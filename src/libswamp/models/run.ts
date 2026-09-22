@@ -175,6 +175,7 @@ export interface RunLog {
   logFilePath: string;
   redactor: SecretRedactor;
   cleanup: () => void;
+  runId?: string;
 }
 
 /**
@@ -475,7 +476,7 @@ export async function* modelMethodRun(
           Object.assign(inputs, inputsWithDefaults);
         }
 
-        const runLogger = getRunLogger(definition.name, input.methodName);
+        let runLogger = getRunLogger(definition.name, input.methodName);
         runLogger.debug("Found model {name} ({type})", {
           name: definition.name,
           type: modelType.normalized,
@@ -509,6 +510,13 @@ export async function* modelMethodRun(
           definition.id,
         );
         const { logFilePath, redactor } = runLog;
+        if (runLog.runId) {
+          runLogger = getRunLogger(
+            definition.name,
+            input.methodName,
+            runLog.runId,
+          );
+        }
 
         try {
           // --- Evaluate expressions ---
@@ -801,7 +809,7 @@ export async function* modelMethodRun(
                         tags: evaluatedDefinition.tags,
                       },
                       methodName: input.methodName,
-                      logger: getRunLogger(definition.name, input.methodName),
+                      logger: runLogger,
                       runtimeTags: input.runtimeTags,
                       tagOverrides: input.initiatedBy
                         ? { initiatedBy: input.initiatedBy }
@@ -877,7 +885,7 @@ export async function* modelMethodRun(
               const failedMethodContext = buildMethodReportContext(
                 {
                   repoDir: deps.repoDir,
-                  logger: getRunLogger(definition.name, input.methodName),
+                  logger: runLogger,
                   dataRepository: deps.dataRepo,
                   definitionRepository: deps.definitionRepo,
                   swampSha: input.swampSha,
@@ -1058,7 +1066,7 @@ export async function* modelMethodRun(
             const methodContext = buildMethodReportContext(
               {
                 repoDir: deps.repoDir,
-                logger: getRunLogger(definition.name, input.methodName),
+                logger: runLogger,
                 dataRepository: deps.dataRepo,
                 definitionRepository: deps.definitionRepo,
                 swampSha: input.swampSha,

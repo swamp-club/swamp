@@ -103,6 +103,7 @@ export async function createWorkerModelRunDeps(
     ),
     createRunLog: async (modelType, method, definitionId) => {
       const redactor = new SecretRedactor();
+      const runId = crypto.randomUUID();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const logFilePath = join(
         swampPath(repoDir, SWAMP_SUBDIRS.outputs),
@@ -115,11 +116,13 @@ export async function createWorkerModelRunDeps(
         logFilePath,
         redactor,
         swampPath(repoDir),
+        { runId },
       );
       return {
         logFilePath,
         redactor,
         cleanup: () => runFileSink.unregister(logHandle),
+        runId,
       };
     },
     createAndSaveDefinition: async (type, definition) => {

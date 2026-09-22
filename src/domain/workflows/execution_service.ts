@@ -859,7 +859,11 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Log via model method run logger (same categories as standalone)
-    const runLogger = getRunLogger(originalDefinition.name, task.methodName);
+    const runLogger = getRunLogger(
+      originalDefinition.name,
+      task.methodName,
+      ctx.workflowRunId,
+    );
 
     runLogger.debug("Found model {name} ({type})", {
       name: originalDefinition.name,
@@ -2040,6 +2044,7 @@ export class WorkflowExecutionService {
           workflowLogPath,
           secretRedactor,
           workflowLogBoundary,
+          { runId: run.id },
         );
         run.setLogFile(workflowLogPath);
 
@@ -2580,7 +2585,7 @@ export class WorkflowExecutionService {
       workflowLogPath,
       secretRedactor,
       swampPath(this.repoDir),
-      { append: true },
+      { append: true, runId: existingRun.id },
     );
 
     // Declared before the try so the finally at the end of this method can
@@ -3210,7 +3215,12 @@ export class WorkflowExecutionService {
           `Step "${stepName}" guard must be a $\{{ }} expression, got: ${step.guard}`,
         );
       }
-      const guardLogger = getWorkflowRunLogger(workflow.name);
+      const guardLogger = getWorkflowRunLogger(
+        workflow.name,
+        undefined,
+        undefined,
+        run.id,
+      );
       try {
         const celEvaluator = new CelEvaluator();
         const guardContext: Record<string, unknown> = {
@@ -4442,7 +4452,12 @@ export class WorkflowExecutionService {
       stepExecutions,
       reportFilterOptions: filterOptions,
       repoDir: this.repoDir,
-      runLogger: getWorkflowRunLogger(workflow.name),
+      runLogger: getWorkflowRunLogger(
+        workflow.name,
+        undefined,
+        undefined,
+        run.id,
+      ),
       unifiedDataRepo: this.dataRepo,
       definitionRepository: this.definitionRepo,
       emitEvent: (event: WorkflowExecutionEvent) => {

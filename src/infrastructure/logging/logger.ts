@@ -31,11 +31,11 @@ import {
   textFormatter,
   TIMESTAMP_FORMAT,
 } from "./log_format.ts";
-import { runFileSink } from "./run_file_sink.ts";
+import { RUN_ID_PROPERTY, runFileSink } from "./run_file_sink.ts";
 import { initLogs, type InitLogsConfig } from "../tracing/mod.ts";
 import { createOtelLogRecordSink } from "./otel_log_sink.ts";
 
-export { runFileSink } from "./run_file_sink.ts";
+export { RUN_ID_PROPERTY, runFileSink } from "./run_file_sink.ts";
 
 export interface LoggingOptions {
   prettyOutput?: boolean;
@@ -283,14 +283,19 @@ export function writeOutput(message: string): void {
   console.log(message);
 }
 
-export function getRunLogger(modelName: string, methodName: string) {
-  return getLogger([
+export function getRunLogger(
+  modelName: string,
+  methodName: string,
+  runId?: string,
+) {
+  const logger = getLogger([
     "model",
     "method",
     "run",
     modelName,
     methodName,
   ]);
+  return runId ? logger.with({ [RUN_ID_PROPERTY]: runId }) : logger;
 }
 
 // LogTape interprets {…} in message templates as property placeholders.
@@ -303,9 +308,11 @@ export function getWorkflowRunLogger(
   workflowName: string,
   jobName?: string,
   stepName?: string,
+  runId?: string,
 ) {
   const category: string[] = ["workflow", "run", workflowName];
   if (jobName) category.push(jobName);
   if (stepName) category.push(stepName);
-  return getLogger(category);
+  const logger = getLogger(category);
+  return runId ? logger.with({ [RUN_ID_PROPERTY]: runId }) : logger;
 }
