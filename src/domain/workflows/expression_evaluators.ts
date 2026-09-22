@@ -38,7 +38,9 @@ import {
 import {
   extractDependencies,
   hasStepOutputDependency,
+  hasStepsNamespaceReference,
 } from "../expressions/dependency_extractor.ts";
+import type { ExpressionLocation } from "../expressions/expression.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 
@@ -62,6 +64,49 @@ export function collectWorkflowAuthoredExpressions(
 }
 
 /**
+ * Builds the rule deciding which task-target expressions in `workflow` defer
+ * past run-start evaluation. Shared by the run path and `workflow evaluate`,
+ * whose cache `--last-evaluated` replays, so both leave the same targets raw.
+ *
+ * A step's task target — what it executes — defers for either of two
+ * reasons, each sufficient on its own:
+ *
+ *   - it reads step output, so the data it names does not exist yet;
+ *   - its step carries a guard, so the step may not run at all, and a
+ *     target evaluated for a step that will skip is exactly the defect in
+ *     swamp-club#2304: an empty result failed StepTask validation and killed
+ *     the whole run before any step executed.
+ *
+ * An unguarded target with no step-output dependency still resolves at run
+ * start, so a mistyped name fails where the error is cheapest — deferral buys
+ * nothing for a step that is going to run.
+ *
+ * @param workflow - The unexpanded workflow whose expressions are evaluated
+ * @returns True for an expression location that is a deferred task target
+ */
+export function createTaskTargetDeferral(
+  workflow: Workflow,
+): (expr: ExpressionLocation) => boolean {
+  // Path prefixes of steps carrying a guard. Prefix matching is sound because
+  // expression paths are positional — `jobs[i].steps[j].task.modelIdOrName` —
+  // and derived from the same unexpanded definition walked here. forEach
+  // changes nothing: expansion rewrites the job *run* at job start, long
+  // after this.
+  const guardedStepPrefixes: string[] = [];
+  for (const [jobIndex, job] of workflow.jobs.entries()) {
+    for (const [stepIndex, step] of job.steps.entries()) {
+      if (step.guard) {
+        guardedStepPrefixes.push(`jobs[${jobIndex}].steps[${stepIndex}].`);
+      }
+    }
+  }
+  return (expr) =>
+    isTaskTargetPath(expr.path) &&
+    (hasStepOutputDependency(expr.celExpression) ||
+      guardedStepPrefixes.some((prefix) => expr.path.startsWith(prefix)));
+}
+
+/**
  * Result of evaluating a workflow's CEL expressions.
  * `expressionsEvaluated` is exposed for callers that record it as a
  * tracing-span attribute.
@@ -73,10 +118,10 @@ export interface WorkflowEvaluationResult {
 
 /**
  * Evaluates CEL expressions in a workflow definition, leaving vault
- * expressions, runtime-only expressions, self.* references, run.*
- * references, bare workflowRunId, forEach.in expressions, and
- * task.inputs with step-output dependencies raw. Those are resolved at
- * runtime when their inputs become available.
+ * expressions, runtime-only expressions, self.* references, run.* and
+ * steps.* references, bare workflowRunId, forEach.in expressions,
+ * task.inputs with step-output dependencies, and deferred task targets
+ * raw. Those are resolved at runtime when their inputs become available.
  *
  * **Strict** about per-expression evaluation errors: any throw during
  * `evaluateAsync` propagates out, surfacing the error to the caller.
@@ -106,17 +151,8 @@ export class WorkflowExpressionEvaluator {
     // remain as strings so forEach expansion can iterate them at run
     // time.
     const forEachInExpressions = new Set<string>();
-    // Path prefixes of steps carrying a guard, used to defer their task
-    // targets below. Prefix matching is sound because expression paths are
-    // positional — `jobs[i].steps[j].task.modelIdOrName` — and derived from
-    // the same unexpanded definition walked here. forEach changes nothing:
-    // expansion rewrites the job *run* at job start, long after this.
-    const guardedStepPrefixes: string[] = [];
-    for (const [jobIndex, job] of workflow.jobs.entries()) {
-      for (const [stepIndex, step] of job.steps.entries()) {
-        if (step.guard) {
-          guardedStepPrefixes.push(`jobs[${jobIndex}].steps[${stepIndex}].`);
-        }
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
         if (step.forEach) {
           const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/s);
           if (match) {
@@ -125,8 +161,7 @@ export class WorkflowExpressionEvaluator {
         }
       }
     }
-    const isOnGuardedStep = (path: string) =>
-      guardedStepPrefixes.some((prefix) => path.startsWith(prefix));
+    const isDeferredTaskTarget = createTaskTargetDeferral(workflow);
 
     // Deferral is decided per path, but substitution below is keyed on the raw
     // expression text and rewrites every occurrence of it. Two steps can carry
@@ -151,6 +186,11 @@ export class WorkflowExpressionEvaluator {
         expr.celExpression.match(/\brun\./) ||
         expr.celExpression.match(/\bworkflowRunId\b/)
       ) {
+        continue;
+      }
+      // steps.* is populated alongside run.*, once the WorkflowRun exists —
+      // evaluating it here fails the whole run with "Unknown variable: steps".
+      if (hasStepsNamespaceReference(expr.celExpression)) {
         continue;
       }
       // forEach.in expressions must remain as strings for expansion.
@@ -179,23 +219,9 @@ export class WorkflowExpressionEvaluator {
       ) {
         continue;
       }
-      // A step's task target — what it executes — defers for either of two
-      // reasons, each sufficient on its own:
-      //
-      //   - it reads step output, so the data it names does not exist yet;
-      //   - its step carries a guard, so the step may not run at all, and a
-      //     target evaluated for a step that will skip is exactly the defect
-      //     in swamp-club#2304: an empty result failed StepTask validation and
-      //     killed the whole run before any step executed.
-      //
-      // An unguarded target with no step-output dependency still resolves
-      // here, so a mistyped name fails at run start where the error is
-      // cheapest — deferral buys nothing for a step that is going to run.
-      if (
-        isTaskTargetPath(expr.path) &&
-        (hasStepOutputDependency(expr.celExpression) ||
-          isOnGuardedStep(expr.path))
-      ) {
+      // A step's task target defers when it reads step output or its step
+      // carries a guard — see createTaskTargetDeferral.
+      if (isDeferredTaskTarget(expr)) {
         deferredTargetPaths.add(expr.path);
         continue;
       }

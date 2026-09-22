@@ -202,6 +202,11 @@ Only completed steps are visible — pending or running steps are not accessible
 The outputs field contains model method resource attributes when available;
 steps that produce no resource attributes have no outputs.
 
+The `steps` namespace exists only once the workflow run does, so like `run.*`
+any expression reading it is left raw during workflow evaluation and resolved
+at step execution time. Evaluating it at run start would fail the whole run
+with `Unknown variable: steps`.
+
 Cross-workflow output passing is supported at one level of nesting: when a
 parent step invokes a child workflow, the child's model method resource
 attributes are collected and accessible as
@@ -497,12 +502,15 @@ against the current data store.
 
 ### Task-target deferral
 
-A step's **task target** — `task.modelIdOrName`, or `task.modelName` in the
-direct-execution form — names what the step executes. It defers for either of
-two independent reasons:
+A step's **task target** — `task.modelIdOrName`, `task.modelName` in the
+direct-execution form, or `task.workflowIdOrName` on a nested workflow step —
+names what the step executes. It defers for either of two independent reasons:
 
 - **It reads step output.** The data it names does not exist at run start, the
-  same reason `task.inputs` defers.
+  same reason `task.inputs` defers. A driver step that picks the next workflow
+  from a record an earlier step wrote relies on this (swamp-club#2351):
+  evaluated at run start, the target silently took its `orValue` fallback, or
+  a previous run's value.
 - **Its step carries a guard.** A guarded step may not run at all, and
   resolving a target for a step that will skip is what made swamp-club#2304
   fail: an empty result failed `StepTask` validation while the evaluated
@@ -519,10 +527,20 @@ are recorded and skipped during substitution — otherwise a plain step's
 evaluated value would be written into a guarded step's deferred target and
 silently undo the deferral.
 
-Deferred targets are resolved in `executeModelMethod`, after the guard has
-decided. `runStep` returns early on a guarded skip and never reaches the
-executor, so a step that does not run never resolves the target it would have
-used.
+Deferred targets are resolved in `executeModelMethod` and `runWorkflowStep`,
+after the guard has decided. `runStep` returns early on a guarded skip and never
+reaches either, so a step that does not run never resolves the target it would
+have used. A target interpolating a deferred expression into literal text
+(`stage-${{ data.latest(...) }}`) is resolved expression by expression, and
+only author-written expressions are evaluated: template text arriving from a
+data record stays literal.
+
+`swamp workflow evaluate` applies the same rule (`createTaskTargetDeferral`),
+so the evaluated cache that `--last-evaluated` replays leaves the same targets
+raw as a fresh run.
+
+`task.methodName` and `task.modelType` are not task targets and still resolve
+at run start.
 
 ## Sensitive Data
 

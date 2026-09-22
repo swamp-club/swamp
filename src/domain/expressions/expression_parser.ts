@@ -299,14 +299,17 @@ export function isTaskInputsPath(path: string): boolean {
  * direct-execution form fails the same way when its name resolves to empty,
  * and because a run-id-based name like `build-lint-${{ run.id }}` carries no
  * step-output dependency — without this it would never reach the deferral
- * rule at all.
+ * rule at all. `workflowIdOrName` is the target of a nested workflow step:
+ * a driver step that picks the next workflow from a record an earlier step
+ * wrote reads data that does not exist at run start (swamp-club#2351).
  *
  * @param path - The expression path (e.g. "jobs[0].steps[1].task.modelIdOrName")
  * @returns True if the path is a step's task target
  */
 export function isTaskTargetPath(path: string): boolean {
   return path.endsWith(".task.modelIdOrName") ||
-    path.endsWith(".task.modelName");
+    path.endsWith(".task.modelName") ||
+    path.endsWith(".task.workflowIdOrName");
 }
 
 /**

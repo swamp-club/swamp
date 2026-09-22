@@ -7460,3 +7460,158 @@ Deno.test("task target: a deferred target resolves after suspend and resume", as
     assertEquals(executor.executedSteps, ["j/consume"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Nested workflow targets and the steps namespace (swamp-club#2351)
+//
+// A nested workflow step's workflowIdOrName is a task target too: deferred
+// past run start when it reads step output or its step carries a guard, and
+// resolved in runWorkflowStep after the guard has decided. A steps.* reference
+// used to fail the whole run at start with "Unknown variable: steps".
+// ---------------------------------------------------------------------------
+
+/** A one-step child workflow whose single step names the child. */
+function childWorkflow(name: string): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "announce", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+}
+
+/** Runs `workflow` (and the saved children) and returns the recorded run. */
+async function runWithChildren(
+  tempDir: string,
+  workflow: Workflow,
+  inputs: Record<string, unknown> = {},
+) {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new MockStepExecutor();
+  for (const name of ["child-a", "child-b"]) {
+    await workflowRepo.save(childWorkflow(name));
+  }
+  await workflowRepo.save(workflow);
+
+  const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    undefined,
+    catalogStore,
+  );
+  const run = await service.execute(workflow.name, { inputs });
+  return { run, executor };
+}
+
+Deno.test("workflow target: a guarded nested workflow step resolves its deferred target at step time", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "guarded-workflow-target",
+      inputs: {
+        type: "object",
+        properties: { child: { type: "string", default: "" } },
+      },
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "dispatch",
+              guard: "${{ false }}",
+              task: StepTask.workflow("${{ inputs.child }}"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const { run, executor } = await runWithChildren(tempDir, workflow, {
+      child: "child-b",
+    });
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps, ["child-b/announce"]);
+  });
+});
+
+Deno.test("workflow target: a guarded nested workflow step with an empty target skips instead of killing the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "guarded-empty-workflow-target",
+      inputs: {
+        type: "object",
+        properties: { child: { type: "string", default: "" } },
+      },
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "dispatch",
+              guard: "${{ true }}",
+              task: StepTask.workflow("${{ inputs.child }}"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const { run, executor } = await runWithChildren(tempDir, workflow, {
+      child: "",
+    });
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(run.getJob("j")?.getStep("dispatch")?.status, "skipped");
+    assertEquals(executor.executedSteps, []);
+  });
+});
+
+Deno.test("steps namespace: steps.* in task.inputs and a workflow target resolves at step time", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "steps-namespace-target",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({ name: "write", task: StepTask.model("m", "run") }),
+            Step.create({
+              name: "consume",
+              task: StepTask.model("m", "run", {
+                status: "${{ steps.write.status }}",
+              }),
+              dependsOn: [
+                { step: "write", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+            Step.create({
+              name: "dispatch",
+              task: StepTask.workflow(
+                "${{ steps.write.status == 'succeeded' ? 'child-b' : 'child-a' }}",
+              ),
+              dependsOn: [
+                { step: "write", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const { run, executor } = await runWithChildren(tempDir, workflow);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps.includes("j/consume"), true);
+    assertEquals(executor.executedSteps.includes("child-b/announce"), true);
+    assertEquals(executor.executedSteps.includes("child-a/announce"), false);
+  });
+});

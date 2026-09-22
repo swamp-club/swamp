@@ -744,6 +744,108 @@ Deno.test("evaluate: guard expressions remain as strings (not resolved to boolea
   assertEquals(steps[1].guard, '${{ inputs.action != "stop" }}');
 });
 
+// --- Deferred task targets and the steps namespace (swamp-club#2351) ---
+
+/** Evaluates a single workflow with the identity CEL stub and returns its steps. */
+async function evaluateSteps(workflow: Workflow) {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(workflow),
+    findWorkflowById: () => Promise.resolve(workflow),
+  });
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: workflow.name,
+      inputs: { name: "picked" },
+    }),
+  );
+  const completed = events[events.length - 1] as Extract<
+    WorkflowEvaluateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  return (completed.data as WorkflowEvaluateItemData).jobs![0].steps;
+}
+
+Deno.test("evaluate: task targets defer by the same rule as a workflow run", async () => {
+  // The evaluated cache feeds --last-evaluated, so it must leave the same
+  // targets raw as the run path does. The identity CEL stub turns an
+  // evaluated expression into its bare CEL text.
+  const dataTarget =
+    "${{ data.latest('driver', 'next').?attributes.?workflow.orValue('a') }}";
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000030",
+    name: "deferred-targets",
+    // Shares the data target's text and is evaluated eagerly, so without
+    // path-scoped substitution its value would overwrite the deferred target.
+    description: dataTarget,
+    inputs: {
+      type: "object",
+      properties: { name: { type: "string", default: "picked" } },
+    },
+    jobs: [{
+      name: "main",
+      steps: [
+        {
+          name: "data-target",
+          task: { type: "workflow", workflowIdOrName: dataTarget },
+        },
+        {
+          name: "guarded-target",
+          guard: "${{ true }}",
+          task: { type: "workflow", workflowIdOrName: "${{ inputs.name }}" },
+        },
+        {
+          name: "plain-target",
+          task: { type: "workflow", workflowIdOrName: "${{ inputs.name }}" },
+        },
+      ],
+    }],
+  });
+
+  const steps = await evaluateSteps(workflow);
+  const targetOf = (index: number) =>
+    (steps[index].task as { workflowIdOrName: string }).workflowIdOrName;
+  assertEquals(targetOf(0), dataTarget);
+  assertEquals(targetOf(1), "${{ inputs.name }}");
+  assertEquals(targetOf(2), "inputs.name");
+});
+
+Deno.test("evaluate: steps.* references stay raw", async () => {
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000031",
+    name: "steps-namespace",
+    inputs: {},
+    jobs: [{
+      name: "main",
+      steps: [
+        {
+          name: "write",
+          task: {
+            type: "model_method",
+            modelIdOrName: "writer",
+            methodName: "run",
+          },
+        },
+        {
+          name: "consume",
+          task: {
+            type: "model_method",
+            modelIdOrName: "consumer",
+            methodName: "run",
+            inputs: { status: "${{ steps.write.status }}" },
+          },
+        },
+      ],
+    }],
+  });
+
+  const steps = await evaluateSteps(workflow);
+  assertEquals(
+    (steps[1].task as { inputs: Record<string, unknown> }).inputs.status,
+    "${{ steps.write.status }}",
+  );
+});
+
 // --- Input coercion ---
 
 Deno.test("evaluate: string boolean inputs are coerced to native booleans", async () => {

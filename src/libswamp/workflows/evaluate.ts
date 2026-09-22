@@ -39,10 +39,14 @@ import {
 import {
   containsRuntimeExpression,
 } from "../../domain/expressions/expression_evaluation_service.ts";
-import { collectWorkflowAuthoredExpressions } from "../../domain/workflows/expression_evaluators.ts";
+import {
+  collectWorkflowAuthoredExpressions,
+  createTaskTargetDeferral,
+} from "../../domain/workflows/expression_evaluators.ts";
 import { resolveAvailableExpressions } from "../../domain/expressions/available_expression_resolver.ts";
 import {
   hasStepOutputDependency,
+  hasStepsNamespaceReference,
   requiresModelNamespace,
 } from "../../domain/expressions/dependency_extractor.ts";
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
@@ -232,6 +236,12 @@ async function evaluateWorkflowInternal(
     }
   }
 
+  // Task targets deferred to step time, by the same rule as the run path.
+  // Recorded by path so substitution below cannot write an identical
+  // expression's value, evaluated elsewhere, into a deferred target.
+  const isDeferredTaskTarget = createTaskTargetDeferral(workflow);
+  const deferredTargetPaths = new Set<string>();
+
   // Evaluate CEL-only expressions; skip vault, self.*, and forEach.in expressions
   const evaluatedValues = new Map<string, unknown>();
   for (const expr of expressions) {
@@ -240,6 +250,10 @@ async function evaluateWorkflowInternal(
     }
     // Skip self.* expressions — they reference forEach variables resolved at runtime
     if (expr.celExpression.match(/\bself\??\./)) {
+      continue;
+    }
+    // Skip steps.* expressions — the namespace only exists once a run does
+    if (hasStepsNamespaceReference(expr.celExpression)) {
       continue;
     }
     // Skip forEach.in expressions — they must remain as strings for forEach expansion
@@ -259,6 +273,11 @@ async function evaluateWorkflowInternal(
     ) {
       continue;
     }
+    // Skip task targets that read step output or sit on a guarded step
+    if (isDeferredTaskTarget(expr)) {
+      deferredTargetPaths.add(expr.path);
+      continue;
+    }
 
     try {
       const value = deps.evaluateCel(expr.celExpression, context);
@@ -276,7 +295,7 @@ async function evaluateWorkflowInternal(
   const evaluatedData = replaceExpressions(
     workflowData,
     evaluatedValues,
-    isAssertExprPath,
+    (path) => isAssertExprPath(path) || deferredTargetPaths.has(path),
   );
 
   // Create new Workflow from evaluated data

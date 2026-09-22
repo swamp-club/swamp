@@ -702,6 +702,15 @@ Deno.test("isTaskTargetPath returns true for modelName", () => {
   assertEquals(isTaskTargetPath("jobs[0].steps[1].task.modelName"), true);
 });
 
+Deno.test("isTaskTargetPath returns true for workflowIdOrName", () => {
+  // A nested workflow step's target names what it executes, the same as a
+  // model step's modelIdOrName.
+  assertEquals(
+    isTaskTargetPath("jobs[0].steps[1].task.workflowIdOrName"),
+    true,
+  );
+});
+
 Deno.test("isTaskTargetPath returns false for other task fields", () => {
   // modelType alone names no definition; methodName and inputs are not
   // targets. Deferring them would change unrelated evaluation timing.
@@ -722,6 +731,10 @@ Deno.test("isTaskTargetPath does not match a field merely containing the name", 
   // modelIdOrName is not mistaken for the target.
   assertEquals(
     isTaskTargetPath("jobs[0].steps[0].task.inputs.modelIdOrName"),
+    false,
+  );
+  assertEquals(
+    isTaskTargetPath("jobs[0].steps[0].task.inputs.workflowIdOrName"),
     false,
   );
 });

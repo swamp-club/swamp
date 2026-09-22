@@ -116,6 +116,12 @@ tasks) `workflowIdOrName` — as well as the step `name`, `inputs`, and
       host: ${{ self.host }}
 ```
 
+A task target (`modelIdOrName`, `modelName`, `workflowIdOrName`) that reads
+`data.*` or `steps.*`, or whose step carries a `guard`, resolves when its step
+runs rather than at run start, so it sees records earlier steps of the same run
+wrote. See "Task-target deferral" in
+[../enablers/expressions.md](../enablers/expressions.md).
+
 ### Manual Approval (`manual_approval`)
 
 Suspends workflow execution at a step boundary and persists the run to disk. The
