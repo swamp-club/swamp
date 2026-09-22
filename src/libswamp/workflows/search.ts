@@ -29,6 +29,7 @@ export interface WorkflowSearchItem {
   name: string;
   description?: string;
   jobCount: number;
+  stepCount: number;
   hasInputs: boolean;
   trigger?: { schedule?: string; inputs?: Record<string, unknown> };
 }
@@ -55,7 +56,7 @@ export interface WorkflowSearchDeps {
       id: string;
       name: string;
       description?: string;
-      jobs: readonly unknown[];
+      jobs: ReadonlyArray<{ readonly steps: readonly unknown[] }>;
       inputs?: { properties?: Record<string, unknown> };
       trigger?: { schedule?: string; inputs?: Record<string, unknown> };
     }>
@@ -92,6 +93,7 @@ export async function* workflowSearch(
         name: w.name,
         description: w.description,
         jobCount: w.jobs.length,
+        stepCount: w.jobs.reduce((n, j) => n + j.steps.length, 0),
         hasInputs: Object.keys(w.inputs?.properties ?? {}).length > 0,
         trigger: w.trigger,
       }));

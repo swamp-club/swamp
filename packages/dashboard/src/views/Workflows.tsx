@@ -28,7 +28,7 @@ interface WorkflowDef {
   id: string;
   name: string;
   trigger?: { schedule?: string };
-  jobs: Array<{ steps: Array<unknown> }>;
+  stepCount: number;
 }
 
 interface RunSummary {
@@ -62,9 +62,6 @@ export function Workflows({ onOpenWorkflow }: WorkflowsProps) {
     list.push(run);
     runsByWorkflow.set(run.workflowName, list);
   }
-
-  const stepCount = (w: WorkflowDef) =>
-    w.jobs?.reduce((n, j) => n + (j.steps?.length ?? 0), 0) ?? 0;
 
   return (
     <>
@@ -112,7 +109,7 @@ export function Workflows({ onOpenWorkflow }: WorkflowsProps) {
                   </>
                 )}
                 {!w.trigger?.schedule && <TriggerBadge trigger="manual" />}
-                <span>{stepCount(w)} steps</span>
+                <span>{w.stepCount} steps</span>
               </div>
               <div className="ratio-bar" style={{ marginTop: 12 }}>
                 <div

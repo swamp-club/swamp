@@ -18,7 +18,7 @@
     "build-attestation": "deno run --allow-read --allow-env --allow-run=git,swamp scripts/build_attestation.ts",
     "review-skills": "deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY,TESSL_TOKEN --allow-write scripts/review_skills.ts",
     "eval-skill-triggers": "deno run --allow-read --allow-run --allow-env --allow-write --allow-net scripts/eval_skill_triggers_promptfoo.ts",
-    "build-dashboard": "cd packages/dashboard && npm run build"
+    "build-dashboard": "npm --prefix packages/dashboard run build"
   },
   "imports": {
     "@cliffy/table": "jsr:@cliffy/table@^1.0.1",

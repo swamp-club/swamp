@@ -237,7 +237,8 @@ function readGrant(id: string, pattern: string): Grant {
 }
 
 /**
- * Five workflows, wf-0 (newest runs) … wf-4, `runsPerWorkflow` runs each.
+ * Five workflows, wf-0 (newest runs) … wf-4, `runsPerWorkflow` runs each;
+ * wf-i has i + 1 steps.
  * With `grants` the context enforces token-mode authorization; without,
  * mode none.
  */
@@ -248,7 +249,7 @@ function makeSearchCtx(
   const workflows = [0, 1, 2, 3, 4].map((i) => ({
     id: crypto.randomUUID(),
     name: `wf-${i}`,
-    jobs: [{}],
+    jobs: [{ steps: Array.from({ length: i + 1 }, () => ({})) }],
   }));
   const ctx: Record<string, unknown> = {
     authConfig: { ...searchAuthBase, mode: grants ? "token" : "none" },
@@ -299,6 +300,7 @@ Deno.test("handleWorkflowSearch: pages with offset and limit and reports total",
 
   assertEquals(frames.length, 1);
   assertEquals(names(frames[0], "name"), ["wf-1", "wf-2"]);
+  assertEquals(names(frames[0], "stepCount"), [2, 3]);
   assertEquals(frames[0].payload?.total, 5);
 });
 
