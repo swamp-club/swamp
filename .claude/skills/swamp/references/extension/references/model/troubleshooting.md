@@ -3,7 +3,7 @@
 ## Table of Contents
 
 - [Common Errors](#common-errors)
-  - [No 'model' or 'extension' export found](#no-model-or-extension-export-found)
+  - [Treating X as a helper module / model type missing](#treating-x-as-a-helper-module--model-type-missing)
   - [Unknown resource spec / Unknown file spec](#unknown-resource-spec-or-unknown-file-spec)
   - [Model type already registered](#model-type-already-registered)
   - [Uses a reserved collective](#uses-a-reserved-collective)
@@ -19,9 +19,16 @@
 
 ## Common Errors
 
-### "No 'model' or 'extension' export found"
+### "Treating X as a helper module" / model type missing
 
-Must use a named export for either a model or extension:
+At debug level (`-v`), the loader logs
+`Treating "foo/lib/util.ts" as a helper module (no "model" export, so not a "model" entry point)`
+for every file under `extensions/models/` without a model or extension export.
+For helper files imported by a model this is expected and harmless — leave them
+where they are.
+
+If the file was meant to be a model, it needs a named export for either a model
+or extension:
 
 ```typescript
 // Wrong

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { join } from "@std/path";
 import { toFileUrl } from "@std/path";
 import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
@@ -729,3 +730,70 @@ Deno.test("importBundle: file URL import error propagates instead of falling to 
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+// -- helper-module skip message (swamp-club#2318) ----------------------------
+
+async function loadHelperOnlyDir(
+  indexOnly: boolean,
+): Promise<{ records: LogRecord[]; loaded: string[]; failed: string[] }> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2318_" });
+  const records: LogRecord[] = [];
+  try {
+    const modelsDir = join(dir, "models");
+    await Deno.mkdir(join(modelsDir, "demo", "lib"), { recursive: true });
+    await Deno.writeTextFile(
+      join(modelsDir, "demo", "lib", "helper.ts"),
+      "export function greet(n: string): string { return n; }\n",
+    );
+
+    await configure({
+      sinks: { capture: (record: LogRecord) => records.push(record) },
+      loggers: [
+        {
+          category: ["swamp", "model", "loader"],
+          lowestLevel: "debug",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+      ],
+      reset: true,
+    });
+
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      makeStubAdapter(new Set<string>()),
+      dir,
+    );
+    const result = await loader.load(modelsDir, { indexOnly });
+    return {
+      records,
+      loaded: result.loaded,
+      failed: result.failed.map((f) => f.file),
+    };
+  } finally {
+    await reset();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+for (const indexOnly of [true, false]) {
+  Deno.test(`load: file without model export is logged at debug as a helper module (indexOnly=${indexOnly})`, async () => {
+    const { records, loaded, failed } = await loadHelperOnlyDir(indexOnly);
+
+    assertEquals(loaded, [], "helper modules must not be loaded");
+    assertEquals(failed, [], "helper modules must not be reported as failed");
+
+    const helperFile = join("demo", "lib", "helper.ts");
+    const helperRecords = records.filter((r) =>
+      r.message.some((part) => part === helperFile)
+    );
+    assertEquals(
+      helperRecords.map((r) => r.level),
+      ["debug"],
+      "helper module must be logged exactly once, at debug",
+    );
+    const text = helperRecords[0].message.map(String).join("");
+    assertStringIncludes(text, "as a helper module");
+    assertStringIncludes(text, "not a model entry point");
+  });
+}
