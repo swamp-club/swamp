@@ -12,6 +12,7 @@ Detailed API documentation for extension model development.
 - [DataWriter Methods](#datawriter-methods)
 - [DataHandle Structure](#datahandle-structure)
 - [Reading Stored Data](#reading-stored-data)
+- [Cross-Model Access](#cross-model-access)
 - [Lifetime Values](#lifetime-values)
 - [Standard Tags](#standard-tags)
 - [Error Handling](#error-handling)
@@ -376,6 +377,88 @@ const content = await context.dataRepository.getContent(
 
 ---
 
+## Cross-Model Access
+
+To read or call **another** model from a method, use these context APIs. Never
+shell out to the `swamp` CLI from a method — every subprocess reloads the
+extensions and syncs the datastore, which can take tens of seconds per call.
+
+### readModelData — read another model's data by name
+
+```typescript
+const records = await context.readModelData!("my-vpc", "state");
+const vpc = records[0]?.attributes as { VpcId: string } | undefined;
+```
+
+- Signature: `(modelName: string, specName?: string) => Promise<DataRecord[]>`
+- Returns the **latest** version of each matching data item; an empty array when
+  the model has no data or does not exist.
+- Each `DataRecord` carries the parsed JSON in `attributes`, plus `name`,
+  `version`, `specName`, `modelId`, `modelType` and `tags`.
+
+### queryData — CEL query across all models
+
+```typescript
+const subnets = await context.queryData!(
+  'modelType == "@myorg/subnet" && attributes.vpcId == "vpc-123"',
+);
+```
+
+- Signature:
+  `(predicate: string, select?: string) => Promise<DataRecord[] | unknown[]>`
+- Same predicate language as `swamp data query` (see
+  [data reference](../../../data/reference.md#query-data)). Latest versions
+  only, unless the predicate mentions `version` or `isLatest`.
+- Without `select` it returns `DataRecord[]`; with `select` it returns the
+  projected values.
+
+### runModel — call another model's method
+
+```typescript
+// Existing definition, by name
+const result = await context.runModel!({
+  definition: "my-vpc",
+  method: "read",
+});
+
+// Direct type execution — auto-creates the definition if missing
+const created = await context.runModel!({
+  modelType: "@myorg/vpc",
+  name: "my-new-vpc",
+  method: "create",
+  arguments: { cidrBlock: "10.0.0.0/16" },
+});
+
+if (!result.ok) throw new Error(result.error.message);
+// result.resources: DataHandle[] written by the target
+```
+
+- Returns `{ ok: true, resources: DataHandle[] }` or
+  `{ ok: false, error: { message, stack? } }`. It does not throw — check `ok`.
+- `arguments` is split between the target's global and method arguments by their
+  schemas (method arguments win on ambiguous keys; unknown keys fail).
+- The target's data belongs to the target definition, not the caller. The
+  caller's vault secrets do not propagate.
+- **Authorization:** to call a model type from another extension, list that
+  extension under `dependencies` in your `manifest.yaml`. Same-extension,
+  built-in and user-authored model types need no declaration.
+- **Limits:** 10 nested levels, 100 `runModel` calls per top-level execution,
+  and cycles are rejected.
+
+### Where each API is available
+
+| API             | Local method | Remote worker                                                    | Checks |
+| --------------- | ------------ | ---------------------------------------------------------------- | ------ |
+| `readModelData` | Yes          | Yes                                                              | No     |
+| `queryData`     | Yes          | Yes — no `select`; errors if it matches access or worker records | No     |
+| `runModel`      | Yes          | No — returns `{ ok: false }`                                     | No     |
+
+To orchestrate models on workers, chain `model_method` steps in a workflow
+instead of calling `runModel` (see
+[remote execution](../../../workflow/references/remote-execution.md#placing-steps-on-workers)).
+
+---
+
 ## Lifetime Values
 
 | Value       | Behavior                                     |
@@ -543,21 +626,29 @@ execute: (async (
 
 ### Context Fields Available in Methods
 
-| Field                          | Type                                                                                           | Description                                      |
-| ------------------------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `context.signal`               | `AbortSignal`                                                                                  | Cancellation signal for async operations         |
-| `context.repoDir`              | `string`                                                                                       | Repository root path                             |
-| `context.globalArgs`           | `z.infer<typeof GlobalArgsSchema>`                                                             | Validated global arguments from the definition   |
-| `context.definition`           | `{ id: string; name: string; version: string; tags: Record<string, string> }`                  | Model instance metadata                          |
-| `context.methodName`           | `string`                                                                                       | Name of the method being invoked                 |
-| `context.logger`               | LogTape Logger (trace/debug/info/warning/error/fatal)                                          | Structured logging                               |
-| `context.writeResource`        | `(specName: string, name: string, data: Record<string, unknown>) => Promise<{ name: string }>` | Write structured JSON data                       |
-| `context.readResource`         | `(instanceName: string, version?: number) => Promise<Record<string, unknown> \| null>`         | Read previously stored data                      |
-| `context.createFileWriter`     | `(specName: string, name: string) => DataWriter`                                               | Create binary/streaming file writer              |
-| `context.createCelEnvironment` | `() => Environment`                                                                            | Fresh CEL environment for expression evaluation  |
-| `context.dataRepository`       | Low-level data API                                                                             | For reading non-JSON content or cross-model data |
-| `context.modelType`            | `string`                                                                                       | The model type string (e.g. `@myorg/my-model`)   |
-| `context.modelId`              | `string`                                                                                       | The model instance ID                            |
+| Field                          | Type                                                                                           | Description                                     |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `context.signal`               | `AbortSignal`                                                                                  | Cancellation signal for async operations        |
+| `context.repoDir`              | `string`                                                                                       | Repository root path                            |
+| `context.globalArgs`           | `z.infer<typeof GlobalArgsSchema>`                                                             | Validated global arguments from the definition  |
+| `context.definition`           | `{ id: string; name: string; version: string; tags: Record<string, string> }`                  | Model instance metadata                         |
+| `context.methodName`           | `string`                                                                                       | Name of the method being invoked                |
+| `context.logger`               | LogTape Logger (trace/debug/info/warning/error/fatal)                                          | Structured logging                              |
+| `context.writeResource`        | `(specName: string, name: string, data: Record<string, unknown>) => Promise<{ name: string }>` | Write structured JSON data                      |
+| `context.readResource`         | `(instanceName: string, version?: number) => Promise<Record<string, unknown> \| null>`         | Read previously stored data                     |
+| `context.createFileWriter`     | `(specName: string, name: string) => DataWriter`                                               | Create binary/streaming file writer             |
+| `context.createCelEnvironment` | `() => Environment`                                                                            | Fresh CEL environment for expression evaluation |
+| `context.readModelData`        | `(modelName: string, specName?: string) => Promise<DataRecord[]>`                              | Read another model's data by name               |
+| `context.queryData`            | `(predicate: string, select?: string) => Promise<DataRecord[] \| unknown[]>`                   | CEL query across all models' data               |
+| `context.runModel`             | `(options: RunModelOptions) => Promise<RunModelResult>`                                        | Call another model's method                     |
+| `context.dataRepository`       | Low-level data API                                                                             | For reading non-JSON content                    |
+| `context.modelType`            | `string`                                                                                       | The model type string (e.g. `@myorg/my-model`)  |
+| `context.modelId`              | `string`                                                                                       | The model instance ID                           |
+
+For the cross-model APIs, see [Cross-Model Access](#cross-model-access).
+Locally, `dataRepository.getContent` and `findAllForModel` also accept a
+definition name in place of the model ID; on remote workers they need the ID, so
+prefer `readModelData` for by-name reads.
 
 Type only the fields your method body actually uses — don't declare the full
 interface. See [typing.md](typing.md) for the complete typing guide.
@@ -592,6 +683,11 @@ execute: async (context: MethodContext): Promise<CheckResult>
 available** in check execute functions. Checks must not produce data output —
 they only inspect state and return a pass/fail result.
 
+`context.readModelData`, `context.queryData` and `context.runModel` are also
+**not available** in checks. To read another model's data from a check, use
+`context.dataRepository` with that model's definition name (see pattern 2
+below).
+
 ### CheckResult
 
 ```typescript
@@ -615,17 +711,18 @@ execute: async (context) => {
 ```
 
 **2. Cross-model validation** — read other model's stored data via
-`context.dataRepository`:
+`context.dataRepository`. The second argument accepts the other model's
+definition name or its ID:
 
 ```typescript
 execute: async (context) => {
   const content = await context.dataRepository.getContent(
     "aws/vpc",
-    context.globalArgs.vpcId,
+    context.globalArgs.vpcName, // definition name of the VPC model
     "state",
   );
   if (!content) {
-    return { pass: false, errors: [`VPC ${context.globalArgs.vpcId} has no stored state`] };
+    return { pass: false, errors: [`VPC ${context.globalArgs.vpcName} has no stored state`] };
   }
   return { pass: true };
 },
