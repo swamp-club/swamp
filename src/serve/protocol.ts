@@ -125,6 +125,10 @@ export interface ModelMethodDescribePayload {
 
 export interface WorkflowSearchPayload {
   query?: string;
+  /** Page size; omitted returns every authorized workflow. */
+  limit?: number;
+  /** Number of authorized workflows to skip before the page. */
+  offset?: number;
 }
 
 export interface VaultGetPayload {
@@ -378,7 +382,10 @@ export interface WorkflowRunSearchPayload {
   workflow?: string;
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
+  /** Page size; the server applies a default of 500 when omitted. */
   limit?: number;
+  /** Number of authorized runs to skip before the page. */
+  offset?: number;
 }
 
 export interface WorkflowSchemaPayload {
@@ -1183,6 +1190,8 @@ export interface WorkflowHistorySearchResponse {
 
 export interface WorkflowRunSearchResponse {
   data: Record<string, unknown>;
+  /** Authorized matches before `offset`/`limit` were applied. */
+  total?: number;
 }
 
 export interface WorkflowSchemaResponse {
@@ -1191,6 +1200,8 @@ export interface WorkflowSchemaResponse {
 
 export interface WorkflowSearchResponse {
   data: Record<string, unknown>;
+  /** Authorized matches before `offset`/`limit` were applied. */
+  total?: number;
 }
 
 export interface WorkflowApprovalsResponse {

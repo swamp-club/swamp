@@ -19,9 +19,10 @@
 
 import { useState } from "react";
 import { useRequest } from "../client/useRequest";
-import { extractArray } from "../client/extract";
+import { extractArray, extractTotal } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
+import { Pager } from "../components/Pager";
 
 interface RunItem {
   runId: string;
@@ -43,14 +44,15 @@ export function Executions({ onOpenRun }: ExecutionsProps) {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [page, setPage] = useState(0);
 
-  const payload: Record<string, unknown> = { limit: 500 };
+  const payload: Record<string, unknown> = {
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  };
   if (statusFilter) payload.status = statusFilter;
 
   const { data } = useRequest("workflow.run.search", payload);
-  const allRuns = extractArray<RunItem>(data);
-
-  const totalPages = Math.ceil(allRuns.length / PAGE_SIZE);
-  const runs = allRuns.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const runs = extractArray<RunItem>(data);
+  const total = extractTotal(data) ?? runs.length;
 
   const statuses = [
     "",
@@ -75,7 +77,7 @@ export function Executions({ onOpenRun }: ExecutionsProps) {
             className="mono"
             style={{ fontSize: "0.75rem", color: "var(--text-3)" }}
           >
-            {allRuns.length} total
+            {total} total
           </span>
           <div className="time-range">
             {statuses.map((s) => (
@@ -170,74 +172,12 @@ export function Executions({ onOpenRun }: ExecutionsProps) {
           </table>
         </div>
 
-        {totalPages > 1 && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "10px 18px",
-              borderTop: "1px solid var(--border)",
-              fontSize: "0.78rem",
-              color: "var(--text-3)",
-            }}
-          >
-            <span>
-              Showing {page * PAGE_SIZE + 1}–
-              {Math.min((page + 1) * PAGE_SIZE, allRuns.length)} of{" "}
-              {allRuns.length}
-            </span>
-            <div style={{ display: "flex", gap: 4 }}>
-              <button
-                type="button"
-                className="btn-sm"
-                disabled={page === 0}
-                onClick={() => setPage(page - 1)}
-                style={{ opacity: page === 0 ? 0.4 : 1 }}
-              >
-                Previous
-              </button>
-              {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
-                let p = i;
-                if (totalPages > 7) {
-                  if (page < 4) p = i;
-                  else if (page > totalPages - 4) p = totalPages - 7 + i;
-                  else p = page - 3 + i;
-                }
-                return (
-                  <button
-                    type="button"
-                    key={p}
-                    onClick={() => setPage(p)}
-                    style={{
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: "0.72rem",
-                      padding: "4px 8px",
-                      border: "1px solid var(--border)",
-                      borderRadius: 4,
-                      background: p === page
-                        ? "var(--accent-subtle)"
-                        : "transparent",
-                      color: p === page ? "var(--accent)" : "var(--text-3)",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {p + 1}
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                className="btn-sm"
-                disabled={page >= totalPages - 1}
-                onClick={() => setPage(page + 1)}
-                style={{ opacity: page >= totalPages - 1 ? 0.4 : 1 }}
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        )}
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={total}
+          onPageChange={setPage}
+        />
       </div>
     </>
   );

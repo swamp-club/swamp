@@ -104,6 +104,34 @@ Deno.test("validateServerRequest accepts a valid cancel request", () => {
   assertEquals(typeof result, "object");
 });
 
+for (const type of ["cluster.instances", "serve.config", "doctor.datastores"]) {
+  Deno.test(`validateServerRequest accepts ${type} with and without an empty payload`, () => {
+    const bare = validateServerRequest({ type, id: "req-bare" });
+    assertEquals(typeof bare, "object");
+    const withPayload = validateServerRequest({
+      type,
+      id: "req-payload",
+      payload: {},
+    });
+    assertEquals(typeof withPayload, "object");
+  });
+}
+
+for (const type of ["workflow.search", "workflow.run.search"]) {
+  Deno.test(`validateServerRequest bounds ${type} paging fields`, () => {
+    const ok = validateServerRequest({
+      type,
+      id: "page-ok",
+      payload: { offset: 0, limit: 25 },
+    });
+    assertEquals(typeof ok, "object");
+    for (const payload of [{ offset: -1 }, { limit: 0 }, { limit: 10_001 }]) {
+      const bad = validateServerRequest({ type, id: "page-bad", payload });
+      assertEquals(typeof bad, "string");
+    }
+  });
+}
+
 Deno.test("validateServerRequest rejects unknown type", () => {
   const input = { type: "unknown.type", id: "req-4" };
   const result = validateServerRequest(input);
@@ -761,6 +789,70 @@ Deno.test("authorizeOrReject: access.reload allowed with admin grant", () => {
     }
   }
 });
+
+// ── Authorization: cluster.instances and serve.config match REST (admin) ──
+
+for (const type of ["cluster.instances", "serve.config"]) {
+  Deno.test(`authorizeOrReject: ${type} rejects read-only access:* grant`, async () => {
+    const mock = createMockSocket();
+    const active = new Map<string, AbortController>();
+    const grant = makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["read"],
+      resource: { kind: "access", pattern: "*" },
+    });
+    const ctx = makeCtx(modeTokenConfig, [grant]);
+
+    handleMessage(
+      mock as unknown as WebSocket,
+      ctx,
+      active,
+      makeEvent(JSON.stringify({ type, id: `admin-gate-${type}` })),
+      testPrincipal,
+    );
+
+    await waitFor(() => mock.sent.length > 0, `${type} response sent`);
+    const msg = parseSent(mock);
+    assertEquals(msg.type, "error");
+    assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+    assertStringIncludes(
+      String((msg.error as Record<string, unknown>).message),
+      "admin",
+    );
+  });
+
+  Deno.test(`authorizeOrReject: ${type} allowed with admin grant`, async () => {
+    const mock = createMockSocket();
+    const active = new Map<string, AbortController>();
+    const grant = makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    });
+    const ctx = makeCtx(modeTokenConfig, [grant]);
+
+    handleMessage(
+      mock as unknown as WebSocket,
+      ctx,
+      active,
+      makeEvent(JSON.stringify({ type, id: `admin-ok-${type}` })),
+      testPrincipal,
+    );
+
+    // The stub context lacks the handler's dependencies, so it may still
+    // answer with an error — just never an authorization one.
+    await waitFor(() => mock.sent.length > 0, `${type} response sent`);
+    for (const sent of mock.sent) {
+      const msg = JSON.parse(sent);
+      if (msg.type === "error") {
+        assertEquals(
+          (msg.error as Record<string, unknown>).code !== "unauthorized",
+          true,
+        );
+      }
+    }
+  });
+}
 
 // ── Authorization: grant list requires read on access:grant ───────────────
 

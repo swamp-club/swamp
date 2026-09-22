@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertInstanceOf } from "@std/assert";
+import { gunzipSync } from "node:zlib";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
@@ -25,11 +26,17 @@ import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_l
 import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeAnyOrReject,
+  COMPRESSION_THRESHOLD_BYTES,
   type ConnectionContext,
   emitSystemAuditEvent,
   filterByAuthorization,
+  paginate,
+  resolveConnectionCompression,
+  send,
   setConnectionCollectives,
+  setConnectionCompression,
 } from "./shared.ts";
+import type { ServerMessage } from "../protocol.ts";
 
 function makeGrant(overrides: Partial<Grant> = {}): Grant {
   return {
@@ -366,4 +373,98 @@ Deno.test("emitSystemAuditEvent: emits event with system category", () => {
 Deno.test("emitSystemAuditEvent: no-op without emitter", () => {
   const ctx = {} as unknown as ConnectionContext;
   emitSystemAuditEvent(ctx, "instance.start");
+});
+
+// ── paginate ──────────────────────────────────────────────────────────────
+
+Deno.test("paginate: slices by offset and limit and reports the full total", () => {
+  assertEquals(paginate([1, 2, 3, 4, 5], 1, 2), { page: [2, 3], total: 5 });
+});
+
+Deno.test("paginate: omitted offset and limit return everything", () => {
+  assertEquals(paginate([1, 2, 3], undefined, undefined), {
+    page: [1, 2, 3],
+    total: 3,
+  });
+});
+
+Deno.test("paginate: offset past the end returns an empty page", () => {
+  assertEquals(paginate([1, 2], 5, 10), { page: [], total: 2 });
+});
+
+// ── WebSocket compression ─────────────────────────────────────────────────
+
+Deno.test("resolveConnectionCompression: reads compress=gzip from the upgrade URL", () => {
+  assertEquals(
+    resolveConnectionCompression("ws://h/?compress=gzip"),
+    "gzip",
+  );
+  assertEquals(
+    resolveConnectionCompression("wss://h/?token=t&compress=gzip"),
+    "gzip",
+  );
+  assertEquals(resolveConnectionCompression("ws://h/"), undefined);
+  assertEquals(
+    resolveConnectionCompression("ws://h/?compress=br"),
+    undefined,
+  );
+});
+
+function makeFrameSocket(): {
+  socket: WebSocket;
+  frames: Array<string | Uint8Array>;
+} {
+  const frames: Array<string | Uint8Array> = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: (data: string | Uint8Array) => frames.push(data),
+  } as unknown as WebSocket;
+  return { socket, frames };
+}
+
+function largeMessage(): ServerMessage {
+  return {
+    type: "workflow.search",
+    id: "big",
+    payload: {
+      data: { results: ["x".repeat(COMPRESSION_THRESHOLD_BYTES)] },
+    },
+  };
+}
+
+Deno.test("send: opted-in socket gets large frames as gzip binary that round-trips", () => {
+  const { socket, frames } = makeFrameSocket();
+  setConnectionCompression(socket, "gzip");
+  const message = largeMessage();
+
+  send(socket, message);
+
+  assertEquals(frames.length, 1);
+  const frame = frames[0];
+  assertInstanceOf(frame, Uint8Array);
+  const decoded = new TextDecoder().decode(gunzipSync(frame));
+  assertEquals(decoded, JSON.stringify(message));
+});
+
+Deno.test("send: opted-in socket keeps small frames as text", () => {
+  const { socket, frames } = makeFrameSocket();
+  setConnectionCompression(socket, "gzip");
+
+  send(socket, {
+    type: "server.version",
+    id: "v",
+    payload: { version: "1", gitSha: "abc" },
+  });
+
+  assertEquals(typeof frames[0], "string");
+});
+
+Deno.test("send: socket without opt-in gets large frames as text", () => {
+  const { socket, frames } = makeFrameSocket();
+  setConnectionCompression(socket, undefined);
+  const message = largeMessage();
+
+  send(socket, message);
+
+  assertEquals(frames[0], JSON.stringify(message));
 });

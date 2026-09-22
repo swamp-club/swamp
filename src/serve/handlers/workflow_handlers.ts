@@ -117,6 +117,7 @@ import {
   exceptionTypeForClient,
   filterByAuthorization,
   lockTimeoutErrorForClient,
+  paginate,
   pushChangedToRemote,
   sanitizeErrorForClient,
   send,
@@ -139,6 +140,8 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
+/** Page size for `workflow.run.search` when the client sends no limit. */
+export const WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT = 500;
 
 export async function resolveWorkflowFields(
   workflowRepo: WorkflowRepository,
@@ -458,9 +461,9 @@ export async function handleWorkflowSearch(
     const data = (result ?? {}) as {
       results?: Array<{ name: string }>;
     };
-    if (data.results) {
-      data.results = filterByAuthorization(
-        data.results,
+    const { page, total } = paginate(
+      filterByAuthorization(
+        data.results ?? [],
         (item) => item.name,
         (item) => ({ name: item.name }),
         socket,
@@ -468,13 +471,16 @@ export async function handleWorkflowSearch(
         "read",
         "workflow",
         ctx,
-      );
-    }
+      ),
+      payload?.offset,
+      payload?.limit,
+    );
+    data.results = page;
 
     send(socket, {
       type: "workflow.search",
       id: requestId,
-      payload: { data },
+      payload: { data, total },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -887,7 +893,6 @@ export async function handleWorkflowRunSearch(
         workflow: payload?.workflow,
         tags: payload?.tags,
         inputs: payload?.inputs,
-        limit: payload?.limit,
       }),
       {
         resolving: () => {},
@@ -908,9 +913,11 @@ export async function handleWorkflowRunSearch(
     const data = (result ?? {}) as {
       results?: Array<{ workflowName: string }>;
     };
-    if (data.results) {
-      data.results = filterByAuthorization(
-        data.results,
+    // Page after the authorization filter, never inside libswamp: slicing
+    // first would let unreadable runs shorten a page and skew `total`.
+    const { page, total } = paginate(
+      filterByAuthorization(
+        data.results ?? [],
         (item) => item.workflowName,
         (item) => ({ name: item.workflowName }),
         socket,
@@ -918,13 +925,16 @@ export async function handleWorkflowRunSearch(
         "read",
         "workflow",
         ctx,
-      );
-    }
+      ),
+      payload?.offset,
+      payload?.limit ?? WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
+    );
+    data.results = page;
 
     send(socket, {
       type: "workflow.run.search",
       id: requestId,
-      payload: { data },
+      payload: { data, total },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);

@@ -21,6 +21,7 @@
  * Shared utilities for serve WebSocket request handlers: the connection context, response senders, error sanitization, and the authorization gate every handler routes through.
  */
 
+import { gzipSync } from "node:zlib";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import {
   type DatastoreConfig,
@@ -300,6 +301,7 @@ const connectionCollectives = new WeakMap<WebSocket, readonly string[]>();
 const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
 const connectionPrincipalId = new WeakMap<WebSocket, string>();
 const connectionSourceIp = new WeakMap<WebSocket, string>();
+const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 
 export function setConnectionCollectives(
@@ -371,6 +373,37 @@ export function setConnectionSourceIp(
   ip: string,
 ): void {
   connectionSourceIp.set(socket, ip);
+}
+
+/**
+ * Message-level compression a client opted into at upgrade. Deno's
+ * `upgradeWebSocket` cannot negotiate `permessage-deflate`, so large protocol
+ * frames are instead sent as gzip-compressed binary frames to clients that
+ * ask for them.
+ */
+export type ConnectionCompression = "gzip";
+
+/** Frames shorter than this stay uncompressed text even when opted in. */
+export const COMPRESSION_THRESHOLD_BYTES = 16 * 1024;
+
+/**
+ * Reads the client's compression opt-in from the upgrade URL
+ * (`?compress=gzip`). The query string is used because the subprotocol slot
+ * already carries the bearer token. Any other value means no compression.
+ */
+export function resolveConnectionCompression(
+  url: string,
+): ConnectionCompression | undefined {
+  return new URL(url).searchParams.get("compress") === "gzip"
+    ? "gzip"
+    : undefined;
+}
+
+export function setConnectionCompression(
+  socket: WebSocket,
+  compression: ConnectionCompression | undefined,
+): void {
+  if (compression) connectionCompression.set(socket, compression);
 }
 
 export function getConnectionSourceIp(socket: WebSocket): string {
@@ -590,6 +623,22 @@ export function filterByAuthorization<T>(
   });
 }
 
+/**
+ * Slices one page out of an already-authorized result list. Apply after
+ * {@link filterByAuthorization} so `total` and page boundaries reflect only
+ * what the principal may read. An omitted `limit` returns everything from
+ * `offset` on.
+ */
+export function paginate<T>(
+  items: T[],
+  offset: number | undefined,
+  limit: number | undefined,
+): { page: T[]; total: number } {
+  const start = offset ?? 0;
+  const end = limit === undefined ? undefined : start + limit;
+  return { page: items.slice(start, end), total: items.length };
+}
+
 export function authorizeAnyOrReject(
   socket: WebSocket,
   requestId: string,
@@ -680,9 +729,17 @@ export function authorizeAnyOrReject(
 }
 
 export function send(socket: WebSocket, message: ServerMessage): void {
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(message));
+  if (socket.readyState !== WebSocket.OPEN) return;
+  const json = JSON.stringify(message);
+  if (
+    connectionCompression.get(socket) === "gzip" &&
+    json.length >= COMPRESSION_THRESHOLD_BYTES
+  ) {
+    // Synchronous so frames keep their order; ~9 ms for a 1.7 MB frame.
+    socket.send(gzipSync(new TextEncoder().encode(json)));
+    return;
   }
+  socket.send(json);
 }
 
 const MAX_ERRORED_REQUESTS = 10_000;

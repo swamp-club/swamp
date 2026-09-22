@@ -39,7 +39,9 @@ import {
   closeConnectionsForPrincipal,
   emitSystemAuditEvent,
   removeConnection,
+  resolveConnectionCompression,
   setConnectionCollectives,
+  setConnectionCompression,
   setConnectionSourceIp,
   updateCollectivesForPrincipal,
 } from "../../serve/handlers/shared.ts";
@@ -4241,6 +4243,10 @@ export const serveCommand = new Command()
               result.principalId,
             );
             setConnectionSourceIp(socket, remoteAddr);
+            setConnectionCompression(
+              socket,
+              resolveConnectionCompression(req.url),
+            );
             socket.addEventListener("close", () => removeConnection(socket));
             handleConnection(socket, connectionCtx, principal);
             return response;
@@ -4250,6 +4256,10 @@ export const serveCommand = new Command()
             wsUpgradeOpts,
           );
           setConnectionSourceIp(socket, remoteAddr);
+          setConnectionCompression(
+            socket,
+            resolveConnectionCompression(req.url),
+          );
           handleConnection(socket, connectionCtx, null);
           return response;
         }

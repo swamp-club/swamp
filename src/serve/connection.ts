@@ -402,6 +402,8 @@ const WorkflowSearchRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
+    limit: z.number().int().positive().max(10_000).optional(),
+    offset: z.number().int().nonnegative().optional(),
   }).optional(),
 });
 
@@ -745,6 +747,7 @@ const WorkflowRunSearchRequestSchema = z.object({
     tags: z.record(z.string(), z.string()).optional(),
     inputs: z.record(z.string(), z.string()).optional(),
     limit: z.number().int().positive().max(10_000).optional(),
+    offset: z.number().int().nonnegative().optional(),
   }).optional(),
 });
 
@@ -1263,6 +1266,24 @@ const DatastoreNamespaceListRequestSchema = z.object({
   payload: z.object({}).optional(),
 });
 
+const DoctorDatastoresRequestSchema = z.object({
+  type: z.literal("doctor.datastores"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
+const ClusterInstancesRequestSchema = z.object({
+  type: z.literal("cluster.instances"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
+const ServeConfigRequestSchema = z.object({
+  type: z.literal("serve.config"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
 const ServerVersionRequestSchema = z.object({
   type: z.literal("server.version"),
   id: z.string().min(1).max(256),
@@ -1383,6 +1404,9 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   DataPruneRequestSchema,
   RunGcRequestSchema,
   DatastoreNamespaceListRequestSchema,
+  DoctorDatastoresRequestSchema,
+  ClusterInstancesRequestSchema,
+  ServeConfigRequestSchema,
 ]);
 
 /**

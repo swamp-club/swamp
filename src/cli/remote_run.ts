@@ -284,6 +284,24 @@ export interface RequestResponseOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Asks serve to send large responses as gzip-compressed binary frames. Older
+ * servers ignore the parameter and keep sending text frames, which are still
+ * handled.
+ */
+function withCompressionOptIn(url: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("compress", "gzip");
+  return parsed.href;
+}
+
+async function gunzipFrame(data: ArrayBuffer): Promise<string> {
+  const stream = new Blob([data]).stream().pipeThrough(
+    new DecompressionStream("gzip"),
+  );
+  return await new Response(stream).text();
+}
+
 export function requestServerResponse<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
@@ -296,9 +314,11 @@ export function requestServerResponse<T>(
     headers["Authorization"] = `Bearer ${options.token}`;
   }
   const requestId = request.id ?? crypto.randomUUID();
+  const socketUrl = withCompressionOptIn(baseUrl);
   const socket = options.createSocket
-    ? options.createSocket(baseUrl, headers)
-    : createSocket(baseUrl, headers, options.caCerts);
+    ? options.createSocket(socketUrl, headers)
+    : createSocket(socketUrl, headers, options.caCerts);
+  socket.binaryType = "arraybuffer";
   const timeoutMs = options.timeoutMs ?? resolveRequestTimeoutMs();
 
   const raw = new Promise<T>((resolve, reject) => {
@@ -379,10 +399,9 @@ export function requestServerResponse<T>(
       );
     };
 
-    socket.onmessage = (event) => {
-      if (typeof event.data !== "string") return;
+    const handleFrame = (text: string) => {
       try {
-        const message = JSON.parse(event.data);
+        const message = JSON.parse(text);
         if (
           typeof message !== "object" || message === null ||
           !("type" in message) || typeof message.type !== "string" ||
@@ -413,6 +432,29 @@ export function requestServerResponse<T>(
           resolve(message.payload as T);
         }
       } catch { /* not a protocol frame */ }
+    };
+
+    socket.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        handleFrame(event.data);
+        return;
+      }
+      if (!(event.data instanceof ArrayBuffer)) return;
+      gunzipFrame(event.data).then(handleFrame).catch((err: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        try {
+          socket.close();
+        } catch { /* already closed */ }
+        reject(
+          new UserError(
+            `Could not decode a compressed response from ${baseUrl}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        );
+      });
     };
   });
 

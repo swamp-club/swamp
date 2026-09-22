@@ -2481,7 +2481,7 @@ export async function handleClusterInstances(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
+    !authorizeOrReject(socket, requestId, principal, "admin", {
       kind: "access",
       name: "*",
       fields: {},
@@ -2551,7 +2551,7 @@ export function handleServeConfig(
   principal: Principal | null,
 ): void {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
+    !authorizeOrReject(socket, requestId, principal, "admin", {
       kind: "access",
       name: "*",
       fields: {},
