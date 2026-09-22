@@ -384,6 +384,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
                 undefined,
                 repoContext.autoDefinitionsDir,
                 false,
+                repoContext.markDirty,
               );
               await autoDefRepo.save(type, definition);
             }

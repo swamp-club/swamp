@@ -157,6 +157,7 @@ export async function createWorkflowRunDeps(
           repoContext.eventBus,
           repoContext.autoDefinitionsDir,
           false,
+          repoContext.markDirty,
         );
         const result = await resolveOrCreateDefinition(
           {
@@ -311,6 +312,7 @@ export async function createModelMethodRunDeps(
           repoContext.eventBus,
           repoContext.autoDefinitionsDir,
           false,
+          repoContext.markDirty,
         );
         await autoDefRepo.save(type, definition);
       }

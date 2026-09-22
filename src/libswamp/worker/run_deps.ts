@@ -131,6 +131,7 @@ export async function createWorkerModelRunDeps(
         undefined,
         repoContext.autoDefinitionsDir,
         false,
+        repoContext.markDirty,
       );
       await autoDefRepo.save(type, definition);
     },

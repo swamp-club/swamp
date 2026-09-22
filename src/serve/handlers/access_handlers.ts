@@ -716,6 +716,7 @@ export async function handleAccessReload(
       ctx.repoContext.eventBus,
       ctx.repoContext.autoDefinitionsDir,
       false,
+      ctx.repoContext.markDirty,
     );
     const fileGrantStore = createFileGrantStore(
       ctx.repoContext.definitionRepo,

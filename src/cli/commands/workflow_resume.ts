@@ -371,6 +371,7 @@ export const workflowResumeCommand = withRemoteOptions(
         undefined,
         repoContext.autoDefinitionsDir,
         false,
+        repoContext.markDirty,
       );
       const result = await resolveOrCreateDefinition(
         {

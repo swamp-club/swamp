@@ -395,6 +395,7 @@ export const workflowRunCommand = new Command()
               undefined,
               repoContext.autoDefinitionsDir,
               false,
+              repoContext.markDirty,
             );
             const result = await resolveOrCreateDefinition(
               {
