@@ -27,7 +27,6 @@ import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import {
   enumeratePulledExtensionDirs,
-  incrementReloadGeneration,
   LockfileRepository,
 } from "../libswamp/mod.ts";
 import {
@@ -80,8 +79,6 @@ export async function reloadPulledExtensions(
   lockfilePath: string,
   pulledExtensionsRoot?: string,
 ): Promise<number> {
-  incrementReloadGeneration();
-
   const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
 
   const catalog = new ExtensionCatalogStore(catalogDbPath);

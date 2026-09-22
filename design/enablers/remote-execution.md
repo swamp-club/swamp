@@ -1350,20 +1350,20 @@ extension trust list.
 
 `reloadPulledExtensions()`:
 
-1. Increments the module-level `reloadGeneration` counter
-2. Opens a fresh `ExtensionCatalogStore` (reads `_extension_catalog.db`)
-3. Reads the lockfile via `LockfileRepository` for extension names/versions
-4. Queries `catalog.findBySourcePathPrefix(sourcePrefix)` for type rows
-5. Re-bundles any source whose fingerprint changed, writing the new bundle
+1. Opens a fresh `ExtensionCatalogStore` (reads `_extension_catalog.db`)
+2. Reads the lockfile via `LockfileRepository` for extension names/versions
+3. Queries `catalog.findBySourcePathPrefix(sourcePrefix)` for type rows
+4. Re-bundles any source whose fingerprint changed, writing the new bundle
    file and recording the fingerprint with `catalog.updateSourceFingerprint()`
-6. For each type across all four kinds (model, vault, datastore, report):
+5. For each type across all four kinds (model, vault, datastore, report):
    - `invalidateType()` — removes from the registry's loaded and lazy maps
    - `registerLazy()` — re-adds with updated `source_fingerprint`
    - `ensureTypeLoaded()` — triggers `loadSingleType()` →
      `importBundleByPath()`, which imports
-     `bundle?fp=<fingerprint>&gen=<reloadGeneration>` so V8's module cache
-     is bypassed even when the fingerprint is unchanged
-     (`src/domain/extensions/extension_loader.ts`)
+     `bundle?fp=<fingerprint>&h=<sha256 of bundle>` (`bundleImportUrl` in
+     `src/domain/extensions/extension_loader.ts`). An unchanged bundle maps
+     to the same URL and reuses its cached module; a re-bundled one maps to
+     a new URL and its new code executes
 
 ### Catalog Safety Constraint
 
@@ -1389,6 +1389,9 @@ load promise via `typeLoadPromises` and wait rather than failing.
   extensions are reloaded. Cost is proportional to pulled extension count.
 - **Windows**: SIGHUP is not available. `--hot-reload` fails with a clear
   message on Windows.
-- **V8 module cache**: Cache busting uses `?fp=<source_fingerprint>&gen=<reloadGeneration>`
-  query parameters; the generation counter guarantees a fresh import on every
-  reload even when the fingerprint is unchanged.
+- **V8 module cache**: Import URLs are content-addressed
+  (`?fp=<source_fingerprint>&h=<sha256 of bundle>`). V8 never evicts an ES
+  module, so each bundle version that is actually loaded stays in memory for
+  the life of the process. Heap therefore grows once per genuinely changed
+  bundle, not per reload; reloading unchanged extensions costs no heap
+  (swamp-club#2340).

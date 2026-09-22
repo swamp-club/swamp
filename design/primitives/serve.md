@@ -334,11 +334,12 @@ is handled by the reconciliation loop after `--stale-ttl`.
   `.swamp/serve.pid` and installs a SIGHUP handler; `swamp serve reload` sends
   the signal locally or, with `--server`, issues the `serve.reload` request.
   `performServeReload` re-bundles pulled extensions whose source fingerprint
-  changed, bumps the reload generation (`incrementReloadGeneration`,
-  `src/serve/extension_reload.ts`; the loader appends `?fp=…&gen=<n>` to
-  bundle imports, `src/domain/extensions/extension_loader.ts`) so in-flight
-  runs keep their old bundles, re-reads `triggers.*` overrides and
-  `webhooks` from `serve.yaml`. Webhook route changes (added, removed,
+  changed and re-imports every pulled type (`src/serve/extension_reload.ts`).
+  Bundle import URLs are content-addressed (`?fp=…&h=<sha256 of bundle>`,
+  `bundleImportUrl` in `src/domain/extensions/extension_loader.ts`), so an
+  unchanged bundle reuses its cached module while a changed bundle loads as a
+  new module and in-flight runs keep their old one. It also re-reads
+  `triggers.*` overrides and `webhooks` from `serve.yaml`. Webhook route changes (added, removed,
   modified bindings) take effect on the next request; in-flight runs
   complete against the endpoint they matched. Webhook reload is skipped
   when `--webhook` CLI flags were used at startup (CLI flags are process

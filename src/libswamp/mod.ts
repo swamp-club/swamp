@@ -892,7 +892,6 @@ export {
   type ExtensionUpdateInput,
 } from "./extensions/update.ts";
 export type { ExtensionUpdateResult } from "../domain/extensions/extension_update_service.ts";
-export { incrementReloadGeneration } from "../domain/extensions/extension_loader.ts";
 export {
   createExtensionVersionDeps,
   extensionVersion,
