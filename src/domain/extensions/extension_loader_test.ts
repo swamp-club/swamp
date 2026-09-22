@@ -25,6 +25,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { toFileUrl } from "@std/path";
 import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
@@ -768,5 +769,106 @@ for (const indexOnly of [true, false]) {
     const text = helperRecords[0].message.map(String).join("");
     assertStringIncludes(text, "as a helper module");
     assertStringIncludes(text, "not a model entry point");
+  });
+}
+
+// -- load() cached-bundle logging (swamp-club#2354) -----------------------
+
+async function loadWithExistingBundle(args: {
+  pulled: boolean;
+  indexOnly: boolean;
+}): Promise<{ records: LogRecord[]; failed: string[]; bundleCalls: number }> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2354_" });
+  const records: LogRecord[] = [];
+  try {
+    const modelsDir = args.pulled
+      ? join(dir, ".swamp", "pulled-extensions", "@test", "ext", "models")
+      : join(dir, "extensions", "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const source =
+      'export const model = { type: "@test/cached", name: "cached" };\n';
+    await Deno.writeTextFile(join(modelsDir, "cached.ts"), source);
+
+    const { bundleNamespace: bn } = await import(
+      "../../infrastructure/persistence/paths.ts"
+    );
+    const bundleDir = join(dir, ".swamp", "bundles", bn(modelsDir, dir));
+    await Deno.mkdir(bundleDir, { recursive: true });
+    await Deno.writeTextFile(join(bundleDir, "cached.js"), source);
+
+    await configure({
+      sinks: { capture: (record: LogRecord) => records.push(record) },
+      loggers: [
+        {
+          category: ["swamp", "model", "loader"],
+          lowestLevel: "debug",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+      ],
+      reset: true,
+    });
+
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      makeStubAdapter(new Set<string>()),
+      dir,
+    );
+    // Any rebundle attempt fails, without spawning a process.
+    const { result, calls } = await withMockedCommand(
+      () => ({ stdout: "", stderr: "simulated bundle failure", code: 1 }),
+      () => loader.load(modelsDir, { indexOnly: args.indexOnly }),
+    );
+    return {
+      records,
+      failed: result.failed.map((f) => f.file),
+      bundleCalls: calls.length,
+    };
+  } finally {
+    await reset();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+function warningTexts(records: LogRecord[]): string[] {
+  return records
+    .filter((r) => r.level === "warning")
+    .map((r) => r.message.map(String).join(""));
+}
+
+for (const indexOnly of [true, false]) {
+  Deno.test(`load: pulled extension with an existing bundle logs no warning (indexOnly=${indexOnly})`, async () => {
+    const { records, failed, bundleCalls } = await loadWithExistingBundle({
+      pulled: true,
+      indexOnly,
+    });
+
+    assertEquals(failed, [], "trusted pulled bundle must load");
+    assertEquals(bundleCalls, 0, "no rebundle is attempted");
+    assertEquals(
+      warningTexts(records),
+      [],
+      "reusing a pulled extension's bundle is not a failure",
+    );
+    const trusted = records.filter((r) =>
+      r.message.map(String).join("").includes(
+        "Using existing bundle for pulled extension",
+      )
+    );
+    assertEquals(trusted.map((r) => r.level), ["debug"]);
+  });
+
+  Deno.test(`load: failed rebundle with an existing bundle warns once with the error (indexOnly=${indexOnly})`, async () => {
+    const { records, failed, bundleCalls } = await loadWithExistingBundle({
+      pulled: false,
+      indexOnly,
+    });
+
+    assertEquals(failed, [], "cached bundle must be used after the failure");
+    assertEquals(bundleCalls, 1, "one rebundle is attempted");
+    const warnings = warningTexts(records);
+    assertEquals(warnings.length, 1, "exactly one warning per failed rebundle");
+    assertStringIncludes(warnings[0], "Rebundle failed for");
+    assertStringIncludes(warnings[0], "simulated bundle failure");
   });
 }
