@@ -101,3 +101,49 @@ export function assertPathMatches(
 ): void {
   assertMatch(actual.replaceAll("\\", "/"), expected, msg);
 }
+
+/**
+ * Runs `fn` with `Deno.env.get` answering from `overrides` instead of the
+ * process environment. A key mapped to `undefined` reads as unset; keys not
+ * in `overrides` pass through to the real environment. When `fn` returns a
+ * promise, the original `Deno.env.get` is restored once it settles.
+ *
+ * Use this instead of `Deno.env.set` / `Deno.env.delete` for the
+ * home-directory variables (`HOME`, `USERPROFILE`, `SWAMP_HOME`,
+ * `XDG_CONFIG_HOME`). `deno test --parallel` runs every test file in one
+ * process, so a real mutation is visible to every other file running at the
+ * same moment; replacing `Deno.env.get` only affects the current file's
+ * worker. Only `Deno.env.get` is replaced: `Deno.env.has` and
+ * `Deno.env.toObject` still read the real environment, and writes made
+ * inside `fn` still go to it.
+ */
+export function withMockedEnv<T>(
+  overrides: Record<string, string | undefined>,
+  fn: () => T,
+): T {
+  const original = Object.getOwnPropertyDescriptor(Deno.env, "get");
+  const realGet = Deno.env.get.bind(Deno.env);
+  Object.defineProperty(Deno.env, "get", {
+    configurable: true,
+    writable: true,
+    value: (key: string) =>
+      Object.hasOwn(overrides, key) ? overrides[key] : realGet(key),
+  });
+  const restore = () => {
+    if (original) Object.defineProperty(Deno.env, "get", original);
+    else delete (Deno.env as { get?: unknown }).get;
+  };
+
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  if (result instanceof Promise) {
+    return result.finally(restore) as T;
+  }
+  restore();
+  return result;
+}
