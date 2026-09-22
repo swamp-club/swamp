@@ -228,7 +228,7 @@ Both the source and target vaults must be different types.`,
         "1Password vault name (or Enter for default): ",
       );
       if (vault) {
-        targetConfig = { vault };
+        targetConfig = { op_vault: vault };
       }
     } else {
       // Other: search for a vault extension by keyword
