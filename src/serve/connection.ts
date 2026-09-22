@@ -206,6 +206,7 @@ const WorkflowRunRequestSchema = z.object({
     skipCheckLabels: z.array(z.string()).optional(),
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
+    noSupersede: z.boolean().optional(),
   }),
 });
 
@@ -383,6 +384,7 @@ const ModelSearchRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
+    includeInternal: z.boolean().optional(),
   }).optional(),
 });
 
@@ -784,6 +786,7 @@ const WorkflowResumeRequestSchema = z.object({
   payload: z.object({
     workflowIdOrName: z.string(),
     runId: z.string().optional(),
+    from: z.string().optional(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
@@ -1173,6 +1176,7 @@ const VaultAuditTrailRequestSchema = z.object({
   payload: z.object({
     vaultName: z.string().optional(),
     secretKey: z.string().optional(),
+    action: z.string().optional(),
     since: z.string().optional(),
     until: z.string().optional(),
     limit: z.number().int().positive().optional(),
@@ -1380,6 +1384,14 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   RunGcRequestSchema,
   DatastoreNamespaceListRequestSchema,
 ]);
+
+/**
+ * The request shape the schemas above actually let through. zod strips
+ * unknown keys, so any `ServerRequest` payload field missing from its schema
+ * never reaches the handler; connection_schema_parity_test.ts compares this
+ * type against `ServerRequest` to catch that drift at compile time.
+ */
+export type ValidatedServerRequest = z.infer<typeof ServerRequestSchema>;
 
 /**
  * Validates a parsed JSON value against the ServerRequest schema.
