@@ -1805,18 +1805,36 @@ datastore, and report registries all register lazy entries from the catalog
      predicate) retain their existing failure semantics because they are not in
      the read-only steady-state loop.
    - **Fingerprint preservation on build failure (issue #265).** When
-     `bundleWithCache` cannot regenerate a bundle (bare specifiers without a
-     project `deno.json`, or a transient build error) and falls back to the
-     cached `.js`, the `rebundleAndUpdateCatalog` caller preserves the catalog's
-     _stored_ `source_fingerprint` instead of writing the new one. This keeps
-     the file "stale" so `findStaleFiles` retries on the next warm-start
-     invocation. Without this, the new fingerprint would be written alongside
-     the old bundle content, permanently masking the staleness —
-     `findStaleFiles` would see matching fingerprints and never retry. The
-     warning log fires only on the fallback case
-     (`fromCache && newFingerprint !== catalogFingerprint`), not on legitimate
-     cache hits where the source hasn't changed. `findStaleFiles` uses
-     fingerprint comparison, not RowState, for staleness decisions.
+     `bundleWithCache` returns the cached `.js` instead of a fresh bundle
+     (`fromCache: true`), the `rebundleAndUpdateCatalog` caller preserves the
+     catalog's _stored_ `source_fingerprint` instead of writing the new one.
+     This keeps the file "stale" so `findStaleFiles` retries on the next
+     warm-start invocation. Without this, the new fingerprint would be written
+     alongside the old bundle content, permanently masking the staleness —
+     `findStaleFiles` would see matching fingerprints and never retry.
+     `BundleResult` (`bundle_freshness.ts`) records why the bundle came from
+     cache via `cacheReason`, and each case produces at most one warning:
+     - `trusted-pulled` — a pulled extension's existing bundle is reused on
+       purpose and no rebundle is attempted (the bundle exists and either the
+       caller passed `trustPulledCache` or `isExpectedBundleFailure` is true).
+       Nothing failed, so it is logged at debug only, in both `load()` and
+       reconcile.
+     - `rebundle-failed` with `expectedFailure: false` — `deno bundle` threw
+       even though a project `deno.json`/`deno.jsonc` exists.
+       `bundleWithCache` emits the single warning
+       `Rebundle failed for <file>, using cached bundle: <error>`; the
+       reconcile line drops to debug.
+     - `rebundle-failed` with `expectedFailure: true` — no project deno config
+       was found between the source file and the repo root
+       (`isExpectedBundleFailure`), so failure is expected (typically bare
+       specifiers). `bundleWithCache` logs at debug, and reconcile emits the
+       single warning
+       `Bundle could not be regenerated for <file> — source fingerprint preserved, will retry on next command`.
+
+     Fingerprint preservation is identical in all three cases. The reconcile
+     log fires only when the stored and new fingerprints differ, never on
+     legitimate cache hits where the source hasn't changed. `findStaleFiles`
+     uses fingerprint comparison, not RowState, for staleness decisions.
      `BundleBuildFailed` rows are skipped when fingerprints match (source
      unchanged) and retried when they mismatch (source changed) — warm-start and
      reconcile operate on orthogonal axes.
