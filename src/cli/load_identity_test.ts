@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { loadIdentity, USER_AGENT } from "./load_identity.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("USER_AGENT identifies the CLI and carries the version", () => {
   assertStringIncludes(USER_AGENT, "swamp-cli/");
@@ -29,24 +30,16 @@ Deno.test("loadIdentity returns empty identity when config dir is unresolvable",
   // (Windows uses USERPROFILE; minimal test envs strip both). The CLI
   // calls loadIdentity at startup for every command — if this throws,
   // every command crashes with empty stdout. Must return `{}` safely.
-  const homeBefore = Deno.env.get("HOME");
-  const userProfileBefore = Deno.env.get("USERPROFILE");
-  const xdgBefore = Deno.env.get("XDG_CONFIG_HOME");
-  Deno.env.delete("HOME");
-  Deno.env.delete("USERPROFILE");
-  Deno.env.delete("XDG_CONFIG_HOME");
-  try {
+  await withMockedEnv({
+    HOME: undefined,
+    USERPROFILE: undefined,
+    XDG_CONFIG_HOME: undefined,
+  }, async () => {
     const identity = await loadIdentity();
     assertEquals(identity.bearerToken, undefined);
     assertEquals(identity.distinctId, undefined);
     // User-Agent is independent of the file system and must always be set,
     // even when device/auth identity resolution fails.
     assertEquals(identity.userAgent, USER_AGENT);
-  } finally {
-    if (homeBefore !== undefined) Deno.env.set("HOME", homeBefore);
-    if (userProfileBefore !== undefined) {
-      Deno.env.set("USERPROFILE", userProfileBefore);
-    }
-    if (xdgBefore !== undefined) Deno.env.set("XDG_CONFIG_HOME", xdgBefore);
-  }
+  });
 });

@@ -28,6 +28,7 @@ import {
   setNestedValue,
 } from "./input_parser.ts";
 import { UserError } from "../domain/errors.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { assertThrows } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 
@@ -234,7 +235,6 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   fn: async () => {
     const tempDir = await Deno.makeTempDir({ prefix: "swamp-tilde-home-" });
-    const originalHome = Deno.env.get("HOME");
     try {
       // Write a file inside the temp dir and stash the value through
       // the @-file mechanism using "~/<basename>" so the production
@@ -245,16 +245,13 @@ Deno.test({
         `${tempDir}/${fileName}`,
         "expanded-via-home",
       );
-      Deno.env.set("HOME", tempDir);
 
-      const result = await parseKeyValueInputs([`token=@~/${fileName}`]);
+      const result = await withMockedEnv(
+        { HOME: tempDir },
+        () => parseKeyValueInputs([`token=@~/${fileName}`]),
+      );
       assertEquals(result, { token: "expanded-via-home" });
     } finally {
-      if (originalHome === undefined) {
-        Deno.env.delete("HOME");
-      } else {
-        Deno.env.set("HOME", originalHome);
-      }
       await Deno.remove(tempDir, { recursive: true });
     }
   },
@@ -270,9 +267,7 @@ Deno.test({
   // this exact fallback (same error message, same un-expanded path).
   ignore: Deno.build.os === "windows",
   fn: async () => {
-    const originalHome = Deno.env.get("HOME");
-    try {
-      Deno.env.delete("HOME");
+    await withMockedEnv({ HOME: undefined }, async () => {
       let caught: Error | undefined;
       try {
         await parseKeyValueInputs(["token=@~/definitely-missing.txt"]);
@@ -298,11 +293,7 @@ Deno.test({
         (caught as Error).message,
         "\\@",
       );
-    } finally {
-      if (originalHome !== undefined) {
-        Deno.env.set("HOME", originalHome);
-      }
-    }
+    });
   },
 });
 
