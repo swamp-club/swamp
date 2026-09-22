@@ -36,6 +36,7 @@ import {
   stripWorkerCredentials,
 } from "../domain/remote/environment_snapshot.ts";
 import {
+  type DispatchParams,
   DispatchParamsSchema,
   type DispatchResult,
   WorkerMethod,
@@ -85,6 +86,8 @@ export interface DispatchHandlerOptions {
   dataPlaneUrl: string;
   /** Path to the shared bundle cache directory. */
   cacheDirPath: string;
+  /** PEM-encoded CA certificates the runner trusts for data-plane requests. */
+  caCerts?: string[];
   /** Maximum concurrent dispatches (default 1). */
   capacity: number;
   /** Receives dispatch start/finish notifications (connect-mode output). */
@@ -143,6 +146,28 @@ export function registerDispatchHandler(
   };
 }
 
+/**
+ * Builds the bootstrap frame the supervisor sends a dispatch runner. The
+ * worker's CA certificates travel here rather than in the spawn environment,
+ * which the orchestrator's environment snapshot can overlay.
+ */
+export function buildRunnerBootstrapParams(
+  params: DispatchParams,
+  dispatchCredential: string | undefined,
+  options: Pick<
+    DispatchHandlerOptions,
+    "sessionCredential" | "dataPlaneUrl" | "cacheDirPath" | "caCerts"
+  >,
+): RunnerBootstrapParams {
+  return {
+    sessionCredential: dispatchCredential ?? options.sessionCredential(),
+    dataPlaneUrl: options.dataPlaneUrl,
+    cacheDirPath: options.cacheDirPath,
+    dispatch: params,
+    ...(options.caCerts?.length ? { caCerts: options.caCerts } : {}),
+  };
+}
+
 async function handleDispatch(
   rawParams: unknown,
   ctx: RpcHandlerContext,
@@ -188,12 +213,11 @@ async function handleDispatch(
   const dispatchCredential = rawParams2.dispatchCredential as
     | string
     | undefined;
-  const bootstrapParams: RunnerBootstrapParams = {
-    sessionCredential: dispatchCredential ?? options.sessionCredential(),
-    dataPlaneUrl: options.dataPlaneUrl,
-    cacheDirPath: options.cacheDirPath,
-    dispatch: params,
-  };
+  const bootstrapParams = buildRunnerBootstrapParams(
+    params,
+    dispatchCredential,
+    options,
+  );
 
   const runnerCmd = options.runnerCommand ?? deriveRunnerCommand();
   const child = new Deno.Command(runnerCmd.cmd, {

@@ -38,6 +38,12 @@ export const RunnerBootstrapParamsSchema = z.object({
   cacheDirPath: z.string().min(1),
   /** The full dispatch parameters from the orchestrator. */
   dispatch: DispatchParamsSchema,
+  /**
+   * PEM-encoded CA certificates the worker trusts (`--ca-cert` /
+   * `SWAMP_CA_CERT`), applied to data-plane requests. Absent when the worker
+   * has no custom CA.
+   */
+  caCerts: z.array(z.string().min(1)).optional(),
 });
 
 export type RunnerBootstrapParams = z.infer<

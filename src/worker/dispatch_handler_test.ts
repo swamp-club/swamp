@@ -24,10 +24,15 @@ import {
 } from "../domain/remote/environment_snapshot.ts";
 import { RpcChannel, type RpcError } from "../domain/remote/rpc_channel.ts";
 import {
+  DispatchParamsSchema,
   REMOTE_PROTOCOL_VERSION,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
-import { registerDispatchHandler } from "./dispatch_handler.ts";
+import {
+  buildRunnerBootstrapParams,
+  registerDispatchHandler,
+} from "./dispatch_handler.ts";
+import { RunnerBootstrapParamsSchema } from "./runner_protocol.ts";
 
 function channelPair(): { worker: RpcChannel; orchestrator: RpcChannel } {
   const worker: RpcChannel = new RpcChannel({
@@ -139,6 +144,52 @@ Deno.test("dispatch spawn env: worker credentials are stripped after overlay", (
   assertEquals(spawnEnv["SWAMP_WORKER_LABELS"], "gpu=true");
   assertEquals(spawnEnv["DEPLOY_ENV"], "prod");
   assertEquals(spawnEnv["API_KEY"], "key123");
+});
+
+Deno.test("buildRunnerBootstrapParams: carries the worker's CA certificates", () => {
+  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+  const dispatch = DispatchParamsSchema.parse(dispatchParams());
+  const bootstrap = buildRunnerBootstrapParams(dispatch, undefined, {
+    sessionCredential: () => "session-cred",
+    dataPlaneUrl: "https://orch.internal:4443/",
+    cacheDirPath: "/tmp/test-cache",
+    caCerts: [pem],
+  });
+
+  assertEquals(bootstrap.caCerts, [pem]);
+  assertEquals(RunnerBootstrapParamsSchema.parse(bootstrap).caCerts, [pem]);
+});
+
+Deno.test("buildRunnerBootstrapParams: omits caCerts when the worker has none", () => {
+  const dispatch = DispatchParamsSchema.parse(dispatchParams());
+  for (const caCerts of [undefined, []]) {
+    const bootstrap = buildRunnerBootstrapParams(dispatch, undefined, {
+      sessionCredential: () => "session-cred",
+      dataPlaneUrl: "http://localhost:0",
+      cacheDirPath: "/tmp/test-cache",
+      caCerts,
+    });
+    assertEquals("caCerts" in bootstrap, false);
+  }
+});
+
+Deno.test("buildRunnerBootstrapParams: prefers the per-dispatch credential", () => {
+  const dispatch = DispatchParamsSchema.parse(dispatchParams());
+  const options = {
+    sessionCredential: () => "session-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+  };
+
+  assertEquals(
+    buildRunnerBootstrapParams(dispatch, "dispatch-cred", options)
+      .sessionCredential,
+    "dispatch-cred",
+  );
+  assertEquals(
+    buildRunnerBootstrapParams(dispatch, undefined, options).sessionCredential,
+    "session-cred",
+  );
 });
 
 Deno.test("registerDispatchHandler: drain() resolves immediately when idle", async () => {
