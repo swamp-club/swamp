@@ -189,6 +189,12 @@ Swamp has two token families — picking the wrong one is a common mistake.
 | **Scopes**    | `serve:*`, `oauth:manage`, …                            | principal-based (no scopes)         |
 | **Used by**   | `swamp serve` → swamp-club (features, OAuth client reg) | Clients → a specific serve instance |
 
+`SWAMP_SERVER_TOKEN` requires `SWAMP_SERVER_URL` (or `SWAMP_SERVE_URL`) to scope
+which server the token applies to. Without a server URL, the token is silently
+ignored and the client falls back to stored credentials in
+`~/.config/swamp/servers.json`. Precedence for the server URL: `--server` flag >
+`SWAMP_SERVE_URL` > `SWAMP_SERVER_URL` > `serverAddress` in `.swamp.yaml`.
+
 If you set `SWAMP_API_KEY` where `SWAMP_SERVER_TOKEN` is expected, serve rejects
 every connection with:
 
