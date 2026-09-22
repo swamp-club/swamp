@@ -391,8 +391,21 @@ function makeStubAdapter(loaded: Set<string>): KindAdapter {
   };
 }
 
-// A path that never exists, so a bundling attempt fails instead of spawning a
-// real deno (distro packages install one at /usr/bin/deno).
+/**
+ * A DenoRuntime whose binary does not exist.
+ *
+ * The path used to be `/usr/bin/deno`, which is where a distro package puts a
+ * perfectly real Deno. `load: indexOnly records bundling failures` needs
+ * bundling to fail, and it fails by not finding the binary — so on any machine
+ * that installed Deno from its package manager the bundle succeeded,
+ * `result.failed` came back empty, and the assertion blew up. It passed only
+ * where Deno happened to live somewhere else, which is why it read as a flake
+ * belonging to whoever hit it rather than as a wrong constant.
+ *
+ * Keep the path fictional. Nothing here wants a working Deno: the tests that
+ * bundle successfully take the `trustPulledCache` fast path, which never
+ * spawns one.
+ */
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/nonexistent/swamp-test/deno"),
   getDenoEnv: () => Deno.env.toObject(),
