@@ -48,7 +48,7 @@ const API_KEY_ENV: Record<string, string> = {
 // Maps model aliases to the API model ID used for preflight checks.
 const PREFLIGHT_MODEL_ID: Record<string, string> = {
   "sonnet": "claude-sonnet-4-5",
-  "opus": "claude-opus-4-6",
+  "opus": "claude-opus-5-5",
   "fable": "claude-fable-5",
   "gpt-5.4": "gpt-5.4",
   "gemini-2.5-pro": "gemini-2.5-pro",
@@ -140,7 +140,7 @@ async function preflightCheck(model: string): Promise<void> {
 // Per-million-token pricing for cost estimation
 const TOKEN_PRICING: Record<string, { prompt: number; completion: number }> = {
   "sonnet": { prompt: 3.0, completion: 15.0 },
-  "opus": { prompt: 15.0, completion: 75.0 },
+  "opus": { prompt: 4.0, completion: 20.0 },
   "fable": { prompt: 10.0, completion: 50.0 },
   "gpt-5.4": { prompt: 2.0, completion: 8.0 },
   "gemini-2.5-pro": { prompt: 1.25, completion: 10.0 },

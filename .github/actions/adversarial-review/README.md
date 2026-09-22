@@ -34,7 +34,7 @@ jobs:
 |---|---|---|---|
 | `github_token` | Yes | — | GitHub token with `pull-requests: write` permission |
 | `anthropic_api_key` | Yes | — | Anthropic API key for Claude |
-| `model` | No | `claude-opus-4-6` | Claude model to use |
+| `model` | No | `claude-opus-5-5` | Claude model to use |
 | `conventions_file` | No | `CLAUDE.md` | Path to a project conventions file. If it exists, the reviewer reads it before reviewing. Set to `""` to skip. |
 | `extra_dimensions` | No | `""` | Additional review dimensions to append (markdown with `##` headings and bullet points) |
 | `allowed_tools` | No | *(see action.yml)* | Comma-separated list of allowed Claude Code tools |
