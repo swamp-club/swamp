@@ -39,7 +39,7 @@ import {
   createStdioReader,
   StdioTransport,
 } from "../domain/remote/stdio_transport.ts";
-import { DataPlaneClient } from "./data_plane_client.ts";
+import { createDataPlaneFetch, DataPlaneClient } from "./data_plane_client.ts";
 import { WorkerBundleCache } from "./bundle_cache.ts";
 import { createRemoteMethodContext } from "./remote_method_context.ts";
 import {
@@ -132,13 +132,6 @@ export async function runDispatchRunner(
   const dispatch = params.dispatch;
   const execution = dispatch.execution;
 
-  const client = new DataPlaneClient({
-    baseUrl: params.dataPlaneUrl,
-    credential: () => params.sessionCredential,
-    extraHeaders: resolveExtraHeaders(),
-  });
-  const bundleCache = new WorkerBundleCache(params.cacheDirPath, client);
-
   const signal = cancelController.signal;
   const start = performance.now();
   const logs: string[] = [];
@@ -151,6 +144,16 @@ export async function runDispatchRunner(
   });
 
   try {
+    // Built inside the try so a TLS client failure fails this dispatch
+    // instead of crashing the runner before it reports a result.
+    const client = new DataPlaneClient({
+      baseUrl: params.dataPlaneUrl,
+      credential: () => params.sessionCredential,
+      extraHeaders: resolveExtraHeaders(),
+      fetchImpl: createDataPlaneFetch(params.caCerts),
+    });
+    const bundleCache = new WorkerBundleCache(params.cacheDirPath, client);
+
     const { modelDef, filesDir } = await bundleCache.load(
       dispatch.bundleFingerprint,
       signal,

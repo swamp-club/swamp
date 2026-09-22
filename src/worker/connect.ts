@@ -115,7 +115,10 @@ export interface RunWorkerOptions {
   onDrainAvailable?: (requestDrain: (reason: WorkerExitReason) => void) => void;
   /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
   headers?: Record<string, string>;
-  /** PEM-encoded CA certificates to trust for TLS connections. */
+  /**
+   * PEM-encoded CA certificates to trust for TLS connections: the control
+   * socket and every dispatch runner's data-plane requests.
+   */
   caCerts?: string[];
   /** Test seam: WebSocket factory. */
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
@@ -443,6 +446,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
           sessionCredential: () => session.credential,
           dataPlaneUrl: args.dataPlaneUrl,
           cacheDirPath: args.cacheDirPath,
+          caCerts: options.caCerts,
           capacity: args.concurrency,
           runnerCommand: options.runnerCommand,
           onDispatch: (event) => {

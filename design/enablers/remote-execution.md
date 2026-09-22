@@ -733,7 +733,10 @@ go directly from the runner to the orchestrator using a per-dispatch credential.
 
 The runner receives bootstrap parameters as its first stdin frame:
 `RunnerBootstrapParams` carrying a per-dispatch session credential, data-plane
-URL, cache directory path, and the full `DispatchParams`. Each dispatch gets its
+URL, cache directory path, the full `DispatchParams`, and the worker's
+`--ca-cert` PEM certificates when set. The runner's data-plane requests trust
+those certificates; they ride the bootstrap frame rather than the spawn
+environment, which the orchestrator's snapshot can overlay. Each dispatch gets its
 own credential (issued by `SessionCredentialService.issueForDispatch`) that
 encodes the `dispatchId`; session refreshes on the control channel do not
 invalidate dispatch credentials. The data plane cross-checks
@@ -1198,8 +1201,9 @@ provisioning credentials and extensions onto workers:
   capture it are to MITM the TLS or to compromise the worker host (which
   already grants code execution there, so no additional ground is lost). The
   TLS side is standard trust-anchor verification: `--ca-cert` /
-  `SWAMP_CA_CERT` adds a PEM CA to trust (`src/cli/commands/worker_connect.ts`);
-  certificate **pinning is not implemented**. The **session credential**
+  `SWAMP_CA_CERT` adds a PEM CA to trust (`src/cli/commands/worker_connect.ts`)
+  for both the control socket and each dispatch runner's data-plane requests,
+  so `DENO_CERT` is not needed; certificate **pinning is not implemented**. The **session credential**
   for the data plane is short-lived and lease-scoped. Lifetimes should be
   short — a token leaked *before* enrollment is the real exposure, since an
   attacker could enroll first. Expiry is enforced actively: the orchestrator

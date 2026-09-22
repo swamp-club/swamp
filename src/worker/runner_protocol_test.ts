@@ -76,6 +76,25 @@ Deno.test("RunnerBootstrapParamsSchema: rejects missing dispatch", () => {
   assertThrows(() => RunnerBootstrapParamsSchema.parse(params), ZodError);
 });
 
+Deno.test("RunnerBootstrapParamsSchema: caCerts is optional", () => {
+  const params = RunnerBootstrapParamsSchema.parse(validBootstrapParams());
+  assertEquals(params.caCerts, undefined);
+});
+
+Deno.test("RunnerBootstrapParamsSchema: carries PEM caCerts", () => {
+  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+  const params = RunnerBootstrapParamsSchema.parse({
+    ...validBootstrapParams(),
+    caCerts: [pem],
+  });
+  assertEquals(params.caCerts, [pem]);
+});
+
+Deno.test("RunnerBootstrapParamsSchema: rejects empty caCerts entries", () => {
+  const params = { ...validBootstrapParams(), caCerts: [""] };
+  assertThrows(() => RunnerBootstrapParamsSchema.parse(params), ZodError);
+});
+
 Deno.test("RunnerBootstrapParamsSchema: defaults reportBundleFingerprints to empty", () => {
   const params = RunnerBootstrapParamsSchema.parse(validBootstrapParams());
   assertEquals(params.dispatch.reportBundleFingerprints, []);

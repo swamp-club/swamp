@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  createDataPlaneFetch,
   DataPlaneClient,
   dataPlaneUrlFromConnectUrl,
 } from "./data_plane_client.ts";
@@ -168,6 +169,63 @@ Deno.test("DataPlaneClient: artifact cache evicts oldest entries at capacity", a
 
   await client.readArtifact("/c");
   assertEquals(fetchCount, 4);
+});
+
+Deno.test("createDataPlaneFetch: uses the base fetch when no CA is configured", () => {
+  const baseFetch = (() => Promise.resolve(new Response())) as typeof fetch;
+  let clientsCreated = 0;
+  const createClient = () => {
+    clientsCreated++;
+    return {} as Deno.HttpClient;
+  };
+
+  for (const caCerts of [undefined, []]) {
+    assertEquals(
+      createDataPlaneFetch(caCerts, createClient, baseFetch),
+      baseFetch,
+    );
+  }
+  assertEquals(clientsCreated, 0);
+});
+
+Deno.test("createDataPlaneFetch: every data-plane request trusts the configured CA", async () => {
+  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+  const httpClient = {} as Deno.HttpClient;
+  const clientOptions: Deno.CreateHttpClientOptions[] = [];
+  const seen: Array<RequestInit & { client?: Deno.HttpClient }> = [];
+  const dataPlaneFetch = createDataPlaneFetch(
+    [pem],
+    (options) => {
+      clientOptions.push(options);
+      return httpClient;
+    },
+    ((
+      _input: URL | Request | string,
+      init?: RequestInit & { client?: Deno.HttpClient },
+    ) => {
+      seen.push(init ?? {});
+      return Promise.resolve(new Response(new Uint8Array([1])));
+    }) as typeof fetch,
+  );
+  const client = new DataPlaneClient({
+    baseUrl: "https://orchestrator.test",
+    credential: () => "cred-1",
+    fetchImpl: dataPlaneFetch,
+  });
+
+  await client.readArtifact("/data/t/m/n/1");
+  await client.fetchBundle("fp-1");
+
+  assertEquals(clientOptions, [{ caCerts: [pem] }]);
+  assertEquals(seen.length, 2);
+  for (const init of seen) {
+    assertEquals(init.client, httpClient);
+    assertEquals(
+      new Headers(init.headers).get("authorization"),
+      "Bearer cred-1",
+    );
+  }
+  assertEquals(seen.map((init) => init.method), ["GET", "GET"]);
 });
 
 Deno.test("dataPlaneUrlFromConnectUrl: maps ws→http and wss→https", () => {

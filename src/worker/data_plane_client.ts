@@ -27,6 +27,7 @@
  * session credential and carries an abort-able timeout.
  */
 
+import { createTlsHttpClient } from "../cli/remote_run.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["worker", "data-plane"]);
@@ -258,6 +259,20 @@ export class DataPlaneClient {
     const body = await response.json() as { files: string[] };
     return body.files;
   }
+}
+
+/** Data-plane fetch that trusts the worker's `--ca-cert` certificates, if any. */
+export function createDataPlaneFetch(
+  caCerts: string[] | undefined,
+  createClient: (options: Deno.CreateHttpClientOptions) => Deno.HttpClient =
+    createTlsHttpClient,
+  baseFetch: typeof fetch = fetch,
+): typeof fetch {
+  if (!caCerts?.length) {
+    return baseFetch;
+  }
+  const client = createClient({ caCerts });
+  return (input, init) => baseFetch(input, { ...init, client });
 }
 
 /** Derives the data-plane base URL from the control-socket connect URL. */

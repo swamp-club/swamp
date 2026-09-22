@@ -391,8 +391,10 @@ function makeStubAdapter(loaded: Set<string>): KindAdapter {
   };
 }
 
+// A path that never exists, so a bundling attempt fails instead of spawning a
+// real deno (distro packages install one at /usr/bin/deno).
 const stubDenoRuntime: DenoRuntime = {
-  ensureDeno: () => Promise.resolve("/usr/bin/deno"),
+  ensureDeno: () => Promise.resolve("/nonexistent/swamp-test/deno"),
   getDenoEnv: () => Deno.env.toObject(),
 };
 
