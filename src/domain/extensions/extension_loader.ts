@@ -184,6 +184,17 @@ export class ExtensionLoader {
       .debug`Treating ${file} as a helper module (no ${kind} export, so not a ${kind} entry point)`;
   }
 
+  /**
+   * Reusing a pulled extension's existing bundle is the normal fast path,
+   * not a failure, so it is logged at debug. A failed rebundle is already
+   * reported by `bundleWithCache` itself.
+   */
+  private logTrustedPulledBundle(bundled: BundleResult, file: string): void {
+    if (bundled.fromCache && bundled.cacheReason === "trusted-pulled") {
+      this.logger.debug`Using existing bundle for pulled extension ${file}`;
+    }
+  }
+
   async load(
     dir: string,
     options?: {
@@ -229,17 +240,14 @@ export class ExtensionLoader {
             continue;
           }
 
-          const { fromCache } = await this.bundleWithCache(
+          const bundled = await this.bundleWithCache(
             absolutePath,
             file,
             denoPath,
             baseDir,
             { trustPulledCache: true },
           );
-          if (fromCache) {
-            this.logger
-              .warn`Using cached bundle for ${file} — source may have changed but bundle could not be regenerated`;
-          }
+          this.logTrustedPulledBundle(bundled, file);
           result.loaded.push(file);
         } catch (error) {
           result.failed.push({
@@ -274,18 +282,15 @@ export class ExtensionLoader {
           continue;
         }
 
-        const { js, fromCache } = await this.bundleWithCache(
+        const bundled = await this.bundleWithCache(
           absolutePath,
           file,
           denoPath,
           baseDir,
           { trustPulledCache: true },
         );
-        if (fromCache) {
-          this.logger
-            .warn`Using cached bundle for ${file} — source may have changed but bundle could not be regenerated`;
-        }
-        const module = await this.importBundle(js, file, baseDir);
+        this.logTrustedPulledBundle(bundled, file);
+        const module = await this.importBundle(bundled.js, file, baseDir);
 
         if (module[this.adapter.primaryExportKey]) {
           primaryFiles.push({ file, module, absolutePath, baseDir });
@@ -1007,12 +1012,13 @@ export class ExtensionLoader {
       return {};
     }
 
-    const { js, fromCache } = await this.bundleWithCache(
+    const bundled = await this.bundleWithCache(
       absolutePath,
       relativePath,
       denoPath,
       baseDir,
     );
+    const { js } = bundled;
 
     const stat = await Deno.stat(absolutePath);
     const sourceMtime = stat.mtime?.toISOString() ?? "";
@@ -1022,12 +1028,17 @@ export class ExtensionLoader {
     );
 
     let effectiveFingerprint = sourceFingerprint;
-    if (fromCache) {
+    if (bundled.fromCache) {
       const existing = catalog.findBySourcePath(absolutePath);
       if (existing?.source_fingerprint) {
         if (existing.source_fingerprint !== sourceFingerprint) {
-          this.logger
-            .warn`Bundle could not be regenerated for ${relativePath} — source fingerprint preserved, will retry on next command`;
+          if (bundled.cacheReason === "rebundle-failed") {
+            this.logger
+              .warn`Bundle could not be regenerated for ${relativePath} — source fingerprint preserved, will retry on next command`;
+          } else {
+            this.logger
+              .debug`Using trusted bundle for pulled extension ${relativePath} — source fingerprint preserved`;
+          }
         }
         effectiveFingerprint = existing.source_fingerprint;
       }
@@ -1212,7 +1223,11 @@ export class ExtensionLoader {
         (options?.trustPulledCache ||
           isExpectedBundleFailure(absolutePath, this.repoDir))
       ) {
-        return { js: await Deno.readTextFile(bundlePath), fromCache: true };
+        return {
+          js: await Deno.readTextFile(bundlePath),
+          fromCache: true,
+          cacheReason: "trusted-pulled",
+        };
       }
 
       try {
@@ -1259,7 +1274,11 @@ export class ExtensionLoader {
               this.logger
                 .warn`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
             }
-            return { js: cached, fromCache: true };
+            return {
+              js: cached,
+              fromCache: true,
+              cacheReason: "rebundle-failed",
+            };
           } catch {
             // Cache file was removed between stat and read — treat as no cache.
           }

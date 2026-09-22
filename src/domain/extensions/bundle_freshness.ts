@@ -70,11 +70,20 @@ export interface FreshnessCatalogRow {
  * Return type for bundleWithCache across all extension loaders.
  * Distinguishes freshly-built bundles from stale cache fallbacks so
  * callers can decide whether to advance the catalog fingerprint.
+ *
+ * A cached result carries why it came from cache:
+ * - `trusted-pulled` — a pulled extension's on-disk bundle was reused
+ *   without attempting a rebundle. Nothing failed.
+ * - `rebundle-failed` — `deno bundle` threw and the previous bundle was
+ *   reused. `bundleWithCache` has already logged the failure.
  */
-export interface BundleResult {
-  readonly js: string;
-  readonly fromCache: boolean;
-}
+export type BundleResult =
+  | { readonly js: string; readonly fromCache: false }
+  | {
+    readonly js: string;
+    readonly fromCache: true;
+    readonly cacheReason: "trusted-pulled" | "rebundle-failed";
+  };
 
 /**
  * Per-invocation cache that dedups file hashing and transitive dep

@@ -797,3 +797,102 @@ for (const indexOnly of [true, false]) {
     assertStringIncludes(text, "not a model entry point");
   });
 }
+
+// -- load() cached-bundle logging (swamp-club#2354) -----------------------
+
+async function loadWithExistingBundle(args: {
+  pulled: boolean;
+  indexOnly: boolean;
+}): Promise<{ records: LogRecord[]; failed: string[] }> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2354_" });
+  const records: LogRecord[] = [];
+  try {
+    const modelsDir = args.pulled
+      ? join(dir, ".swamp", "pulled-extensions", "@test", "ext", "models")
+      : join(dir, "extensions", "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const source =
+      'export const model = { type: "@test/cached", name: "cached" };\n';
+    await Deno.writeTextFile(join(modelsDir, "cached.ts"), source);
+
+    const { bundleNamespace: bn } = await import(
+      "../../infrastructure/persistence/paths.ts"
+    );
+    const bundleDir = join(dir, ".swamp", "bundles", bn(modelsDir, dir));
+    await Deno.mkdir(bundleDir, { recursive: true });
+    await Deno.writeTextFile(join(bundleDir, "cached.js"), source);
+
+    await configure({
+      sinks: { capture: (record: LogRecord) => records.push(record) },
+      loggers: [
+        {
+          category: ["swamp", "model", "loader"],
+          lowestLevel: "debug",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+      ],
+      reset: true,
+    });
+
+    // A deno binary that does not exist makes any rebundle attempt fail
+    // the same way on every platform.
+    const missingDenoRuntime: DenoRuntime = {
+      ensureDeno: () => Promise.resolve(join(dir, "no-such-deno")),
+      getDenoEnv: () => Deno.env.toObject(),
+    };
+    const loader = new ExtensionLoader(
+      missingDenoRuntime,
+      makeStubAdapter(new Set<string>()),
+      dir,
+    );
+    const result = await loader.load(modelsDir, {
+      indexOnly: args.indexOnly,
+    });
+    return { records, failed: result.failed.map((f) => f.file) };
+  } finally {
+    await reset();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+function warningTexts(records: LogRecord[]): string[] {
+  return records
+    .filter((r) => r.level === "warning")
+    .map((r) => r.message.map(String).join(""));
+}
+
+for (const indexOnly of [true, false]) {
+  Deno.test(`load: pulled extension with an existing bundle logs no warning (indexOnly=${indexOnly})`, async () => {
+    const { records, failed } = await loadWithExistingBundle({
+      pulled: true,
+      indexOnly,
+    });
+
+    assertEquals(failed, [], "trusted pulled bundle must load");
+    assertEquals(
+      warningTexts(records),
+      [],
+      "reusing a pulled extension's bundle is not a failure",
+    );
+    const trusted = records.filter((r) =>
+      r.message.map(String).join("").includes(
+        "Using existing bundle for pulled extension",
+      )
+    );
+    assertEquals(trusted.map((r) => r.level), ["debug"]);
+  });
+
+  Deno.test(`load: failed rebundle with an existing bundle warns once with the error (indexOnly=${indexOnly})`, async () => {
+    const { records, failed } = await loadWithExistingBundle({
+      pulled: false,
+      indexOnly,
+    });
+
+    assertEquals(failed, [], "cached bundle must be used after the failure");
+    const warnings = warningTexts(records);
+    assertEquals(warnings.length, 1, "exactly one warning per failed rebundle");
+    assertStringIncludes(warnings[0], "Rebundle failed for");
+    assertStringIncludes(warnings[0], "using cached bundle:");
+  });
+}

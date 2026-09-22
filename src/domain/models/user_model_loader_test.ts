@@ -57,7 +57,7 @@ import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
-import { getLogger } from "@logtape/logtape";
+import { configure, getLogger, type LogRecord, reset } from "@logtape/logtape";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
 // Import models barrel to ensure command/shell is registered for extension test
@@ -2877,6 +2877,114 @@ export const model = {
   } finally {
     await Deno.remove(repoDir, { recursive: true });
     await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
+Deno.test("UserModelLoader buildIndex: pulled extension reusing its bundle after a source change logs no warning (swamp-club#2354)", async () => {
+  const ts = crypto.randomUUID().slice(0, 8);
+  const typeId = `@user/trusted-pulled-${ts}`;
+  const v1 = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  // A bare specifier with no deno.json is an expected bundle failure, so
+  // the loader reuses the pulled extension's bundle without rebundling.
+  const v2 = `import { helper } from "bare-helper-${ts}";\n${v1}`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_2354_repo_" });
+  const modelsDir = join(
+    repoDir,
+    ".swamp",
+    "pulled-extensions",
+    "@test",
+    "ext",
+    "models",
+  );
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+  const sourcePath = join(modelsDir, "model.ts");
+  const records: LogRecord[] = [];
+
+  try {
+    await Deno.mkdir(modelsDir, { recursive: true });
+    await Deno.writeTextFile(sourcePath, v1);
+
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      makeRepoForCatalog(catalog1, repoDir),
+    );
+    await loader1.buildIndex(modelsDir);
+    const fingerprintBefore = catalog1.findBySourcePath(sourcePath)
+      ?.source_fingerprint;
+    catalog1.close();
+    assertNotEquals(fingerprintBefore, undefined);
+
+    await Deno.writeTextFile(sourcePath, v2);
+
+    await configure({
+      sinks: { capture: (record: LogRecord) => records.push(record) },
+      loggers: [
+        {
+          category: ["swamp", "model", "loader"],
+          lowestLevel: "debug",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+      ],
+      reset: true,
+    });
+
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      makeRepoForCatalog(catalog2, repoDir),
+    );
+    const result = await loader2.buildIndex(modelsDir);
+    const fingerprintAfter = catalog2.findBySourcePath(sourcePath)
+      ?.source_fingerprint;
+    catalog2.close();
+
+    assertEquals(result.failed, []);
+    assertEquals(
+      fingerprintAfter,
+      fingerprintBefore,
+      "reused bundle must keep the stored fingerprint",
+    );
+    assertEquals(
+      records
+        .filter((r) => r.level === "warning")
+        .map((r) => r.message.map(String).join("")),
+      [],
+      "reusing a pulled extension's bundle is not a failure",
+    );
+    const preserved = records.filter((r) =>
+      r.message.map(String).join("").includes("source fingerprint preserved")
+    );
+    assertEquals(preserved.map((r) => r.level), ["debug"]);
+  } finally {
+    await reset();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
   }
 });
 
