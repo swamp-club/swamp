@@ -19,9 +19,16 @@ names the whole verification rather than one third of it.
 
 ### Toolchain
 
-Shell steps run `./scripts/toolchain.sh <command>`, which routes through
-`mise exec` when mise is present so the command uses the version
-`.tool-versions` pins. Without it the steps inherit whatever the launcher had
+Every shell step that calls deno first runs
+`command -v mise >/dev/null 2>&1 && eval "$(mise env -s bash)" || true`, which
+puts the version `.tool-versions` pins on PATH when mise is present and
+changes nothing when it is not.
+
+It is repeated inline rather than factored into a script on purpose. Group
+steps run inside a worktree of the **commit being verified**, so a helper
+committed on the branch holding the workflow does not exist there — an earlier
+attempt to share one made every skills step fail with exit 127 while the
+preflight, running in the launch directory, passed. Without it the steps inherit whatever the launcher had
 on PATH: nothing (every step exits 127) or, worse, a different deno, which
 would verify against an unpinned toolchain and record that version in the
 attestation as though it were intended.
