@@ -1153,6 +1153,84 @@ Deno.test("getLatestRecord: stale row falls through to scoped backfill", async (
   Deno.removeSync(dir, { recursive: true });
 });
 
+Deno.test("getLatestRecord: hydrates a lazily-synced row instead of treating it as stale", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-lazy-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  // Do NOT mark populated — a datastore sync invalidates the catalog.
+
+  // A lazy-hydration datastore syncs metadata.yaml but not raw.
+  createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest");
+  const rawPath = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "my-data",
+    "1",
+    "raw",
+  );
+  const remoteBytes = Deno.readFileSync(rawPath);
+  Deno.removeSync(rawPath);
+  catalog.upsertNewVersion(makeRow());
+
+  const hydrated: string[] = [];
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    async (absPath: string) => {
+      hydrated.push(absPath);
+      await Deno.writeFile(absPath, remoteBytes);
+      return true;
+    },
+  );
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const record = await service.getLatestRecord("ingest", "my-data");
+  assertNotEquals(record, null);
+  assertEquals(record!.attributes, { value: "ingest/my-data" });
+  assertEquals(hydrated.length, 1);
+
+  catalog.close();
+  Deno.removeSync(dir, { recursive: true });
+});
+
+Deno.test("getLatestRecord: a row whose content is missing remotely is still stale", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-lazy-gone-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+
+  createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest");
+  Deno.removeSync(
+    join(
+      dir,
+      ".swamp",
+      "data",
+      "test-model",
+      "model-001",
+      "my-data",
+      "1",
+      "raw",
+    ),
+  );
+  catalog.upsertNewVersion(makeRow());
+
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    () => Promise.resolve(false),
+  );
+  const service = new DataQueryService(catalog, dataRepo);
+
+  assertEquals(await service.getLatestRecord("ingest", "my-data"), null);
+
+  catalog.close();
+  Deno.removeSync(dir, { recursive: true });
+});
+
 Deno.test("getLatestRecord: scoped backfill finds orphan data without full backfill", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-orphan-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
@@ -2125,5 +2203,72 @@ Deno.test("DataQueryService: successive queries see rewritten bodies", () => {
   const results = service.querySync("attributes.value == 2") as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].attributes, { value: 2 });
+  catalog.close();
+});
+
+// ============================================================================
+// includeContentPath — path is opt-in so it never leaves the process
+// ============================================================================
+
+function expectedContentPath(dir: string, catalog: CatalogStore): string {
+  return new FileSystemUnifiedDataRepository(dir, undefined, catalog)
+    .getContentPath(
+      ModelType.create("test-model"),
+      "model-001",
+      "my-data",
+      1,
+    );
+}
+
+Deno.test("DataQueryService: records carry an empty path by default", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow());
+
+  const results = service.querySync('modelName == "ingest"') as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].path, "");
+  catalog.close();
+});
+
+Deno.test("DataQueryService: includeContentPath sets the local content path", () => {
+  const { catalog, service, dir } = setupTest();
+  catalog.upsert(makeRow());
+
+  const results = service.querySync('modelName == "ingest"', {
+    includeContentPath: true,
+  }) as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].path, expectedContentPath(dir, catalog));
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a select projection of path is empty unless opted in", () => {
+  const { catalog, service, dir } = setupTest();
+  catalog.upsert(makeRow());
+
+  const hidden = service.querySync('modelName == "ingest"', {
+    select: "path",
+  }) as string[];
+  assertEquals(hidden, [""]);
+
+  const shown = service.querySync('modelName == "ingest"', {
+    select: "path",
+    includeContentPath: true,
+  }) as string[];
+  assertEquals(shown, [expectedContentPath(dir, catalog)]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: getLatestRecord sets path only when requested", async () => {
+  const { catalog, service, dir } = setupTest();
+  catalog.upsert(makeRow());
+
+  const hidden = await service.getLatestRecord("ingest", "my-data");
+  assertEquals(hidden?.path, "");
+
+  const shown = await service.getLatestRecord("ingest", "my-data", undefined, {
+    includeContentPath: true,
+  });
+  assertEquals(shown?.path, expectedContentPath(dir, catalog));
   catalog.close();
 });

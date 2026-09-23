@@ -1475,6 +1475,20 @@ Deno.test("CelEvaluator: explains 'No such key' when data.latest() found no reco
   assertStringIncludes(message, "^");
 });
 
+Deno.test("CelEvaluator: explains 'No such key: path' when data.latest() found no record", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("echo-hi", "nope").path',
+    missingRecordContext(),
+  );
+  assertStringIncludes(message, "No such key: path");
+  assertStringIncludes(
+    message,
+    'data.latest("echo-hi", "nope") found no data record',
+  );
+  assertStringIncludes(message, ".?path");
+});
+
 Deno.test("CelEvaluator: explains a missed data.version() lookup with its version", async () => {
   const message = await messageFrom(
     new CelEvaluator(),

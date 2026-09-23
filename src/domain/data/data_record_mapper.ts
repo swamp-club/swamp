@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isAbsolute } from "@std/path";
 import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
 import type { DataRecord, FileDataRecord } from "./data_record.ts";
 import type { Data } from "./data.ts";
@@ -34,6 +35,31 @@ import {
 export interface DataRecordMapperOptions {
   vaultService?: VaultService;
   redactor?: SecretRedactor;
+}
+
+/**
+ * Returns the local filesystem path of a data version's stored content, or
+ * "" when there is none on this host: a record from another namespace in a
+ * shared datastore (its content is fetched on demand, never stored locally),
+ * a name the repository refuses to resolve, or a repository whose content
+ * does not live on disk (the in-memory ephemeral store returns an
+ * `ephemeral://` URI). Never touches the filesystem.
+ */
+export function localContentPath(
+  dataRepo: UnifiedDataRepository,
+  modelType: ModelType,
+  modelId: string,
+  dataName: string,
+  version: number,
+  namespace: string,
+): string {
+  if (namespace !== dataRepo.namespace) return "";
+  try {
+    const path = dataRepo.getContentPath(modelType, modelId, dataName, version);
+    return isAbsolute(path) ? path : "";
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -104,6 +130,9 @@ async function resolveVaultRefs(
  *
  * Content is loaded from disk only when needed (controlled by loadAttributes
  * and loadContent flags, driven by AST analysis of the query predicate).
+ * `path` is set only when includeContentPath is true — see
+ * {@link localContentPath}; callers whose results cross a trust boundary
+ * leave it off so host paths never leave the process.
  *
  * Vault resolution is NOT performed here — callers that need it (e.g.
  * DataQueryService.query) handle it after the query loop.
@@ -113,6 +142,7 @@ export function fromRow(
   dataRepo: UnifiedDataRepository,
   loadAttributes: boolean,
   loadContent: boolean,
+  includeContentPath = false,
 ): DataRecord {
   const needsBytes = (loadAttributes &&
     row.content_type === "application/json") ||
@@ -162,6 +192,16 @@ export function fromRow(
     streaming: row.streaming === 1,
     size: row.size,
     content: textContent,
+    path: includeContentPath
+      ? localContentPath(
+        dataRepo,
+        ModelType.create(row.type_normalized),
+        row.model_id,
+        row.data_name,
+        row.version,
+        row.namespace,
+      )
+      : "",
     ownerRef: row.owner_ref,
     workflowRunId: row.workflow_run_id,
     workflowName: row.workflow_name,
@@ -235,6 +275,7 @@ export async function fromData(
     streaming: data.streaming,
     size: data.size ?? 0,
     content: textContent,
+    path: "",
     ownerRef: data.ownerDefinition.ownerRef,
     workflowRunId: data.ownerDefinition.workflowRunId ?? "",
     workflowName: data.ownerDefinition.workflowName ?? "",
@@ -327,6 +368,7 @@ export async function fromResourceHandle(
     content: handle.metadata.contentType === "application/json"
       ? attributes
       : "",
+    path: "",
     ownerRef: handle.metadata.ownerDefinition.ownerRef,
     workflowRunId: handle.metadata.ownerDefinition.workflowRunId ?? "",
     workflowName: handle.metadata.ownerDefinition.workflowName ?? "",

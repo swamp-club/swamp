@@ -146,6 +146,8 @@ interface DataRecord {
   streaming: boolean;
   size: number;
   content: unknown; // parsed object for JSON, text for other text types
+  // Local path of the stored content file; "" unless requested (see below)
+  path: string;
 
   // Provenance fields — promoted from tags/ownerDefinition to first-class.
   // Empty string when the data was not produced inside a workflow.
@@ -164,6 +166,21 @@ in `data_record_mapper.ts`: `fromRow()` for catalog-backed queries,
 resource outputs, and `fromFileHandle()` for file-kind outputs. This is
 backward-compatible: existing code that reads `record.name` or
 `record.attributes` continues to work; the provenance fields are additive.
+
+`path` is the local filesystem path of the version's stored content (its
+`raw` file). It is only populated when the caller opts in with
+`DataQueryOptions.includeContentPath`, and the only caller that does is the CEL
+`data.*` namespace (`ModelResolver.buildDataNamespace`), so that
+`data.latest(...).path` can replace the deprecated
+`model.<name>.file.<spec>.<instance>.path`. Everywhere else — `swamp data
+query`, the serve `data.query` handler, remote-worker `queryData`, and
+extension `readModelData`/`queryData` — `path` is `""`, so host filesystem
+paths never cross the serve boundary, including through a `select` projection.
+Even when requested it is `""` for a record from another namespace in a shared
+datastore, for ephemeral data (held in memory), and when the file is not on
+local disk (see [datastores.md](./datastores.md), lazy hydration).
+`localContentPath()` in `data_record_mapper.ts` holds that rule. `path` is not
+a predicate field: filtering on a host path is not a catalog query.
 
 For JSON resources (`contentType == "application/json"`), `attributes` contains
 the parsed content — matching the existing behavior of `data.latest()` and

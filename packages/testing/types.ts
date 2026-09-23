@@ -164,6 +164,13 @@ export interface DataRecord {
   streaming: boolean;
   size: number;
   content: unknown;
+  /**
+   * Local filesystem path of the stored content. Swamp sets it for records
+   * returned by the CEL `data.*` functions and leaves it empty elsewhere.
+   * Optional so existing test fixtures that build DataRecord literals keep
+   * type-checking.
+   */
+  path?: string;
   ownerRef: string;
   workflowRunId: string;
   workflowName: string;

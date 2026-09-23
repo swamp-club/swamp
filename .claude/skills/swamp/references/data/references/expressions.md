@@ -15,8 +15,8 @@ value: ${{ model.my-model.resource.output.main.attributes.result }}
 value: ${{ data.version("my-model", "main", 2).attributes.result }}
 
 # Access file metadata
-path: ${{ model.my-model.file.content.primary.path }}
-size: ${{ model.my-model.file.content.primary.size }}
+path: ${{ data.latest("my-model", "primary").path }}
+size: ${{ data.latest("my-model", "primary").size }}
 
 # Lazy-load file contents
 body: ${{ file.contents("my-model", "content") }}

@@ -44,6 +44,7 @@ function makeRecord(
     streaming: false,
     size: 100,
     content: "",
+    path: "",
     ownerRef: "model-1",
     workflowRunId: "",
     workflowName: "",

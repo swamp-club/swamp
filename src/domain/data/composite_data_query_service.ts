@@ -22,6 +22,7 @@ import {
   type DataQueryOptions,
   DataQueryService,
   type ForeignContentFetcher,
+  type LatestRecordOptions,
 } from "./data_query_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
@@ -78,12 +79,14 @@ export class CompositeDataQueryService extends DataQueryService {
     modelName: string,
     dataName: string,
     namespace?: string,
+    options?: LatestRecordOptions,
   ): Promise<DataRecord | null> {
     return await this.ephemeralQueryService.getLatestRecord(
       modelName,
       dataName,
       namespace,
-    ) ?? await super.getLatestRecord(modelName, dataName, namespace);
+      options,
+    ) ?? await super.getLatestRecord(modelName, dataName, namespace, options);
   }
 
   override async query(

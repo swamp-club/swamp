@@ -114,6 +114,20 @@ export interface DataQueryOptions {
   select?: string;
   /** Force-load JSON attributes even when the predicate doesn't reference them. */
   loadAttributes?: boolean;
+  /**
+   * Populate each record's `path` with its local content path (default
+   * false). Applied as each row's record is built, so predicates and select
+   * projections see "" unless the caller opts in. Only the CEL data.*
+   * namespace opts in; results that leave the process (serve, workers) must
+   * not.
+   */
+  includeContentPath?: boolean;
+}
+
+/** Options for {@link DataQueryService.getLatestRecord}. */
+export interface LatestRecordOptions {
+  /** See {@link DataQueryOptions.includeContentPath}. */
+  includeContentPath?: boolean;
 }
 
 /**
@@ -182,8 +196,9 @@ export class DataQueryService {
    * Uses a three-tier strategy to avoid a full catalog backfill:
    * 1. Try the indexed SQL lookup first — if the catalog is populated or the
    *    row exists from a write-through update, return immediately.
-   * 2. If the catalog is not populated and the row exists but the on-disk
-   *    data is gone (stale row after invalidate()), fall through.
+   * 2. If the catalog is not populated and the row exists but its content
+   *    is gone (stale row after invalidate()), fall through. On a
+   *    lazy-hydration datastore the content check downloads the raw file.
    * 3. If the catalog is not populated and no row exists (or row was stale),
    *    run a scoped backfill for just this (modelName, dataName) pair, then
    *    retry the indexed lookup.
@@ -192,14 +207,21 @@ export class DataQueryService {
     modelName: string,
     dataName: string,
     namespace?: string,
+    options?: LatestRecordOptions,
   ): Promise<DataRecord | null> {
+    const includePath = options?.includeContentPath ?? false;
     const populated = this.catalogStore.isPopulated();
 
     // If a full backfill is already in-flight, await it — it will populate
     // everything including our target.
     if (!populated && this.backfillPromise) {
       await this.backfillPromise;
-      return this.buildRecordFromRow(modelName, dataName, namespace);
+      return this.buildRecordFromRow(
+        modelName,
+        dataName,
+        namespace,
+        includePath,
+      );
     }
 
     // Tier 1: try the indexed SQL lookup.
@@ -209,18 +231,24 @@ export class DataQueryService {
         if (dataName === row.spec_name) {
           this.checkSpecNameAmbiguity(row.spec_name, modelName, namespace);
         }
-        return this.buildRecordFromRow(modelName, dataName, namespace, row);
+        return this.buildRecordFromRow(
+          modelName,
+          dataName,
+          namespace,
+          includePath,
+          row,
+        );
       }
-      // Catalog not populated — verify the data still exists on disk to
-      // guard against stale rows left behind after invalidate().
-      const content = this.dataRepo.getContentSync(
-        ModelType.create(row.type_normalized),
-        row.model_id,
-        row.data_name,
-        row.version,
-      );
-      if (content !== null) {
-        return this.buildRecordFromRow(modelName, dataName, namespace, row);
+      // Catalog not populated — verify the data still exists to guard
+      // against stale rows left behind after invalidate().
+      if (await this.rowHasContent(row)) {
+        return this.buildRecordFromRow(
+          modelName,
+          dataName,
+          namespace,
+          includePath,
+          row,
+        );
       }
       // Stale row — fall through to scoped backfill
     }
@@ -235,16 +263,33 @@ export class DataQueryService {
       namespace,
     );
     if (!freshRow) return null;
-    // Verify the row points to real on-disk data (it may be the same
-    // stale row that triggered the scoped backfill).
-    const freshContent = this.dataRepo.getContentSync(
-      ModelType.create(freshRow.type_normalized),
-      freshRow.model_id,
-      freshRow.data_name,
-      freshRow.version,
+    // Verify the row points to real data (it may be the same stale row
+    // that triggered the scoped backfill).
+    if (!(await this.rowHasContent(freshRow))) return null;
+    return this.buildRecordFromRow(
+      modelName,
+      dataName,
+      namespace,
+      includePath,
+      freshRow,
     );
-    if (freshContent === null) return null;
-    return this.buildRecordFromRow(modelName, dataName, namespace, freshRow);
+  }
+
+  /**
+   * Whether a catalog row's content still exists. Uses the async read so a
+   * lazy-hydration datastore — which syncs metadata only — fetches the raw
+   * file instead of the row being mistaken for a stale one (swamp-club#2288).
+   * Without a hydrate hook this is the same local read as before, so a row
+   * whose data was deleted, or whose write never finished, is still stale.
+   */
+  private async rowHasContent(row: CatalogRow): Promise<boolean> {
+    const content = await this.dataRepo.getContent(
+      ModelType.create(row.type_normalized),
+      row.model_id,
+      row.data_name,
+      row.version,
+    );
+    return content !== null;
   }
 
   checkSpecNameAmbiguity(
@@ -275,6 +320,7 @@ export class DataQueryService {
     modelName: string,
     dataName: string,
     namespace: string | undefined,
+    includeContentPath: boolean,
     row?: CatalogRow | null,
   ): Promise<DataRecord | null> {
     const r = row ?? this.catalogStore.findLatestRow(
@@ -283,7 +329,7 @@ export class DataQueryService {
       namespace,
     );
     if (!r) return null;
-    const record = fromRow(r, this.dataRepo, true, true);
+    const record = fromRow(r, this.dataRepo, true, true, includeContentPath);
     if (this.vaultService && Object.keys(record.attributes).length > 0) {
       const sensitiveFields = parseSensitiveFieldsFromRowTags(r.tags);
       if (sensitiveFields) {
@@ -447,6 +493,7 @@ export class DataQueryService {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
     const limit = options?.limit ?? Infinity;
+    const includePath = options?.includeContentPath ?? false;
 
     // Parse and validate the caller's predicate first. Parsing on the raw
     // input means parse errors point at what the caller actually wrote.
@@ -523,7 +570,7 @@ export class DataQueryService {
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
     for (const row of rows) {
-      const record = this.rowToRecord(row, false, false);
+      const record = this.rowToRecord(row, false, false, includePath);
       // attributes/content are read from disk only when evaluation touches
       // them or the row matches, so rows rejected by metadata terms never
       // read their body (swamp-club#2122). The load outcome — record or
@@ -535,7 +582,12 @@ export class DataQueryService {
         if (loadFailed) throw loadError;
         if (!full) {
           try {
-            full = this.rowToRecord(row, needsAttributes, needsContent);
+            full = this.rowToRecord(
+              row,
+              needsAttributes,
+              needsContent,
+              includePath,
+            );
           } catch (error) {
             loadFailed = true;
             loadError = error;
@@ -605,7 +657,12 @@ export class DataQueryService {
             continue;
           }
         }
-        results[writeIndex] = this.rowToRecord(row, true, needsContent);
+        results[writeIndex] = this.rowToRecord(
+          row,
+          true,
+          needsContent,
+          includePath,
+        );
         writeIndex++;
       }
       results.length = writeIndex;
@@ -639,8 +696,15 @@ export class DataQueryService {
     row: CatalogRow,
     loadAttributes: boolean,
     loadContent: boolean,
+    includeContentPath: boolean,
   ): DataRecord {
-    return fromRow(row, this.dataRepo, loadAttributes, loadContent);
+    return fromRow(
+      row,
+      this.dataRepo,
+      loadAttributes,
+      loadContent,
+      includeContentPath,
+    );
   }
 
   private async backfillAsync(): Promise<void> {

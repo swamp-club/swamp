@@ -48,6 +48,11 @@ export interface DataRecord {
   streaming: boolean;
   size: number;
   content: unknown;
+  // Local filesystem path of this version's stored content. Set only for
+  // records resolved by the CEL data.* functions when the file is on this
+  // host's disk; empty string otherwise (foreign namespace, ephemeral data,
+  // content not present locally, and every non-CEL caller).
+  path: string;
 
   // Provenance fields — promoted from tags/ownerDefinition to first-class.
   // Empty string when the data was not produced inside a workflow.

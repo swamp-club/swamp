@@ -2062,3 +2062,192 @@ Deno.test("buildLightContext resolves data.latest sensitive vault refs like buil
     assertEquals(fullRecord.attributes.plain, lightRecord.attributes.plain);
   });
 });
+
+// ============================================================================
+// DataRecord.path — local content path for CEL data.* results (swamp-club#2288)
+// ============================================================================
+
+type HydrateMode = "restore" | "absent" | "throw";
+
+/**
+ * Saves a text/plain file-kind data item for `producer`, then (when `evict`
+ * is set) removes its raw file to mimic a lazy-hydration datastore that has
+ * synced metadata only. The hydrate hook restores the bytes, reports the file
+ * absent, or throws, per `mode`.
+ */
+async function setupPathFixture(
+  repoDir: string,
+  opts: { evict: boolean; mode?: HydrateMode },
+) {
+  await setupRepoDir(repoDir);
+  const defRepo = new YamlDefinitionRepository(repoDir);
+  const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+  const hydrated: string[] = [];
+  const bytes = new TextEncoder().encode("hello-from-producer\n");
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    undefined,
+    catalog,
+    undefined,
+    async (absPath: string) => {
+      hydrated.push(absPath);
+      if (opts.mode === "throw") throw new Error("remote unreachable");
+      if (opts.mode === "absent") return false;
+      await Deno.writeFile(absPath, bytes);
+      return true;
+    },
+  );
+  const type = ModelType.create("test/model");
+  const model = Definition.create({ name: "producer", globalArguments: {} });
+  await defRepo.save(type, model);
+  const data = Data.create({
+    name: "log",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "file", specName: "log", modelName: "producer" },
+    ownerDefinition: owner,
+  });
+  await dataRepo.save(type, model.id, data, bytes);
+  const contentPath = dataRepo.getContentPath(type, model.id, "log", 1);
+  if (opts.evict) await Deno.remove(contentPath);
+
+  const dqs = new DataQueryService(catalog, dataRepo);
+  await dqs.query('name == ""');
+  const resolver = new ModelResolver(defRepo, {
+    repoDir,
+    dataRepo,
+    dataQueryService: dqs,
+  });
+  return { resolver, catalog, contentPath, hydrated };
+}
+
+Deno.test("data.latest(): path names the stored content file", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, contentPath, hydrated } = await setupPathFixture(
+      repoDir,
+      { evict: false },
+    );
+    const ctx = await resolver.buildContext();
+    const record = await ctx.data!.latest("producer", "log");
+    assertEquals(record?.path, contentPath);
+    assertEquals(
+      await Deno.readTextFile(record!.path),
+      "hello-from-producer\n",
+    );
+    assertEquals(hydrated.length, 0);
+    catalog.close();
+  });
+});
+
+Deno.test("data.latest(): the catalog fallback path also sets path", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, contentPath } = await setupPathFixture(
+      repoDir,
+      { evict: false },
+    );
+    // The light context has no model coordinates, so latest() resolves
+    // through DataQueryService.getLatestRecord.
+    const ctx = resolver.buildLightContext();
+    const record = await ctx.data!.latest("producer", "log");
+    assertEquals(record?.path, contentPath);
+    catalog.close();
+  });
+});
+
+Deno.test("data.version(): path names the stored content file", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, contentPath } = await setupPathFixture(
+      repoDir,
+      { evict: false },
+    );
+    const ctx = await resolver.buildContext();
+    const record = await ctx.data!.version("producer", "log", 1);
+    assertEquals(record?.path, contentPath);
+    catalog.close();
+  });
+});
+
+Deno.test("data.latest(): hydrates a raw file that is not local yet", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, contentPath, hydrated } = await setupPathFixture(
+      repoDir,
+      { evict: true, mode: "restore" },
+    );
+    const ctx = await resolver.buildContext();
+    const record = await ctx.data!.latest("producer", "log");
+    assertEquals(record?.path, contentPath);
+    assertEquals(hydrated, [contentPath]);
+    assertEquals(
+      await Deno.readTextFile(contentPath),
+      "hello-from-producer\n",
+    );
+    catalog.close();
+  });
+});
+
+Deno.test("data.latest(): path is empty when the file cannot be hydrated", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, hydrated } = await setupPathFixture(repoDir, {
+      evict: true,
+      mode: "absent",
+    });
+    const ctx = await resolver.buildContext();
+    const record = await ctx.data!.latest("producer", "log");
+    assertExists(record);
+    assertEquals(record.path, "");
+    assertEquals(hydrated.length, 1);
+    catalog.close();
+  });
+});
+
+Deno.test("data.latest(): a failing hydrate clears path but still returns the record", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog } = await setupPathFixture(repoDir, {
+      evict: true,
+      mode: "throw",
+    });
+    const ctx = await resolver.buildContext();
+    const record = await ctx.data!.latest("producer", "log");
+    assertExists(record);
+    assertEquals(record.name, "log");
+    assertEquals(record.path, "");
+    catalog.close();
+  });
+});
+
+Deno.test("data.findBySpec(): clears a missing path without downloading", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, hydrated } = await setupPathFixture(repoDir, {
+      evict: true,
+      mode: "restore",
+    });
+    const ctx = await resolver.buildContext();
+    const records = await ctx.data!.findBySpec("producer", "log");
+    assertEquals(records.length, 1);
+    assertEquals(records[0].path, "");
+    assertEquals(hydrated.length, 0);
+    catalog.close();
+  });
+});
+
+Deno.test("data.query(): record results and path projections carry the path", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, contentPath } = await setupPathFixture(
+      repoDir,
+      { evict: false },
+    );
+    const ctx = await resolver.buildContext();
+    const records = await ctx.data!.query('modelName == "producer"');
+    assertEquals(
+      (records as { path: string }[]).map((r) => r.path),
+      [contentPath],
+    );
+    const projected = await ctx.data!.query(
+      'modelName == "producer"',
+      "path",
+    );
+    assertEquals(projected, [contentPath]);
+    catalog.close();
+  });
+});

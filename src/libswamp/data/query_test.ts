@@ -44,6 +44,7 @@ function makeRecord(overrides: Partial<DataRecord> = {}): DataRecord {
     streaming: false,
     size: 10,
     content: {},
+    path: "",
     ownerRef: "",
     workflowRunId: "",
     workflowName: "",

@@ -239,7 +239,8 @@ Create a file writer:
 | `overrides`    | Optional overrides (see below)           |
 
 Returns a `DataWriter` for binary/streaming content. The `instanceName` you pass
-here is used in CEL: `model.<defName>.file.<specName>.<instanceName>.path`.
+here is the data name in CEL: `data.latest("<defName>", "<instanceName>").path`
+gives the stored file's local path.
 
 **FileWriterOverrides** (optional):
 
