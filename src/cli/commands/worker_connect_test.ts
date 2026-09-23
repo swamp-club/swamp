@@ -152,3 +152,18 @@ Deno.test("readTokenFile: throws UserError for file with only a newline", async 
     await Deno.remove(tmpFile).catch(() => {});
   }
 });
+
+Deno.test("workerConnectCommand: a wrong-scheme URL error hides credentials", async () => {
+  const { workerConnectCommand } = await import("./worker_connect.ts");
+  const err = await assertRejects(
+    () =>
+      workerConnectCommand.parse([
+        "http://alice:hunter2@orch.example.com:9000/?token=abc.s3cret",
+      ]),
+    UserError,
+  );
+  assertStringIncludes(err.message, "'http://orch.example.com:9000'");
+  for (const secret of ["alice", "hunter2", "s3cret"]) {
+    assertEquals(err.message.includes(secret), false, secret);
+  }
+});

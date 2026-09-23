@@ -26,7 +26,10 @@ import {
   resolveServeUrl,
 } from "../remote_run.ts";
 import { FileServerCredentialRepository } from "../../infrastructure/persistence/server_credential_repository.ts";
-import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
+import {
+  normalizeServerUrl,
+  redactServerUrl,
+} from "../../domain/auth/server_url.ts";
 import { splitServerToken } from "../../serve/token_auth.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { bold, dim, green, yellow } from "@std/fmt/colors";
@@ -85,6 +88,23 @@ export const authServerLoginCommand = new Command()
     cliCtx.logger.debug("Server login command completed");
   });
 
+/**
+ * Normalizes the --server value, throwing a UserError that never echoes
+ * credentials (userinfo, `?token=`) from an invalid value.
+ */
+export function parseServerLoginUrl(rawUrl: string): string {
+  try {
+    return normalizeServerUrl(rawUrl);
+  } catch {
+    const shown = redactServerUrl(rawUrl);
+    throw new UserError(
+      `Invalid --server URL${
+        shown === undefined ? "" : ` "${shown}"`
+      }: expected ws://, wss://, http://, or https:// URL`,
+    );
+  }
+}
+
 async function handleStaticToken(
   rawUrl: string,
   cliCtx: { outputMode: string },
@@ -97,14 +117,7 @@ async function handleStaticToken(
     );
   }
 
-  let serverUrl: string;
-  try {
-    serverUrl = normalizeServerUrl(rawUrl);
-  } catch {
-    throw new UserError(
-      `Invalid --server URL "${rawUrl}": expected ws://, wss://, http://, or https:// URL`,
-    );
-  }
+  const serverUrl = parseServerLoginUrl(rawUrl);
 
   const repo = new FileServerCredentialRepository();
   await repo.save({
@@ -132,14 +145,7 @@ async function handleOAuthFlow(
   rawUrl: string,
   cliCtx: { outputMode: string },
 ): Promise<void> {
-  let normalizedUrl: string;
-  try {
-    normalizedUrl = normalizeServerUrl(rawUrl);
-  } catch {
-    throw new UserError(
-      `Invalid --server URL "${rawUrl}": expected ws://, wss://, http://, or https:// URL`,
-    );
-  }
+  const normalizedUrl = parseServerLoginUrl(rawUrl);
   const caCerts = getEnvCaCerts();
   const httpClient = caCerts?.length
     ? createTlsHttpClient({ caCerts })
