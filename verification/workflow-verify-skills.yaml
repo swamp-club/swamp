@@ -37,7 +37,10 @@ jobs:
           inputs:
             run: |
               set -e
-              git fetch origin main
+              # Concurrent verifications share refs/remotes/origin/main; the
+              # loser of the ref update fails with "incorrect old value".
+              # The retry finds the ref current, so it has nothing to write.
+              git fetch origin main || { sleep 1; git fetch origin main; }
               CHECKOUT_DIR="/tmp/swamp-verify-skills-${{ run.id }}"
               rm -rf "$CHECKOUT_DIR"
               git worktree prune

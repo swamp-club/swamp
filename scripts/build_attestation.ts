@@ -53,6 +53,7 @@
  */
 
 import { parseArgs } from "@std/cli/parse-args";
+import { dirname, join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { computeChecksum } from "../src/domain/models/checksum.ts";
 import {
@@ -189,6 +190,8 @@ export interface RunRecord {
   startedAt?: string;
   duration?: number;
   inputs?: Record<string, unknown>;
+  /** Where the run record is stored; locates the evaluated workflow. */
+  path?: string;
   jobs: JobRecord[];
 }
 
@@ -665,6 +668,119 @@ export function checkCommitBinding(
   return errors;
 }
 
+/** An expression, `${{ … }}`, as it appears in a committed definition. */
+const EXPRESSION = /\$\{\{[\s\S]*?\}\}/;
+
+/**
+ * Where a run's evaluated workflow is kept, beside the run record itself.
+ *
+ * The record lives at `<swamp>/workflow-runs/<workflow-id>/workflow-run-<id>.yaml`
+ * and the evaluated workflow at `<swamp>/workflows-evaluated/runs/<id>/`, so
+ * the record's own path locates it without guessing which repository the run
+ * was launched against.
+ */
+export function evaluatedWorkflowPath(run: RunRecord): string | null {
+  if (!run.path) return null;
+  const swampDir = dirname(dirname(dirname(run.path)));
+  return join(
+    swampDir,
+    "workflows-evaluated",
+    "runs",
+    run.id,
+    "evaluated-workflow.yaml",
+  );
+}
+
+/**
+ * Checks that a run executed the workflow the attestation pins.
+ *
+ * `configIntegrity` hashes each workflow as it stands at the verified commit,
+ * but the commit is only an input the run was handed — nothing ties it to the
+ * file swamp loaded. They part ways when `SWAMP_WORKFLOWS_DIR` is relative and
+ * `--repo-dir` points at another checkout: the runs load that checkout's
+ * `verification/`, and an attestation for a change to the workflows themselves
+ * would pin files the runs never executed (swamp-club#2388).
+ *
+ * swamp keeps the definition each run executed, after evaluation, so the
+ * committed definition is compared to it as a template: every expression in a
+ * committed string matches whatever it evaluated to, and everything else must
+ * match exactly. Evaluation also fills defaults the file leaves out, so a field
+ * present only in the evaluated workflow is accepted when it is empty, zero or
+ * false, and refused otherwise.
+ *
+ * Returns one line per difference, each naming where in the document it is.
+ */
+export function checkWorkflowProvenance(
+  committed: unknown,
+  evaluated: unknown,
+  at = "",
+): string[] {
+  if (typeof committed === "string" && EXPRESSION.test(committed)) {
+    const literals = committed.split(new RegExp(EXPRESSION, "g"));
+    if (literals.every((l) => l.trim() === "")) return [];
+    const pattern = new RegExp(
+      `^${
+        literals.map((l) => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(
+          "[\\s\\S]*",
+        )
+      }$`,
+    );
+    return typeof evaluated === "string" && pattern.test(evaluated)
+      ? []
+      : [`${at || "(root)"} differs from the committed definition`];
+  }
+
+  if (Array.isArray(committed)) {
+    if (!Array.isArray(evaluated) || evaluated.length !== committed.length) {
+      return [
+        `${at || "(root)"} has ${
+          Array.isArray(evaluated) ? evaluated.length : "no"
+        } entries where the committed definition has ${committed.length}`,
+      ];
+    }
+    return committed.flatMap((value, i) =>
+      checkWorkflowProvenance(value, evaluated[i], `${at}[${i}]`)
+    );
+  }
+
+  if (committed !== null && typeof committed === "object") {
+    if (
+      evaluated === null || typeof evaluated !== "object" ||
+      Array.isArray(evaluated)
+    ) {
+      return [`${at || "(root)"} is not a mapping in the evaluated workflow`];
+    }
+    const c = committed as Record<string, unknown>;
+    const e = evaluated as Record<string, unknown>;
+    const errors: string[] = [];
+    for (const key of Object.keys(c)) {
+      const path = at ? `${at}.${key}` : key;
+      if (!(key in e)) errors.push(`${path} is missing from the evaluated workflow`);
+      else errors.push(...checkWorkflowProvenance(c[key], e[key], path));
+    }
+    for (const key of Object.keys(e)) {
+      if (key in c || isEmptyDefault(e[key])) continue;
+      errors.push(
+        `${at ? `${at}.${key}` : key} is in the evaluated workflow but not the committed definition`,
+      );
+    }
+    return errors;
+  }
+
+  return committed === evaluated
+    ? []
+    : [`${at || "(root)"} differs from the committed definition`];
+}
+
+function isEmptyDefault(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length === 0;
+  if (value !== null && typeof value === "object") {
+    return Object.keys(value).length === 0;
+  }
+  return value === false || value === 0 || value === null ||
+    value === undefined || value === "";
+}
+
 async function fetchRun(id: string): Promise<RunRecord | null> {
   const record = await capture("swamp", [
     "workflow",
@@ -766,10 +882,42 @@ async function main(): Promise<number> {
       console.error(`could not read ${workflow.path} at ${commit.slice(0, 8)}`);
       return 1;
     }
-    sources.push({
-      ...source,
-      definition: parseYaml(new TextDecoder().decode(raw)) as WorkflowDef,
-    });
+    const definition = parseYaml(new TextDecoder().decode(raw));
+
+    const evaluatedPath = evaluatedWorkflowPath(source.run);
+    let evaluated: unknown;
+    try {
+      evaluated = evaluatedPath
+        ? parseYaml(await Deno.readTextFile(evaluatedPath))
+        : undefined;
+    } catch {
+      evaluated = undefined;
+    }
+    if (evaluated === undefined) {
+      console.error(
+        `${source.name} run ${source.run.id} has no evaluated workflow` +
+          (evaluatedPath ? ` at ${evaluatedPath}` : "") +
+          ", so it cannot be shown to have executed " +
+          `${workflow.path} as committed`,
+      );
+      return 1;
+    }
+    const provenanceErrors = checkWorkflowProvenance(definition, evaluated);
+    if (provenanceErrors.length > 0) {
+      console.error(
+        `${source.name} run ${source.run.id} did not execute ${workflow.path} ` +
+          `as it stands at ${commit}:`,
+      );
+      for (const error of provenanceErrors) console.error(`  ${error}`);
+      console.error(
+        "re-run verification with SWAMP_WORKFLOWS_DIR pointing at this " +
+          "commit's verification/ directory; a relative path resolves " +
+          "against --repo-dir, not the current directory",
+      );
+      return 1;
+    }
+
+    sources.push({ ...source, definition: definition as WorkflowDef });
   }
 
   const configIntegrity: Record<string, unknown> = {};

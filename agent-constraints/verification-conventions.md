@@ -47,7 +47,8 @@ The workflow:
    review type with different prompt files and models
 5. Review diffs use `git merge-base origin/main HEAD` so only the branch's own
    changes are reviewed — the setup step fetches `origin main` first to ensure
-   the diff base is current regardless of local branch state
+   the diff base is current regardless of local branch state, retrying once
+   because parallel verifications race to update the shared ref
 6. Cleans up the worktree regardless of pass/fail
 
 ### Guards
@@ -252,8 +253,10 @@ To construct this checklist:
    skipped one did not run, and SHA-256 of every file that shaped the
    verification read at the verified commit with `git show`. It refuses to
    write anything when a run examined a different commit than the one being
-   attested to, and validates its own output against `AttestationSchema`
-   before it prints.
+   attested to, or executed a workflow other than that commit's — a relative
+   `SWAMP_WORKFLOWS_DIR` resolves against `--repo-dir`, so from a worktree set
+   it to the worktree's absolute `verification/` path. It validates its own
+   output against `AttestationSchema` before it prints.
 
    This replaces roughly seventy lines of instructions that used to live here,
    telling you how to read the records, hash the files, work out which reviews
