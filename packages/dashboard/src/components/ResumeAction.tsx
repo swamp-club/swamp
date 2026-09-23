@@ -24,6 +24,11 @@ import { type ResumableRun, resumeStateFor } from "../client/resume_state";
 interface ResumeActionProps {
   run: ResumableRun;
   onResumed?: () => void;
+  /**
+   * Serve reported that it is resuming this run itself (auto-resume). A
+   * refetch can still see it suspended for a moment, so no Resume is offered.
+   */
+  resuming?: boolean;
 }
 
 /**
@@ -31,7 +36,9 @@ interface ResumeActionProps {
  * command for anyone who cannot resume from here. Renders nothing for a run
  * that is not waiting for a resume.
  */
-export function ResumeAction({ run, onResumed }: ResumeActionProps) {
+export function ResumeAction(
+  { run, onResumed, resuming }: ResumeActionProps,
+) {
   const { requestDetached } = useSwamp();
   const [busy, setBusy] = useState(false);
   const [started, setStarted] = useState(false);
@@ -39,6 +46,13 @@ export function ResumeAction({ run, onResumed }: ResumeActionProps) {
 
   const state = resumeStateFor(run);
   if (!state) return null;
+  if (resuming) {
+    return (
+      <div className="resume-action">
+        <span className="resume-label">Approved — serve is resuming</span>
+      </div>
+    );
+  }
 
   const handleResume = async (e: MouseEvent) => {
     e.stopPropagation();

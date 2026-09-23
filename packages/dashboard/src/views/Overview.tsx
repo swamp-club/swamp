@@ -91,16 +91,25 @@ export function Overview(
   }, [refetchRuns, refetchApprovals, onApprovalsChanged]);
 
   const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [resumingRuns, setResumingRuns] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   const decide = useCallback(
     async (type: "workflow.approve" | "workflow.reject", a: ApprovalInfo) => {
       setDecisionError(null);
       try {
-        await request(type, {
-          workflowIdOrName: a.workflowName,
-          stepName: a.stepName,
-          runId: a.runId,
-        });
+        const result = await request<{ data?: { autoResumed?: boolean } }>(
+          type,
+          {
+            workflowIdOrName: a.workflowName,
+            stepName: a.stepName,
+            runId: a.runId,
+          },
+        );
+        if (result.data?.autoResumed) {
+          setResumingRuns((prev) => new Set(prev).add(a.runId));
+        }
       } catch (err) {
         setDecisionError(err instanceof Error ? err.message : String(err));
       }
@@ -203,7 +212,11 @@ export function Overview(
                       </div>
                     )}
                   </div>
-                  <ResumeAction run={run} onResumed={refresh} />
+                  <ResumeAction
+                    run={run}
+                    onResumed={refresh}
+                    resuming={resumingRuns.has(run.runId)}
+                  />
                 </div>
                 <span className="run-duration">
                   {formatDuration(run.duration)}

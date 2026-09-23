@@ -51,6 +51,9 @@ export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
     (run) => resumeStateFor(run) !== null,
   );
   const [notice, setNotice] = useState<string | null>(null);
+  const [resumingRuns, setResumingRuns] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   const refresh = useCallback(() => {
     refetch();
@@ -63,6 +66,7 @@ export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
   const handleApprove = useCallback(
     async (a: ApprovalInfo) => {
       setError(null);
+      setNotice(null);
       try {
         const result = await request<{ data?: { autoResumed?: boolean } }>(
           "workflow.approve",
@@ -72,11 +76,10 @@ export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
             runId: a.runId,
           },
         );
-        setNotice(
-          result.data?.autoResumed
-            ? `${a.workflowName}: approved — serve is resuming the run`
-            : null,
-        );
+        if (result.data?.autoResumed) {
+          setResumingRuns((prev) => new Set(prev).add(a.runId));
+          setNotice(`${a.workflowName}: approved — serve is resuming the run`);
+        }
       } catch (err) {
         setError(
           `Approve failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -90,13 +93,13 @@ export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
   const handleReject = useCallback(
     async (a: ApprovalInfo) => {
       setError(null);
+      setNotice(null);
       try {
         await request("workflow.reject", {
           workflowIdOrName: a.workflowName,
           stepName: a.stepName,
           runId: a.runId,
         });
-        setNotice(null);
       } catch (err) {
         setError(
           `Reject failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -220,7 +223,11 @@ export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
                     {run.runId.slice(0, 8)}
                   </span>
                 </div>
-                <ResumeAction run={run} onResumed={refresh} />
+                <ResumeAction
+                  run={run}
+                  onResumed={refresh}
+                  resuming={resumingRuns.has(run.runId)}
+                />
               </div>
             </div>
           ))}
