@@ -252,13 +252,19 @@ export async function materializeAdmins(
 export interface MigrateGrantDefinitionsResult {
   moved: number;
   skipped: number;
+  /** Destination path of each moved file, for per-path dirty marks. */
+  movedPaths: string[];
 }
 
 export async function migrateGrantDefinitions(
   sourceDir: string,
   destDir: string,
 ): Promise<MigrateGrantDefinitionsResult> {
-  const result: MigrateGrantDefinitionsResult = { moved: 0, skipped: 0 };
+  const result: MigrateGrantDefinitionsResult = {
+    moved: 0,
+    skipped: 0,
+    movedPaths: [],
+  };
 
   let entries: Deno.DirEntry[];
   try {
@@ -309,6 +315,7 @@ export async function migrateGrantDefinitions(
         }
       }
       result.moved++;
+      result.movedPaths.push(dstPath);
       logger.info`Migrated grant definition ${entry.name} to auto-definitions`;
     }
   }

@@ -38,6 +38,7 @@ import {
   vaultAnnotate,
   vaultAuditTrail,
   vaultCreate,
+  type VaultCreateData,
   vaultDelete,
   vaultDeletePreview,
   vaultDescribe,
@@ -370,24 +371,12 @@ export async function handleVaultDelete(
       payload: { data: result ?? {} },
     });
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      try {
-        await ctx.syncService.markDirty();
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push vault delete to remote datastore: {error}",
-          {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
-          },
-        );
-      }
-    }
+    // No datastore push: secrets and annotations live in the always-local
+    // .swamp/secrets (or an external provider), and vault audit entries go
+    // to the repo-local .swamp/audit, so nothing here enters the datastore
+    // cache. Like vault.put, this handler has nothing to push; add a
+    // per-path mark and push if either ever moves into the cache
+    // (swamp-club#2415).
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
@@ -715,24 +704,12 @@ export async function handleVaultAnnotate(
       payload: { data: result },
     });
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      try {
-        await ctx.syncService.markDirty();
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push vault annotate to remote datastore: {error}",
-          {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
-          },
-        );
-      }
-    }
+    // No datastore push: secrets and annotations live in the always-local
+    // .swamp/secrets (or an external provider), and vault audit entries go
+    // to the repo-local .swamp/audit, so nothing here enters the datastore
+    // cache. Like vault.put, this handler has nothing to push; add a
+    // per-path mark and push if either ever moves into the cache
+    // (swamp-club#2415).
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_annotate_failed", message);
@@ -759,6 +736,7 @@ export async function handleVaultCreate(
     const libCtx = createLibSwampContext();
     const deps = await createVaultCreateDeps(ctx.repoDir);
 
+    let created: VaultCreateData | undefined;
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       vaultCreate(libCtx, deps, {
@@ -771,6 +749,7 @@ export async function handleVaultCreate(
       {
         creating: () => {},
         completed: (e) => {
+          created = e.data;
           result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
@@ -795,7 +774,16 @@ export async function handleVaultCreate(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
+        // The vault config repository has no markDirty hook, so mark the
+        // file it wrote, by path: a bare markDirty() turns the push into a
+        // walk of the whole cache (swamp-club#2415). Under managedConfig the
+        // file is in the datastore's config tier; otherwise it is repo-local
+        // and the hook drops the mark.
+        if (created) {
+          await ctx.repoContext.markDirty?.(
+            ctx.repoContext.vaultConfigRepo.getPath(created.type, created.id),
+          );
+        }
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn(
@@ -863,24 +851,8 @@ export async function handleVaultEdit(
       payload: { data: result ?? {} },
     });
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      try {
-        await ctx.syncService.markDirty();
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push vault edit to remote datastore: {error}",
-          {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
-          },
-        );
-      }
-    }
+    // No datastore push: vault.edit only opens the repo-local vaults/ file,
+    // which is outside the datastore cache (swamp-club#2415, #2426).
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_edit_failed", message);

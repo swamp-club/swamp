@@ -184,6 +184,12 @@ async function resolveCustomProvider(
  * with `..`. In that case we fall back to `relative(repoSwampDir, absPath)`
  * — both trees share the same internal layout, so either root produces a
  * usable cache-relative key.
+ *
+ * A path outside both roots (repo-local `models/`, `workflows/` or `vaults/`
+ * without managedConfig) is never synced, so the hook sends nothing. The
+ * S3 and GCS extensions treat an escaping relPath as bulk invalidation, so
+ * forwarding it would turn the next push into a walk of the whole cache.
+ * A cross-drive `relative()` result on Windows is absolute, not `..`.
  */
 export function buildMarkDirtyHook(
   syncService: DatastoreSyncService,
@@ -191,13 +197,15 @@ export function buildMarkDirtyHook(
   repoDir: string,
 ): MarkDirtyHook {
   const repoSwampDir = swampPath(repoDir);
+  const outside = (rel: string) => rel.startsWith("..") || isAbsolute(rel);
   return (absPath?: string) => {
     if (absPath === undefined) {
       return syncService.markDirty();
     }
     let rel = relative(cacheRoot, absPath);
-    if (rel.startsWith("..")) {
+    if (outside(rel)) {
       rel = relative(repoSwampDir, absPath);
+      if (outside(rel)) return Promise.resolve();
     }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
     return syncService.markDirty({ relPath });

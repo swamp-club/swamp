@@ -17,10 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
-import { handleVaultAnnotate, isReservedVaultName } from "./vault_handlers.ts";
+import {
+  handleVaultAnnotate,
+  handleVaultCreate,
+  handleVaultDelete,
+  isReservedVaultName,
+} from "./vault_handlers.ts";
+import { buildMarkDirtyHook } from "../../cli/repo_context.ts";
+import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
+import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { ConnectionContext } from "./shared.ts";
 import type {
   DatastoreSyncOptions,
@@ -153,7 +161,7 @@ function createAnnotateCtx(
   } as ConnectionContext;
 }
 
-Deno.test("handleVaultAnnotate: calls markDirty and pushChanged on syncService after successful annotation", async () => {
+Deno.test("handleVaultAnnotate: makes no datastore push, since nothing it writes is in the cache (swamp-club#2415)", async () => {
   await withTempDir(async (dir) => {
     await setupVault(dir);
 
@@ -173,9 +181,121 @@ Deno.test("handleVaultAnnotate: calls markDirty and pushChanged on syncService a
     const response = JSON.parse(socket.sent[0]);
     assertEquals(response.type, "vault.annotate");
 
-    assertGreater(markDirtyCalls.length, 0);
-    assertGreater(pushCalls.length, 0);
-    assertEquals(pushCalls[0].namespace, "shared");
+    // Annotations live in the always-local .swamp/secrets. A bare
+    // markDirty() here used to turn every annotate into a full-cache push.
+    assertEquals(markDirtyCalls, []);
+    assertEquals(pushCalls, []);
+  });
+});
+
+Deno.test("handleVaultDelete: makes no datastore push, since nothing it writes is in the cache (swamp-club#2415)", async () => {
+  await withTempDir(async (dir) => {
+    await setupVault(dir);
+
+    const { service, pushCalls, markDirtyCalls } = createMockSyncService();
+    const ctx = createAnnotateCtx(dir, service);
+    const socket = createMockSocket();
+
+    await handleVaultDelete(
+      socket,
+      ctx,
+      "req-delete",
+      { vaultName: TEST_VAULT_NAME, key: "test-key" },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "vault.delete");
+    assertEquals(markDirtyCalls, []);
+    assertEquals(pushCalls, []);
+  });
+});
+
+type VaultSyncEvent = { kind: "mark"; relPath?: string } | { kind: "push" };
+
+async function runVaultCreate(
+  repoDir: string,
+  cacheRoot: string,
+): Promise<{ events: VaultSyncEvent[]; response: { type: string } }> {
+  const events: VaultSyncEvent[] = [];
+  const service: DatastoreSyncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => {
+      events.push({ kind: "push" });
+      return Promise.resolve(0);
+    },
+    markDirty: (options) => {
+      events.push({ kind: "mark", relPath: options?.relPath });
+      return Promise.resolve();
+    },
+  };
+  const repoContext = createRepositoryContext({
+    repoDir,
+    enableIndexing: false,
+    markDirty: buildMarkDirtyHook(service, cacheRoot, repoDir),
+  });
+  try {
+    const ctx: ConnectionContext = {
+      ...createAnnotateCtx(repoDir, service),
+      repoContext,
+    };
+    const socket = createMockSocket();
+    await handleVaultCreate(
+      socket,
+      ctx,
+      "req-create",
+      { vaultType: "local_encryption", name: "new-vault" },
+      new AbortController(),
+      null,
+    );
+    return { events, response: JSON.parse(socket.sent[0]) };
+  } finally {
+    repoContext.catalogStore.close();
+  }
+}
+
+Deno.test("handleVaultCreate: marks the new config file by path under managedConfig (swamp-club#2415)", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const cacheRoot = join(dir, "cache");
+    await Deno.mkdir(repoDir, { recursive: true });
+    registerManagedConfig(repoDir, true, join(cacheRoot, "config"));
+    try {
+      const { events, response } = await runVaultCreate(repoDir, cacheRoot);
+
+      assertEquals(response.type, "vault.create");
+      assertEquals(events.length, 2);
+      const [mark, push] = events;
+      assertEquals(push, { kind: "push" });
+      assert(
+        mark.kind === "mark" &&
+          mark.relPath?.startsWith("config/vaults/local_encryption/") &&
+          mark.relPath.endsWith(".yaml"),
+        `expected a per-path mark for the vault config, got ${
+          JSON.stringify(mark)
+        }`,
+      );
+    } finally {
+      registerManagedConfig(repoDir, false);
+    }
+  });
+});
+
+Deno.test("handleVaultCreate: sends no mark for a repo-local config without managedConfig (swamp-club#2415)", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir, { recursive: true });
+
+    const { events, response } = await runVaultCreate(
+      repoDir,
+      join(dir, "cache"),
+    );
+
+    assertEquals(response.type, "vault.create");
+    // <repo>/vaults is never synced, so the hook drops the mark and the
+    // push takes the fast path.
+    assertEquals(events, [{ kind: "push" }]);
   });
 });
 

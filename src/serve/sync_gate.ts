@@ -149,7 +149,9 @@ export function pollerGateTiming(pollIntervalMs: number): PollerGateTiming {
  *
  * `vault.put` is absent on purpose: `acquireVaultSync`'s flush is a documented
  * no-op because vault secrets live in always-local `.swamp/secrets` and never
- * enter the datastore.
+ * enter the datastore. `vault.annotate`, `vault.delete` and `vault.edit` no
+ * longer push either, for the same reason (swamp-club#2415); they stay gated
+ * only because ungating them is a separate change.
  */
 export const SYNC_GATED_REQUESTS: ReadonlySet<string> = new Set([
   "access.reload",
@@ -195,6 +197,9 @@ export const UNGATED_PUSH_HANDLERS: ReadonlySet<string> = new Set([
   // The gate's own plumbing: this helper contains the pushChanged call every
   // gated handler routes through.
   "pushChangedToRemote",
+  // The same for the extension handlers (install, pull, rm, update), which
+  // are gated at their dispatch sites and push through this helper.
+  "pushExtensionLockfile",
 ]);
 
 type GateMode = "exclusive" | "shared";

@@ -17,7 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
+import "../../domain/vaults/vault_types.ts";
+import { buildMarkDirtyHook } from "../../cli/repo_context.ts";
+import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
+import { MockVaultProvider } from "../../domain/vaults/mock_vault_provider.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
+import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
+import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import type { ConnectionContext } from "./shared.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   type HeartbeatRecord,
@@ -27,8 +42,12 @@ import type { ControlPlaneStore } from "../../domain/datastore/control_plane_sto
 import type { MergedServeOptions } from "../serve_config.ts";
 import {
   collectClusterInstances,
+  handleExtensionRm,
+  handleVaultMigrate,
   redactServeOptions,
 } from "./admin_handlers.ts";
+
+await initializeLogging({});
 
 function makeHeartbeat(
   id: string,
@@ -312,4 +331,266 @@ Deno.test("redactServeOptions: handles no webhooks", () => {
   assertEquals(webhooks.length, 0);
   assertEquals(redacted.port, 9090);
   assertEquals(redacted.authMode, "none");
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+function createMockSocket(): WebSocket & { sent: string[] } {
+  const sent: string[] = [];
+  return {
+    readyState: WebSocket.OPEN,
+    send(data: string) {
+      sent.push(data);
+    },
+    sent,
+  } as unknown as WebSocket & { sent: string[] };
+}
+
+type SyncEvent = { kind: "mark"; relPath?: string } | { kind: "push" };
+
+function createRecordingSyncService(): {
+  service: DatastoreSyncService;
+  events: SyncEvent[];
+} {
+  const events: SyncEvent[] = [];
+  const service: DatastoreSyncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => {
+      events.push({ kind: "push" });
+      return Promise.resolve(0);
+    },
+    markDirty: (options) => {
+      events.push({ kind: "mark", relPath: options?.relPath });
+      return Promise.resolve();
+    },
+  };
+  return { service, events };
+}
+
+/**
+ * A repo whose datastore cache lives outside it, as with S3 or GCS, and a
+ * serve connection context whose sync service records every mark and push.
+ */
+async function createSyncRepo(dir: string, managedConfig: boolean) {
+  const repoDir = join(dir, "repo");
+  const cacheRoot = join(dir, "cache");
+  await ensureDir(join(repoDir, ".swamp"));
+  await ensureDir(cacheRoot);
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml({
+      swampVersion: "0.0.0",
+      initializedAt: new Date().toISOString(),
+      datastore: { type: "@test/remote", managedConfig },
+    }),
+  );
+  const datastoreConfig: CustomDatastoreConfig = {
+    type: "@test/remote",
+    config: {},
+    datastorePath: join(dir, "remote"),
+    cachePath: cacheRoot,
+  };
+  const datastoreResolver = new DefaultDatastorePathResolver(
+    repoDir,
+    datastoreConfig,
+  );
+  if (managedConfig) {
+    registerManagedConfig(
+      repoDir,
+      true,
+      datastoreResolver.resolvePath("config"),
+    );
+  }
+  const { service, events } = createRecordingSyncService();
+  const repoContext = createRepositoryContext({
+    repoDir,
+    enableIndexing: false,
+    datastoreResolver,
+    markDirty: buildMarkDirtyHook(service, cacheRoot, repoDir),
+  });
+  const ctx = {
+    repoDir,
+    repoContext,
+    datastoreConfig,
+    datastoreResolver,
+    syncService: service,
+    authConfig: {
+      mode: "none" as const,
+      admins: [],
+      allowedCollectives: [],
+      allowedUsers: [],
+      oauthProvider: "",
+      groupsField: "collectives",
+      restrictedModelTypes: [],
+      restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
+    },
+  } as ConnectionContext;
+  const cleanup = () => {
+    repoContext.catalogStore.close();
+    registerManagedConfig(repoDir, false);
+  };
+  return { repoDir, datastoreResolver, ctx, events, cleanup };
+}
+
+Deno.test("handleExtensionRm: marks only the config-tier lockfile before the push under managedConfig (swamp-club#2415)", async () => {
+  await withTempDir(async (dir) => {
+    const { datastoreResolver, ctx, events, cleanup } = await createSyncRepo(
+      dir,
+      true,
+    );
+    try {
+      const configDir = datastoreResolver.resolvePath("config");
+      await ensureDir(configDir);
+      await Deno.writeTextFile(
+        join(configDir, "upstream_extensions.json"),
+        JSON.stringify({
+          "@test/ext": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [],
+          },
+        }),
+      );
+      const socket = createMockSocket();
+
+      await handleExtensionRm(
+        socket,
+        ctx,
+        "req-rm",
+        { extensionName: "@test/ext" },
+        new AbortController(),
+        null,
+      );
+
+      assertEquals(JSON.parse(socket.sent[0]).type, "extension.rm");
+      // Extension sources still live outside the datastore tier
+      // (swamp-club#2429), so the lockfile is the only file to mark. A bare
+      // markDirty() would turn the push into a walk of the whole cache.
+      assertEquals(events, [
+        { kind: "mark", relPath: "config/upstream_extensions.json" },
+        { kind: "push" },
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleExtensionRm: neither marks nor pushes without managedConfig (swamp-club#2415)", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, events, cleanup } = await createSyncRepo(dir, false);
+    try {
+      const lockfileDir = join(repoDir, "extensions", "models");
+      await ensureDir(lockfileDir);
+      await Deno.writeTextFile(
+        join(lockfileDir, "upstream_extensions.json"),
+        JSON.stringify({
+          "@test/ext": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [],
+          },
+        }),
+      );
+      const socket = createMockSocket();
+
+      await handleExtensionRm(
+        socket,
+        ctx,
+        "req-rm",
+        { extensionName: "@test/ext" },
+        new AbortController(),
+        null,
+      );
+
+      assertEquals(JSON.parse(socket.sent[0]).type, "extension.rm");
+      assertEquals(events, []);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleVaultMigrate: marks the new and the old config path before the push (swamp-club#2415)", async () => {
+  const targetType = `@test/migrate-target-${crypto.randomUUID()}`;
+  vaultTypeRegistry.register({
+    type: targetType,
+    name: "Migrate target",
+    description: "In-memory vault for the migrate dirty-path test",
+    isBuiltIn: false,
+    createProvider: (name) => new MockVaultProvider(name),
+  });
+  try {
+    await withTempDir(async (dir) => {
+      const { repoDir, datastoreResolver, ctx, events, cleanup } =
+        await createSyncRepo(dir, true);
+      try {
+        const vaultsDir = join(
+          datastoreResolver.resolvePath("config"),
+          "vaults",
+        );
+        await ensureDir(join(vaultsDir, "local_encryption"));
+        await Deno.writeTextFile(
+          join(vaultsDir, "local_encryption", "migrate-vault-id.yaml"),
+          stringifyYaml({
+            id: "migrate-vault-id",
+            name: "migrate-vault",
+            type: "local_encryption",
+            config: { auto_generate: true, base_dir: repoDir },
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        const vaults = await VaultService.fromRepository(repoDir);
+        await vaults.put("migrate-vault", "probe-key", "probe-value");
+        events.length = 0;
+        const socket = createMockSocket();
+
+        await handleVaultMigrate(
+          socket,
+          ctx,
+          "req-migrate",
+          { vaultName: "migrate-vault", targetType },
+          new AbortController(),
+          null,
+        );
+
+        assertEquals(JSON.parse(socket.sent[0]).type, "vault.migrate");
+        assertEquals(events.at(-1), { kind: "push" });
+        const marks = events.flatMap((e) =>
+          e.kind === "mark" ? [e.relPath] : []
+        );
+        // The old path is marked so the scoped push sees it absent and
+        // deletes it remotely; a bare markDirty() would skip that.
+        assertEquals(
+          marks.sort(),
+          [
+            `config/vaults/${targetType}/migrate-vault-id.yaml`,
+            "config/vaults/local_encryption/migrate-vault-id.yaml",
+          ].sort(),
+        );
+        assert(
+          !(await Deno.stat(
+            join(vaultsDir, "local_encryption", "migrate-vault-id.yaml"),
+          ).then(() => true, () => false)),
+          "the old config should be gone locally",
+        );
+      } finally {
+        cleanup();
+      }
+    });
+  } finally {
+    vaultTypeRegistry.invalidateType(targetType);
+  }
 });
