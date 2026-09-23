@@ -113,6 +113,11 @@ Deno.test("collectServeExtraArgs: includes --heartbeat-interval", () => {
   assertEquals(args, ["--heartbeat-interval", "15s"]);
 });
 
+Deno.test("collectServeExtraArgs: includes --datastore-poll-interval", () => {
+  const args = collectServeExtraArgs({ datastorePollInterval: "5s" });
+  assertEquals(args, ["--datastore-poll-interval", "5s"]);
+});
+
 Deno.test("collectServeExtraArgs: includes --stale-ttl", () => {
   const args = collectServeExtraArgs({ staleTtl: "2m" });
   assertEquals(args, ["--stale-ttl", "2m"]);

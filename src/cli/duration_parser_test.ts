@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { parseTimeout } from "./duration_parser.ts";
+import {
+  MAX_TIMER_DELAY_MS,
+  parseTimeout,
+  parseTimerDuration,
+} from "./duration_parser.ts";
 import { UserError } from "../domain/errors.ts";
 
 Deno.test("parseTimeout: bare integer is interpreted as seconds", () => {
@@ -69,5 +73,55 @@ Deno.test("parseTimeout: error message defaults to --timeout", () => {
     () => parseTimeout("0"),
     UserError,
     "--timeout",
+  );
+});
+
+Deno.test("parseTimerDuration: returns the parsed value below the ceiling", () => {
+  assertEquals(parseTimerDuration("30s"), 30_000);
+  assertEquals(parseTimerDuration("24d"), 2_073_600_000);
+});
+
+Deno.test("parseTimerDuration: rejects values above the timer ceiling", () => {
+  // 25d is 2_160_000_000 ms, just above MAX_TIMER_DELAY_MS.
+  assertEquals(25 * 24 * 60 * 60 * 1000 > MAX_TIMER_DELAY_MS, true);
+  assertThrows(
+    () => parseTimerDuration("25d", "--heartbeat-interval"),
+    UserError,
+    "--heartbeat-interval (25d) exceeds the maximum safe timer duration",
+  );
+  assertThrows(
+    () => parseTimerDuration("1mo", "--hydration-timeout"),
+    UserError,
+    "--hydration-timeout (1mo) exceeds the maximum safe timer duration",
+  );
+});
+
+Deno.test("parseTimerDuration: error message defaults to --timeout", () => {
+  assertThrows(
+    () => parseTimerDuration("1y"),
+    UserError,
+    "--timeout (1y) exceeds",
+  );
+});
+
+Deno.test("parseTimerDuration: honours a custom ceiling inclusively", () => {
+  assertEquals(parseTimerDuration("60s", "--x", 60_000), 60_000);
+  assertThrows(
+    () => parseTimerDuration("61s", "--x", 60_000),
+    UserError,
+    "--x (61s) exceeds",
+  );
+});
+
+Deno.test("parseTimerDuration: surfaces parseTimeout errors", () => {
+  assertThrows(
+    () => parseTimerDuration("0", "--x"),
+    UserError,
+    "must be positive",
+  );
+  assertThrows(
+    () => parseTimerDuration("abc", "--x"),
+    UserError,
+    "Invalid duration format",
   );
 });

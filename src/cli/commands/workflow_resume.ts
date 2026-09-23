@@ -61,7 +61,7 @@ import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
 import { GIT_SHA } from "./version.ts";
-import { parseTimeout } from "../duration_parser.ts";
+import { parseTimerDuration } from "../duration_parser.ts";
 import {
   deepMerge,
   mergeInputArgs,
@@ -192,7 +192,7 @@ export const workflowResumeCommand = withRemoteOptions(
 
       const abort = new AbortController();
       if (options.timeout) {
-        const timeoutMs = parseTimeout(options.timeout as string);
+        const timeoutMs = parseTimerDuration(options.timeout as string);
         setTimeout(() => abort.abort(), timeoutMs);
       }
       const shutdown = registerShutdownHandler({
@@ -430,7 +430,7 @@ export const workflowResumeCommand = withRemoteOptions(
 
     const abort = new AbortController();
     if (options.timeout) {
-      const timeoutMs = parseTimeout(options.timeout as string);
+      const timeoutMs = parseTimerDuration(options.timeout as string);
       setTimeout(() => abort.abort(), timeoutMs);
     }
     const shutdownHandle = registerShutdownHandler({

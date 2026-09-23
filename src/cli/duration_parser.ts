@@ -71,3 +71,31 @@ export function parseTimeout(
   }
   return ms;
 }
+
+/**
+ * The largest delay, in milliseconds, that `setTimeout`, `setInterval` and
+ * `AbortSignal.timeout` honour. Deno clamps anything larger to 1 ms, so an
+ * interval loop fires every millisecond and a timeout aborts at once.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * Parses a CLI duration that will drive a timer. Same grammar as
+ * {@link parseTimeout}, plus a ceiling of `maxMs` (default
+ * {@link MAX_TIMER_DELAY_MS}) so an oversized value is rejected at the CLI
+ * instead of firing its timer after 1 ms. Pass a smaller `maxMs` when the
+ * caller adds to the value before scheduling (e.g. jitter).
+ */
+export function parseTimerDuration(
+  value: string,
+  flagName = "--timeout",
+  maxMs = MAX_TIMER_DELAY_MS,
+): number {
+  const ms = parseTimeout(value, flagName);
+  if (ms > maxMs) {
+    throw new UserError(
+      `${flagName} (${value}) exceeds the maximum safe timer duration (~24.8 days)`,
+    );
+  }
+  return ms;
+}

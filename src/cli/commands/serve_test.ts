@@ -23,6 +23,7 @@ import {
   assertOffLoopbackSecurity,
   cancelExecution,
   collectServeExtraArgs,
+  parseDatastorePollInterval,
   reapOrphanedWorkflowRuns,
   validateWebSocketOrigin,
 } from "./serve.ts";
@@ -89,6 +90,60 @@ Deno.test("serveCommand has --key-file option", async () => {
   const options = serveCommand.getOptions();
   const keyOpt = options.find((o) => o.name === "key-file");
   assertEquals(keyOpt !== undefined, true);
+});
+
+Deno.test("serveCommand has --datastore-poll-interval option", async () => {
+  const { serveCommand } = await import("./serve.ts");
+  const options = serveCommand.getOptions();
+  const pollOpt = options.find((o) => o.name === "datastore-poll-interval");
+  assertEquals(pollOpt !== undefined, true);
+  assertStringIncludes(
+    pollOpt!.description,
+    "SWAMP_DATASTORE_POLL_INTERVAL",
+  );
+});
+
+// --- --datastore-poll-interval parsing ---
+
+Deno.test("parseDatastorePollInterval: unset returns undefined", () => {
+  assertEquals(parseDatastorePollInterval(undefined), undefined);
+});
+
+Deno.test("parseDatastorePollInterval: accepts seconds and larger units", () => {
+  assertEquals(parseDatastorePollInterval("2s"), 2_000);
+  assertEquals(parseDatastorePollInterval("2"), 2_000);
+  assertEquals(parseDatastorePollInterval("1m"), 60_000);
+});
+
+Deno.test("parseDatastorePollInterval: rejects milliseconds with the 1s floor", () => {
+  for (const raw of ["500ms", "500MS", "1500ms"]) {
+    assertThrows(
+      () => parseDatastorePollInterval(raw),
+      UserError,
+      "--datastore-poll-interval must be at least 1s",
+    );
+  }
+});
+
+Deno.test("parseDatastorePollInterval: rejects values above the timer ceiling", () => {
+  assertThrows(
+    () => parseDatastorePollInterval("1mo"),
+    UserError,
+    "--datastore-poll-interval (1mo) exceeds the maximum safe timer duration",
+  );
+});
+
+Deno.test("parseDatastorePollInterval: rejects zero and bad formats", () => {
+  assertThrows(
+    () => parseDatastorePollInterval("0"),
+    UserError,
+    "must be positive",
+  );
+  assertThrows(
+    () => parseDatastorePollInterval("abc"),
+    UserError,
+    "Invalid duration format",
+  );
 });
 
 // --- Off-loopback security validation ---

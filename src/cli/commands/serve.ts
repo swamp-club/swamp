@@ -28,7 +28,11 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { parseTimeout } from "../duration_parser.ts";
+import {
+  MAX_TIMER_DELAY_MS,
+  parseTimeout,
+  parseTimerDuration,
+} from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import {
@@ -431,6 +435,9 @@ export async function cancelExecution(
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
+/** Up to this much random delay is added to each reconciliation tick. */
+const RECONCILIATION_JITTER_MS = 500;
+
 export function assertOffLoopbackSecurity(
   host: string,
   tlsEnabled: boolean,
@@ -620,6 +627,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.hydrationTimeout) {
     args.push("--hydration-timeout", options.hydrationTimeout as string);
   }
+  if (options.datastorePollInterval) {
+    args.push(
+      "--datastore-poll-interval",
+      options.datastorePollInterval as string,
+    );
+  }
   if (options.remoteOnly) {
     args.push("--remote-only");
   }
@@ -651,6 +664,25 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
     args.push("--auto-resume");
   }
   return args;
+}
+
+/**
+ * Parses `--datastore-poll-interval` into milliseconds, or `undefined` when
+ * unset so each poller keeps its own default. `parseTimeout` only returns
+ * whole seconds, which makes 1s the floor; millisecond input gets its own
+ * error because `parseTimeout`'s generic format error would not name the
+ * flag.
+ */
+export function parseDatastorePollInterval(
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  if (/^\d+ms$/i.test(raw.trim())) {
+    throw new UserError(
+      `--datastore-poll-interval must be at least 1s and in whole seconds or larger units (e.g. 1s, 30s, 1m); got ${raw}`,
+    );
+  }
+  return parseTimerDuration(raw, "--datastore-poll-interval");
 }
 
 export interface ReapResult {
@@ -910,6 +942,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--hydration-timeout <duration:string>",
     "Startup cache hydration timeout (default: 60s, env: SWAMP_HYDRATION_TIMEOUT)",
+  )
+  .option(
+    "--datastore-poll-interval <duration:string>",
+    "Datastore poll interval (default: 30s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
     "--remote-only",
@@ -1473,6 +1509,12 @@ export const serveCommand = new Command()
       "Increase for large repos where the initial pull takes longer (env: SWAMP_HYDRATION_TIMEOUT)",
   )
   .option(
+    "--datastore-poll-interval <duration:string>",
+    "How often to pull config, access data and runtime data from the remote datastore. " +
+      "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. Minimum: 1s. " +
+      "Only effective with a remote datastore (env: SWAMP_DATASTORE_POLL_INTERVAL)",
+  )
+  .option(
     "--max-concurrent-runs <count:integer>",
     "Maximum number of concurrent detached runs across all principals. Default: 100. " +
       "(env: SWAMP_MAX_CONCURRENT_RUNS)",
@@ -1621,7 +1663,7 @@ export const serveCommand = new Command()
 
     const heartbeatIntervalRaw = merged.heartbeatInterval;
     const heartbeatIntervalMs = heartbeatIntervalRaw !== undefined
-      ? parseTimeout(heartbeatIntervalRaw, "--heartbeat-interval")
+      ? parseTimerDuration(heartbeatIntervalRaw, "--heartbeat-interval")
       : undefined;
 
     const staleTtlRaw = merged.staleTtl;
@@ -1631,13 +1673,21 @@ export const serveCommand = new Command()
 
     const reconciliationIntervalRaw = merged.reconciliationInterval;
     const reconciliationIntervalMs = reconciliationIntervalRaw !== undefined
-      ? parseTimeout(reconciliationIntervalRaw, "--reconciliation-interval")
+      ? parseTimerDuration(
+        reconciliationIntervalRaw,
+        "--reconciliation-interval",
+        MAX_TIMER_DELAY_MS - RECONCILIATION_JITTER_MS,
+      )
       : undefined;
 
     const hydrationTimeoutRaw = merged.hydrationTimeout;
     const hydrationTimeoutMs = hydrationTimeoutRaw !== undefined
-      ? parseTimeout(hydrationTimeoutRaw, "--hydration-timeout")
+      ? parseTimerDuration(hydrationTimeoutRaw, "--hydration-timeout")
       : 60_000;
+
+    const datastorePollIntervalMs = parseDatastorePollInterval(
+      merged.datastorePollInterval,
+    );
 
     const maxConcurrentRuns = merged.maxConcurrentRuns;
     if (
@@ -1661,16 +1711,8 @@ export const serveCommand = new Command()
       ? String(merged.maxRunDuration)
       : undefined;
     const maxRunDurationMs = maxRunDurationRaw !== undefined
-      ? parseTimeout(maxRunDurationRaw, "--max-run-duration")
+      ? parseTimerDuration(maxRunDurationRaw, "--max-run-duration")
       : undefined;
-    const MAX_SETTIMEOUT_MS = 2_147_483_647;
-    if (
-      maxRunDurationMs !== undefined && maxRunDurationMs > MAX_SETTIMEOUT_MS
-    ) {
-      throw new UserError(
-        `--max-run-duration (${maxRunDurationRaw}) exceeds the maximum safe timer duration (~24.8 days)`,
-      );
-    }
 
     const authConfig = buildServeAuthConfig({
       authMode: merged.authMode,
@@ -2012,6 +2054,14 @@ export const serveCommand = new Command()
       }
     }
 
+    // The access and runtime pollers start whenever a sync service exists,
+    // so this is a different gate from the control-plane flags above.
+    if (!syncService && datastorePollIntervalMs !== undefined) {
+      logger.warn(
+        "--datastore-poll-interval has no effect without a remote datastore",
+      );
+    }
+
     if (hasRemoteControlPlane) {
       const effectiveStaleTtl = staleTtlMs ?? DEFAULT_STALE_TTL_MS;
       const effectiveHeartbeat = heartbeatIntervalMs ??
@@ -2110,6 +2160,7 @@ export const serveCommand = new Command()
         configPoller = new ConfigPoller({
           syncService,
           syncGate,
+          pollIntervalMs: datastorePollIntervalMs,
           catalogInvalidate: () => repoContext.catalogStore.invalidate(),
           extensionSubdirs: ["config/pulled-extensions"],
           extensionReloader: async () => {
@@ -2859,6 +2910,7 @@ export const serveCommand = new Command()
       accessDataPoller = new AccessDataPoller({
         syncService,
         syncGate,
+        pollIntervalMs: datastorePollIntervalMs,
         policySnapshotLoader,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
         namespace: serveNamespace,
@@ -2868,6 +2920,7 @@ export const serveCommand = new Command()
       runtimeDataPoller = new RuntimeDataPoller({
         syncService,
         syncGate,
+        pollIntervalMs: datastorePollIntervalMs,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
         namespace: serveNamespace,
       });
@@ -3862,7 +3915,7 @@ export const serveCommand = new Command()
       const normalized = groupRefreshRaw.trim().replace(/^0[smhdw].*$/i, "0");
       groupRefreshMs = normalized === "0"
         ? 0
-        : parseTimeout(groupRefreshRaw, "--group-refresh-interval");
+        : parseTimerDuration(groupRefreshRaw, "--group-refresh-interval");
     }
 
     if (
@@ -5244,7 +5297,6 @@ export const serveCommand = new Command()
       logger.info`Instance heartbeat started (id: ${instanceId})`;
 
       const RECONCILIATION_INTERVAL_MS = reconciliationIntervalMs ?? 60_000;
-      const RECONCILIATION_JITTER_MS = 500;
       let knownPeerIds: Set<string> | null = null;
       const runReconciliationTick = async () => {
         try {
