@@ -341,7 +341,11 @@ Deno.test("repoInit: a credential-bearing serverAddress yields one error without
     );
     assertEquals(error.error.message.includes("zz9"), false);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
