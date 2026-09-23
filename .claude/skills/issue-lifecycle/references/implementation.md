@@ -159,21 +159,18 @@ For quick close-out (e.g., the PR merged and you just want to wrap up),
 
 ## 6. Notify the Contributor
 
-After `ship` or `complete`, the phase is `notify`. Check whether the issue
-author is an external contributor:
+After `ship` or `complete`, the phase is `notify`. Run `notify` and let the
+model decide — it checks the author's swamp-club user id against the swamp-club
+team roster (eligible assignees):
 
 ```
-gh api /repos/swamp-club/swamp/collaborators --jq '.[].login' | grep -qx '<author>'
+swamp model @swamp/issue-lifecycle method run notify issue-<N>
 ```
 
-- **External** (not a collaborator): call `notify` to post a thank-you ripple:
-  ```
-  swamp model @swamp/issue-lifecycle method run notify issue-<N>
-  ```
-- **Collaborator**: call `skip_notify` to proceed:
-  ```
-  swamp model @swamp/issue-lifecycle method run skip_notify issue-<N>
-  ```
+- A team member is skipped; anyone else gets a thank-you ripple.
+- If the issue or roster lookup fails, `notify` posts nothing and the phase
+  stays `notify`. Ask the human, then re-run it, add `--input force=true` to
+  thank the author anyway, or run `skip_notify`.
 
 ## 7. Session Summary
 

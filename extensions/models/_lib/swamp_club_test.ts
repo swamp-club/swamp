@@ -467,3 +467,50 @@ Deno.test("updateAssignees: stays best-effort and never throws on rejection", as
     restore();
   }
 });
+
+Deno.test("fetchIssue: maps the author's user id alongside the handle", async () => {
+  const { client, restore } = withScriptedFetch(() =>
+    new Response(
+      JSON.stringify({
+        issue: {
+          number: 42,
+          authorUsername: "skunk-ape",
+          authorId: "user-skunk-ape",
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )
+  );
+  try {
+    const issue = await client.fetchIssue();
+    assertEquals(issue?.author, "skunk-ape");
+    assertEquals(issue?.authorId, "user-skunk-ape");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("fetchIssue: leaves authorId undefined when the server omits it", async () => {
+  const { client, restore } = withScriptedFetch(() => issueResponse("open"));
+  try {
+    const issue = await client.fetchIssue();
+    assertEquals(issue?.authorId, undefined);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("fetchIssue: drops an author id that is not a string", async () => {
+  const { client, restore } = withScriptedFetch(() =>
+    Response.json({
+      issue: { number: 42, authorUsername: "skunk-ape", authorId: 1234 },
+    })
+  );
+  try {
+    const issue = await client.fetchIssue();
+    assertEquals(issue?.author, "skunk-ape");
+    assertEquals(issue?.authorId, undefined);
+  } finally {
+    restore();
+  }
+});

@@ -230,21 +230,18 @@ can a PR be created.
 
 ### Phase 5: Contributor Notification
 
-After `ship` or `complete`, the lifecycle enters the `notify` phase. This is
-where you decide whether to thank the issue author:
-
-- If the issue author is an **external contributor** (not a repo collaborator),
-  call `notify` to post a thank-you ripple mentioning them by handle.
-- If the issue author is a **collaborator**, call `skip_notify` to proceed.
-
-Check collaborator status with:
+After `ship` or `complete`, run `notify`. It checks the author against the
+swamp-club team roster itself: team members are skipped, anyone else is thanked
+with a ripple. Never check membership with GitHub — swamp-club handles are not
+GitHub logins.
 
 ```
-gh api /repos/swamp-club/swamp/collaborators --jq '.[].login' | grep -qx '<author>'
+swamp model @swamp/issue-lifecycle method run notify issue-<N>
 ```
 
-If the author is NOT in the collaborator list, they are external — call
-`notify`. Otherwise call `skip_notify`.
+If the lookup fails, `notify` posts nothing and stays in `notify`. Ask the
+human, then re-run it, add `--input force=true` to thank the author anyway, or
+run `skip_notify`.
 
 ### Phase 6: Session Summary
 
@@ -327,7 +324,7 @@ Use this table to determine what to do next:
 | `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed    |
 | `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)       |
 | `releasing`      | Check release build: `ship` when done, or `complete` as fallback           |
-| `notify`         | Check if author is external: `notify` to thank them, `skip_notify` to skip |
+| `notify`         | Run `notify` — it thanks external authors and skips team members by itself |
 | `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet     |
 | `done`           | Nothing to do — lifecycle is complete                                      |
 
@@ -354,12 +351,7 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    ```
    swamp model @swamp/issue-lifecycle method run ship issue-<N>
    ```
-5. If the phase is `notify`, check if the author is external and either thank
-   them or skip:
-   ```
-   swamp model @swamp/issue-lifecycle method run notify issue-<N>
-   swamp model @swamp/issue-lifecycle method run skip_notify issue-<N>
-   ```
+5. If the phase is `notify`, run `notify` (see Phase 5).
 6. If the phase is `summarizing`, record the summary:
    ```
    swamp model @swamp/issue-lifecycle method run summarize issue-<N> \
@@ -372,9 +364,8 @@ When a PR has already merged and the lifecycle just needs to be marked done:
 ## Key Rules
 
 1. **Never use `gh` to fetch issue data.** All issue context comes from
-   swamp-club via the `start` method — not from GitHub. The only place `gh` is
-   used in this skill is checking collaborator status during contributor
-   notification.
+   swamp-club via the `start` method — not from GitHub. Issue authors are
+   swamp-club handles, so never compare them against GitHub logins.
 2. **Never skip the feedback loop.** Always show the plan. Always ask.
 3. **Never call approve without explicit human approval.**
 4. **Persist everything through the model.** Don't just have a conversation —

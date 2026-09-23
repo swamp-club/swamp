@@ -43,7 +43,12 @@ import {
   TRANSITIONS,
   VerificationResultSchema,
 } from "./_lib/schemas.ts";
-import { createSwampClubClient, loadAuthFile } from "./_lib/swamp_club.ts";
+import {
+  createSwampClubClient,
+  type EligibleAssignee,
+  type FetchedIssue,
+  loadAuthFile,
+} from "./_lib/swamp_club.ts";
 import {
   recordLifecycle,
   recordLifecycleBestEffort,
@@ -97,13 +102,38 @@ export function buildNotifyMessage(
   );
 }
 
+/**
+ * Whether the issue author is on swamp-club's team roster. Both sides are
+ * swamp-club identities, so the handle is a sound fallback when the server
+ * omits the user id — unlike a GitHub login, which is a different namespace.
+ */
+function isTeamMember(
+  issue: Pick<FetchedIssue, "author" | "authorId">,
+  roster: EligibleAssignee[],
+): boolean {
+  return roster.some((member) =>
+    issue.authorId
+      ? member.userId === issue.authorId
+      : member.username === issue.author
+  );
+}
+
+/** Explain why notify posted nothing and how the operator can proceed. */
+function notifyUndecided(reason: string): Error {
+  return new Error(
+    `${reason}, so no thank-you was posted and the phase is still notify. ` +
+      "Re-run notify, pass --input force=true to thank the author anyway, " +
+      "or run skip_notify.",
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Model Definition
 // ---------------------------------------------------------------------------
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.09.23.1",
+  version: "2026.09.23.2",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -282,6 +312,19 @@ export const model = {
         "verify's description no longer mentions a container sandbox; " +
         "verification runs as host workflows. Description-only change. " +
         "No resources and no globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.09.23.2",
+      description:
+        "notify decides for itself whether to thank the author. It checks " +
+        "the author's swamp-club user id against the eligible-assignees " +
+        "roster and skips team members, instead of relying on the skill's " +
+        "comparison of swamp-club handles with GitHub logins, which read " +
+        "every team member as external. When the issue or roster lookup " +
+        "fails it posts nothing and leaves the phase at notify. New force " +
+        "argument bypasses the roster check. No resources and no " +
+        "globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -2708,15 +2751,21 @@ export const model = {
 
     notify: {
       description:
-        "Thank an external contributor by posting a ripple on the issue " +
-        "mentioning them by handle. Transitions to summarizing.",
+        "Thank the issue author with a ripple on the issue, unless they are " +
+        "on swamp-club's team roster (eligible assignees). Fails without " +
+        "posting when membership cannot be confirmed. Transitions to " +
+        "summarizing.",
       arguments: z.object({
         message: z.string().optional().describe(
           "Custom thank-you message. If omitted, a default message is generated.",
         ),
+        force: z.boolean().optional().describe(
+          "Post the thank-you without checking the team roster, e.g. to " +
+            "thank a team member deliberately.",
+        ),
       }),
       execute: async (
-        args: { message?: string },
+        args: { message?: string; force?: boolean },
         context: {
           globalArgs: GlobalArgs;
           logger: {
@@ -2736,12 +2785,6 @@ export const model = {
       ) => {
         const { issueNumber } = context.globalArgs;
 
-        let author: string | undefined;
-        const contextData = await context.readResource("context-main");
-        if (contextData && typeof contextData.author === "string") {
-          author = contextData.author;
-        }
-
         const prData = await context.readResource("pullRequest-main") as
           | PullRequestData
           | null;
@@ -2754,12 +2797,37 @@ export const model = {
           context.logger,
         );
 
-        if (!author && sc) {
+        // The ripple cannot be taken back, so every lookup that decides it
+        // runs first and fails closed. The handle mentioned and the id
+        // checked come from the same fetch.
+        let author: string | undefined;
+        let teamMember = false;
+        if (sc) {
           const issue = await sc.fetchIssue();
-          author = issue?.author;
+          if (!issue) {
+            throw notifyUndecided(
+              `Could not fetch issue #${issueNumber} to identify its author`,
+            );
+          }
+          if (issue.author !== "unknown") author = issue.author;
+          if (author && !args.force) {
+            const roster = await sc.fetchEligibleAssignees();
+            if (!roster) {
+              throw notifyUndecided(
+                `Could not confirm whether @${author} is a swamp-club team ` +
+                  "member (the eligible-assignees lookup failed)",
+              );
+            }
+            teamMember = isTeamMember(issue, roster);
+          }
         }
 
-        if (author && author !== "unknown" && sc) {
+        if (author && teamMember) {
+          context.logger.info(
+            "@{author} is a swamp-club team member — no thank-you posted",
+            { author },
+          );
+        } else if (author && sc) {
           const body = args.message ??
             buildNotifyMessage(author, prData, planData);
           // The ripple is this method's deliverable, not a courtesy, so a
@@ -2784,16 +2852,27 @@ export const model = {
         });
 
         if (sc) {
-          await recordLifecycle(sc, {
-            step: "contributor_notified",
-            targetStatus: "shipped",
-            summary: author && author !== "unknown"
-              ? `Thanked @${author}`
-              : "Notification skipped (unknown author)",
-            emoji: "\u{1F64F}",
-            payload: { author: author ?? "unknown" },
-            isVerbose: false,
-          });
+          if (author && teamMember) {
+            await recordLifecycle(sc, {
+              step: "notification_skipped",
+              targetStatus: "shipped",
+              summary: `Skipped thanks: @${author} is a swamp-club team member`,
+              emoji: "\u{23ED}\u{FE0F}",
+              payload: { author, reason: "team_member" },
+              isVerbose: false,
+            });
+          } else {
+            await recordLifecycle(sc, {
+              step: "contributor_notified",
+              targetStatus: "shipped",
+              summary: author
+                ? `Thanked @${author}`
+                : "Notification skipped (unknown author)",
+              emoji: "\u{1F64F}",
+              payload: { author: author ?? "unknown" },
+              isVerbose: false,
+            });
+          }
         }
 
         return { dataHandles: [stateHandle] };
@@ -2804,7 +2883,7 @@ export const model = {
       rollbackOnFailure: true,
       description:
         "Skip contributor notification and transition to summarizing. " +
-        "Use when the issue author is a collaborator or notification is not needed.",
+        "Use when no notification is wanted; notify already skips team members.",
       arguments: z.object({}),
       execute: async (
         _args: Record<string, never>,
