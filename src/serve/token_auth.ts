@@ -29,6 +29,7 @@ import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
+import { parsePrincipal } from "../domain/access/principal.ts";
 
 const logger = getSwampLogger(["serve", "token-auth"]);
 
@@ -154,6 +155,7 @@ export type TokenAuthRejectionReason =
   | "expired"
   | "revoked"
   | "secret-mismatch"
+  | "invalid-principal"
   | "no-definition"
   | "invalid-format"
   | "vault-error"
@@ -222,6 +224,26 @@ export async function authenticateServerToken(
     validateServerToken(token, split.name, presented, nowMs);
     const secret = await deps.readSecret(token.vaultName, token.secretKey);
     validateServerToken(token, split.name, presented, nowMs, secret);
+
+    // Every caller parses the principal after a successful authentication;
+    // a stored principal that does not parse (minted before mint validated
+    // it, or hand-edited) must be a rejection, not a crash (swamp-club#2383).
+    try {
+      parsePrincipal(token.principalId);
+    } catch (error) {
+      logger.warn(
+        "Token authentication rejected for {name} (invalid-principal): {error}",
+        {
+          name: split.name,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return {
+        ok: false,
+        error: "Authentication failed",
+        reason: "invalid-principal",
+      };
+    }
 
     emitTokenUseAuditEvent(auditContext, split.name, token.principalId);
     logger.info("Authenticated token {name} as {principal}", {

@@ -332,6 +332,52 @@ Deno.test("authenticateServerToken: rejects a mismatched secret", async () => {
   });
 });
 
+for (const principalId of ["agent:swamp-resumer", "adam", "user:"]) {
+  Deno.test(`authenticateServerToken: rejects stored principal ${principalId} as invalid-principal without an audit event`, async () => {
+    const events: AuditEvent[] = [];
+    const result = await authenticateWithDeps(
+      "test-token.secret-value",
+      makeAuthDeps({
+        readToken: () => Promise.resolve(activeToken({ principalId })),
+      }),
+      events,
+    );
+
+    assertEquals(result, {
+      ok: false,
+      error: "Authentication failed",
+      reason: "invalid-principal",
+    });
+    assertEquals(events.length, 0);
+  });
+}
+
+Deno.test("authenticateServerToken: checks the secret before the stored principal", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.wrong-secret",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve(activeToken({ principalId: "agent:swamp-resumer" })),
+    }),
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.reason, "secret-mismatch");
+});
+
+Deno.test("authenticateServerToken: accepts a worker principal", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve(activeToken({ principalId: "worker:runner-1" })),
+    }),
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.principalId, "worker:runner-1");
+});
+
 Deno.test("authenticateServerToken: emits a secret-free audit event after successful ingress", async () => {
   const events: AuditEvent[] = [];
   const result = await authenticateWithDeps(

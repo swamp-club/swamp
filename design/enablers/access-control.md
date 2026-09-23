@@ -26,6 +26,10 @@ A principal is the authenticated identity making a request. Two kinds exist:
 | `user`   | `user:<id>`    | OAuth sub claim, or the username on a server token                   |
 | `worker` | `worker:<id>`  | Worker enrollment via the `rpc.enroll` frame                         |
 
+Minting a server token rejects any other kind, naming the valid ones. A stored
+token whose principal does not parse — minted before that check existed, or
+edited by hand — is refused at authentication with `401 invalid-principal`.
+
 The principal is resolved once at connection time and attached to every
 subsequent request on that WebSocket. In `none` auth mode there is no principal
 and authorization is skipped entirely.

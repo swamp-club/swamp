@@ -76,3 +76,56 @@ Deno.test("accessTokenMintCommand: --vault rejected when --server is set", async
     "swamp vault put 'my-vault' 'server-token-test-token' --yes",
   );
 });
+
+Deno.test("accessTokenMintCommand: rejects an unsupported principal kind before any repo work", async () => {
+  const { accessTokenMintCommand } = await import("./access_token_mint.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("mint", accessTokenMintCommand);
+
+  await assertRejects(
+    () =>
+      root.parse([
+        "mint",
+        "agent-token",
+        "--principal",
+        "agent:swamp-resumer",
+        "--repo-dir",
+        "/nonexistent-swamp-repo",
+      ]),
+    UserError,
+    'Invalid --principal value "agent:swamp-resumer": Invalid principal kind "agent": expected "user" or "worker"',
+  );
+});
+
+Deno.test("accessTokenMintCommand: rejects an unsupported principal kind before contacting --server", async () => {
+  const { accessTokenMintCommand } = await import("./access_token_mint.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("mint", accessTokenMintCommand);
+
+  await assertRejects(
+    () =>
+      root.parse([
+        "mint",
+        "agent-token",
+        "--principal",
+        "agent:swamp-resumer",
+        "--server",
+        "ws://localhost:0",
+        "--token",
+        "dummy.token",
+      ]),
+    UserError,
+    'Invalid principal kind "agent"',
+  );
+});
+
+Deno.test("accessTokenMintCommand: --principal help text names both valid kinds", async () => {
+  const { accessTokenMintCommand } = await import("./access_token_mint.ts");
+  const principalOpt = accessTokenMintCommand.getOptions().find((o) =>
+    o.name === "principal"
+  );
+  assertStringIncludes(principalOpt!.description, "user:<id>");
+  assertStringIncludes(principalOpt!.description, "worker:<id>");
+});

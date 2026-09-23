@@ -797,6 +797,12 @@ async function classifyConnectionError(
     if (statusCode === 401 || statusCode === 403) {
       return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
     }
+    if (statusCode >= 500) {
+      return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause`;
+    }
+    // The server answered with a status of its own; the health probe below
+    // only disambiguates connections that never got one (swamp-club#2383).
+    return originalMessage;
   }
   const tlsGuidance = diagnoseTlsMessage(originalMessage);
   if (tlsGuidance) return tlsGuidance;
