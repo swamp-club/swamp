@@ -398,6 +398,7 @@ Deno.test("DefinitionExpressionEvaluator: LENIENT — per-expression eval error 
   const evaluator = new DefinitionExpressionEvaluator(new ThrowingEvaluator());
   const def = Definition.create({
     name: "lenient",
+    inputs: { properties: { thing: { type: "string" } } },
     methods: {
       run: { arguments: { thing: "${{ inputs.thing }}" } },
     },
@@ -493,7 +494,10 @@ Deno.test("DefinitionExpressionEvaluator: resolves expressions naming a hyphenat
 
 Deno.test("DefinitionExpressionEvaluator: leaves another templating system's expressions in place unrecorded", async () => {
   const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
-  const run = "echo ${{ github.sha }} ${{ matrix.os }} ${{ secrets.TOKEN }}";
+  // inputs and steps are also GitHub Actions contexts; this definition
+  // declares no `version` input and the context binds no steps.
+  const run =
+    "echo ${{ github.sha }} ${{ matrix.os }} ${{ secrets.TOKEN }} ${{ inputs.version }} ${{ steps.build.outputs.sha }}";
   const result = await evaluator.evaluate(
     Definition.create({
       name: "gha-writer",

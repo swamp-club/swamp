@@ -580,10 +580,15 @@ lazily by the Proxy on `context.globalArgs`.
 Text is classified only after evaluation fails, so a misclassification can
 never stop an expression that evaluates. Two kinds of failure are left in place
 without being recorded. The first is text that is not valid CEL, which is prose.
-The second is CEL with a free root identifier outside swamp's namespaces, such
-as `${{ github.sha }}` in a GitHub Actions file a shell model writes, which
-belongs to another templating system. Both keep passing through to the method
-as literal text.
+The second is CEL written for another templating system, such as a GitHub
+Actions file a shell model writes. An expression counts as swamp's only when
+every free root identifier is a swamp namespace bound in this evaluation, and
+every `inputs.X` names an input the definition declares
+(`isSwampExpression`). So `${{ github.sha }}` is not swamp's, and neither is
+`${{ steps.build.outputs.sha }}` outside a workflow. `${{ inputs.version }}` is
+not swamp's in a definition that declares no `version` input, but a declared
+input with no value is. Both kinds keep passing through to the method as
+literal text.
 
 ## Sensitive Data
 

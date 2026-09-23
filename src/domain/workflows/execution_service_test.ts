@@ -3460,6 +3460,7 @@ Deno.test({
       runDefinitionStep(
         {
           name: "consumer",
+          inputs: { properties: { cfg: { type: "object" } } },
           methods: {
             execute: { arguments: { value: "${{ inputs.cfg.nope }}" } },
           },
@@ -3486,6 +3487,7 @@ Deno.test({
     const received = await runDefinitionStep(
       {
         name: "consumer",
+        inputs: { properties: { cfg: { type: "object" } } },
         methods: {
           execute: { arguments: { value: "${{ inputs.cfg.nope }}" } },
         },

@@ -18,52 +18,76 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { referencesOnlySwampNamespaces } from "./swamp_namespaces.ts";
+import { isSwampExpression, type SwampScope } from "./swamp_namespaces.ts";
 
-Deno.test("referencesOnlySwampNamespaces: true for expressions rooted in swamp namespaces", () => {
+// A CLI run: no steps/run/webhook bound; the definition declares two inputs.
+const cliScope: SwampScope = {
+  isBound: (root) => ["model", "self", "inputs", "data", "file"].includes(root),
+  declaredInputs: new Set(["cidrBlock", "cfg"]),
+};
+
+Deno.test("isSwampExpression: true for expressions swamp owns", () => {
   for (
     const cel of [
       "inputs.cidrBlock",
+      "inputs['cfg'].nope",
       "data.latest('producer', 'log').nope",
       "model.web-1a.resource.state.main.attributes.id",
-      "self.globalArguments.target + '-' + inputs.host",
+      "self.globalArguments.target + '-' + inputs.cidrBlock",
       "1 + 'a'",
     ]
   ) {
-    assertEquals(referencesOnlySwampNamespaces(cel), true, cel);
+    assertEquals(isSwampExpression(cel, cliScope), true, cel);
   }
 });
 
-Deno.test("referencesOnlySwampNamespaces: false when any root belongs to another templating system", () => {
+Deno.test("isSwampExpression: false for another templating system's expressions", () => {
   for (
     const cel of [
       "github.sha",
       "secrets.TOKEN",
       "matrix.os",
-      "parameters.env",
-      "inputs.a + github.sha",
+      "inputs.cidrBlock + github.sha",
+      // GitHub Actions contexts that share a swamp namespace name.
+      "inputs.version",
+      "steps.build.outputs.sha",
     ]
   ) {
-    assertEquals(referencesOnlySwampNamespaces(cel), false, cel);
+    assertEquals(isSwampExpression(cel, cliScope), false, cel);
   }
 });
 
-Deno.test("referencesOnlySwampNamespaces: macro-bound variables are not roots", () => {
+Deno.test("isSwampExpression: steps is swamp's where the run binds it", () => {
   assertEquals(
-    referencesOnlySwampNamespaces("inputs.hosts.map(h, h + '.local')"),
+    isSwampExpression("steps.build.outputs.sha", {
+      ...cliScope,
+      isBound: (root) => root === "steps",
+    }),
+    true,
+  );
+});
+
+Deno.test("isSwampExpression: inputs that name no single input are not attributed", () => {
+  assertEquals(isSwampExpression("inputs[self.key]", cliScope), false);
+  assertEquals(isSwampExpression("size(inputs)", cliScope), false);
+});
+
+Deno.test("isSwampExpression: macro-bound variables are not roots", () => {
+  assertEquals(
+    isSwampExpression("inputs.cfg.map(h, h + '.local')", cliScope),
     true,
   );
   assertEquals(
-    referencesOnlySwampNamespaces("cel.bind(v, inputs.a, v + 1)"),
+    isSwampExpression("cel.bind(v, inputs.cidrBlock, v + 1)", cliScope),
     true,
   );
   // The bound name only shadows inside the macro body.
   assertEquals(
-    referencesOnlySwampNamespaces("inputs.hosts.map(h, h) + h"),
+    isSwampExpression("inputs.cfg.map(h, h) + h", cliScope),
     false,
   );
 });
 
-Deno.test("referencesOnlySwampNamespaces: false when the expression does not parse", () => {
-  assertEquals(referencesOnlySwampNamespaces("not valid cel !!!"), false);
+Deno.test("isSwampExpression: false when the expression does not parse", () => {
+  assertEquals(isSwampExpression("not valid cel !!!", cliScope), false);
 });

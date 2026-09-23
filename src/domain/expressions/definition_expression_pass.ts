@@ -27,7 +27,7 @@ import { ExpressionError } from "./errors.ts";
 import type { ExpressionLocation } from "./expression.ts";
 import { replaceExpressions } from "./expression_parser.ts";
 import type { ExpressionContext } from "./model_resolver.ts";
-import { referencesOnlySwampNamespaces } from "./swamp_namespaces.ts";
+import { isSwampExpression, type SwampScope } from "./swamp_namespaces.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 
 /** Result of one CEL pass over a definition's data. */
@@ -55,8 +55,9 @@ function isGlobalArgumentPath(path: string): boolean {
  * uses it. Each one is recorded in `failedExpressions` with its reason, for
  * {@link assertMethodArgumentsEvaluated} to raise if the method being run
  * does use it. Text that is not valid CEL (prose documenting the syntax), or
- * CEL rooted outside swamp's namespaces (`${{ github.sha }}` written for
- * another templating system), is left in place without being recorded.
+ * CEL that is not swamp's — `${{ github.sha }}` or `${{ inputs.version }}`
+ * written for another templating system, see {@link isSwampExpression} — is
+ * left in place without being recorded.
  *
  * @param expressions - Expressions to evaluate. Callers exclude runtime
  *   (vault/env/deferred) expressions and apply their own provenance rules.
@@ -69,11 +70,18 @@ export async function evaluateDefinitionExpressions(
   celEvaluator: CelExpressionEvaluator & CelExpressionValidator,
 ): Promise<DefinitionExpressionPassResult> {
   const failedExpressions = new Map<string, Error>();
+  const declaredInputs = new Set(
+    Object.keys(definitionData.inputs?.properties ?? {}),
+  );
 
   const evaluateAll = async (
     batch: readonly ExpressionLocation[],
     ctx: ExpressionContext,
   ): Promise<Map<string, unknown>> => {
+    const scope: SwampScope = {
+      isBound: (root) => (ctx as Record<string, unknown>)[root] !== undefined,
+      declaredInputs,
+    };
     const values = new Map<string, unknown>();
     for (const expr of batch) {
       const missingModel = findMissingModelDependency(expr.celExpression, ctx);
@@ -96,12 +104,12 @@ export async function evaluateDefinitionExpressions(
       } catch (error) {
         // Only now is the text classified, so a classification mistake can
         // never stop an expression that evaluates from resolving. Text that
-        // is not CEL (prose documenting the syntax), or CEL rooted outside
-        // swamp's namespaces (`${{ github.sha }}` for another templating
-        // system), is left in place unrecorded, as it always was.
+        // is not CEL (prose documenting the syntax), or CEL written for
+        // another templating system, is left in place unrecorded, as it
+        // always was.
         if (
           !celEvaluator.validate(expr.celExpression).valid ||
-          !referencesOnlySwampNamespaces(expr.celExpression)
+          !isSwampExpression(expr.celExpression, scope)
         ) continue;
         // Most often an input referenced directly (not inside a conditional
         // branch) that only another method supplies — see #653.

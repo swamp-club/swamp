@@ -194,10 +194,12 @@ followed by the CEL source with a caret. With `--json`, the code is
 `validation_failed` and `details` carries `path` and `expression`.
 
 **Cause**: An argument of the method being run holds a CEL expression that
-failed — a missing key, `data.latest()` finding no record, a type error, an
-input with no value and no default, or `model.<name>.resource` for a model with
-no data. The method is not run. Failing expressions in other methods, or in
-global arguments the method never reads, do not stop it.
+failed — a missing key, `data.latest()` finding no record, a type error, a
+declared input with no value and no default, or `model.<name>.resource` for a
+model with no data. The method is not run. Failing expressions in other methods,
+or in global arguments the method never reads, do not stop it. Text for another
+templating system (`${{ github.sha }}`, or `${{ inputs.version }}` when
+`version` is not a declared input) is passed through unchanged.
 
 **Solutions**:
 
@@ -205,9 +207,10 @@ global arguments the method never reads, do not stop it.
    `swamp data get <model> <name> --json`).
 2. **Run the producing model first** if the data does not exist yet, or use
    `.?field` when the record may legitimately be absent.
-3. **Supply the value directly** — `--input <field>=<value>` on
-   `model method run`, or the step's `inputs:` in a workflow, replaces the
-   failing argument.
+3. **Supply the value directly.** For a declared input, pass it
+   (`--input <input>=<value>`, or the step's `inputs:`). For any other argument,
+   `--input <argument>=<value>` on `model method run` or the step's `inputs:` in
+   a workflow replaces the failing argument itself.
 
 ### "Model type not found"
 
