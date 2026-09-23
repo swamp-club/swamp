@@ -245,7 +245,7 @@ export class StepOutputResolver {
 /**
  * Builds a reader over a data repository. When `getVaultService` is given,
  * the resource's sensitive fields are resolved from their vault references,
- * matching what `model.<name>.resource` exposes to CEL; without it they stay
+ * matching what `data.latest` exposes to CEL; without it they stay
  * as stored, which is what a display path such as workflow history needs.
  */
 export function createDataRepositoryAttributeReader(

@@ -201,8 +201,8 @@ earlier steps in the same workflow.
 Only completed steps are visible — pending or running steps are not accessible.
 A model method step's outputs are the attributes of every JSON resource it
 wrote, merged into one flat record in write order; when two resources share an
-attribute name the later one wins. For keyed access to one instance use
-`model.<name>.resource.<spec>.<instance>.attributes`. Non-JSON resources and
+attribute name the later one wins. For one specific instance, read it with
+`data.latest("<model>", "<instance>")` instead. Non-JSON resources and
 file outputs contribute nothing, and steps that produce no resource attributes
 have no outputs.
 
@@ -214,7 +214,7 @@ get --json` / `swamp workflow history outputs` read them back from the
 datastore through the resource references the run keeps, so these reads are
 best-effort: ephemeral-lifetime data, garbage-collected versions and a remote
 datastore not cached locally yield no outputs. A run and its resume resolve
-sensitive fields from their vault references, as `model.<name>.resource` does;
+sensitive fields from their vault references, as `data.latest` does;
 history shows sensitive fields as stored. Over `swamp serve`, history includes
 only the outputs of models the caller may read as data.
 
