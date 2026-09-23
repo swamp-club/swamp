@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { VaultService } from "../../domain/vaults/vault_service.ts";
+import {
+  isReservedVaultName,
+  reservedVaultNameMessage,
+  vaultCreateHint,
+} from "../../domain/vaults/vault_name.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
@@ -100,13 +105,28 @@ export async function* vaultListKeys(
       const vaultConfig = await deps.findVaultByName(input.vaultName);
       if (!vaultConfig) {
         const allVaults = await deps.findAllVaults();
-        if (allVaults.length === 0) {
+        if (isReservedVaultName(input.vaultName)) {
+          yield {
+            kind: "error",
+            error: notFound(
+              "Vault",
+              `'${input.vaultName}'. ${
+                reservedVaultNameMessage(input.vaultName)
+              }` +
+                (allVaults.length > 0
+                  ? `\nAvailable vaults: ${
+                    allVaults.map((v) => v.name).join(", ")
+                  }`
+                  : ""),
+            ),
+          };
+        } else if (allVaults.length === 0) {
           yield {
             kind: "error",
             error: notFound(
               "Vault",
               `'${input.vaultName}'. No vaults are configured.\n` +
-                `Create a vault using: swamp vault create <type> ${input.vaultName}`,
+                vaultCreateHint(input.vaultName),
             ),
           };
         } else {

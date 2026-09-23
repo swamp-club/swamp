@@ -26,6 +26,10 @@ import {
   vaultTypeRegistry,
 } from "../../domain/vaults/vault_type_registry.ts";
 import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
+import {
+  isValidVaultName,
+  VAULT_NAME_RULE,
+} from "../../domain/vaults/vault_name.ts";
 import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -151,11 +155,11 @@ export async function* vaultCreate(
       }
 
       // Validate vault name format
-      if (!/^[a-z][a-z0-9-]*$/.test(input.name)) {
+      if (!isValidVaultName(input.name)) {
         yield {
           kind: "error",
           error: validationFailed(
-            `Invalid vault name: ${input.name}. Vault names must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens.`,
+            `Invalid vault name: ${input.name}. ${VAULT_NAME_RULE}`,
           ),
         };
         return;

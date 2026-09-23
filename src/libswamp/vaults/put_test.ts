@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
@@ -78,6 +78,57 @@ Deno.test("vaultPutPreview: throws not_found for missing vault", async () => {
   } catch (error) {
     assertEquals((error as { code: string }).code, "not_found");
   }
+});
+
+async function putPreviewError(
+  vaultName: string,
+  vaultNames: string[],
+): Promise<string> {
+  const deps = makeDeps({
+    findVault: () => Promise.resolve(null),
+    listVaultNames: () => Promise.resolve(vaultNames),
+  });
+  try {
+    await vaultPutPreview(createLibSwampContext(), deps, vaultName, "KEY");
+  } catch (error) {
+    const swampError = error as { code: string; message: string };
+    assertEquals(swampError.code, "not_found");
+    return swampError.message;
+  }
+  throw new Error("Expected to throw");
+}
+
+Deno.test("vaultPutPreview: suggests vault create for a valid name when no vaults are configured", async () => {
+  assertStringIncludes(
+    await putPreviewError("missing-vault", []),
+    "Create a vault using: swamp vault create <type> missing-vault",
+  );
+});
+
+Deno.test("vaultPutPreview: explains the reserved token vault instead of suggesting vault create", async () => {
+  for (const configured of [[], ["dev-secrets"]]) {
+    const message = await putPreviewError("_token-secrets", configured);
+    assertStringIncludes(message, "swamp's reserved control-plane vault");
+    assertStringIncludes(message, "swamp access token reveal <name>");
+    assertEquals(message.includes("swamp vault create <type> _"), false);
+  }
+  assertStringIncludes(
+    await putPreviewError("_token-secrets", ["dev-secrets"]),
+    "Available vaults: dev-secrets",
+  );
+});
+
+Deno.test("vaultPutPreview: explains other reserved names instead of suggesting vault create", async () => {
+  const message = await putPreviewError("_foo", []);
+  assertStringIncludes(message, "reserved for swamp's internal vaults");
+  assertEquals(message.includes("swamp vault create <type> _foo"), false);
+});
+
+Deno.test("vaultPutPreview: does not suggest creating a vault with an invalid name", async () => {
+  const message = await putPreviewError("MyVault", []);
+  assertStringIncludes(message, "'MyVault' is not a valid vault name.");
+  assertStringIncludes(message, "swamp vault create <type> <name>");
+  assertEquals(message.includes("swamp vault create <type> MyVault"), false);
 });
 
 Deno.test("vaultPut: yields completed after storing secret", async () => {

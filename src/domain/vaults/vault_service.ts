@@ -32,7 +32,11 @@ import {
   isVaultRefreshHookProvider,
   type RefreshHook,
 } from "./refresh_hook.ts";
-import { TOKEN_SECRETS_VAULT_NAME } from "./control_plane_vault_provider.ts";
+import {
+  isReservedVaultName,
+  reservedVaultNameMessage,
+  vaultCreateHint,
+} from "./vault_name.ts";
 import { getVaultTypes, RENAMED_VAULT_TYPES } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
@@ -297,21 +301,20 @@ export class VaultService {
   private requireProvider(vaultName: string): VaultProvider {
     const provider = this.providers.get(vaultName);
     if (!provider) {
-      if (vaultName === TOKEN_SECRETS_VAULT_NAME) {
+      if (isReservedVaultName(vaultName)) {
         throw new Error(
-          `Vault '${vaultName}' is not available. It is swamp's reserved ` +
-            `control-plane vault for token secrets and cannot be created with ` +
-            `'swamp vault create'. It is registered automatically by ` +
-            `'swamp serve' and the access token and worker token commands. ` +
-            `To read a token's secret, use 'swamp access token reveal <name>'.`,
+          `Vault '${vaultName}' is not available. ${
+            reservedVaultNameMessage(vaultName)
+          }`,
         );
       }
       const availableVaults = Array.from(this.providers.keys());
       if (availableVaults.length === 0) {
         throw new Error(
           `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
-            `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
-            `  swamp vault create <type> ${vaultName}\n\n` +
+            `Note: Vaults are NOT configured in .swamp.yaml. ${
+              vaultCreateHint(vaultName)
+            }\n\n` +
             `Available vault types: ${
               getVaultTypes().map((v) => v.type).join(", ")
             }\n` +
@@ -322,7 +325,7 @@ export class VaultService {
         `Vault '${vaultName}' not found. Available vaults: ${
           availableVaults.join(", ")
         }.\n` +
-          `Create '${vaultName}' using: swamp vault create <type> ${vaultName}`,
+          vaultCreateHint(vaultName),
       );
     }
     return provider;

@@ -23,6 +23,13 @@
    swamp vault get my-vault --json
    ```
 
+4. Name starts with `_` - Reserved for swamp's internal vaults and cannot be
+   created. `_token-secrets` holds access and worker token secrets; read one
+   with:
+   ```bash
+   swamp access token reveal <name>
+   ```
+
 ### "Secret not found"
 
 **Symptom**: `Error: Secret 'API_KEY' not found in vault 'dev-secrets'`

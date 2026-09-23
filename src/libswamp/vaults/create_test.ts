@@ -121,4 +121,8 @@ Deno.test("vaultCreate: yields error for invalid vault name", async () => {
   const last = events[1] as Extract<VaultCreateEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "validation_failed");
+  assertEquals(
+    last.error.message,
+    "Invalid vault name: Invalid-Name!. Vault names must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens.",
+  );
 });
