@@ -86,6 +86,8 @@ Deno.test("modelGet yields resolving -> completed with model data on success", a
         globalArguments: { region: "us-east-1" },
         autoCreated: undefined,
         typeVersion: undefined,
+        currentTypeVersion: undefined,
+        staleness: undefined,
         globalArgumentsSchema: undefined,
         methods: undefined,
         configuredMethods: undefined,
@@ -267,4 +269,101 @@ Deno.test("modelGet yields resolving -> error with not_found when model does not
   const last = events[1] as Extract<ModelGetEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_found");
+});
+
+// ---------------------------------------------------------------------------
+// typeVersion reporting (swamp-club#900)
+//
+// `modelGet` used to report the registered model's version as `typeVersion`,
+// so an instance whose global arguments were never migrated still displayed the
+// new version. That is what led the reporter of swamp-club#900 to conclude the
+// model schema was being cached.
+// ---------------------------------------------------------------------------
+
+const staleDefinition = {
+  ...testDefinition,
+  typeVersion: "2026.01.01.1",
+};
+
+/** Runs modelGet with the given deps and returns the completed payload. */
+async function getData(deps: ModelGetDeps) {
+  return completedData(
+    await collect<ModelGetEvent>(
+      modelGet(createLibSwampContext(), deps, "my-model"),
+    ),
+  );
+}
+
+Deno.test("modelGet: reports the definition's own typeVersion, not the model's", async () => {
+  const deps = makeDeps({
+    lookupResult: { definition: staleDefinition, type: testModelType },
+    modelDef: { version: "2026.06.01.1", methods: {} },
+  });
+
+  const data = await getData(deps);
+
+  assertEquals(data.typeVersion, "2026.01.01.1");
+  assertEquals(data.currentTypeVersion, "2026.06.01.1");
+});
+
+Deno.test("modelGet: reports stranded when the model bumped with no upgrade chain", async () => {
+  const deps = makeDeps({
+    lookupResult: { definition: staleDefinition, type: testModelType },
+    modelDef: { version: "2026.06.01.1", methods: {} },
+  });
+
+  assertEquals((await getData(deps)).staleness, "stranded");
+});
+
+Deno.test("modelGet: reports upgradable when the chain covers the gap", async () => {
+  const deps = makeDeps({
+    lookupResult: { definition: staleDefinition, type: testModelType },
+    modelDef: {
+      version: "2026.06.01.1",
+      methods: {},
+      upgrades: [{ toVersion: "2026.06.01.1" }],
+    },
+  });
+
+  assertEquals((await getData(deps)).staleness, "upgradable");
+});
+
+Deno.test("modelGet: reports current when the definition matches the model", async () => {
+  const deps = makeDeps({
+    lookupResult: {
+      definition: { ...testDefinition, typeVersion: "2026.06.01.1" },
+      type: testModelType,
+    },
+    modelDef: { version: "2026.06.01.1", methods: {} },
+  });
+
+  assertEquals((await getData(deps)).staleness, "current");
+});
+
+Deno.test("modelGet: reports unknown for a definition with no recorded version", async () => {
+  const deps = makeDeps({
+    lookupResult: { definition: testDefinition, type: testModelType },
+    modelDef: { version: "2026.06.01.1", methods: {} },
+  });
+
+  const data = await getData(deps);
+  assertEquals(data.typeVersion, undefined);
+  assertEquals(data.staleness, "unknown");
+});
+
+Deno.test("modelGet: describes a definition whose typeVersion is malformed", async () => {
+  // model get is the command used to diagnose a broken definition, so it must
+  // not fail on one. Surfaced by the adversarial review of swamp-club#900.
+  const deps = makeDeps({
+    lookupResult: {
+      definition: { ...testDefinition, typeVersion: "1.0.0" },
+      type: testModelType,
+    },
+    modelDef: { version: "2026.06.01.1", methods: {} },
+  });
+
+  const data = await getData(deps);
+  assertEquals(data.typeVersion, "1.0.0");
+  assertEquals(data.currentTypeVersion, "2026.06.01.1");
+  assertEquals(data.staleness, "unknown");
 });

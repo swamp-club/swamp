@@ -136,6 +136,9 @@ export function createAdminGrantStore(
         def = Definition.create({
           type: GRANT_MODEL_TYPE.normalized,
           name: instanceName,
+          // See grant_file_reconciler: creation owns typeVersion now that the
+          // repository no longer stamps it (swamp-club#900).
+          typeVersion: grantModel.version,
         });
         await writeRepo.save(GRANT_MODEL_TYPE, def);
       }

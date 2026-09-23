@@ -160,9 +160,40 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
           lines.push(...formatRecord(data.globalArguments, "  "));
         }
 
-        if (data.typeVersion) {
+        if (data.typeVersion || data.currentTypeVersion) {
           lines.push("");
-          lines.push(bold(cyan("Type Version:")) + ` ${data.typeVersion}`);
+          lines.push(
+            bold(cyan("Type Version:")) +
+              ` ${data.typeVersion ?? dim("not recorded")}`,
+          );
+          // Only worth showing when it differs — otherwise it is noise.
+          if (
+            data.currentTypeVersion &&
+            data.currentTypeVersion !== data.typeVersion
+          ) {
+            lines.push(
+              bold(cyan("Current Type Version:")) +
+                ` ${data.currentTypeVersion}`,
+            );
+          }
+          if (data.staleness === "upgradable") {
+            lines.push(
+              yellow(
+                "  This instance is behind its model type. The next method run will migrate it.",
+              ),
+            );
+          } else if (data.staleness === "stranded") {
+            lines.push(
+              yellow(
+                "  This instance is behind its model type and no upgrade entry covers the gap,",
+              ),
+            );
+            lines.push(
+              yellow(
+                "  so nothing will migrate it. The extension must ship a version upgrade.",
+              ),
+            );
+          }
         }
 
         if (data.globalArgumentsSchema) {

@@ -650,7 +650,15 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       await modelRegistry.ensureTypeLoaded(type);
       modelDef = modelRegistry.get(type);
     }
-    data.typeVersion = modelDef?.version ?? data.typeVersion;
+    // typeVersion is deliberately NOT stamped here. It records the model type
+    // version a definition's globalArguments were authored or migrated for, so
+    // only creation and DefinitionUpgradeService may set it. Stamping it on
+    // every save marked a stale instance as current without migrating its
+    // arguments, which stranded it permanently: DefinitionUpgradeService
+    // short-circuits once typeVersion is at or above the model version, so no
+    // upgrade chain shipped later could ever run (swamp-club#900). An absent
+    // typeVersion is likewise left absent — it is the recorded signal for a
+    // legacy pre-CalVer definition (swamp-club#2412).
 
     // Fail closed before writing: a global argument marked `{ sensitive: true }`
     // must never be persisted as a literal value — it would sit in cleartext in

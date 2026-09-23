@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   setRemoteOnlyMode,
   setRemoteStepDispatcher,
@@ -3739,4 +3739,112 @@ Deno.test("executeWorkflow: non-internal model without placement throws in remot
   } finally {
     setRemoteOnlyMode(false);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Stranded-instance warning (swamp-club#900)
+// ---------------------------------------------------------------------------
+
+/**
+ * A logger stand-in that records `warn` calls and swallows everything else.
+ * LogTape loggers are tagged-template callables, so each level is returned as a
+ * function that reassembles the template.
+ */
+function captureWarnings(sink: string[]): MethodContext["logger"] {
+  const tag = (record: (message: string) => void) =>
+  (
+    strings: TemplateStringsArray | string,
+    ...values: unknown[]
+  ): void => {
+    if (typeof strings === "string") {
+      record(strings);
+      return;
+    }
+    record(
+      strings.reduce(
+        (acc, part, i) =>
+          acc + part + (i < values.length ? String(values[i]) : ""),
+        "",
+      ),
+    );
+  };
+
+  return new Proxy({}, {
+    get(_target, property) {
+      if (property === "warn") return tag((message) => sink.push(message));
+      if (property === "getChild") return () => captureWarnings(sink);
+      return tag(() => {});
+    },
+  }) as unknown as MethodContext["logger"];
+}
+
+Deno.test("executeWorkflow - warns once when an instance is stranded", async () => {
+  const service = new DefaultMethodExecutionService();
+  // Installed model is ahead, and ships no upgrade entry covering the gap.
+  const model: ModelDefinition = {
+    ...createTestModel({}),
+    version: "2026.06.01.1",
+  };
+  const definition = Definition.create({
+    name: "stranded-definition",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { value: "test" },
+  });
+
+  const warnings: string[] = [];
+  const { context } = createTestContext({
+    modelType: model.type,
+    logger: captureWarnings(warnings),
+  });
+
+  await service.executeWorkflow(definition, model, "start", context);
+
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0], "no upgrade entry covers the gap");
+  assertStringIncludes(warnings[0], "2026.01.01.1");
+  assertStringIncludes(warnings[0], "2026.06.01.1");
+});
+
+Deno.test("executeWorkflow - does not warn when the instance is current", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "current-definition",
+    typeVersion: model.version,
+    globalArguments: { value: "test" },
+  });
+
+  const warnings: string[] = [];
+  const { context } = createTestContext({
+    modelType: model.type,
+    logger: captureWarnings(warnings),
+  });
+
+  await service.executeWorkflow(definition, model, "start", context);
+
+  assertEquals(warnings, []);
+});
+
+Deno.test("executeWorkflow - does not warn for a legacy definition with no typeVersion", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    ...createTestModel({}),
+    version: "2026.06.01.1",
+  };
+  // No typeVersion recorded: a legacy pre-CalVer definition. Warning here would
+  // fire on every run with nothing actionable to say (swamp-club#2412).
+  const definition = Definition.create({
+    name: "legacy-definition",
+    globalArguments: { value: "test" },
+  });
+
+  const warnings: string[] = [];
+  const { context } = createTestContext({
+    modelType: model.type,
+    logger: captureWarnings(warnings),
+  });
+
+  await service.executeWorkflow(definition, model, "start", context);
+
+  assertEquals(warnings, []);
 });

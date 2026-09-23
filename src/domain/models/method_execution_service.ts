@@ -35,6 +35,7 @@ import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
+import { resolveStaleness } from "../definitions/definition_staleness.ts";
 import { modelRequiresVault } from "./data_writer.ts";
 import {
   coerceMethodArgs,
@@ -478,6 +479,24 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const upgradeService = new DefinitionUpgradeService();
       const upgradeResult = upgradeService.upgrade(definition, modelDef);
       const currentDefinition = upgradeResult.definition;
+
+      // Surface an instance that no upgrade chain will ever migrate. Only
+      // `stranded` warrants a warning: `upgradable` was just migrated above,
+      // `current` is fine, and `unknown` is a legacy pre-CalVer definition that
+      // would warn on every run with nothing actionable to say
+      // (swamp-club#900, swamp-club#2412). One warning per run, derived from
+      // the resolved state rather than a per-argument diff.
+      if (!upgradeResult.upgraded) {
+        const staleness = resolveStaleness(
+          definition.typeVersion,
+          modelDef.version,
+          (modelDef.upgrades ?? []).map((upgrade) => upgrade.toVersion),
+        );
+        if (staleness.state === "stranded") {
+          context.logger
+            .warn`Definition ${definition.name} was created for ${context.modelType.normalized} version ${staleness.definitionVersion}, but the installed version is ${modelDef.version} and no upgrade entry covers the gap. Its global arguments will not be migrated — the extension must ship a version upgrade.`;
+        }
+      }
 
       // Persist upgraded definition if it was upgraded.
       // IMPORTANT: The in-memory definition may have vault sentinel tokens

@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
-import type { ModelGetEvent } from "../../libswamp/mod.ts";
+import type { ModelGetEvent, StalenessState } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createModelGetRenderer,
@@ -206,4 +206,77 @@ Deno.test("formatSchemaAttributes: renders array-typed properties correctly", ()
   // The second line should contain 'nickname' and '(string | null)'
   assertEquals(lines[1].includes("nickname"), true);
   assertEquals(lines[1].includes("(string | null)"), true);
+});
+
+// ---------------------------------------------------------------------------
+// Staleness surfacing (swamp-club#900)
+// ---------------------------------------------------------------------------
+
+const staleData = {
+  ...testData,
+  typeVersion: "2026.01.01.1",
+  currentTypeVersion: "2026.06.01.1",
+  staleness: "stranded" as StalenessState,
+};
+
+async function renderLog(data: typeof testData | typeof staleData) {
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => lines.push(msg);
+  try {
+    const renderer = createModelGetRenderer("log");
+    await consumeStream(
+      toStream([{ kind: "completed", data }] as ModelGetEvent[]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = originalLog;
+  }
+  return lines.join("\n");
+}
+
+Deno.test("LogModelGetRenderer - shows both versions when the instance is behind", async () => {
+  const output = await renderLog(staleData);
+  assertStringIncludes(output, "2026.01.01.1");
+  assertStringIncludes(output, "2026.06.01.1");
+});
+
+Deno.test("LogModelGetRenderer - explains a stranded instance", async () => {
+  const output = await renderLog(staleData);
+  assertStringIncludes(output, "no upgrade entry covers the gap");
+});
+
+Deno.test("LogModelGetRenderer - says an upgradable instance will migrate", async () => {
+  const output = await renderLog({ ...staleData, staleness: "upgradable" });
+  assertStringIncludes(output, "next method run will migrate it");
+});
+
+Deno.test("LogModelGetRenderer - stays quiet when the instance is current", async () => {
+  const output = await renderLog({
+    ...staleData,
+    typeVersion: "2026.06.01.1",
+    staleness: "current",
+  });
+  // No warning, and no redundant second version line.
+  assertEquals(output.includes("Current Type Version:"), false);
+  assertEquals(output.includes("behind its model type"), false);
+});
+
+Deno.test("JsonModelGetRenderer - carries typeVersion, currentTypeVersion and staleness", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createModelGetRenderer("json");
+    await consumeStream(
+      toStream([{ kind: "completed", data: staleData }] as ModelGetEvent[]),
+      renderer.handlers(),
+    );
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.typeVersion, "2026.01.01.1");
+    assertEquals(parsed.currentTypeVersion, "2026.06.01.1");
+    assertEquals(parsed.staleness, "stranded");
+  } finally {
+    console.log = originalLog;
+  }
 });

@@ -332,3 +332,24 @@ Deno.test("YamlEvaluatedDefinitionRepository: rejects malformed provenance", asy
     }
   });
 });
+
+Deno.test("YamlEvaluatedDefinitionRepository: records the source typeVersion verbatim", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const type = ModelType.create("test/evaluated-stale");
+    const definition = Definition.create({
+      name: "stale-evaluated",
+      type: type.normalized,
+      typeVersion: "2026.01.01.1",
+      globalArguments: { project: "demo" },
+    });
+
+    await repo.save(type, definition);
+
+    // Evaluated definitions are derived data replayed under --last-evaluated.
+    // Restamping here would reintroduce the staleness masking that was fixed
+    // in the source repository (swamp-club#900).
+    const reloaded = await repo.findByName(type, "stale-evaluated");
+    assertEquals(reloaded?.typeVersion, "2026.01.01.1");
+  });
+});

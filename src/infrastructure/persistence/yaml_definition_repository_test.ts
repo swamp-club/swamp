@@ -1488,3 +1488,82 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal skips definitions with an i
     assertEquals(await repo.findByNameGlobal("spirit"), null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// typeVersion ownership (swamp-club#900)
+//
+// `save` used to overwrite typeVersion with the registered model's version on
+// every write. That marked a stale instance as current without migrating its
+// global arguments, and because DefinitionUpgradeService short-circuits once
+// typeVersion is at or above the model version, no upgrade chain shipped later
+// could ever run — the instance was stranded permanently.
+// ---------------------------------------------------------------------------
+
+const STALE_SAVE_TYPE = ModelType.create("test/stale-save");
+
+defineModel({
+  type: STALE_SAVE_TYPE,
+  version: "2026.06.01.1",
+  globalArguments: z.object({ project: z.string() }),
+  methods: {},
+});
+
+Deno.test("YamlDefinitionRepository.save does not advance a definition's typeVersion", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = Definition.create({
+      name: "stale-instance",
+      type: STALE_SAVE_TYPE.normalized,
+      // Created against an older version; its arguments were never migrated.
+      typeVersion: "2026.01.01.1",
+      globalArguments: { project: "demo" },
+    });
+
+    await repo.save(STALE_SAVE_TYPE, definition);
+
+    const reloaded = await repo.findByName(STALE_SAVE_TYPE, "stale-instance");
+    assertEquals(reloaded?.typeVersion, "2026.01.01.1");
+    assertEquals(reloaded?.globalArguments, { project: "demo" });
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save leaves an absent typeVersion absent", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = Definition.create({
+      name: "legacy-instance",
+      type: STALE_SAVE_TYPE.normalized,
+      globalArguments: { project: "demo" },
+    });
+
+    await repo.save(STALE_SAVE_TYPE, definition);
+
+    // An absent typeVersion is the recorded signal for a legacy pre-CalVer
+    // definition. Backfilling it here would strand exactly those definitions.
+    const path = repo.getPath(STALE_SAVE_TYPE, definition.id);
+    const data = parseYaml(await Deno.readTextFile(path)) as Record<
+      string,
+      unknown
+    >;
+    assertEquals(data.typeVersion, undefined);
+    // Type metadata is still written — that part was always the intent.
+    assertEquals(data.type, STALE_SAVE_TYPE.normalized);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save preserves a typeVersion ahead of the model", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = Definition.create({
+      name: "ahead-instance",
+      type: STALE_SAVE_TYPE.normalized,
+      typeVersion: "2027.01.01.1",
+      globalArguments: { project: "demo" },
+    });
+
+    await repo.save(STALE_SAVE_TYPE, definition);
+
+    const reloaded = await repo.findByName(STALE_SAVE_TYPE, "ahead-instance");
+    assertEquals(reloaded?.typeVersion, "2027.01.01.1");
+  });
+});
