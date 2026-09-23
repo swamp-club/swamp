@@ -123,7 +123,11 @@ record across workflows tagged role=manifest", or a projection that extracts
 just specific fields.
 
 **Avoid `model.*.resource` / `model.*.file`** — these patterns are deprecated
-and will emit a warning. Migrate to `data.latest()` or `data.query()`.
+and will emit a warning. Migrate to `data.latest()` or `data.query()`. For a
+file path, `model.<name>.file.<spec>.<instance>.path` becomes
+`data.latest('<name>', '<instance>').path` — the local path of the stored file,
+downloaded first on a lazy-hydration datastore, and `""` for ephemeral data or a
+file that cannot be made local.
 
 **Use `.?` (optional select)** when the data might not exist yet — for example,
 referencing a prior cycle's output on the first cycle of a rework loop. `.?`

@@ -2127,3 +2127,70 @@ Deno.test("DataQueryService: successive queries see rewritten bodies", () => {
   assertEquals(results[0].attributes, { value: 2 });
   catalog.close();
 });
+
+// ============================================================================
+// includeContentPath — path is opt-in so it never leaves the process
+// ============================================================================
+
+function expectedContentPath(dir: string, catalog: CatalogStore): string {
+  return new FileSystemUnifiedDataRepository(dir, undefined, catalog)
+    .getContentPath(
+      ModelType.create("test-model"),
+      "model-001",
+      "my-data",
+      1,
+    );
+}
+
+Deno.test("DataQueryService: records carry an empty path by default", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow());
+
+  const results = service.querySync('modelName == "ingest"') as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].path, "");
+  catalog.close();
+});
+
+Deno.test("DataQueryService: includeContentPath sets the local content path", () => {
+  const { catalog, service, dir } = setupTest();
+  catalog.upsert(makeRow());
+
+  const results = service.querySync('modelName == "ingest"', {
+    includeContentPath: true,
+  }) as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].path, expectedContentPath(dir, catalog));
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a select projection of path is empty unless opted in", () => {
+  const { catalog, service, dir } = setupTest();
+  catalog.upsert(makeRow());
+
+  const hidden = service.querySync('modelName == "ingest"', {
+    select: "path",
+  }) as string[];
+  assertEquals(hidden, [""]);
+
+  const shown = service.querySync('modelName == "ingest"', {
+    select: "path",
+    includeContentPath: true,
+  }) as string[];
+  assertEquals(shown, [expectedContentPath(dir, catalog)]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: getLatestRecord sets path only when requested", async () => {
+  const { catalog, service, dir } = setupTest();
+  catalog.upsert(makeRow());
+
+  const hidden = await service.getLatestRecord("ingest", "my-data");
+  assertEquals(hidden?.path, "");
+
+  const shown = await service.getLatestRecord("ingest", "my-data", undefined, {
+    includeContentPath: true,
+  });
+  assertEquals(shown?.path, expectedContentPath(dir, catalog));
+  catalog.close();
+});

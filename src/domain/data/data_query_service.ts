@@ -114,6 +114,20 @@ export interface DataQueryOptions {
   select?: string;
   /** Force-load JSON attributes even when the predicate doesn't reference them. */
   loadAttributes?: boolean;
+  /**
+   * Populate each record's `path` with its local content path (default
+   * false). Applied as each row's record is built, so predicates and select
+   * projections see "" unless the caller opts in. Only the CEL data.*
+   * namespace opts in; results that leave the process (serve, workers) must
+   * not.
+   */
+  includeContentPath?: boolean;
+}
+
+/** Options for {@link DataQueryService.getLatestRecord}. */
+export interface LatestRecordOptions {
+  /** See {@link DataQueryOptions.includeContentPath}. */
+  includeContentPath?: boolean;
 }
 
 /**
@@ -192,14 +206,21 @@ export class DataQueryService {
     modelName: string,
     dataName: string,
     namespace?: string,
+    options?: LatestRecordOptions,
   ): Promise<DataRecord | null> {
+    const includePath = options?.includeContentPath ?? false;
     const populated = this.catalogStore.isPopulated();
 
     // If a full backfill is already in-flight, await it — it will populate
     // everything including our target.
     if (!populated && this.backfillPromise) {
       await this.backfillPromise;
-      return this.buildRecordFromRow(modelName, dataName, namespace);
+      return this.buildRecordFromRow(
+        modelName,
+        dataName,
+        namespace,
+        includePath,
+      );
     }
 
     // Tier 1: try the indexed SQL lookup.
@@ -209,7 +230,13 @@ export class DataQueryService {
         if (dataName === row.spec_name) {
           this.checkSpecNameAmbiguity(row.spec_name, modelName, namespace);
         }
-        return this.buildRecordFromRow(modelName, dataName, namespace, row);
+        return this.buildRecordFromRow(
+          modelName,
+          dataName,
+          namespace,
+          includePath,
+          row,
+        );
       }
       // Catalog not populated — verify the data still exists on disk to
       // guard against stale rows left behind after invalidate().
@@ -220,7 +247,13 @@ export class DataQueryService {
         row.version,
       );
       if (content !== null) {
-        return this.buildRecordFromRow(modelName, dataName, namespace, row);
+        return this.buildRecordFromRow(
+          modelName,
+          dataName,
+          namespace,
+          includePath,
+          row,
+        );
       }
       // Stale row — fall through to scoped backfill
     }
@@ -244,7 +277,13 @@ export class DataQueryService {
       freshRow.version,
     );
     if (freshContent === null) return null;
-    return this.buildRecordFromRow(modelName, dataName, namespace, freshRow);
+    return this.buildRecordFromRow(
+      modelName,
+      dataName,
+      namespace,
+      includePath,
+      freshRow,
+    );
   }
 
   checkSpecNameAmbiguity(
@@ -275,6 +314,7 @@ export class DataQueryService {
     modelName: string,
     dataName: string,
     namespace: string | undefined,
+    includeContentPath: boolean,
     row?: CatalogRow | null,
   ): Promise<DataRecord | null> {
     const r = row ?? this.catalogStore.findLatestRow(
@@ -283,7 +323,7 @@ export class DataQueryService {
       namespace,
     );
     if (!r) return null;
-    const record = fromRow(r, this.dataRepo, true, true);
+    const record = fromRow(r, this.dataRepo, true, true, includeContentPath);
     if (this.vaultService && Object.keys(record.attributes).length > 0) {
       const sensitiveFields = parseSensitiveFieldsFromRowTags(r.tags);
       if (sensitiveFields) {
@@ -447,6 +487,7 @@ export class DataQueryService {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
     const limit = options?.limit ?? Infinity;
+    const includePath = options?.includeContentPath ?? false;
 
     // Parse and validate the caller's predicate first. Parsing on the raw
     // input means parse errors point at what the caller actually wrote.
@@ -523,7 +564,7 @@ export class DataQueryService {
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
     for (const row of rows) {
-      const record = this.rowToRecord(row, false, false);
+      const record = this.rowToRecord(row, false, false, includePath);
       // attributes/content are read from disk only when evaluation touches
       // them or the row matches, so rows rejected by metadata terms never
       // read their body (swamp-club#2122). The load outcome — record or
@@ -535,7 +576,12 @@ export class DataQueryService {
         if (loadFailed) throw loadError;
         if (!full) {
           try {
-            full = this.rowToRecord(row, needsAttributes, needsContent);
+            full = this.rowToRecord(
+              row,
+              needsAttributes,
+              needsContent,
+              includePath,
+            );
           } catch (error) {
             loadFailed = true;
             loadError = error;
@@ -605,7 +651,12 @@ export class DataQueryService {
             continue;
           }
         }
-        results[writeIndex] = this.rowToRecord(row, true, needsContent);
+        results[writeIndex] = this.rowToRecord(
+          row,
+          true,
+          needsContent,
+          includePath,
+        );
         writeIndex++;
       }
       results.length = writeIndex;
@@ -639,8 +690,15 @@ export class DataQueryService {
     row: CatalogRow,
     loadAttributes: boolean,
     loadContent: boolean,
+    includeContentPath: boolean,
   ): DataRecord {
-    return fromRow(row, this.dataRepo, loadAttributes, loadContent);
+    return fromRow(
+      row,
+      this.dataRepo,
+      loadAttributes,
+      loadContent,
+      includeContentPath,
+    );
   }
 
   private async backfillAsync(): Promise<void> {

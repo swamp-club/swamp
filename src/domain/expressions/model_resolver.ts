@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import type { ModelOutput } from "../models/model_output.ts";
-import type { ModelType } from "../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
 import type { Definition, InputsSchema } from "../definitions/definition.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -27,6 +28,7 @@ import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import { isTextContentType } from "../data/content_type.ts";
+import { localContentPath } from "../data/data_record_mapper.ts";
 import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefs,
@@ -174,6 +176,28 @@ function deduplicateByName(records: DataRecord[]): DataRecord[] {
     }
   }
   return [...byKey.values()];
+}
+
+/** Whether a regular file or directory exists at the path. */
+function fileExists(path: string): boolean {
+  try {
+    Deno.statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Clears `path` on records whose content file is not present locally. Used
+ * for list lookups, which must not download every match on a lazy-hydration
+ * datastore (swamp-club#2122); single-record lookups hydrate instead.
+ */
+function dropMissingPaths(records: DataRecord[]): DataRecord[] {
+  for (const record of records) {
+    if (record.path && !fileExists(record.path)) record.path = "";
+  }
+  return records;
 }
 
 // FileDataRecord moved to ../data/data_record.ts. Re-exported below for
@@ -795,6 +819,34 @@ export class ModelResolver {
   }
 
   /**
+   * Makes a single-record lookup's `path` name a file that is present. On a
+   * lazy-hydration datastore the version's raw file may not have been pulled
+   * yet; the async content read fetches it through the repository's hydrate
+   * hook. If it is still absent — or the fetch fails — `path` is cleared, so
+   * hydration can add a path but never fail a lookup that would otherwise
+   * succeed. List lookups use {@link dropMissingPaths} instead so they never
+   * download.
+   */
+  private async materializePath(record: DataRecord | null): Promise<void> {
+    if (!record?.path || !this.dataRepo) return;
+    if (fileExists(record.path)) return;
+    try {
+      await this.dataRepo.getContent(
+        ModelType.create(record.modelType),
+        record.modelId,
+        record.name,
+        record.version,
+      );
+    } catch (error) {
+      getLogger(["swamp", "expressions"])
+        .debug`Could not hydrate ${record.modelName}/${record.name}@v${record.version}: ${
+        String(error)
+      }`;
+    }
+    if (!fileExists(record.path)) record.path = "";
+  }
+
+  /**
    * Resolves vault references in a data record's attributes, limited to the
    * fields the record's schema marked sensitive. Leaves refs unresolved when
    * no vault is available.
@@ -851,11 +903,14 @@ export class ModelResolver {
         const results = await this.dataQueryService.query(predicate, {
           limit: ns.isWildcard ? undefined : 1,
           loadAttributes: true,
+          includeContentPath: true,
         }) as DataRecord[];
         if (ns.isWildcard) {
           checkWildcardAmbiguity(results, rawModelName);
         }
-        return results.length > 0 ? results[0] : null;
+        if (results.length === 0) return null;
+        await this.materializePath(results[0]);
+        return results[0];
       },
       latest: async (
         rawModelName: string,
@@ -899,6 +954,7 @@ export class ModelResolver {
                   ns.modelName,
                 );
                 await this.resolveRecordVaultRefs(record, data.tags);
+                await this.materializePath(record);
                 return record;
               }
             }
@@ -914,11 +970,13 @@ export class ModelResolver {
               ns.modelName,
               dataName,
               targetNs,
+              { includeContentPath: true },
             );
             // The coordinates path above resolves sensitive vault references
             // through this resolver's own vault service; do the same here so
             // both paths return the same attributes.
             await this.resolveRecordVaultRefs(record, record?.tags);
+            await this.materializePath(record);
             return record;
           }
 
@@ -931,6 +989,7 @@ export class ModelResolver {
           ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
+          includeContentPath: true,
         }) as DataRecord[];
         checkWildcardAmbiguity(results, rawModelName);
         if (results.length > 0) {
@@ -941,6 +1000,7 @@ export class ModelResolver {
               ns.modelName,
             );
           }
+          await this.materializePath(results[0]);
           return results[0];
         }
         return null;
@@ -974,8 +1034,9 @@ export class ModelResolver {
           nsPredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
+          includeContentPath: true,
         }) as DataRecord[];
-        return deduplicateByName(results);
+        return dropMissingPaths(deduplicateByName(results));
       },
       findBySpec: async (
         rawSpecModelName: string,
@@ -988,18 +1049,25 @@ export class ModelResolver {
           ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
+          includeContentPath: true,
         }) as DataRecord[];
         if (ns.isWildcard) {
           checkWildcardAmbiguity(results, rawSpecModelName);
         }
-        return deduplicateByName(results);
+        return dropMissingPaths(deduplicateByName(results));
       },
       query: async (
         predicate: string,
         select?: string,
       ): Promise<DataRecord[] | unknown[]> => {
         if (!this.dataQueryService) return [];
-        return await this.dataQueryService.query(predicate, { select });
+        const results = await this.dataQueryService.query(predicate, {
+          select,
+          includeContentPath: true,
+        });
+        // Projections are opaque values, so a projected path is not
+        // existence-checked; record results are.
+        return select ? results : dropMissingPaths(results as DataRecord[]);
       },
       invalidateLatest: (_modelName: string, _dataName: string): void => {
         // No-op — latest() always reads from disk; no cache to invalidate.
@@ -1157,6 +1225,14 @@ export class ModelResolver {
       streaming: data.streaming,
       size: data.size ?? 0,
       content: textContent,
+      path: localContentPath(
+        this.dataRepo,
+        modelType,
+        modelId,
+        dataName,
+        resolvedVersion,
+        this.dataRepo.namespace,
+      ),
       ownerRef: data.ownerDefinition.ownerRef,
       workflowRunId: data.ownerDefinition.workflowRunId ?? "",
       workflowName: data.ownerDefinition.workflowName ?? "",

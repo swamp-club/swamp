@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { fromData, fromResourceHandle, fromRow } from "./data_record_mapper.ts";
+import {
+  fromData,
+  fromResourceHandle,
+  fromRow,
+  localContentPath,
+} from "./data_record_mapper.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import type { DataHandle } from "../models/model.ts";
 import type { DataId } from "./data_id.ts";
@@ -568,4 +573,111 @@ Deno.test("fromResourceHandle: content is empty string for non-JSON", async () =
   );
 
   assertEquals(record.content, "");
+});
+
+// ============================================================================
+// localContentPath / path — local content location for CEL data.* results
+// ============================================================================
+
+function pathRepo(
+  namespace: string,
+  getContentPath: () => string,
+): UnifiedDataRepository & { calls: number } {
+  const repo = {
+    namespace,
+    calls: 0,
+    getContentSync: () => null,
+    getContentPath: () => {
+      repo.calls++;
+      return getContentPath();
+    },
+  };
+  return repo as unknown as UnifiedDataRepository & { calls: number };
+}
+
+const ABSOLUTE_RAW = Deno.build.os === "windows"
+  ? "C:\\repo\\.swamp\\data\\test\\model\\model-123\\test-data\\1\\raw"
+  : "/repo/.swamp/data/test/model/model-123/test-data/1/raw";
+
+Deno.test("localContentPath: returns the repository's absolute content path for its own namespace", () => {
+  const repo = pathRepo("", () => ABSOLUTE_RAW);
+  const path = localContentPath(
+    repo,
+    ModelType.create("test/model"),
+    "model-123",
+    "test-data",
+    1,
+    "",
+  );
+  assertEquals(path, ABSOLUTE_RAW);
+});
+
+Deno.test("localContentPath: returns empty for a foreign namespace without asking the repository", () => {
+  const repo = pathRepo("team-a", () => ABSOLUTE_RAW);
+  const path = localContentPath(
+    repo,
+    ModelType.create("test/model"),
+    "model-123",
+    "test-data",
+    1,
+    "team-b",
+  );
+  assertEquals(path, "");
+  assertEquals(repo.calls, 0);
+});
+
+Deno.test("localContentPath: returns empty when the repository rejects the name", () => {
+  const repo = pathRepo("", () => {
+    throw new Error("dataName escapes its directory");
+  });
+  const path = localContentPath(
+    repo,
+    ModelType.create("test/model"),
+    "model-123",
+    "../escape",
+    1,
+    "",
+  );
+  assertEquals(path, "");
+});
+
+Deno.test("localContentPath: returns empty for a non-filesystem location such as ephemeral data", () => {
+  const repo = pathRepo(
+    "",
+    () => "ephemeral://test/model/model-123/test-data/1/raw",
+  );
+  const path = localContentPath(
+    repo,
+    ModelType.create("test/model"),
+    "model-123",
+    "test-data",
+    1,
+    "",
+  );
+  assertEquals(path, "");
+});
+
+Deno.test("fromRow: leaves path empty unless includeContentPath is set", () => {
+  const repo = pathRepo("", () => ABSOLUTE_RAW);
+  const record = fromRow(createRow(), repo, false, false);
+  assertEquals(record.path, "");
+  assertEquals(repo.calls, 0);
+});
+
+Deno.test("fromRow: sets path from the repository when includeContentPath is set", () => {
+  const repo = pathRepo("", () => ABSOLUTE_RAW);
+  const record = fromRow(createRow(), repo, false, false, true);
+  assertEquals(record.path, ABSOLUTE_RAW);
+});
+
+Deno.test("fromRow: path is empty for a foreign-namespace row even when requested", () => {
+  const repo = pathRepo("", () => ABSOLUTE_RAW);
+  const record = fromRow(
+    createRow({ namespace: "other" }),
+    repo,
+    false,
+    false,
+    true,
+  );
+  assertEquals(record.path, "");
 });

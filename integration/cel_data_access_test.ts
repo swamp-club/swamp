@@ -49,6 +49,11 @@ import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { SENSITIVE_FIELDS_TAG } from "../src/domain/models/data_writer.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
+import {
+  createEphemeralStore,
+  wrapWithEphemeral,
+} from "../src/infrastructure/persistence/ephemeral_store.ts";
+import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { initializeTestRepo, runCliCommand } from "./test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -1576,6 +1581,166 @@ Deno.test("CEL Data Access: data.latest() on a sensitive field injected through 
       assertEquals(vaultReads, 1);
     } finally {
       catalog.close();
+    }
+  });
+});
+
+// ============================================================================
+// DataRecord.path replaces model.<name>.file.<spec>.<instance>.path
+// (swamp-club#2288)
+// ============================================================================
+
+Deno.test("CEL Data Access: data.latest().path matches the deprecated model.*.file path", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("test/model");
+    const owner = createOwner("test/model:path");
+
+    const model = Definition.create({ name: "r-lab", globalArguments: {} });
+    await definitionRepo.save(type, model);
+
+    const csv = "a,b\n1,2\n";
+    await dataRepo.save(
+      type,
+      model.id,
+      Data.create({
+        name: "table",
+        contentType: "text/csv",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "file", specName: "table", modelName: "r-lab" },
+        ownerDefinition: owner,
+      }),
+      new TextEncoder().encode(csv),
+    );
+    await dataRepo.save(
+      type,
+      model.id,
+      Data.create({
+        name: "summary",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", specName: "summary", modelName: "r-lab" },
+        ownerDefinition: owner,
+      }),
+      new TextEncoder().encode(JSON.stringify({ rows: 1 })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const resolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await resolver.buildContext();
+      assertExists(context.data);
+
+      const deprecated = (context.model["r-lab"].file as Record<
+        string,
+        Record<string, { path: string }>
+      >)["table"]["table"].path;
+
+      const latest = await context.data.latest("r-lab", "table");
+      assertExists(latest);
+      assertPathEquals(latest.path, deprecated);
+      assertEquals(await Deno.readTextFile(latest.path), csv);
+
+      const pinned = await context.data.version("r-lab", "table", 1);
+      assertPathEquals(pinned!.path, deprecated);
+
+      const projected = await context.data.query(
+        'modelName == "r-lab" && name == "table"',
+        "path",
+      );
+      assertEquals(projected.length, 1);
+      assertPathEquals(projected[0] as string, deprecated);
+
+      // Resources carry their stored JSON file too.
+      const summary = await context.data.latest("r-lab", "summary");
+      assertEquals(
+        JSON.parse(await Deno.readTextFile(summary!.path)),
+        { rows: 1 },
+      );
+
+      // Callers that do not opt in — swamp data query, the serve API and
+      // remote workers — never see the host path, even under select.
+      const plain = await dqs.query('modelName == "r-lab"') as DataRecord[];
+      assertEquals(plain.map((r) => r.path), ["", ""]);
+      const plainProjection = await dqs.query(
+        'modelName == "r-lab"',
+        { select: "path" },
+      );
+      assertEquals(plainProjection, ["", ""]);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("CEL Data Access: data.latest().path is empty for ephemeral data", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const persistentRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const ephemeral = createEphemeralStore();
+    try {
+      const { dataRepo, dataQueryService } = wrapWithEphemeral(
+        persistentRepo,
+        catalog,
+        ephemeral,
+      );
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const type = ModelType.create("test/model");
+      const model = Definition.create({ name: "scratch" });
+      await definitionRepo.save(type, model);
+      await dataRepo.save(
+        type,
+        model.id,
+        Data.create({
+          name: "notes",
+          contentType: "text/plain",
+          lifetime: "ephemeral",
+          garbageCollection: 10,
+          tags: { type: "file", specName: "notes", modelName: "scratch" },
+          ownerDefinition: createOwner("test/model:ephemeral"),
+        }),
+        new TextEncoder().encode("in memory only"),
+      );
+
+      const resolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService,
+      });
+      for (
+        const context of [
+          await resolver.buildContext(),
+          resolver.buildLightContext(),
+        ]
+      ) {
+        const record = await context.data!.latest("scratch", "notes");
+        assertExists(record);
+        assertEquals(record.content, "in memory only");
+        assertEquals(record.path, "");
+      }
+    } finally {
+      ephemeral.dispose();
     }
   });
 });

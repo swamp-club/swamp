@@ -53,6 +53,7 @@ const DATA_RECORD_FIELDS = new Set([
   "namespace",
   "ownerRef",
   "ownerType",
+  "path",
   "size",
   "source",
   "specName",

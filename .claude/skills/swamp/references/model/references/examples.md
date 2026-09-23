@@ -20,6 +20,7 @@
 | `data.findByTag("<key>", "<value>")`                         | Find data by tag                          | All resources tagged env=prod |
 | `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource (DEPRECATED)         | VPC ID, subnet CIDR, etc.     |
 | `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout (DEPRECATED)         | AMI ID from aws cli command   |
+| `data.latest("<model>", "<name>").path`                      | Local path of another model's stored file | `/path/to/file.txt`           |
 | `model.<name>.file.<spec>.<instance>.path`                   | File path from another model (DEPRECATED) | `/path/to/file.txt`           |
 | `self.name`                                                  | Current model's name                      | `my-vpc`                      |
 | `self.version`                                               | Current model's version                   | `1`                           |

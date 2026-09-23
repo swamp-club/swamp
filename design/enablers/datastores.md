@@ -1223,6 +1223,14 @@ Its callers are:
 The `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
 → scoped pull, which downloads `raw` files before CEL evaluation begins.
 
+That scoped pull covers the step's own model only. `DataRecord.path` from
+`data.latest()` / `data.version()` must name a file that is present, so those
+two lookups stat the path and, when it is missing, call the async
+`getContent()` to hydrate it; if the file is still absent (or hydration
+throws) `path` is `""`. List lookups (`data.findBySpec()`, `data.findByTag()`,
+`data.query()` record results) only stat and clear missing paths — they never
+download, so a metadata query cannot pull every matching `raw` file.
+
 The `data_record_mapper.ts` path means `data query` predicates referencing
 `attributes` or `content` on un-hydrated data will see `null` values. This is a
 documented limitation of lazy hydration — queries that filter only on metadata

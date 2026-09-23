@@ -316,6 +316,24 @@ inputs:
 For non-JSON content types (e.g. `text/plain`), `.content` remains the raw text
 string.
 
+`.path` is the local filesystem path of the version's stored content file —
+the replacement for the deprecated `model.<name>.file.<spec>.<instance>.path`:
+
+```yaml
+methods:
+  execute:
+    arguments:
+      run: "wc -l ${{ data.latest('r-lab', 'table').path }}"
+```
+
+It works for any data type (a resource's `.path` is its stored JSON file). It
+is `""` for ephemeral data, for records from another namespace in a shared
+datastore, and when the file cannot be made local — on a lazy-hydration
+datastore `data.latest()` and `data.version()` download it first. The path is
+on the host that evaluates the expression, not on a remote worker, and a run
+replayed with `--last-evaluated` reuses the path as it was resolved. Select
+`.path` explicitly rather than passing a whole record into an input.
+
 ### data.version(modelName, dataName, version)
 
 Returns a specific version of a data artifact:
