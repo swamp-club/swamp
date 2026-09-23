@@ -250,6 +250,47 @@ Deno.test("replaceExpressions: an empty values map leaves arbitrary data unchang
   );
 });
 
+Deno.test("replaceExpressions: a skipped path keeps its template even when the same text is replaced elsewhere", () => {
+  // Deferral is decided per path while values are keyed on the raw text, so
+  // the same expression can be evaluated at one path and deferred at another.
+  // Expressions are drawn from a small pool to force those collisions.
+  fc.assert(
+    fc.property(
+      fc.array(arbCelExpr, { minLength: 1, maxLength: 3 }),
+      fc.dictionary(arbKey, fc.tuple(fc.nat(), fc.boolean()), {
+        minKeys: 1,
+        maxKeys: 6,
+      }),
+      (pool, fields) => {
+        const data: Record<string, string> = {};
+        const skipped = new Set<string>();
+        const values = new Map<string, unknown>();
+        for (const [key, [index, skip]] of Object.entries(fields)) {
+          const raw = `\${{ ${pool[index % pool.length]} }}`;
+          data[key] = raw;
+          values.set(raw, "evaluated");
+          if (skip) skipped.add(key);
+        }
+
+        const result = replaceExpressions(
+          data,
+          values,
+          (path) => skipped.has(path),
+        ) as Record<string, unknown>;
+
+        for (const key of Object.keys(data)) {
+          assertEquals(
+            result[key],
+            skipped.has(key) ? data[key] : "evaluated",
+            key,
+          );
+        }
+      },
+    ),
+    { numRuns: 300 },
+  );
+});
+
 Deno.test("extractInputReferencesFromCel: dot and bracket references agree", () => {
   fc.assert(
     fc.property(

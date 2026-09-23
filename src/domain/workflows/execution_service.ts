@@ -224,13 +224,15 @@ async function resolveRecordExpression(
 }
 
 /**
- * Resolves a whole-field scalar expression that survived
- * `resolveAvailableExpressions` — the task target, deferred past run-start
- * evaluation when it reads step output or when its step carries a guard.
+ * Resolves a scalar expression that survived `resolveAvailableExpressions` —
+ * the task target, deferred past run-start evaluation when it reads step
+ * output or when its step carries a guard.
  *
  * The record sibling above cannot serve: a target evaluates to a name, not a
  * record. Provenance is checked the same way, so a target assembled out of
- * substituted data is refused rather than executed.
+ * substituted data is refused rather than executed. A target interpolating a
+ * deferred expression into literal text (`stage-${{ data.latest(...) }}`) is
+ * resolved expression by expression, as run-start evaluation would have.
  */
 async function resolveScalarExpression(
   value: string | undefined,
@@ -239,17 +241,33 @@ async function resolveScalarExpression(
   authored: AuthoredExpressions,
 ): Promise<string | undefined> {
   if (value === undefined) return undefined;
-  const cel = extractCelExpression(value);
-  if (!cel) return value;
+  const expressions = extractExpressions(value);
+  if (expressions.length === 0) return value;
   if (!expressionContext) {
     throw new UserError(
-      `${fieldName} expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
+      `${fieldName} expression "${
+        expressions[0].raw
+      }" could not be resolved: no expression context available`,
     );
   }
-  if (partitionAuthored(extractExpressions(value), authored).length !== 1) {
+  if (partitionAuthored(expressions, authored).length !== expressions.length) {
     throw new UserError(`${fieldName} must be an authored expression`);
   }
   const celEvaluator = new CelEvaluator();
+  const cel = expressions.length === 1 ? extractCelExpression(value) : null;
+  if (!cel) {
+    const values = new Map<string, unknown>();
+    for (const expression of expressions) {
+      values.set(
+        expression.raw,
+        await celEvaluator.evaluateAsync(
+          expression.celExpression,
+          expressionContext,
+        ),
+      );
+    }
+    return replaceExpressions(value, values) as string;
+  }
   const resolved = await celEvaluator.evaluateAsync(cel, expressionContext);
   if (resolved === null || resolved === undefined) return "";
   if (typeof resolved === "object") {
@@ -3822,6 +3840,20 @@ export class WorkflowExecutionService {
         expressionContext,
         options.authoredExpressions,
       ),
+    };
+
+    // The task target survives the passes above when it was deferred past
+    // run-start evaluation — it reads step output, or its step carries a
+    // guard. Resolve it here, after the guard has decided and after earlier
+    // steps have written the data it names (swamp-club#2351).
+    task = {
+      ...task,
+      workflowIdOrName: await resolveScalarExpression(
+        task.workflowIdOrName,
+        "task.workflowIdOrName",
+        expressionContext,
+        options.authoredExpressions,
+      ) as string,
     };
 
     // Recursion guard

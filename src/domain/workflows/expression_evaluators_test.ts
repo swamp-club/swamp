@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   collectWorkflowAuthoredExpressions,
+  createTaskTargetDeferral,
   DefinitionExpressionEvaluator,
   WorkflowExpressionEvaluator,
 } from "./expression_evaluators.ts";
@@ -651,4 +652,177 @@ Deno.test("target deferral: the direct-execution form defers its modelName too",
   // expression text does not leak across them.
   assertEquals(nameOf(evaluated.jobs[0].steps[0]), "${{ inputs.name }}");
   assertEquals(nameOf(evaluated.jobs[0].steps[1]), "picked");
+});
+
+// ---------------------------------------------------------------------------
+// Nested workflow targets and the steps namespace (swamp-club#2351)
+//
+// A driver step that picks the next workflow from a record an earlier step
+// wrote had its workflowIdOrName evaluated at run start, before that record
+// existed — silently taking the orValue fallback, or a previous run's value.
+// A steps.* reference failed the whole run with "Unknown variable: steps".
+// ---------------------------------------------------------------------------
+
+/** Returns a nested workflow step's target. */
+function workflowTargetOf(step: Step): string {
+  const data = step.task.data;
+  if (data.type !== "workflow") throw new Error("not a workflow task");
+  return data.workflowIdOrName;
+}
+
+async function evaluateWith(workflow: Workflow) {
+  const context = emptyContext();
+  context.inputs = { name: "picked" };
+  const { workflow: evaluated } = await new WorkflowExpressionEvaluator(
+    new CelEvaluator(),
+  ).evaluate(workflow, context, collectWorkflowAuthoredExpressions(workflow));
+  return evaluated;
+}
+
+Deno.test("target deferral: a nested workflow target that reads step output defers", async () => {
+  const target =
+    "${{ data.latest('driver', 'next').?attributes.?workflow.orValue('fallback') }}";
+  const evaluated = await evaluateWith(Workflow.create({
+    name: "workflow-target",
+    jobs: [Job.create({
+      name: "job1",
+      steps: [
+        Step.create({ name: "dispatch", task: StepTask.workflow(target) }),
+      ],
+    })],
+  }));
+
+  assertEquals(workflowTargetOf(evaluated.jobs[0].steps[0]), target);
+});
+
+Deno.test("target deferral: a guard defers a nested workflow target but not an unguarded one", async () => {
+  const evaluated = await evaluateWith(Workflow.create({
+    name: "workflow-target-guards",
+    inputs: {
+      type: "object",
+      properties: { name: { type: "string", default: "picked" } },
+    },
+    jobs: [Job.create({
+      name: "job1",
+      steps: [
+        Step.create({
+          name: "guarded",
+          guard: "${{ true }}",
+          task: StepTask.workflow("${{ inputs.name }}"),
+        }),
+        Step.create({
+          name: "plain",
+          task: StepTask.workflow("${{ inputs.name }}"),
+        }),
+      ],
+    })],
+  }));
+
+  const steps = evaluated.jobs[0].steps;
+  assertEquals(workflowTargetOf(steps[0]), "${{ inputs.name }}");
+  assertEquals(workflowTargetOf(steps[1]), "picked");
+});
+
+Deno.test("target deferral: an input identical to a deferred workflow target stays deferred", async () => {
+  // The reporter's collision: the input shares the target's text. Before the
+  // fix the target evaluated at run start and substitution, keyed on the raw
+  // text, wrote the same stale value into the input.
+  const expression = "${{ data.latest('driver', 'next').attributes.workflow }}";
+  const evaluated = await evaluateWith(Workflow.create({
+    name: "workflow-target-collision",
+    jobs: [Job.create({
+      name: "job1",
+      steps: [Step.create({
+        name: "dispatch",
+        task: StepTask.workflow(expression, { chosen: expression }),
+      })],
+    })],
+  }));
+
+  const task = evaluated.jobs[0].steps[0].task.data as {
+    workflowIdOrName: string;
+    inputs: Record<string, unknown>;
+  };
+  assertEquals(task.workflowIdOrName, expression);
+  assertEquals(task.inputs.chosen, expression);
+});
+
+Deno.test("steps namespace: steps.* references stay raw at run start instead of failing the run", async () => {
+  // The namespace only exists once the run does; evaluating it here used to
+  // throw "Unknown variable: steps" and kill the run before any step ran.
+  const input = "${{ steps.write.status }}";
+  const target = "${{ steps.write.status == 'succeeded' ? 'next' : 'retry' }}";
+  const evaluated = await evaluateWith(Workflow.create({
+    name: "steps-namespace",
+    jobs: [Job.create({
+      name: "job1",
+      steps: [
+        Step.create({ name: "write", task: StepTask.model("writer", "run") }),
+        Step.create({
+          name: "consume",
+          task: StepTask.model("consumer", "run", { status: input }),
+        }),
+        Step.create({ name: "dispatch", task: StepTask.workflow(target) }),
+      ],
+    })],
+  }));
+
+  const steps = evaluated.jobs[0].steps;
+  assertEquals(
+    (steps[1].task.data as { inputs: Record<string, unknown> }).inputs.status,
+    input,
+  );
+  assertEquals(workflowTargetOf(steps[2]), target);
+});
+
+Deno.test("createTaskTargetDeferral: defers only task targets, by step-output dependency or guard", () => {
+  const workflow = Workflow.create({
+    name: "deferral-rule",
+    jobs: [Job.create({
+      name: "job1",
+      steps: [
+        Step.create({
+          name: "guarded",
+          guard: "${{ true }}",
+          task: StepTask.workflow("${{ inputs.name }}"),
+        }),
+        Step.create({
+          name: "plain",
+          task: StepTask.model("${{ inputs.name }}", "run"),
+        }),
+      ],
+    })],
+  });
+  const isDeferred = createTaskTargetDeferral(workflow);
+  const location = (path: string, celExpression: string) => ({
+    path,
+    raw: `\${{ ${celExpression} }}`,
+    celExpression,
+  });
+
+  // Guarded step: its target defers, its other fields do not.
+  assertEquals(
+    isDeferred(
+      location("jobs[0].steps[0].task.workflowIdOrName", "inputs.name"),
+    ),
+    true,
+  );
+  assertEquals(
+    isDeferred(location("jobs[0].steps[0].task.inputs.x", "inputs.name")),
+    false,
+  );
+  // Unguarded step: only a step-output dependency defers its target.
+  assertEquals(
+    isDeferred(location("jobs[0].steps[1].task.modelIdOrName", "inputs.name")),
+    false,
+  );
+  assertEquals(
+    isDeferred(
+      location(
+        "jobs[0].steps[1].task.modelIdOrName",
+        "data.latest('m', 'r').attributes.name",
+      ),
+    ),
+    true,
+  );
 });

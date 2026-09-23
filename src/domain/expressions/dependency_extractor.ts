@@ -388,3 +388,26 @@ export function requiresModelNamespace(data: unknown): boolean {
     MODEL_NAMESPACE_PATTERN.test(expression.celExpression)
   );
 }
+
+/**
+ * Pattern to match any read of the `steps` namespace — dotted
+ * (`steps.build.outputs`), bracket (`steps["build-app"].status`) or bare
+ * (`has(steps.build)`) — anchored like {@link MODEL_NAMESPACE_PATTERN} so
+ * `inputs.steps` and longer identifiers like `steps_total` do not match.
+ */
+const STEPS_NAMESPACE_PATTERN = /(?<![.\w])steps\b/;
+
+/**
+ * Checks whether an expression reads the `steps` namespace.
+ *
+ * The namespace is populated only once the workflow run exists, after
+ * workflow evaluation, so like `run.*` it can only be resolved at step
+ * execution time. It is not a step-output dependency: the step-time passes
+ * resolve it synchronously from the expression context.
+ *
+ * @param expression - The CEL expression to check
+ * @returns True if the expression reads the steps namespace
+ */
+export function hasStepsNamespaceReference(expression: string): boolean {
+  return STEPS_NAMESPACE_PATTERN.test(expression);
+}

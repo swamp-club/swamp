@@ -31,6 +31,7 @@ import {
   hasResourceDependency,
   hasSelfReference,
   hasStepOutputDependency,
+  hasStepsNamespaceReference,
   requiresModelNamespace,
 } from "./dependency_extractor.ts";
 
@@ -593,4 +594,44 @@ Deno.test("requiresModelNamespace is false for a property that shares the name",
     requiresModelNamespace({ with: { name: "${{ inputs.mymodel }}" } }),
     false,
   );
+});
+
+// ============================================================================
+// hasStepsNamespaceReference
+// ============================================================================
+
+Deno.test("hasStepsNamespaceReference matches dotted, bracket and bare reads", () => {
+  for (
+    const expression of [
+      "steps.build.outputs.image",
+      'steps["build-app"].status',
+      "has(steps.build)",
+      "size(steps) > 0",
+      "inputs.fallback + steps.build.outputs.tag",
+    ]
+  ) {
+    assertEquals(hasStepsNamespaceReference(expression), true, expression);
+  }
+});
+
+Deno.test("hasStepsNamespaceReference ignores properties and longer identifiers", () => {
+  // A property that merely shares the name reads something else, and a longer
+  // identifier is a different variable altogether.
+  for (
+    const expression of [
+      "inputs.steps",
+      "data.latest('m', 'r').attributes.steps",
+      "self.steps.count",
+      "steps_total + 1",
+      "mysteps.x",
+    ]
+  ) {
+    assertEquals(hasStepsNamespaceReference(expression), false, expression);
+  }
+});
+
+Deno.test("hasStepsNamespaceReference is not a step-output dependency", () => {
+  // The step-time sync pass must still resolve it from the expression context,
+  // which it skips for step-output dependencies.
+  assertEquals(hasStepOutputDependency("steps.build.outputs.image"), false);
 });
