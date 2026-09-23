@@ -1096,11 +1096,17 @@ the marks a push actually handled.
 
 `integration/datastore_sync_rules_test.ts` enforces this at build time. One
 rule rejects bare `notifyDirty()` inside the per-path-wired repositories.
-Another pins the remaining bare `markDirty()` call sites in `src/serve`,
-matched on any receiver, so the list can shrink but not grow. The pinned
-sites are the vault, access-reload and extension handlers. Their writes do
+Another pins the remaining bare `markDirty()` call sites in `src/serve` and
+`src/cli/commands/serve.ts`, so the list can shrink but not grow. It matches
+the `.markDirty()` and `.markDirty?.()` forms on any receiver, and records one
+entry per top-level function with its call count, so a second call inside a
+pinned function also fails. The pinned sites are the vault, access-reload and
+extension handlers, plus the serve startup migration. The handlers' writes do
 not all flow through per-path-wired repos, so bare `markDirty()` may still be
-their only dirty signal; swamp-club#2415 audits each one.
+their only dirty signal; swamp-club#2415 audits each one. The startup
+migration moves server-token definitions from `models/` to
+`auto-definitions/` directly on disk, so no repository marks them and the
+bare call is its only signal.
 
 Every serve mutation handler must call `pushChanged()` after a mutation —
 including the data-domain handlers (`data.delete`, `data.rename`, `data.gc`,
