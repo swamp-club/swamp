@@ -33,6 +33,21 @@ import { VaultService } from "./vault_service.ts";
 
 await initializeLogging({});
 
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-control-plane-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
 function createMockStore(): ControlPlaneStore {
   const data = new Map<string, Uint8Array>();
   return {
@@ -151,14 +166,11 @@ Deno.test("initializeControlPlaneVault: a failed init does not replace the regis
     UserError,
   );
 
-  const tempDir = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tempDir) => {
     const vaultService = await VaultService.fromRepository(tempDir);
     assertEquals(
       await vaultService.get(TOKEN_SECRETS_VAULT_NAME, "any-key"),
       "sentinel-value",
     );
-  } finally {
-    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
-  }
+  });
 });

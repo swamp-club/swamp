@@ -33,13 +33,14 @@ Deno.test("accessTokenRotateCommand: module loads", async () => {
   assertEquals(accessTokenRotateCommand.getName(), "rotate");
 });
 
-Deno.test("accessTokenRotateCommand: --vault option help text mentions local repos and not supported", async () => {
+Deno.test("accessTokenRotateCommand: --vault option help text says it is not supported", async () => {
   const { accessTokenRotateCommand } = await import("./access_token_rotate.ts");
   const options = accessTokenRotateCommand.getOptions();
   const vaultOpt = options.find((o) => o.name === "vault");
   assertEquals(vaultOpt !== undefined, true);
-  assertEquals(vaultOpt!.description.includes("local repos only"), true);
-  assertEquals(vaultOpt!.description.includes("not supported"), true);
+  assertEquals(vaultOpt!.description.includes("local repos only"), false);
+  assertStringIncludes(vaultOpt!.description, "Not supported");
+  assertStringIncludes(vaultOpt!.description, "control-plane vault");
 });
 
 Deno.test("accessTokenRotateCommand: --vault rejected when --server is set", async () => {
@@ -86,6 +87,6 @@ Deno.test("accessTokenRotateCommand: rejects --vault before any repo work", asyn
         "/nonexistent-swamp-repo",
       ]),
     UserError,
-    "--vault is not supported when a datastore is configured",
+    "--vault is not supported when rotating locally",
   );
 });

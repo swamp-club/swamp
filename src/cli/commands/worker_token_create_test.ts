@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -89,6 +89,21 @@ Deno.test("workerTokenCreateCommand: rejects --vault before any repo work", asyn
         "/nonexistent-swamp-repo",
       ]),
     UserError,
-    "--vault is not supported when a datastore is configured",
+    "--vault is not supported when creating a worker token locally",
   );
+});
+
+Deno.test("workerTokenCreateCommand: --vault help and example say it needs --server", async () => {
+  const { workerTokenCreateCommand } = await import("./worker_token_create.ts");
+  const vaultOpt = workerTokenCreateCommand.getOptions().find((o) =>
+    o.name === "vault"
+  );
+  assertStringIncludes(vaultOpt!.description, "only with --server");
+  const vaultExamples = workerTokenCreateCommand.getExamples().filter((e) =>
+    e.description.includes("--vault")
+  );
+  assertEquals(vaultExamples.length > 0, true);
+  for (const example of vaultExamples) {
+    assertStringIncludes(example.description, "--server");
+  }
 });

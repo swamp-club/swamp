@@ -39,13 +39,14 @@ Deno.test("accessTokenMintCommand: description does not mention vault storage", 
   assertEquals(desc.includes("stored in a vault"), false);
 });
 
-Deno.test("accessTokenMintCommand: --vault option help text mentions local repos and not supported", async () => {
+Deno.test("accessTokenMintCommand: --vault option help text says it is not supported", async () => {
   const { accessTokenMintCommand } = await import("./access_token_mint.ts");
   const options = accessTokenMintCommand.getOptions();
   const vaultOpt = options.find((o) => o.name === "vault");
   assertEquals(vaultOpt !== undefined, true);
-  assertEquals(vaultOpt!.description.includes("local repos only"), true);
-  assertEquals(vaultOpt!.description.includes("not supported"), true);
+  assertEquals(vaultOpt!.description.includes("local repos only"), false);
+  assertStringIncludes(vaultOpt!.description, "Not supported");
+  assertStringIncludes(vaultOpt!.description, "control-plane vault");
 });
 
 Deno.test("accessTokenMintCommand: --vault rejected when --server is set", async () => {
@@ -96,7 +97,7 @@ Deno.test("accessTokenMintCommand: rejects --vault before any repo work", async 
         "/nonexistent-swamp-repo",
       ]),
     UserError,
-    "--vault is not supported when a datastore is configured",
+    "--vault is not supported when minting locally",
   );
 });
 

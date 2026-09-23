@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import {
   controlPlaneVaultInitError,
@@ -54,9 +55,16 @@ export async function initializeControlPlaneVaultForCli(
     options.catalogInvalidate?.();
   }
 
-  const store = hasRemote
-    ? syncService!.controlPlaneStore!()
-    : new FileSystemControlPlaneStore(swampPath(repoDir));
+  let store: ControlPlaneStore;
+  if (hasRemote) {
+    try {
+      store = syncService!.controlPlaneStore!();
+    } catch (err) {
+      throw controlPlaneVaultInitError(err, true);
+    }
+  } else {
+    store = new FileSystemControlPlaneStore(swampPath(repoDir));
+  }
 
   return await initializeControlPlaneVault(store, hasRemote);
 }

@@ -90,7 +90,7 @@ export const accessTokenRotateCommand = withRemoteOptions(
     )
     .option(
       "--vault <vault:string>",
-      "Vault for the token secret (local repos only; not supported when a datastore is configured)",
+      "Not supported: token secrets are always stored in the control-plane vault. Passing it prints how to copy the credential into another vault",
     ),
 ).action(async function (options: AnyOptions, name: string) {
   const cliCtx = createContext(options as GlobalOptions, [
