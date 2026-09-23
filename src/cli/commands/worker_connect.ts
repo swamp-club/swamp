@@ -33,7 +33,7 @@ import { runWorker, type WorkerExitReason } from "../../worker/connect.ts";
 import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
 import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
-import { parseTimeout } from "../duration_parser.ts";
+import { parseTimerDuration } from "../duration_parser.ts";
 import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
 import { getEnvCaCerts, readTokenFile } from "../remote_run.ts";
 
@@ -234,7 +234,7 @@ export const workerConnectCommand = new Command()
     const idleTimeoutRaw = (options.idleTimeout as string | undefined) ??
       Deno.env.get("SWAMP_WORKER_IDLE_TIMEOUT");
     const idleTimeoutMs = idleTimeoutRaw !== undefined
-      ? parseTimeout(idleTimeoutRaw, "--idle-timeout")
+      ? parseTimerDuration(idleTimeoutRaw, "--idle-timeout")
       : undefined;
 
     const concurrencyRaw = (options.concurrency as string | undefined) ??

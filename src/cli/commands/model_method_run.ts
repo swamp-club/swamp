@@ -83,7 +83,7 @@ import {
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
-import { parseTimeout } from "../duration_parser.ts";
+import { parseTimerDuration } from "../duration_parser.ts";
 import { isAuthenticated, resolveCliInitiatedBy } from "../auth_context.ts";
 import {
   DEFAULT_STALE_TTL_MS,
@@ -408,7 +408,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
         };
 
         const timeoutMs = options.timeout
-          ? parseTimeout(options.timeout as string)
+          ? parseTimerDuration(options.timeout as string)
           : undefined;
         const abort = new AbortController();
         const exitSuppress = suppressSyncExitOnSignal();
@@ -607,7 +607,7 @@ async function runMethodViaServer(
 
   const abort = new AbortController();
   if (options.timeout) {
-    const timeoutMs = parseTimeout(options.timeout as string);
+    const timeoutMs = parseTimerDuration(options.timeout as string);
     setTimeout(() => abort.abort(), timeoutMs);
   }
   const shutdown = registerShutdownHandler({

@@ -285,8 +285,9 @@ It loads at serve startup and is rebuilt when grant or group model data changes.
    `DefinitionCreated` and `DefinitionUpdated`. When a grant or group model
    changes, it rebuilds after a 500 ms debounce.
 3. **Remote datastore**: with a remote datastore, an `AccessDataPoller` pulls
-   `data/swamp/grant` and `data/swamp/group` every 30 s and reloads on any
-   change (`src/serve/access_data_poller.ts`).
+   `data/swamp/grant` and `data/swamp/group` every `--datastore-poll-interval`
+   (default 30 s) and reloads on any change
+   (`src/serve/access_data_poller.ts`).
 4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
    logged-in user's collectives every `--group-refresh-interval` and closes
    connections whose admission lapsed

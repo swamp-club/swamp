@@ -83,6 +83,7 @@ it the default file is optional.
 | `--verify-on-enroll` | `SWAMP_VERIFY_ON_ENROLL` | `false` | Fleet probe on each enrolling worker; failures marked unverified |
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
+| `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
@@ -101,8 +102,12 @@ Table notes:
   `src/serve/worker_gateway.ts`) and 600 s queue ceiling
   (`DEFAULT_QUEUE_TIMEOUT_MS`, `src/serve/dispatch_service.ts`).
 - The run limit's `100` is the registry's own fallback
-  (`src/serve/active_run_registry.ts`). `--max-run-duration` is capped at
-  2 147 483 647 ms.
+  (`src/serve/active_run_registry.ts`).
+- Durations that drive a timer (`--heartbeat-interval`,
+  `--reconciliation-interval`, `--group-refresh-interval`,
+  `--hydration-timeout`, `--datastore-poll-interval`, `--max-run-duration`)
+  are capped at 2 147 483 647 ms, about 24.8 days (`parseTimerDuration`,
+  `src/cli/duration_parser.ts`). Deno fires a longer timer after 1 ms.
 - Without `--hot-reload`, SIGHUP is a shutdown signal
   (`src/infrastructure/process/shutdown_handlers.ts`).
 - `--remote-only` never moves built-in `swamp/*` control-plane models (server
@@ -234,7 +239,8 @@ exists but serve never creates it.
 **Grants.** Each request is authorized against an in-memory `PolicySnapshot`
 built from grant and group data (`src/domain/access/policy_snapshot_loader.ts`).
 With a remote datastore, an `AccessDataPoller` pulls `data/swamp/grant` and
-`data/swamp/group` every 30 s and reloads the snapshot on any change
+`data/swamp/group` every `--datastore-poll-interval` (default 30 s) and
+reloads the snapshot on any change
 (`src/serve/access_data_poller.ts`). In OAuth mode, a `CollectiveRefreshService`
 re-fetches each logged-in user's collectives from the provider every
 `--group-refresh-interval`. It closes connections whose admission lapsed
@@ -368,14 +374,16 @@ marks that peer's `running` tracker rows `interrupted` with reason
 `active-runs/` records. Only then does it remove the heartbeat, so a crash
 mid-reconcile leaves the heartbeat for another instance once the claim expires.
 When the datastore manages config, a `ConfigPoller` pulls `.swamp/config/` every
-30 s. The `AccessDataPoller` pulls grants and groups at the same interval.
+`--datastore-poll-interval` (default 30 s). The `AccessDataPoller` pulls grants
+and groups at the same interval.
 
 **What does not replicate.** The `ActiveRunRegistry`, its event buffers, the
 worker session pool, rate-limiter buckets and the policy snapshot are
 per-process memory. Clients can attach to a run's events only on the executing
 instance. The control plane records which instance owns a run, not its events.
 Grants replicate as data, but each instance loads its snapshot on its own poll.
-Instances may therefore see a grant change up to 30 s apart.
+Instances may therefore see a grant change up to one poll interval apart (30 s
+by default).
 
 Extension registries are indexed at startup. With `managedConfig` active, the
 config poller pulls extension files (`config/pulled-extensions/`) separately from
@@ -435,7 +443,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   from datastore-only state without `kubectl exec`. Without it,
   `swamp serve reload --server` fails and new extensions need a full pod
   restart. The `ConfigPoller` refreshes definitions (models, workflows, vaults)
-  every 30 s and reloads extension type registries only when extension files
+  every `--datastore-poll-interval` (default 30 s) and reloads extension type registries only when extension files
   under `config/pulled-extensions/` change (see
   [High availability](#high-availability)). SIGHUP (`swamp serve reload`) remains
   available for manual reloads. See

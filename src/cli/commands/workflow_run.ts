@@ -67,7 +67,7 @@ import {
   parseStdinContent,
 } from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
-import { parseTimeout } from "../duration_parser.ts";
+import { parseTimerDuration } from "../duration_parser.ts";
 import { GIT_SHA } from "./version.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -471,7 +471,7 @@ export const workflowRunCommand = new Command()
       };
 
       const timeoutMs = options.timeout
-        ? parseTimeout(options.timeout as string)
+        ? parseTimerDuration(options.timeout as string)
         : undefined;
       shutdownHandle = registerShutdownHandler({
         handler: () => abort.abort(),
@@ -648,7 +648,7 @@ async function runWorkflowViaServer(
 
   const abort = new AbortController();
   if (options.timeout) {
-    const timeoutMs = parseTimeout(options.timeout as string);
+    const timeoutMs = parseTimerDuration(options.timeout as string);
     setTimeout(() => abort.abort(), timeoutMs);
   }
   const shutdown = registerShutdownHandler({

@@ -1195,7 +1195,8 @@ being skipped.
 
 The `--timeout` flag kills in-flight subprocesses (SIGTERM) when the deadline
 passes, then runs cleanup steps. It marks a subprocess failed without waiting
-for it to finish.
+for it to finish. Values above about 24.8 days are rejected, because Deno fires
+a longer timer after 1 ms (`parseTimerDuration`, `src/cli/duration_parser.ts`).
 
 ### Recovery
 

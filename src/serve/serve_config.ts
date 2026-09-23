@@ -53,6 +53,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   staleTtl: "SWAMP_STALE_TTL",
   reconciliationInterval: "SWAMP_RECONCILIATION_INTERVAL",
   hydrationTimeout: "SWAMP_HYDRATION_TIMEOUT",
+  datastorePollInterval: "SWAMP_DATASTORE_POLL_INTERVAL",
   groupRefreshInterval: "SWAMP_GROUP_REFRESH_INTERVAL",
   maxConcurrentRuns: "SWAMP_MAX_CONCURRENT_RUNS",
   maxRunsPerPrincipal: "SWAMP_MAX_RUNS_PER_PRINCIPAL",
@@ -127,6 +128,7 @@ export interface ServeConfigFile {
   "max-runs-per-principal"?: number;
   "max-run-duration"?: string;
   "hydration-timeout"?: string;
+  "datastore-poll-interval"?: string;
   "enable-internal-api"?: boolean;
   "remote-only"?: boolean;
   dashboard?: boolean;
@@ -241,6 +243,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "max-runs-per-principal",
   "max-run-duration",
   "hydration-timeout",
+  "datastore-poll-interval",
   "enable-internal-api",
   "remote-only",
   "dashboard",
@@ -465,6 +468,7 @@ function validateConfigValues(
     ["stale-ttl", raw["stale-ttl"]],
     ["reconciliation-interval", raw["reconciliation-interval"]],
     ["hydration-timeout", raw["hydration-timeout"]],
+    ["datastore-poll-interval", raw["datastore-poll-interval"]],
   ];
   for (const [name, value] of stringFields) {
     if (value !== undefined && typeof value !== "string") {
@@ -790,6 +794,7 @@ export interface MergedServeOptions {
   maxRunsPerPrincipal?: number;
   maxRunDuration?: string;
   hydrationTimeout?: string;
+  datastorePollInterval?: string;
   enableInternalApi: boolean;
   remoteOnly: boolean;
   dashboard: boolean;
@@ -1127,6 +1132,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const datastorePollInterval = resolveString(
+    "datastore-poll-interval",
+    cliOptions.datastorePollInterval as string | undefined,
+    config?.["datastore-poll-interval"],
+    undefined,
+  );
+
   const enableInternalApi = resolveBoolean(
     "enable-internal-api",
     cliOptions.enableInternalApi as boolean,
@@ -1218,6 +1230,7 @@ export function mergeServeOptions(
     maxRunsPerPrincipal,
     maxRunDuration,
     hydrationTimeout,
+    datastorePollInterval,
     enableInternalApi,
     remoteOnly,
     dashboard,

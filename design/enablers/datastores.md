@@ -441,7 +441,9 @@ Serve runs three background pollers to fix this:
   (runtime model output), then invalidates the query catalog so the next
   `data.query` rebuilds from the new local files.
 
-All three run every 30 seconds by default, starting when a
+All three run every 30 seconds by default (set with `swamp serve
+--datastore-poll-interval`, `SWAMP_DATASTORE_POLL_INTERVAL` or the `serve.yaml`
+key `datastore-poll-interval`; minimum 1 s), starting when a
 `DatastoreSyncService` is available. They are independent: a config-only pull
 does not count as a runtime refresh, and vice versa.
 

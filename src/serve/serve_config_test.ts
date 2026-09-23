@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -92,6 +93,7 @@ Deno.test("loadServeConfig: parses valid full config with all fields", () => {
       "heartbeat-interval": "30s",
       "stale-ttl": "90s",
       "reconciliation-interval": "60s",
+      "datastore-poll-interval": "5s",
     });
 
     const config = loadServeConfig(undefined, dir);
@@ -106,6 +108,7 @@ Deno.test("loadServeConfig: parses valid full config with all fields", () => {
     assertEquals(config!["detach-runs"], true);
     assertEquals(config!["trust-proxy"], true);
     assertEquals(config!["trusted-hosts"], ["host.docker.internal"]);
+    assertEquals(config!["datastore-poll-interval"], "5s");
   });
 });
 
@@ -930,6 +933,84 @@ Deno.test("mergeServeOptions: hydration-timeout defaults to undefined", () => {
     () => undefined,
   );
   assertEquals(merged.hydrationTimeout, undefined);
+});
+
+Deno.test("mergeServeOptions: datastore-poll-interval CLI flag wins over env and config", () => {
+  const merged = mergeServeOptions(
+    { "datastore-poll-interval": "10s" },
+    { datastorePollInterval: "2s" },
+    new Set(["datastore-poll-interval"]),
+    (name) => name === "SWAMP_DATASTORE_POLL_INTERVAL" ? "5s" : undefined,
+  );
+  assertEquals(merged.datastorePollInterval, "2s");
+});
+
+Deno.test("mergeServeOptions: datastore-poll-interval env var wins over config", () => {
+  const merged = mergeServeOptions(
+    { "datastore-poll-interval": "10s" },
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_DATASTORE_POLL_INTERVAL" ? "5s" : undefined,
+  );
+  assertEquals(merged.datastorePollInterval, "5s");
+});
+
+Deno.test("mergeServeOptions: datastore-poll-interval from config", () => {
+  const merged = mergeServeOptions(
+    { "datastore-poll-interval": "10s" },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.datastorePollInterval, "10s");
+});
+
+Deno.test("mergeServeOptions: datastore-poll-interval defaults to undefined", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.datastorePollInterval, undefined);
+});
+
+Deno.test("loadServeConfig: datastore-poll-interval is a known key", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["serve", "config"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+  try {
+    withTempDir((dir) => {
+      writeConfig(dir, { "datastore-poll-interval": "5s" });
+      loadServeConfig(undefined, dir);
+    });
+    const unknownKeyWarnings = captured.filter((r) =>
+      r.message.map((p) => String(p)).join("").includes("Unknown key")
+    );
+    assertEquals(unknownKeyWarnings, []);
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+});
+
+Deno.test("loadServeConfig: non-string datastore-poll-interval produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "datastore-poll-interval": 30 });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "expected string",
+    );
+  });
 });
 
 // ── Trigger Overrides ────────────────────────────────────────────────
