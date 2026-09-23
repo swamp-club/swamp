@@ -196,8 +196,9 @@ export class DataQueryService {
    * Uses a three-tier strategy to avoid a full catalog backfill:
    * 1. Try the indexed SQL lookup first — if the catalog is populated or the
    *    row exists from a write-through update, return immediately.
-   * 2. If the catalog is not populated and the row exists but the on-disk
-   *    data is gone (stale row after invalidate()), fall through.
+   * 2. If the catalog is not populated and the row exists but its content
+   *    is gone (stale row after invalidate()), fall through. On a
+   *    lazy-hydration datastore the content check downloads the raw file.
    * 3. If the catalog is not populated and no row exists (or row was stale),
    *    run a scoped backfill for just this (modelName, dataName) pair, then
    *    retry the indexed lookup.
@@ -238,15 +239,9 @@ export class DataQueryService {
           row,
         );
       }
-      // Catalog not populated — verify the data still exists on disk to
-      // guard against stale rows left behind after invalidate().
-      const content = this.dataRepo.getContentSync(
-        ModelType.create(row.type_normalized),
-        row.model_id,
-        row.data_name,
-        row.version,
-      );
-      if (content !== null) {
+      // Catalog not populated — verify the data still exists to guard
+      // against stale rows left behind after invalidate().
+      if (await this.rowHasContent(row)) {
         return this.buildRecordFromRow(
           modelName,
           dataName,
@@ -268,15 +263,9 @@ export class DataQueryService {
       namespace,
     );
     if (!freshRow) return null;
-    // Verify the row points to real on-disk data (it may be the same
-    // stale row that triggered the scoped backfill).
-    const freshContent = this.dataRepo.getContentSync(
-      ModelType.create(freshRow.type_normalized),
-      freshRow.model_id,
-      freshRow.data_name,
-      freshRow.version,
-    );
-    if (freshContent === null) return null;
+    // Verify the row points to real data (it may be the same stale row
+    // that triggered the scoped backfill).
+    if (!(await this.rowHasContent(freshRow))) return null;
     return this.buildRecordFromRow(
       modelName,
       dataName,
@@ -284,6 +273,23 @@ export class DataQueryService {
       includePath,
       freshRow,
     );
+  }
+
+  /**
+   * Whether a catalog row's content still exists. Uses the async read so a
+   * lazy-hydration datastore — which syncs metadata only — fetches the raw
+   * file instead of the row being mistaken for a stale one (swamp-club#2288).
+   * Without a hydrate hook this is the same local read as before, so a row
+   * whose data was deleted, or whose write never finished, is still stale.
+   */
+  private async rowHasContent(row: CatalogRow): Promise<boolean> {
+    const content = await this.dataRepo.getContent(
+      ModelType.create(row.type_normalized),
+      row.model_id,
+      row.data_name,
+      row.version,
+    );
+    return content !== null;
   }
 
   checkSpecNameAmbiguity(

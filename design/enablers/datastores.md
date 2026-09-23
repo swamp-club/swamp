@@ -1216,12 +1216,18 @@ Its callers are:
 
 - `data_record_mapper.ts` — query predicate attribute/content loading during
   `data query '<predicate>'` evaluation.
-- `data_query_service.ts` — the stale-row check in `getLatestRecord()`.
 - `model_resolver.ts` — CEL expression resolution during model runs.
 - The composite and in-memory repositories, which delegate to it.
 
 The `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
 → scoped pull, which downloads `raw` files before CEL evaluation begins.
+
+`DataQueryService.getLatestRecord()` — the lookup behind `data.latest()` —
+confirms a catalog row still has content before trusting it while the catalog
+is unpopulated (every datastore sync invalidates it). That check uses the
+async `getContent()`, so on a lazy-hydration datastore it downloads the `raw`
+file rather than mistaking a metadata-only row for a stale one; a row whose
+content is absent remotely too is still stale (swamp-club#2288).
 
 That scoped pull covers the step's own model only. `DataRecord.path` from
 `data.latest()` / `data.version()` must name a file that is present, so those
