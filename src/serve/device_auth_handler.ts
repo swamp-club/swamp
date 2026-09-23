@@ -368,6 +368,7 @@ async function mintServerTokenImpl(
 
   const defRepo = repoContext.definitionRepo;
   let def = await defRepo.findByName(SERVER_TOKEN_MODEL_TYPE, tokenName);
+  let savedDefinitionPath: string | undefined;
   if (!def) {
     def = Definition.create({
       type: SERVER_TOKEN_MODEL_TYPE.normalized,
@@ -381,6 +382,7 @@ async function mintServerTokenImpl(
       repoContext.markDirty,
     );
     await autoDefRepo.save(SERVER_TOKEN_MODEL_TYPE, def);
+    savedDefinitionPath = autoDefRepo.getPath(SERVER_TOKEN_MODEL_TYPE, def.id);
   }
 
   const now = Date.now();
@@ -415,10 +417,22 @@ async function mintServerTokenImpl(
   );
 
   if (syncService) {
-    // The definition save and the resource write above already sent
-    // per-path markDirty signals through the repository hooks. A bare
-    // markDirty() here would set bulkInvalidated and turn every login's
-    // push into a walk of the whole cache (swamp-club#2408).
+    // The repositories mark each path dirty before writing it. An ungated
+    // push (post-run, post-resume) that lands in between takes the path as
+    // a delete and clears the mark, so mark the token's paths again now
+    // that both writes are done. Per path, not bare: a bare markDirty()
+    // sets bulkInvalidated and turns every login's push into a walk of the
+    // whole cache (swamp-club#2408).
+    if (savedDefinitionPath) {
+      await repoContext.markDirty?.(savedDefinitionPath);
+    }
+    await repoContext.markDirty?.(
+      repoContext.unifiedDataRepo.getDataNameDir(
+        SERVER_TOKEN_MODEL_TYPE,
+        def.id,
+        TOKEN_DATA_NAME,
+      ),
+    );
     await syncService.pushChanged({ namespace });
 
     repoContext.catalogStore.invalidate();

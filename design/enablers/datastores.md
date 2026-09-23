@@ -1076,10 +1076,23 @@ per-path signal. That has two costs:
   per-path set overflowed, so remote object deletions are silently lost
   (swamp-club#2273).
 - **A full-cache push.** The push rebuilds the index from every remote shard
-  and walks, and on a pulled cache hashes, every cached file. A mutation of a
-  few files then costs time proportional to the whole cache. On the login
-  mint this made every `swamp auth server-login` slower as the datastore grew
-  (swamp-club#2408).
+  and walks every cached file, hashing each one on a cache filled by pulling.
+  A mutation of a few files then costs time proportional to the whole cache.
+  On the login mint this made every `swamp auth server-login` slower as the
+  datastore grew (swamp-club#2408).
+
+The repositories mark a path dirty *before* they write it. Serve's post-run
+and post-resume pushes are ungated (`UNGATED_PUSH_HANDLERS`), so one can land
+between a repository's mark and its write. That push finds the path absent,
+takes it as a delete and clears the mark, and the handler's own push then
+has nothing to upload. A mutation whose writes must reach the remote even
+when a run finishes at the same moment re-marks its paths, by path, after
+the writes and just before `pushChanged()`. The OAuth mint does this for
+the token's definition file and data folder. A push that is already running
+when the re-mark lands still clears it, because the extension resets the
+whole dirty set when a push completes. swamp-club#2421 tracks the proper
+fix: repositories that mark after the write, and extensions that clear only
+the marks a push actually handled.
 
 `integration/datastore_sync_rules_test.ts` enforces this at build time. One
 rule rejects bare `notifyDirty()` inside the per-path-wired repositories.

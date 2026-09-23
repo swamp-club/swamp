@@ -822,3 +822,92 @@ Deno.test("createDeviceAuthDeps: mintServerToken sends only per-path markDirty b
     }
   });
 });
+
+// Models an ungated push (post-run, post-resume) landing right after each
+// mark. The repositories mark a path before writing it, so that push finds
+// the path absent, takes it as a delete and clears the mark. Only marks made
+// after the write survive to the mint's own push.
+function createRacingSyncService(): {
+  service: DatastoreSyncService;
+  dirtyAtPush: string[];
+} {
+  const dirty = new Set<string>();
+  const dirtyAtPush: string[] = [];
+  const service: DatastoreSyncService = {
+    pullChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
+      return Promise.resolve(0);
+    },
+    pushChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
+      dirtyAtPush.push(...dirty);
+      dirty.clear();
+      return Promise.resolve(0);
+    },
+    async markDirty(options?: DatastoreSyncOptions): Promise<void> {
+      if (!options?.relPath) return;
+      try {
+        await Deno.stat(options.relPath);
+        dirty.add(options.relPath);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        dirty.delete(options.relPath);
+      }
+    },
+  };
+  return { service, dirtyAtPush };
+}
+
+Deno.test("createDeviceAuthDeps: mintServerToken re-marks the token paths after writing them, so a concurrent push cannot drop them (swamp-club#2408)", async () => {
+  await withTempDir(async (dir) => {
+    const vaultDir = join(dir, "vaults", TOKEN_SECRETS_VAULT_NAME);
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "token-secrets-id.yaml"),
+      stringifyYaml({
+        id: "token-secrets-id",
+        name: TOKEN_SECRETS_VAULT_NAME,
+        type: "mock",
+        config: {},
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    const { service, dirtyAtPush } = createRacingSyncService();
+    const repoContext = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+      markDirty: (path?: string) =>
+        service.markDirty(path ? { relPath: path } : undefined),
+    });
+    try {
+      const deps = createDeviceAuthDeps(
+        { ...makeMockDeps().authConfig, oauthClientId: "test-client-id" },
+        "test-client-secret",
+        dir,
+        repoContext,
+        undefined,
+        service,
+      );
+
+      await deps.mintServerToken(
+        "user:user-1",
+        "user@example.com",
+        ["team-a"],
+        [],
+        dir,
+        repoContext,
+      );
+
+      const marked = dirtyAtPush.map((p) => p.replaceAll("\\", "/"));
+      assert(
+        marked.some((p) => p.includes("auto-definitions/")),
+        `token definition must still be marked when the mint pushes, got ${marked}`,
+      );
+      assert(
+        marked.some((p) => p.endsWith("/token-main")),
+        `token data must still be marked when the mint pushes, got ${marked}`,
+      );
+    } finally {
+      repoContext.catalogStore.close();
+    }
+  });
+});
