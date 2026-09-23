@@ -214,7 +214,7 @@ Deno.test("resolveAccessLists: full mode aborts on an admin lookup error other t
   );
   assertEquals(
     err.message,
-    `Failed to resolve admin 'bob': Failed to resolve username 'bob': 503. Check that ${PROVIDER} is reachable and retry.`,
+    `Failed to resolve admin 'bob': Failed to resolve username 'bob': 503. Check that ${PROVIDER} is reachable and that the credential can look up users, then retry.`,
   );
 });
 
@@ -244,10 +244,11 @@ Deno.test("resolveAccessLists: full mode re-resolves names that are already cach
   assertEquals(calls, ["alice", "bob"]);
 });
 
-Deno.test("resolveAccessLists: full mode looks up a previously missing name again", async () => {
-  // Full mode only runs when the lists changed, which is the operator's cue
-  // to re-check every name.
-  const { resolve, calls } = fakeResolver(["alice", "alic_e"]);
+Deno.test("resolveAccessLists: full mode keeps a previously missing name skipped", async () => {
+  // Adding carol triggers full mode, but alic_e was recorded as not found:
+  // an unrelated edit must not look it up, or a squatted typo would be
+  // promoted.
+  const { resolve, calls } = fakeResolver(["alice", "alic_e", "carol"]);
   const result = await run({
     admins: ["alice", "alic_e", "carol"],
     cache: {
@@ -257,9 +258,53 @@ Deno.test("resolveAccessLists: full mode looks up a previously missing name agai
     mode: "full",
     resolve,
   });
-  assertEquals(calls, ["alice", "alic_e", "carol"]);
-  assertEquals(result.admins, ["user:sub-alice", "user:sub-alic_e"]);
-  assertEquals(result.cache[unresolvedCacheKey("admin", "alic_e")], undefined);
+  assertEquals(calls, ["alice", "carol"]);
+  assertEquals(result.admins, ["user:sub-alice", "user:sub-carol"]);
+  assertEquals(result.unresolved.map((u) => [u.entry, u.notFoundSince]), [
+    ["alic_e", EARLIER],
+  ]);
+  assertEquals(result.cache[unresolvedCacheKey("admin", "alic_e")], EARLIER);
+});
+
+Deno.test("resolveAccessLists: removing a skipped name drops its record", async () => {
+  const cache = {
+    alice: "sub-alice",
+    [unresolvedCacheKey("admin", "bob")]: EARLIER,
+  };
+  const result = await run({
+    admins: ["alice"],
+    cache,
+    mode: chooseResolutionMode(["alice"], [], cache),
+  });
+  assert(result.cacheChanged);
+  assertEquals({ ...result.cache }, { alice: "sub-alice" });
+});
+
+Deno.test("resolveAccessLists: a name added back after removal is looked up fresh", async () => {
+  // The cache after removing bob no longer has his record, so adding him
+  // back is a new name and triggers a lookup.
+  const cache = { alice: "sub-alice" };
+  const admins = ["alice", "bob"];
+  const { resolve, calls } = fakeResolver(["alice", "bob"]);
+  const result = await run({
+    admins,
+    cache,
+    mode: chooseResolutionMode(admins, [], cache),
+    resolve,
+  });
+  assertEquals(calls, ["alice", "bob"]);
+  assertEquals(result.admins, ["user:sub-alice", "user:sub-bob"]);
+});
+
+Deno.test("resolveAccessLists: names that shadow Object.prototype are not treated as cached", async () => {
+  const admins = ["constructor", "toString"];
+  const cache = JSON.parse("{}") as Record<string, string>;
+  assertEquals(chooseResolutionMode(admins, [], cache), "full");
+  const { resolve, calls } = fakeResolver(["constructor"]);
+  const result = await run({ admins, cache, mode: "full", resolve });
+  assertEquals(calls, ["constructor", "toString"]);
+  assertEquals(result.admins, ["user:sub-constructor"]);
+  assertEquals(result.unresolved.map((u) => u.entry), ["toString"]);
 });
 
 // ── resolveAccessLists: cached mode ────────────────────────────────────

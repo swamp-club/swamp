@@ -31,10 +31,11 @@
  * failure aborts startup, because dropping an existing admin from the list
  * makes `materializeAdmins` revoke their grant.
  *
- * A skipped name is never looked up again on its own. It stays skipped
- * until the operator changes the lists, which re-resolves every name. An
- * automatic re-check would promote the name as soon as anyone registered
- * it, so a typo in `auth.admins` could be claimed by someone else.
+ * A skipped name stays skipped: restarts and edits to other entries never
+ * look it up again. Removing it from the list drops its record, so adding
+ * it back later looks it up fresh. Any automatic re-check would promote the
+ * name as soon as someone registered it, so a typo in `auth.admins` could
+ * be claimed by someone else and become an admin.
  */
 
 import { UserError } from "../domain/errors.ts";
@@ -45,9 +46,10 @@ export type AccessListKind = "admin" | "allowed-user";
 
 /**
  * How startup resolves the lists:
- * - `full`: some name is not in the cache at all, i.e. the lists changed.
- *   Every name is looked up, including ones previously not found.
- * - `cached`: every name is cached, as resolved or as not found. No lookups.
+ * - `full`: some name has no record in the cache (it was added). Names with
+ *   a resolved record are looked up again; names recorded as not found stay
+ *   skipped without a lookup.
+ * - `cached`: every name has a record. No lookups.
  */
 export type ResolutionMode = "full" | "cached";
 
@@ -124,6 +126,17 @@ export function unresolvedCacheKey(
   return `unresolved:${resolvedCacheKey(kind, username)}`;
 }
 
+/**
+ * Reads a cache entry. The cache comes from `JSON.parse`, so a plain index
+ * would find `Object.prototype` members for names like `constructor`.
+ */
+function cached(
+  cache: Readonly<Record<string, string>>,
+  key: string,
+): string | undefined {
+  return Object.hasOwn(cache, key) ? cache[key] : undefined;
+}
+
 interface ConfiguredEntry {
   readonly kind: AccessListKind;
   readonly entry: string;
@@ -160,8 +173,8 @@ export function listUncachedNames(
 ): string[] {
   return configuredEntries(admins, allowedUsers)
     .filter(({ kind, username }) =>
-      !cache[resolvedCacheKey(kind, username)] &&
-      !cache[unresolvedCacheKey(kind, username)]
+      !cached(cache, resolvedCacheKey(kind, username)) &&
+      !cached(cache, unresolvedCacheKey(kind, username))
     )
     .map(({ kind, username }) => resolvedCacheKey(kind, username));
 }
@@ -197,8 +210,8 @@ export async function resolveAccessLists(
 
   const admins: string[] = [];
   const allowedUsers: string[] = [];
-  const usernamesBySub: Record<string, string> = {};
-  const nextCache: Record<string, string> = {};
+  const usernamesBySub: Record<string, string> = Object.create(null);
+  const nextCache: Record<string, string> = Object.create(null);
   const resolved: ResolvedEntry[] = [];
   const unresolved: UnresolvedEntry[] = [];
 
@@ -215,7 +228,8 @@ export async function resolveAccessLists(
 
   const skip = (entry: ConfiguredEntry, reason?: string) => {
     const markerKey = unresolvedCacheKey(entry.kind, entry.username);
-    const notFoundSince = cache[markerKey] ?? nextCache[markerKey] ?? now();
+    const notFoundSince = cached(cache, markerKey) ??
+      cached(nextCache, markerKey) ?? now();
     nextCache[markerKey] = notFoundSince;
     unresolved.push({
       kind: entry.kind,
@@ -227,9 +241,16 @@ export async function resolveAccessLists(
   };
 
   for (const entry of configuredEntries(input.admins, input.allowedUsers)) {
-    const cachedSub = cache[resolvedCacheKey(entry.kind, entry.username)];
+    const cachedSub = cached(
+      cache,
+      resolvedCacheKey(entry.kind, entry.username),
+    );
+    const knownMissing = cached(
+      cache,
+      unresolvedCacheKey(entry.kind, entry.username),
+    ) !== undefined;
 
-    if (mode === "cached") {
+    if (mode === "cached" || (knownMissing && !cachedSub)) {
       if (cachedSub) {
         accept(entry, cachedSub, true);
       } else {
@@ -249,7 +270,7 @@ export async function resolveAccessLists(
       throw new UserError(
         `Failed to resolve ${label} '${entry.entry}': ${
           errorMessage(err)
-        }. Check that ${providerUrl} is reachable and retry.`,
+        }. Check that ${providerUrl} is reachable and that the credential can look up users, then retry.`,
       );
     }
   }
@@ -305,7 +326,7 @@ export function assertAccessListsUsable(
       `Failed to resolve admin ${
         quotedEntries(resolution.unresolved, "admin")
       }: none of the configured admins exist on ${providerUrl}. ` +
-        "Serve will not start without an admin. Fix the names in auth.admins.",
+        "Serve will not start without an admin. Fix the names in --admins / auth.admins.",
     );
   }
   if (
@@ -318,7 +339,7 @@ export function assertAccessListsUsable(
         quotedEntries(resolution.unresolved, "allowed-user")
       }: none of the configured allowed-users exist on ${providerUrl} and no ` +
         "allowed-collectives are set, so admission would be open to every " +
-        `user of ${providerUrl}. Fix the names in auth.allowed-users.`,
+        `user of ${providerUrl}. Fix the names in --allowed-users / auth.allowed-users.`,
     );
   }
 }

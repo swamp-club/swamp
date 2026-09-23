@@ -78,8 +78,10 @@ Deno.test("renderServeCheckConfig: log mode marks unknown names and fails", () =
   assertStringIncludes(output, "✓ alice → sub-alice");
   assertStringIncludes(output, `✗ alic_e → not found on ${PROVIDER}`);
   assertStringIncludes(output, "Allowed users:");
-  assertStringIncludes(output, "would start, skipping 1 unknown name(s)");
-  assertStringIncludes(output, "Result: FAILED");
+  assertStringIncludes(
+    output,
+    "Result: FAILED (1 unknown name(s); swamp serve would start without them)",
+  );
 });
 
 Deno.test("renderServeCheckConfig: log mode shows why serve would refuse to start", () => {
@@ -94,7 +96,10 @@ Deno.test("renderServeCheckConfig: log mode shows why serve would refuse to star
   );
   assertStringIncludes(output, "swamp serve would refuse to start:");
   assertStringIncludes(output, "Failed to resolve admin 'alic_e'");
-  assertFalse(output.includes("would start, skipping"));
+  assertStringIncludes(
+    output,
+    "Result: FAILED (swamp serve would refuse to start)",
+  );
 });
 
 Deno.test("renderServeCheckConfig: log mode passes when every name resolves", () => {

@@ -115,6 +115,13 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
       for (const u of result.unresolved) {
         assert(!(`sub-${u.username}` in result.usernamesBySub));
       }
+      // A name recorded as not found is never promoted without being
+      // removed first, whatever the provider says now.
+      for (const name of s.cachedMissing) {
+        if (s.cachedExisting.includes(name)) continue;
+        assert(!result.admins.includes(`user:sub-${name}`));
+        assert(!result.allowedUsers.includes(`sub-${name}`));
+      }
 
       let usable = true;
       try {

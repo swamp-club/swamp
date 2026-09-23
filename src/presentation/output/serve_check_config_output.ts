@@ -89,26 +89,22 @@ export function renderServeCheckConfig(
       );
     }
 
-    const notFound = data.entries.filter((e) => e.status === "not-found");
     if (data.refusal !== undefined) {
       lines.push("");
       lines.push(`${red(CROSS)} ${red("swamp serve would refuse to start:")}`);
       lines.push(`  ${data.refusal}`);
-    } else if (notFound.length > 0) {
-      lines.push("");
-      lines.push(
-        dim(
-          `swamp serve would start, skipping ${notFound.length} unknown name(s).`,
-        ),
-      );
     }
   }
 
+  const notFound = data.entries.filter((e) => e.status === "not-found").length;
+  let result = green("PASSED");
+  if (!data.passed) {
+    const why = data.refusal !== undefined
+      ? "swamp serve would refuse to start"
+      : `${notFound} unknown name(s); swamp serve would start without them`;
+    result = `${red("FAILED")} ${dim(`(${why})`)}`;
+  }
   lines.push("");
-  lines.push(
-    data.passed
-      ? `${bold(cyan("Result:"))} ${green("PASSED")}`
-      : `${bold(cyan("Result:"))} ${red("FAILED")}`,
-  );
+  lines.push(`${bold(cyan("Result:"))} ${result}`);
   writeOutput(lines.join("\n"));
 }

@@ -1153,9 +1153,9 @@ const checkConfigCommand = new Command()
   .name("check-config")
   .description(
     "Check a serve config's auth settings without starting the server.\n\n" +
-      "Loads the config the same way 'swamp serve' does (config file, then env vars), " +
-      "validates the auth settings, and in oauth mode looks up every auth.admins and " +
-      "auth.allowed-users name on the OAuth provider. Exits non-zero if a name is unknown " +
+      "Loads the auth settings the same way 'swamp serve' does (flags, env vars, then the " +
+      "config file), validates them, and in oauth mode looks up every admin and " +
+      "allowed-user name on the OAuth provider. Exits non-zero if a name is unknown " +
       "or serve would refuse to start. Uses SWAMP_API_KEY or your 'swamp auth login' " +
       "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
       "for a custom provider). Nothing is written to the repository or the vault.",
@@ -1165,6 +1165,10 @@ const checkConfigCommand = new Command()
     "Check a config file before deploying it",
     "swamp serve check-config --config deploy/serve.yaml",
   )
+  .example(
+    "Check names passed as flags",
+    "swamp serve check-config --auth-mode oauth --admins alice,bob --allowed-collectives eng",
+  )
   .option(
     "--config <path:string>",
     "Path to serve config file (default: .swamp/serve.yaml)",
@@ -1172,6 +1176,26 @@ const checkConfigCommand = new Command()
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option(
+    "--auth-mode <mode:string>",
+    "Authentication mode to check, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--admins <principals:string>",
+    "Comma-separated admin usernames, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--allowed-users <list:string>",
+    "Comma-separated allowed-user usernames, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--allowed-collectives <list:string>",
+    "Comma-separated collective slugs, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--oauth-provider <url:string>",
+    "OAuth provider URL, as passed to 'swamp serve' (overrides the config file)",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
@@ -2538,13 +2562,21 @@ export const serveCommand = new Command()
         }
       }
       for (const u of resolution.unresolved) {
-        const list = u.kind === "admin" ? "auth.admins" : "auth.allowed-users";
-        if (u.reason !== undefined) {
+        // A fresh 404 carries a reason; a recorded one does not.
+        if (u.kind === "admin") {
+          if (u.reason !== undefined) {
+            logger
+              .error`Skipping admin ${u.entry}: ${u.reason}. Fix the name in --admins / auth.admins, or remove it.`;
+          } else {
+            logger
+              .error`Skipping admin ${u.entry}: not found on ${authConfig.oauthProvider} since ${u.notFoundSince}. It stays skipped until removed from --admins / auth.admins. If the account exists now (swamp serve check-config), remove the name, restart, then add it back.`;
+          }
+        } else if (u.reason !== undefined) {
           logger
-            .error`Skipping ${u.entry} from ${list}: ${u.reason}. Fix or remove it in the serve config.`;
+            .error`Skipping allowed-user ${u.entry}: ${u.reason}. Fix the name in --allowed-users / auth.allowed-users, or remove it.`;
         } else {
           logger
-            .error`Skipping ${u.entry} from ${list}: ${authConfig.oauthProvider} reported it not found at ${u.notFoundSince} (cached). Fix or remove it in the serve config. It is not looked up again until ${list} changes; run swamp serve check-config to see whether it exists now.`;
+            .error`Skipping allowed-user ${u.entry}: not found on ${authConfig.oauthProvider} since ${u.notFoundSince}. It stays skipped until removed from --allowed-users / auth.allowed-users. If the account exists now (swamp serve check-config), remove the name, restart, then add it back.`;
         }
       }
 
@@ -2560,7 +2592,9 @@ export const serveCommand = new Command()
         authConfig.oauthProvider,
       );
 
-      if (resolutionMode === "full" && resolution.cacheChanged) {
+      // Written in either mode: dropping a removed name's record is what
+      // lets it be looked up fresh if it is added back.
+      if (resolution.cacheChanged) {
         await storeResolvedAdmins(
           {
             putVaultSecret: (_v, k, val) =>

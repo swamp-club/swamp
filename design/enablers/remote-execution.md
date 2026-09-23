@@ -272,11 +272,15 @@ Username resolution: at startup serve turns each `--admins` and
 no lookups. The rules for a name that does not resolve:
 
 - **Not found (HTTP 404)**: the name is skipped with an ERROR log, and serve
-  starts with the rest. The failure is cached. A restart with unchanged lists
-  does not look the name up again. Only a change to `--admins` or
-  `--allowed-users` does, because that change re-resolves every name. An
-  automatic re-check would promote the name as soon as anyone registered it,
-  so a typo in `--admins` could be claimed by someone else and become an admin.
+  starts with the rest. The failure is recorded in the cache, and the name
+  stays skipped: restarts and edits to other entries never look it up again.
+  Removing the name drops its record, so adding it back later looks it up
+  fresh. Fixing a typo therefore takes one deploy; an account created after
+  the name was added takes two (remove, then add back). Any automatic re-check
+  would promote the name as soon as someone registered it, so a typo in
+  `--admins` could be claimed by someone else and become an admin. One case
+  remains: if the cache itself is lost (a new host or a rebuilt
+  `_token-secrets` vault), every name is looked up again, including old typos.
 - **Any other lookup error** (5xx, timeout, network): startup aborts. Dropping
   an existing admin would make `materializeAdmins` revoke their grant, so a
   provider outage must never shrink the list.
@@ -284,9 +288,11 @@ no lookups. The rules for a name that does not resolve:
   allowed-user was skipped and no `--allowed-collectives` are set.
   `checkAdmission` admits everyone when both lists are empty.
 
-`swamp serve check-config` runs the same lookups against a config without
-starting the server or writing the cache. It exits non-zero on any unknown name,
-so a typo is caught before a deploy. It uses `SWAMP_API_KEY` or the
+`swamp serve check-config` runs the same lookups without starting the server or
+writing the cache. It reads the auth settings the way serve does (flags, env
+vars, then the config file) and looks up every name, including ones serve has
+recorded as not found. It exits non-zero on any unknown name, so a typo is
+caught before a deploy. It uses `SWAMP_API_KEY` or the
 `swamp auth login` credential, and sends it only when the provider has the same
 origin as the swamp-club server that issued it (`SWAMP_CLUB_URL` for a custom
 provider). The command is meant for configs that are not yet deployed, possibly
