@@ -105,7 +105,34 @@ The skill verification workflow also needs:
   Anthropic API). Already available from `verify.env` or claude.ai login. If
   missing, trigger evals are skipped gracefully (exit 0).
 
-To create the env file (optional):
+To create the env file, read the values out of 1Password:
+
+```
+deno run setup-verify-env            # writes ~/.config/swamp/verify.env, 0600
+deno run setup-verify-env --check    # reports what is missing, writes nothing
+```
+
+It expects one 1Password item per variable, titled by the variable's own name
+(`TESSL_TOKEN`, `ANTHROPIC_API_KEY`), and names no vault or item path itself —
+this repository is public. Pass `--account` (or set `OP_ACCOUNT`) when more
+than one 1Password account is signed in; `op` refuses with "multiple accounts
+found" otherwise. Keys the script does not manage are left in the file
+untouched.
+
+Run `--check` before a verification rather than after. A missing
+`TESSL_TOKEN` surfaces as `skill-review` exiting 1 several minutes into a run,
+and a missing `ANTHROPIC_API_KEY` does not surface at all — trigger evals skip
+at exit 0 and the reviews fall back to a claude.ai login, so the gate goes
+green having checked less than it appears to have checked.
+
+Writing the file is not enough. Nothing reads it automatically, so export it
+in the shell that launches the workflows:
+
+```
+set -a; . ~/.config/swamp/verify.env; set +a
+```
+
+To write it by hand instead:
 
 ```
 cat > ~/.config/swamp/verify.env << 'EOF'
