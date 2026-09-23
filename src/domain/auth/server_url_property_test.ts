@@ -19,7 +19,7 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
-import { normalizeServerUrl } from "./server_url.ts";
+import { normalizeServerUrl, redactServerUrl } from "./server_url.ts";
 
 const arbScheme = fc.constantFrom("http", "https", "ws", "wss");
 
@@ -218,5 +218,82 @@ Deno.test("normalizeServerUrl: rejects strings that are not URLs", () => {
       },
     ),
     { numRuns: 200 },
+  );
+});
+
+// Secrets use an uppercase alphabet behind a SECRET marker. Schemes and
+// path segments are lowercase and the parser lowercases hosts, so any
+// uppercase run in a redacted URL can only be a leaked secret.
+const arbSecret = fc.stringOf(
+  fc.constantFrom(..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")),
+  { minLength: 1, maxLength: 12 },
+).map((s) => `SECRET${s}`);
+
+interface Secrets {
+  username: string;
+  password: string;
+  token: string;
+  fragment: string;
+}
+
+const arbSecrets: fc.Arbitrary<Secrets> = fc.record({
+  username: arbSecret,
+  password: arbSecret,
+  token: arbSecret,
+  fragment: arbSecret,
+});
+
+function buildUrlWithSecrets(parts: UrlParts, secrets: Secrets): string {
+  const port = parts.port === undefined ? "" : `:${parts.port}`;
+  const path = parts.segments.length > 0 ? `/${parts.segments.join("/")}` : "";
+  return `${parts.scheme}://${secrets.username}:${secrets.password}@${parts.host}${port}${path}${
+    "/".repeat(parts.trailingSlashes)
+  }?token=${secrets.token}#${secrets.fragment}`;
+}
+
+Deno.test("redactServerUrl: never contains userinfo, query or fragment secrets", () => {
+  fc.assert(
+    fc.property(arbUrlParts, arbSecrets, (parts, secrets) => {
+      const redacted = redactServerUrl(buildUrlWithSecrets(parts, secrets));
+      assert(redacted !== undefined);
+      assertEquals(redacted.includes("SECRET"), false);
+      for (const secret of Object.values(secrets)) {
+        assertEquals(redacted.includes(secret), false);
+      }
+    }),
+    { numRuns: 300 },
+  );
+});
+
+Deno.test("redactServerUrl: secrets do not change the result", () => {
+  fc.assert(
+    fc.property(arbUrlParts, arbSecrets, (parts, secrets) => {
+      assertEquals(
+        redactServerUrl(buildUrlWithSecrets(parts, secrets)),
+        redactServerUrl(buildUrl(parts)),
+      );
+    }),
+    { numRuns: 300 },
+  );
+});
+
+Deno.test("redactServerUrl: is idempotent", () => {
+  fc.assert(
+    fc.property(arbUrlParts, arbSecrets, (parts, secrets) => {
+      const once = redactServerUrl(buildUrlWithSecrets(parts, secrets));
+      assert(once !== undefined);
+      assertEquals(redactServerUrl(once), once);
+    }),
+    { numRuns: 300 },
+  );
+});
+
+Deno.test("redactServerUrl: keeps the scheme as given", () => {
+  fc.assert(
+    fc.property(arbUrlParts, arbSecrets, (parts, secrets) => {
+      const redacted = redactServerUrl(buildUrlWithSecrets(parts, secrets));
+      assert(redacted?.startsWith(`${parts.scheme}://`));
+    }),
+    { numRuns: 300 },
   );
 });

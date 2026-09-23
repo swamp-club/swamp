@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { UserError } from "../../domain/errors.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import { isServeOwnedRun } from "./workflow_cancel.ts";
+import { buildCancelUrl, isServeOwnedRun } from "./workflow_cancel.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -82,6 +83,37 @@ Deno.test("isServeOwnedRun: returns false for CLI-started run with pid", () => {
 Deno.test("isServeOwnedRun: returns true for serve run with both pid and instanceId", () => {
   const run = makeRun({ pid: 12345, instanceId: crypto.randomUUID() });
   assertEquals(isServeOwnedRun(run), true);
+});
+
+Deno.test("buildCancelUrl: maps ws(s) to http(s) and appends the cancel path", () => {
+  assertEquals(
+    buildCancelUrl("ws://127.0.0.1:9000", "run-1"),
+    "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+  );
+  assertEquals(
+    buildCancelUrl("wss://serve.example.com/swamp/", "a/b"),
+    "https://serve.example.com/swamp/api/v1/cancel/workflow-run/a%2Fb",
+  );
+});
+
+Deno.test("buildCancelUrl: drops userinfo, token query and fragment", () => {
+  assertEquals(
+    buildCancelUrl(
+      "http://alice:hunter2@127.0.0.1:9000/?token=abc.s3cret#frag",
+      "run-1",
+    ),
+    "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+  );
+});
+
+Deno.test("buildCancelUrl: the invalid-URL error hides credentials", () => {
+  const error = assertThrows(
+    () => buildCancelUrl("ftp://alice:hunter2@h:2121/?token=abc.s3cret", "r"),
+    UserError,
+  );
+  for (const secret of ["alice", "hunter2", "s3cret"]) {
+    assertEquals(error.message.includes(secret), false, secret);
+  }
 });
 
 Deno.test("workflowCancelCommand module loads", async () => {

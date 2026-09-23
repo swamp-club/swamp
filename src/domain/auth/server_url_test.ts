@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { normalizeServerUrl } from "./server_url.ts";
+import { normalizeServerUrl, redactServerUrl } from "./server_url.ts";
 
 Deno.test("normalizeServerUrl: strips trailing slash", () => {
   assertEquals(
@@ -134,4 +134,50 @@ Deno.test("normalizeServerUrl: wss and https normalize to same key", () => {
     normalizeServerUrl("wss://SWAMP.Example.COM:443/"),
     normalizeServerUrl("https://swamp.example.com"),
   );
+});
+
+Deno.test("redactServerUrl: drops a token query string", () => {
+  assertEquals(
+    redactServerUrl("http://127.0.0.1:9000/?token=abc.s3cret"),
+    "http://127.0.0.1:9000",
+  );
+});
+
+Deno.test("redactServerUrl: drops userinfo", () => {
+  assertEquals(
+    redactServerUrl("https://alice:hunter2@serve.example.com"),
+    "https://serve.example.com",
+  );
+});
+
+Deno.test("redactServerUrl: drops the fragment", () => {
+  assertEquals(
+    redactServerUrl("wss://serve.example.com:4000/#s3cret"),
+    "wss://serve.example.com:4000",
+  );
+});
+
+Deno.test("redactServerUrl: keeps the scheme as given", () => {
+  assertEquals(redactServerUrl("ws://h:1"), "ws://h:1");
+  assertEquals(redactServerUrl("wss://h:1"), "wss://h:1");
+  assertEquals(redactServerUrl("http://h:1"), "http://h:1");
+  assertEquals(redactServerUrl("https://h:1"), "https://h:1");
+  assertEquals(redactServerUrl("ftp://u:p@h/?token=x"), "ftp://h");
+});
+
+Deno.test("redactServerUrl: keeps a non-root path", () => {
+  assertEquals(
+    redactServerUrl("https://u:p@serve.example.com/swamp/?token=x#f"),
+    "https://serve.example.com/swamp/",
+  );
+});
+
+Deno.test("redactServerUrl: returns undefined for a value that does not parse", () => {
+  assertEquals(redactServerUrl("not a url"), undefined);
+  assertEquals(redactServerUrl(""), undefined);
+});
+
+Deno.test("redactServerUrl: returns undefined for a URL without a host", () => {
+  assertEquals(redactServerUrl("localhost:9000/?token=s3cret"), undefined);
+  assertEquals(redactServerUrl("mailto:alice@example.com"), undefined);
 });

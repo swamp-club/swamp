@@ -80,6 +80,7 @@ import {
   resolveServeUrl,
   runModelMethodOverServer,
 } from "../remote_run.ts";
+import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { parseTimeout } from "../duration_parser.ts";
@@ -631,7 +632,9 @@ async function runMethodViaServer(
         ctx.logger
           .info`Running method ${methodName} [${
           i + 1
-        }/${inputSets.length}] via ${options.server}`;
+        }/${inputSets.length}] via ${
+          redactServerUrl(options.server as string) ?? "(invalid URL)"
+        }`;
       }
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: modelIdOrName,

@@ -92,6 +92,7 @@ import {
   resolveServeUrl,
   runWorkflowOverServer,
 } from "../remote_run.ts";
+import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 
@@ -672,7 +673,9 @@ async function runWorkflowViaServer(
         ctx.logger
           .info`Running workflow ${workflowIdOrName} [${
           i + 1
-        }/${inputSets.length}] via ${options.server}`;
+        }/${inputSets.length}] via ${
+          redactServerUrl(options.server as string) ?? "(invalid URL)"
+        }`;
       }
       const renderer = options.junit
         ? new JUnitWorkflowRunRenderer({

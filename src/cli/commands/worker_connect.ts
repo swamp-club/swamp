@@ -27,6 +27,7 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { parseLabels } from "./worker_shared.ts";
 import { runWorker, type WorkerExitReason } from "../../worker/connect.ts";
 import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
@@ -165,8 +166,11 @@ export const workerConnectCommand = new Command()
     }
 
     if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
+      const shown = redactServerUrl(url);
       throw new UserError(
-        `Orchestrator URL must start with ws:// or wss:// (got '${url}')`,
+        `Orchestrator URL must start with ws:// or wss://${
+          shown === undefined ? "" : ` (got '${shown}')`
+        }`,
       );
     }
 

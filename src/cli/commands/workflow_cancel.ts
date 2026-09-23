@@ -26,6 +26,10 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
+  normalizeServerUrl,
+  redactServerUrl,
+} from "../../domain/auth/server_url.ts";
+import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
@@ -51,6 +55,26 @@ const TERMINAL_STATUSES = new Set([
   "cancelled",
   "interrupted",
 ]);
+
+/**
+ * Builds the serve cancel endpoint URL from the --server value. Starts from
+ * the normalized http(s) URL, so userinfo, query string and fragment never
+ * reach the request URL or its error text.
+ */
+export function buildCancelUrl(server: string, runId: string): string {
+  let base: string;
+  try {
+    base = normalizeServerUrl(server);
+  } catch {
+    const shown = redactServerUrl(server);
+    throw new UserError(
+      `Invalid --server URL${
+        shown === undefined ? "" : ` '${shown}'`
+      } — expected ws://host:port (or http://)`,
+    );
+  }
+  return `${base}/api/v1/cancel/workflow-run/${encodeURIComponent(runId)}`;
+}
 
 export function isServeOwnedRun(run: WorkflowRun): boolean {
   return run.instanceId !== undefined;
@@ -156,10 +180,7 @@ export const workflowCancelCommand = withRemoteOptions(
         server,
         options,
       );
-      const httpUrl = server.replace(/^ws(s?):/, "http$1:");
-      const cancelUrl = `${httpUrl}/api/v1/cancel/workflow-run/${
-        encodeURIComponent(options.run as string)
-      }`;
+      const cancelUrl = buildCancelUrl(server, options.run as string);
       const headers: Record<string, string> = {};
       if (token) headers["Authorization"] = `Bearer ${token}`;
       let body: Record<string, unknown>;
@@ -181,9 +202,9 @@ export const workflowCancelCommand = withRemoteOptions(
       } catch (error) {
         if (error instanceof UserError) throw error;
         throw new UserError(
-          `Could not connect to ${server}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Could not connect to ${
+            redactServerUrl(server) ?? "(invalid URL)"
+          }: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
       if (

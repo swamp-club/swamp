@@ -42,7 +42,10 @@ import type {
 } from "../serve/protocol.ts";
 import { deserializeEvent } from "../serve/serializer.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
-import { normalizeServerUrl as normalizeServerUrlForCredentials } from "../domain/auth/server_url.ts";
+import {
+  normalizeServerUrl as normalizeServerUrlForCredentials,
+  redactServerUrl,
+} from "../domain/auth/server_url.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -121,7 +124,13 @@ function serverWithoutCredentials(server: string): string | undefined {
 }
 
 export function writeRemoteIndicator(serverUrl: string): void {
-  console.error(gutterLine("Remote", STATUS_COLORS.warn, serverUrl));
+  console.error(
+    gutterLine(
+      "Remote",
+      STATUS_COLORS.warn,
+      redactServerUrl(serverUrl) ?? "(invalid URL)",
+    ),
+  );
 }
 
 function formatServerError(
@@ -265,8 +274,11 @@ export function toWebSocketUrl(server: string): string {
   try {
     normalized = normalizeServerUrlForCredentials(server);
   } catch {
+    const shown = redactServerUrl(server);
     throw new UserError(
-      `Invalid --server URL '${server}' — expected ws://host:port (or http://)`,
+      `Invalid --server URL${
+        shown === undefined ? "" : ` '${shown}'`
+      } — expected ws://host:port (or http://)`,
     );
   }
   const parsed = new URL(normalized);

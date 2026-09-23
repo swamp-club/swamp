@@ -194,7 +194,10 @@ commands fall back to `SWAMP_SERVE_URL`, then `SWAMP_SERVER_URL` (precedence:
 `export SWAMP_SERVE_URL=wss://demo.swamp-club.ai` saves repeating the URL.
 Before the first network I/O, a remote command writes a `Remote   <url>` line
 to stderr, so the user always knows it targets a server, not the local
-repository.
+repository. The line, and every other message that names the server, shows
+the URL without userinfo, query string or fragment (`redactServerUrl` in
+`src/domain/auth/server_url.ts`), so a `?token=` credential never reaches
+stderr or logs.
 
 With `--auth-mode token`, the server checks the upgrade token by a read-only
 lookup of its `swamp/server-token` lifecycle record and vault secret, using the

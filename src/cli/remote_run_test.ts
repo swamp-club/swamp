@@ -1758,7 +1758,7 @@ Deno.test("writeRemoteIndicator: writes server URL to stderr", () => {
   }
 });
 
-Deno.test("writeRemoteIndicator: includes ws URL verbatim", () => {
+Deno.test("writeRemoteIndicator: includes a credential-free ws URL unchanged", () => {
   const calls: string[] = [];
   const originalError = console.error;
   console.error = (...args: unknown[]) => {
@@ -1771,6 +1771,62 @@ Deno.test("writeRemoteIndicator: includes ws URL verbatim", () => {
   } finally {
     console.error = originalError;
   }
+});
+
+Deno.test("writeRemoteIndicator: hides userinfo, token query and fragment", () => {
+  const calls: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    calls.push(args.map(String).join(" "));
+  };
+  try {
+    writeRemoteIndicator(
+      "http://alice:hunter2@127.0.0.1:9000/?token=abc.s3cret#frag",
+    );
+    assertEquals(calls.length, 1);
+    assertStringIncludes(calls[0], "http://127.0.0.1:9000");
+    for (const secret of ["alice", "hunter2", "token", "s3cret", "frag"]) {
+      assertEquals(calls[0].includes(secret), false, secret);
+    }
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("writeRemoteIndicator: an unparseable value is not echoed", () => {
+  const calls: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    calls.push(args.map(String).join(" "));
+  };
+  try {
+    writeRemoteIndicator("not a url s3cret");
+    assertEquals(calls.length, 1);
+    assertStringIncludes(calls[0], "(invalid URL)");
+    assertEquals(calls[0].includes("s3cret"), false);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("toWebSocketUrl: the invalid-URL error hides credentials", () => {
+  const error = assertThrows(
+    () => toWebSocketUrl("ftp://alice:hunter2@h:2121/?token=abc.s3cret"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "'ftp://h:2121'");
+  for (const secret of ["alice", "hunter2", "s3cret"]) {
+    assertEquals(error.message.includes(secret), false, secret);
+  }
+});
+
+Deno.test("toWebSocketUrl: the invalid-URL error omits an unparseable value", () => {
+  const error = assertThrows(
+    () => toWebSocketUrl("not a url s3cret"),
+    UserError,
+  );
+  assertEquals(error.message.includes("s3cret"), false);
+  assertStringIncludes(error.message, "Invalid --server URL —");
 });
 
 Deno.test({

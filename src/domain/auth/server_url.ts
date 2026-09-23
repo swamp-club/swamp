@@ -57,3 +57,27 @@ export function normalizeServerUrl(url: string): string {
 
   return `${parsed.protocol}//${host}${pathname}`;
 }
+
+/**
+ * Render a server URL for display: stderr lines, log messages and error
+ * text. Keeps the scheme, host, port and path as given, and drops the
+ * userinfo, query string and fragment, which can carry credentials such
+ * as `?token=`.
+ *
+ * This is the display form only. Credential lookup and connections use
+ * {@link normalizeServerUrl} or the original value.
+ *
+ * @returns the display form, or `undefined` when the value does not parse
+ *   as a URL with a host — callers must not fall back to the raw value.
+ */
+export function redactServerUrl(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (!parsed.host) return undefined;
+  const pathname = parsed.pathname === "/" ? "" : parsed.pathname;
+  return `${parsed.protocol}//${parsed.host}${pathname}`;
+}
