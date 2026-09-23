@@ -311,6 +311,7 @@ export {
   workflowHistoryGet,
   type WorkflowHistoryGetDeps,
   type WorkflowHistoryGetEvent,
+  type WorkflowHistoryGetOptions,
 } from "./workflows/history_get.ts";
 export {
   createWorkflowApproveDeps,

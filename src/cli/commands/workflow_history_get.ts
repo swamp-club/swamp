@@ -98,7 +98,10 @@ export async function workflowHistoryGetAction(
 
   const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);
   await consumeStream(
-    workflowHistoryGet(ctx, deps, runIdOrWorkflow),
+    // Only the JSON view renders step outputs, so only it reads them.
+    workflowHistoryGet(ctx, deps, runIdOrWorkflow, {
+      includeOutputs: cliCtx.outputMode === "json",
+    }),
     renderer.handlers(),
   );
 

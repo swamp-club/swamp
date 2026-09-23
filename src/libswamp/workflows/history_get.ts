@@ -30,12 +30,26 @@ import { createRunMatcher, type PartialMatchResult } from "./run_lookup.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import {
+  createCatalogStore,
+  namespaceFromResolver,
+} from "../../infrastructure/persistence/repository_factory.ts";
+import {
+  createDataRepositoryAttributeReader,
+  type ResourceReadPolicy,
+  StepOutputResolver,
+} from "../../domain/workflows/step_output_resolver.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 import type { WorkflowRunView } from "./workflow_run_view.ts";
-import { toRunData } from "./run.ts";
+import {
+  resolveRunStepOutputs,
+  type RunStepOutputs,
+  toRunData,
+} from "./run.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export type WorkflowHistoryGetEvent =
@@ -50,13 +64,30 @@ export interface WorkflowHistoryGetDeps {
   findWorkflow: (idOrName: string) => Promise<Workflow | null>;
   findLatestRun: (workflowId: WorkflowId) => Promise<WorkflowRun | null>;
   getRunPath: (workflowId: WorkflowId, runId: string) => string;
+  /** Reads a run's step outputs back from the datastore. */
+  resolveStepOutputs: (run: WorkflowRun) => Promise<RunStepOutputs>;
 }
 
-/** Wires real infrastructure into WorkflowHistoryGetDeps. */
+/** Options for {@link workflowHistoryGet}. */
+export interface WorkflowHistoryGetOptions {
+  /**
+   * Resolve step outputs and data attributes from the datastore. Leave unset
+   * when the caller does not render them, so no data is read.
+   */
+  includeOutputs?: boolean;
+}
+
+/**
+ * Wires real infrastructure into WorkflowHistoryGetDeps. `canRead` limits
+ * which resources' attributes may appear in step outputs; serve passes the
+ * principal's data-read decision. Sensitive fields are shown as stored,
+ * never resolved from their vault.
+ */
 export function createWorkflowHistoryGetDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedWorkflowRepo?: WorkflowRepository,
+  canRead?: ResourceReadPolicy,
 ): WorkflowHistoryGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -76,6 +107,32 @@ export function createWorkflowHistoryGetDeps(
     findLatestRun: (workflowId) => runRepo.findLatestByWorkflowId(workflowId),
     getRunPath: (workflowId, runId) =>
       runRepo.getPath(workflowId, createWorkflowRunId(runId)),
+    resolveStepOutputs: async (run) => {
+      // Opened per call: only callers that render outputs pay for it.
+      const catalogStore = createCatalogStore(repoDir, datastoreResolver);
+      try {
+        const dataRepo = new FileSystemUnifiedDataRepository(
+          repoDir,
+          dsPath(SWAMP_SUBDIRS.data),
+          catalogStore,
+          undefined,
+          undefined,
+          namespaceFromResolver(datastoreResolver),
+        );
+        const resolver = new StepOutputResolver({
+          readAttributes: createDataRepositoryAttributeReader(dataRepo),
+          findChildRun: (workflowId, runId) =>
+            runRepo.findById(
+              createWorkflowId(workflowId),
+              createWorkflowRunId(runId),
+            ),
+          canRead,
+        });
+        return await resolveRunStepOutputs(run, resolver);
+      } finally {
+        catalogStore.close();
+      }
+    },
   };
 }
 
@@ -84,6 +141,7 @@ export async function* workflowHistoryGet(
   _ctx: LibSwampContext,
   deps: WorkflowHistoryGetDeps,
   runIdOrWorkflow: string,
+  options: WorkflowHistoryGetOptions = {},
 ): AsyncIterable<WorkflowHistoryGetEvent> {
   yield* withGeneratorSpan(
     "swamp.workflow.history.get",
@@ -146,7 +204,10 @@ export async function* workflowHistoryGet(
         run.workflowId as WorkflowId,
         run.id,
       );
-      const data = toRunData(run, path);
+      const stepOutputs = options.includeOutputs
+        ? await deps.resolveStepOutputs(run)
+        : undefined;
+      const data = toRunData(run, path, undefined, stepOutputs);
 
       yield { kind: "completed", data };
     })(),

@@ -18,14 +18,25 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { dirname } from "@std/path";
 import {
   applyTriggerOverrides,
+  handleWorkflowHistoryGet,
   handleWorkflowRunSearch,
   handleWorkflowSearch,
   resolveWorkflowFields,
   WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
 } from "./workflow_handlers.ts";
+import "../../domain/models/models.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { ConnectionContext } from "./shared.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
@@ -391,4 +402,227 @@ Deno.test("handleWorkflowRunSearch: applies the default limit when none is sent"
     WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
   );
   assertEquals(frames[0].payload?.total, 505);
+});
+
+// --- workflow.history.get step outputs ---
+
+const HISTORY_MODEL_TYPE = "command/shell";
+const WRITER_ID = "0b8a3c1e-4f1d-4c7a-9a55-000000000001";
+const SECRETS_ID = "0b8a3c1e-4f1d-4c7a-9a55-000000000002";
+
+async function withHistoryRepo(
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+function historyResource(name: string, modelId: string, modelName: string) {
+  return {
+    id: `data-${name}`,
+    name,
+    version: 1,
+    modelType: HISTORY_MODEL_TYPE,
+    modelId,
+    modelName,
+    specName: "result",
+    contentType: "application/json",
+    tags: {},
+    attributes: null,
+    content: null,
+  };
+}
+
+/**
+ * Persists a run of `history-wf` whose one step wrote a resource for the
+ * `writer` model and one for the `secrets` model, with their contents in the
+ * datastore, and returns the workflow.
+ */
+async function seedHistoryRun(dir: string): Promise<Workflow> {
+  const workflow = Workflow.create({
+    name: "history-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "write",
+            task: StepTask.model("writer", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const step = job.getStep("write")!;
+  step.start();
+  step.succeed({
+    type: "model_method",
+    model: "writer",
+    method: "execute",
+    resources: {
+      result: {
+        record: historyResource("record", WRITER_ID, "writer"),
+        token: historyResource("token", SECRETS_ID, "secrets"),
+      },
+    },
+  });
+  job.succeed();
+  run.complete();
+  await new YamlWorkflowRunRepository(dir).save(workflow.id, run);
+
+  const catalogStore = createCatalogStore(dir);
+  try {
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalogStore,
+    );
+    const contents: Array<[string, string, Record<string, unknown>]> = [
+      [WRITER_ID, "record", { stdout: "hello" }],
+      [SECRETS_ID, "token", { apiKey: "not-for-you" }],
+    ];
+    for (const [modelId, name, attributes] of contents) {
+      const path = dataRepo.getContentPath(
+        ModelType.create(HISTORY_MODEL_TYPE),
+        modelId,
+        name,
+        1,
+      );
+      await Deno.mkdir(dirname(path), { recursive: true });
+      await Deno.writeTextFile(path, JSON.stringify(attributes));
+    }
+  } finally {
+    catalogStore.close();
+  }
+  return workflow;
+}
+
+function makeHistoryCtx(
+  dir: string,
+  workflow: Workflow,
+  grants?: Grant[],
+): ConnectionContext {
+  const definitionNames: Record<string, string> = {
+    [WRITER_ID]: "writer",
+    [SECRETS_ID]: "secrets",
+  };
+  const ctx: Record<string, unknown> = {
+    repoDir: dir,
+    authConfig: { ...searchAuthBase, mode: grants ? "token" : "none" },
+    repoContext: {
+      workflowRepo: makeWorkflowRepo(new Map([[workflow.name, workflow]])),
+      definitionRepo: {
+        findByNameGlobal: () => Promise.resolve(null),
+        findById: (_type: unknown, id: string) =>
+          Promise.resolve(
+            definitionNames[id]
+              ? { name: definitionNames[id], tags: {} }
+              : null,
+          ),
+      },
+    },
+  };
+  if (grants) {
+    const snapshot = new PolicySnapshot(grants, []);
+    ctx.policySnapshotLoader = {
+      snapshot,
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader;
+  }
+  return ctx as unknown as ConnectionContext;
+}
+
+function grantFor(id: string, kind: string, pattern: string): Grant {
+  return {
+    ...readGrant(id, pattern),
+    resource: { kind, pattern },
+  } as Grant;
+}
+
+interface HistoryFrame {
+  type: string;
+  payload?: {
+    data: {
+      jobs: Array<{ steps: Array<{ outputs?: Record<string, unknown> }> }>;
+    };
+  };
+  error?: { code: string };
+}
+
+async function historyGet(
+  ctx: ConnectionContext,
+  principal: Principal | null,
+): Promise<HistoryFrame> {
+  const frames: HistoryFrame[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: (data: string) => frames.push(JSON.parse(data)),
+  } as unknown as WebSocket;
+  await handleWorkflowHistoryGet(
+    socket,
+    ctx,
+    "req-history",
+    { workflowIdOrName: "history-wf" },
+    new AbortController(),
+    principal,
+  );
+  assertEquals(frames.length, 1);
+  return frames[0];
+}
+
+Deno.test("handleWorkflowHistoryGet: returns step outputs read from the datastore", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+
+    const frame = await historyGet(makeHistoryCtx(dir, workflow), null);
+
+    assertEquals(frame.payload?.data.jobs[0].steps[0].outputs, {
+      stdout: "hello",
+      apiKey: "not-for-you",
+    });
+  });
+});
+
+Deno.test("handleWorkflowHistoryGet: leaves out outputs of models the principal cannot read as data", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const ctx = makeHistoryCtx(dir, workflow, [
+      grantFor("wf", "workflow", "history-wf"),
+      grantFor("writer-data", "data", "writer"),
+    ]);
+
+    const frame = await historyGet(ctx, searchPrincipal);
+
+    assertEquals(frame.payload?.data.jobs[0].steps[0].outputs, {
+      stdout: "hello",
+    });
+  });
+});
+
+Deno.test("handleWorkflowHistoryGet: a principal with no data read sees no outputs", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const ctx = makeHistoryCtx(dir, workflow, [
+      grantFor("wf", "workflow", "history-wf"),
+    ]);
+
+    const frame = await historyGet(ctx, searchPrincipal);
+
+    assertEquals(frame.type, "workflow.history.get");
+    assertEquals(frame.payload?.data.jobs[0].steps[0].outputs, undefined);
+  });
 });

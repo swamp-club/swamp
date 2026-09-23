@@ -21,6 +21,8 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   extractStepArtifacts,
   inputValidationFailed,
+  resolveRunStepOutputs,
+  type RunStepOutputs,
   toRunData,
   workflowExecutionFailed,
   workflowNotFound,
@@ -36,6 +38,7 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { StepOutputResolver } from "../../domain/workflows/step_output_resolver.ts";
 import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
 import {
   createWorkflowId,
@@ -587,28 +590,103 @@ Deno.test("toRunData: step without approval has no approval field", () => {
   assertEquals(data.jobs[0].steps[0].approval, undefined);
 });
 
-Deno.test("toRunData: includes step outputs from model method resource attributes", () => {
-  const workflow = createTestWorkflow();
-  const run = WorkflowRun.create(workflow);
+/** A run whose single model_method step wrote a resource and a log. */
+function createModelMethodRun(): WorkflowRun {
+  const run = WorkflowRun.create(createTestWorkflow());
   run.start();
   const job = run.getJob("job1")!;
   job.start();
   const step = job.getStep("step1")!;
   step.start();
+  step.addDataArtifact({
+    dataId: "data-audience",
+    name: "audience",
+    version: 1,
+    tags: {},
+  });
+  step.addDataArtifact({
+    dataId: "data-log",
+    name: "log",
+    version: 1,
+    tags: {},
+  });
+  // Persisted shape: resource records without attributes.
   step.succeed({
     type: "model_method",
-    resourceAttributes: {
-      audienceId: "aud_123",
-      status: "Building",
+    model: "test-model",
+    method: "run",
+    resources: {
+      result: {
+        audience: {
+          id: "data-audience",
+          name: "audience",
+          version: 1,
+          modelType: "test/model",
+          modelId: "model-1",
+          contentType: "application/json",
+          tags: {},
+          attributes: null,
+          content: null,
+        },
+      },
     },
   });
   job.succeed();
   run.complete();
+  return run;
+}
 
-  const data = toRunData(run);
+const AUDIENCE_OUTPUTS: RunStepOutputs = {
+  job1: {
+    step1: {
+      outputs: { audienceId: "aud_123", status: "Building" },
+      attributesByDataId: {
+        "data-audience": { audienceId: "aud_123", status: "Building" },
+      },
+    },
+  },
+};
+
+Deno.test("toRunData: includes step outputs from the resolved step outputs", () => {
+  const data = toRunData(
+    createModelMethodRun(),
+    undefined,
+    false,
+    AUDIENCE_OUTPUTS,
+  );
+
   const stepView = data.jobs[0].steps[0];
-  assertEquals(stepView.outputs?.audienceId, "aud_123");
-  assertEquals(stepView.outputs?.status, "Building");
+  assertEquals(stepView.outputs, { audienceId: "aud_123", status: "Building" });
+});
+
+Deno.test("toRunData: attaches attributes only to the artifact they came from", () => {
+  const data = toRunData(
+    createModelMethodRun(),
+    undefined,
+    true,
+    AUDIENCE_OUTPUTS,
+  );
+
+  const stepView = data.jobs[0].steps[0];
+  const byName = Object.fromEntries(
+    stepView.dataArtifacts!.map((a) => [a.name, a.attributes]),
+  );
+  assertEquals(byName.audience, { audienceId: "aud_123", status: "Building" });
+  assertEquals(byName.log, undefined);
+  assertEquals(stepView.artifacts?.dataAttributes, {
+    audienceId: "aud_123",
+    status: "Building",
+  });
+});
+
+Deno.test("toRunData: without resolved outputs a model_method step shows none", () => {
+  // The run record keeps no attribute values to fall back on.
+  const data = toRunData(createModelMethodRun(), undefined, true);
+
+  const stepView = data.jobs[0].steps[0];
+  assertEquals(stepView.outputs, undefined);
+  assertEquals(stepView.artifacts, undefined);
+  assertEquals(stepView.dataArtifacts?.[0].attributes, undefined);
 });
 
 Deno.test("toRunData: includes workflow child step outputs namespaced by step", () => {
@@ -622,19 +700,23 @@ Deno.test("toRunData: includes workflow child step outputs namespaced by step", 
   step.succeed({
     type: "workflow",
     workflow: "child-wf",
+    workflowId: "child-wf-id",
     runId: "child-run-123",
     status: "succeeded",
-    outputs: {
-      "create-audience": {
-        audienceId: "aud_456",
-        name: "test-audience",
-      },
-    },
   });
   job.succeed();
   run.complete();
 
-  const data = toRunData(run);
+  const data = toRunData(run, undefined, false, {
+    job1: {
+      step1: {
+        outputs: {
+          "create-audience": { audienceId: "aud_456", name: "test-audience" },
+        },
+        attributesByDataId: {},
+      },
+    },
+  });
   const stepView = data.jobs[0].steps[0];
   const childOutputs = stepView.outputs as Record<
     string,
@@ -642,6 +724,23 @@ Deno.test("toRunData: includes workflow child step outputs namespaced by step", 
   >;
   assertEquals(childOutputs["create-audience"].audienceId, "aud_456");
   assertEquals(childOutputs["create-audience"].name, "test-audience");
+});
+
+Deno.test("resolveRunStepOutputs: resolves every step keyed by job and step", async () => {
+  const run = createModelMethodRun();
+  const resolver = new StepOutputResolver({
+    readAttributes: (ref) =>
+      Promise.resolve(
+        ref.name === "audience" ? { audienceId: "aud_123" } : undefined,
+      ),
+  });
+
+  const resolved = await resolveRunStepOutputs(run, resolver);
+
+  assertEquals(resolved.job1.step1.outputs, { audienceId: "aud_123" });
+  assertEquals(resolved.job1.step1.attributesByDataId, {
+    "data-audience": { audienceId: "aud_123" },
+  });
 });
 
 Deno.test("toRunData: includes references on run", () => {

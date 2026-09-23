@@ -80,7 +80,11 @@ export async function workflowHistoryOutputsAction(
       repoContext.workflowRepo,
     );
 
-    for await (const event of workflowHistoryGet(ctx, deps, runIdOrWorkflow)) {
+    for await (
+      const event of workflowHistoryGet(ctx, deps, runIdOrWorkflow, {
+        includeOutputs: true,
+      })
+    ) {
       if (event.kind === "completed") {
         runView = event.data;
       }

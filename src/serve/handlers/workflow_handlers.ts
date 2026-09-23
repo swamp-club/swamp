@@ -124,6 +124,8 @@ import {
   sendError,
   subscribeUntilDetach,
 } from "./shared.ts";
+import { resolveDataFields } from "./data_handlers.ts";
+import type { ResourceReadPolicy } from "../../domain/workflows/step_output_resolver.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
@@ -631,6 +633,38 @@ export async function handleWorkflowGet(
   }
 }
 
+/**
+ * Limits step outputs in workflow history to resources the principal may
+ * read as data. Reading a workflow's history must not reveal a model's data
+ * that `data.get` would refuse, so each resource goes through the same data
+ * read decision, keyed by the model's definition fields.
+ */
+function dataReadPolicy(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  principal: Principal | null,
+): ResourceReadPolicy {
+  const fieldsByModel = new Map<string, Promise<Record<string, unknown>>>();
+  return async (ref) => {
+    let fields = fieldsByModel.get(ref.modelId);
+    if (!fields) {
+      fields = resolveDataFields(ctx.repoContext.definitionRepo, ref.modelId);
+      fieldsByModel.set(ref.modelId, fields);
+    }
+    const resolved = await fields;
+    return filterByAuthorization(
+      [ref],
+      () => resolved.name as string,
+      () => resolved,
+      socket,
+      principal,
+      "read",
+      "data",
+      ctx,
+    ).length === 1;
+  };
+}
+
 export async function handleWorkflowHistoryGet(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -657,11 +691,14 @@ export async function handleWorkflowHistoryGet(
       ctx.repoDir,
       ctx.datastoreResolver,
       ctx.repoContext.workflowRepo,
+      dataReadPolicy(socket, ctx, principal),
     );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      workflowHistoryGet(libCtx, deps, payload.workflowIdOrName),
+      workflowHistoryGet(libCtx, deps, payload.workflowIdOrName, {
+        includeOutputs: true,
+      }),
       {
         resolving: () => {},
         completed: (e) => {
