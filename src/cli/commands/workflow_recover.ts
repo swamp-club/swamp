@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
   assessRecoveryForRun,
   findInterruptedRun,
@@ -78,15 +79,17 @@ export const workflowRecoverCommand = new Command()
         "recover",
       ]);
 
-      const repoDir = resolveRepoDir(options);
+      const repoDir = resolveRepoDir(options.repoDir);
       const { repoContext } = await requireInitializedRepoUnlocked({
         repoDir,
         outputMode: cliCtx.outputMode,
       });
 
-      const workflow = await repoContext.workflowRepo.findByName(
-        workflowIdOrName,
-      );
+      const workflow =
+        await repoContext.workflowRepo.findByName(workflowIdOrName) ??
+          await repoContext.workflowRepo.findById(
+            createWorkflowId(workflowIdOrName),
+          );
       if (!workflow) {
         throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
