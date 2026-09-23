@@ -1,0 +1,151 @@
+name: Flaky Test Detection
+
+# Detection only: runs the suite with --repeats so tests that do not pass
+# deterministically surface without anyone remembering to look. It is never a
+# required check and has no push or pull_request trigger, so it cannot gate a
+# merge.
+on:
+  schedule:
+    # Every 6 hours
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: flaky-tests
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test --repeats 3 (${{ matrix.os }})
+    if: github.repository == 'swamp-club/swamp'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282 # v2.0.4
+        with:
+          deno-version-file: .tool-versions
+
+      - name: Run tests with --repeats 3
+        shell: bash
+        env:
+          NO_COLOR: "1"
+        run: deno task test --repeats 3 2>&1 | tee test.log
+
+      - name: Summarise failures
+        if: failure()
+        shell: bash
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+        run: |
+          {
+            echo "## Flaky test detection failed on ${MATRIX_OS}"
+            echo
+            echo '```'
+            if [ -f test.log ] && grep -Eq '^ *FAILURES *$' test.log; then
+              awk '/^ *FAILURES *$/{f=1} f' test.log
+            elif [ -f test.log ]; then
+              # No FAILURES block: the run died early (OOM, timeout, type
+              # check), so show where it stopped.
+              tail -n 50 test.log
+            else
+              echo "No test log was produced."
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  alert:
+    name: Raise swamp-club alert
+    needs: test
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Open or update the flaky-test lab issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          SWAMP_CLUB_API_KEY: ${{ secrets.SWAMP_CLUB_API_KEY }}
+        with:
+          script: |
+            // This repo tracks issues in the swamp-club lab (auto-response.yml
+            // moves every GitHub issue there), so alert the lab directly.
+            // One open issue collects every red run instead of a new issue
+            // per run.
+            const apiKey = process.env.SWAMP_CLUB_API_KEY;
+            if (!apiKey) {
+              core.setFailed("SWAMP_CLUB_API_KEY secret is not set");
+              return;
+            }
+
+            const base = "https://swamp-club.com/api/v1/lab/issues";
+            const title = "Scheduled flaky-test detection is failing";
+            const terminalStatuses = ["shipped", "closed"];
+            const runUrl =
+              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const request = async (label, url, init) => {
+              const res = await fetch(url, {
+                ...init,
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${apiKey}`,
+                },
+                signal: AbortSignal.timeout(15_000),
+              });
+              if (!res.ok) {
+                const text = await res.text().catch(() => "");
+                throw new Error(`swamp-club ${label} failed: ${res.status} ${text}`);
+              }
+              return await res.json();
+            };
+
+            try {
+              const params = new URLSearchParams({ q: title, limit: "50" });
+              const found = await request("search", `${base}?${params}`, {
+                method: "GET",
+              });
+              const existing = (found?.issues ?? []).find((issue) =>
+                issue.title === title &&
+                !terminalStatuses.includes(issue.status)
+              );
+
+              if (existing) {
+                await request("ripple", `${base}/${existing.number}/comments`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    body: `Scheduled run failed again: ${runUrl}`,
+                  }),
+                });
+                core.info(`Commented on lab issue #${existing.number}`);
+                return;
+              }
+
+              const body = [
+                "The scheduled flaky-test detection workflow (.github/workflows/flaky-tests.yml) failed.",
+                "It runs `deno task test --repeats 3` on Linux and macOS every 6 hours; the run summary lists the failing tests per OS.",
+                "",
+                `Run: ${runUrl}`,
+                "",
+                "Later failures are added here as comments until this issue is closed.",
+              ].join("\n");
+              const created = await request("create", base, {
+                method: "POST",
+                body: JSON.stringify({ source: "swamp", type: "bug", title, body }),
+              });
+              core.info(`Opened lab issue #${created?.issue?.number}`);
+            } catch (err) {
+              core.setFailed(err instanceof Error ? err.message : String(err));
+            }

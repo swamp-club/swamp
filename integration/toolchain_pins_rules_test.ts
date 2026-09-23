@@ -47,6 +47,7 @@ const EXPECTED_SETUP_STEPS: Record<string, number> = {
   "publish-client.yml": 1,
   "multi-model-eval.yml": 2,
   "windows-compat.yml": 1,
+  "flaky-tests.yml": 1,
 };
 
 const EXPECTED_SETUP_TOTAL = Object.values(EXPECTED_SETUP_STEPS)
