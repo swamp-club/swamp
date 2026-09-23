@@ -58,7 +58,6 @@ import {
 import { migrateTokenSecrets } from "../../serve/token_secret_migration.ts";
 import { createResourceWriter } from "../../domain/models/data_writer.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
-import { tokenVaultRejectedMessage } from "../access_token_vault_guidance.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -97,10 +96,6 @@ export const accessTokenMintCommand = withRemoteOptions(
       "--duration <duration:string>",
       "Token lifetime (e.g. 30m, 1h, 24h, 7d, 30d)",
       { default: DEFAULT_DURATION },
-    )
-    .option(
-      "--vault <vault:string>",
-      "Not supported: token secrets are always stored in the control-plane vault. Passing it prints how to copy the credential into another vault",
     ),
 ).action(async function (options: AnyOptions, name: string) {
   const cliCtx = createContext(options as GlobalOptions, [
@@ -131,13 +126,6 @@ export const accessTokenMintCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    if (options.vault !== undefined) {
-      throw new UserError(
-        tokenVaultRejectedMessage("mint", name, options.vault as string, {
-          remote: true,
-        }),
-      );
-    }
     const token = await resolveServerTokenFromOptions(
       server,
       options,
@@ -159,13 +147,6 @@ export const accessTokenMintCommand = withRemoteOptions(
       cliCtx.outputMode,
     );
     return;
-  }
-
-  const requestedVault = options.vault as string | undefined;
-  if (requestedVault !== undefined) {
-    throw new UserError(
-      tokenVaultRejectedMessage("mint", name, requestedVault),
-    );
   }
 
   const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =

@@ -39,66 +39,12 @@ Deno.test("accessTokenMintCommand: description does not mention vault storage", 
   assertEquals(desc.includes("stored in a vault"), false);
 });
 
-Deno.test("accessTokenMintCommand: --vault option help text says it is not supported", async () => {
+Deno.test("accessTokenMintCommand: has no --vault option", async () => {
   const { accessTokenMintCommand } = await import("./access_token_mint.ts");
-  const options = accessTokenMintCommand.getOptions();
-  const vaultOpt = options.find((o) => o.name === "vault");
-  assertEquals(vaultOpt !== undefined, true);
-  assertEquals(vaultOpt!.description.includes("local repos only"), false);
-  assertStringIncludes(vaultOpt!.description, "Not supported");
-  assertStringIncludes(vaultOpt!.description, "control-plane vault");
-});
-
-Deno.test("accessTokenMintCommand: --vault rejected when --server is set", async () => {
-  const { accessTokenMintCommand } = await import("./access_token_mint.ts");
-  const root = new Command()
-    .globalOption("--json", "JSON output")
-    .command("mint", accessTokenMintCommand);
-
-  const error = await assertRejects(
-    () =>
-      root.parse([
-        "mint",
-        "test-token",
-        "--principal",
-        "user:adam",
-        "--server",
-        "ws://localhost:0",
-        "--token",
-        "dummy.token",
-        "--vault",
-        "my-vault",
-      ]),
-    UserError,
-    "--vault is not supported when targeting a remote server",
+  const vaultOpt = accessTokenMintCommand.getOptions(true).find((o) =>
+    o.name === "vault"
   );
-  assertStringIncludes(
-    error.message,
-    "swamp vault put 'my-vault' 'server-token-test-token' --yes",
-  );
-});
-
-Deno.test("accessTokenMintCommand: rejects --vault before any repo work", async () => {
-  const { accessTokenMintCommand } = await import("./access_token_mint.ts");
-  const root = new Command()
-    .globalOption("--json", "JSON output")
-    .command("mint", accessTokenMintCommand);
-
-  await assertRejects(
-    () =>
-      root.parse([
-        "mint",
-        "test-token",
-        "--principal",
-        "user:adam",
-        "--vault",
-        "my-vault",
-        "--repo-dir",
-        "/nonexistent-swamp-repo",
-      ]),
-    UserError,
-    "--vault is not supported when minting locally",
-  );
+  assertEquals(vaultOpt, undefined);
 });
 
 Deno.test("accessTokenMintCommand: rejects an unsupported principal kind before any repo work", async () => {
