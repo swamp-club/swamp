@@ -61,6 +61,8 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import { WorkflowRun } from "./workflow_run.ts";
+import { assessRecoveryForRun } from "./recovery_assessment.ts";
+import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import type { ActiveRun, ActiveRunStatus } from "../models/active_run.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
@@ -8497,5 +8499,90 @@ Deno.test("resume: a failing restore still rethrows the original error", async (
       Error,
       "no such overload",
     );
+  });
+});
+
+/** A one-step workflow whose step input resolves `inputs.greeting`. */
+function greetingWorkflow(message: string, id?: string): Workflow {
+  return Workflow.create({
+    id,
+    name: "recover-greeting",
+    inputs: {
+      properties: { greeting: { type: "string" } },
+      required: ["greeting"],
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "greet",
+            task: StepTask.modelMethod("some-model", "run", { message }),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/**
+ * Rewinds a completed one-step run to mid-step and interrupts it, the state
+ * a crash leaves behind. `interrupt` returns early on a succeeded run.
+ */
+function interruptMidStep(run: WorkflowRun): WorkflowRun {
+  const data = run.toData();
+  const job = data.jobs[0];
+  const step = job.steps[0];
+  data.status = "running";
+  data.completedAt = undefined;
+  job.status = "running";
+  job.completedAt = undefined;
+  step.status = "running";
+  step.completedAt = undefined;
+  step.output = undefined;
+  const rewound = WorkflowRun.fromData(data);
+  rewound.interrupt("server_crash");
+  return rewound;
+}
+
+Deno.test("WorkflowExecutionService.run: definition fingerprint lets recovery match a workflow with an inputs expression", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = greetingWorkflow("${{ inputs.greeting }}");
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name, {
+      inputs: { greeting: "howdy" },
+    });
+
+    assertEquals(run.status, "succeeded");
+    const definitionFingerprint = await computeWorkflowFingerprint(workflow);
+    assertEquals(run.runPlan?.definitionFingerprint, definitionFingerprint);
+    // Evaluation resolved the inputs expression, so the evaluated
+    // fingerprint differs from the definition's.
+    assertNotEquals(run.runPlan?.fingerprint, definitionFingerprint);
+
+    const interrupted = interruptMidStep(run);
+    const unchanged = await assessRecoveryForRun(workflow, interrupted);
+    assertEquals(unchanged.fingerprintMismatch, false);
+    assertEquals(unchanged.unguardedSteps, ["greet"]);
+
+    const edited = greetingWorkflow(
+      "${{ inputs.greeting }} again",
+      workflow.id,
+    );
+    const drifted = await assessRecoveryForRun(edited, interrupted);
+    assertEquals(drifted.fingerprintMismatch, true);
   });
 });

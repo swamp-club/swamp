@@ -1278,6 +1278,32 @@ Deno.test("WorkflowRun.resetUnknownStepsForRecovery: throws on non-interrupted r
   );
 });
 
+Deno.test("WorkflowRun: runPlan definitionFingerprint round-trips through serialization", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.captureRunPlan("evaluated-fp", run.id, "definition-fp");
+
+  const data = run.toData();
+  assertEquals(data.runPlan?.definitionFingerprint, "definition-fp");
+
+  const restored = WorkflowRun.fromData(data);
+  assertEquals(restored.runPlan?.fingerprint, "evaluated-fp");
+  assertEquals(restored.runPlan?.evaluatedWorkflowId, run.id);
+  assertEquals(restored.runPlan?.definitionFingerprint, "definition-fp");
+});
+
+Deno.test("WorkflowRun: runPlan without definitionFingerprint still parses", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  const data = run.toData();
+  // A run recorded before runs stored a definition fingerprint.
+  data.runPlan = { fingerprint: "evaluated-fp", evaluatedWorkflowId: run.id };
+
+  const restored = WorkflowRun.fromData(data);
+  assertEquals(restored.runPlan?.fingerprint, "evaluated-fp");
+  assertEquals(restored.runPlan?.definitionFingerprint, undefined);
+});
+
 Deno.test("StepRun.markUnknown: sets status to unknown with error", () => {
   const step = StepRun.pending("test-step");
   step.start();

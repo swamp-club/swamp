@@ -2008,6 +2008,7 @@ export class WorkflowExecutionService {
       let run: WorkflowRun;
       let workflowLogPath: string;
       let evaluatedWorkflowFingerprint: string | undefined;
+      let definitionFingerprint: string | undefined;
       const secretRedactor = new SecretRedactor();
 
       try {
@@ -2063,6 +2064,11 @@ export class WorkflowExecutionService {
             expressionContext.inputs = options.inputs;
           }
         } else {
+          // Fingerprint the definition as loaded, before evaluation resolves
+          // its expressions, so recovery can compare it with the current
+          // definition. The evaluated fingerprint also varies with inputs.
+          definitionFingerprint = await computeWorkflowFingerprint(found);
+
           // Build expression context and evaluate workflow
           const buildCtxSpan = tracer.startSpan(
             "swamp.workflow.build_context",
@@ -2158,7 +2164,11 @@ export class WorkflowExecutionService {
         if (evaluatedWorkflowFingerprint) {
           const evalRepo = new YamlEvaluatedWorkflowRepository(this.repoDir);
           await evalRepo.saveForRun(run.id, workflow);
-          run.captureRunPlan(evaluatedWorkflowFingerprint, run.id);
+          run.captureRunPlan(
+            evaluatedWorkflowFingerprint,
+            run.id,
+            definitionFingerprint,
+          );
         }
 
         // Start execution

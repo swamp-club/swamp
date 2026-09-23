@@ -199,6 +199,7 @@ export const WorkflowRunSchema = z.object({
   runPlan: z.object({
     fingerprint: z.string(),
     evaluatedWorkflowId: z.string().optional(),
+    definitionFingerprint: z.string().optional(),
   }).optional(),
 });
 
@@ -737,7 +738,11 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _triggerSource: string | undefined = undefined,
     private _references: Record<string, string> | undefined = undefined,
     private _runPlan:
-      | { fingerprint: string; evaluatedWorkflowId?: string }
+      | {
+        fingerprint: string;
+        evaluatedWorkflowId?: string;
+        definitionFingerprint?: string;
+      }
       | undefined = undefined,
     private _inheritedExpressions: string[] = [],
     private _deferredExpressions: DeferredExpression[] = [],
@@ -1018,10 +1023,17 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   /**
    * The run plan identity captured at run start. Contains the fingerprint
-   * of the evaluated workflow and an optional reference to the persisted snapshot.
+   * of the evaluated workflow, an optional reference to the persisted snapshot,
+   * and the fingerprint of the definition as loaded from disk before
+   * evaluation. Recovery compares the definition fingerprint, since the
+   * evaluated one also changes with the run's inputs.
    */
   get runPlan():
-    | { fingerprint: string; evaluatedWorkflowId?: string }
+    | {
+      fingerprint: string;
+      evaluatedWorkflowId?: string;
+      definitionFingerprint?: string;
+    }
     | undefined {
     return this._runPlan;
   }
@@ -1029,8 +1041,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   captureRunPlan(
     fingerprint: string,
     evaluatedWorkflowId?: string,
+    definitionFingerprint?: string,
   ): void {
-    this._runPlan = { fingerprint, evaluatedWorkflowId };
+    this._runPlan = { fingerprint, evaluatedWorkflowId, definitionFingerprint };
   }
 
   /**

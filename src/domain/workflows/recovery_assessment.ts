@@ -37,10 +37,26 @@ export async function assessRecoveryForRun(
   run: WorkflowRun,
 ): Promise<RecoveryAssessment> {
   let fingerprintMismatch = false;
+  // Starting over is the only way forward from a refused run: resume --from
+  // accepts failed runs, not interrupted ones (swamp-club#2443).
+  const newRunHint =
+    `start a new run with 'swamp workflow run ${workflow.name}'`;
+  let mismatchReason =
+    `Workflow definition changed since the run started — ${newRunHint}`;
   if (run.runPlan?.fingerprint) {
     const currentFingerprint = await computeWorkflowFingerprint(workflow);
-    if (currentFingerprint !== run.runPlan.fingerprint) {
+    if (run.runPlan.definitionFingerprint !== undefined) {
+      fingerprintMismatch =
+        currentFingerprint !== run.runPlan.definitionFingerprint;
+    } else if (currentFingerprint !== run.runPlan.fingerprint) {
+      // Recorded before runs stored a definition fingerprint. The evaluated
+      // fingerprint equals the definition's only when evaluation left the
+      // definition unchanged, so a difference cannot tell drift from
+      // evaluation. Refuse rather than resume a definition that may have
+      // changed.
       fingerprintMismatch = true;
+      mismatchReason =
+        `Run was recorded before swamp stored definition fingerprints, so an unchanged workflow definition cannot be confirmed — ${newRunHint}`;
     }
   }
 
@@ -62,7 +78,7 @@ export async function assessRecoveryForRun(
   return {
     canAutoRecover: !fingerprintMismatch && unguardedSteps.length === 0,
     reason: fingerprintMismatch
-      ? "Workflow definition changed since the run started — use 'swamp workflow resume --from <step>' instead"
+      ? mismatchReason
       : unguardedSteps.length > 0
       ? `${unguardedSteps.length} unknown step(s) lack guard expressions — operator acknowledgement required`
       : undefined,

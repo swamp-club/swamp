@@ -27,6 +27,7 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { WorkflowRun } from "./workflow_run.ts";
+import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { WorkflowRunRepository } from "./repositories.ts";
 import type { WorkflowId } from "./workflow_id.ts";
 
@@ -133,6 +134,71 @@ Deno.test("assessRecoveryForRun: no fingerprint skips drift check", async () => 
 
   assertEquals(result.canAutoRecover, true);
   assertEquals(result.fingerprintMismatch, false);
+});
+
+Deno.test("assessRecoveryForRun: matching definition fingerprint passes when the evaluated one differs", async () => {
+  const wf = createWorkflow({ guard: 'data.latest("m", "d")' });
+  const run = createInterruptedRun(wf);
+  // Evaluation resolved expressions, so the evaluated fingerprint differs
+  // from the definition's while the definition itself is unchanged.
+  run.captureRunPlan(
+    "evaluated-fingerprint",
+    run.id,
+    await computeWorkflowFingerprint(wf),
+  );
+
+  const result = await assessRecoveryForRun(wf, run);
+
+  assertEquals(result.fingerprintMismatch, false);
+  assertEquals(result.canAutoRecover, true);
+  assertEquals(result.reason, undefined);
+});
+
+Deno.test("assessRecoveryForRun: differing definition fingerprint blocks recovery", async () => {
+  const wf = createWorkflow();
+  const run = createInterruptedRun(wf);
+  run.captureRunPlan(
+    await computeWorkflowFingerprint(wf),
+    run.id,
+    "definition-fingerprint-before-edit",
+  );
+
+  const result = await assessRecoveryForRun(wf, run);
+
+  assertEquals(result.fingerprintMismatch, true);
+  assertEquals(result.canAutoRecover, false);
+  assertEquals(
+    result.reason,
+    "Workflow definition changed since the run started — start a new run with 'swamp workflow run test-wf'",
+  );
+});
+
+Deno.test("assessRecoveryForRun: legacy run plan matches when its fingerprint equals the definition's", async () => {
+  const wf = createWorkflow({ guard: 'data.latest("m", "d")' });
+  const run = createInterruptedRun(wf);
+  // Recorded before runs stored a definition fingerprint, for a workflow
+  // with no expressions resolved at evaluation.
+  run.captureRunPlan(await computeWorkflowFingerprint(wf), run.id);
+
+  const result = await assessRecoveryForRun(wf, run);
+
+  assertEquals(result.fingerprintMismatch, false);
+  assertEquals(result.canAutoRecover, true);
+});
+
+Deno.test("assessRecoveryForRun: legacy run plan that differs is refused as unconfirmable", async () => {
+  const wf = createWorkflow({ guard: 'data.latest("m", "d")' });
+  const run = createInterruptedRun(wf);
+  run.captureRunPlan("evaluated-fingerprint", run.id);
+
+  const result = await assessRecoveryForRun(wf, run);
+
+  assertEquals(result.fingerprintMismatch, true);
+  assertEquals(result.canAutoRecover, false);
+  assertEquals(
+    result.reason,
+    "Run was recorded before swamp stored definition fingerprints, so an unchanged workflow definition cannot be confirmed — start a new run with 'swamp workflow run test-wf'",
+  );
 });
 
 Deno.test("findInterruptedRun: returns null when no interrupted runs", async () => {
