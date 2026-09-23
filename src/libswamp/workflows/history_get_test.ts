@@ -21,6 +21,11 @@ import { assertEquals } from "@std/assert";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { Workflow as RealWorkflow } from "../../domain/workflows/workflow.ts";
+import { WorkflowRun as RealWorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -54,9 +59,85 @@ function makeDeps(
     findWorkflow: () => Promise.resolve(testWorkflow),
     findLatestRun: () => Promise.resolve(testRun),
     getRunPath: () => "/repo/.swamp/runs/wf-1/run-1",
+    resolveStepOutputs: () =>
+      Promise.reject(new Error("outputs were not requested")),
     ...overrides,
   };
 }
+
+function runWithOneStep(): WorkflowRun {
+  const workflow = RealWorkflow.create({
+    name: "my-workflow",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "write",
+            task: StepTask.model("writer", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = RealWorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const step = job.getStep("write")!;
+  step.start();
+  step.succeed({ type: "model_method", model: "writer", resources: {} });
+  job.succeed();
+  run.complete();
+  return run;
+}
+
+Deno.test("workflowHistoryGet: reads no step outputs unless asked", async () => {
+  // The default resolveStepOutputs rejects, so any read fails the test.
+  const deps = makeDeps({
+    findLatestRun: () => Promise.resolve(runWithOneStep()),
+  });
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "my-workflow"),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.jobs[0].steps[0].outputs, undefined);
+});
+
+Deno.test("workflowHistoryGet: includeOutputs adds the resolved step outputs", async () => {
+  const run = runWithOneStep();
+  let resolvedRunId: string | undefined;
+  const deps = makeDeps({
+    findLatestRun: () => Promise.resolve(run),
+    resolveStepOutputs: (r) => {
+      resolvedRunId = r.id;
+      return Promise.resolve({
+        main: {
+          write: {
+            outputs: { stdout: "hello" },
+            attributesByDataId: {},
+          },
+        },
+      });
+    },
+  });
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "my-workflow", {
+      includeOutputs: true,
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(resolvedRunId, run.id);
+  assertEquals(completed.data.jobs[0].steps[0].outputs, { stdout: "hello" });
+});
 
 Deno.test("workflowHistoryGet: yields resolving then completed on happy path", async () => {
   const deps = makeDeps();

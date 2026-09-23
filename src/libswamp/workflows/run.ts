@@ -31,6 +31,10 @@ import type {
   WorkflowRun,
 } from "../../domain/workflows/workflow_run.ts";
 import type { StepRun } from "../../domain/workflows/workflow_run.ts";
+import type {
+  ResolvedStepOutputs,
+  StepOutputResolver,
+} from "../../domain/workflows/step_output_resolver.ts";
 import type { WebhookPayload } from "../../domain/expressions/model_resolver.ts";
 import type {
   ApprovalView,
@@ -342,6 +346,7 @@ export interface WorkflowRunInput {
  */
 export function extractStepArtifacts(
   step: StepRun,
+  resolved?: ResolvedStepOutputs,
 ): StepArtifactsData | undefined {
   if (step.output === undefined || step.output === null) {
     return undefined;
@@ -362,15 +367,10 @@ export function extractStepArtifacts(
     return Object.keys(artifacts).length > 0 ? artifacts : undefined;
   }
 
-  // Model method output: { type, model, method, resourceId, resourcePath, resourceAttributes }
+  // A model method output keeps no attributes on the run record; they come
+  // from the step's resolved outputs when the caller resolved them.
   if (output.type === "model_method") {
-    const attrs = output.resourceAttributes as
-      | Record<string, unknown>
-      | undefined;
-    if (attrs && Object.keys(attrs).length > 0) {
-      return { dataAttributes: attrs };
-    }
-    return undefined;
+    return resolved?.outputs ? { dataAttributes: resolved.outputs } : undefined;
   }
 
   return undefined;
@@ -400,33 +400,42 @@ function mapApprovalDecision(
   };
 }
 
-function extractStepOutputs(
-  step: StepRun,
-): Record<string, unknown> | undefined {
-  const output = step.output as Record<string, unknown> | undefined;
-  if (!output) return undefined;
-  if (output.type === "model_method") {
-    const attrs = output.resourceAttributes as
-      | Record<string, unknown>
-      | undefined;
-    return attrs && Object.keys(attrs).length > 0 ? attrs : undefined;
+/** Resolved step outputs for one run, keyed by job name, then step name. */
+export type RunStepOutputs = Record<
+  string,
+  Record<string, ResolvedStepOutputs>
+>;
+
+/**
+ * Resolves the outputs of every step in a run. The run record keeps no
+ * attribute values, so each step's outputs are read back through the
+ * resolver.
+ */
+export async function resolveRunStepOutputs(
+  run: WorkflowRun,
+  resolver: StepOutputResolver,
+): Promise<RunStepOutputs> {
+  const resolved: RunStepOutputs = {};
+  for (const job of run.jobs) {
+    const steps: Record<string, ResolvedStepOutputs> = {};
+    for (const step of job.steps) {
+      steps[step.stepName] = await resolver.resolve(step);
+    }
+    resolved[job.jobName] = steps;
   }
-  if (output.type === "workflow") {
-    const outputs = output.outputs as
-      | Record<string, unknown>
-      | undefined;
-    return outputs && Object.keys(outputs).length > 0 ? outputs : undefined;
-  }
-  return undefined;
+  return resolved;
 }
 
 /**
- * Converts a WorkflowRun to WorkflowRunData for presentation.
+ * Converts a WorkflowRun to WorkflowRunData for presentation. Step outputs
+ * and data attributes appear only when `stepOutputs` is given, because the
+ * run record does not carry them.
  */
 export function toRunData(
   run: WorkflowRun,
   path?: string,
   verbose?: boolean,
+  stepOutputs?: RunStepOutputs,
 ): WorkflowRunView {
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
@@ -461,29 +470,22 @@ export function toRunData(
             duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
           };
 
+          const resolved = stepOutputs?.[job.jobName]?.[step.stepName];
+
           if (verbose) {
-            const artifacts = extractStepArtifacts(step);
+            const artifacts = extractStepArtifacts(step, resolved);
             if (artifacts) {
               stepData.artifacts = artifacts;
             }
           }
 
           if (step.dataArtifacts && step.dataArtifacts.length > 0) {
-            const stepOutput = step.output as
-              | Record<string, unknown>
-              | undefined;
-            const resourceAttrs = stepOutput?.type === "model_method"
-              ? stepOutput.resourceAttributes as
-                | Record<string, unknown>
-                | undefined
-              : undefined;
-
             stepData.dataArtifacts = step.dataArtifacts.map((a) => ({
               dataId: a.dataId,
               name: a.name,
               version: a.version,
               tags: a.tags,
-              attributes: resourceAttrs,
+              attributes: resolved?.attributesByDataId[a.dataId],
             }));
           }
 
@@ -506,9 +508,8 @@ export function toRunData(
             );
           }
 
-          const outputs = extractStepOutputs(step);
-          if (outputs) {
-            stepData.outputs = outputs;
+          if (resolved?.outputs) {
+            stepData.outputs = resolved.outputs;
           }
 
           return stepData;

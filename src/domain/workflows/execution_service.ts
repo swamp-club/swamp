@@ -138,6 +138,11 @@ import {
 import { join } from "@std/path";
 import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import {
+  createDataRepositoryAttributeReader,
+  liveStepOutputs,
+  StepOutputResolver,
+} from "./step_output_resolver.ts";
 import { mergeWithConcurrency } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
@@ -2615,7 +2620,12 @@ export class WorkflowExecutionService {
       initiatedBy: existingRun.initiatedBy,
       inputs: existingRun.inputs,
     };
+    // Declared here so vault values resolved into prior step outputs below
+    // are redacted from this resume's logs.
+    const secretRedactor = new SecretRedactor();
+
     expressionContext.steps = {};
+    const stepOutputResolver = this.createStepOutputResolver(secretRedactor);
     for (const job of existingRun.jobs) {
       for (const step of job.steps) {
         if (
@@ -2624,7 +2634,7 @@ export class WorkflowExecutionService {
         ) {
           expressionContext.steps[step.stepName] = {
             status: step.status,
-            outputs: this.extractStepOutputsForContext(step),
+            outputs: (await stepOutputResolver.resolve(step)).outputs,
           };
         }
       }
@@ -2648,8 +2658,6 @@ export class WorkflowExecutionService {
       authoredExpressions,
     );
     const resolvedWorkflow = evaluated.workflow;
-
-    const secretRedactor = new SecretRedactor();
 
     // Re-register the log file sink so resume output is captured.
     // Append to preserve records from earlier attempts.
@@ -3211,10 +3219,16 @@ export class WorkflowExecutionService {
           error: stepRun.assertResult.error,
         };
       }
-      if (expressionContext?.steps) {
+      // resume() already resolved completed steps into the context; only
+      // read the datastore when this step is missing or its status moved.
+      if (
+        expressionContext?.steps &&
+        expressionContext.steps[stepName]?.status !== stepRun.status
+      ) {
         expressionContext.steps[stepName] = {
           status: stepRun.status,
-          outputs: this.extractStepOutputsForContext(stepRun),
+          outputs: (await this.createStepOutputResolver(options.secretRedactor)
+            .resolve(stepRun)).outputs,
         };
       }
       stepSpan.end();
@@ -3373,6 +3387,10 @@ export class WorkflowExecutionService {
       forEachIndex,
     };
 
+    // This step's `steps.<name>.outputs`, taken from the full output before
+    // it is stripped for the run record. Declared here so the finally below
+    // sees it for both model_method and workflow steps.
+    let liveOutputs: Record<string, unknown> | undefined;
     try {
       const task = step.task.data;
 
@@ -3559,7 +3577,7 @@ export class WorkflowExecutionService {
 
       // Handle workflow tasks inline to forward nested workflow events
       if (task.type === "workflow") {
-        yield* this.runWorkflowStep(
+        liveOutputs = yield* this.runWorkflowStep(
           workflow,
           job,
           stepRun,
@@ -3698,6 +3716,8 @@ export class WorkflowExecutionService {
       }
 
       // Strip heavy payload from the run record (see stripResourceContent).
+      // Outputs are taken first: the stripped record keeps no attributes.
+      liveOutputs = liveStepOutputs(output);
       const lightOutput = step.task.isModelMethod() && output &&
           typeof output === "object"
         ? stripResourceContent(output as Record<string, unknown>)
@@ -3780,10 +3800,9 @@ export class WorkflowExecutionService {
         (stepRun.status === "succeeded" || stepRun.status === "failed" ||
           stepRun.status === "skipped" || stepRun.status === "unknown")
       ) {
-        const stepOutputs = this.extractStepOutputsForContext(stepRun);
         stepExprContext.steps[stepName] = {
           status: stepRun.status,
-          outputs: stepOutputs,
+          outputs: liveOutputs,
         };
       }
       stepSpan.end();
@@ -3792,7 +3811,8 @@ export class WorkflowExecutionService {
 
   /**
    * Handles a workflow task step, forwarding child workflow events
-   * to the parent stream.
+   * to the parent stream. Returns the child's outputs for the parent's
+   * `steps.<name>.outputs` when the child succeeds.
    */
   private async *runWorkflowStep(
     workflow: Workflow,
@@ -3806,7 +3826,10 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
     allowFailure: boolean,
-  ): AsyncGenerator<WorkflowExecutionEvent> {
+  ): AsyncGenerator<
+    WorkflowExecutionEvent,
+    Record<string, unknown> | undefined
+  > {
     // Resolve every available expression (self.* from the forEach variable,
     // run.*, etc.) in the task BEFORE the recursion-depth guard, cycle
     // detection, ancestor-set additions, and the child invocation, so they all
@@ -4037,15 +4060,20 @@ export class WorkflowExecutionService {
       return;
     }
 
-    const childOutputs = this.extractChildWorkflowOutputs(childRun);
+    // The child's outputs go to the live context only. The run record keeps
+    // the child's ids so they can be resolved again later, never the values.
+    const childOutputs = await this.createStepOutputResolver(
+      options.secretRedactor,
+    ).resolveChildOutputs(childRun);
     stepRun.succeed({
       type: "workflow",
       workflow: task.workflowIdOrName,
+      workflowId: childRun.workflowId,
       runId: childRun.id,
       status: childRun.status,
-      outputs: childOutputs,
     });
     yield { kind: "step_completed", jobId: job.name, stepId: stepName };
+    return childOutputs;
   }
 
   private buildModelMethodDelegate(
@@ -4119,46 +4147,30 @@ export class WorkflowExecutionService {
     };
   }
 
-  private extractStepOutputsForContext(
-    stepRun: import("./workflow_run.ts").StepRun,
-  ): Record<string, unknown> | undefined {
-    const output = stepRun.output as Record<string, unknown> | undefined;
-    if (!output || typeof output !== "object") return undefined;
-    if (output.type === "model_method") {
-      const attrs = output.resourceAttributes as
-        | Record<string, unknown>
-        | undefined;
-      return attrs && Object.keys(attrs).length > 0 ? attrs : undefined;
-    }
-    if (output.type === "workflow") {
-      const outputs = output.outputs as
-        | Record<string, unknown>
-        | undefined;
-      return outputs && Object.keys(outputs).length > 0 ? outputs : undefined;
-    }
-    return undefined;
-  }
-
-  private extractChildWorkflowOutputs(
-    childRun: WorkflowRun,
-  ): Record<string, Record<string, unknown>> | undefined {
-    const outputs: Record<string, Record<string, unknown>> = {};
-    for (const job of childRun.jobs) {
-      for (const step of job.steps) {
-        if (step.status !== "succeeded") continue;
-        const stepOutput = step.output as Record<string, unknown> | undefined;
-        if (!stepOutput || typeof stepOutput !== "object") continue;
-        if (stepOutput.type === "model_method") {
-          const attrs = stepOutput.resourceAttributes as
-            | Record<string, unknown>
-            | undefined;
-          if (attrs && Object.keys(attrs).length > 0) {
-            outputs[step.stepName] = attrs;
-          }
-        }
-      }
-    }
-    return Object.keys(outputs).length > 0 ? outputs : undefined;
+  /**
+   * Builds the resolver that reads step outputs back from the datastore for
+   * steps whose full output is no longer in memory (resume, replay, child
+   * runs). Sensitive fields are vault-resolved so these values match what a
+   * live run exposes.
+   */
+  private createStepOutputResolver(
+    redactor: SecretRedactor | undefined,
+  ): StepOutputResolver {
+    let vaultService: Promise<VaultService> | undefined;
+    return new StepOutputResolver({
+      readAttributes: createDataRepositoryAttributeReader(this.dataRepo, {
+        getVaultService: () =>
+          vaultService ??= VaultService.fromRepository(this.repoDir, {
+            vaultsDir: this.vaultsDir,
+          }),
+        redactor,
+      }),
+      findChildRun: (workflowId, runId) =>
+        this.runRepo.findById(
+          createWorkflowId(workflowId),
+          createWorkflowRunId(runId),
+        ),
+    });
   }
 
   private shouldJobRun(job: Job, run: WorkflowRun): boolean {

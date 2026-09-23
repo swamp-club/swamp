@@ -26,7 +26,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import {
   computeStepsToReset,
   DefaultStepExecutor,
@@ -37,6 +37,7 @@ import {
   WorkflowExecutionService,
 } from "./execution_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -5964,6 +5965,73 @@ Deno.test({
   },
 });
 
+const STEP_OUTPUT_MODEL_TYPE = "test/step-outputs";
+
+/**
+ * A model_method step output in the shape the real step executor returns:
+ * resource records keyed by spec then instance, each still carrying the
+ * attributes loaded when the step ran.
+ */
+function modelMethodStepOutput(
+  model: string,
+  method: string,
+  resources: Array<{
+    name: string;
+    modelId: string;
+    attributes: Record<string, unknown>;
+  }>,
+): Record<string, unknown> {
+  const records: Record<string, Record<string, unknown>> = {};
+  for (const r of resources) {
+    records[r.name] = {
+      id: `data-${r.name}`,
+      name: r.name,
+      version: 1,
+      isLatest: true,
+      modelName: model,
+      modelId: r.modelId,
+      modelType: STEP_OUTPUT_MODEL_TYPE,
+      specName: "result",
+      contentType: "application/json",
+      tags: {},
+      attributes: r.attributes,
+      content: r.attributes,
+    };
+  }
+  return {
+    type: "model_method",
+    model,
+    method,
+    resources: { result: records },
+    files: {},
+    dataArtifacts: [],
+    dataHandles: [],
+  };
+}
+
+/** Writes a resource's content where the service's data repository reads it. */
+async function writeStepResource(
+  tempDir: string,
+  catalogStore: CatalogStore,
+  modelId: string,
+  name: string,
+  attributes: Record<string, unknown>,
+): Promise<void> {
+  const repo = new FileSystemUnifiedDataRepository(
+    tempDir,
+    undefined,
+    catalogStore,
+  );
+  const path = repo.getContentPath(
+    ModelType.create(STEP_OUTPUT_MODEL_TYPE),
+    modelId,
+    name,
+    1,
+  );
+  await Deno.mkdir(dirname(path), { recursive: true });
+  await Deno.writeTextFile(path, JSON.stringify(attributes));
+}
+
 Deno.test("steps context: downstream step sees upstream step outputs", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -5974,15 +6042,14 @@ Deno.test("steps context: downstream step sees upstream step outputs", async () 
       execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
         capturedContexts.set(ctx.stepName, ctx);
         if (step.name === "create") {
-          return Promise.resolve({
-            type: "model_method",
-            method: "create",
-            model: "test-model",
-            resourceAttributes: {
-              audienceId: "aud_123",
-              status: "Building",
-            },
-          });
+          // No datastore content: a live run must not need to read it.
+          return Promise.resolve(
+            modelMethodStepOutput("test-model", "create", [{
+              name: "audience",
+              modelId: "model-create",
+              attributes: { audienceId: "aud_123", status: "Building" },
+            }]),
+          );
         }
         return Promise.resolve({ executed: true });
       },
@@ -6099,12 +6166,13 @@ Deno.test("steps context: pre-populated from completed jobs on resume", async ()
         callCount++;
         capturedContexts.set(ctx.stepName, ctx);
         if (step.name === "compile") {
-          return Promise.resolve({
-            type: "model_method",
-            method: "build",
-            model: "build-model",
-            resourceAttributes: { artifactId: "art_abc" },
-          });
+          return Promise.resolve(
+            modelMethodStepOutput("build-model", "build", [{
+              name: "artifact",
+              modelId: "model-build",
+              attributes: { artifactId: "art_abc" },
+            }]),
+          );
         }
         return Promise.resolve({ executed: true });
       },
@@ -6146,6 +6214,14 @@ Deno.test("steps context: pre-populated from completed jobs on resume", async ()
 
     await workflowRepo.save(workflow);
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    // The resumed run reads compile's outputs back from the datastore.
+    await writeStepResource(
+      tempDir,
+      catalogStore,
+      "model-build",
+      "artifact",
+      { artifactId: "art_abc" },
+    );
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -6184,6 +6260,188 @@ Deno.test("steps context: pre-populated from completed jobs on resume", async ()
     assertEquals(compileStep.status, "succeeded");
     assertExists(compileStep.outputs);
     assertEquals(compileStep.outputs!.artifactId, "art_abc");
+  });
+});
+
+Deno.test("steps context: a downstream step sees a child workflow's outputs by child step", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: Map<string, StepExecutionContext> = new Map();
+    const executor: StepExecutor = {
+      execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        capturedContexts.set(ctx.stepName, ctx);
+        if (step.name === "write") {
+          return Promise.resolve(
+            modelMethodStepOutput("writer", "execute", [{
+              name: "record",
+              modelId: "model-writer",
+              attributes: { stdout: "hello" },
+            }]),
+          );
+        }
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const child = Workflow.create({
+      name: "child-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "write",
+              task: StepTask.model("writer", "execute"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const parent = Workflow.create({
+      name: "parent-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "child",
+              task: StepTask.workflow("child-wf"),
+            }),
+            Step.create({
+              name: "use",
+              task: StepTask.model("reader", "execute"),
+              dependsOn: [
+                { step: "child", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(child);
+    await workflowRepo.save(parent);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    // The child run's step outputs are stripped by the time the parent
+    // resolves them, so they are read from the datastore.
+    await writeStepResource(
+      tempDir,
+      catalogStore,
+      "model-writer",
+      "record",
+      { stdout: "hello" },
+    );
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(parent.name);
+    assertEquals(run.status, "succeeded");
+
+    const childStep = capturedContexts.get("use")!.expressionContext!.steps!
+      .child;
+    assertEquals(childStep.status, "succeeded");
+    assertEquals(childStep.outputs, { write: { stdout: "hello" } });
+  });
+});
+
+Deno.test("steps context: the run record keeps no step output values", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const executor: StepExecutor = {
+      execute(step: Step): Promise<unknown> {
+        if (step.name === "write") {
+          return Promise.resolve(
+            modelMethodStepOutput("writer", "execute", [{
+              name: "record",
+              modelId: "model-writer",
+              attributes: { stdout: "hello" },
+            }]),
+          );
+        }
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const child = Workflow.create({
+      name: "child-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "write",
+              task: StepTask.model("writer", "execute"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const parent = Workflow.create({
+      name: "parent-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "child",
+              task: StepTask.workflow("child-wf"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(child);
+    await workflowRepo.save(parent);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    await writeStepResource(
+      tempDir,
+      catalogStore,
+      "model-writer",
+      "record",
+      { stdout: "hello" },
+    );
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(parent.name);
+    assertEquals(run.status, "succeeded");
+
+    // The parent step records how to find the child run, not its outputs.
+    const parentOutput = run.getJob("main")!.getStep("child")!.output as Record<
+      string,
+      unknown
+    >;
+    assertEquals(parentOutput.workflowId, child.id);
+    assertEquals("outputs" in parentOutput, false);
+
+    const childRun = await runRepo.findById(
+      child.id,
+      createWorkflowRunId(parentOutput.runId as string),
+    );
+    const childOutput = childRun!.getJob("main")!.getStep("write")!
+      .output as Record<string, unknown>;
+    const record = (childOutput.resources as Record<
+      string,
+      Record<string, Record<string, unknown>>
+    >).result.record;
+    assertEquals(record.attributes, null);
+    assertEquals(record.content, null);
+    assertEquals(JSON.stringify(childRun!.toData()).includes("hello"), false);
   });
 });
 

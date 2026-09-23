@@ -199,8 +199,24 @@ earlier steps in the same workflow.
 | `steps.<name>.outputs`     | `Record<string,unknown>` | Resource attributes from model method steps |
 
 Only completed steps are visible — pending or running steps are not accessible.
-The outputs field contains model method resource attributes when available;
-steps that produce no resource attributes have no outputs.
+A model method step's outputs are the attributes of every JSON resource it
+wrote, merged into one flat record in write order; when two resources share an
+attribute name the later one wins. For one specific instance, read it with
+`data.latest("<model>", "<instance>")` instead. Non-JSON resources and
+file outputs contribute nothing, and steps that produce no resource attributes
+have no outputs.
+
+The workflow run record never stores output values: resource attributes are
+stripped from it to keep its size independent of the data steps write. A live
+run takes each step's outputs from the step's full output before stripping.
+A resumed run, a parent reading a child run, and `swamp workflow history
+get --json` / `swamp workflow history outputs` read them back from the
+datastore through the resource references the run keeps, so these reads are
+best-effort: ephemeral-lifetime data, garbage-collected versions and a remote
+datastore not cached locally yield no outputs. A run and its resume resolve
+sensitive fields from their vault references, as `data.latest` does;
+history shows sensitive fields as stored. Over `swamp serve`, history includes
+only the outputs of models the caller may read as data.
 
 The `steps` namespace exists only once the workflow run does, so like `run.*`
 any expression reading it is left raw during workflow evaluation and resolved
@@ -208,10 +224,11 @@ at step execution time. Evaluating it at run start would fail the whole run
 with `Unknown variable: steps`.
 
 Cross-workflow output passing is supported at one level of nesting: when a
-parent step invokes a child workflow, the child's model method resource
-attributes are collected and accessible as
-`steps.<parent-step>.outputs.<child-step>.<attr>`. Multi-level nesting
-(grandchild workflows) does not propagate outputs.
+parent step invokes a child workflow, the outputs of the child's succeeded
+model method steps are accessible as
+`steps.<parent-step>.outputs.<child-step>.<attr>`. The parent step records the
+child's workflow and run ids, not the values. Multi-level nesting (grandchild
+workflows) does not propagate outputs.
 
 ## Webhook Payload Context
 

@@ -5,6 +5,7 @@
 - [Example: Dynamic AMI Lookup Workflow](#example-dynamic-ami-lookup-workflow)
 - [Example: Multi-Step Infrastructure Workflow](#example-multi-step-infrastructure-workflow)
 - [Choosing model.\* vs data.latest() Expressions](#choosing-model-vs-datalatest-expressions)
+- [Step Results (`steps.*`)](#step-results-steps)
 - [Resource References](#resource-references)
 - [Delete Workflow Ordering](#delete-workflow-ordering)
 - [Update Workflow Ordering](#update-workflow-ordering)
@@ -141,6 +142,59 @@ findings: ${{ data.latest('factory', 'code-review').?attributes.?findings.orValu
 ```
 
 Use explicit `dependsOn` to control step ordering.
+
+## Step Results (`steps.*`)
+
+Within one workflow run, `steps.<name>` exposes every **completed** upstream
+step, keyed by step name — no model or instance name needed.
+
+| Expression                                        | Value                                          |
+| ------------------------------------------------- | ---------------------------------------------- |
+| `steps.<name>.status`                             | `succeeded`, `failed`, `skipped` or `unknown`  |
+| `steps.<name>.outputs.<attr>`                     | An attribute of a JSON resource the step wrote |
+| `steps.<parent-step>.outputs.<child-step>.<attr>` | A child workflow step's output, one level deep |
+
+```yaml
+- name: write_record # command/shell writes a `result` resource
+  task:
+    type: model_method
+    modelIdOrName: writer
+    methodName: execute
+- name: use_it
+  task:
+    type: model_method
+    modelIdOrName: reader
+    methodName: execute
+    inputs:
+      msg: ${{ steps.write_record.outputs.stdout }}
+  dependsOn:
+    - step: write_record
+      condition:
+        type: succeeded
+```
+
+- **`dependsOn` is required.** `steps.*` adds no implicit dependency (unlike
+  `data.latest`). Without `dependsOn` on the step, or on its job for a cross-job
+  read, the read races the producer. A step that has not completed is absent,
+  which fails with `No such key: <name>`.
+- **`outputs` is a flat merge** of the attributes of every JSON resource the
+  step wrote, in write order; a later resource wins on a shared key. When a step
+  writes several instances with the same attribute names (factory models), read
+  the one you need with `data.latest("<model>", "<instance>")`.
+- **No outputs, no key.** A step that wrote no JSON resource (file outputs only,
+  `manual_approval`, `assert`) has no `outputs` — `No such key: outputs`. Test
+  with `has(steps.x.outputs)` when that is expected.
+- **Names that are not CEL identifiers** (hyphens, forEach-expanded names such
+  as `deploy-dev`) use bracket access: `steps["deploy-dev"].status`.
+- **Nested workflows:** a `type: workflow` step's outputs are its child's
+  succeeded model method steps, keyed by child step name. Grandchild workflows
+  are not propagated.
+- Resolves at step time, so it works on resume and across jobs. Outputs of
+  ephemeral-lifetime data are not available after the producing process exits
+  (resume, history).
+
+After a run, `swamp workflow history outputs <run-id-or-workflow> --json` prints
+the same outputs as a step-name → attributes map.
 
 ## Example: Multi-Step Infrastructure Workflow
 
