@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   methodExecutionFailed,
   modelMethodRun,
@@ -876,6 +876,149 @@ Deno.test("modelMethodRun: does not publish ModelUpdated when method writes no d
   );
 
   assertEquals(published.length, 0);
+});
+
+const FAILED_RAW = "${{ data.latest('producer', 'log').nope }}";
+
+function createFailingEvaluationDeps(
+  definition: Definition,
+  executed: string[],
+): ModelMethodRunDeps {
+  return {
+    ...createTestDeps(definition, createTestModelDef("run")),
+    createEvaluationService: () => ({
+      ...createFakeEvaluationService(),
+      hasDefinitionExpressions: () => true,
+      evaluateDefinition: (def: Definition) =>
+        Promise.resolve({
+          definition: def,
+          type: TEST_MODEL_TYPE,
+          hadExpressions: true,
+          authoredExpressions: new Set([FAILED_RAW]),
+          failedExpressions: new Map([
+            [FAILED_RAW, new Error("Invalid expression: No such key: nope")],
+          ]),
+        }),
+    }),
+    createExecutionService: () =>
+      ({
+        executeWorkflow: (
+          _def: Definition,
+          _modelDef: unknown,
+          name: string,
+        ) => {
+          executed.push(name);
+          return Promise.resolve({ dataHandles: [] });
+        },
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+  };
+}
+
+Deno.test("modelMethodRun: fails with the CEL error when the method's own argument failed to evaluate (swamp-club#2397)", async () => {
+  const definition = Definition.create({
+    name: "consumer",
+    methods: { run: { arguments: { key: `cat ${FAILED_RAW}` } } },
+  });
+  const executed: string[] = [];
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      createFailingEvaluationDeps(definition, executed),
+      createTestInput("consumer", "run"),
+    ),
+  );
+
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "validation_failed");
+    assertStringIncludes(
+      last.error.message,
+      "Expression in methods.run.arguments.key could not be evaluated",
+    );
+    assertStringIncludes(last.error.message, "No such key: nope");
+    assertEquals(last.error.details, {
+      path: "methods.run.arguments.key",
+      expression: FAILED_RAW,
+    });
+  }
+  assertEquals(executed, []);
+});
+
+Deno.test("modelMethodRun: a run that fails the argument check does not replace the saved evaluation", async () => {
+  const definition = Definition.create({
+    name: "consumer",
+    methods: { run: { arguments: { key: `cat ${FAILED_RAW}` } } },
+  });
+  const saved: Definition[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createFailingEvaluationDeps(definition, []),
+    saveEvaluatedDefinition: (_type, def) => {
+      saved.push(def);
+      return Promise.resolve();
+    },
+  };
+  await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("consumer", "run"),
+    ),
+  );
+  assertEquals(saved, []);
+
+  // A passing run still saves, without the --input overrides.
+  await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      { ...createTestInput("consumer", "run"), inputs: { key: "overridden" } },
+    ),
+  );
+  assertEquals(saved.length, 1);
+  assertEquals(saved[0].getMethodArguments("run"), {
+    key: `cat ${FAILED_RAW}`,
+  });
+});
+
+Deno.test("modelMethodRun: a failed expression in another method's arguments does not stop this method", async () => {
+  const definition = Definition.create({
+    name: "two-methods",
+    methods: {
+      run: { arguments: { key: "value" } },
+      update: { arguments: { key: FAILED_RAW } },
+    },
+  });
+  const executed: string[] = [];
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      createFailingEvaluationDeps(definition, executed),
+      createTestInput("two-methods", "run"),
+    ),
+  );
+
+  assertEquals(events.some((e) => e.kind === "error"), false);
+  assertEquals(executed, ["run"]);
+});
+
+Deno.test("modelMethodRun: an --input override replacing the failed argument lets the method run", async () => {
+  const definition = Definition.create({
+    name: "consumer",
+    methods: { run: { arguments: { key: `cat ${FAILED_RAW}` } } },
+  });
+  const executed: string[] = [];
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      createFailingEvaluationDeps(definition, executed),
+      { ...createTestInput("consumer", "run"), inputs: { key: "overridden" } },
+    ),
+  );
+
+  assertEquals(events.some((e) => e.kind === "error"), false);
+  assertEquals(executed, ["run"]);
 });
 
 Deno.test("modelMethodRun: schema-declared inputs contribute authored expressions to the runtime pass", async () => {

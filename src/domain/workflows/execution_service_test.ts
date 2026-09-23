@@ -3379,6 +3379,174 @@ Deno.test("DefaultStepExecutor wires dataQueryService into MethodContext", async
   });
 });
 
+// swamp-club#2397 / #2455: a step runs a model whose own definition holds the
+// expressions. Records the arguments each method actually receives.
+async function runDefinitionStep(
+  definitionProps: Parameters<typeof Definition.create>[0],
+  methodName: string,
+  stepInputs: Record<string, unknown> | undefined,
+  inputs: Record<string, unknown>,
+): Promise<Record<string, unknown>[]> {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+
+  const received: Record<string, unknown>[] = [];
+  await withTempDir(async (tempDir) => {
+    const modelType = ModelType.create(
+      `@test-2397/capture-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    const method = {
+      description: "records its arguments",
+      arguments: z.object({ value: z.string() }),
+      execute: (args: { value: string }) => {
+        received.push(args);
+        return Promise.resolve({});
+      },
+    };
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({
+        cidr: z.string().optional(),
+        target: z.string().optional(),
+      }),
+      resources: {},
+      methods: { execute: method, delete: method },
+    });
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const definition = Definition.create({
+        ...definitionProps,
+        type: modelType.normalized,
+      });
+      await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+
+      const step = Step.create({
+        name: "step",
+        task: StepTask.model(definition.name, methodName, stepInputs),
+      });
+      await new DefaultStepExecutor().execute(step, {
+        workflowId: createWorkflowId(crypto.randomUUID()),
+        workflowRunId: crypto.randomUUID(),
+        workflowName: "wf",
+        jobName: "job",
+        stepName: "step",
+        repoDir: tempDir,
+        signal: new AbortController().signal,
+        step,
+        catalogStore,
+        authoredExpressions: new Set(),
+        expressionContext: { model: {}, env: {}, inputs },
+      });
+    } finally {
+      catalogStore.close();
+    }
+  });
+  return received;
+}
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: fails the step with the CEL error when the method's own argument failed to evaluate (swamp-club#2397)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const error = await assertRejects(() =>
+      runDefinitionStep(
+        {
+          name: "consumer",
+          inputs: { properties: { cfg: { type: "object" } } },
+          methods: {
+            execute: { arguments: { value: "${{ inputs.cfg.nope }}" } },
+          },
+        },
+        "execute",
+        undefined,
+        { cfg: {} },
+      )
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Expression in methods.execute.arguments.value could not be evaluated",
+    );
+    assertStringIncludes((error as Error).message, "No such key: nope");
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a step input replacing the failed argument lets the method run",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const received = await runDefinitionStep(
+      {
+        name: "consumer",
+        inputs: { properties: { cfg: { type: "object" } } },
+        methods: {
+          execute: { arguments: { value: "${{ inputs.cfg.nope }}" } },
+        },
+      },
+      "execute",
+      { value: "overridden" },
+      { cfg: {} },
+    );
+    assertEquals(received, [{ value: "overridden" }]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a delete step still runs when create-time inputs are absent (#653)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const received = await runDefinitionStep(
+      {
+        name: "subnet",
+        globalArguments: { cidr: "${{ inputs.cidrBlock }}" },
+        methods: {
+          execute: { arguments: { value: "${{ inputs.cidrBlock }}" } },
+          delete: { arguments: { value: "${{ inputs.instanceName }}" } },
+        },
+      },
+      "delete",
+      undefined,
+      { instanceName: "public-a" },
+    );
+    assertEquals(received, [{ value: "public-a" }]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: self.globalArguments in a method argument sees the evaluated global argument (swamp-club#2455)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const received = await runDefinitionStep(
+      {
+        name: "web",
+        globalArguments: { target: "${{ 'web-' + inputs.host }}" },
+        methods: {
+          execute: {
+            arguments: { value: "${{ self.globalArguments.target }}" },
+          },
+        },
+      },
+      "execute",
+      undefined,
+      { host: "a" },
+    );
+    assertEquals(received, [{ value: "web-a" }]);
+  },
+});
+
 // --- forEach.in async helper resolution (Issue #88) ---
 
 Deno.test({

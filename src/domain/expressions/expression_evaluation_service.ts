@@ -32,7 +32,6 @@ import { getLogger } from "@logtape/logtape";
 import { type ASTNode, parse as parseCel } from "cel-js";
 import type { ExpressionLocation } from "./expression.ts";
 import {
-  extractDependencies,
   extractModelRefs,
   requiresModelNamespace,
 } from "./dependency_extractor.ts";
@@ -43,6 +42,9 @@ import {
   type ModelResolverRepositories,
 } from "./model_resolver.ts";
 import { CyclicDependencyError } from "./errors.ts";
+import { evaluateDefinitionExpressions } from "./definition_expression_pass.ts";
+import { BINDING_MACROS } from "./swamp_namespaces.ts";
+import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
@@ -74,18 +76,6 @@ const VAULT_GET_PATTERN = /vault\.get\s*\(/;
  * where the context also carries the process environment.
  */
 const ENV_PATTERN = /(?<![.\w])env\b/;
-
-/**
- * CEL macros whose first argument binds a local variable for the remaining
- * arguments. A variable bound this way shadows the root `env` identifier.
- */
-const BINDING_MACROS = new Set([
-  "map",
-  "filter",
-  "all",
-  "exists",
-  "exists_one",
-]);
 
 /**
  * Walks a parsed CEL tree looking for a reference to the root `env`
@@ -304,6 +294,12 @@ export interface EvaluatedDefinition {
   authoredExpressions: ReadonlySet<string>;
   /** Whether any expressions were evaluated */
   hadExpressions: boolean;
+  /**
+   * Expressions left unresolved because evaluation failed, with the reason.
+   * Absent when nothing was evaluated (e.g. a definition loaded for
+   * `--last-evaluated`).
+   */
+  failedExpressions?: FailedExpressions;
 }
 
 /**
@@ -459,66 +455,27 @@ export class ExpressionEvaluationService {
       return { definition, type, hadExpressions: false, authoredExpressions };
     }
 
-    // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
-    // Runtime expressions are resolved at runtime only, never persisted
-    const evaluatedValues = new Map<string, unknown>();
-    for (const expr of expressions) {
-      if (containsRuntimeExpression(expr.celExpression)) {
-        // Leave runtime expressions (vault, env, and mixed) as raw
-        continue;
-      }
-
-      // Skip expressions referencing model resource/file data that isn't
-      // available in context (e.g., referenced model was never executed).
-      // Unlike inputs, model data is never conditionally accessed in CEL —
-      // member access on a missing model ref is always an error.
-      let hasMissingModelDep = false;
-      const deps = extractDependencies(expr.celExpression);
-      for (const dep of deps) {
-        if (dep.type === "resource" || dep.type === "file") {
-          const modelData = ctx.model[dep.modelRef];
-          if (
-            !modelData ||
-            (dep.type === "resource" && !modelData.resource) ||
-            (dep.type === "file" && !modelData.file)
-          ) {
-            hasMissingModelDep = true;
-            break;
-          }
-        }
-      }
-
-      if (hasMissingModelDep) {
-        continue;
-      }
-
-      try {
-        const value = await this.celEvaluator.evaluateAsync(
-          expr.celExpression,
-          ctx,
-        );
-        evaluatedValues.set(expr.raw, value);
-      } catch {
-        // Leave unresolved — CEL threw because an input referenced directly
-        // (not inside a conditional branch) is absent from context.
-        // The Proxy on globalArgs will surface a clear error if the method
-        // actually needs the unresolved value.
-      }
-    }
-
-    // Replace only the CEL-only expressions with evaluated values
-    const evaluatedData = replaceExpressions(definitionData, evaluatedValues);
+    // Evaluate CEL-only expressions; runtime expressions (vault, env, and
+    // mixed) are left raw — they are resolved at runtime only, never persisted.
+    const { data: evaluatedData, failedExpressions } =
+      await evaluateDefinitionExpressions(
+        definitionData,
+        expressions.filter((expr) =>
+          !containsRuntimeExpression(expr.celExpression)
+        ),
+        ctx,
+        this.celEvaluator,
+      );
 
     // Create new Definition from evaluated data
-    const evaluatedDefinition = DefinitionClass.fromData(
-      evaluatedData as ReturnType<typeof definition.toData>,
-    );
+    const evaluatedDefinition = DefinitionClass.fromData(evaluatedData);
 
     return {
       definition: evaluatedDefinition,
       type,
       hadExpressions: true,
       authoredExpressions,
+      failedExpressions,
     };
   }
 

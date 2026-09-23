@@ -36,13 +36,17 @@ import {
   partitionAuthored,
 } from "../expressions/expression_evaluation_service.ts";
 import {
-  extractDependencies,
   hasStepOutputDependency,
   hasStepsNamespaceReference,
 } from "../expressions/dependency_extractor.ts";
 import type { ExpressionLocation } from "../expressions/expression.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
-import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
+import type {
+  CelExpressionEvaluator,
+  CelExpressionValidator,
+} from "../expressions/cel_runtime.ts";
+import { evaluateDefinitionExpressions } from "../expressions/definition_expression_pass.ts";
+import type { FailedExpressions } from "../expressions/unresolved_expression_guard.ts";
 
 /** Collect template expressions and bare assertion predicates from source. */
 export function collectWorkflowAuthoredExpressions(
@@ -254,16 +258,21 @@ export class WorkflowExpressionEvaluator {
  * leaves the expression unresolved. This pairs intentionally with
  * WorkflowExpressionEvaluator's strict behaviour — definitions are
  * built up over time and may legitimately reference inputs that are
- * absent when CEL eval first runs. The Proxy on globalArgs surfaces a
- * clear error later if the method actually needs the unresolved value.
+ * absent when CEL eval first runs, for a method other than the one
+ * being run. Each failure is returned with its reason, so the caller can
+ * fail the step if the method it runs uses the value
+ * (assertMethodArgumentsEvaluated); the Proxy on globalArgs covers
+ * global arguments the method reads directly.
  *
- * Also skips expressions that reference model resource/file data not
- * yet available in the context (e.g., a referenced model was never
- * executed). Unlike inputs, model data is never conditionally accessed
- * in CEL — member access on a missing model ref is always an error.
+ * See {@link evaluateDefinitionExpressions} for evaluation order and the
+ * handling of model data that is not yet available.
  */
 export class DefinitionExpressionEvaluator {
-  constructor(private readonly celEvaluator: CelExpressionEvaluator) {}
+  constructor(
+    private readonly celEvaluator:
+      & CelExpressionEvaluator
+      & CelExpressionValidator,
+  ) {}
 
   /**
    * @param authored - Expressions the author wrote, collected from the
@@ -276,59 +285,23 @@ export class DefinitionExpressionEvaluator {
     definition: Definition,
     context: ExpressionContext,
     authored: AuthoredExpressions,
-  ): Promise<Definition> {
+  ): Promise<{ definition: Definition; failedExpressions: FailedExpressions }> {
     const definitionData = definition.toData();
     const expressions = partitionAuthored(
       extractExpressions(definitionData),
       authored,
-    );
+    ).filter((expr) => !containsRuntimeExpression(expr.celExpression));
 
     if (expressions.length === 0) {
-      return definition;
+      return { definition, failedExpressions: new Map() };
     }
 
-    const evaluatedValues = new Map<string, unknown>();
-    for (const expr of expressions) {
-      if (containsRuntimeExpression(expr.celExpression)) {
-        continue;
-      }
-
-      let hasMissingModelDep = false;
-      const deps = extractDependencies(expr.celExpression);
-      for (const dep of deps) {
-        if (dep.type === "resource" || dep.type === "file") {
-          const modelData = context.model[dep.modelRef];
-          if (
-            !modelData ||
-            (dep.type === "resource" && !modelData.resource) ||
-            (dep.type === "file" && !modelData.file)
-          ) {
-            hasMissingModelDep = true;
-            break;
-          }
-        }
-      }
-      if (hasMissingModelDep) {
-        continue;
-      }
-
-      try {
-        const value = await this.celEvaluator.evaluateAsync(
-          expr.celExpression,
-          context,
-        );
-        evaluatedValues.set(expr.raw, value);
-      } catch {
-        // Lenient: leave unresolved. CEL threw because an input
-        // referenced directly (not inside a conditional branch) is
-        // absent from context. Surfaces later through the globalArgs
-        // Proxy if actually needed.
-      }
-    }
-
-    const evaluatedData = replaceExpressions(definitionData, evaluatedValues);
-    return Definition.fromData(
-      evaluatedData as ReturnType<typeof definition.toData>,
+    const { data, failedExpressions } = await evaluateDefinitionExpressions(
+      definitionData,
+      expressions,
+      context,
+      this.celEvaluator,
     );
+    return { definition: Definition.fromData(data), failedExpressions };
   }
 }

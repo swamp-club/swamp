@@ -76,6 +76,23 @@ export class InvalidExpressionError extends ExpressionError {
 }
 
 /**
+ * Error thrown when a method is about to run with an argument that still holds
+ * an expression whose evaluation failed. Carries the original evaluation error
+ * as its cause so the CEL message (and its caret) reaches the user.
+ */
+export class UnresolvedExpressionError extends ExpressionError {
+  constructor(expression: string, path: string, cause: Error) {
+    super(
+      `Expression in ${path} could not be evaluated: ${cause.message}`,
+      expression,
+      path,
+      cause,
+    );
+    this.name = "UnresolvedExpressionError";
+  }
+}
+
+/**
  * Error thrown when circular dependencies are detected between expressions.
  */
 export class CyclicDependencyError extends ExpressionError {

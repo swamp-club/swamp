@@ -319,6 +319,138 @@ Deno.test("evaluateDefinition: directly-missing input in globalArguments stays u
   });
 });
 
+Deno.test("evaluateDefinition: records failed expressions with their reason and leaves them in place", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const definition = Definition.create({
+      name: "failing-model",
+      inputs: {
+        properties: { cfg: { type: "object" }, cidrBlock: { type: "string" } },
+      },
+      methods: {
+        execute: {
+          arguments: {
+            missingKey: "${{ inputs.cfg.nope }}",
+            typeError: "${{ 1 + 'a' }}",
+            absentInput: "${{ inputs.cidrBlock }}",
+            missingModel: "${{ model.ghost.resource.state.main.attributes }}",
+            ok: "${{ 1 + 1 }}",
+            runtime: "${{ env.HOME }}",
+            prose: "use ${{ not valid cel !!! }} in templates",
+          },
+        },
+      },
+    });
+
+    const result = await service.evaluateDefinition(definition, type, {
+      cfg: {},
+    });
+
+    const failed = result.failedExpressions!;
+    assertEquals([...failed.keys()].sort(), [
+      "${{ 1 + 'a' }}",
+      "${{ inputs.cfg.nope }}",
+      "${{ inputs.cidrBlock }}",
+      "${{ model.ghost.resource.state.main.attributes }}",
+    ]);
+    assertStringIncludes(
+      failed.get("${{ inputs.cfg.nope }}")!.message,
+      "No such key: nope",
+    );
+    assertStringIncludes(
+      failed.get("${{ model.ghost.resource.state.main.attributes }}")!.message,
+      "Model ghost has no resource data",
+    );
+
+    // Evaluation stays lenient: failures keep their raw text.
+    const args = result.definition.getMethodArguments("execute");
+    assertEquals(args.missingKey, "${{ inputs.cfg.nope }}");
+    assertEquals(args.ok, 2);
+    assertEquals(args.runtime, "${{ env.HOME }}");
+    assertEquals(args.prose, "use ${{ not valid cel !!! }} in templates");
+  });
+});
+
+Deno.test("evaluateDefinition: self.globalArguments in a method argument sees the evaluated global argument (swamp-club#2455)", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const definition = Definition.create({
+      name: "global-copy-model",
+      inputs: { properties: { host: { type: "string" } } },
+      globalArguments: {
+        target: "${{ 'web-' + inputs.host }}",
+        literal: "static",
+        broken: "${{ inputs.host.nope }}",
+      },
+      methods: {
+        execute: {
+          arguments: {
+            run:
+              "echo ${{ self.globalArguments.target }} ${{ self.globalArguments.literal }}",
+            copyBroken: "${{ self.globalArguments.broken }}",
+          },
+        },
+      },
+    });
+
+    const result = await service.evaluateDefinition(definition, type, {
+      host: "a",
+    });
+
+    assertEquals(result.definition.globalArguments.target, "web-a");
+    const args = result.definition.getMethodArguments("execute");
+    assertEquals(args.run, "echo web-a static");
+    // A global argument that failed is copied as its raw text, which is
+    // itself a recorded failure — so the guard catches the copy too.
+    assertEquals(args.copyBroken, "${{ inputs.host.nope }}");
+    assertEquals(
+      result.failedExpressions!.has("${{ inputs.host.nope }}"),
+      true,
+    );
+  });
+});
+
+Deno.test("evaluateDefinition: a runtime global argument copied via self.globalArguments is resolved by the runtime pass", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const definition = Definition.create({
+      name: "runtime-copy-model",
+      globalArguments: { path: "${{ env.PATH }}" },
+      methods: {
+        execute: {
+          arguments: { run: "${{ self.globalArguments.path }}" },
+        },
+      },
+    });
+
+    const result = await service.evaluateDefinition(definition, type);
+    assertEquals(
+      result.definition.getMethodArguments("execute").run,
+      "${{ env.PATH }}",
+    );
+
+    const runtime = await service.resolveRuntimeExpressionsInDefinition(
+      result.definition,
+      undefined,
+      undefined,
+      result.authoredExpressions,
+    );
+    assertEquals(
+      runtime.definition.getMethodArguments("execute").run,
+      Deno.env.get("PATH"),
+    );
+  });
+});
+
 // ============================================================================
 // resolveAllExpressionsInData — CEL + runtime two-pass seam (swamp-club#291)
 // ============================================================================
@@ -605,6 +737,38 @@ Deno.test("evaluateData: leaves invalid-CEL prose unchanged", async () => {
       collectAuthoredExpressions(data),
     ) as { doc: string };
     assertEquals(result.doc, data.doc);
+  });
+});
+
+Deno.test("evaluateData: resolves an expression naming a hyphenated model rather than treating it as prose", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const data = { id: "${{ model.web-1a.execution.status }}" };
+    const result = await service.evaluateData(
+      data,
+      makeContext({
+        model: {
+          "web-1a": {
+            input: {
+              id: "web-1a",
+              name: "web-1a",
+              version: 1,
+              tags: {},
+              globalArguments: {},
+            },
+            execution: {
+              id: "e1",
+              methodName: "create",
+              status: "succeeded",
+              startedAt: "2026-01-01T00:00:00Z",
+            },
+          },
+        },
+      }),
+      collectAuthoredExpressions(data),
+    ) as { id: string };
+    assertEquals(result.id, "succeeded");
   });
 });
 
