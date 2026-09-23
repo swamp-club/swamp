@@ -218,7 +218,12 @@ Secrets live in the encrypted control-plane vault (`ControlPlaneVaultProvider`,
 they replicate with the control-plane store and can be deleted immediately. At
 boot, right after that vault registers, `checkTokenHealth` reports secrets that
 no longer decrypt and `sweepTokenConsistency` removes token records missing
-their secret (`src/cli/commands/serve.ts`). There is no periodic token garbage
+their secret (`src/cli/commands/serve.ts`). The CLI token commands (`access
+token mint`, `rotate` and `reveal`, and `worker token create`) register the same
+vault through `initializeControlPlaneVault`
+(`src/domain/vaults/control_plane_vault_init.ts`). Like serve, they stop with
+the initialization error if it fails; they never fall back to a user vault.
+There is no periodic token garbage
 collector: `ServerTokenGcService` (`src/serve/server_token_gc_service.ts`)
 exists but serve never creates it.
 

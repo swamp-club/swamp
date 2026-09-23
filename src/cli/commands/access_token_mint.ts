@@ -100,7 +100,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     )
     .option(
       "--vault <vault:string>",
-      "Vault for the token secret (local repos only; not supported when a datastore is configured)",
+      "Not supported: token secrets are always stored in the control-plane vault. Passing it prints how to copy the credential into another vault",
     ),
 ).action(async function (options: AnyOptions, name: string) {
   const cliCtx = createContext(options as GlobalOptions, [
@@ -161,6 +161,13 @@ export const accessTokenMintCommand = withRemoteOptions(
     return;
   }
 
+  const requestedVault = options.vault as string | undefined;
+  if (requestedVault !== undefined) {
+    throw new UserError(
+      tokenVaultRejectedMessage("mint", name, requestedVault),
+    );
+  }
+
   const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
@@ -173,7 +180,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     ? datastoreConfig.namespace
     : undefined;
 
-  const controlPlaneResult = await initializeControlPlaneVaultForCli(
+  await initializeControlPlaneVaultForCli(
     repoDir,
     syncService,
     {
@@ -181,16 +188,6 @@ export const accessTokenMintCommand = withRemoteOptions(
       catalogInvalidate: () => repoContext.catalogStore.invalidate(),
     },
   );
-
-  let effectiveVault = options.vault as string | undefined;
-  if (controlPlaneResult) {
-    if (effectiveVault !== undefined) {
-      throw new UserError(
-        tokenVaultRejectedMessage("mint", name, effectiveVault),
-      );
-    }
-    effectiveVault = TOKEN_SECRETS_VAULT_NAME;
-  }
 
   const libCtx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = await createServerTokenCreateDeps(
@@ -230,7 +227,7 @@ export const accessTokenMintCommand = withRemoteOptions(
         principalId: principal,
         principalEmail: email,
         durationMs,
-        vaultName: effectiveVault,
+        vaultName: TOKEN_SECRETS_VAULT_NAME,
       }),
       withDefaults<ServerTokenCreateEvent>({
         completed: (event) => {
@@ -249,48 +246,46 @@ export const accessTokenMintCommand = withRemoteOptions(
 
     renderServerTokenCreate(data, cliCtx.outputMode);
 
-    if (controlPlaneResult) {
-      const migrationVaultService = await VaultService.fromRepository(
-        repoDir,
-        { vaultsDir },
-      );
-      await migrateTokenSecrets({
-        tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
-        vaultService: migrationVaultService,
-        dataQueryService: repoContext.dataQueryService,
-        updateTokenVaultName: async (
+    const migrationVaultService = await VaultService.fromRepository(
+      repoDir,
+      { vaultsDir },
+    );
+    await migrateTokenSecrets({
+      tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+      vaultService: migrationVaultService,
+      dataQueryService: repoContext.dataQueryService,
+      updateTokenVaultName: async (
+        tokenName,
+        newVaultName,
+        currentAttrs,
+      ) => {
+        const def = await repoContext.definitionRepo.findByName(
+          SERVER_TOKEN_MODEL_TYPE,
           tokenName,
-          newVaultName,
-          currentAttrs,
-        ) => {
-          const def = await repoContext.definitionRepo.findByName(
-            SERVER_TOKEN_MODEL_TYPE,
-            tokenName,
+        );
+        if (!def) {
+          throw new Error(
+            `Definition not found for token '${tokenName}' — skipping migration`,
           );
-          if (!def) {
-            throw new Error(
-              `Definition not found for token '${tokenName}' — skipping migration`,
-            );
-          }
-          const { writeResource } = createResourceWriter(
-            repoContext.unifiedDataRepo,
-            SERVER_TOKEN_MODEL_TYPE,
-            def.id,
-            serverTokenModel.resources!,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            tokenName,
-          );
-          await writeResource(
-            "token",
-            "token-main",
-            { ...currentAttrs, vaultName: newVaultName },
-          );
-        },
-      });
-    }
+        }
+        const { writeResource } = createResourceWriter(
+          repoContext.unifiedDataRepo,
+          SERVER_TOKEN_MODEL_TYPE,
+          def.id,
+          serverTokenModel.resources!,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          tokenName,
+        );
+        await writeResource(
+          "token",
+          "token-main",
+          { ...currentAttrs, vaultName: newVaultName },
+        );
+      },
+    });
 
     if (syncService) {
       await syncService.markDirty();

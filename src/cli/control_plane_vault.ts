@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import {
+  controlPlaneVaultInitError,
   type ControlPlaneVaultInitResult,
   initializeControlPlaneVault,
 } from "../domain/vaults/control_plane_vault_init.ts";
@@ -34,7 +36,7 @@ export async function initializeControlPlaneVaultForCli(
   repoDir: string,
   syncService?: DatastoreSyncService,
   options?: ControlPlaneVaultCliOptions,
-): Promise<ControlPlaneVaultInitResult | null> {
+): Promise<ControlPlaneVaultInitResult> {
   const caps = syncService?.capabilities?.();
   const hasRemote = !!(caps?.controlPlane && syncService?.controlPlaneStore);
 
@@ -45,13 +47,24 @@ export async function initializeControlPlaneVaultForCli(
   // causing all subsequent namespace-aware pushChanged calls to fail with
   // "Namespace mismatch". This mirrors the serve.ts boot sequence.
   if (hasRemote && options?.namespace) {
-    await syncService!.pullChanged({ namespace: options.namespace });
+    try {
+      await syncService!.pullChanged({ namespace: options.namespace });
+    } catch (err) {
+      throw controlPlaneVaultInitError(err, true);
+    }
     options.catalogInvalidate?.();
   }
 
-  const store = hasRemote
-    ? syncService!.controlPlaneStore!()
-    : new FileSystemControlPlaneStore(swampPath(repoDir));
+  let store: ControlPlaneStore;
+  if (hasRemote) {
+    try {
+      store = syncService!.controlPlaneStore!();
+    } catch (err) {
+      throw controlPlaneVaultInitError(err, true);
+    }
+  } else {
+    store = new FileSystemControlPlaneStore(swampPath(repoDir));
+  }
 
   return await initializeControlPlaneVault(store, hasRemote);
 }

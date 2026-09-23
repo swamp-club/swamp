@@ -32,13 +32,13 @@ export function tokenVaultRejectedMessage(
   const location = opts.remote ? " on the serve host" : "";
   const rejection = opts.remote
     ? "--vault is not supported when targeting a remote server"
-    : "--vault is not supported when a datastore is configured";
+    : `--vault is not supported when ${action} locally`;
   const retry = opts.remote
     ? `The requested ${requestedAction} was not performed. Rerun without --vault, then${location} copy the credential without printing it:`
     : `Rerun without --vault. After ${action}, copy the credential without printing it:`;
   const credentialKey = `server-token-${name}`;
 
-  return `${rejection} - token secrets are stored in the control-plane vault. ${retry}\n` +
+  return `${rejection} - token secrets are always stored in the control-plane vault. ${retry}\n` +
     `swamp access token reveal ${
       shellQuote(name)
     } --repo-dir <repo> --yes --json | jq -re .token | swamp vault put ${

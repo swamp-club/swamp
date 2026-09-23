@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { tokenVaultRejectedMessage } from "./access_token_vault_guidance.ts";
 
 Deno.test("tokenVaultRejectedMessage: gives a safe mint handoff command", () => {
@@ -49,6 +49,19 @@ Deno.test("tokenVaultRejectedMessage: describes a remote mint accurately", () =>
   });
 
   assertStringIncludes(message, "The requested minting was not performed.");
+});
+
+Deno.test("tokenVaultRejectedMessage: describes local rejection without blaming a datastore", () => {
+  const mint = tokenVaultRejectedMessage("mint", "alice", "team-vault");
+  assertStringIncludes(mint, "--vault is not supported when minting locally");
+  assertEquals(mint.includes("datastore"), false);
+
+  const rotate = tokenVaultRejectedMessage("rotate", "alice", "team-vault");
+  assertStringIncludes(
+    rotate,
+    "--vault is not supported when rotating locally",
+  );
+  assertEquals(rotate.includes("datastore"), false);
 });
 
 Deno.test("tokenVaultRejectedMessage: shell-quotes user-provided names", () => {

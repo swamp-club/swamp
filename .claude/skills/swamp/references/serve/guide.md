@@ -250,9 +250,12 @@ vault. It is a copy: the token secret remains in its control-plane vault.
 `swamp access token mint` runs against a local repo. When a datastore is
 configured, the token secret is stored in the control-plane vault (not a
 user-configured vault). Use `swamp access token reveal <name>` on the serve host
-to retrieve the credential. For headless deployments, mint inside the serve
-process's own environment — e.g. via `kubectl exec` — not on the operator's
-laptop.
+to retrieve the credential. If the control-plane vault cannot initialize (for
+example, expired or wrong datastore credentials), `access token mint`, `rotate`
+and `reveal`, and `worker token create`, fail with that underlying error. Fix
+the datastore access and rerun; do not create a vault named `_token-secrets`.
+For headless deployments, mint inside the serve process's own environment — e.g.
+via `kubectl exec` — not on the operator's laptop.
 
 ## OAuth Login
 

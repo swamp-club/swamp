@@ -66,8 +66,8 @@ export const workerTokenCreateCommand = withRemoteOptions(
       "swamp worker token create ci-runner-3 --duration 24h",
     )
     .example(
-      "Choose the vault that stores the plaintext",
-      "swamp worker token create ci-runner-3 --duration 7d --vault prod-vault",
+      "Choose the server vault that stores the plaintext",
+      "swamp worker token create ci-runner-3 --duration 7d --vault prod-vault --server wss://swamp.example.com",
     )
     .example(
       "Mint a fleet token for 3 machines",
@@ -85,7 +85,7 @@ export const workerTokenCreateCommand = withRemoteOptions(
     )
     .option(
       "--vault <vault:string>",
-      "Vault that stores the token plaintext (defaults to the sole configured vault)",
+      "Vault on the server that stores the token plaintext (only with --server; local creation always uses the control-plane vault)",
     )
     .option(
       "--max-enrollments <n:string>",
@@ -146,6 +146,16 @@ export const workerTokenCreateCommand = withRemoteOptions(
     return;
   }
 
+  const requestedVault = options.vault as string | undefined;
+  if (requestedVault !== undefined) {
+    throw new UserError(
+      `--vault is not supported when creating a worker token locally — ` +
+        `enrollment token secrets are always stored in the control-plane ` +
+        `vault (${TOKEN_SECRETS_VAULT_NAME}). Remove --vault and retry, or ` +
+        `pass --server to store the plaintext in a vault on the server.`,
+    );
+  }
+
   const {
     repoDir,
     repoContext,
@@ -163,7 +173,7 @@ export const workerTokenCreateCommand = withRemoteOptions(
     ? datastoreConfig.namespace
     : undefined;
 
-  const controlPlaneResult = await initializeControlPlaneVaultForCli(
+  await initializeControlPlaneVaultForCli(
     repoDir,
     syncService,
     {
@@ -171,18 +181,6 @@ export const workerTokenCreateCommand = withRemoteOptions(
       catalogInvalidate: () => repoContext.catalogStore.invalidate(),
     },
   );
-
-  let effectiveVault = options.vault as string | undefined;
-  if (controlPlaneResult) {
-    if (effectiveVault !== undefined) {
-      throw new UserError(
-        `--vault is not supported when a datastore is configured — ` +
-          `enrollment token secrets are stored in the control-plane vault ` +
-          `(${TOKEN_SECRETS_VAULT_NAME}). Remove --vault and retry.`,
-      );
-    }
-    effectiveVault = TOKEN_SECRETS_VAULT_NAME;
-  }
 
   const libCtx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = await createWorkerTokenCreateDeps(
@@ -222,7 +220,7 @@ export const workerTokenCreateCommand = withRemoteOptions(
       workerTokenCreate(libCtx, deps, {
         name,
         durationMs,
-        vaultName: effectiveVault,
+        vaultName: TOKEN_SECRETS_VAULT_NAME,
         maxEnrollments,
       }),
       withDefaults<WorkerTokenCreateEvent>({

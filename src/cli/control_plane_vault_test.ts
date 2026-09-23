@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { join } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import type {
   DatastoreSyncOptions,
@@ -25,9 +31,27 @@ import type {
   SyncCapabilities,
 } from "../domain/datastore/datastore_sync_service.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+import { UserError } from "../domain/errors.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+import { swampPath } from "../infrastructure/persistence/paths.ts";
 import { initializeControlPlaneVaultForCli } from "./control_plane_vault.ts";
 
 await initializeLogging({});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-control-plane-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
 
 function createMockStore(): ControlPlaneStore {
   const data = new Map<string, Uint8Array>();
@@ -56,8 +80,15 @@ function createMockStore(): ControlPlaneStore {
   };
 }
 
+function createFailingStore(): ControlPlaneStore {
+  const fail = () => Promise.reject(new Error("S3 headBucket failed HTTP 403"));
+  return { put: fail, get: fail, delete: fail, list: fail };
+}
+
 interface MockSyncServiceOptions {
   pullShouldFail?: boolean;
+  controlPlaneStoreShouldFail?: boolean;
+  controlPlaneStoreThrows?: boolean;
 }
 
 function createMockSyncService(
@@ -67,7 +98,9 @@ function createMockSyncService(
   calls: { method: string; options?: DatastoreSyncOptions }[];
 } {
   const calls: { method: string; options?: DatastoreSyncOptions }[] = [];
-  const store = createMockStore();
+  const store = opts.controlPlaneStoreShouldFail
+    ? createFailingStore()
+    : createMockStore();
 
   const syncService: DatastoreSyncService = {
     pullChanged(
@@ -94,6 +127,9 @@ function createMockSyncService(
     },
     controlPlaneStore(): ControlPlaneStore {
       calls.push({ method: "controlPlaneStore" });
+      if (opts.controlPlaneStoreThrows) {
+        throw new Error("Namespace mismatch: bound to root");
+      }
       return store;
     },
   };
@@ -167,29 +203,81 @@ Deno.test("initializeControlPlaneVaultForCli: skips pullChanged when no namespac
   assertEquals(storeCalls.length, 1, "controlPlaneStore must still be called");
 });
 
-Deno.test("initializeControlPlaneVaultForCli: propagates pullChanged failure", async () => {
-  const { syncService } = createMockSyncService({ pullShouldFail: true });
+Deno.test("initializeControlPlaneVaultForCli: surfaces a pullChanged failure as a control-plane init error", async () => {
+  const { syncService, calls } = createMockSyncService({
+    pullShouldFail: true,
+  });
 
-  await assertRejects(
+  const error = await assertRejects(
     () =>
       initializeControlPlaneVaultForCli(
         "/tmp/test-repo",
         syncService,
         { namespace: "my-namespace" },
       ),
-    Error,
-    "S3 unreachable",
+    UserError,
+  );
+  assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+  assertStringIncludes(error.message, "remote datastore");
+  assertStringIncludes(error.message, "S3 unreachable");
+  assertEquals(
+    calls.some((c) => c.method === "controlPlaneStore"),
+    false,
+    "controlPlaneStore must not be reached after pullChanged fails",
   );
 });
 
-Deno.test("initializeControlPlaneVaultForCli: works without sync service", async () => {
-  const result = await initializeControlPlaneVaultForCli(
-    "/tmp/test-repo",
-    undefined,
-  );
+Deno.test("initializeControlPlaneVaultForCli: surfaces a remote control-plane store failure", async () => {
+  const { syncService } = createMockSyncService({
+    controlPlaneStoreShouldFail: true,
+  });
 
-  // Falls back to FileSystemControlPlaneStore — init may fail because
-  // /tmp/test-repo/.swamp doesn't exist, returning null. That's fine;
-  // we're testing that it doesn't throw on the sync path.
-  assertEquals(result === null || result !== undefined, true);
+  const error = await assertRejects(
+    () => initializeControlPlaneVaultForCli("/tmp/test-repo", syncService),
+    UserError,
+  );
+  assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+  assertStringIncludes(error.message, "remote datastore");
+  assertStringIncludes(error.message, "S3 headBucket failed HTTP 403");
+});
+
+Deno.test("initializeControlPlaneVaultForCli: surfaces a synchronous controlPlaneStore failure", async () => {
+  const { syncService } = createMockSyncService({
+    controlPlaneStoreThrows: true,
+  });
+
+  const error = await assertRejects(
+    () => initializeControlPlaneVaultForCli("/tmp/test-repo", syncService),
+    UserError,
+  );
+  assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+  assertStringIncludes(error.message, "remote datastore");
+  assertStringIncludes(error.message, "Namespace mismatch: bound to root");
+});
+
+Deno.test("initializeControlPlaneVaultForCli: works without sync service", async () => {
+  await withTempDir(async (repoDir) => {
+    const result = await initializeControlPlaneVaultForCli(repoDir, undefined);
+
+    assertEquals(result.isRemote, false);
+  });
+});
+
+Deno.test("initializeControlPlaneVaultForCli: surfaces a corrupted local encryption key", async () => {
+  await withTempDir(async (repoDir) => {
+    const keyDir = join(swampPath(repoDir), "_control", "token-secrets");
+    await Deno.mkdir(keyDir, { recursive: true });
+    await Deno.writeFile(
+      join(keyDir, "encryption-key"),
+      new Uint8Array([1, 2, 3]),
+    );
+
+    const error = await assertRejects(
+      () => initializeControlPlaneVaultForCli(repoDir, undefined),
+      UserError,
+    );
+    assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+    assertStringIncludes(error.message, "local control plane");
+    assertStringIncludes(error.message, "Invalid key length");
+  });
 });
