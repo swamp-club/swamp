@@ -90,28 +90,33 @@ export function Overview(
     onApprovalsChanged?.();
   }, [refetchRuns, refetchApprovals, onApprovalsChanged]);
 
-  const handleApprove = useCallback(
-    async (a: ApprovalInfo) => {
-      await request("workflow.approve", {
-        workflowIdOrName: a.workflowName,
-        stepName: a.stepName,
-        runId: a.runId,
-      });
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+
+  const decide = useCallback(
+    async (type: "workflow.approve" | "workflow.reject", a: ApprovalInfo) => {
+      setDecisionError(null);
+      try {
+        await request(type, {
+          workflowIdOrName: a.workflowName,
+          stepName: a.stepName,
+          runId: a.runId,
+        });
+      } catch (err) {
+        setDecisionError(err instanceof Error ? err.message : String(err));
+      }
       refresh();
     },
     [request, refresh],
   );
 
+  const handleApprove = useCallback(
+    (a: ApprovalInfo) => decide("workflow.approve", a),
+    [decide],
+  );
+
   const handleReject = useCallback(
-    async (a: ApprovalInfo) => {
-      await request("workflow.reject", {
-        workflowIdOrName: a.workflowName,
-        stepName: a.stepName,
-        runId: a.runId,
-      });
-      refresh();
-    },
-    [request, refresh],
+    (a: ApprovalInfo) => decide("workflow.reject", a),
+    [decide],
   );
 
   return (
@@ -230,6 +235,11 @@ export function Overview(
             </div>
           </div>
           <div>
+            {decisionError && (
+              <div className="resume-error" style={{ padding: "8px 18px" }}>
+                {decisionError}
+              </div>
+            )}
             {approvals.length === 0 && (
               <div className="loading">No pending approvals</div>
             )}

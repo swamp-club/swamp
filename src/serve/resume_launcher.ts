@@ -25,16 +25,14 @@
  */
 
 import { mapWorkflowExecutionEvent } from "../libswamp/mod.ts";
-import { createWorkflowRunDeps } from "./deps.ts";
+import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { serializeEvent } from "./serializer.ts";
-import { acquireModelLocks } from "../cli/repo_context.ts";
 import { isCustomDatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import {
   resolveResumableRun,
   resolveSuspendedRun,
 } from "../domain/workflows/suspended_run_resolver.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
-import type { StepLockHook } from "../domain/workflows/execution_service.ts";
 import { createEphemeralStore } from "../infrastructure/persistence/ephemeral_store.ts";
 import {
   extractTraceContext,
@@ -157,17 +155,12 @@ export async function startDetachedResume(
   }
 
   (async () => {
-    const stepLockHook: StepLockHook = async (modelType, modelId) => {
-      const lockResult = await acquireModelLocks(
-        ctx.datastoreConfig,
-        [{ modelType, modelId }],
-        ctx.repoDir,
-        ctx.syncService,
-        ctx.repoContext.catalogStore,
-      );
-      if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-      return lockResult;
-    };
+    const stepLockHook = createStepLockHook(
+      ctx.repoDir,
+      ctx.repoContext,
+      ctx.datastoreConfig,
+      ctx.syncService,
+    );
 
     let ephemeral: ReturnType<typeof createEphemeralStore> | null = null;
     let terminal: BufferTerminal = { kind: "done" };

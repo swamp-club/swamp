@@ -1070,11 +1070,21 @@ export async function handleWorkflowApprove(
   // Launched only once the approval is saved and pushed. The resume runs
   // detached and is never awaited here: this handler holds the sync gate,
   // which is not reentrant.
-  const autoResumed = await autoResumeAfterApproval(
-    ctx,
-    result,
-    principal ? principalToString(principal) : null,
-  );
+  // The approval is already saved: a failure deciding or launching the
+  // auto-resume must not cost the client its reply.
+  let autoResumed = false;
+  try {
+    autoResumed = await autoResumeAfterApproval(
+      ctx,
+      result,
+      principal ? principalToString(principal) : null,
+    );
+  } catch (error) {
+    logger.warn("Auto-resume after approval of run {runId} failed: {error}", {
+      runId: result.runId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   send(socket, {
     type: "workflow.approve",
