@@ -31,6 +31,10 @@ import {
 import type { ExpressionContext } from "./model_resolver.ts";
 import { deferredExpressionReference } from "./deferred_expression.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
+import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-eval-service-" });
@@ -1381,5 +1385,39 @@ Deno.test("resolveAllExpressionsInData: requires provenance from before earlier 
       ),
       data,
     );
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInData: resolves vault.get from the managed config tier without a vaultsDir", async () => {
+  await withTempDir(async (repoDir) => {
+    // Production callers construct the service with only (definitionRepo,
+    // repoDir), so vault configs must come from the managed config tier.
+    const configBase = join(repoDir, "datastore-config");
+    const vaultId = crypto.randomUUID();
+    await ensureDir(join(configBase, "vaults", "mock"));
+    await Deno.writeTextFile(
+      join(configBase, "vaults", "mock", `${vaultId}.yaml`),
+      stringifyYaml({
+        id: vaultId,
+        name: "managed",
+        type: "mock",
+        config: { "probe-key": "managed-value" },
+        createdAt: new Date(2026, 0, 1).toISOString(),
+      }),
+    );
+    registerManagedConfig(repoDir, true, configBase);
+
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const data = { run: "${{ vault.get('managed', 'probe-key') }}" };
+
+    const result = await service.resolveRuntimeExpressionsInData(
+      data,
+      undefined,
+      undefined,
+      new Set([data.run]),
+    );
+
+    assertEquals(result, { run: "managed-value" });
   });
 });

@@ -37,7 +37,6 @@ import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import type { LocalEncryptionConfig } from "./local_encryption_vault_provider.ts";
-import { join } from "@std/path";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { createVaultProvider } from "./vault_provider_factory.ts";
 import {
@@ -98,10 +97,13 @@ export class VaultService {
    * This is the preferred way to create a VaultService that should have access to
    * all configured vaults.
    *
-   * Vaults are loaded from the vaults/ directory (created via `swamp vault create`).
+   * Vaults are loaded from the effective vaults directory (created via
+   * `swamp vault create`): the repository's vaults/ directory, or the
+   * datastore config tier's vaults/ when managedConfig is active.
    * Note: Vaults are NOT configured in .swamp.yaml - use the CLI to create vaults.
    *
    * @param repoDir - The repository directory containing vault configurations
+   * @param options.vaultsDir - Overrides the effective vaults directory
    * @returns A VaultService with all configured vaults loaded
    */
   static async fromRepository(
@@ -121,11 +123,12 @@ export class VaultService {
       ReturnType<YamlVaultConfigRepository["findAll"]>
     >;
     try {
-      const effectiveVaultsDir = options?.vaultsDir ?? join(repoDir, "vaults");
+      // Without an explicit vaultsDir the repository resolves the effective
+      // vaults dir itself, which honours managedConfig.
       const vaultRepo = new YamlVaultConfigRepository(
         repoDir,
         undefined,
-        effectiveVaultsDir,
+        options?.vaultsDir,
       );
       vaultConfigs = await vaultRepo.findAll();
     } catch (error) {
