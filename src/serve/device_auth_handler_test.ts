@@ -17,13 +17,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertExists } from "@std/assert";
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
 import {
+  createDeviceAuthDeps,
   type DeviceAuthDeps,
   handleDeviceAuth,
 } from "./device_auth_handler.ts";
 import { DeviceGrantPollError } from "./oauth_client.ts";
-import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import {
+  createRepositoryContext,
+  type RepositoryContext,
+} from "../infrastructure/persistence/repository_factory.ts";
+import type {
+  DatastoreSyncOptions,
+  DatastoreSyncService,
+} from "../domain/datastore/datastore_sync_service.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import type { AuditSink } from "../domain/serve_audit/audit_sink.ts";
@@ -697,4 +710,115 @@ Deno.test("handleDeviceAuth: no audit events on pending poll (not a security eve
   assertEquals(result?.status, 202);
   await emitter.flush();
   assertEquals(sink.events.length, 0);
+});
+
+function createMockSyncService(): {
+  service: DatastoreSyncService;
+  pushCalls: DatastoreSyncOptions[];
+  markDirtyCalls: DatastoreSyncOptions[];
+} {
+  const pushCalls: DatastoreSyncOptions[] = [];
+  const markDirtyCalls: DatastoreSyncOptions[] = [];
+  const service: DatastoreSyncService = {
+    pullChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
+      return Promise.resolve(0);
+    },
+    pushChanged(options?: DatastoreSyncOptions): Promise<number | void> {
+      pushCalls.push(options ?? {});
+      return Promise.resolve(0);
+    },
+    markDirty(options?: DatastoreSyncOptions): Promise<void> {
+      markDirtyCalls.push(options ?? {});
+      return Promise.resolve();
+    },
+  };
+  return { service, pushCalls, markDirtyCalls };
+}
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("createDeviceAuthDeps: mintServerToken sends only per-path markDirty before pushChanged (swamp-club#2408)", async () => {
+  await withTempDir(async (dir) => {
+    // A repo-local vault resolves _token-secrets without registering a
+    // process-global provider.
+    const vaultDir = join(dir, "vaults", TOKEN_SECRETS_VAULT_NAME);
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "token-secrets-id.yaml"),
+      stringifyYaml({
+        id: "token-secrets-id",
+        name: TOKEN_SECRETS_VAULT_NAME,
+        type: "mock",
+        config: {},
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    const { service, pushCalls, markDirtyCalls } = createMockSyncService();
+    const repoContext = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+      namespace: "infra",
+      markDirty: (path?: string) =>
+        service.markDirty(path ? { relPath: path } : undefined),
+    });
+    try {
+      const deps = createDeviceAuthDeps(
+        { ...makeMockDeps().authConfig, oauthClientId: "test-client-id" },
+        "test-client-secret",
+        dir,
+        repoContext,
+        undefined,
+        service,
+        "infra",
+      );
+
+      const token = await deps.mintServerToken(
+        "user:user-1",
+        "user@example.com",
+        ["team-a"],
+        [],
+        dir,
+        repoContext,
+      );
+      const tokenName = token.split(".")[0];
+
+      // A bare markDirty() sets bulkInvalidated in the datastore extension,
+      // which turns the push into a walk of the whole cache.
+      assertEquals(
+        markDirtyCalls.filter((c) => !c.relPath),
+        [],
+        "mint must not call bare markDirty()",
+      );
+      const marked = markDirtyCalls.map((c) =>
+        c.relPath!.replaceAll("\\", "/")
+      );
+      assert(
+        marked.some((p) => p.includes("auto-definitions/")),
+        `expected a per-path mark for the token definition, got ${marked}`,
+      );
+      assert(
+        marked.some((p) => p.includes("/token-main")),
+        `expected a per-path mark for the token data, got ${marked}`,
+      );
+      assertEquals(pushCalls, [{ namespace: "infra" }]);
+
+      assertExists(
+        await findDefinitionByIdOrName(repoContext.definitionRepo, tokenName),
+      );
+    } finally {
+      repoContext.catalogStore.close();
+    }
+  });
 });

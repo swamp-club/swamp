@@ -1061,19 +1061,33 @@ signal their `saveDeferred` / `finalizeVersionDeferred` already sent
 Filesystem datastores have no fast path and wire no sync service, so the
 markDirty plumbing is a no-op for them.
 
-**Serve handler obligation.** Serve mutation handlers that route through
+**Serve handler obligation.** Serve code whose mutations route through
 repositories with per-path `markDirty` wired (model, workflow, data, output
-repos) must NOT call bare `syncService.markDirty()` before `pushChanged()`.
-The per-path signals from the repositories are sufficient and drive the
-extension's scoped-walk optimization, which correctly detects deletions via
-absence-on-disk (rule 2). A bare `markDirty()` call sets `bulkInvalidated`
-in the extension, forcing a full walk that skips deletion detection unless
-the per-path set overflowed — overriding the per-path signal and silently
-dropping remote object deletions (swamp-club#2273). The architecture fitness
-test in `integration/datastore_sync_rules_test.ts` enforces this obligation
-at build time. Handlers whose mutations do NOT flow through per-path-wired
-repos (vault, access, admin) still need bare `markDirty()` because it is
-their only dirty signal.
+and definition repos) must NOT call bare `syncService.markDirty()` before
+`pushChanged()`. This includes the mutation handlers and the OAuth
+server-token mint in `device_auth_handler.ts`, which saves a definition and
+writes a token resource. The per-path signals from the repositories are
+sufficient and drive the extension's scoped-walk optimization, which
+correctly detects deletions via absence-on-disk (rule 2). A bare
+`markDirty()` call sets `bulkInvalidated` in the extension and overrides the
+per-path signal. That has two costs:
+
+- **Dropped deletions.** The full walk skips deletion detection unless the
+  per-path set overflowed, so remote object deletions are silently lost
+  (swamp-club#2273).
+- **A full-cache push.** The push rebuilds the index from every remote shard
+  and walks, and on a pulled cache hashes, every cached file. A mutation of a
+  few files then costs time proportional to the whole cache. On the login
+  mint this made every `swamp auth server-login` slower as the datastore grew
+  (swamp-club#2408).
+
+`integration/datastore_sync_rules_test.ts` enforces this at build time. One
+rule rejects bare `notifyDirty()` inside the per-path-wired repositories.
+Another pins the remaining bare `markDirty()` call sites in `src/serve`,
+matched on any receiver, so the list can shrink but not grow. The pinned
+sites are the vault, access-reload and extension handlers. Their writes do
+not all flow through per-path-wired repos, so bare `markDirty()` may still be
+their only dirty signal; swamp-club#2415 audits each one.
 
 Every serve mutation handler must call `pushChanged()` after a mutation —
 including the data-domain handlers (`data.delete`, `data.rename`, `data.gc`,

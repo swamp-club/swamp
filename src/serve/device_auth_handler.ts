@@ -415,7 +415,10 @@ async function mintServerTokenImpl(
   );
 
   if (syncService) {
-    await syncService.markDirty();
+    // The definition save and the resource write above already sent
+    // per-path markDirty signals through the repository hooks. A bare
+    // markDirty() here would set bulkInvalidated and turn every login's
+    // push into a walk of the whole cache (swamp-club#2408).
     await syncService.pushChanged({ namespace });
 
     repoContext.catalogStore.invalidate();
