@@ -53,9 +53,9 @@ export function assertStorableServerAddress(value: string): void {
   throw new UserError(
     `Refusing to store the --server URL '${shown}' in .swamp.yaml: it has ` +
       `${joinWithAnd(parts)}, which can carry a credential, and .swamp.yaml ` +
-      `is usually committed. Use '${shown}' here, and give remote commands ` +
-      `the serve token with --token or SWAMP_SERVER_TOKEN, or store it with: ` +
-      `swamp auth server-login --server ${shown}`,
+      `is usually committed. Pass '${shown}' to --server instead, and give ` +
+      `remote commands the serve token with --token or SWAMP_SERVER_TOKEN, ` +
+      `or store it with: swamp auth server-login --server ${shown}`,
   );
 }
 
