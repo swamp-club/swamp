@@ -715,3 +715,149 @@ Deno.test("formatRedactionSummary: singular form for count of 1", () => {
   assertStringIncludes(msg, "1 email");
   assertEquals(msg.includes("emails"), false);
 });
+
+// ---- labelled keys: widening ----
+//
+// Secrets shaped <label><joiner><payload> escaped redaction entirely when the
+// label was not one of the enumerated six, because \b cannot fire between the
+// joiner and the payload. These cover the tiers that close that gap.
+
+Deno.test("redactIssueContent: redacts a first-party key with an unrecognised label", () => {
+  const result = redactIssueContent(
+    "leaked: swamp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123456789AB",
+  );
+  assertEquals(result.text, "leaked: [REDACTED-SECRET-1]");
+});
+
+Deno.test("redactIssueContent: redacts a known-label key whose payload has no digit", () => {
+  const result = redactIssueContent(
+    "token was glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+  );
+  assertEquals(result.text, "token was [REDACTED-SECRET-1]");
+});
+
+Deno.test("redactIssueContent: redacts a labelled key terminated by punctuation", () => {
+  const result = redactIssueContent(
+    '{ "apiKey": "vendor_a1B2c3D4e5F6g7H8i9J0k1L2m3N4" }',
+  );
+  assertEquals(result.text, '{ "apiKey": "[REDACTED-SECRET-1]" }');
+});
+
+Deno.test("redactIssueContent: redacts a labelled hex run", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const result = redactIssueContent(`commit_${sha} landed`);
+  assertEquals(result.text, "[REDACTED-SECRET-1] landed");
+});
+
+Deno.test("redactIssueContent: redacts label-prefixed card numbers, IDs and addresses", () => {
+  // Each of these is redacted when bare; the joiner used to hide them.
+  assertEquals(
+    redactIssueContent("card_4111111111111111 charged").text,
+    "card_[REDACTED-CC] charged",
+  );
+  assertEquals(
+    redactIssueContent("ssn_123-45-6789 on file").text,
+    "ssn_[REDACTED-ID] on file",
+  );
+  assertEquals(
+    redactIssueContent("host_10.1.2.3 unreachable").text,
+    "host_[IP-1] unreachable",
+  );
+  assertEquals(
+    redactIssueContent("aws_AKIAIOSFODNN7EXAMPLE expired").text,
+    "aws_[REDACTED-SECRET-1] expired",
+  );
+});
+
+Deno.test("redactIssueContent: an address with a long local part is still redacted as an address", () => {
+  // The labelled-key passes run after the email pass for this reason: ahead of
+  // it the local part becomes a placeholder and the domain leaks.
+  const result = redactIssueContent(
+    "contact user_abcdefghijklmnopqrstuvwxyz@corp.com today",
+  );
+  assertEquals(result.text, "contact [REDACTED-EMAIL] today");
+});
+
+// ---- labelled keys: narrowing ----
+//
+// The enumerated tier used to redact any payload of 20+ characters, including
+// word-structured identifiers, which destroyed the diagnostic content of
+// reports quoting cloud API enums. The payload must now carry key material.
+// Relaxing that gate is what these tests exist to prevent.
+
+Deno.test("redactIssueContent: enumerated labels in front of word-structured identifiers are not redacted", () => {
+  for (
+    const identifier of [
+      "KEY_ALGORITHM_UNSPECIFIED",
+      "SECRET_KIND_GCP_OAUTH2_ACCESS_TOKEN",
+      "KEY_REVOCATION_ACTION_TYPE_UNSPECIFIED",
+      "token_endpoint_auth_method",
+      "key-access-justifications",
+      "key_access_justifications_policy",
+    ]
+  ) {
+    const result = redactIssueContent(`field ${identifier} was set`);
+    assertEquals(result.text, `field ${identifier} was set`, identifier);
+    assertEquals(result.summary.totalRedactions, 0, identifier);
+  }
+});
+
+Deno.test("redactIssueContent: a UUID behind a recognised label is still key material", () => {
+  // Every UUID segment is shorter than the key-material run length, so without
+  // the UUID rule the narrowing above would stop redacting UUID-shaped keys.
+  const result = redactIssueContent(
+    "key-123e4567-e89b-12d3-a456-426614174000 rejected",
+  );
+  assertEquals(result.text, "[REDACTED-SECRET-1] rejected");
+});
+
+Deno.test("redactIssueContent: bare UUIDs are run identifiers, not secrets", () => {
+  const input = "run 7ec3441f-36db-4b60-ba55-897c2d9a4116 failed at step 2";
+  const result = redactIssueContent(input);
+  assertEquals(result.text, input);
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
+// ---- benign corpus ----
+//
+// Harvested from this repository, swamp-extensions, swamp-club, swamp-uat and
+// a third-party package cache: the strings that matched the labelled-key shape
+// without being secrets. Redacting any of them destroys the evidence a bug
+// report exists to carry, so these assert a redaction count of zero rather
+// than merely unchanged text.
+
+Deno.test("redactIssueContent: benign labelled identifiers survive redaction", () => {
+  for (
+    const benign of [
+      // Generated cloud API resource names, both joiners.
+      "options_requestedPolicyVersion",
+      "accounts-userlistdirectlicenses",
+      "environments_userworkloadsconfigmaps",
+      "API_DescribeLoadBalancers",
+      // Only digit is a trailing version suffix.
+      "resource-elasticloadbalancingv2",
+      // First-party environment variable: payload carries separators.
+      "SWAMP_GCS_REQUEST_TIMEOUT_MS",
+      // Lockfile integrity hash.
+      "sha512-q6MMm2zhggzsHVNbabYwutQRSTUVWXYZabc",
+      // Branch name, test path, record id, version string.
+      "cue/3-redaction-regex-boundary-bug-label-base6",
+      "src/domain/issues/content_redactor_test.ts",
+      "id_12345678901234567890123",
+      "20260922.011324.0-sha.2e949db5",
+    ]
+  ) {
+    const result = redactIssueContent(`saw ${benign} in the log`);
+    assertEquals(result.text, `saw ${benign} in the log`, benign);
+    assertEquals(result.summary.totalRedactions, 0, benign);
+  }
+});
+
+Deno.test("redactIssueContent: redacting already-redacted text is a no-op", () => {
+  const once = redactIssueContent(
+    "key swamp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123456789AB for user@corp.com",
+  );
+  const twice = redactIssueContent(once.text);
+  assertEquals(twice.text, once.text);
+  assertEquals(twice.summary.totalRedactions, 0);
+});

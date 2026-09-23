@@ -16,6 +16,12 @@ context is needed for diagnosis. Sanitize the final draft.
 
 - API keys, tokens, and passwords (e.g. `sk-...`, `ghp_...`, `AKIA...`,
   `Bearer ...`, `token: ...`)
+- swamp-club API keys (`swamp_...`) — the user's own credential, and the one
+  most likely to appear in a report about swamp itself
+- Any `<label>_<payload>` or `<label>-<payload>` value where the payload is a
+  long unbroken run of random-looking characters, whatever the label. Vendor
+  prefixes are not a fixed list, so treat the payload shape as the signal rather
+  than the label.
 - JWTs (three dot-separated base64 segments)
 - Private keys (`-----BEGIN ... PRIVATE KEY-----`)
 - `Authorization` headers and `Cookie` values

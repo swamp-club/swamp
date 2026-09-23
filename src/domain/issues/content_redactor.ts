@@ -84,11 +84,15 @@ const PUBLIC_HOST_ALLOWLIST = new Set([
 
 // --- Pattern definitions ---
 
-// Credit card: 13-19 digit sequences with optional separators
-const CREDIT_CARD_RE = /\b(?:\d[ -]*?){12,18}\d\b/g;
+// Credit card: 13-19 digit sequences with optional separators.
+// The leading boundary is a lookbehind, not \b: \b cannot fire between a
+// joiner and the payload it introduces, because _ is itself a word character,
+// so \b would leave label-prefixed values (card_4111...) unredacted. Every
+// pattern below that anchors on the start of a payload run does the same.
+const CREDIT_CARD_RE = /(?<![0-9A-Za-z])(?:\d[ -]*?){12,18}\d\b/g;
 
 // SSN / national ID: XXX-XX-XXXX
-const SSN_RE = /\b\d{3}-\d{2}-\d{4}\b/g;
+const SSN_RE = /(?<![0-9A-Za-z])\d{3}-\d{2}-\d{4}\b/g;
 
 // Phone numbers: require a + prefix or at least one separator to avoid
 // matching bare digit runs like batch IDs or offsets.
@@ -100,10 +104,11 @@ const EMAIL_RE =
   /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}\b/g;
 
 // AWS access key IDs
-const AWS_KEY_RE = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
+const AWS_KEY_RE = /(?<![0-9A-Za-z])(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
 
 // GitHub tokens
-const GITHUB_TOKEN_RE = /\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{36,}\b/g;
+const GITHUB_TOKEN_RE =
+  /(?<![0-9A-Za-z])(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{36,}\b/g;
 
 // Generic API keys / bearer tokens: long base64-ish strings with a prefix.
 // Use lookahead instead of \b after =* since = is non-word and \b fails
@@ -111,15 +116,98 @@ const GITHUB_TOKEN_RE = /\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{36,}\b/g;
 // separator is spaces/tabs only — \s would let the match cross a newline
 // and consume the first token of the following line.
 const BEARER_RE = /\bBearer[ \t]+([A-Za-z0-9_\-.~+/]+=*)(?=\s|$)/g;
+
+// --- Labelled keys: a label joined to a payload (swamp_<key>, sk_live_<key>) ---
+//
+// Three tiers of the same shape, differing only in how much the label is
+// trusted. A recognised label is evidence, so it buys a looser payload rule;
+// an unrecognised one has to earn the match from the payload alone.
+
+// Tier 1: labels whose formats are enumerated. Their payloads may carry
+// internal separators (sk_live_<key>, sk-ant-api03-<key>).
 const PREFIXED_KEY_RE =
   /\b(?:sk|pk|rk|ak|key|token|secret)[-_][a-zA-Z0-9_\-]{20,}\b/gi;
 
-// Generic long hex strings (40+ chars, like SHA tokens / API keys)
-const LONG_HEX_RE = /\b[0-9a-fA-F]{40,}\b/g;
+// Tier 2: first-party and vendor labels whose formats join a label to one
+// unbroken payload. Each entry is a permanent false-positive surface, so the
+// list is deliberately short: only published formats that use a joiner, and
+// none already covered by tier 1. Additions belong here only after being
+// checked against real code.
+const KNOWN_KEY_LABELS = new Set([
+  "swamp",
+  "glpat",
+  "xoxb",
+  "xoxp",
+  "xapp",
+  "hf",
+  "shpat",
+  "dop",
+  "npm",
+  "gsk",
+  "xai",
+]);
+
+// Tiers 2 and 3 share this shape: a short label, one joiner, and a payload
+// that is a single unbroken run. Which tier applies is decided by the label.
+const LABELLED_KEY_RE = /\b[A-Za-z][A-Za-z0-9]{1,15}[-_][A-Za-z0-9]{20,}\b/g;
+
+// Labels that introduce a content hash rather than a credential. Same idea as
+// SAFE_HEX_KEY_RE below, which exempts a hash named by a preceding JSON key;
+// extending either is a reason to look at the other.
+const HASH_KEY_LABELS = new Set([
+  "sha1",
+  "sha256",
+  "sha512",
+  "md5",
+  "integrity",
+  "digest",
+  "checksum",
+  "etag",
+]);
+
+// A UUID is key material even though no segment reaches 20 characters. Only
+// honoured behind a recognised label: bare UUIDs are run, trace and request
+// ids, and redacting those would gut the diagnostic value of a report.
+const UUID_PAYLOAD_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// A payload that is one unbroken run of 20+ alphanumerics is key material;
+// one built from shorter runs is a word-structured identifier. Measured over
+// this repo, swamp-extensions, swamp-club, swamp-uat and a third-party package
+// cache: the longest run inside a benign identifier payload has a median of 10
+// and a maximum of 20, while key material runs 20 to 50+. That margin is why
+// no word list is needed to tell them apart.
+const KEY_MATERIAL_RUN_RE = /[A-Za-z0-9]{20,}/;
+
+// Digits are what separate a random payload from a concatenated identifier
+// like "userlistdirectlicenses". Without this gate the generic tier redacts
+// 795 benign cloud API resource names across the first-party repositories —
+// a 100% false-positive rate on 164 distinct payloads. A trailing version
+// suffix is not evidence, so it is stripped before the test.
+const VERSION_SUFFIX_RE = /v\d+(?:[a-z]+\d+)*$/i;
+
+function splitLabelledKey(match: string): { label: string; payload: string } {
+  const joiner = match.search(/[-_]/);
+  return {
+    label: match.slice(0, joiner).toLowerCase(),
+    payload: match.slice(joiner + 1),
+  };
+}
+
+/** Whether a payload behind an unrecognised label looks like key material. */
+function isUnlabelledKeyPayload(payload: string): boolean {
+  if (!/[A-Za-z]/.test(payload)) return false;
+  return /\d/.test(payload.replace(VERSION_SUFFIX_RE, ""));
+}
+
+// Generic long hex strings (40+ chars, like SHA tokens / API keys).
+// The lookbehind excludes any alphanumeric, matching what \b excluded, while
+// still allowing a run that starts right after a joiner.
+const LONG_HEX_RE = /(?<![0-9A-Za-z])[0-9a-fA-F]{40,}\b/g;
 
 // Generic long base64 strings (32+ chars, often tokens/secrets).
 // Same =* lookahead fix as BEARER_RE.
-const LONG_BASE64_RE = /\b[A-Za-z0-9+/]{32,}={0,2}(?=\s|$)/g;
+const LONG_BASE64_RE = /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{32,}={0,2}(?=\s|$)/g;
 
 // env-var style secrets: VAR_NAME=value where name contains sensitive
 // keywords. The value is either an explicitly quoted span (matched as a
@@ -151,7 +239,9 @@ const CONNECTION_STRING_RE =
   /(\w+:\/\/)([^:/?#@\s]+):([^@/\s]+)@([^/:?#\s]+)(:\d+)?(\/[^\s?#]*)?(\?[^\s#]*)?(#\S*)?/g;
 
 // IPv4
-const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+// The lookbehind also excludes a dot so a match cannot start partway into a
+// longer dotted run.
+const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 
 // IPv6 (simplified: at least two colons in a hex group sequence)
 const IPV6_RE =
@@ -227,6 +317,12 @@ function isLikelyTimestamp(s: string): boolean {
   const [h, m, sec] = parts.map(Number);
   return h <= 23 && m <= 59 && sec <= 59;
 }
+
+// The hash labels above, in their joined form (sha512-<hash>), for the generic
+// backstops. SAFE_HEX_KEY_RE covers the JSON-key form ("sha256": "<hash>");
+// this covers the label form, so a lockfile integrity string survives both.
+const HASH_LABEL_PREFIX_RE =
+  /(?:sha1|sha256|sha512|md5|integrity|digest|checksum|etag)[-_]$/i;
 
 const SAFE_HEX_KEY_RE =
   /(?:"|\\")?(?:checksum|sha256|sha1|sha512|digest|hash|contentHash|etag|md5)(?:"|\\")?[\s]*:[\s]*(?:"|\\")?$/i;
@@ -577,8 +673,15 @@ function applyRedactions(
     return `Bearer ${placeholders.get("REDACTED-SECRET", token)}`;
   });
 
-  // 6. Prefixed API keys (sk_live_..., token-..., etc.)
+  // 6. Tier 1: enumerated labels (sk_live_..., token-..., etc.). The payload
+  //    must carry key material — an enumerated label in front of a
+  //    word-structured payload is an identifier like KEY_ALGORITHM_UNSPECIFIED,
+  //    not a credential.
   result = result.replace(PREFIXED_KEY_RE, (match) => {
+    const { payload } = splitLabelledKey(match);
+    if (!KEY_MATERIAL_RUN_RE.test(payload) && !UUID_PAYLOAD_RE.test(payload)) {
+      return match;
+    }
     count("secret");
     return placeholders.get("REDACTED-SECRET", match);
   });
@@ -587,6 +690,20 @@ function applyRedactions(
   result = result.replace(EMAIL_RE, () => {
     count("email");
     return "[REDACTED-EMAIL]";
+  });
+
+  // 7a. Tiers 2 and 3: labelled keys. These run *after* the email pass on
+  //     purpose. Ahead of it, an address whose local part is a long run
+  //     (user_<long>@corp.com) loses its local part to a placeholder, the
+  //     email matcher no longer sees an address, and the domain survives.
+  result = result.replace(LABELLED_KEY_RE, (match) => {
+    const { label, payload } = splitLabelledKey(match);
+    if (HASH_KEY_LABELS.has(label)) return match;
+    if (!KNOWN_KEY_LABELS.has(label) && !isUnlabelledKeyPayload(payload)) {
+      return match;
+    }
+    count("secret");
+    return placeholders.get("REDACTED-SECRET", match);
   });
 
   // 8. SSNs
@@ -671,19 +788,30 @@ function applyRedactions(
     (match: string, offset: number, source: string) => {
       const preceding = source.slice(Math.max(0, offset - 40), offset);
       if (SAFE_HEX_KEY_RE.test(preceding)) return match;
+      if (HASH_LABEL_PREFIX_RE.test(preceding)) return match;
       count("secret");
       return placeholders.get("REDACTED-SECRET", match);
     },
   );
 
   // 17. Long base64 strings
-  result = result.replace(LONG_BASE64_RE, (match) => {
-    if (/[a-z]/.test(match) && /[A-Z]/.test(match)) {
-      count("secret");
-      return placeholders.get("REDACTED-SECRET", match);
-    }
-    return match;
-  });
+  result = result.replace(
+    LONG_BASE64_RE,
+    (match: string, offset: number, source: string) => {
+      if (
+        HASH_LABEL_PREFIX_RE.test(
+          source.slice(Math.max(0, offset - 16), offset),
+        )
+      ) {
+        return match;
+      }
+      if (/[a-z]/.test(match) && /[A-Z]/.test(match)) {
+        count("secret");
+        return placeholders.get("REDACTED-SECRET", match);
+      }
+      return match;
+    },
+  );
 
   return result;
 }
