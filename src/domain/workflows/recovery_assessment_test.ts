@@ -168,8 +168,8 @@ Deno.test("assessRecoveryForRun: differing definition fingerprint blocks recover
   assertEquals(result.fingerprintMismatch, true);
   assertEquals(result.canAutoRecover, false);
   assertEquals(
-    result.reason?.startsWith("Workflow definition changed"),
-    true,
+    result.reason,
+    "Workflow definition changed since the run started — start a new run with 'swamp workflow run test-wf'",
   );
 });
 
@@ -197,7 +197,7 @@ Deno.test("assessRecoveryForRun: legacy run plan that differs is refused as unco
   assertEquals(result.canAutoRecover, false);
   assertEquals(
     result.reason,
-    "Run was recorded before swamp stored definition fingerprints, so an unchanged workflow definition cannot be confirmed",
+    "Run was recorded before swamp stored definition fingerprints, so an unchanged workflow definition cannot be confirmed — start a new run with 'swamp workflow run test-wf'",
   );
 });
 

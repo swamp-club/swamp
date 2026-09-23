@@ -1214,17 +1214,19 @@ evaluated workflow (`fingerprint`), whose per-run snapshot is stored in
 `.swamp/workflows-evaluated/runs/{runId}/`. Evaluation resolves expressions such
 as `inputs.*`, so the evaluated fingerprint also changes with the run's inputs.
 On recovery, the current definition's fingerprint is compared with the stored
-definition fingerprint. If they differ, auto-recovery is refused and the
-operator must use `swamp workflow resume --from <step>` instead.
+definition fingerprint. If they differ, recovery is refused, and the refusal
+tells the operator to start a new run with `swamp workflow run`. There is no
+way yet to continue the interrupted run itself: `resume --from` accepts failed
+runs, not interrupted ones (swamp-club#2443).
 
 A run recorded before runs stored a definition fingerprint has only the
 evaluated one. Recovery compares that with the current definition, which matches
-only when evaluation resolved no expressions, and refuses on any difference,
-because a difference cannot be told apart from a changed definition. A run
-re-saved by an older swamp loses its definition fingerprint, because older
-versions drop run-plan keys they do not know, and is handled the same way. Runs
-started with `--last-evaluated` record no run plan, and recovery skips the check
-for them.
+only when evaluation left the definition unchanged, and refuses on any
+difference, with the same next step, because a difference cannot be told apart
+from a changed definition. A run re-saved by an older swamp loses its definition
+fingerprint, because older versions drop run-plan keys they do not know, and is
+handled the same way. Runs started with `--last-evaluated` record no run plan,
+and recovery skips the check for them.
 
 **Recovery assessment (`swamp workflow recover --assess-only`):** classifies
 each `unknown` step as auto-recoverable (it has a `guard` expression) or

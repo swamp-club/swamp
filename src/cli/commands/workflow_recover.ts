@@ -113,29 +113,28 @@ export const workflowRecoverCommand = new Command()
         if (cliCtx.outputMode === "json") {
           writeOutput(JSON.stringify(assessment, null, 2));
         } else {
-          writeOutput(`Recovery assessment for "${workflowIdOrName}":`);
+          writeOutput(`Recovery assessment for "${workflow.name}":`);
           writeOutput(`  Run ID: ${run.id}`);
           writeOutput(`  Can auto-recover: ${assessment.canAutoRecover}`);
           if (assessment.reason) {
             writeOutput(`  Reason: ${assessment.reason}`);
           }
+          // A failed definition check refuses recovery outright, so the
+          // per-step hints would point at flags that cannot help; the reason
+          // already names the way forward.
+          const showStepHints = !assessment.fingerprintMismatch;
           if (assessment.guardedSteps.length > 0) {
             writeOutput(
-              `  Guarded steps (auto-recoverable): ${
+              `  Guarded steps${showStepHints ? " (auto-recoverable)" : ""}: ${
                 assessment.guardedSteps.join(", ")
               }`,
             );
           }
           if (assessment.unguardedSteps.length > 0) {
             writeOutput(
-              `  Unguarded steps (require --acknowledge-unknown): ${
-                assessment.unguardedSteps.join(", ")
-              }`,
-            );
-          }
-          if (assessment.fingerprintMismatch) {
-            writeOutput(
-              `  Fingerprint mismatch — use 'swamp workflow resume --from <step>' instead`,
+              `  Unguarded steps${
+                showStepHints ? " (require --acknowledge-unknown)" : ""
+              }: ${assessment.unguardedSteps.join(", ")}`,
             );
           }
         }

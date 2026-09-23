@@ -183,6 +183,34 @@ Deno.test("workflowRecoverCommand: --assess-only prints the assessment in log mo
   });
 });
 
+Deno.test("workflowRecoverCommand: --assess-only in log mode names the way forward when the definition changed", async () => {
+  await withTempDir(async (dir) => {
+    const repoContext = await initRepo(dir);
+    const workflow = deployWorkflow("unguarded");
+    await repoContext.workflowRepo.save(workflow);
+    const run = interruptedRun(workflow, "2026-09-20T10:00:00.000Z");
+    run.captureRunPlan("evaluated-fp", run.id, "definition-fp-before-edit");
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+
+    // By ID, so the header shows the name rather than what was typed.
+    const logs = await recover([
+      workflow.id,
+      "--assess-only",
+      "--repo-dir",
+      dir,
+    ]);
+
+    // No --acknowledge-unknown hint: that flag cannot get past the refusal.
+    assertEquals(logs, [
+      `Recovery assessment for "unguarded":`,
+      `  Run ID: ${run.id}`,
+      "  Can auto-recover: false",
+      "  Reason: Workflow definition changed since the run started — start a new run with 'swamp workflow run unguarded'",
+      "  Unguarded steps: deploy",
+    ]);
+  });
+});
+
 Deno.test("workflowRecoverCommand: recovers a guarded run without acknowledgement", async () => {
   await withTempDir(async (dir) => {
     const repoContext = await initRepo(dir);
@@ -468,7 +496,7 @@ Deno.test("workflowRecoverCommand: recovers a run of a workflow with an inputs e
           dir,
         ]),
       UserError,
-      "Workflow definition changed since the run started",
+      "Workflow definition changed since the run started — start a new run with 'swamp workflow run greeting'",
     );
   });
 });
