@@ -6,9 +6,10 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Inputs
 
-Both workflows and models support _inputs_. These are defined using json-schema, expressed as yaml in a definition file or a workflow file. These are specified as a top level field of both model definitions and workflow definitions.
+Models and workflows both support _inputs_. Inputs are JSON Schema, written as
+YAML in a top-level `inputs` field of a model definition or workflow file.
 
-For example, an input for an environment can be specified as:
+For example, an environment input:
 
 ```yaml
 inputs:
@@ -18,7 +19,8 @@ inputs:
     description: "Target environment for deployment"
 ```
 
-This would make the model have an 'environment' input, that must be a string, and allows for only dev, staging, or production.
+This gives the model an 'environment' input that must be a string: dev, staging
+or production.
 
 ## Model Example
 
@@ -42,7 +44,7 @@ methods:
       run: echo "Deploying to ${{ inputs.environment }}"
 ```
 
-Then, from a workflow file:
+A workflow can then pass them:
 
 ```yaml
 id: abc123
@@ -76,11 +78,12 @@ jobs:
         weight: 0
 ```
 
-Which would run shell commands for "dev" and "qa" environments respectively. Passing an `environment` value outside the enum (e.g. `boo`) fails input validation before the method runs.
+This runs shell commands for "dev" and then "qa". An `environment` value outside
+the enum (e.g. `boo`) fails input validation before the method runs.
 
 ## Workflow Example
 
-A workflow can also specify inputs.
+A workflow can also declare inputs.
 
 ```yaml
 id: abc123
@@ -119,11 +122,16 @@ jobs:
         weight: 0
 ```
 
-This requires `--input targetEnvironment=dev` on `swamp workflow run` (`src/cli/commands/workflow_run.ts`) in order to execute; omitting it fails input validation at run time. Any input that does not specify a default value is required. Input names must be valid CEL identifiers — a hyphenated name such as `environment-one` parses as subtraction inside `${{ }}`.
+This needs `--input targetEnvironment=dev` on `swamp workflow run`
+(`src/cli/commands/workflow_run.ts`). Without it, input validation fails at run
+time. Any input without a default is required. Input names must be valid CEL
+identifiers: a hyphenated name such as `environment-one` parses as subtraction
+inside `${{ }}`.
 
 ## Iteration
 
-An input can be specified as an array or a hash, and then a user can use a CEL expression to specify that a step, job, or model global arguments can be set via iteration.
+An input can be an array or a hash. A CEL expression can then iterate over it to
+set a step, a job, or a model's global arguments.
 
 ```yaml
 id: abc123
@@ -154,7 +162,7 @@ jobs:
             environment: ${{ self.env }}
 ```
 
-When iterating over an object:
+Iterating over an object:
 
 ```yaml
 inputs:
@@ -180,39 +188,44 @@ jobs:
             value: ${{ self.tag.value }}
 ```
 
-Nested objects are dereferenced with normal dot notation in the CEL expression.
+Nested objects use normal dot notation in the CEL expression.
 
 ## Dependencies
 
-A `dependsOn` entry names the forEach _template_ step. The template's status aggregates its expanded iterations (`WorkflowRun.registerForEachExpansion` in `src/domain/workflows/workflow_run.ts`), so a downstream step waits for every iteration.
+A `dependsOn` entry names the forEach _template_ step. The template's status
+combines its expanded iterations, so a downstream step waits for all of them
+(`WorkflowRun.registerForEachExpansion` in `src/domain/workflows/workflow_run.ts`).
 
 ## Evaluated Expansion
 
-`swamp workflow evaluate` and `swamp model evaluate` (`src/cli/commands/workflow_evaluate.ts`, `src/cli/commands/model_evaluate.ts`) evaluate inputs and CEL expressions and write the result to `.swamp/workflows-evaluated/` and `.swamp/definitions-evaluated/` without executing anything.
+`swamp workflow evaluate` and `swamp model evaluate` evaluate inputs and CEL
+expressions without running anything. They write the result to
+`.swamp/workflows-evaluated/` and `.swamp/definitions-evaluated/`
+(`src/cli/commands/workflow_evaluate.ts`, `src/cli/commands/model_evaluate.ts`).
 
 ## Evaluated Execution
 
-`swamp workflow run` and `swamp model method run` both accept a `--last-evaluated` flag (`src/cli/commands/workflow_run.ts`, `src/cli/commands/model_method_run.ts`), which skips evaluating inputs and CEL expressions and runs directly from the last evaluated version of the models and workflows.
+`swamp workflow run` and `swamp model method run` accept `--last-evaluated`. It
+skips evaluating inputs and CEL and runs the last evaluated version of the
+models and workflows (`src/cli/commands/workflow_run.ts`,
+`src/cli/commands/model_method_run.ts`).
 
 ### Combining file + key=value overrides
 
-When both `--input-file` and key=value `--input` are provided, the file supplies
-base values and key=value pairs act as overrides (deep merged).
+With both `--input-file` and key=value `--input`, the file gives base values and
+the key=value pairs override them (deep merged).
 
 ### Type coercion
 
-Key=value inputs are parsed as strings by default. When the workflow or model
-declares an `InputsSchema`, string values are automatically coerced to match
-the schema's declared types (`number`, `integer`, `boolean`, `array`, `object`)
-before validation (`coerceInputTypes` in
-`src/domain/inputs/input_coercion.ts`). Without a schema, values remain as
-strings.
+Key=value inputs are strings by default. When the workflow or model declares an
+`InputsSchema`, strings are coerced to the schema's types (`number`, `integer`,
+`boolean`, `array`, `object`) before validation (`coerceInputTypes` in
+`src/domain/inputs/input_coercion.ts`). Without a schema they stay strings.
 
-For `array` and `object` types, the string is parsed as JSON. If parsing
-succeeds and the result is the correct type (an actual array or object), the
-parsed value is used. If parsing fails or the result is a different JSON type
-(e.g. `null`, a number), the value remains as a string and downstream
-validation reports the mismatch.
+For `array` and `object`, the string is parsed as JSON. If that gives a real
+array or object, the parsed value is used. If parsing fails or gives another
+JSON type (e.g. `null`, a number), the value stays a string and validation
+reports the mismatch.
 
 ### File references via `@`
 
@@ -229,13 +242,12 @@ To pass a literal `@`, escape it with `\`:
 swamp model method run my-model search --input email=\@user
 ```
 
-**Scoped identifiers** (`@namespace/name`) are recognized and passed through
-literally — they are not treated as file paths. This covers swamp type
-identifiers like `@hivemq/base-images` or `@swamp/aws/ec2/vpc`. The heuristic:
-if the value after `@` starts with a letter, contains at least one `/`, and has
-no `.` characters, it is a scoped identifier (`isScopedIdentifier` in
-`src/cli/input_parser.ts`). File paths with extensions (e.g.
-`@path/to/file.txt`) are still read as files.
+**Scoped identifiers** (`@namespace/name`) pass through as literals, not file
+paths. This covers swamp type identifiers like `@hivemq/base-images` or
+`@swamp/aws/ec2/vpc`. A value is a scoped identifier if the text after `@`
+starts with a letter, contains at least one `/`, and has no `.`
+(`isScopedIdentifier` in `src/cli/input_parser.ts`). Paths with extensions
+(e.g. `@path/to/file.txt`) are still read as files.
 
 ```sh
 # Passes @hivemq/base-images as the literal value (not a file path)
@@ -244,8 +256,8 @@ swamp model method run my-model check --input sourceType=@hivemq/base-images
 
 ### JSON-typed values via `:json` suffix
 
-Append `:json` to the leaf segment of a key to parse the value as JSON
-instead of a string:
+Append `:json` to the leaf segment of a key to parse the value as JSON instead
+of a string:
 
 ```sh
 # Array
@@ -259,42 +271,41 @@ swamp model method run my-model deploy --input 'server.config:json={"port":8080}
 # → { server: { config: { port: 8080 } } }
 ```
 
-The `:json` suffix bypasses the `@file` shorthand and the `\@` escape;
-the value is always parsed as a JSON literal. JSON parse failures are
-hard errors. When both `--input key:json=...` and a YAML
-`--input-file` set the same key, the CLI value wins (existing
-deepMerge precedence).
+With `:json`, the value is always parsed as a JSON literal; the `@file`
+shorthand and the `\@` escape do not apply. A parse failure is a hard error. If
+`--input key:json=...` and a YAML `--input-file` set the same key, the CLI
+value wins (the usual deepMerge precedence).
 
 ### Arrays
 
-Array inputs are supported via automatic type coercion when the schema declares
-`type: array` (the string is parsed as JSON), via the `:json` suffix above
-(explicit, works without a schema), via `--input-file` with YAML/JSON, or via
-the legacy single-shot `--input '<json-object>'` form.
+Array inputs can come from:
+
+- type coercion, when the schema declares `type: array` (the string is parsed
+  as JSON);
+- the `:json` suffix above, which works without a schema;
+- `--input-file` with YAML or JSON;
+- the legacy single-shot `--input '<json-object>'` form.
 
 ### Reading inputs from stdin
 
-Both `method run` and `workflow run` accept piped stdin via the `--stdin` flag.
-When `--stdin` is passed, the command reads stdin until EOF and parses it as
-inputs. This enables Unix pipe composition following the same pattern as `jq -n`
-(explicit opt-in).
+With `--stdin`, `method run` and `workflow run` read stdin to EOF and parse it
+as inputs. This lets them sit in Unix pipes, opt-in like `jq -n`.
 
-The input format is detected automatically (`parseStdinContent` in
+The format is detected automatically (`parseStdinContent` in
 `src/cli/input_parser.ts`):
 
-- **JSON object** — single run with the object as inputs
-- **JSON array** — one run per array element (each must be an object)
-- **NDJSON** (one JSON object per line) — one run per line
-- **YAML object** — single run with the parsed object as inputs
+- **JSON object**: one run with the object as inputs.
+- **JSON array**: one run per element; each must be an object.
+- **NDJSON** (one JSON object per line): one run per line.
+- **YAML object**: one run with the parsed object as inputs.
 
-When multiple items are detected (array or NDJSON), the method or workflow is
-executed once per item. Each execution is discrete — it produces its own data
-artifacts, runs pre-flight checks, and reports independently. Execution stops on
-the first failure.
+With several items (array or NDJSON), the method or workflow runs once per item.
+Each run has its own data, pre-flight checks and report. Execution stops at the
+first failure.
 
-`--stdin` and `--input-file` cannot be combined. `--input` key=value overrides
-can be combined with `--stdin` — they are deep-merged onto each stdin item (the
-`--input` values win on conflict).
+`--stdin` cannot be combined with `--input-file`. It can be combined with
+`--input` key=value overrides, which are deep-merged onto each stdin item and
+win on conflict.
 
 ```sh
 # Single JSON object from stdin
@@ -312,31 +323,30 @@ swamp data query 'modelName == "source"' --json \
 
 ## Input Routing for Direct Type Execution
 
-When using direct type execution (`swamp model @type method run ...`), there is
-no `definition.inputs` schema to guide input splitting. Instead, the type's own
-schemas are used to route `--input` values (`routeInputsBySchema` in
+Direct type execution (`swamp model @type method run ...`) has no
+`definition.inputs` schema to split inputs. The type's own schemas route
+`--input` values instead (`routeInputsBySchema` in
 `src/libswamp/models/direct_execution.ts`):
 
-1. Keys matching the method's `arguments` Zod schema → **method arguments**
-2. Keys matching the type's `globalArguments` Zod schema (but not in the method
-   schema) → **global arguments**
-3. Keys in neither schema → **rejected** with an error listing valid keys
+1. Keys in the method's `arguments` Zod schema → **method arguments**
+2. Keys in the type's `globalArguments` Zod schema, but not the method schema →
+   **global arguments**
+3. Keys in neither → **rejected**, with an error listing valid keys
 
-Method arguments take precedence when a key appears in both schemas (more
-specific scope wins).
+If a key is in both schemas, the method argument wins (the narrower scope).
 
-String values are coerced to match schema types (e.g., `"428"` → `428` for a
-number field) using `coerceMethodArgs` (`src/domain/models/zod_type_coercion.ts`),
-which introspects the Zod schema directly and handles both Zod v3 and v4.
+`coerceMethodArgs` coerces string values to the schema types (e.g., `"428"` →
+`428` for a number field). It reads the Zod schema directly and handles Zod v3
+and v4 (`src/domain/models/zod_type_coercion.ts`).
 
-This routing happens at definition creation time. The routed global arguments
-are stored in the auto-created definition; the routed method arguments are
-passed to the method's execute function.
+Routing happens when the definition is created. Global arguments are stored in
+the auto-created definition; method arguments go to the method's execute
+function.
 
 ### Explicit `globalArgs` in Workflow Steps
 
-Workflow step tasks using direct type execution can also pass global arguments
-explicitly via a `globalArgs` field, bypassing the implicit routing:
+A workflow step using direct type execution can pass global arguments directly
+in a `globalArgs` field, skipping the routing above:
 
 ```yaml
 task:
@@ -351,12 +361,11 @@ task:
     version: ${{ inputs.version }}
 ```
 
-When `globalArgs` is present, `inputs` are treated as method arguments only — no
-schema-based routing is performed. The `globalArgs` values are passed directly to
-the auto-created definition's `globalArguments`. This is particularly useful for
-`forEach` fan-out, where each iteration needs distinct connection or
-configuration global args.
+With `globalArgs`, `inputs` are method arguments only and no schema routing
+runs. The `globalArgs` values go straight into the auto-created definition's
+`globalArguments`. This helps with `forEach` fan-out, where each iteration needs
+its own connection or configuration global args.
 
-`globalArgs` is only valid with direct type execution (`modelType` + `modelName`)
-and is rejected for existing definitions (`modelIdOrName`) — see
+`globalArgs` is valid only with direct type execution (`modelType` +
+`modelName`). It is rejected for existing definitions (`modelIdOrName`); see
 `src/domain/workflows/step_task.ts`.

@@ -5,156 +5,145 @@ last-verified: 2026-09-16 @ 03224b68
 
 # Extensions
 
-An extension in swamp is a distributable package of models, workflows, vaults,
-datastores, reports, and skills that can be shared through a registry.
-Extensions allow the community to share reusable automation components that
-others can pull into their repositories.
+An extension is a package of models, workflows, vaults, datastores, reports and
+skills that others can pull from a registry into their repositories.
 
-Four kinds have a runtime type registry and loader: models, vaults, datastores,
-and reports (`src/cli/mod.ts` wires exactly these four).
+Four kinds have a runtime type registry and loader: models, vaults, datastores
+and reports (`src/cli/mod.ts` wires only these four).
 
 ## Name
 
-Every extension has a scoped name in the format `@collective/name`. The
-collective identifies the collective, and the name identifies the extension.
-Additional path segments are allowed for organizing related extensions
-hierarchically. All parts must be lowercase and may contain alphanumeric
-characters, hyphens, and underscores. The pattern is
-`@[a-z0-9_-]+/[a-z0-9_-]+(/[a-z0-9_-]+)*`.
+Every extension has a scoped name, `@collective/name`. Extra path segments may
+group related extensions. All parts are lowercase letters, digits, hyphens and
+underscores. The pattern is `@[a-z0-9_-]+/[a-z0-9_-]+(/[a-z0-9_-]+)*`.
 
-The collectives `@swamp` and `@si` are reserved for built-in extensions and
-cannot be used by external authors. This is enforced on model types
-(`RESERVED_COLLECTIVES` in `src/domain/models/model_type.ts`), not at manifest
-parse time.
+The collectives `@swamp` and `@si` are reserved for built-in extensions, so
+external authors cannot use them. This is enforced on model types, not when the
+manifest is parsed (`RESERVED_COLLECTIVES` in
+`src/domain/models/model_type.ts`).
 
-You cannot use another person's name in the extensions that you publish.
+You cannot use another person's name in the extensions you publish.
 
 Examples: `@keeb/ssh`, `@acme/deploy`, `@myorg/aws-helpers`, `@swamp/aws/ec2`,
 `@swamp/aws/accessanalyzer/analyzer`.
 
 ## Version
 
-Extensions use **CalVer** format `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`). The
-micro counter allows multiple versions per day and resets for each new date.
-This is the same versioning scheme used by models (see [models](./models.md)).
+Extensions use **CalVer** `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`), the same
+scheme as models (see [models](./models.md)). The micro counter allows several
+versions a day and resets each new date.
 
-The registry enforces unique name+version tuples. If a version conflict occurs
-during push, the CLI offers to bump the version automatically.
+Each name+version pair must be unique in the registry. On a push conflict, the
+CLI offers to bump the version.
 
 ### Epoch suffix
 
 `swamp extension push manifest.yaml --version-suffix epoch` replaces the micro
-segment with the current Unix epoch seconds, producing versions like
-`2026.06.18.1750263600`. This eliminates push collisions in CI pipelines where
-interactive version bumps aren't possible — each push gets a unique,
-monotonically increasing version without prompts. The date prefix stays
-human-readable; the epoch suffix handles uniqueness and encodes the exact
-publish time.
+segment with the current Unix epoch seconds, e.g. `2026.06.18.1750263600`. This
+avoids push collisions in CI, where nobody can answer a bump prompt. Each push
+gets a unique, increasing version that records the exact publish time, and the
+date prefix stays readable.
 
-Use `swamp extension version <name>` to query the registry for the latest
-published version and compute the next CalVer version. Accepts an extension name
-directly or `--manifest <path>` to read the name from a manifest file. Does not
-require a swamp repository — works from any directory.
+`swamp extension version <name>` asks the registry for the latest published
+version and computes the next one. It takes an extension name, or
+`--manifest <path>` to read the name from a manifest. It works outside a swamp
+repository.
 
 ## Publication Visibility
 
-Extension manifests accept optional `visibility: public` or `visibility: private`.
-`swamp extension push manifest.yaml --visibility private` supplies the same intent
-for one publication. The flag is optional: CLI choice takes precedence over the
-manifest; omitting both preserves registry defaults. `public` explicitly selects
-that default behavior, so `--visibility public` overrides a private manifest.
-It does not convert an already-private extension or override a private collective's
-default. Release channels are independent of visibility.
+A manifest may set `visibility: public` or `visibility: private`.
+`swamp extension push manifest.yaml --visibility private` sets the same intent
+for one publication and wins over the manifest. With neither, registry defaults
+apply. `public` selects that default, so `--visibility public` overrides a
+private manifest. It does not make an already-private extension public or
+override a private collective's default. Release channels are independent of
+visibility.
 
-The effective intent is preserved in the packaged manifest and package cache key.
-Private intent is sent on both initiation and confirmation; public/default intent
-omits the wire field because the registry accepts only explicit private.
-Preview and dry-run output show requested `visibility` as `public`, `private` or
-`default` (registry decides). Public is labelled as registry-default behavior.
-Dry-run does not establish entitlement or applied visibility. Successful output reports the
-confirmation response's actual `public`/`private` visibility; explicit private
-requests require a private confirmation and never use a best-effort lookup.
+The effective intent is stored in the packaged manifest and the package cache
+key. Private intent is sent on both initiation and confirmation. Public or
+default intent omits the wire field, since the registry accepts only explicit
+private. Preview and dry-run show the requested `visibility` as `public`,
+`private` or `default` (registry decides); public is labelled as registry-default
+behavior. Dry-run does not establish entitlement or the applied visibility.
+Successful output reports the actual `public`/`private` visibility from the
+confirmation response. Explicit private requests require a private confirmation
+and never fall back to a best-effort lookup.
 
-The upgraded registry creates explicit-private extensions privately from the
-outset, including inside public collectives, and enforces namespace permissions
-and private-extension entitlements. Republish with private intent to retain that
-requirement. An already-public extension produces a conflict: use the registry's
-visibility action before publishing privately. With public or omitted intent, new
-extensions use their collective's default and existing extensions retain their
-own visibility.
+The upgraded registry creates explicit-private extensions as private from the
+start, even inside public collectives, and enforces namespace permissions and
+private-extension entitlements. Republish with private intent to keep that
+requirement. An already-public extension produces a conflict; use the registry's
+visibility action first. With public or omitted intent, new extensions take
+their collective's default and existing ones keep their own visibility.
 
-Explicit private publication requires the private-publication API from Lab #2200
-on **all registry replicas**. Older servers ignore the field; checking confirmation
-cannot undo public exposure. Complete the registry rollout before using this
-feature, including on custom registries, and pause explicit-private publishing
-during rollback to an older service. Public or omitted requests remain compatible with
-older servers, including their historical visibility-lookup fallback.
+Explicit private publication needs the private-publication API from Lab #2200 on
+**all registry replicas**. Older servers ignore the field, and checking the
+confirmation cannot undo public exposure. Finish the registry rollout first,
+including on custom registries, and pause explicit-private publishing while
+rolling back to an older service. Public or omitted requests still work with
+older servers, including their old visibility-lookup fallback.
 
 ## Release Channels
 
-Extensions support three release channels with a strict promotion ladder:
+Extensions have three release channels with a strict promotion order:
 
 ```
 beta → rc → stable
   └──────────┘  (can skip rc)
 ```
 
-- **stable** — the default channel. All existing versions are stable. Omitting
-  `--channel` or passing `--channel stable` on push and pull means stable.
-  Auto-resolve only considers stable versions.
-- **rc** — release candidate. Opt-in via `--channel rc`.
-- **beta** — early preview. Opt-in via `--channel beta`.
+- **stable**: the default. All existing versions are stable. Omitting
+  `--channel`, or passing `--channel stable`, on push and pull means stable.
+  Auto-resolve considers only stable versions.
+- **rc**: release candidate. Opt in with `--channel rc`.
+- **beta**: early preview. Opt in with `--channel beta`.
 
 ### Version uniqueness
 
-A version string (CalVer) is globally unique per extension regardless of
-channel. You cannot push `2026.06.10.1` as both beta and stable. This enables
-promotion as a metadata-only operation — the archive bytes and checksum are
-unchanged.
+A version is unique per extension across all channels; you cannot push
+`2026.06.10.1` as both beta and stable. So promotion changes only metadata, and
+the archive bytes and checksum stay the same.
 
 ### Push
 
-`swamp extension push manifest.yaml --channel rc` pushes to the rc channel.
-`swamp extension push manifest.yaml --channel beta` pushes to beta. No
-`--channel` flag pushes to stable.
+`swamp extension push manifest.yaml --channel rc` pushes to rc and
+`swamp extension push manifest.yaml --channel beta` to beta. With no
+`--channel` flag, push goes to stable.
 
 ### Pull
 
-`swamp extension pull @name` resolves the latest stable version. If no stable
-version exists (prerelease-only extension), pull errors with an actionable
-message suggesting the available `--channel` flag.
-`swamp extension pull @name --channel rc` resolves the latest rc version.
-`swamp extension pull @name --channel beta` resolves the latest beta version.
-Explicit version pinning (`@name@2026.06.10.1`) ignores channel since versions
-are globally unique.
+`swamp extension pull @name` resolves the latest stable version. For a
+prerelease-only extension it fails with a message suggesting the right
+`--channel` flag. `swamp extension pull @name --channel rc` and
+`swamp extension pull @name --channel beta` resolve the latest rc or beta.
+Pinning an exact version (`@name@2026.06.10.1`) ignores the channel.
 
 ### Search and Versions
 
-`swamp extension search --channel rc --channel beta` filters to extensions with
-versions in either channel. `--channel` is a collect flag (multiple allowed). No
-`--channel` shows stable-only results.
+`swamp extension search --channel rc --channel beta` shows extensions with
+versions in either channel. `--channel` can be repeated; without it, only stable
+results are shown.
 
 `swamp extension version @name` shows the latest published version and computes
-the next CalVer version for an extension.
+the next CalVer version.
 
 ### Info
 
-`swamp extension info @name` shows per-channel latest versions (stable, rc,
-beta) when they exist. No flag needed — info always shows all channels.
+`swamp extension info @name` always shows the latest stable, rc and beta
+versions that exist. No flag is needed.
 
-The info command also displays content metadata for the latest version: model
-types with their methods, extensions (foreign-type grafts with their methods),
-workflows, vaults, datastores, reports, and skills. By default, models
-show the type name and method names; extensions show the target type and grafted
-method names. With `--verbose`, each method's arguments and descriptions are
-also displayed. JSON output (`--json`) includes the full `contentMetadata`
-object with all detail.
+It also shows content metadata for the latest version: model types, extensions
+(foreign-type grafts), workflows, vaults, datastores, reports and skills. By
+default models show the type name and method names, and extensions show the
+target type and grafted method names. `--verbose` adds each method's arguments
+and descriptions. JSON output (`--json`) includes the full `contentMetadata`
+object.
 
 ### Promotion
 
 `swamp extension promote @name 2026.06.10.1 --channel rc` promotes a beta
-version to rc. `--channel stable` promotes to stable. Only forward transitions
-are allowed:
+version to rc; `--channel stable` promotes to stable. Only forward moves are
+allowed:
 
 - beta → rc ✅
 - beta → stable ✅
@@ -163,228 +152,194 @@ are allowed:
 - rc → beta ❌
 - stable → beta ❌
 
-Promotion is a metadata-only operation on the registry — the archive is not
-re-uploaded. The server recalculates per-channel latest after promotion. The CLI
-validates the direction only when `--from-channel` is supplied
-(`src/libswamp/extensions/promote.ts`); otherwise the server enforces it.
+Promotion changes registry metadata only; the archive is not uploaded again.
+The server then recalculates the latest version per channel. The CLI checks the
+direction only when `--from-channel` is given; otherwise the server enforces it
+(`src/libswamp/extensions/promote.ts`).
 
 ### Auto-resolve safety
 
-Beta and rc versions are never auto-resolved via trusted collectives. Only
-stable versions participate in auto-resolution. Lockfile-pinned restores fetch
-by exact version regardless of channel.
+Trusted-collective auto-resolution uses only stable versions, never beta or rc.
+Lockfile-pinned restores fetch the exact version whatever its channel.
 
 ### Lockfile
 
-The `upstream_extensions.json` entry records the channel the extension was
-installed from (`channel` field). The field is written only for non-stable
-installs (`src/infrastructure/persistence/lockfile_repository.ts`); entries
-without it — including all stable installs — read as `"stable"`. The update
-service checks for updates within the installed channel.
+The `upstream_extensions.json` entry records the install channel in a `channel`
+field. It is written only for non-stable installs, so entries without it read
+as `"stable"` (`src/infrastructure/persistence/lockfile_repository.ts`). The
+update service looks for updates within the installed channel.
 
 ### Update cache
 
-The extension update check cache (`.swamp/extension-update-checks.json`) uses
-channel-aware keys: stable uses the bare extension name (backward compatible),
-non-stable uses `name:channel` (e.g. `@swamp/aws:rc`).
+The update check cache (`.swamp/extension-update-checks.json`) keys stable
+entries by the bare extension name, for backward compatibility, and non-stable
+ones by `name:channel` (e.g. `@swamp/aws:rc`).
 
 ## Freshness
 
-Two opt-in user-facing surfaces report whether installed extensions are behind
-the registry's latest version. There is no passive on-load warning — extension
-freshness is surfaced only when the user explicitly asks for it.
+Two opt-in commands report whether installed extensions are behind the
+registry. There is no passive warning on load.
 
 ### `swamp extension list`
 
-Augments the installed-extensions table with a "latest" column when stdout is a
-terminal. Outdated rows are marked `(update available)`; rows where the registry
-could not be reached are marked `(offline — last check failed)`. Two flags
-control the behavior:
+When stdout is a terminal, this adds a "latest" column to the installed
+extensions table. Outdated rows are marked `(update available)`, and rows where
+the registry was unreachable `(offline — last check failed)`. Two flags control
+this:
 
-- `--check-updates` forces enrichment on regardless of stdout type (useful in CI
-  when the user explicitly wants the side-by-side view in JSON output).
-- `--no-check-updates` forces enrichment off.
+- `--check-updates` forces enrichment on, e.g. in CI to get the side-by-side
+  view in JSON output.
+- `--no-check-updates` forces it off.
 
-Default behavior: enrichment runs when stdout is a terminal AND output mode is
-`log`. JSON output and piped invocations skip enrichment by default to keep
-scripted use of `extension list` cheap and offline.
+By default, enrichment runs only when stdout is a terminal and the output mode
+is `log`. JSON output and piped runs skip it, so scripted `extension list` stays
+cheap and offline.
 
-JSON output: when enrichment ran, each entry carries optional `latestVersion`
-and `updateStatus` fields. `updateStatus` is one of `up_to_date`,
-`update_available`, `unknown_offline`, or `deprecated`
-(`src/presentation/renderers/extension_list.ts`). Consumers can distinguish "didn't try"
-(fields absent) from "tried and failed" (`updateStatus: "unknown_offline"`,
+When enrichment ran, each JSON entry has optional `latestVersion` and
+`updateStatus` fields. `updateStatus` is one of `up_to_date`,
+`update_available`, `unknown_offline` or `deprecated`
+(`src/presentation/renderers/extension_list.ts`). Consumers can tell "didn't
+try" (fields absent) from "tried and failed" (`updateStatus: "unknown_offline"`,
 `latestVersion: null`).
 
 ### `swamp extension outdated`
 
-A dedicated subcommand intended for CI gates and scheduled checks. Renders all
-non-up_to_date statuses (update_available, not_found, failed) so users see them,
-but the EXIT CODE depends only on update_available presence:
+A subcommand for CI gates and scheduled checks. It shows every status other than
+up_to_date (update_available, not_found, failed), but the exit code depends only
+on update_available:
 
 - Exit 1 if at least one extension has status `update_available`.
-- Exit 0 otherwise (including when only `not_found` or `failed` are present).
+- Exit 0 otherwise, including when only `not_found` or `failed` are present.
 
-This deliberate semantic means a CI gate `swamp extension outdated && deploy`
-fails only on a clear newer-version-exists signal, not on transient registry
-errors. The exit-code semantic is a public contract: broadening it later (to
-also fail on not_found/failed) would silently break pipelines built on the
-strict semantic.
+So `swamp extension outdated && deploy` fails only when a newer version clearly
+exists, not on passing registry errors. This exit code is a public contract.
+Widening it to fail on not_found/failed would silently break pipelines that rely
+on it.
 
 ### Deprecation
 
-Extensions can be deprecated in the registry without being yanked. Deprecation
-is a soft lifecycle state: deprecated extensions remain pullable and resolvable
-— existing workflows don't break.
+An extension can be deprecated without being yanked. Deprecated extensions can
+still be pulled and resolved, so existing workflows keep working.
 
-`swamp extension deprecate` marks an entire extension (not individual versions)
-as deprecated. An optional `--superseded-by` flag points users to a replacement
-extension. `swamp extension undeprecate` reverses the state.
+`swamp extension deprecate` deprecates a whole extension, not single versions.
+The optional `--superseded-by` flag names a replacement.
+`swamp extension undeprecate` reverses it.
 
-Deprecation surfaces in five places:
+Deprecation shows up in five places:
 
-- `swamp extension search` shows a `[deprecated]` indicator next to deprecated
-  extensions.
-- `swamp extension info` displays deprecation timestamp, reason, and successor
-  (if set).
-- `swamp extension pull` prints a warning when pulling a deprecated extension,
-  including the successor pointer.
-- `swamp extension outdated` includes a `deprecated` status alongside
-  `update_available`, `not_found`, and `failed`. Deprecated extensions do NOT
-  fail the exit code (same rationale as not_found/failed: the extension still
-  works, it's informational).
-- `swamp extension list --check-updates` marks deprecated extensions with
-  `(deprecated)` when the enrichment status is available.
+- `swamp extension search` shows `[deprecated]` next to the extension.
+- `swamp extension info` shows the deprecation time, reason and successor (if
+  set).
+- `swamp extension pull` warns and names the successor.
+- `swamp extension outdated` reports a `deprecated` status alongside
+  `update_available`, `not_found` and `failed`. Like not_found/failed, it does
+  not fail the exit code, because the extension still works.
+- `swamp extension list --check-updates` marks the extension `(deprecated)`
+  when the enrichment status is available.
 
-Registry API endpoints: `POST /api/v1/extensions/{name}/deprecate` (body:
+Registry API endpoints are `POST /api/v1/extensions/{name}/deprecate` (body:
 `{reason, supersededBy?}`) and `POST /api/v1/extensions/{name}/undeprecate` (no
 body). The extension info view returns `deprecatedAt`, `deprecatedByUserId`,
-`deprecationReason`, and `supersededBy` fields.
+`deprecationReason` and `supersededBy`.
 
 ### Cache and registry behavior
 
-Both surfaces share a 24-hour on-disk cache stored at
-`.swamp/extension-update-checks.json`. The TTL matches the `CHECK_INTERVAL_MS`
-constant in `src/domain/update/update_check_cache.ts`. These surfaces only ever
-read the registry to report available updates — no extension kind is auto-pulled
-or upgraded as a side effect. Within the 24h window, freshness data is served
-from cache without contacting the registry.
+Both commands share a 24-hour on-disk cache at
+`.swamp/extension-update-checks.json`. The TTL matches `CHECK_INTERVAL_MS` in
+`src/domain/update/update_check_cache.ts`. Within that window, freshness comes
+from the cache without contacting the registry. The commands only read the
+registry; nothing is pulled or upgraded as a side effect.
 
-On registry failure for a stale entry, the cache is stamped with
-`latestVersion: installedVersion` to suppress retries for the next 24h. This is
-a deliberate trade-off: during that 24h window, a stamped entry will read as
-`up_to_date` even though the latest version is genuinely unknown — the
-alternative (every command hammering an unreachable registry) is worse for
-advisory data. The in-memory enriched entry returned by the list composer
-additionally carries `updateStatus: "unknown_offline"` so the user can
-distinguish "freshly failed" from "cache-fresh up_to_date" within the same
-invocation. After 24h, the cache entry expires and the next command re-attempts
-the registry call.
+If the registry call fails for a stale entry, the cache stores
+`latestVersion: installedVersion` so it does not retry for 24h. During that time
+the entry reads as `up_to_date` although the latest version is unknown. For
+advisory data, that is better than every command hitting an unreachable
+registry. The in-memory entry from the list composer also carries
+`updateStatus: "unknown_offline"`, so within one run the user can tell "just
+failed" from "cached up_to_date". After 24h the entry expires and the next
+command tries again.
 
-The cache file itself is written atomically via `atomicWriteTextFile`, so
-concurrent writers cannot corrupt the file. The repository uses
-read-modify-write on the whole map, so under parallel invocations one writer's
-individual mutations may be lost (last-writer-wins on the whole map). For a 24h
-advisory cache where each entry is self-contained, lost mutations simply
-re-occur on the next stale check — never file corruption. A per-extension keyed
-file or kvstore would eliminate the trade-off and is a future improvement.
+The cache file is written with `atomicWriteTextFile`, so concurrent writers
+cannot corrupt it. The repository rewrites the whole map, though, so parallel
+runs can lose each other's changes (last writer wins). Entries are independent
+and advisory, so a lost change recurs on the next stale check. A
+per-extension file or kvstore would remove this trade-off and is a possible
+future improvement.
 
 ### Why no passive on-load warning
 
-The original feature request (issue #199) proposed a per-extension warning
-emitted on every command that resolves an extension bundle. After research into
-how comparable tools handle this, swamp ships the explicit-only design instead:
+The original request (issue #199) asked for a warning on every command that
+resolves an extension bundle. Comparable tools pointed the other way:
 
-- Terraform, OpenTofu, and Ansible all explicitly chose against passive nags for
-  plugin/provider staleness, treating it as user opt-in. OpenTofu re-litigated
-  the design (issue #2032, closed not-planned) citing CI-breakage concerns.
-- Pulumi ships a passive nag (for the CLI itself, not plugins) and has
-  documented user pain at length: per-invocation noise (issue #5576), wrong
-  severity level (issue #10578), unactionable warnings when package managers
-  haven't caught up (issue #2426).
-- No surveyed tool has shipped a generally-loved per-extension passive warning.
-  gh's extension version checker is the closest attempt and is the documented
-  cautionary tale (issue #10235: blocking PostRun call hangs commands for
-  minutes).
+- Terraform, OpenTofu and Ansible all leave plugin/provider staleness checks to
+  the user. OpenTofu reconsidered (issue #2032, closed not-planned) over CI
+  breakage concerns.
+- Pulumi warns passively about the CLI itself, not plugins, and users have
+  complained about noise on every run (issue #5576), the wrong severity (issue
+  #10578), and warnings they can't act on when package managers lag (issue
+  #2426).
+- No surveyed tool has a well-liked per-extension passive warning. gh's
+  extension version checker came closest, and it caused problems (issue
+  #10235: a blocking PostRun call hangs commands for minutes).
 
-If real demand for a passive surface emerges, the path forward is documented but
-not implemented: an end-of-command, single-line, aggregated, info-level (not
-warn) advisory with 24h display cooldown, TTY gating, env-var suppression, and
-non-blocking time-budgeted registry calls. (The existing
-`SWAMP_NO_UPDATE_CHECK` variable in `src/cli/mod.ts` disables the CLI's own
-self-update check, not extension freshness.)
-Per-extension warnings at the start of every command are explicitly out.
+If demand appears, the documented but unbuilt design is one aggregated line at
+the end of a command: info level (not warn), 24h display cooldown, TTY gating,
+env-var suppression, and non-blocking, time-limited registry calls.
+(`SWAMP_NO_UPDATE_CHECK` in `src/cli/mod.ts` turns off the CLI's own
+self-update check, not extension freshness.) Per-extension warnings at the
+start of every command are ruled out.
 
 ## Manifest
 
-Every extension is defined by a `manifest.yaml` file. The manifest declares what
-the extension contains and how it should be packaged.
+Every extension is defined by a `manifest.yaml` file that declares its contents
+and how to package them.
 
 ### Required Fields
 
-- `manifestVersion`: Must be `1` (the only supported version).
-- `name`: Scoped name (`@collective/name`).
+- `manifestVersion`: must be `1`, the only supported version.
+- `name`: scoped name (`@collective/name`).
 - `version`: CalVer version string.
 - At least one of `models`, `workflows`, `vaults`, `datastores`, `reports`,
-  `webhooks`, or `skills` must be present.
+  `webhooks` or `skills`.
 
 ### Path Safety
 
-All file paths in the manifest must be **relative and downward-only**. Paths
-containing `..` components (e.g., `../../workflows/file.yaml`) or starting with
-`/` (absolute paths) are rejected during push. This prevents archive entries
-that would fail the pull-side safety validator, which rejects any tar entry
-containing `..` or starting with `/`.
+Every manifest path must be **relative and downward-only**. Push rejects paths
+with `..` components (e.g., `../../workflows/file.yaml`) or a leading `/`
+(absolute paths). Such paths would produce archive entries that pull's safety
+check rejects, since it refuses any tar entry containing `..` or starting with
+`/`.
 
 ### Optional Fields
 
-- `description`: Human-readable description of the extension.
-- `paths.base`: Path resolution mode for the typed keys below. `"typedDir"`
-  (default) resolves typed entries relative to their configured directory
-  (`modelsDir`, `vaultsDir`, etc.). `"manifest"` resolves every typed entry plus
-  `additionalFiles` relative to the manifest's own directory — pick this for
-  per-extension-subdir layouts where manifest, source, README, and LICENSE all
-  sit alongside each other. Under `"manifest"`, entries must not repeat the
-  typed directory prefix — e.g. `models: ["project.ts"]`, not
-  `models: ["models/project.ts"]` — because the archive already places each
-  entry under its typed directory. See "Path resolution" below.
-- `models`: Array of relative paths to TypeScript model files (e.g.,
+- `description`: human-readable description.
+- `paths.base`: how the typed keys below resolve, `"typedDir"` (default) or
+  `"manifest"`. See "Path resolution" below. Under `"manifest"`, entries must not
+  repeat the typed directory prefix, because the archive already puts each entry
+  under its typed directory: write `models: ["project.ts"]`, not
+  `models: ["models/project.ts"]`.
+- `models`: relative paths to TypeScript model files (e.g.,
   `["aws/ec2/instance.ts"]`). Resolved via `paths.base`.
-- `workflows`: Array of relative paths to YAML workflow files. Resolved via
-  `paths.base`. Under `paths.base: manifest`, workflows resolve relative to the
-  manifest's own directory first, falling back to the repo-root `workflows/` and
-  `extensions/workflows/` directories.
-- `vaults`: Array of relative paths to TypeScript vault files. Resolved via
-  `paths.base`.
-- `datastores`: Array of relative paths to TypeScript datastore files. Resolved
-  via `paths.base`.
-- `reports`: Array of relative paths to TypeScript report files. Resolved via
-  `paths.base`.
-- `skills`: Array of skill directory names. Each directory must contain a
-  `SKILL.md` with YAML frontmatter declaring `name` and `description`. Skills
-  are passive markdown guidance documents — swamp never executes them. Under
-  `paths.base: manifest`, skills resolve relative to the manifest's own
-  directory first (e.g., `sub/.claude/skills/<name>/`), then fall back to the
-  repo-root skill directory and global user-level directory. Under the default
-  `paths.base: typedDir`, skills resolve from repo-root and global only. In
-  multi-tool repos, all enrolled tools' skill directories are searched.
-- `repository`: URL of the extension's source repository (e.g.,
+- `workflows`: relative paths to YAML workflow files. Resolved via `paths.base`.
+- `vaults`, `datastores`, `reports`: relative paths to TypeScript vault,
+  datastore and report files. Resolved via `paths.base`.
+- `skills`: skill directory names. Each must contain a `SKILL.md` whose YAML
+  frontmatter declares `name` and `description`. Skills are passive markdown
+  guidance; swamp never runs them.
+- `repository`: URL of the source repository (e.g.,
   `"https://github.com/org/repo"`).
-- `releaseNotes`: Free-form release notes for the current version (max 5000
-  characters).
-- `include`: Array of relative paths to files that should be included in the
-  archive alongside models but not bundled. Used for helper scripts that are
-  executed via `Deno.Command` subprocess rather than imported directly. Resolved
-  via `paths.base`.
-- `additionalFiles`: Array of relative paths to non-model files (README, config,
-  etc.). Always resolved relative to the manifest's own directory.
-- `platforms`: Array of platform identifiers the extension supports (e.g.,
-  `["darwin-aarch64", "linux-x86_64"]`). Informational only — displayed during
-  pull.
-- `labels`: Array of categorization labels (e.g., `["aws", "kubernetes"]`), at
-  most `MAX_LABELS = 20` (`src/domain/extensions/extension_manifest.ts`).
-- `dependencies`: Array of extension names (`@collective/name`) that this
-  extension requires. Dependencies are pulled automatically.
+- `releaseNotes`: free-form notes for this version (max 5000 characters).
+- `include`: relative paths to files copied into the archive next to models but
+  not bundled, such as helper scripts run as a `Deno.Command` subprocess rather
+  than imported. Resolved via `paths.base`.
+- `additionalFiles`: relative paths to non-model files (README, config, etc.).
+  Always resolved relative to the manifest's own directory.
+- `platforms`: supported platform identifiers (e.g.,
+  `["darwin-aarch64", "linux-x86_64"]`). Informational only; shown during pull.
+- `labels`: categorization labels (e.g., `["aws", "kubernetes"]`), at most
+  `MAX_LABELS = 20` (`src/domain/extensions/extension_manifest.ts`).
+- `dependencies`: extension names (`@collective/name`) this extension needs.
+  They are pulled automatically.
 
 ### Example
 
@@ -413,67 +368,64 @@ labels:
 
 ### Path Resolution
 
-The `paths.base` field selects the directory typed-key entries (`models`,
-`vaults`, `datastores`, `reports`, `include`) plus `additionalFiles`
-resolve against during push. Two modes:
+`paths.base` picks the directory that typed-key entries (`models`, `vaults`,
+`datastores`, `reports`, `include`) and `additionalFiles` resolve against during
+push:
 
-- **`typedDir` (default)** — typed entries resolve relative to their configured
+- **`typedDir` (default)**: typed entries resolve relative to their configured
   directory from the repo marker (`modelsDir`, `vaultsDir`, etc., or environment
   overrides like `SWAMP_MODELS_DIR`). `additionalFiles` resolves relative to the
-  manifest's own directory. This is the historical behavior; every existing
-  manifest without an explicit `paths.base` keeps these semantics.
-- **`manifest`** — every typed entry plus `additionalFiles` resolves relative to
-  the manifest's own directory. Pick this for per-extension-subdir layouts where
-  manifest, source, README, and LICENSE all live alongside each other (e.g.
+  manifest's own directory. This is the original behavior, kept by every
+  manifest without `paths.base`.
+- **`manifest`**: every typed entry and `additionalFiles` resolve relative to
+  the manifest's own directory. Use it when each extension has its own
+  subdirectory holding manifest, source, README and LICENSE (e.g.
   `extensions/models/myext/manifest.yaml` next to `myext/echo.ts` and
   `myext/README.md`).
 
-Workflows honour `paths.base: manifest` — when set, the manifest's own directory
-is searched first, falling back to the repo-root `workflows/` and
-`extensions/workflows/` directories. Under the default `paths.base: typedDir`,
-workflows resolve only from the repo-root locations.
+Workflows honour `paths.base: manifest`: the manifest's own directory is
+searched first, then the repo-root `workflows/` and `extensions/workflows/`
+directories. Under the default `paths.base: typedDir`, only the repo-root
+locations are used.
 
-Skills honour `paths.base: manifest` — when set, the manifest's own directory is
-searched first (e.g. `sub/.claude/skills/<name>/`), then project-local, then
-global. All enrolled tools are searched, not just the primary tool.
+Skills honour it too: the manifest's own directory first (e.g.
+`sub/.claude/skills/<name>/`), then the repo-root (project-local) skill
+directory, then the global user-level one. Under `paths.base: typedDir`, only
+repo-root and global are searched. Every enrolled tool's skill directory is
+searched, not only the primary tool's.
 
-Local source-loading honours `paths.base: manifest` — at startup, the loader
-scans all known extension directories for manifests with `paths.base: manifest`.
-When a manifest declares components of a kind different from its parent
-directory (e.g. a `reports:` entry in a manifest under
-`extensions/models/myext/`), the manifest's directory is added as an additional
-source directory for that kind. This closes the dev/prod parity gap where
-published bundles loaded all declared components but local source loading only
-discovered components matching their kind directory.
+Local source loading also honours `paths.base: manifest`. At startup the loader
+scans every known extension directory for such manifests. If one declares a kind
+other than its parent directory's (e.g. a `reports:` entry in a manifest under
+`extensions/models/myext/`), its directory becomes an extra source directory for
+that kind. This closes a gap between dev and prod. Published bundles loaded
+every declared component, but local loading only found components in the
+matching kind directory.
 
 ### Source-Path Skill Installation
 
-Source-path extensions (configured via `.swamp-sources.yaml`) can provide skills
-just like registry-pulled extensions. When `extension source add` records a new
-source, it reads the source's `manifest.yaml` and — if the manifest declares a
-`skills` field — resolves and copies those skill directories into the repo's
-tool-specific skills directory (e.g. `.claude/skills/`). Skill resolution uses
-the same `paths.base` strategy as `extension push` and `extension quality`:
-under `paths.base: manifest`, skills are found relative to the manifest
-directory; otherwise they are found under the source root's tool-specific skill
-directories.
+Source-path extensions (set up in `.swamp-sources.yaml`) can provide skills too.
+When `extension source add` records a source, it reads its `manifest.yaml`. If
+that declares `skills`, it copies those skill directories into the repo's
+tool-specific skills directory (e.g. `.claude/skills/`). Resolution uses the
+same `paths.base` strategy as `extension push` and `extension quality`: relative
+to the manifest under `paths.base: manifest`, otherwise under the source root's
+tool-specific skill directories.
 
-The installed skill names are tracked in the `installedSkills` field on the
-source entry in `.swamp-sources.yaml`. When `extension source rm` removes a
-source, it reads this field and deletes the corresponding skill directories from
-the repo. This ensures cleanup does not depend on the source directory still
-being accessible at removal time.
+The installed skill names are recorded in the `installedSkills` field of the
+source entry in `.swamp-sources.yaml`. `extension source rm` reads this field
+and deletes those skill directories, so cleanup works even if the source
+directory is gone.
 
-The on-wire manifest in the archive preserves the field strings verbatim — no
-path rewriting, no normalization. WYSIWYG between what the author pushes and
-what the registry stores. The archive layout under each typed-key directory
-mirrors the entry strings: under `paths.base: manifest` with
-`models: [echo.ts]`, the archive contains `extension/models/echo.ts` directly.
+The manifest in the archive keeps its field strings as written, with no
+path rewriting or normalization, so the registry stores what the author pushed.
+The archive layout under each typed-key directory follows the entry strings:
+under `paths.base: manifest` with `models: [echo.ts]`, the archive contains
+`extension/models/echo.ts` directly.
 
 ## Archive Structure
 
-When pushed, an extension is packaged as a gzipped tar archive with the
-following structure:
+On push, an extension is packaged as a gzipped tar archive:
 
 ```
 extension.tar.gz
@@ -500,189 +452,171 @@ extension.tar.gz
 
 ### Models
 
-Source TypeScript files are included preserving their relative directory
-structure from the active base (the configured `modelsDir` under
-`paths.base: typedDir`, the manifest's own directory under
-`paths.base: manifest`). Local imports are resolved recursively — if
-`connection.ts` imports `./helpers.ts`, both files are included.
+Source TypeScript files keep their paths relative to the active base: the
+configured `modelsDir` under `paths.base: typedDir`, or the manifest's directory
+under `paths.base: manifest`. Local imports are followed recursively; if
+`connection.ts` imports `./helpers.ts`, both are included.
 
-Files listed in the manifest's `include` field are also copied to `models/` in
-the archive, preserving their relative paths from the active base. Include files
-are not bundled — they are raw TypeScript files intended to be executed as
-subprocesses or used as standalone utilities.
+Files in `include` are also copied to `models/`, keeping their paths relative to
+the active base. They are not bundled; they are raw TypeScript meant to run as
+subprocesses or standalone utilities.
 
 ### Loader pre-check
 
-At runtime, loaders discover `.ts` files in their respective directories and
-attempt to bundle each one. Before bundling, the loader reads the source and
-checks for the expected named export (`export const model`,
-`export const vault`, etc.). Files that don't declare the expected export are
-skipped — no bundling attempted, no error. This avoids failing on helper scripts
-with unbundleable dependencies (e.g., native modules used via `Deno.Command`
-subprocess).
+At runtime, loaders find `.ts` files in their directories and try to bundle
+each. First the loader reads the source and looks for the expected named export
+(`export const model`, `export const vault`, etc.). Files without it are skipped
+silently, with no bundling attempt and no error. This way helper scripts with
+unbundleable dependencies (e.g., native modules used via a `Deno.Command`
+subprocess) cause no failures.
 
 ### Bundles
 
-Each model entry point is compiled using `deno bundle` with zod externalized.
+Each model entry point is compiled with `deno bundle`, with zod externalized.
 All other non-local specifiers (`npm:`, `jsr:`, `https:`) are resolved and
-inlined into the bundle, which ensures they work in the compiled binary where
-only swamp's own embedded dependency graph is available. Zod is externalized so
-extensions share the same zod instance as swamp (required for schema
-`instanceof` checks). Dynamic `import()` calls are not supported — all imports
-must be static top-level imports. Bundles are JavaScript files stored alongside
-their source counterparts under `bundles/`.
+inlined, so they work in the compiled binary, where only swamp's own embedded
+dependency graph exists. Zod stays external so extensions share swamp's zod
+instance, which schema `instanceof` checks require. Dynamic `import()` is not
+supported; all imports must be static and top-level. Bundles are JavaScript
+files stored next to their sources under `bundles/`.
 
-**First-class specifier kinds:** `npm:`, `jsr:`, and `https:` are peers —
-`deno bundle` resolves all three natively with identical treatment (all inlined,
-all cached by Deno's module cache, all subject to the same externalization rules
-for zod). No per-specifier-kind configuration is required.
+**Specifier kinds:** `deno bundle` handles `npm:`, `jsr:` and
+`https:` natively and alike. All are inlined, cached by Deno's module cache, and
+follow the same zod externalization rules, with no per-kind configuration.
 
 **Pin versions on all non-local specifiers** (`npm:`, `jsr:`, `https:`) for
-reproducibility. An unpinned specifier resolves to the registry's current
-"latest" at push time, which means the published bundle silently changes
-whenever the upstream package publishes a new version. See
-`.claude/skills/swamp/references/extension-publish/references/publishing.md` for
-author-facing guidance.
+reproducibility. An unpinned specifier resolves to the registry's "latest" at
+push time, so the published bundle changes silently whenever upstream releases.
+Author guidance is in `.claude/skills/swamp/references/extension-publish/references/publishing.md`.
 
 #### Project-aware bundling
 
-Extensions can optionally live within a project that has a `deno.json` or
-`package.json`. When `swamp extension push` is run, it walks up from the
-manifest directory to the repo root looking for project config files.
+An extension may live inside a project with a `deno.json` or `package.json`.
+`swamp extension push` walks up from the manifest directory to the repo root
+looking for project config.
 
-**Detection priority:** `deno.json` is searched first (full walk from manifest
-to repo root). Only if no `deno.json` is found does the push command walk again
-looking for `package.json`. This means `deno.json` always wins regardless of
-directory depth.
+**Detection priority:** push walks the whole path for `deno.json` first, and
+only then walks again for `package.json`. So `deno.json` always wins, whatever
+its depth.
 
-**Bare specifier gate:** A `package.json` is only used when the extension source
-actually contains bare specifiers (e.g., `from "zod"` instead of
-`from "npm:zod@4"`). This prevents an unrelated `package.json` (e.g., one
-containing `@anthropic-ai/claude-code` for tooling) from being mistakenly
-treated as the extension's project config.
+**Bare specifier gate:** a `package.json` is used only if the extension source
+has bare specifiers (e.g., `from "zod"` rather than `from "npm:zod@4"`). This
+keeps an unrelated `package.json` (e.g., one listing `@anthropic-ai/claude-code`
+for tooling) from being taken as the extension's project config.
 
-Specifiers are read from the module's own static imports only. Import statements
-that appear inside template literals are generated code — the specifier belongs
-to the script the extension emits at runtime, not to the extension's own module
-graph — so they are ignored by every bare-specifier check.
+Specifiers come only from the module's own static imports. Import statements
+inside template literals are generated code for a script the extension emits at
+runtime, not part of its own module graph, so every bare-specifier check ignores
+them.
 
 #### Bundling permutations
 
-| Scenario                                  | `deno bundle` flags                                      | Quality check flags    | Notes                                                                                                                                                              |
-| ----------------------------------------- | -------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **`deno.json` found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply                                                                                                        |
-| **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`; `--node-modules-dir=auto` initializes `.deno/` metadata if needed |
-| **`package.json` found, `npm:` imports**  | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Package.json is ignored (extension doesn't need it); `--node-modules-dir=none` prevents ambient package.json from poisoning resolution                             |
-| **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default behavior; `--node-modules-dir=none` prevents any package.json in the directory tree from interfering                                                       |
+| Scenario                                  | `deno bundle` flags                                      | Quality check flags    | Notes                                                                                                            |
+| ----------------------------------------- | -------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **`deno.json` found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply                                                      |
+| **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
+| **`package.json` found, `npm:` imports**  | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Package.json is ignored (extension doesn't need it)                                                              |
+| **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default behavior                                                                                                 |
 
-The `--node-modules-dir=none` flag is critical for the last two cases: without
-it, an unrelated `package.json` anywhere in the directory tree causes Deno to
-switch to `node_modules/` resolution mode, breaking `npm:` prefixed imports with
-errors like "Could not find a matching package for 'npm:@octokit/rest@22.0.1' in
-the node_modules directory."
+In the bare-specifier row, `--node-modules-dir=auto` also creates `.deno/`
+metadata if needed.
 
-`jsr:` and `https:` specifiers work identically across all four rows — they
-don't require `deno.json` or `package.json` to resolve, so the project-config
-detection logic is irrelevant to them. They are fetched and cached by Deno's
-module cache on first use and reused offline thereafter.
+`--node-modules-dir=none` is required in the last two rows. Without it, any
+`package.json` in the directory tree switches Deno to `node_modules/`
+resolution, which breaks `npm:` imports with errors like "Could not find a
+matching package for 'npm:@octokit/rest@22.0.1' in the node_modules directory."
+
+`jsr:` and `https:` specifiers behave the same in all four rows. They need no
+`deno.json` or `package.json`, so project-config detection does not affect them.
+Deno's module cache fetches them on first use and reuses them offline.
 
 #### Zod externalization
 
-Zod is externalized using `--external` flags that match the specifier as written
-in source. The bundler handles:
+Zod is externalized with `--external` flags matching the specifier as written.
+The bundler handles:
 
 - `npm:zod@4` and `npm:zod` (base patterns, always applied)
-- Fully-pinned versions like `npm:zod@4.3.6` (detected by scanning the source)
-- Bare `"zod"` specifier via `deno.json` (when the import map maps it to zod
-  4.x, both the resolved specifier and bare `"zod"` are externalized)
-- Bare `"zod"` specifier via `package.json` (when `dependencies` or
-  `devDependencies` lists zod 4.x)
+- Fully pinned versions like `npm:zod@4.3.6` (found by scanning the source)
+- Bare `"zod"` via `deno.json`: when the import map maps it to zod 4.x, both the
+  resolved specifier and bare `"zod"` are externalized
+- Bare `"zod"` via `package.json`: when `dependencies` or `devDependencies`
+  lists zod 4.x
 
-After bundling, `rewriteZodImports` rewrites any externalized zod import to
-`globalThis.__swamp_zod`, which is set at runtime by `installZodGlobal()`. The
-rewrite regex matches both `npm:zod@4.x` and bare `"zod"` specifiers, but
-explicitly excludes zod 3.x to prevent silent runtime breakage.
+After bundling, `rewriteZodImports` rewrites each externalized zod import to
+`globalThis.__swamp_zod`, which `installZodGlobal()` sets at runtime. The
+rewrite matches `npm:zod@4.x` and bare `"zod"` but excludes zod 3.x, to avoid
+silent runtime breakage.
 
 #### Runtime bundle caching
 
-At runtime, loaders check `.swamp/bundles/` (or the corresponding `-bundles/`
-directory) for cached bundles. If the source file contains bare specifiers that
-require a project config to resolve, and a cached bundle exists, the loader uses
-the cached bundle rather than attempting a re-bundle that would fail without the
-config. This supports pulled extensions that were built with a `deno.json` or
-`package.json` project — the archive includes pre-built bundles but not the
-project config. Imports inside template literals do not count here either: an
-extension that only generates code re-bundles normally rather than being pinned
-to its cached bundle.
+At runtime, loaders look for cached bundles in `.swamp/bundles/` (or the
+matching `-bundles/` directory). If the source has bare specifiers that need a
+project config and a cached bundle exists, the loader uses it, since
+re-bundling without the config would fail. This serves pulled extensions built
+in a `deno.json` or `package.json` project, whose archive has pre-built bundles
+but no project config. Imports inside template literals don't count here either,
+so an extension that only generates code re-bundles normally.
 
-When a non-filesystem datastore is configured (e.g. `@swamp/s3-datastore`),
-bundle paths are resolved through the `DatastorePathResolver` instead of the
-hardcoded local `.swamp/` directory. This routes bundle reads and writes to the
-datastore cache path (e.g. `~/.swamp/repos/<repo-id>/bundles/`). The datastore
-loader is excluded from this routing due to bootstrap ordering — it always uses
-the local path since it loads datastore extensions that configure the resolver
-itself. When no resolver is available (e.g. during `repo init` or in tests),
-loaders fall back to the local `.swamp/` path.
+With a non-filesystem datastore (e.g. `@swamp/s3-datastore`), bundle paths go
+through the `DatastorePathResolver` instead of the hardcoded local `.swamp/`
+directory, so bundle reads and writes use the datastore cache path (e.g.
+`~/.swamp/repos/<repo-id>/bundles/`). The datastore loader is the exception.
+Because of bootstrap order it always uses the local path: it loads the
+datastore extensions that configure the resolver. Without a resolver (e.g.
+during `repo init` or in tests), loaders fall back to the local `.swamp/` path.
 
 ### Vaults, Datastores, Reports, and Webhooks
 
-Vault, datastore, report, and webhook entry points are bundled with the same
-strategy as models — deno bundle with zod externalized. Each entry point gets a
-compiled `.js` file in its corresponding `-bundles/` directory
-(`vault-bundles/`, `datastore-bundles/`, `report-bundles/`,
-`webhook-bundles/`). Local imports are resolved recursively within the directory
-boundary. The install-time `KIND_DIRS` array covers
-`["models", "vaults", "datastores", "reports", "webhooks"]`.
+Vault, datastore, report and webhook entry points are bundled like models. Each
+gets a compiled `.js` file in its `-bundles/` directory (`vault-bundles/`,
+`datastore-bundles/`, `report-bundles/`, `webhook-bundles/`). Local imports are
+followed recursively within the directory. The install-time `KIND_DIRS` array
+covers `["models", "vaults", "datastores", "reports", "webhooks"]`.
 
-The export from each bundle is validated against a Zod schema:
+Each bundle's export is validated against a Zod schema:
 
-- **Vaults**: `export const vault` — must have `type`, `name`, `description`,
+- **Vaults**: `export const vault` with `type`, `name`, `description`,
   optional `configSchema`, and `createProvider`
-- **Datastores**: `export const datastore` — must have `type`, `name`,
+- **Datastores**: `export const datastore` with `type`, `name`,
   `description`, optional `configSchema`, and `createProvider`
-- **Reports**: `export const report` — must have `name`, `description`, `scope`,
+- **Reports**: `export const report` with `name`, `description`, `scope`,
   optional `labels`, and `execute`
-- **Webhooks**: `export const webhook` — must have `type`, `name`,
-  `description`, optional `configSchema`, and `createHandler`, which returns a
-  handler used by `swamp serve` webhook endpoints whose scheme is the type
-  (see [serve](serve.md))
+- **Webhooks**: `export const webhook` with `type`, `name`, `description`,
+  optional `configSchema`, and `createHandler`. It returns the handler for
+  `swamp serve` webhook endpoints whose scheme is the type (see
+  [serve](serve.md))
 
 ### Collective Validation
 
-All content types — model types, vault types, workflow names, datastore types,
-report names, webhook types — must use the same collective as the extension
-name. This is enforced during push to prevent an extension from registering
-types under a different collective.
+Push checks that all content (model types, vault types, workflow names,
+datastore types, report names, webhook types) uses the extension name's
+collective, so an extension cannot register types under another collective.
 
 ### Workflows
 
-Workflow YAML files are included with unique archive names derived from their
-directory path to avoid collisions.
+Workflow YAML files get unique archive names derived from their directory path,
+so they don't collide.
 
 ### Additional Files
 
-Files listed in `additionalFiles` are included under the `files/` directory
-preserving their relative paths. A manifest entry `prompts/review.md` lands at
-`files/prompts/review.md` in the archive; pulled consumers find it at
-`.swamp/pulled-extensions/<name>/files/prompts/review.md`.
+`additionalFiles` go under `files/`, keeping their relative paths. A manifest
+entry `prompts/review.md` lands at `files/prompts/review.md` in the archive, and
+at `.swamp/pulled-extensions/<name>/files/prompts/review.md` for consumers.
 
 Push rejects:
 
-- Duplicate entries (case-insensitive, NFC-normalized) — two entries that would
-  resolve to the same archive path fail with a clear error naming both
-  offenders.
-- Symlinks — to prevent archive bloat and path escapes, entries pointing at
-  symlinks are rejected. Copy the target file into the extension tree instead.
+- Duplicate entries (case-insensitive, NFC-normalized). Two entries mapping to
+  the same archive path fail with an error naming both.
+- Symlinks, to avoid archive bloat and path escapes. Copy the target file into
+  the extension tree instead.
 
 ### Runtime access
 
-Model method `execute` functions and report functions receive a context with an
-`extensionFile(relPath)` helper that resolves a relative path from
-`additionalFiles` to an absolute filesystem path. The helper abstracts the
-source-vs-pulled layout divergence — the same code works whether the extension
-was added via `swamp extension source add` (files resolve relative to the
-manifest) or pulled from the registry (files resolve under
-`.swamp/pulled-extensions/<name>/files/`).
+Model method `execute` functions and report functions get a context with an
+`extensionFile(relPath)` helper. It turns a relative `additionalFiles` path into
+an absolute path, whether the extension was added with
+`swamp extension source add` (relative to the manifest) or pulled from the
+registry (under `.swamp/pulled-extensions/<name>/files/`).
 
 ```ts
 export const model = {
@@ -701,35 +635,30 @@ export const model = {
 };
 ```
 
-The helper throws a typed `UserError` when the path is unsafe (contains `..`,
-starts with `/`), when the file is missing, or when called on a model that isn't
-shipped via an extension manifest. The missing-file error is mode-aware:
-pulled-mode archives get a re-publish hint; source-mode callers get the absolute
-path and a pointer at the manifest entry.
+The helper throws a typed `UserError` if the path is unsafe (contains `..` or
+starts with `/`), the file is missing, or the model was not shipped via an
+extension manifest. For a missing file, pulled archives get a re-publish hint;
+source-mode callers get the absolute path and a pointer to the manifest entry.
 
 ## Import Resolution
 
-When packaging an extension, the CLI resolves all local TypeScript imports
-starting from each entry point (model, vault, datastore, or report). The
-resolver follows relative `import`/`export` statements (e.g., `./helpers.ts`,
-`../shared.ts`) and includes all transitively imported files. Only files within
-the respective directory boundary are included. Non-local imports (`npm:`,
-`jsr:`, `https:`) are skipped here — they are resolved and inlined at bundle
-time by `deno bundle`, not by the local-import resolver.
+When packaging, the CLI follows local TypeScript imports from each entry point
+(model, vault, datastore or report). It follows relative `import`/`export`
+statements (e.g., `./helpers.ts`, `../shared.ts`) transitively and includes
+every file reached inside that kind's directory boundary. Non-local imports
+(`npm:`, `jsr:`, `https:`) are skipped here; `deno bundle` inlines them at
+bundle time.
 
 ## Per-Subdirectory Extension Identity
 
-By default, all files under `extensions/<kind>/` are grouped into a single local
-extension aggregate (`@local/<repo-basename>@0.0.0`, or the identity from the
-top-level `extensions/manifest.yaml` if present).
+By default, all files under `extensions/<kind>/` form one local extension
+aggregate, `@local/<repo-basename>@0.0.0`, or the identity in the top-level
+`extensions/manifest.yaml` if present.
 
-When a subdirectory directly under `extensions/<kind>/` contains its own
-`manifest.yaml` declaring both `name` and `version`, that subdirectory is
-treated as an independent extension aggregate. Files under that subdirectory are
-claimed by the manifest-declared identity instead of the default `@local/<repo>`
-aggregate.
-
-This enables multi-extension repos where sibling directories host independently
+If a subdirectory directly under `extensions/<kind>/` has its own
+`manifest.yaml` declaring both `name` and `version`, it becomes a separate
+aggregate. Its files belong to that identity instead of the default
+`@local/<repo>` aggregate. Sibling directories can then hold separately
 published extensions:
 
 ```
@@ -743,36 +672,35 @@ extensions/models/
   shared.ts          → claimed by @local/<repo>@0.0.0
 ```
 
-**Precedence:** When a top-level `extensions/manifest.yaml` exists, it claims
-the entire `extensions/` tree — per-subdirectory manifests are ignored.
-Per-subdirectory discovery only activates when no top-level manifest is present.
+**Precedence:** a top-level `extensions/manifest.yaml` claims the whole
+`extensions/` tree and per-subdirectory manifests are ignored. Per-subdirectory
+discovery applies only without one.
 
 ### Origin Precedence Enforcement
 
-When both a local source and a pulled extension provide the same `(kind, type)`,
-the local source wins. The pulled row's `type_normalized` is cleared to empty in
-the catalog so it no longer occupies the type namespace — the same treatment as
-`ValidationFailed` or `EntryPointUnreadable` states. The pulled files remain on
-disk for reference (diffing, version comparison) but are not registered as
-active types.
+If a local source and a pulled extension provide the same `(kind, type)`, the
+local source wins. The catalog clears the pulled row's `type_normalized`, so it
+no longer holds the type name, as it does for `ValidationFailed` or
+`EntryPointUnreadable` states. The pulled files stay on disk for reference
+(diffing, version comparison) but are not registered as active types.
 
-This applies to the push/pull development loop: when editing a local extension
-source that is also pulled from the registry, `extension pull` succeeds and the
-local source's types take precedence. The in-memory registry has always
-respected this ordering (`load()` processes local directories first and
-deduplicates via `hasType()`); the catalog now matches.
+This supports the push/pull development loop: while you edit a local source that
+is also pulled from the registry, `extension pull` succeeds and the local types
+take precedence. The in-memory registry always worked this way (`load()`
+processes local directories first and deduplicates with `hasType()`); the
+catalog now matches.
 
 To re-activate pulled types after removing a local source, run
-`swamp doctor extensions` or any command that triggers a catalog rescan.
+`swamp doctor extensions` or any command that rescans the catalog.
 
 ## Split Extensions Directory (`--extensions-dir`)
 
-By default, swamp discovers local extension sources from `extensions/<kind>/`
-relative to the repository root (`--repo-dir` / `SWAMP_REPO_DIR`). The
-`--extensions-dir` flag (or `SWAMP_EXTENSIONS_DIR` env var) overrides only the
-local source scanning root while keeping all data at the repository root.
+By default, swamp finds local extension sources in `extensions/<kind>/` under
+the repository root (`--repo-dir` / `SWAMP_REPO_DIR`). The `--extensions-dir`
+flag (or `SWAMP_EXTENSIONS_DIR` env var) moves only the source scanning root;
+all data stays at the repository root.
 
-This enables **git worktree** workflows where the working tree (code plane) is
+This supports **git worktree** setups where the working tree (code plane) is
 separate from the `.swamp/` data directory (data plane):
 
 ```
@@ -814,20 +742,18 @@ SWAMP_EXTENSIONS_DIR=~/repo/trees/feature-branch \
 
 ### Validation
 
-The CLI rejects `--extensions-dir` values that point inside `.swamp/` to prevent
-accidental reads of data-plane files as extension sources. The directory must
-exist and must be a real directory (not a file).
+The CLI rejects an `--extensions-dir` inside `.swamp/`, so data-plane files are
+never read as extension sources. The path must be an existing directory.
 
 ## Adversarial Review Directory (`SWAMP_EXTENSION_REVIEW_DIR`)
 
-The adversarial review gate in `swamp extension push` looks for a
-content-hash-bound report at `<base>/swamp-extension-review/<name>-<hash>.json`.
-By default `<base>` is the OS temp directory (`TMPDIR` / `TMP` / `TEMP` /
-`/tmp`), which works for local development but is ephemeral on CI runners.
+The adversarial review gate in `swamp extension push` looks for a report tied to
+the content hash at `<base>/swamp-extension-review/<name>-<hash>.json`. By
+default `<base>` is the OS temp directory (`TMPDIR` / `TMP` / `TEMP` / `/tmp`),
+which is fine locally but does not persist on CI runners.
 
-Set `SWAMP_EXTENSION_REVIEW_DIR` to override the base directory. This lets CI
-workflows store review reports in a durable, repo-local path that survives
-across runners:
+`SWAMP_EXTENSION_REVIEW_DIR` overrides the base, so CI can keep reports in a
+repo-local path that persists across runners:
 
 ```yaml
 # GitHub Actions example
@@ -840,50 +766,49 @@ steps:
 ```
 
 Precedence: `SWAMP_EXTENSION_REVIEW_DIR` > `TMPDIR` > `TMP` > `TEMP` > `/tmp`.
-The explicit `baseTmpDir` parameter on `reviewReportPath()` (used by tests)
-overrides all env vars.
+The `baseTmpDir` parameter on `reviewReportPath()`, used by tests, overrides all
+env vars.
 
 ## Dependencies
 
-Extensions can declare dependencies on other extensions. During a pull,
-dependencies are resolved and pulled automatically if not already installed.
+Extensions can depend on other extensions. On pull, missing dependencies are
+pulled automatically.
 
 ### Dependency Resolution
 
-- Dependencies are listed by scoped name in the manifest (e.g.,
-  `@keeb/network`).
-- When pulling, each dependency is checked against `upstream_extensions.json`.
-  If not already installed, it is pulled recursively.
-- Maximum recursion depth is 10 to prevent circular dependency loops.
-- A `alreadyPulled` set tracks extensions visited in a single pull session to
-  avoid duplicate work.
+- The manifest lists dependencies by scoped name (e.g., `@keeb/network`).
+- Each is checked against `upstream_extensions.json` and pulled recursively if
+  not installed.
+- Recursion stops at depth 10 to prevent circular dependency loops.
+- An `alreadyPulled` set tracks extensions visited in one pull session to avoid
+  repeat work.
 
 ### Workflow Dependency Resolution
 
-During push, the CLI also resolves which models a workflow references. It parses
-workflow YAML to find `model_method` and `workflow` step tasks, then looks up
-the corresponding model source files. Only user-collective models (types
-starting with `@`) are bundled — built-in models are skipped.
+During push, the CLI also finds the models a workflow references. It parses
+workflow YAML for `model_method` and `workflow` step tasks and looks up the
+model source files. Only user-collective models (types starting with `@`) are
+bundled; built-in models are skipped.
 
 ## Automatic Resolution
 
-Extensions from trusted collectives auto-resolve on first use — no manual
-`extension pull` needed. When swamp encounters an unknown model type from a
-trusted collective, it searches the registry, installs the extension, hot-loads
-it, and continues.
+Extensions from trusted collectives resolve on first use, without a manual
+`extension pull`. When swamp meets an unknown model type from a trusted
+collective, it searches the registry, installs the extension, hot-loads it and
+carries on.
 
 ### Trusted Collectives
 
-Only the first-party `swamp` collective is trusted by default. Extensions from
-`@swamp/*` auto-resolve with no configuration required.
+By default only the first-party `swamp` collective is trusted, so `@swamp/*`
+extensions auto-resolve with no configuration.
 
 Default trusted collectives: `["swamp"]`.
 
-**Membership collectives are NOT trusted automatically** (swamp-club#465).
-Belonging to a collective lets you _publish_ to it; it does not silently grant
-_install_ consent on the consumer side. A compromised or careless member publish
-must not be able to execute code in every repo that references the collective's
-types. To use a collective's extensions, trust it explicitly:
+**Membership collectives are not trusted automatically** (swamp-club#465).
+Membership lets you publish to a collective; it does not grant install consent
+on the consumer side. A compromised or careless member's publish must
+not be able to run code in every repo that uses the collective's types. Trust a
+collective yourself:
 
 ```bash
 swamp extension trust add myorg
@@ -898,19 +823,18 @@ trustedCollectives:
 ```
 
 Membership collectives are cached in `auth.json` during `auth login` and
-`auth whoami`. To trust _every_ collective you belong to at once (the previous
-default behavior), opt in explicitly with `trustMemberCollectives: true` — but
-prefer trusting individual collectives. Set `trustedCollectives` to `[]` to
-disable automatic resolution entirely.
+`auth whoami`. `trustMemberCollectives: true` trusts every collective you
+belong to (the old default); prefer trusting them one by one. Set
+`trustedCollectives` to `[]` to turn off automatic resolution.
 
-Once a collective is trusted, its extensions auto-resolve, but the installed
-version is **pinned to the committed lockfile** — see
-[Version pinning on auto-resolve](#version-pinning-on-auto-resolve) below — so a
-trusted collective still cannot silently push an _updated_ version into a repo.
+A trusted collective's extensions auto-resolve, but the installed version is
+**pinned to the committed lockfile** (see
+[Version pinning on auto-resolve](#version-pinning-on-auto-resolve) below). So a
+trusted collective still cannot silently push an updated version into a repo.
 
 #### CLI Management
 
-Trusted collectives can be managed via the `swamp extension trust` commands:
+Manage trusted collectives with the `swamp extension trust` commands:
 
 ```bash
 swamp extension trust list                # Show explicit, membership, and resolved collectives
@@ -924,60 +848,54 @@ swamp extension trust auto-trust <on|off> # Opt in/out of trusting all membershi
 
 ### Version pinning on auto-resolve
 
-When auto-resolve installs an extension that already has an entry in the
-committed `upstream_extensions.json` lockfile, it installs the **pinned
-version** recorded there and verifies the download against the recorded
-**checksum** — the same integrity-anchored path `swamp extension install` uses —
-rather than fetching whatever is latest (swamp-club#465).
+If the extension already has an entry in the committed
+`upstream_extensions.json` lockfile, auto-resolve installs the **pinned
+version** and checks the download against the recorded **checksum**, instead of
+fetching the latest (swamp-club#465). This is the same integrity-checked path
+`swamp extension install` uses.
 
-This matters on a fresh checkout: `.swamp/pulled-extensions/` is gitignored but
-the lockfile is committed, so without pinning the first reference to a type
-would silently re-fetch the latest published version. Pinning means a trusted
-collective cannot push an unreviewed _update_ into a repo through auto-resolve —
-moving to a newer version requires an explicit `swamp extension pull` /
-`swamp extension update`. A checksum that no longer matches the registry
-(content drift) fails the install with actionable guidance instead of silently
-installing the changed bytes.
+This matters on a fresh checkout, where `.swamp/pulled-extensions/` is
+gitignored but the lockfile is committed. Without pinning, the first reference
+to a type would silently fetch the latest version, letting a trusted collective
+push an unreviewed update into the repo. Moving to a newer version takes an
+explicit `swamp extension pull` / `swamp extension update`. If the checksum no
+longer matches the registry (content drift), the install fails with guidance
+instead of installing the changed bytes.
 
-The first-ever resolve of an extension (no lockfile entry yet) installs the
-latest version and writes the entry, which becomes the pin for subsequent
-resolves.
+The first resolve (no lockfile entry yet) installs the latest version and
+writes the entry, which then pins later resolves.
 
 ### Resolution Algorithm
 
-1. **Local registry** — check if the type is already registered locally.
-2. **Direct lookup** — try the full type as an extension name first, then strip
-   trailing path segments to derive shorter candidates (e.g.,
-   `@swamp/aws/ec2/instance` → `@swamp/aws/ec2/instance` → `@swamp/aws/ec2` →
-   `@swamp/aws`). For two-segment types like `@keeb/mongodb-datastore`, the full
-   type is the only candidate — stripping further would leave a bare collective.
-3. **Search fallback** — if direct lookup fails, search the registry for
-   matching extensions.
+1. **Local registry**: is the type already registered locally?
+2. **Direct lookup**: try the full type as an extension name, then strip
+   trailing segments for shorter candidates (e.g., `@swamp/aws/ec2/instance` →
+   `@swamp/aws/ec2/instance` → `@swamp/aws/ec2` → `@swamp/aws`). For
+   two-segment types like `@keeb/mongodb-datastore`, the full type is the only
+   candidate; stripping more would leave a bare collective.
+3. **Search fallback**: otherwise, search the registry for matching extensions.
 
 ### Safety: never overwrite on-disk extensions
 
-Auto-resolution will never overwrite an extension that is already installed on
-disk. If the type failed to register despite the extension being present,
-something is wrong locally (commonly a user's in-progress edit introducing a
-syntax error) and a silent force-pull would destroy that work.
+Auto-resolution never overwrites an extension already on disk. If it is present
+but its type failed to register, the problem is local, often a syntax error in
+the user's unfinished edit, and a silent force-pull would destroy that work.
 
-The resolver inspects the pulled tree and classifies it into one of four
-states, driving the auto-resolve decision:
+The resolver puts the pulled tree in one of four states, which decide what
+auto-resolve does:
 
-- **Missing** — no entry in `upstream_extensions.json`, or the per-extension
-  directory under `.swamp/pulled-extensions/<name>/` is absent and no
-  lockfile-declared source files remain on disk. A clean install proceeds.
-- **Intact** — the lockfile entry exists, the directory exists, and every file
-  the lockfile lists for this extension is present on disk. If the type still
-  failed to register, the cause is local. The resolver surfaces
-  `alreadyInstalledButFailed` with the install path and the `--force` recovery
-  command.
-- **Truncated** — the lockfile entry and directory both exist, but one or more
-  files the lockfile lists are missing from disk (swamp-club#133). This is the
-  "present but incomplete" state that used to produce misleading
-  `Unknown <kind> type` errors downstream. The resolver now surfaces
+- **Missing**: no entry in `upstream_extensions.json`, or the directory
+  `.swamp/pulled-extensions/<name>/` is absent and no source files the lockfile
+  lists remain on disk. A clean install goes ahead.
+- **Intact**: the lockfile entry, the directory and every file the lockfile
+  lists are present. A registration failure is then local, and the resolver
+  reports `alreadyInstalledButFailed` with the install path and the `--force`
+  recovery command.
+- **Truncated**: the lockfile entry and directory exist, but some listed files
+  are missing (swamp-club#133). This "present but incomplete" state used to
+  cause misleading `Unknown <kind> type` errors later. The resolver now reports
   `alreadyInstalledTruncated` naming the missing files, exits with an error, and
-  does **not** attempt to repair. In JSON mode the event shape is:
+  does not try to repair. In JSON mode the event shape is:
   ```json
   {
     "event": "auto_resolve",
@@ -988,116 +906,105 @@ states, driving the auto-resolve decision:
     "missing": ["..."]
   }
   ```
-- **Legacy** — the current per-extension directory is absent, but source files
-  declared by the lockfile remain at older locations. Auto-resolution reports
-  this state and leaves those files untouched; run `swamp extension pull <name>`
-  explicitly to accept the migration.
+- **Legacy**: the per-extension directory is absent, but source files the
+  lockfile declares remain at older locations. Auto-resolution reports this and
+  leaves the files alone. Run `swamp extension pull <name>` to accept the
+  migration.
 
-"Intact-but-fails" and "truncated" surface the same
-`swamp extension pull <name> --force` recovery — that command is the only way
-auto-installation state can overwrite a pulled extension. Legacy state requires
-an explicit `swamp extension pull <name>` migration. No auto-resolve, validate,
-or run command will clobber local edits, silently re-fetch a broken tree, or
-migrate legacy files.
+"Intact-but-fails" and "truncated" share one recovery,
+`swamp extension pull <name> --force`, the only way auto-installation state can
+overwrite a pulled extension. Legacy state needs an explicit
+`swamp extension pull <name>` migration. No auto-resolve, validate or run
+command will overwrite local edits, silently re-fetch a broken tree, or migrate
+legacy files.
 
-The truncation predicate is file-level: any file listed in the lockfile entry
-for an extension that cannot be stat'd on disk. The check stops at presence — it
-does not verify file contents, only that the paths the lockfile says should
-exist actually do.
+Truncation is checked per file: any file in the extension's lockfile entry that
+cannot be stat'd. Only presence is checked, not contents.
 
 Paths under `.swamp/bundles/`, `.swamp/vault-bundles/`,
-`.swamp/datastore-bundles/`, and `.swamp/report-bundles/` are excluded from this
-check. Those are regenerable
-build artifacts: clearing the bundle cache is a normal hygiene operation and
-must not flip an extension with intact source into the truncated branch (which
-would steal the user-WIP path from issue #121). Only source-tree files — the
-per-extension subtree under `.swamp/pulled-extensions/<name>/` — drive
-truncation.
+`.swamp/datastore-bundles/` and `.swamp/report-bundles/` are excluded. They are
+regenerable build artifacts, and clearing the bundle cache is routine. It must
+not push an extension with intact source into the truncated branch, which would
+take over the user-WIP path from issue #121. Only source files in
+`.swamp/pulled-extensions/<name>/` count.
 
 ### Hot-Loading
 
-After installation, swamp re-runs model and vault discovery with
-`skipAlreadyRegistered` to load only the newly installed types. This avoids
-re-registering types that were already loaded at startup.
+After installing, swamp re-runs model and vault discovery with
+`skipAlreadyRegistered`, so only the new types load and types from startup are
+not registered twice.
 
-User extensions under `extensions/models/` that `extend` a newly-installed base
-type are also re-attached during hot-loading. The installer walks
-catalog-recorded extension rows and calls the extension-attach primitive for
-each base that is now fully registered, so a user extension targeting
-`@swamp/aws/ec2/instance` becomes callable as soon as auto-resolve pulls
-`@swamp/aws` — no separate command needed.
+Hot-loading also re-attaches user extensions under `extensions/models/` that
+`extend` a newly installed base type. The installer walks the catalog's
+extension rows and calls the extension-attach primitive for each base that is
+now fully registered. A user extension targeting `@swamp/aws/ec2/instance`
+works as soon as auto-resolve pulls `@swamp/aws`, with no separate command.
 
 ### Re-Entrancy Guard
 
-A guard prevents infinite loops — if auto-resolution is already in progress for
-a type, subsequent resolution attempts for that type are skipped.
+If auto-resolution is already running for a type, further attempts for it are
+skipped, preventing infinite loops.
 
 ### Architecture
 
-`ExtensionAutoResolver` is a domain service with port interfaces. Adapters in
-the CLI layer provide the concrete implementations for registry access,
-extension installation, and model/vault discovery.
+`ExtensionAutoResolver` is a domain service with port interfaces. CLI-layer
+adapters implement registry access, extension installation and model/vault
+discovery.
 
 ### Output
 
-Auto-resolution always shows status messages to the user: searching for the
-extension, installing it, and confirming installation with the number of models
-loaded.
+Auto-resolution always prints status: searching, installing, and a confirmation
+with the number of models loaded.
 
 ## Safety
 
-All TypeScript files in an extension are analyzed for safety before push and
-after pull.
+Every TypeScript file in an extension is checked before push and after pull.
 
 ### Hard Errors (block push/pull)
 
 - Hidden files (names starting with `.`)
-- Disallowed file extensions (only `.ts`, `.json`, `.md`, `.yaml`, `.yml`,
-  `.txt` are allowed). Files declared in `binaries` are exempt from this check,
-  as are the extensionless legal basenames in `LEGAL_BASENAMES` (`AUTHORS`,
-  `CONTRIBUTORS`, `COPYING`, `COPYING-EXCEPTION`, `LICENSE`, `NOTICE`,
-  `PATENTS`; `src/domain/extensions/extension_safety_analyzer.ts`).
+- File extensions other than `.ts`, `.json`, `.md`, `.yaml`, `.yml` and `.txt`.
+  Files declared in `binaries` are exempt, as are the extensionless legal
+  basenames in `LEGAL_BASENAMES` (`AUTHORS`, `CONTRIBUTORS`, `COPYING`,
+  `COPYING-EXCEPTION`, `LICENSE`, `NOTICE`, `PATENTS`;
+  `src/domain/extensions/extension_safety_analyzer.ts`).
 - Symlinks
-- Individual file size exceeding 1 MB
-- Total extension size exceeding 10 MB
-- File count exceeding 150
+- A single file over 1 MB
+- Total extension size over 10 MB
+- More than 150 files
 - Use of `eval()` or `new Function()` (code injection)
 
 ### Warnings (prompt user)
 
 - Lines with more than 500 non-whitespace characters
 - Base64-like strings (100+ consecutive base64 characters)
-- Use of `Deno.Command()` for subprocess spawning
-- IPv4 address literals in `.md` and `.txt` files that are not in RFC 5737
-  documentation ranges, loopback, or link-local ranges (detected by the
-  extensible content rule framework)
+- Use of `Deno.Command()` to spawn subprocesses
+- IPv4 address literals in `.md` and `.txt` files outside the RFC 5737
+  documentation, loopback and link-local ranges (found by the extensible content
+  rule framework)
 
 ### Binaries
 
-Extensions can declare executable host helpers via the `binaries` manifest
-field. These files are exempt from the file-extension allowlist but still
-subject to all other safety checks (hidden files, symlinks, size limits, file
-count). Executable mode bits are preserved through the publish/pull cycle on
-POSIX systems.
+The `binaries` manifest field declares executable host helpers. They skip the
+file-extension allowlist but get every other check (hidden files, symlinks, size
+limits, file count). On POSIX systems, executable mode bits survive publish and
+pull.
 
-At pull time, if the extension declares binaries, the CLI warns the user to
-inspect them before use. The binaries list is also sent as push metadata to
-swamp-club for display on extension pages.
+On pull, the CLI warns the user to inspect declared binaries before use. The
+list is also sent to swamp-club as push metadata for display on extension pages.
 
 ### Integrity Verification
 
-Archives are verified using SHA-256 checksums. The checksum is computed at push
-time and stored in the registry. During pull, the downloaded archive's checksum
-is verified against the registry. Legacy extensions that predate checksum
-support are marked as "unverified" but still allowed.
+Archives are verified with SHA-256 checksums, computed at push and stored in the
+registry. Pull checks the downloaded archive against it. Legacy extensions from
+before checksum support are marked "unverified" but still allowed.
 
 ## Runtime Permissions
 
-Extension model methods run in-process in the host Deno process (via
-`InProcessExecutor`). They share the process-level permissions baked into the
-compiled binary. The binary is compiled with individually scoped flags — not
-`--allow-all` — to maintain least-privilege and prevent auto-granting future Deno
-permission categories:
+Extension model methods run inside the host Deno process (via
+`InProcessExecutor`) and share the permissions compiled into the binary. The
+binary uses individually scoped flags, not `--allow-all`, to keep privileges
+minimal and avoid auto-granting future Deno permission categories:
 
 | Flag            | Grants                                     |
 | --------------- | ------------------------------------------ |
@@ -1109,17 +1016,17 @@ permission categories:
 | `--allow-net`   | Network access (HTTP, TCP, UDP)            |
 | `--allow-ffi`   | Foreign function interface (libc `getrlimit`/`setrlimit` for fd-limit raising at serve startup) |
 
-See `scripts/compile.ts` for the authoritative flag list.
+`scripts/compile.ts` has the authoritative flag list.
 
 ### Device Node I/O
 
 `Deno.open()` on character or block device nodes (e.g., `/dev/ttyUSB0`,
-`/dev/spidev0.0`) does not work in the compiled binary. Deno compiled binaries
-require `--allow-all` for device-node access, even when `--allow-read` and
-`--allow-write` are granted. This is a Deno limitation, not a swamp restriction.
+`/dev/spidev0.0`) fails in the compiled binary. Deno compiled binaries need
+`--allow-all` for device nodes, even with `--allow-read` and `--allow-write`.
+This is a Deno limitation, not a swamp one.
 
-Extensions that need hardware I/O should use `Deno.Command` to spawn a
-subprocess, which is permitted by `--allow-run`:
+For hardware I/O, spawn a subprocess with `Deno.Command`, which `--allow-run`
+permits:
 
 ```typescript
 // Read from a serial device using cat
@@ -1145,19 +1052,19 @@ const stty = new Deno.Command("stty", {
 await stty.output();
 ```
 
-Remote workers run extension bundles in-process with the same compiled
-permissions as the CLI, so this limitation applies to every execution path.
+Remote workers run bundles in-process with the same permissions as the CLI, so
+this applies on every execution path.
 
 ## Dependency Trust Audit
 
-Extension source files are scanned for `npm:` and `jsr:` import specifiers
-during the push prepare phase. Each npm dependency is evaluated against trust
-gates adapted from `@bixu/wheelshop`:
+During the push prepare phase, source files are scanned for `npm:` and `jsr:`
+import specifiers. Each npm dependency is checked against trust gates adapted
+from `@bixu/wheelshop`:
 
 ### Hard Errors (block push)
 
 - Deprecated packages
-- HIGH, CRITICAL, or UNKNOWN severity vulnerabilities (via OSV.dev)
+- HIGH, CRITICAL or UNKNOWN severity vulnerabilities (via OSV.dev)
 
 ### Warnings (shown but don't block)
 
@@ -1170,15 +1077,14 @@ gates adapted from `@bixu/wheelshop`:
 
 ### jsr Dependencies
 
-jsr packages trust jsr's built-in enforcement (SPDX license requirement,
-provenance, no install scripts) and skip gates where data is unavailable.
+jsr packages rely on jsr's own enforcement (SPDX license requirement,
+provenance, no install scripts) and skip gates that lack data.
 
 ### Quality Rubric Factor
 
-Dependency trust is a rubric scoring factor (`dependency-trust`, worth 2
-points). It flows through both `swamp extension quality` (CLI) and swamp-club's
-server-side scorer. The factor earns points when all dependencies pass trust
-gates (no hard-error blockers).
+Dependency trust is a rubric factor (`dependency-trust`, worth 2 points) in both
+`swamp extension quality` (CLI) and swamp-club's server-side scorer. It scores
+when every dependency passes the trust gates with no hard errors.
 
 ## Registry
 
@@ -1187,45 +1093,42 @@ Extensions are distributed through the swamp registry at
 
 ### Authentication
 
-Push operations require authentication via an API key sent in the `x-api-key`
-header (`src/infrastructure/http/extension_api_client.ts`). Pull operations do
-not require authentication, but the key is sent when one is available
-(`src/libswamp/extensions/pull.ts`) so private or non-default registries can
-authorize. Users can only push extensions to their own collective. You need to
-authenticate to Swamp Club via the CLI `swamp auth login` to get the correct API
-Key used for push.
+Push needs an API key in the `x-api-key` header
+(`src/infrastructure/http/extension_api_client.ts`). Pull does not, but sends
+the key when available so private or non-default registries can authorize it
+(`src/libswamp/extensions/pull.ts`). Users can push only to their own
+collective. `swamp auth login` authenticates to Swamp Club and provides the key.
 
 `swamp extension yank <name> <version>` withdraws a published version from
-resolution (`src/libswamp/extensions/yank.ts`); it is distinct from deprecation,
-which leaves versions pullable.
+resolution (`src/libswamp/extensions/yank.ts`). Deprecation, by contrast, leaves
+versions pullable.
 
 ### Push Protocol
 
-Push uses a three-phase protocol:
+Push has three phases:
 
-1. **Initiate**: `POST /api/v1/extensions/push` — declares intent, receives a
+1. **Initiate**: `POST /api/v1/extensions/push` declares intent and returns a
    presigned S3 upload URL.
-2. **Upload**: `PUT {uploadUrl}` — uploads the tar.gz archive directly to S3.
-3. **Confirm**: `POST /api/v1/extensions/confirm` — finalizes the version in the
-   registry.
+2. **Upload**: `PUT {uploadUrl}` uploads the tar.gz archive straight to S3.
+3. **Confirm**: `POST /api/v1/extensions/confirm` finalizes the version.
 
 ### Pull Protocol
 
-1. **Resolve**: `GET /api/v1/extensions/{name}` — get metadata and latest
+1. **Resolve**: `GET /api/v1/extensions/{name}` returns metadata and the latest
    version.
-2. **Download**: `GET /api/v1/extensions/{name}@{version}/download` — follows a
-   302 redirect to download the archive.
-3. **Verify**: `GET /api/v1/extensions/{name}@{version}/checksum` — retrieve the
-   SHA-256 checksum for integrity verification.
+2. **Download**: `GET /api/v1/extensions/{name}@{version}/download` follows a
+   302 redirect to the archive.
+3. **Verify**: `GET /api/v1/extensions/{name}@{version}/checksum` returns the
+   SHA-256 checksum.
 
 ## Upstream Extensions Tracking
 
-When an extension is pulled, its metadata and the list of extracted files are
-recorded in `upstream_extensions.json`. By default it lives in the models
-directory (`<modelsDir>/upstream_extensions.json`); repos on managed config use
-`.swamp/config/upstream_extensions.json` instead (`src/cli/repo_context.ts`).
-This file enables clean removal, conflict detection, and **integrity-anchored
-restore** (see `checksum` field below).
+On pull, the extension's metadata and extracted file list are recorded in
+`upstream_extensions.json`. By default it lives in the models directory
+(`<modelsDir>/upstream_extensions.json`); repos on managed config use
+`.swamp/config/upstream_extensions.json` (`src/cli/repo_context.ts`). The file
+supports clean removal, conflict detection and **integrity-anchored restore**
+(see the `checksum` field below).
 
 ### Structure
 
@@ -1252,58 +1155,56 @@ restore** (see `checksum` field below).
 ### Integrity Anchor
 
 Optional fields (`src/infrastructure/persistence/upstream_extensions.ts`):
-`filesChecksum` is a rolled-up digest of the extracted subtree so auto-update
-can detect local edits before overwriting; `serverUrl` records a non-default
-registry; `channel` is present only for non-stable installs.
 
-Every lockfile entry records the SHA-256 of the extension archive at install
-time (`checksum`). On any lockfile-restore flow (`swamp extension install`,
-phase-two migration re-pull), the freshly-downloaded archive is verified
-byte-for-byte against this stored value. On mismatch, the restore fails loudly
-with a message offering the user a choice: accept current registry content
-(`swamp extension pull <name>`) or pin an older version. This turns the lockfile
-into an integrity manifest rather than just a version record — restores cannot
-silently accept drifted registry bytes. Entries predating checksum tracking
-(pre-commit `f4dfc083`) skip verification gracefully.
+- `filesChecksum`: a digest of the extracted subtree, so auto-update can detect
+  local edits before overwriting.
+- `serverUrl`: a non-default registry.
+- `channel`: present only for non-stable installs.
 
-Explicit `swamp extension pull <name>` is the user's opt-in path to accept
-whatever bytes the registry currently serves; integrity verification is scoped
-strictly to lockfile-restore flows.
+Every entry records the archive's SHA-256 at install time (`checksum`). Each
+lockfile-restore flow (`swamp extension install`, phase-two migration re-pull)
+checks the fresh download byte for byte against it. On mismatch the restore
+fails with an error that offers a choice: accept the current registry content
+(`swamp extension pull <name>`) or pin an older version. So the lockfile is an
+integrity manifest as well as a version record, and restores cannot silently
+accept changed registry bytes. Entries from before checksum tracking
+(pre-commit `f4dfc083`) skip the check.
+
+`swamp extension pull <name>` is how the user opts in to whatever the registry
+now serves. Integrity checks apply only to lockfile-restore flows.
 
 ### Restore Reconciliation
 
-`swamp extension install` decides per entry whether the on-disk state already
-satisfies the lockfile. File presence alone is not that decision — a different
-version's files can already occupy the per-extension subtree, left there by an
-earlier pull or by `doctor extensions` repairing a missing type. For every entry
-whose files are all present at the current layout, install compares:
+`swamp extension install` decides per entry whether the disk already matches the
+lockfile. File presence is not enough: another version's files may occupy the
+per-extension subtree, left by an earlier pull or by `doctor extensions`
+repairing a missing type. For each entry whose files are all present at the
+current layout, install compares:
 
-1. **Version** — the `version` recorded in the entry against the `version` in
-   the installed `manifest.yaml` copy. A mismatch re-pulls the pinned version
+1. **Version**: the entry's `version` against the `version` in the installed
+   `manifest.yaml` copy. A mismatch re-pulls the pinned version
    (swamp-club#2150). A constraint pin (`>=`, `^`, `~`) has no single version to
-   match and an entry installed before the manifest copy existed has no on-disk
-   identity; both fall through to the content check rather than re-pulling on
+   match, and an entry installed before the manifest copy existed has no
+   on-disk identity. Both go on to the content check rather than re-pulling on
    every run.
-2. **Content** — the subtree digest against `filesChecksum`, which catches a
+2. **Content**: the subtree digest against `filesChecksum`. This catches a
    lockfile updated through git without a matching re-fetch (swamp-club#1021).
 
 `doctor extensions --repair` restores the pinned version for the same reason:
-re-pulling registry latest would rewrite the entry and silently discard the pin.
-Extensions with no lockfile entry have nothing to pin to and still resolve
-latest.
+re-pulling the latest would rewrite the entry and silently drop the pin.
+Extensions with no lockfile entry have no pin and still resolve latest.
 
 ### Concurrency Safety
 
-All mutations to `upstream_extensions.json` use an advisory lockfile
-(`upstream_extensions.json.lock`) with retry logic (10 attempts, 100ms backoff)
-and atomic file writes to prevent corruption from concurrent operations.
+All changes to `upstream_extensions.json` take an advisory lockfile
+(`upstream_extensions.json.lock`) with retries (10 attempts, 100ms backoff) and
+use atomic writes, so concurrent operations cannot corrupt it.
 
 ## File Extraction (Per-Extension Layout)
 
-Each installed extension owns a dedicated on-disk subtree at
-`.swamp/pulled-extensions/<ext-name>/`, where `<ext-name>` is the extension's
-scoped name (e.g. `@swamp/aws/ec2`). Inside that subtree, per-type directories
-mirror the archive structure:
+Each installed extension has its own subtree at
+`.swamp/pulled-extensions/<ext-name>/`, where `<ext-name>` is its scoped name
+(e.g. `@swamp/aws/ec2`). Per-type directories inside it mirror the archive:
 
 | Archive directory    | Destination                                                    |
 | -------------------- | -------------------------------------------------------------- |
@@ -1322,246 +1223,229 @@ mirror the archive structure:
 
 ### Multi-tool skill materialization
 
-In repos enrolled for multiple AI tools (`marker.tools` has 2+ entries),
-`extension pull`, `extension update`, `extension install`, and
-`extension source add` extract skills to **every** enrolled tool's project-local
-skills directory. The directories are deduplicated so shared-path tools are
-written only once. Project-local, codex/opencode/copilot map to
-`.agents/skills/` while cursor maps to `.cursor/skills/`; at the global
-(user-level) tier cursor also shares `.agents/skills/`
-(`SKILL_DIRS` / `GLOBAL_SKILL_DIRS` in `src/domain/repo/skill_dirs.ts`).
+In repos enrolled for several AI tools (`marker.tools` has 2+ entries),
+`extension pull`, `extension update`, `extension install` and
+`extension source add` extract skills to every enrolled tool's project-local
+skills directory. Directories are deduplicated, so tools sharing a path are
+written once. At project level, codex/opencode/copilot map to `.agents/skills/`
+and cursor to `.cursor/skills/`. At the global (user-level) tier, cursor also
+uses `.agents/skills/` (`SKILL_DIRS` / `GLOBAL_SKILL_DIRS` in
+`src/domain/repo/skill_dirs.ts`).
 
-All skill directory roots are tracked in the lockfile's `files[]` array, so
-`extension rm` and orphan pruning correctly handle multi-tool repos: removal
-deletes all copies, and re-pulling after a tool change prunes the old tool's
-stale skill paths.
+Every skill directory root is tracked in the lockfile's `files[]` array. So
+`extension rm` deletes every copy, and re-pulling after a tool change prunes the
+old tool's stale skill paths.
 
-The `resolveUniqueLocalSkillsDirs(repoDir, tools)` helper mirrors the existing
+The `resolveUniqueLocalSkillsDirs(repoDir, tools)` helper follows the
 `resolveUniqueGlobalSkillsDirs(tools)` pattern used for user-level skill
 directories.
 
 ### Why extension-first?
 
-Two sibling extensions from the same collective (e.g. `@swamp/aws/ec2` and
-`@swamp/aws/eks`) frequently ship files with identical basenames — shared
-helpers under `_lib/`, boilerplate like `README.md` and `LICENSE.txt`, and
-occasional type-coincidences like `cluster.ts`. In a type-first (flat) layout,
-these collide at extraction time: the second pull either errors with
-`ConflictError` or silently overwrites the first with `--force`. The silent
-overwrite is the dangerous case — `_lib/*` helpers are imported transitively by
-model bundles, so a swap of `_lib/aws.ts` between ec2 and eks produces incorrect
-runtime behavior with no type or load error.
+Sibling extensions from one collective (e.g. `@swamp/aws/ec2` and
+`@swamp/aws/eks`) often ship files with the same basename: shared helpers under
+`_lib/`, boilerplate like `README.md` and `LICENSE.txt`, and chance matches like
+`cluster.ts`. In a type-first (flat) layout these collide on extraction. The
+second pull either fails with `ConflictError` or, with `--force`, silently
+overwrites the first. The silent overwrite is the dangerous case. Model bundles
+import `_lib/*` helpers transitively, so swapping `_lib/aws.ts` between ec2 and
+eks gives wrong runtime behavior with no type or load error.
 
-Extension-first layout eliminates this entirely: each extension's files live in
-a disjoint subtree keyed on its scoped name. The scoped name is already a value
-object the registry uses for identity, so promoting it to the filesystem
-aggregate root costs nothing beyond joining a path segment.
+In the extension-first layout, each extension's files live in their own subtree
+keyed on its scoped name, so this cannot happen. The registry already uses the
+scoped name as an identity value object; making it the filesystem aggregate root
+only adds a path segment.
 
 ### manifest.yaml colocation
 
-Each extension's archive manifest is extracted to
-`.swamp/pulled-extensions/<ext-name>/manifest.yaml` with file mode `0o444`
-(read-only) and prefixed with a
-`# Read-only; regenerate via 'swamp
-extension pull'` header. Colocation makes
-every installed extension self-describing on disk: `extension rm`'s
-dependent-resolution reads the tracked manifest directly rather than re-fetching
-or re-parsing the archive. The read-only mode is advisory on some filesystems
-(notably Windows); it is documented via the header, not enforced as a security
-boundary.
+Each archive manifest is extracted to
+`.swamp/pulled-extensions/<ext-name>/manifest.yaml` with mode `0o444`
+(read-only) and a `# Read-only; regenerate via 'swamp extension pull'` header.
+Every installed extension thus describes itself on disk, and `extension rm`'s
+dependent resolution reads that manifest instead of re-fetching or re-parsing
+the archive. Some filesystems (notably Windows) treat the read-only mode as
+advisory. The header documents it; it is not a security boundary.
 
 ### Bundle cache isolation
 
-`bundleNamespace(baseDir, repoDir)` hashes its input relative path. With
-per-extension models dirs, each extension's hash is unique, so every extension
-ends up in its own namespace under `.swamp/bundles/…` — bundle keys are disjoint
-per extension without any additional logic. For datastore-backed repos where
-`bundles/` is tiered to S3 (see `DEFAULT_DATASTORE_SUBDIRS`), this means team
-members' bundle caches are cleanly separated per extension.
+`bundleNamespace(baseDir, repoDir)` hashes its input relative path. Each
+extension has its own models dir, so each hash is unique and each extension gets
+its own namespace under `.swamp/bundles/…` with no extra logic. In
+datastore-backed repos where `bundles/` is tiered to S3 (see
+`DEFAULT_DATASTORE_SUBDIRS`), team members' bundle caches stay separate per
+extension.
 
-If files already exist at the destination and `--force` is not set, the user is
-prompted to confirm overwriting. Because every extension has its own subtree,
-the only path that triggers ConflictError today is re-installing the same
-extension on top of itself — cross-extension collisions cannot happen.
+If files exist at the destination and `--force` is not set, the user is asked to
+confirm the overwrite. Since each extension has its own subtree, ConflictError
+now fires only when an extension is reinstalled over itself; different
+extensions cannot collide.
 
-macOS resource fork files (`._*`) cannot enter archives: the Deno-native
+macOS resource fork files (`._*`) cannot get into archives. The Deno-native
 archiver in `src/infrastructure/archive/tar_archive.ts` walks an explicit file
 list on push and filters AppleDouble entries on extraction, so no
 `COPYFILE_DISABLE` environment variable is involved.
 
 ### Bundle staleness and recovery
 
-Bundles can become stale after a swamp upgrade when `BUNDLE_LAYOUT_VERSION`
-changes. The `ExtensionLoader.buildIndex` invalidation guards detect the
-layout-version mismatch and evict stale bundle files from disk before
-reconciliation runs. This prevents the `bundleWithCache` fallback from reusing
-bundles compiled against an incompatible runtime.
+A swamp upgrade that changes `BUNDLE_LAYOUT_VERSION` can leave bundles stale.
+The `ExtensionLoader.buildIndex` invalidation guards detect the mismatch and
+delete stale bundle files before reconciliation, so the `bundleWithCache`
+fallback cannot reuse bundles built for an incompatible runtime.
 
-Pulled extensions cannot rebundle locally — they use bare specifiers (e.g.,
-`from "zod"`) and ship without a `deno.json`, so `deno bundle` always fails.
-They rely entirely on pre-built bundles shipped with the registry package. When
-a stale bundle is evicted, the extension enters `BundleBuildFailed` state and
-becomes unavailable until re-pulled.
+Pulled extensions cannot re-bundle locally. They use bare specifiers (e.g.,
+`from "zod"`) and ship without a `deno.json`, so `deno bundle` always fails and
+they depend on the registry package's pre-built bundles. Once a stale bundle is
+deleted, the extension enters `BundleBuildFailed` and is unavailable until
+re-pulled.
 
 Recovery paths:
 
-- **`swamp doctor extensions --repair`** detects pulled extensions in
-  `BundleBuildFailed` or `ValidationFailed` state and re-pulls them from the
-  registry automatically.
-- **`swamp extension pull <name> --force`** manually re-downloads the extension
-  including its pre-built bundle.
+- **`swamp doctor extensions --repair`** re-pulls pulled extensions in
+  `BundleBuildFailed` or `ValidationFailed` state from the registry.
+- **`swamp extension pull <name> --force`** re-downloads the extension and its
+  pre-built bundle.
 - **User-facing warning:** `registerLazyFromCatalog` warns when extensions are
-  skipped due to failure states, directing users to the recovery commands. The
-  warning checks source file existence before firing — stale catalog entries for
-  deleted source files are silently skipped (swamp-club#894).
+  skipped for failure states and points to the recovery commands. It fires only
+  if the source file exists; stale catalog entries for deleted sources are
+  skipped silently (swamp-club#894).
 
-`BUNDLE_LAYOUT_VERSION` must be bumped whenever a change to the bundler, runtime
-interface, or zod global shape would make existing bundles incompatible.
+Bump `BUNDLE_LAYOUT_VERSION` whenever a change to the bundler, runtime interface
+or zod global shape makes existing bundles incompatible.
 
 ## Layout Migration
 
-Existing repos that installed extensions under older layouts migrate via
-`swamp repo upgrade`. Three generations are recognised:
+Repos with extensions under older layouts migrate with `swamp repo upgrade`.
+Three generations are recognised:
 
-- **gen-1 (pre-`.swamp/`):** files under `extensions/<type>/...`. Handled the
-  same way as gen-2: `swamp extension install` re-pulls the extension into its
-  per-extension subtree and `sweepLegacyPaths` removes the tracked legacy paths
+- **gen-1 (pre-`.swamp/`):** files under `extensions/<type>/...`. Handled like
+  gen-2: `swamp extension install` re-pulls into the per-extension subtree and
+  `sweepLegacyPaths` removes the tracked legacy paths
   (`src/libswamp/extensions/install.ts`). Nothing is renamed in place.
 - **gen-2 (flat under `.swamp/`):** files under
-  `.swamp/pulled-extensions/<type>/<file>`. Because filenames collide across
-  extensions in this layout, prior installs may have silently overwritten each
-  other, so rename cannot recover authentic content. `repo upgrade` instead
-  selectively deletes each gen-2 entry's tracked files (leaving the lockfile
-  unchanged); the next `swamp extension install` re-pulls each affected
-  extension into its new per-extension subtree, with integrity verified against
-  the lockfile's stored checksum.
+  `.swamp/pulled-extensions/<type>/<file>`. Filenames collide across extensions
+  here, so earlier installs may have overwritten each other and renaming cannot
+  recover the real content. `repo upgrade` instead deletes each gen-2 entry's
+  tracked files and leaves the lockfile unchanged. The next
+  `swamp extension install` re-pulls each affected extension into its new
+  subtree, verified against the lockfile's stored checksum.
 - **current (per-extension):** files under
   `.swamp/pulled-extensions/<ext-name>/<type>/...`. No migration needed.
 
-The lockfile tolerates mixed-generation state: each entry stands alone, and the
-warn-not-block guard at the CLI layer proceeds with a one-line reminder rather
-than hard-failing so that already-migrated extensions stay usable during a
-partial upgrade. The migration is **resumable**: `Deno.errors.NotFound` during
-selective delete is treated as success (expected on a retry after an interrupted
-prior pass); any other IO error aborts the upgrade before any further mutations,
-leaving the lockfile intact so retry starts from a consistent state.
+The lockfile tolerates mixed generations, since each entry stands alone. The CLI
+guard warns with a one-line reminder instead of failing, so migrated extensions
+stay usable during a partial upgrade. The migration is resumable:
+`Deno.errors.NotFound` during the delete counts as success, as expected on a
+retry after an interrupted run. Any other IO error stops the upgrade before
+further changes and leaves the lockfile intact, so a retry starts from a
+consistent state.
 
-Skill directory entries (tracked as a single dir path in `entry.files[]`, e.g.
+Skill directory entries are always treated as current-layout, wherever they
+are. Each is tracked as one dir path in `entry.files[]`, e.g.
 `.claude/skills/<name>`, `.cursor/skills/<name>`, or
-`.swamp/pulled-extensions/skills/<name>` for the `tool=none` fallback) are
-**always** treated as current-layout regardless of physical location. The
-install flow filters them via the skillsDir wired through `ExtensionInstallDeps`
-before classification runs, so they neither trigger migration on their own nor
-get touched by the post-migration sweep — without that filter, the `tool=none`
-fallback shape would be indistinguishable from a gen-2 path and the
-freshly-restored skill dir would be destructively removed. The path-only
-`classifyExtensionFile` helper on its own only flags paths matching the
-documented gen-1 shape (`extensions/<known-type>/...` where `<known-type>` is in
-`PULLED_TYPE_DIRS`); arbitrary non-`.swamp/` paths and any path the classifier
-doesn't recognise fall through to current-layout and are ignored by migration
-rather than swept.
+`.swamp/pulled-extensions/skills/<name>` for the `tool=none` fallback. The
+install flow filters them out before classification, using the skillsDir passed
+through `ExtensionInstallDeps`. They never trigger migration and the
+post-migration sweep never touches them. Without the filter, the `tool=none`
+path would look like a gen-2 path and the freshly restored skill dir would be
+deleted. On its own, the path-only `classifyExtensionFile` helper flags only the
+documented gen-1 shape, `extensions/<known-type>/...` with `<known-type>` in
+`PULLED_TYPE_DIRS`. Any other non-`.swamp/` path, or a path it doesn't
+recognise, counts as current-layout and is ignored rather than swept.
 
 ## Removal
 
-Installed extensions can be removed with `extension rm`. Removal first
-tombstones the extension's catalog rows (so its `(kind, type)` slots are
-released atomically in one SQLite transaction), then removes the lockfile entry,
-then deletes the on-disk files tracked in `upstream_extensions.json` and prunes
-empty parent directories.
+`extension rm` first tombstones the extension's catalog rows, freeing its
+`(kind, type)` slots atomically in one SQLite transaction. It then removes the
+lockfile entry, deletes the files tracked in `upstream_extensions.json`, and
+prunes empty parent directories.
 
-If other installed extensions list the target as a dependency (detected by
-scanning their `manifest.yaml` files on disk), a warning is displayed before
-proceeding.
+If other installed extensions depend on the target (found by scanning their
+`manifest.yaml` files on disk), a warning is shown first.
 
-A double-rm yields a clean `Extension <name> is not installed.` user error on
-the second call — the lifecycle service decides "not installed" when both the
-catalog AND the lockfile confirm absence, so partial-state extensions still rm
-cleanly.
+A second rm of the same extension gives a clean
+`Extension <name> is not installed.` user error. The lifecycle service decides
+"not installed" only when both the catalog and the lockfile show it absent, so
+extensions in a partial state still rm cleanly.
 
-Extensions pulled before file tracking was added cannot be removed cleanly — the
-user is prompted to re-pull with `--force` to populate the file list first.
+Extensions pulled before file tracking existed cannot be removed cleanly; the
+user is asked to re-pull with `--force` to fill in the file list first.
 
 ## Lifecycle Services
 
-`InstallExtensionService`, `RemoveExtensionService`, and
-`UpgradeExtensionService` (in `src/libswamp/extensions/`) are the three narrow
-seams through which the catalog gets written. The CLI command files do not call
-the catalog directly — they construct the appropriate service and call
-`execute(...)`. This split is what lets `rm` prune catalog rows and what the
-unified loader builds on.
+`InstallExtensionService`, `RemoveExtensionService` and
+`UpgradeExtensionService` (in `src/libswamp/extensions/`) are the only three
+paths that write the catalog. CLI command files never call the catalog; they
+build the service and call `execute(...)`. This split lets `rm` prune catalog
+rows, and the unified loader builds on it.
 
 ### Asymmetric ordering
 
-Install is **filesystem → lockfile → catalog**. Remove is the **inverse**:
+Install is **filesystem → lockfile → catalog**. Remove is the inverse:
 **catalog → lockfile → filesystem**.
 
-The asymmetry is not aesthetic. If rm went filesystem-first, the catalog would
-briefly point at deleted bundle files and any concurrent type resolution would
-crash for that window. Catalog-first means a mid-rm crash leaves files on disk
-but the catalog clean — the next loader pass surfaces the orphans via
-`findStaleFiles`. Symmetrically, install catalog-last means a mid-install crash
-leaves on-disk files + lockfile entry but no catalog rows; the next loader pass
-rebuilds the catalog from the on-disk content via the existing cold-start path.
+If rm deleted files first, the catalog would briefly point
+at deleted bundle files and concurrent type resolution would crash. With the
+catalog first, a crash mid-rm leaves files on disk but a clean catalog, and the
+next loader pass finds the orphans via `findStaleFiles`. With the catalog last
+on install, a crash mid-install leaves files and the lockfile entry but no
+catalog rows, and the next loader pass rebuilds them through the cold-start
+path.
 
 ### Phase 8: synchronous type extraction at install
 
-After the install service has written files to disk and the lockfile entry,
-**phase 8** walks the per-extension subtree, calls each loader's
-`bundleAndIndexOne(args)` for every source file, builds an `Extension` aggregate
-whose Sources land in `Indexed` state with `(kind, typeNormalized, bundlePath)`
-populated, and commits via `repository.saveAll([extension])` in one SQLite
-transaction. The repository's I-Repo-1 invariant — no two non-tombstoned Sources
-may share `(kind, typeNormalized)` — fires synchronously at install time rather
-than at the next steady-state loader pass. The user-visible payoff: a
-cross-extension type collision surfaces as a clean
-`DuplicateTypeUserError` _before_ the user sees a "successfully pulled" message.
+After writing files and the lockfile entry, phase 8 walks the per-extension
+subtree and calls each loader's `bundleAndIndexOne(args)` on every source file.
+It builds an `Extension` aggregate whose Sources are `Indexed` with
+`(kind, typeNormalized, bundlePath)` set, and commits it with
+`repository.saveAll([extension])` in one SQLite transaction. The repository's
+I-Repo-1 invariant (no two non-tombstoned Sources share
+`(kind, typeNormalized)`) is therefore checked at install, not at the next
+steady-state loader pass. A type collision between extensions shows up as a
+clean `DuplicateTypeUserError` before the user sees "successfully pulled".
 
-`bundleAndIndexOne` is a strict per-loader contract: it bundles + type-
-extracts + returns metadata, but **does not write to the catalog**. The
-lifecycle service is the catalog-write owner — keeping it that way is what lets
-I-Repo-1 fire on every install consistently.
+`bundleAndIndexOne` is a strict per-loader contract: it bundles, extracts types
+and returns metadata, but **does not write to the catalog**. Only the lifecycle
+service writes the catalog, which keeps I-Repo-1 firing consistently on every
+install.
 
 ### Unreachable-path pre-flight prune
 
-Before I-Repo-1 evaluates, `saveAll` prunes non-Tombstoned rows whose
-`source_path` is not under the canonical repo root. This handles stale rows left
-by container sessions that bind-mounted the repo at a different path (e.g.
-`/workspace/...` vs `/Users/...`). Without the prune, these phantom rows form
-cross-aggregate `(kind, typeNormalized)` collisions that block _every_ catalog
-write — including `rm` of unrelated extensions.
+Before checking I-Repo-1, `saveAll` prunes non-Tombstoned rows whose
+`source_path` is outside the canonical repo root. These are stale rows from
+container sessions that bind-mounted the repo elsewhere (e.g. `/workspace/...`
+vs `/Users/...`). Unpruned, these phantom rows cause cross-aggregate
+`(kind, typeNormalized)` collisions that block every catalog write, including
+`rm` of unrelated extensions.
 
 ### Atomic upgrade pattern
 
-For every new aggregate the install service is about to save, it tombstones any
-existing aggregate with the _same name_ but a _different version_, then submits
-everything to `saveAll` in one transaction:
+For each new aggregate it saves, the install service tombstones any existing
+aggregate with the same name but a different version, and submits everything
+to `saveAll` in one transaction:
 
 ```
 saveAll([tombstoneAll(v1), ..., v2])
 ```
 
-I-Repo-1 evaluates the **post-save** state, so the slot is held by exactly one
-occupant: the new version. Without this pattern, force-pulling an
-already-installed extension (or any version-bump pull) would fail with
-`DuplicateTypeError` even though the only "conflict" is the user's own prior
-version. Re-installs of the same version skip the tombstone — the diff-save in
-`saveAll` handles overwrite semantics.
+I-Repo-1 checks the post-save state, where only the new version holds the
+slot. Otherwise a force-pull of an installed extension, or any version-bump
+pull, would fail with `DuplicateTypeError` against the user's own earlier
+version. Reinstalling the same version skips the tombstone; the diff-save in
+`saveAll` handles the overwrite.
 
 `UpgradeExtensionService` is a thin facade over
-`InstallExtensionService.execute(...)` that lets call sites express upgrade
-intent at the call site; the atomic-tombstone logic lives inside the install
-service's phase 8.
+`InstallExtensionService.execute(...)` so call sites can state upgrade intent.
+The atomic-tombstone logic lives in the install service's phase 8.
 
 ### FS rollback on DuplicateTypeError
 
-A genuine cross-extension `DuplicateTypeError` (two different extensions trying
-to claim the same `(kind, typeNormalized)`) triggers an explicit filesystem
-rollback before the error propagates: extracted files are deleted and the
-lockfile entry is restored to its pre-install state. SQLite ROLLBACK does not
-undo filesystem mutations, so the service does this work explicitly. The error
-then propagates as a `DuplicateTypeUserError` (a `UserError` subclass) so the
-top-level CLI handler renders a clean single-line message in log mode and a
-structured `duplicateType` object in `--json` mode:
+A cross-extension `DuplicateTypeError` (two different extensions claiming
+the same `(kind, typeNormalized)`) triggers a filesystem rollback before the
+error propagates. Extracted files are deleted and the lockfile entry is restored
+to its pre-install state, since SQLite ROLLBACK does not undo filesystem
+changes. The error then propagates as a `DuplicateTypeUserError` (a `UserError`
+subclass). The top-level CLI handler prints a clean one-line message in log mode
+and a structured `duplicateType` object in `--json` mode:
 
 ```json
 {
@@ -1583,88 +1467,86 @@ structured `duplicateType` object in `--json` mode:
 }
 ```
 
-The user-visible message points the user at `swamp extension rm <existing-name>`
-to recover. When the conflict is caused by a **ghost catalog row** (an entry
-whose source file was deleted outside swamp), the service detects the missing
-path via `Deno.stat` and instead suggests `swamp doctor extensions` — the
-correct recovery for orphaned rows. The `isGhostRow` flag on
-`DuplicateTypeUserError` is `true` in this case and is included in the `--json`
-output's `duplicateType` object.
+The message suggests `swamp extension rm <existing-name>`. A conflict may come
+from a **ghost catalog row**, whose source file was deleted outside swamp. The
+service then detects the missing path via `Deno.stat` and suggests
+`swamp doctor extensions` instead, the right fix for orphaned rows. The
+`isGhostRow` flag on `DuplicateTypeUserError` is then `true` and appears in the
+`--json` output's `duplicateType` object.
 
 ### Bounded atomicity
 
 Each `execute(...)` is its own transaction. Bulk operations (`extension update`
-over N extensions) run N independent transactions — not one all-or-nothing
-batch. If extension A's upgrade rolls back due to a collision with unchanged
-extension B, every other extension already-upgraded in the bulk run **stays
-upgraded**. This is the explicit bounded-atomicity contract: the unit of
-atomicity is the single extension, never a multi-extension run.
+over N extensions) run N separate transactions, not one all-or-nothing batch. If
+extension A's upgrade rolls back on a collision with unchanged extension B,
+extensions already upgraded in the run stay upgraded. The unit of atomicity
+is one extension, never a multi-extension run.
 
 ### Crash-state recovery
 
-A generic non-`DuplicateTypeError` failure inside `repository.saveAll` (SQLite
-I/O error, OOM, process kill mid-commit) leaves the catalog in its pre-save
-state via SQLite ROLLBACK. The filesystem and lockfile are **not**
-auto-rolled-back — only `DuplicateTypeError` triggers FS rollback. A retry
-succeeds: the diff-save in `saveAll` reconciles the catalog against the
-on-disk + lockfile state.
+Any other failure inside `repository.saveAll` (SQLite I/O error, OOM, process
+killed mid-commit) leaves the catalog in its pre-save state via SQLite ROLLBACK.
+The filesystem and lockfile are not rolled back; only `DuplicateTypeError`
+triggers FS rollback. A retry succeeds, because the diff-save in `saveAll`
+reconciles the catalog with the disk and lockfile.
 
-For rm, the catalog tombstone is the **first** mutation, so a fault inside that
-`saveAll` leaves all three layers (catalog, lockfile, FS) in their pre-rm state
-— a retry is a clean re-rm.
+For rm, the catalog tombstone is the first change, so a fault in that
+`saveAll` leaves catalog, lockfile and FS in their pre-rm state and a retry is a
+clean re-rm.
 
-Known limit: these per-extension atomicity guarantees are reasoned about per
-process. Concurrent `swamp` processes mutating the same repository (parallel
-`pull`/`rm`/`update`) are not covered by an automated stress test.
+Known limit: this behavior has only been reasoned about per process. No automated
+stress test covers concurrent `swamp` processes changing one repository
+(parallel `pull`/`rm`/`update`).
 
 ### Unified loader
 
-A single `ExtensionLoader` (`src/domain/extensions/extension_loader.ts`),
+One `ExtensionLoader` (`src/domain/extensions/extension_loader.ts`),
 parameterized by a `KindAdapter` (`model_kind_adapter.ts`,
 `vault_kind_adapter.ts`, `datastore_kind_adapter.ts`,
-`report_kind_adapter.ts`), provides one `bundleAndIndexOne` dispatch for all
-four kinds. The install/remove/upgrade services keep their public surface; CLI
+`report_kind_adapter.ts`), gives one `bundleAndIndexOne` dispatch for all four
+kinds. The install/remove/upgrade services keep their public API, and CLI
 command files (`extension_pull.ts`, `extension_update.ts`, `extension_rm.ts`,
-etc.) construct the services directly.
+etc.) build them directly.
 
 ### ReconcileFromDisk and freshness as an aggregate query
 
 `ReconcileFromDiskService`
 (`src/libswamp/extensions/reconcile_from_disk_service.ts`) and the freshness
-contract form a two-layer model:
+contract form two layers:
 
-1. **Type resolution layer**: `isFresh(state) = state === "Indexed"`. A
-   constant-time aggregate query. All other RowState tags are invisible to type
-   resolution.
+1. **Type resolution layer**: `isFresh(state) = state === "Indexed"`, a
+   constant-time aggregate query. Type resolution ignores all other RowState
+   tags.
 
-2. **State maintenance layer** (split between two paths):
-   - **Cold-start / explicit reconcile:** `ReconcileFromDiskService`. Full disk
-     walk across all three origin types (locals, pulled, source-mounted).
-     Post-hoc state repair. Fires when `anyKindNeedsInvalidation()` returns true
-     (i.e. any kind's `populated:<kind>` marker in `bundle_meta` is unset).
-   - **Warm-start / hot path:** `findStaleFiles`. Incremental fingerprint
-     comparison. Fires per-loader `buildIndex` when the catalog is already
-     populated. A fingerprint-matched `BundleBuildFailed` row is treated as
-     **stale** (re-attempted on the next scan), not a satisfied cache hit — a
+2. **State maintenance layer**, split between two paths:
+   - **Cold-start / explicit reconcile:** `ReconcileFromDiskService` walks the
+     whole disk across all three origin types (locals, pulled, source-mounted)
+     and repairs state after the fact. It runs when
+     `anyKindNeedsInvalidation()` returns true, i.e. some kind's
+     `populated:<kind>` marker in `bundle_meta` is unset.
+   - **Warm-start / hot path:** `findStaleFiles` compares fingerprints
+     incrementally, run by each loader's `buildIndex` once the catalog is
+     populated. A `BundleBuildFailed` row with a matching fingerprint counts as
+     stale and is retried on the next scan, not treated as a cache hit. A
      transient build failure (e.g. npm deps unreachable on a cold cache at
-     first load) must recover once conditions change rather than pin the type
-     permanently across restarts. Deterministic `ValidationFailed` rows stay
-     excluded — re-bundling them only thrashes.
+     first load) must recover when conditions change, not block the type
+     across restarts. Deterministic `ValidationFailed` rows stay excluded,
+     since re-bundling them only wastes work.
 
-Warm-start incremental detection is load-bearing for the development workflow,
-so `findStaleFiles` retains its full fingerprint comparison rather than being a
+The development workflow depends on warm-start incremental detection, so
+`findStaleFiles` keeps its full fingerprint comparison rather than becoming a
 deletion-sweep shim.
 
 **ReconcileFromDisk semantics.** The service:
 
-- Walks on-disk source trees for all origin types.
+- Walks the on-disk source trees for all origin types.
 - Loads current aggregate state via `repository.loadAll()`.
-- Diffs disk vs aggregate and emits RowState transitions using the existing
-  Extension aggregate methods.
-- Delegates to per-loader `bundleAndIndexOne` for type extraction — NOT
-  `InstallExtensionService`. The source is already on disk and the lockfile
-  already exists; reconcile is post-hoc state repair.
-- Saves via `repository.saveAll()` inside a single SQLite transaction.
+- Diffs disk against the aggregate and applies RowState transitions with the
+  existing Extension aggregate methods.
+- Uses each loader's `bundleAndIndexOne` for type extraction, not
+  `InstallExtensionService`: the source and lockfile already exist, and
+  reconcile only repairs state.
+- Saves via `repository.saveAll()` in one SQLite transaction.
 
 **Locals vs pulled reconcile matrix:**
 
@@ -1677,253 +1559,241 @@ deletion-sweep shim.
 | Pulled         | absent         | lockfile absent     | `Tombstoned` (orphan from failed rm)                       |
 | Source-mounted | —              | —                   | Follows local semantics                                    |
 
-**Trigger points:** cold-start (when `anyKindNeedsInvalidation()` returns
-true) + explicit `swamp doctor extensions` call. NOT on every command —
-reconcile would dominate the hot-path performance.
+**Trigger points:** cold-start (when `anyKindNeedsInvalidation()` returns true)
+and an explicit `swamp doctor extensions`. It does not run on every command,
+where reconcile would dominate hot-path performance.
 
 **dryRun mode:** `execute({ dryRun: true })` collects transitions without
-calling `repository.saveAll()`. Returns structured `ReconcileTransition` records
+calling `repository.saveAll()`. It returns `ReconcileTransition` records
 (`{ source, fromState, toState, reason }`) that `swamp doctor extensions`
 renders directly.
 
-**Transition-count guardrail:** if a reconcile run would transition more than
-50% of existing rows (minimum 10 rows), the run aborts and returns the
-transitions without applying them. Catches mass-tombstone bugs.
+**Transition-count guardrail:** if a run would transition more than 50% of
+existing rows (minimum 10 rows), it aborts and returns the transitions unapplied.
+This catches mass-tombstone bugs.
 
-**enforceI2 transform.** The Extension aggregate's I2 enforcement uses a
-deterministic-winner + tombstone-loser transform rather than throwing. The
-Source with the lexicographically smaller `canonicalPath` wins; the loser is
-tombstoned with reason `"renamed"`. Cross-aggregate uniqueness (I-Repo-1) still
-throws `DuplicateTypeError` at the repository layer.
+**enforceI2 transform.** The Extension aggregate enforces I2 by picking a
+deterministic winner and tombstoning the loser instead of throwing. The Source
+with the lexicographically smaller `canonicalPath` wins; the loser is tombstoned
+with reason `"renamed"`. Cross-aggregate uniqueness (I-Repo-1) still throws
+`DuplicateTypeError` at the repository layer.
 
 **Unreadable dependencies.** `computeSourceFingerprint`
 (`src/domain/extensions/bundle_freshness.ts`) substitutes the internal
 `UNREADABLE_PLACEHOLDER` constant for any dependency it cannot hash, so broken
-transitive deps produce a stable fingerprint; the failure surfaces at
-`bundleAndIndexOne` as `BundleBuildFailed`. Zod schema validation failures
-(bundle built successfully but export rejected) surface as `ValidationFailed`
-via a `ValidationError` subclass that carries the bundle path and fingerprint
-(see `validation_error.ts`).
+transitive deps give a stable fingerprint. The failure then surfaces at
+`bundleAndIndexOne` as `BundleBuildFailed`. Zod schema validation failures (the
+bundle built but its export was rejected) surface as `ValidationFailed`, via a
+`ValidationError` subclass carrying the bundle path and fingerprint (see
+`validation_error.ts`).
 
-**Forward-only revert posture.** Revert means deleting
-`_extension_catalog.db` and rebuilding from disk on the next cold-start.
+**Forward-only revert posture.** To revert, delete `_extension_catalog.db`; the
+next cold-start rebuilds it from disk.
 
 ## `swamp doctor extensions` — aggregate-state rendering and repair
 
-`swamp doctor extensions` (`src/cli/commands/doctor_extensions.ts`) has two
-capabilities:
+`swamp doctor extensions` (`src/cli/commands/doctor_extensions.ts`) does two
+things:
 
-1. **Aggregate-state rendering** — surfaces per-extension RowState distribution,
-   orphan detection, and summary rollups in both `log` and `json` modes. Always
-   runs after the existing invalidation-guard checks. `--verbose` adds
-   per-source detail.
+1. **Aggregate-state rendering**: per-extension RowState distribution, orphan
+   detection and summary rollups, in both `log` and `json` modes. It always runs
+   after the existing invalidation-guard checks. `--verbose` adds per-source
+   detail.
 
-2. **Repair surface** — `--repair` prunes Tombstoned/OrphanedBundleOnly catalog
-   rows and evicts unreferenced `.js` files in `<kind>-bundles/`. `--dry-run`
-   previews the repair without executing; `-y`/`--yes` (alias `-f`/`--force`)
-   skips the confirmation prompt. There is no `--apply` flag.
+2. **Repair**: `--repair` prunes Tombstoned/OrphanedBundleOnly catalog rows and
+   deletes unreferenced `.js` files in `<kind>-bundles/`. `--dry-run` previews
+   the repair; `-y`/`--yes` (alias `-f`/`--force`) skips the confirmation
+   prompt. There is no `--apply` flag.
 
-**Bundle naming convention:** overwrite-on-rebundle (not content-addressed).
-Orphans accumulate linearly per deleted source. The `bundle_path` column is the
-source of truth for which files are referenced.
+**Bundle naming convention:** a rebundle overwrites the file (not
+content-addressed), so orphans grow by one per deleted source. The `bundle_path`
+column is the source of truth for which files are referenced.
 
-**Event model:** `DoctorExtensionsReport` carries additive `aggregateState`,
-`repairReport`, and `recentTransitions` fields. No new event kinds. Backward
-compatible for existing `--json` consumers.
+**Event model:** `DoctorExtensionsReport` gains `aggregateState`,
+`repairReport` and `recentTransitions` fields, with no new event kinds, so
+existing `--json` consumers keep working.
 
-**`recentTransitions`**: Always-present array (empty when no transitions
-occurred) populated from `ReconcileResult.transitions[]`. Each entry serializes
-`sourcePath` (from `SourceLocation.canonicalPath`, matching
-`sourceDetails[].sourcePath`), `fromState`, `toState`, and `reason`. No
-timestamp — every `doctor extensions` invocation triggers reconcile, so all
-transitions are current-process. In JSON mode the array is unconditionally
-present; in log mode it renders only with `--verbose`. Surfaced via
-`DoctorExtensionsDeps.getRecentTransitions` callback so the generator stays
-infrastructure-free.
+**`recentTransitions`**: an array, always present (empty when nothing changed),
+filled from `ReconcileResult.transitions[]`. Each entry has `sourcePath` (from
+`SourceLocation.canonicalPath`, matching `sourceDetails[].sourcePath`),
+`fromState`, `toState` and `reason`. There is no timestamp, because every
+`doctor extensions` run triggers reconcile and all transitions come from the
+current process. JSON mode always includes the array; log mode shows it only
+with `--verbose`. It comes through the
+`DoctorExtensionsDeps.getRecentTransitions` callback, so the generator stays
+free of infrastructure.
 
-**Repair safety:** Indexed and Bundled rows are NEVER touched by repair.
+**Repair safety:** repair never touches Indexed and Bundled rows.
 
 ## Lazy Per-Bundle Loading
 
-Extension bundles are loaded lazily — individual bundles are imported on demand
-rather than all at once. This keeps CLI response times constant regardless of
-how many extensions are installed.
+Each extension bundle is imported on demand, not all at once, so CLI response
+time stays constant however many extensions are installed.
 
 ### Architecture
 
-**Extension Catalog**: A SQLite database at `.swamp/_extension_catalog.db`
-indexes all known bundle types. Each row stores the normalized type
+**Extension Catalog**: a SQLite database at `.swamp/_extension_catalog.db`
+indexes every known bundle type. Each row stores the normalized type
 (`type_normalized`), bundle path, source path, source mtime, source fingerprint
-(sha-256 content hash), version, the RowState discriminant (`state`), and (for
-extensions) the base type it targets (`extends_type`)
-(`src/infrastructure/persistence/extension_catalog_store.ts`). Freshness is
-decided by the content fingerprint; `source_mtime` is retained for
-observability only. The catalog lives at the `.swamp` root level because it is
-shared across all registry types (models, vaults, datastores, reports). It is
-completely independent of the data catalog (`_catalog.db`) used for data
-queries.
+(sha-256 content hash), version, the RowState discriminant (`state`) and, for
+extensions, the base type it targets (`extends_type`)
+(`src/infrastructure/persistence/extension_catalog_store.ts`). The content
+fingerprint decides freshness; `source_mtime` is kept only for observability.
+The catalog sits at the `.swamp` root because all registry types (models,
+vaults, datastores, reports) share it. It is independent of the data catalog
+(`_catalog.db`) used for data queries.
 
-The schema includes a `kind` column (`model`, `extension`, `vault`,
-`datastore`, `report`) so a single catalog supports all registry types. The model, vault,
-datastore, and report registries all register lazy entries from the catalog
-(`registerLazy` in each registry). The per-kind `populated:<kind>` marker in
-`bundle_meta` records whether a kind has been fully indexed.
+A `kind` column (`model`, `extension`, `vault`, `datastore`, `report`) lets one
+catalog serve every registry type. The model, vault, datastore and report
+registries all register lazy entries from it (`registerLazy` in each registry).
+The per-kind `populated:<kind>` marker in `bundle_meta` records whether a kind
+has been fully indexed.
 
 **Loading Flow**:
 
-1. On first `ensureLoaded()` call, the model registry's loader runs
-   `buildIndex()` which:
-   - Checks the catalog's `populated` flag
-   - If populated: scans source directories, computes a sha-256 content
+1. On the first `ensureLoaded()` call, the model registry's loader runs
+   `buildIndex()`, which:
+   - Checks the catalog's `populated` flag.
+   - If populated: scans source directories and computes a sha-256 content
      fingerprint over each entry point plus its transitive local `.ts`
-     dependencies, compares that against the catalog's stored fingerprint,
-     rebundles only changed files, then registers lazy entries for all types
-     from the catalog (no bundle imports). Fingerprint-based freshness replaced
-     mtime-based freshness in issue #125 — mtime was fragile under atomic-rename
-     saves, mtime-preserving sync tools, and sub-millisecond edits. The
-     fingerprint is **total**: when a transitive dep is currently unreadable
-     (broken symlink, deleted file, FilesystemLoop), its hash entry is replaced
-     with a stable sentinel rather than throwing — so a stable broken state
-     produces a stable fingerprint and the entry is not marked permanently stale
-     (#208). Repairing the dep flips the sentinel back to a real hash and
-     triggers a rebundle correctly. This property holds uniformly across all
-     four extension kinds (models, vaults, datastores, reports) since they
-     share the freshness service. Symmetrically, when an extension's source
-     bundles and imports cleanly but fails schema validation (e.g. a required
-     field was removed), the catalog row is upserted with the new fingerprint
-     and `state = ValidationFailed` (the former `validation_failed` column was
-     folded into `state`). Freshness comparison still works via fingerprint
-     equality — the broken row is visible to `findStaleFiles` so a stable
-     broken source produces a stable not-stale state. Registration paths skip
-     non-`Indexed` rows, so the broken extension is correctly absent from the
-     registry until the source is fixed. Editing the source to a different
-     shape produces a new fingerprint, marks the file stale, triggers a
-     rebundle, and flips the row back to `Indexed`. This is scoped to the
-     steady-state
-     `rebundleAndUpdateCatalog` hot path — the cold-start parses (initial
-     `loadModels` Pass 1, the by-name `loadSingleType`, and the extension-attach
-     predicate) retain their existing failure semantics because they are not in
-     the read-only steady-state loop.
+     dependencies. It compares that with the stored fingerprint, rebundles only
+     changed files, then registers lazy entries for every type from the catalog
+     without importing bundles.
+
+     Fingerprints replaced mtime-based freshness in issue #125, because mtime
+     was unreliable with atomic-rename saves, mtime-preserving sync tools and
+     sub-millisecond edits.
+
+     The fingerprint is **total**. If a transitive dep is unreadable (broken
+     symlink, deleted file, FilesystemLoop), its hash entry becomes a stable
+     sentinel instead of throwing. A stable broken state then gives a stable
+     fingerprint, and the entry is not marked permanently stale (#208). Fixing
+     the dep turns the sentinel back into a real hash and triggers a rebundle.
+     All four kinds (models, vaults, datastores, reports) share this, since
+     they share the freshness service.
+
+     Likewise, a source can bundle and import cleanly but fail schema
+     validation (e.g. a required field was removed). Its catalog row is then
+     upserted with the new fingerprint and `state = ValidationFailed`. (The
+     former `validation_failed` column was folded into `state`.) Fingerprint
+     comparison still works: `findStaleFiles` sees the row, so a stable broken
+     source stays not-stale. Registration skips non-`Indexed` rows, so the
+     extension stays out of the registry until the source is fixed. Editing the
+     source gives a new fingerprint, marks the file stale, triggers a rebundle
+     and moves the row back to `Indexed`. This covers only the steady-state
+     `rebundleAndUpdateCatalog` hot path. The cold-start parses (initial
+     `loadModels` Pass 1, the by-name `loadSingleType`, and the
+     extension-attach predicate) keep their existing failure behavior, as they
+     are outside the read-only steady-state loop.
    - **Fingerprint preservation on build failure (issue #265).** When
      `bundleWithCache` returns the cached `.js` instead of a fresh bundle
-     (`fromCache: true`), the `rebundleAndUpdateCatalog` caller preserves the
-     catalog's _stored_ `source_fingerprint` instead of writing the new one.
-     This keeps the file "stale" so `findStaleFiles` retries on the next
-     warm-start invocation. Without this, the new fingerprint would be written
-     alongside the old bundle content, permanently masking the staleness —
-     `findStaleFiles` would see matching fingerprints and never retry.
+     (`fromCache: true`), the caller `rebundleAndUpdateCatalog` keeps the
+     catalog's stored `source_fingerprint` rather than writing the new one.
+     The file stays "stale", so `findStaleFiles` retries on the next warm
+     start. Writing the new fingerprint next to the old bundle would hide the
+     staleness for good: fingerprints would match and nothing would retry.
      `BundleResult` (`bundle_freshness.ts`) records why the bundle came from
-     cache via `cacheReason`, and each case produces at most one warning:
-     - `trusted-pulled` — a pulled extension's existing bundle is reused on
-       purpose and no rebundle is attempted (the bundle exists and either the
+     cache in `cacheReason`, and each case logs at most one warning:
+     - `trusted-pulled`: a pulled extension's existing bundle is reused on
+       purpose, with no rebundle attempt (the bundle exists and either the
        caller passed `trustPulledCache` or `isExpectedBundleFailure` is true).
-       Nothing failed, so it is logged at debug only, in both `load()` and
-       reconcile.
-     - `rebundle-failed` with `expectedFailure: false` — `deno bundle` threw
-       even though a project `deno.json`/`deno.jsonc` exists.
-       `bundleWithCache` emits the single warning
-       `Rebundle failed for <file>, using cached bundle: <error>`; the
+       Nothing failed, so both `load()` and reconcile log at debug only.
+     - `rebundle-failed` with `expectedFailure: false`: `deno bundle` threw
+       although a project `deno.json`/`deno.jsonc` exists. `bundleWithCache`
+       emits the one warning
+       `Rebundle failed for <file>, using cached bundle: <error>`, and the
        reconcile line drops to debug.
-     - `rebundle-failed` with `expectedFailure: true` — no project deno config
-       was found between the source file and the repo root
-       (`isExpectedBundleFailure`), so failure is expected (typically bare
-       specifiers). `bundleWithCache` logs at debug, and reconcile emits the
-       single warning
+     - `rebundle-failed` with `expectedFailure: true`: no project deno config
+       exists between the source file and the repo root
+       (`isExpectedBundleFailure`), so failure is expected, usually from bare
+       specifiers. `bundleWithCache` logs at debug and reconcile emits the one
+       warning
        `Bundle could not be regenerated for <file> — source fingerprint preserved, will retry on next command`.
 
-     Fingerprint preservation is identical in all three cases. The reconcile
-     log fires only when the stored and new fingerprints differ, never on
-     legitimate cache hits where the source hasn't changed. `findStaleFiles`
-     uses fingerprint comparison, not RowState, for staleness decisions.
-     `BundleBuildFailed` rows are skipped when fingerprints match (source
-     unchanged) and retried when they mismatch (source changed) — warm-start and
-     reconcile operate on orthogonal axes.
+     The fingerprint is kept the same way in all three cases. The reconcile log
+     fires only when stored and new fingerprints differ, never on a normal
+     cache hit with unchanged source. `findStaleFiles` decides staleness by
+     fingerprint, not RowState: `BundleBuildFailed` rows are skipped when
+     fingerprints match (source unchanged) and retried when they differ
+     (source changed). Warm start and reconcile work on independent axes.
 
-   - If not populated (first run or DB deleted): bundles all source files
-     without importing them into V8 (`load()` with `indexOnly: true`), then
-     populates the catalog from source extraction and registers lazy entries.
-     This avoids OOM on repos with thousands of model definitions — bundles
-     stay on disk and are imported on demand via `ensureTypeLoaded()`. Schema
-     validation errors are deferred to first type access, matching the
-     warm-start behavior.
+   - If not populated (first run or DB deleted): bundles every source file
+     without importing it into V8 (`load()` with `indexOnly: true`), fills the
+     catalog from source extraction and registers lazy entries. This avoids OOM
+     in repos with thousands of model definitions: bundles stay on disk until
+     `ensureTypeLoaded()` imports them. Schema validation errors wait until the
+     type is first used, as in warm start.
 
-2. `types()` returns both fully loaded and lazy type names — commands like
-   `model type search` work without importing any bundles.
+2. `types()` returns both fully loaded and lazy type names, so commands like
+   `model type search` import no bundles.
 
 3. When a specific type is needed (e.g. `model get`, `model create`),
-   `ensureTypeLoaded(type)` queries the catalog for the bundle path, imports
-   just that bundle, and also imports any extension bundles targeting the base
-   type.
+   `ensureTypeLoaded(type)` looks up its bundle path in the catalog and imports
+   only that bundle, plus any extension bundles targeting the base type.
 
-4. Concurrent callers requesting the same type share a single load promise
-   (per-type memoization). Additionally, `ensureTypeLoaded` awaits any pending
-   load promise even when the type is already in the registry — `loadSingleType`
-   registers the base type via `promoteFromLazy` before attaching extensions, so
-   a concurrent caller arriving between those two steps must wait for extensions
-   to be merged (swamp-club#521).
+4. Concurrent callers for the same type share one load promise (per-type
+   memoization). `ensureTypeLoaded` also awaits a pending load promise when the
+   type is already in the registry. `loadSingleType` registers the base type via
+   `promoteFromLazy` before attaching extensions, so a caller arriving between
+   those steps must wait for the extensions to be merged (swamp-club#521).
 
 ### Self-Healing
 
-The catalog self-heals: deleting `_extension_catalog.db` triggers a cold-start
-rebuild on next access — source files are bundled (without importing into V8)
-and the catalog is repopulated from source extraction. Types are then available
-as lazy entries and imported on demand. The `populated` flag follows the same
-pattern as the data catalog's backfill mechanism.
+Deleting `_extension_catalog.db` triggers a cold-start rebuild on next access:
+source files are bundled without importing into V8 and the catalog is refilled
+from source extraction. Types are then lazy entries imported on demand. The
+`populated` flag follows the data catalog's backfill pattern.
 
 ## Reporting Issues Against Extensions
 
-Users can file reports against a specific extension with `--extension <name>`
-(alias `-x`) on the `swamp issue bug|feature|security` commands. The CLI routes the report
-according to the extension's collective and its declared `repository`:
+`--extension <name>` (alias `-x`) on the `swamp issue bug|feature|security`
+commands files a report against a specific extension. The CLI routes it by the
+extension's collective and declared `repository`:
 
-1. **`@swamp/*` extensions** — routed to the existing swamp-club Lab (the same
-   endpoint `swamp issue bug` already uses). Extension name, installed version,
-   and the reporter's environment are appended to the body under a
-   `## Environment` section. The title is not modified.
+1. **`@swamp/*` extensions** go to the existing swamp-club Lab, the same
+   endpoint `swamp issue bug` uses. The extension name, installed version and
+   the reporter's environment are appended to the body under an
+   `## Environment` section. The title is unchanged.
 
-2. **Third-party extensions with `repository` set** — routed to the declared
-   upstream repository. When the `gh` CLI is installed and authenticated
-   (`GH_TOKEN` or `gh auth login`), the report is created via
-   `gh issue
-   create`. Otherwise the CLI opens the provider's new-issue URL in
-   the browser with title and body pre-filled (GitHub and GitLab supported;
-   other hosts open the repo root and the prepared body is printed to the
-   terminal for manual pasting).
+2. **Third-party extensions with `repository` set** go to that upstream
+   repository. If the `gh` CLI is installed and authenticated (`GH_TOKEN` or
+   `gh auth login`), the report is created with `gh issue create`. Otherwise the
+   CLI opens the provider's new-issue URL in the browser with title and body
+   filled in (supported for GitHub and GitLab). For other hosts it opens the
+   repo root and prints the prepared body for manual pasting.
 
-3. **Third-party extensions without `repository`** — refused cleanly with
-   guidance that points reporters at the extension's swamp-club page (where
-   publisher contact info lives) and tells publishers to add a `repository:`
-   field to their manifest. Exit code stays 0; the refusal is informational.
+3. **Third-party extensions without `repository`** are refused cleanly. The
+   guidance points reporters to the extension's swamp-club page, which has
+   publisher contact info, and tells publishers to add a `repository:` field to
+   their manifest. The exit code stays 0; the refusal is informational.
 
 ### Security Routing
 
 For `swamp issue security --extension <name>` against a third-party GitHub
-repository, the CLI first checks whether the repository has enabled GitHub's
-Private Vulnerability Reporting (PVR) feature via
-`gh api
-repos/<owner>/<repo>/private-vulnerability-reporting`:
+repository, the CLI first checks whether GitHub's Private Vulnerability
+Reporting (PVR) is enabled, via
+`gh api repos/<owner>/<repo>/private-vulnerability-reporting`:
 
-- **PVR enabled** — open the GitHub advisory form
-  (`<repo>/security/advisories/new`). The form is structured and doesn't accept
-  URL prefill; the user fills it in manually.
-- **PVR disabled** — **refuse**. This is a load-bearing security guardrail: the
-  CLI never falls back to creating a public issue for a security report, because
-  that would silently publish the vulnerability. The refusal guidance tells the
-  reporter to contact the publisher privately and tells the publisher to enable
-  PVR at `<repo>/settings/security_analysis`.
-- **PVR check failed or gh unavailable** — open the advisory URL with a fallback
-  issue URL surfaced in the output. The user decides after seeing what GitHub
-  responds with.
+- **PVR enabled**: open the GitHub advisory form
+  (`<repo>/security/advisories/new`). It is structured and can't be prefilled
+  from the URL, so the user fills it in.
+- **PVR disabled**: **refuse**. The CLI never falls back to a public issue for
+  a security report, since that would publish the vulnerability. The refusal tells the reporter to contact the
+  publisher privately and the publisher to enable PVR at
+  `<repo>/settings/security_analysis`.
+- **PVR check failed or gh unavailable**: open the advisory URL and show a
+  fallback issue URL in the output. The user decides after seeing GitHub's
+  response.
 
-The asymmetry between GitHub (hard refusal when PVR is off) and GitLab (routes
-to the normal issue form with a "toggle confidential" warning) is intentional:
-GitLab's confidential-issues feature is universal and reliable, so the user
-always has a safe in-form path. GitHub's PVR is opt-in per repo, so the CLI
-refuses rather than trust the reporter to remember not to file publicly.
+GitHub and GitLab differ on purpose. GitLab opens the normal issue form with a
+"toggle confidential" warning, because confidential issues exist on every GitLab
+repo and so always give the user a safe path. GitHub's PVR is opt-in per repo,
+so with PVR off the CLI refuses rather than trust the reporter not to file
+publicly.
 
 ### Publish-Time Nudge
 
-When `swamp extension push` runs against a manifest without a `repository`
-field, the CLI emits a non-blocking warning reminding the publisher that users
-will not be able to file issues via `--extension`. The warning never blocks the
-push — some publishers may deliberately omit `repository`.
+When `swamp extension push` runs on a manifest without a `repository` field, the
+CLI warns that users will not be able to file issues via `--extension`. The
+warning never blocks the push; some publishers leave out `repository` on
+purpose.

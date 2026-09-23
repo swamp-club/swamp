@@ -5,150 +5,139 @@ last-verified: 2026-09-07 @ 58652907
 
 # swamp repo
 
-A swamp repo contains all of the models and code for automating tasks with
-swamp.
+A swamp repo holds all the models and code for automating tasks with swamp.
 
-Swamp repo's can be initalized, where the needed directories, and the swamp-\*
-skills will be copied in.
+Initializing a repo creates the needed directories and copies in the swamp-\*
+skills. Upgrading a repo moves the skills, and anything else that needs it, from
+one version to the next.
 
-They can be upgraded, where the skills and anything else that is needed can move
-from one version to another.
+The repo should have a `.swamp.yaml` file at its root recording the swamp
+version it was initialized or upgraded with.
 
-They should have a `.swamp.yaml` file at the top of the repo with the current
-swamp version it was initialized/upgraded with.
-
-It should write a CLAUDE.md that describes the purpose of the repository as
-building automation with swamp, and describes when to use the linked skills. The
-agent should attempt to use swamp for most tasks.
+Init should write a CLAUDE.md that says the repository is for building
+automation with swamp and when to use the linked skills. The agent should try to
+use swamp for most tasks.
 
 ## Multi-tool Repos
 
-A swamp repo can be enrolled for multiple AI agent tools at once (Amp,
-Claude Code, Cursor, OpenCode, Codex, Copilot, Kiro). The marker file stores the
-full enrolled list as `tools: AiTool[]`. Each tool's scaffolding (skills
-directory, instructions file, settings/hooks) is written independently
-since the paths don't conflict.
+A repo can be enrolled for several AI agent tools at once (Amp, Claude Code,
+Cursor, OpenCode, Codex, Copilot, Kiro). The marker file stores the enrolled
+list as `tools: AiTool[]`. Each tool's scaffolding (skills directory,
+instructions file, settings/hooks) is written separately, since the paths do
+not conflict.
 
-`swamp repo init --tool <X> [--tool <Y>...]` sets the enrolled tool list.
-`swamp repo upgrade --tool <X> [--tool <Y>...]` replaces it; plain
-`swamp repo upgrade` (no `--tool`) preserves `marker.tools` and re-syncs
-scaffolding for every enrolled tool. `--tool none` clears the list. Duplicate
-`--tool` values are deduped at the CLI; `--tool none` cannot be combined with
-other tool values.
+- `swamp repo init --tool <X> [--tool <Y>...]` sets the enrolled list.
+- `swamp repo upgrade --tool <X> [--tool <Y>...]` replaces it.
+- Plain `swamp repo upgrade` (no `--tool`) keeps `marker.tools` and re-syncs
+  scaffolding for every enrolled tool.
+- `--tool none` clears the list and cannot be combined with other tool values.
+- Duplicate `--tool` values are deduped at the CLI.
 
-When the enrolled list shrinks, on-disk scaffolding for dropped tools is
-**not** deleted — the renderer surfaces a "files were not deleted" note so
-the user can clean up by hand. This avoids destructive surprises.
+When the list shrinks, scaffolding for dropped tools is not deleted, to avoid
+destructive surprises. The renderer shows a "files were not deleted" note so the
+user can clean up by hand.
 
-The **primary tool** is `marker.tools[0]` (or `"claude"` as a fallback for
-unenrolled repos), resolved via `resolvePrimaryTool(marker)` in
-`src/domain/repo/primary_tool.ts`. Commands that still operate on a single
-tool — audit recording (`src/cli/commands/audit.ts`), extension skills
-directory resolution (`extension_list.ts`, `extension_rm.ts`) — consume it.
-`swamp doctor audit` reads `marker.tools[0]` directly and throws
+The **primary tool** is `marker.tools[0]`, or `"claude"` for unenrolled repos
+(`resolvePrimaryTool(marker)` in `src/domain/repo/primary_tool.ts`). Commands
+that still work on one tool use it: audit recording
+(`src/cli/commands/audit.ts`) and extension skills directory resolution
+(`extension_list.ts`, `extension_rm.ts`). `swamp doctor audit` reads
+`marker.tools[0]` directly with no `"claude"` fallback, and throws
 `NoToolConfiguredError` when no tool is enrolled and `--tool` is absent
-(`src/cli/commands/doctor_audit.ts`) — it has no `"claude"` fallback. The
-first-in-array rule means appending a tool keeps the existing primary stable.
+(`src/cli/commands/doctor_audit.ts`). Since the primary is the first entry,
+appending a tool does not change it.
 
-The `.swamp.yaml` marker uses lazy migration for backwards compat: the read
-normalizer in `RepoMarkerRepository.read()` promotes the legacy `tool:
-<single>` shape into `tools: [<single>]` and strips the legacy field. The
-next marker write persists the new shape.
+The `.swamp.yaml` marker migrates lazily: `RepoMarkerRepository.read()` turns the
+legacy `tool: <single>` shape into `tools: [<single>]` and drops the old field.
+The next marker write saves the new shape.
 
-The compiled swamp binary should include everything it needs to initialize a
-repository, including the skill files, so that they can be written out by the
-cli.
+The compiled swamp binary should contain everything needed to initialize a
+repository, including the skill files, so the CLI can write them out.
 
 ## Superseded Skill Detection
 
-When the CLI binary is upgraded but `swamp repo upgrade` is not run, the
-repo retains old skill directories that have been consolidated in the new
-version. The `SUPERSEDED_SKILLS` constant in `superseded_skills.ts` lists these
-directory names.
+If the binary is upgraded without `swamp repo upgrade`, the repo keeps old skill
+directories that the new version has merged. `SUPERSEDED_SKILLS` in
+`superseded_skills.ts` lists their names.
 
-On every CLI startup (for repo-scoped commands), the CLI checks all enrolled
-tools' skill directories for superseded subdirectories. If any are found, a
-warning is emitted via the deferred-warning system:
+On every repo-scoped command, the CLI checks each enrolled tool's skill
+directory for superseded subdirectories and, if any exist, emits a warning
+through the deferred-warning system:
 
 ```
 WRN 2 old swamp-managed skill(s) can be safely deleted: swamp-data-query, swamp-extension-model. These have been replaced by the bundled swamp skill. Run 'swamp repo upgrade' to remove them.
 ```
 
-This check is non-fatal — it never blocks startup. `swamp repo upgrade`
-removes the superseded directories via `removeSupersededSkills()`.
+The check never blocks startup. `swamp repo upgrade` removes the directories
+with `removeSupersededSkills()`.
 
 ## Repository Layout
 
 Source-of-truth files live in top-level directories tracked in git:
 
-- **`models/`** — Model definitions: `models/{normalized-type}/{name}.yaml`
-  (legacy `{uuid}.yaml` also supported)
-- **`workflows/`** — Workflow definitions: `workflows/workflow-{name}.yaml`
-  (legacy `workflow-{uuid}.yaml` also supported)
-- **`vaults/`** — Vault configurations: `vaults/{vault-type}/{id}.yaml`
-- **`grants/`** — Declarative access grant files: `grants/{name}.yaml` or
-  `grants/{name}.yml`. Each file contains a `grants:` array of grant entries
-  (subject, effect, actions, resource, optional condition). Reconciled against
-  stored `source: file:<filename>` grants on `swamp serve` startup, on
-  `swamp access reload`, and continuously while the server runs by
-  `GrantsDirectoryPoller` (`src/domain/access/grants_directory_poller.ts`,
-  wired in `src/cli/commands/serve.ts`), which re-reconciles when files in
-  the directory change.
+- **`models/`**: model definitions, `models/{normalized-type}/{name}.yaml`
+  (legacy `{uuid}.yaml` also supported).
+- **`workflows/`**: workflow definitions, `workflows/workflow-{name}.yaml`
+  (legacy `workflow-{uuid}.yaml` also supported).
+- **`vaults/`**: vault configurations, `vaults/{vault-type}/{id}.yaml`.
+- **`grants/`**: declarative access grant files, `grants/{name}.yaml` or
+  `grants/{name}.yml`. Each holds a `grants:` array of entries (subject,
+  effect, actions, resource, optional condition). They are reconciled against
+  stored `source: file:<filename>` grants on `swamp serve` startup and on
+  `swamp access reload`. While the server runs, `GrantsDirectoryPoller`
+  re-reconciles whenever files in the directory change
+  (`src/domain/access/grants_directory_poller.ts`, wired in
+  `src/cli/commands/serve.ts`).
 
-Runtime data (versioned model data, workflow runs, method outputs, secrets) is
-stored through a datastore abstraction. The default datastore uses the `.swamp/`
-directory, but it can be configured to use an external filesystem path or S3.
-See [datastores.md](../enablers/datastores.md) for details.
+Runtime data (versioned model data, workflow runs, method outputs, secrets) goes
+through a datastore abstraction. The default datastore uses `.swamp/`; it can
+also use an external filesystem path or S3. See
+[datastores.md](../enablers/datastores.md).
 
 ## Configuration
 
-The swamp repo can be configured with an environment file that can specify
-attributes to control the behaviour of the swamp operations.
+A repo can be configured with an environment file whose attributes control how
+swamp operations behave.
 
 ### Supported Configuration Options
 
-Vault definitions are not `.swamp.yaml` keys — each vault lives in its own
-`vaults/{vault-type}/{id}.yaml` file (see Repository Layout). The marker's
-full key set is `RepoMarkerData` in
-`src/infrastructure/persistence/repo_marker_repository.ts`; the user-facing
+Vault definitions are not `.swamp.yaml` keys. Each vault has its own
+`vaults/{vault-type}/{id}.yaml` file (see Repository Layout). The full marker
+key set is `RepoMarkerData` in
+`src/infrastructure/persistence/repo_marker_repository.ts`. The user-facing
 options are:
 
-- `defaultVault`: name of the vault used when a method run or `swamp serve`
-  does not name one explicitly.
-- `trustedCollectives`: List of collectives whose extensions auto-resolve on
-  first use. Default: `["swamp"]`. Set to `[]` to disable. Manageable via
+- `defaultVault`: the vault used when a method run or `swamp serve` names none.
+- `trustedCollectives`: collectives whose extensions auto-resolve on first use.
+  Default `["swamp"]`; `[]` disables it. Managed with
   `swamp extension trust list/add/rm`.
-- `trustMemberCollectives`: Whether to auto-trust collectives the user belongs
-  to (cached from `auth login`/`auth whoami`). Default: `false`. Set to `true`
-  to trust all membership collectives in addition to the explicit
-  `trustedCollectives` list. Toggleable via
+- `trustMemberCollectives`: whether to also trust every collective the user
+  belongs to (cached from `auth login`/`auth whoami`), on top of
+  `trustedCollectives`. Default `false`. Toggled with
   `swamp extension trust auto-trust <on|off>`.
-- `autoGc`: Enable automatic garbage collection after model method runs.
-  Default: `false`. When `true`, `collectGarbage` runs for the model that just
-  executed after reports complete and the method result is shown. Reuses each
-  data item's declared `garbageCollection` policy (version-count caps and
-  duration-based retention). Errors are logged but never fail the method run.
-  GC runs inside the `modelMethodRun` stream (`src/libswamp/models/run.ts`)
-  before the CLI releases model locks and flushes the datastore sync, so on a
-  synced datastore the deletions ride along with the same post-run push.
-  `swamp data gc` remains available for repo-wide manual GC.
-- `garbageCollection`: Repository defaults for manual `swamp run gc` cleanup.
-  `workflowRuns` and `outputs` accept positive duration strings such as `7d`
-  or `2w`; omitted values retain the 30-day default. This setting does not run
-  cleanup automatically and does not change model data's `autoGc` behavior.
-- `serverAddress`: Default `swamp serve` URL for this repository. When set,
-  all serve-aware commands route through this serve instance without
-  requiring `SWAMP_SERVE_URL` or `--server`. Precedence: `--server` flag >
-  `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env > `.swamp.yaml
-  serverAddress`. Set during init with `swamp repo init --server <url>` or
-  by editing `.swamp.yaml` directly.
+- `autoGc`: run garbage collection after model method runs. Default `false`.
+  When `true`, `collectGarbage` runs for the model that just ran, after reports
+  finish and the result is shown, using each data item's declared
+  `garbageCollection` policy (version-count caps and duration-based retention).
+  Errors are logged and never fail the run. GC runs inside the `modelMethodRun`
+  stream (`src/libswamp/models/run.ts`) before the CLI releases model locks and
+  flushes datastore sync, so on a synced datastore the deletions go out in the
+  same post-run push. `swamp data gc` still does repo-wide manual GC.
+- `garbageCollection`: repository defaults for manual `swamp run gc` cleanup.
+  `workflowRuns` and `outputs` take positive durations such as `7d` or `2w`;
+  omitted values keep the 30-day default. It does not run cleanup on its own or
+  change model data's `autoGc` behavior.
+- `serverAddress`: default `swamp serve` URL for the repo. When set, every
+  serve-aware command uses it without `SWAMP_SERVE_URL` or `--server`.
+  Precedence: `--server` flag > `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env >
+  `.swamp.yaml serverAddress`. Set it with `swamp repo init --server <url>` or
+  by editing `.swamp.yaml`.
 
 ### Run Garbage Collection
 
-`swamp run gc` garbage-collects old workflow-run records
-(`.swamp/workflow-runs/`) and model method outputs (`.swamp/outputs/`). These
-two runtime artifact stores are not covered by `data gc`, which handles
-`.swamp/data/` (versioned data with lifetime/version policies).
+`swamp run gc` removes old workflow-run records (`.swamp/workflow-runs/`) and
+model method outputs (`.swamp/outputs/`). `data gc` does not cover these; it
+handles `.swamp/data/` (versioned data with lifetime/version policies).
 
 - **Default retention**: `.swamp.yaml` can configure independent values:
   ```yaml
@@ -159,26 +148,24 @@ two runtime artifact stores are not covered by `data gc`, which handles
   Omitted values use 30 days (`DEFAULT_WORKFLOW_RUN_RETENTION_DAYS` and
   `DEFAULT_OUTPUT_RETENTION_DAYS` in
   `src/domain/data/run_lifecycle_service.ts`). `--older-than` overrides both
-  configured values for one invocation.
-- **Terminal runs only**: Only runs in a terminal state (succeeded, failed,
-  cancelled) are deleted. Running and suspended workflow runs are never deleted
-  regardless of age.
-- **Flags**: `--dry-run`, `--force`, `--older-than <duration>` (reuses
-  `parseDuration` -- units: m, h, d, w, mo, y)
-- **Manual-only**: There is no automated or post-run GC for these stores yet.
-  `swamp run gc` is currently the only way to clean them up.
+  for one invocation.
+- **Terminal runs only**: only succeeded, failed or cancelled runs are deleted.
+  Running and suspended workflow runs are never deleted, however old.
+- **Flags**: `--dry-run`, `--force`, `--older-than <duration>` (uses
+  `parseDuration`; units m, h, d, w, mo, y).
+- **Manual-only**: nothing cleans these stores automatically or after a run
+  yet. `swamp run gc` is the only way.
 
 ## RepoIndexService
 
-The RepoIndexService is a domain event handler that responds to aggregate
-repository mutations. It is currently a noop implementation
-(`NoopRepoIndexService`) — the old symlink-based logical views have been
-removed. Domain events are still emitted by repositories and can be used for
+The RepoIndexService is a domain event handler for aggregate repository
+changes. It is currently a no-op (`NoopRepoIndexService`); the old
+symlink-based logical views are gone. Repositories still emit domain events for
 future event-driven features.
 
 ### Domain Events
 
-Aggregate repositories emit domain events when data changes:
+Aggregate repositories emit these events when data changes:
 
 **Model Events:**
 
@@ -218,10 +205,10 @@ Aggregate repositories emit domain events when data changes:
 
 When an aggregate repository emits an event:
 
-1. The repository persists the aggregate (definitions to top-level directories,
-   runtime data to the datastore)
-2. The repository emits the appropriate domain event
-3. The RepoIndexService receives the event (currently a noop)
+1. The repository saves the aggregate (definitions to top-level directories,
+   runtime data to the datastore).
+2. It emits the matching domain event.
+3. The RepoIndexService receives it (currently a no-op).
 
 ### Directory Structure
 
@@ -231,8 +218,8 @@ When an aggregate repository emits an event:
 models/{normalized-type}/{name}.yaml
 ```
 
-These are real files (not symlinks) tracked in git. Legacy `{uuid}.yaml` files
-are also supported and lazily migrated to name-based filenames on save.
+Real files, not symlinks, tracked in git. Legacy `{uuid}.yaml` files also work
+and are renamed to name-based filenames on save.
 
 **Workflow definitions (`workflows/`):**
 
@@ -240,7 +227,7 @@ are also supported and lazily migrated to name-based filenames on save.
 workflows/workflow-{name}.yaml
 ```
 
-These are real files (not symlinks) tracked in git.
+Real files, not symlinks, tracked in git.
 
 **Runtime data (datastore, default `.swamp/`):**
 
@@ -250,7 +237,8 @@ These are real files (not symlinks) tracked in git.
 .swamp/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 ```
 
-The `workflow-runs/` and `outputs/` directories are covered by `swamp run gc`
-(see [Run Garbage Collection](#run-garbage-collection) above).
+`swamp run gc` covers the `workflow-runs/` and `outputs/` directories (see
+[Run Garbage Collection](#run-garbage-collection) above).
 
-See [datastores.md](../enablers/datastores.md) for how the datastore path is resolved.
+See [datastores.md](../enablers/datastores.md) for how the datastore path is
+resolved.

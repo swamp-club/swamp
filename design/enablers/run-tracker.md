@@ -6,28 +6,26 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Run Tracker
 
-Local SQLite subsystem for tracking in-flight model method and workflow run
-lifecycle.
+A local SQLite subsystem that tracks in-flight model method and workflow runs.
 
 ## Problem
 
 `model method run` writes a `ModelOutput` YAML file with `status: "running"` at
-start, then updates it to a terminal state on completion. Process death (OOM,
-SIGKILL, power failure) leaves the YAML permanently stuck in "running" with no
-mechanism for detection.
+start and updates it when the run ends. If the process dies (OOM, SIGKILL,
+power failure), the YAML stays "running" and nothing notices.
 
 ## Solution
 
-A SQLite database at `.swamp/run_tracker.db` that owns the in-flight lifecycle.
-Output YAMLs are only written once in terminal state (write-once invariant),
-preserving the `findAllGlobalSince()` mtime pre-filter optimization.
+A SQLite database at `.swamp/run_tracker.db` owns the in-flight lifecycle.
+Output YAMLs are written once, in their terminal state. This write-once rule
+keeps the `findAllGlobalSince()` mtime pre-filter working.
 
-**Known limit:** the write-once invariant holds for top-level
-`modelMethodRun()` (`src/libswamp/models/run.ts`). Nested `context.runModel()`
-invocations go through `DefaultMethodExecutionService.execute`
-(`src/domain/models/method_execution_service.ts`), which still saves a
-`status: "running"` output YAML before execution so the child's id is available
-as `parentOutputId`; a crash mid-child leaves that YAML in `running`.
+**Known limit:** write-once holds for top-level `modelMethodRun()`
+(`src/libswamp/models/run.ts`). Nested `context.runModel()` calls go through
+`DefaultMethodExecutionService.execute`, which still saves a
+`status: "running"` output YAML first so the child's id can serve as
+`parentOutputId` (`src/domain/models/method_execution_service.ts`). A crash
+mid-child leaves that YAML in `running`.
 
 ### Schema
 
@@ -63,115 +61,105 @@ CREATE TABLE pending_runs (             -- queued webhook/cron fires
 );
 ```
 
-(`src/infrastructure/persistence/run_tracker_store.ts`.) Schema versioning via
-`run_tracker_meta` table. Terminal rows older than 7 days are purged on
-startup; `swamp run gc` (`src/cli/commands/run_gc.ts`, protocol `run.gc`)
-collects older run records on demand with a 30-day default, `--older-than`,
-`--dry-run`, and `--server`.
+(`src/infrastructure/persistence/run_tracker_store.ts`.) The
+`run_tracker_meta` table holds the schema version. Terminal rows older than 7
+days are purged at startup. `swamp run gc` removes older records on demand:
+30-day default, `--older-than`, `--dry-run`, `--server`
+(`src/cli/commands/run_gc.ts`, protocol `run.gc`).
 
 ### Lifecycle
 
-1. **Register** — on method/workflow start, INSERT with `pid`, `hostname`,
-   `heartbeat_at = now`, `status = 'running'`
-2. **Heartbeat** — every 30s, `UPDATE heartbeat_at = now WHERE id = ?`
-3. **Complete** — on success/failure/cancel/suspend, UPDATE status (guarded by
-   `AND status IN ('running', 'suspended')` to prevent TOCTOU races)
-4. **Reap** — find stale rows (heartbeat >90s): same-machine checks
-   `isProcessDead(pid)` first, cross-machine uses TTL alone. Reaped runs are
-   marked `interrupted` (not `failed`) so they are eligible for checkpoint
-   recovery. Reaping runs at `swamp serve` boot, `swamp model method run`,
-   `swamp model cancel`, and `swamp run doctor --fix` (locally or via the
-   `run.doctor` handler) — not on every CLI invocation (`reapStaleRuns`
-   callers in `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`).
-   The continuous reconciler and `run.doctor` also reconcile YAML
-   workflow-run records from dead remote instances whose heartbeats are gone.
-5. **Suspend** — workflow approval gates set status to `suspended`, which
-   excludes the row from stale detection
-6. **Reactivate** — on workflow resume, transitions `suspended` → `running` and
-   restarts heartbeat
+1. **Register**: on start, INSERT with `pid`, `hostname`,
+   `heartbeat_at = now`, `status = 'running'`.
+2. **Heartbeat**: every 30s, `UPDATE heartbeat_at = now WHERE id = ?`.
+3. **Complete**: on success, failure, cancel or suspend, UPDATE status, guarded
+   by `AND status IN ('running', 'suspended')` against TOCTOU races.
+4. **Reap**: find rows with a heartbeat older than 90s. On the same machine,
+   check `isProcessDead(pid)` first; across machines, use the TTL alone. Reaped
+   runs become `interrupted`, not `failed`, so checkpoint recovery can resume
+   them. Reaping runs at `swamp serve` boot, `swamp model method run`,
+   `swamp model cancel`, and `swamp run doctor --fix` (local or via the
+   `run.doctor` handler), not on every CLI call (`reapStaleRuns` callers in
+   `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`). The
+   continuous reconciler and `run.doctor` also reconcile YAML workflow-run
+   records from dead remote instances.
+5. **Suspend**: approval gates set `suspended`, which skips stale detection.
+6. **Reactivate**: on resume, `suspended` → `running` and the heartbeat
+   restarts.
 
 ### Coverage
 
-- **CLI `model method run`** and **`swamp serve` model method runs** both flow
+- **CLI `model method run`** and **`swamp serve` model method runs** both go
   through `modelMethodRun()` in `run.ts`, which registers with the tracker.
-- **Workflow-triggered model method runs** via `execution_service.ts`
-  `DefaultStepExecutor.executeModelMethod()` register with the tracker.
-- **Workflow runs** themselves register at the `WorkflowExecutionService.run()`
-  level, tracking the overall workflow lifecycle.
-- Workflow suspend/approve/resume/reject transitions are tracked (suspended →
-  running → completed, or suspended → failed on reject).
+- **Workflow-triggered model method runs** register via
+  `DefaultStepExecutor.executeModelMethod()` in `execution_service.ts`.
+- **Workflow runs** register in `WorkflowExecutionService.run()` for the whole
+  workflow.
+- Suspend/approve/resume/reject are tracked: suspended → running → completed,
+  or suspended → failed on reject.
 
 ### CLI Commands
 
-- `swamp run history` — list recent runs (last 24h), model methods and workflows
-- `swamp run history --active` — running only
-- `swamp run history --all` — full tracked history
-- `swamp run doctor` — diagnose stale/orphaned runs
-- `swamp run doctor --fix` — auto-reap stale runs
+- `swamp run history`: runs from the last 24h, model methods and workflows
+- `swamp run history --active`: running only
+- `swamp run history --all`: full tracked history
+- `swamp run doctor`: diagnose stale or orphaned runs
+- `swamp run doctor --fix`: reap stale runs
 
-All commands support `--server` for querying a remote `swamp serve` instance and
-`--json` for structured output.
+All support `--server` for a remote `swamp serve` instance and `--json`.
 
 ### Unhandled Rejection Guard
 
-`swamp serve` installs a global `unhandledrejection` and `error` event handler
-at startup (`src/serve/unhandled_rejection_guard.ts`). This prevents detached
-rejecting promises or uncaught exceptions in extension code from terminating the
-server process. The handler logs the error and calls `preventDefault()` to keep
-the process alive.
+`swamp serve` installs global `unhandledrejection` and `error` event handlers at
+startup so detached rejections or uncaught exceptions in extension code cannot
+kill the server. The handler logs the error and calls `preventDefault()`
+(`src/serve/unhandled_rejection_guard.ts`).
 
-The guard cannot correlate a detached rejection with a specific active run
-because the rejection may fire after the run's async context has already exited.
-If the rejection does orphan a run (e.g. the rejection fires during execution
-and prevents the run from completing normally), the heartbeat reaper will mark
-it as stale after the 90-second TTL.
+The guard cannot link a rejection to a run, since it may fire after the run's
+async context has exited. If a rejection does orphan a run, the heartbeat reaper
+marks it stale after the 90-second TTL.
 
 ### Run Metrics Tracker
 
-A separate in-memory subsystem (`src/serve/run_metrics_tracker.ts`) that
-aggregates run completion events into sliding-window throughput and latency
-metrics for the health monitoring endpoints.
-
-The RunMetricsTracker is NOT related to the SQLite-based run tracker — it is a
-lightweight, in-memory, serve-only counters that records outcomes (completed,
-failed, cancelled) and computes:
+A separate, in-memory, serve-only set of counters
+(`src/serve/run_metrics_tracker.ts`) that feeds the health endpoints. It is not
+related to the SQLite run tracker. It records outcomes (completed, failed,
+cancelled) and computes over a sliding window:
 
 - Completion, failure, and cancellation counts within the window
 - Throughput per minute
 - Latency percentiles (P50, P95, P99)
 
-Default window is 5 minutes. Records are pruned on snapshot or when the buffer
-exceeds 10,000 entries. Event sources: scheduled execution
-(schedule_completed/schedule_failed), webhook execution
-(webhook_completed/webhook_failed). Runs started over the WebSocket API
-(`workflow.run`, `model.method.run`) are **not** recorded
-(`runMetricsTracker.record` is called only from the schedule and webhook event
-handlers in `src/cli/commands/serve.ts`), so health throughput excludes them.
-A webhook run that suspends on an approval gate emits neither event and so
-contributes no health record until it resumes.
+The window defaults to 5 minutes. Records are pruned on snapshot or past 10,000
+entries. Sources are scheduled runs (schedule_completed/schedule_failed) and
+webhook runs (webhook_completed/webhook_failed). Runs started over the WebSocket
+API (`workflow.run`, `model.method.run`) are **not** recorded, so health
+throughput excludes them (`runMetricsTracker.record` is called only from the
+schedule and webhook handlers in `src/cli/commands/serve.ts`). A webhook run
+suspended on an approval gate records nothing until it resumes.
 
-The metrics are surfaced on `GET /api/v1/health` and
-`GET /api/v1/health/stream`.
+The metrics appear on `GET /api/v1/health` and `GET /api/v1/health/stream`.
 
 ### Local SQLite, replicated presence
 
-The SQLite file itself is never synced — PIDs and heartbeats are inherently
-local, and a PID from machine A is meaningless on machine B. In an HA
-deployment (see [serve](../primitives/serve.md)) run *presence* is replicated
-through the `ControlPlaneStore` instead: each instance writes
-`active-runs/<instanceId>/<runId>` (`src/serve/active_run_tracker.ts`), cron
-and webhook pending runs are dual-written to `pending-runs/<id>`
-(`src/cli/commands/serve.ts`), and boot reconciliation
-(`src/serve/boot_reconciliation.ts`) marks runs owned by a dead peer as
-`failed` with reason `remote_instance_dead`.
+The SQLite file is never synced, because PIDs and heartbeats mean nothing on
+another machine. In an HA deployment (see [serve](../primitives/serve.md)), run
+presence is replicated through the `ControlPlaneStore`:
 
-The `/internal/runs` endpoint that exposes full run history is off by default;
-it is enabled with `--enable-internal-api` / `SWAMP_ENABLE_INTERNAL_API` and
-requires admin authorization (`src/cli/commands/serve.ts`).
+- Each instance writes `active-runs/<instanceId>/<runId>`
+  (`src/serve/active_run_tracker.ts`).
+- Cron and webhook pending runs are also written to `pending-runs/<id>`
+  (`src/cli/commands/serve.ts`).
+- Boot reconciliation marks runs owned by a dead peer `failed` with reason
+  `remote_instance_dead` (`src/serve/boot_reconciliation.ts`).
+
+The `/internal/runs` endpoint exposes full run history. It is off by default,
+enabled with `--enable-internal-api` / `SWAMP_ENABLE_INTERNAL_API`, and needs
+admin authorization (`src/cli/commands/serve.ts`).
 
 ### Related
 
-- #636 — OOM crash leaves run stuck in "running"
-- #519 — persistent, queryable workflow runs (foundation laid here)
-- #1613 — Health snapshot endpoints with SSE streaming (added RunMetricsTracker
-  and `/internal/runs` endpoint for full run history access)
+- #636: OOM crash leaves run stuck in "running"
+- #519: persistent, queryable workflow runs (foundation laid here)
+- #1613: health snapshot endpoints with SSE streaming (added RunMetricsTracker
+  and the `/internal/runs` endpoint for full run history)

@@ -5,15 +5,14 @@ last-verified: 2026-09-08 @ HEAD
 
 # Serve Audit
 
-Audit event pipeline for `swamp serve`. Captures authorization decisions across
-all handlers and success/failure events for every operation. Events are
-chain-hashed for tamper evidence, persisted durably via a write-ahead log, and
-queryable through the `audit.query` API and `swamp audit log` CLI command.
+The audit event pipeline for `swamp serve`. It records every handler's
+authorization decisions and a success or failure event per operation. Events are
+chain-hashed to show tampering, kept durable by a write-ahead log, and queried
+with the `audit.query` API and `swamp audit log`.
 
-This is distinct from the CLI audit subsystem (`src/domain/audit/`), which
-tracks local command history. The serve audit bounded context
-(`src/domain/serve_audit/`) concerns server-side request-level events across
-authenticated WebSocket connections.
+The CLI audit subsystem (`src/domain/audit/`) is separate: it tracks local
+command history. This bounded context (`src/domain/serve_audit/`) covers
+server-side events on authenticated WebSocket connections.
 
 ## How it works
 
@@ -21,37 +20,34 @@ authenticated WebSocket connections.
 Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [chain hash] → WalSink/StoreSink → AuditStore(s)
 ```
 
-1. **authorizeOrReject** returns `{ allowed, decision }` — the `AccessDecision`
-   is captured in the audit event so every allow/deny is traceable to a specific
-   grant rule. Denials emit an audit event as a side effect.
-2. **audited()** wraps a handler's `Promise<void>`, emitting success on
-   resolution and failure on rejection. It re-throws the original error so
-   handler semantics are unchanged. All 106+ handlers are wrapped.
-3. **AuditEmitter** appends events synchronously to a **RingBuffer** (10,000
-   capacity). During drain, events receive chain-hashed integrity fields
-   (sequence, SHA-256 digest, version) via **AuditChainState** before reaching
-   sinks. Sink errors are logged and absorbed — audit never disrupts request
-   handling unless fail-secure mode is enabled.
-4. **AuditPolicy** evaluates each event against ordered rules to determine the
-   detail level (none, metadata, request, requestResponse). Management-tier
-   events (audit.query, audit.verify) default to metadata level.
-5. **WalSink** spills events to local disk when the remote backend is
-   unreachable, replays on reconnection. Configurable max size (default 100MB).
-6. **StoreSink** batches events in memory, writes date-partitioned JSONL
-   (`events/YYYY-MM-DD/<uuid>.jsonl`) to all configured **AuditStore** targets
-   on a timer or when the batch is full. Supports per-target retention with
-   automatic date-partition GC.
+1. **authorizeOrReject** returns `{ allowed, decision }`. The event keeps the
+   `AccessDecision`, so every allow or deny traces to a grant rule. Denials also
+   emit an event.
+2. **audited()** wraps a handler's `Promise<void>`, emitting success on resolve
+   and failure on reject. It re-throws the original error, so handler behavior
+   is unchanged. All 106+ handlers are wrapped.
+3. **AuditEmitter** appends events synchronously to a **RingBuffer** (capacity
+   10,000). On drain, **AuditChainState** adds integrity fields (sequence,
+   SHA-256 digest, version) before sinks see them. Sink errors are logged and
+   absorbed; audit never disrupts requests unless fail-secure mode is on.
+4. **AuditPolicy** matches ordered rules to pick each event's detail level:
+   none, metadata, request or requestResponse. Management-tier events
+   (audit.query, audit.verify) default to metadata.
+5. **WalSink** spills events to local disk while the remote backend is down and
+   replays them on reconnect. Max size is configurable (default 100MB).
+6. **StoreSink** batches events and, on a timer or a full batch, writes
+   date-partitioned JSONL (`events/YYYY-MM-DD/<uuid>.jsonl`) to every
+   configured **AuditStore** target. Each target can set its own retention; old
+   date partitions are deleted automatically.
 7. **RemoteAuditStore** adapts `ControlPlaneStore` with a key prefix.
 
 ## Configuration
 
-Audit is enabled via `serve.yaml`. No config means zero behavior change.
+Audit is turned on in `serve.yaml`. With no config, nothing changes.
 
-Each audit store target can reference a **dedicated datastore** — a separate
-S3 bucket, a separate provider, fully independent from the repo's main
-datastore. This is the recommended setup: audit data should not live alongside
-application data, so it cannot be tampered with by someone who has access to
-the main datastore.
+Each store target can use a **dedicated datastore**: its own S3 bucket or
+provider, independent of the repo's main datastore. This is recommended, so that
+someone with access to the main datastore cannot alter audit data.
 
 ```yaml
 audit:
@@ -78,97 +74,92 @@ audit:
     max-size: 100MB
 ```
 
-Config values support `${{ }}` expression interpolation — the same syntax as
-datastore config in `.swamp.yaml` (see
+Config values support `${{ }}` interpolation, the same syntax as datastore
+config in `.swamp.yaml` (see
 [datastores.md § Config Value Interpolation](datastores.md#config-value-interpolation)).
 
-A store entry without `type` + `config` falls back to the repo's existing
-control-plane store (shared datastore). This works for development but logs
-a warning at startup — production deployments should use a dedicated store.
+A store entry without `type` + `config` uses the repo's existing control-plane
+store (the shared datastore). That works for development but logs a startup
+warning; production should use a dedicated store.
 
 ## What is audited
 
-- **All handlers**: authorization decision capture via `authorizeOrReject` and
-  success/failure auditing via `audited()` wrapper
-- **Chain hashing**: every event carries a sequence number and SHA-256 digest
-  chaining it to the previous event for tamper evidence
-- **Access decisions**: every allow/deny is recorded with the matched grant
-  rule, effect, and principal groups at decision time
+- **All handlers**: the authorization decision via `authorizeOrReject`, and
+  success or failure via the `audited()` wrapper.
+- **Chain hashing**: every event has a sequence number and a SHA-256 digest
+  that links it to the previous event.
+- **Access decisions**: every allow or deny, with the matched grant rule, its
+  effect, and the principal's groups at decision time.
 
 ## Query API
 
-- `audit.query` — paginated query with filters (time range, principal,
-  category, action, resource, outcome). Requires `read` permission on the
-  `audit` resource kind.
-- `audit.verify` — verify chain integrity for a time range, reports broken
-  chains or missing events
+- `audit.query`: paginated query filtered by time range, principal, category,
+  action, resource and outcome. Needs `read` permission on the `audit` resource
+  kind.
+- `audit.verify`: checks chain integrity for a time range and reports broken
+  chains or missing events.
 
 ## CLI commands
 
-- `swamp audit log` — query the audit log with filters (`--since`, `--until`,
-  `--principal`, `--category`, `--action`, `--outcome`, `--limit`)
-- `swamp audit verify` — check chain integrity for a time range
-- `swamp audit log --follow` — stream new audit events in real-time after the
-  initial query (Ctrl+C to stop)
+- `swamp audit log`: query the audit log with `--since`, `--until`,
+  `--principal`, `--category`, `--action`, `--outcome`, `--limit`.
+- `swamp audit verify`: check chain integrity for a time range.
+- `swamp audit log --follow`: after the initial query, stream new events live
+  until Ctrl+C.
 
 ## Real-time streaming
 
-`audit.subscribe` starts a live stream of audit events over the existing
-WebSocket connection. The server sends `audit.event` messages as they occur,
-filtered by the subscription parameters. Subscriptions stay active until the
-connection closes or the client sends `audit.unsubscribe`.
+`audit.subscribe` streams audit events live on the existing WebSocket. The
+server sends matching `audit.event` messages until the connection closes or the
+client sends `audit.unsubscribe`.
 
-Filter shape matches `audit.query`: categories, principals, actions, outcomes,
-resourceKind. Per-connection subscription cap: 2. Subscriptions are
-re-authorized every 60 seconds — revoked grants terminate the stream.
+Filters match `audit.query`: categories, principals, actions, outcomes,
+resourceKind. Each connection can hold 2 subscriptions. They are re-authorized
+every 60 seconds, and a revoked grant ends the stream.
 
-No durability guarantee — this is live streaming, not a replay mechanism. Missed
-events are queryable via `audit.query`.
+There is no replay. Use `audit.query` for missed events.
 
 ## Auth events
 
-The `auth` audit category captures OAuth device flow operations. Unlike other
-categories that flow through the `audited()` wrapper on WebSocket handlers, auth
-events are emitted inline from the HTTP device auth handler
-(`src/serve/device_auth_handler.ts`) via `buildAuditEvent` + `emitter.emit`.
-This is because the device auth flow runs in the HTTP request path
-pre-authentication — there is no WebSocket connection or authenticated principal
-at this point.
+The `auth` audit category records OAuth device flow operations. Other categories
+go through the `audited()` wrapper on WebSocket handlers; these do not. The HTTP
+device auth handler emits them inline (`src/serve/device_auth_handler.ts`) via
+`buildAuditEvent` + `emitter.emit`. The device flow runs on the HTTP path before
+authentication, so there is no WebSocket or principal yet.
 
 Actions:
 
-- `auth.login.started` — device grant initiated (anonymous principal)
-- `auth.login.completed` — OAuth flow completed, server token minted (success)
-- `auth.login.denied` — admission check failed or user denied authorization
-- `auth.login.expired` — device code expired before completion
-- `auth.token.used` — a server token passed direct authentication ingress
+- `auth.login.started`: device grant started (anonymous principal)
+- `auth.login.completed`: OAuth flow completed and a server token minted
+  (success)
+- `auth.login.denied`: admission failed or the user denied authorization
+- `auth.login.expired`: the device code expired first
+- `auth.token.used`: a server token passed direct authentication
 
-The `AuditEmitter` and `instanceId` are threaded through `DeviceAuthDeps`; the
-`sourceIp` is resolved by the serve HTTP handler (respecting `trustProxy` /
-`X-Forwarded-For`) and passed through. When audit is not configured (no
-`auditEmitter`), the emit helper is a no-op.
+`DeviceAuthDeps` carries the `AuditEmitter` and `instanceId`. The serve HTTP
+handler resolves `sourceIp` (honouring `trustProxy` / `X-Forwarded-For`) and
+passes it on. With no `auditEmitter`, the emit helper does nothing.
 
-Token revocation is audited separately via the `access.token.revoke` WebSocket
-handler under the `admin` category.
+The `access.token.revoke` WebSocket handler audits token revocation under the
+`admin` category.
 
-Successful `auth.token.used` events contain the token name, authenticated
-principal, source IP, and ingress metadata, but never the credential secret.
-They are best-effort and cannot interrupt authentication. Token-creation audit
-events record the created token name as their resource name.
+Successful `auth.token.used` events hold the token name, principal, source IP
+and ingress metadata, never the secret. They are best-effort and cannot
+interrupt authentication. Token-creation events use the new token's name as the
+resource name.
 
 ## System events
 
-The `system` audit category captures infrastructure lifecycle events with
+The `system` audit category records infrastructure lifecycle events with
 `principalKind: "system"`:
 
-- `instance.start` — emitted when the serve instance starts (with version)
-- `instance.stop` — emitted on graceful shutdown
-- `instance.join` — emitted when a new peer instance appears in the cluster
-- `instance.leave` — emitted when a peer instance disappears from the cluster
-- `health.transition` — emitted when the instance health status changes
-  (healthy/degraded/unhealthy)
+- `instance.start`: the serve instance started (with version)
+- `instance.stop`: graceful shutdown
+- `instance.join`: a new peer instance appeared in the cluster
+- `instance.leave`: a peer instance left the cluster
+- `health.transition`: instance health changed (healthy/degraded/unhealthy)
 
-System events are always at `metadata` audit level (management tier).
+System events are always at `metadata` level (management tier).
 
 ## Domain model
 
@@ -205,8 +196,8 @@ System events are always at `metadata` audit level (management tier).
 
 ## Phase 5 (completed)
 
-Alert rules, compliance reports, HMAC key rotation, streaming bulk export,
-and hot-reload of external sinks.
+Alert rules, compliance reports, HMAC key rotation, streaming bulk export, and
+hot-reload of external sinks.
 
 | Concept                 | DDD Building Block | Location                          |
 | ----------------------- | ------------------ | --------------------------------- |
@@ -221,6 +212,7 @@ and hot-reload of external sinks.
 
 ## Future phases
 
-- **Phase 6**: Extension sink API — let extension authors register custom audit
-  sinks (Kafka, Elasticsearch, etc.) via the AuditSink interface. Requires design
-  work on trust model, discovery/packaging, sandbox, and lifecycle.
+- **Phase 6**: Extension sink API. Extension authors could register custom audit
+  sinks (Kafka, Elasticsearch, etc.) through the AuditSink interface. This needs
+  design work on the trust model, discovery and packaging, sandbox, and
+  lifecycle.

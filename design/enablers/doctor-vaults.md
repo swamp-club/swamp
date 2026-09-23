@@ -6,69 +6,62 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Doctor Vaults — sensitive-output vault availability scan
 
-`swamp doctor vaults` is a read-only diagnostic that reports model definitions
-whose resource output schemas contain sensitive fields (`{ sensitive: true }`
-metadata or `sensitiveOutput: true` on the spec) when no vault is configured in
-the repository. It exits non-zero when any finding is present, so CI can gate
-on it.
+`swamp doctor vaults` is a read-only check. It reports model definitions whose
+resource output schemas have sensitive fields (`{ sensitive: true }` metadata or
+`sensitiveOutput: true` on the spec) when the repository has no vault. It exits
+non-zero on any finding, so CI can gate on it.
 
 ## Why it exists
 
-Models that produce sensitive data in their resource outputs (credentials, API
-keys, private key material) rely on a configured vault to store those values
-securely. Without a vault, the method execution fails at persist time — but only
-after the method has already run, potentially creating cloud resources that
-cannot be recorded.
+Models whose resource outputs hold sensitive data (credentials, API keys,
+private keys) need a vault to store it. Without one, the method fails when it
+saves output, after it has already run and possibly created cloud resources
+that now cannot be recorded.
 
 swamp-club#562 added two runtime guards:
 
 1. **Pre-flight check** in `DefaultMethodExecutionService.executeWorkflow()`
-   (`src/domain/models/method_execution_service.ts`) — before a _mutating_
-   method (`isMutatingKind`) begins, if the model's resource output specs
-   contain sensitive fields and no vault is configured, the method fails
-   immediately with a `UserError`. No API calls are made, no cloud resources
-   are created. Read and list methods skip this guard.
+   (`src/domain/models/method_execution_service.ts`). Before a mutating
+   method (`isMutatingKind`) starts, it fails with a `UserError` if the model's
+   resource output specs have sensitive fields and no vault is configured. No
+   API calls are made and no cloud resources are created. Read and list methods
+   skip this check.
 
-2. **Defense-in-depth** in `createResourceWriter()` — if a resource write is
-   attempted for a spec with sensitive fields and no `vaultService` is
-   available, it throws an explicit error instead of silently writing plaintext.
+2. **Defense-in-depth** in `createResourceWriter()`. A write for a spec with
+   sensitive fields and no `vaultService` throws rather than writing plaintext.
 
-`doctor vaults` is the validation-time counterpart: it scans all model
-definitions proactively so users discover the mismatch before they even attempt
-a `method run`.
+`doctor vaults` runs the same check ahead of time over every model definition,
+so users find the problem before a `method run`.
 
 ## What it scans
 
-It enumerates the same two definition trees as `doctor secrets`:
+The same two trees as `doctor secrets`:
 
 - Source-of-truth definitions under `models/`.
 - Auto-created definitions under `.swamp/auto-definitions`.
 
-For each definition, it resolves the model type from the registry and checks
-whether any `ResourceOutputSpec` requires a vault (via `modelRequiresVault()`
-in `data_writer.ts`). A spec requires a vault when:
+For each definition it resolves the model type from the registry and asks
+whether any `ResourceOutputSpec` needs a vault (`modelRequiresVault()` in
+`data_writer.ts`). A spec needs one when:
 
-- Any field in the spec's Zod schema has `.meta({ sensitive: true })`, or
-- The spec has `sensitiveOutput: true` (all fields treated as sensitive).
+- any field in its Zod schema has `.meta({ sensitive: true })`, or
+- it has `sensitiveOutput: true` (all fields count as sensitive).
 
-If any spec requires a vault and no vault is configured in the repository, the
-definition is reported as a finding.
+If a spec needs a vault and the repository has none, the definition is reported.
 
 ## Vault availability
 
-Vault availability is checked by instantiating a `VaultService` from the
-repository (`VaultService.fromRepository(repoDir)`) and verifying
-`getVaultNames().length > 0` — at least one vault is configured
-(`src/libswamp/models/doctor_vaults.ts`). This is the same check the runtime
-pre-flight uses.
+The scan builds a `VaultService` with `VaultService.fromRepository(repoDir)` and
+checks `getVaultNames().length > 0`, meaning at least one vault is configured
+(`src/libswamp/models/doctor_vaults.ts`). The runtime pre-flight uses the same
+check.
 
 ## Best-effort residual
 
-Like `doctor secrets`, definitions whose type cannot be resolved are reported
-as unresolved — advisory, not silent.
+As in `doctor secrets`, definitions whose type cannot be resolved are reported
+as unresolved: advisory, not silent.
 
 ## Out of scope
 
-This scan does not check whether the configured vault is _functional_ (e.g.
-encryption keys present, provider reachable). That is a runtime concern handled
-by the vault provider itself.
+The scan does not check that the vault works (e.g. encryption keys present,
+provider reachable). The vault provider handles that at runtime.

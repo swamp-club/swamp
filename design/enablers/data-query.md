@@ -6,46 +6,45 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Data Query
 
-Data query is the general interface for finding data artifacts across models
-using CEL predicates. Queries filter on artifact metadata (model name, spec
-name, tags, version, etc.) and optionally on JSON content.
+Data query is the general way to find data artifacts across models with CEL
+predicates. Queries filter on artifact metadata (model name, spec name, tags,
+version, etc.) and optionally on JSON content.
 
-The query interface is available in three places:
+It is available in three places, all with the same predicate syntax and
+fields:
 
-- **CLI** — `swamp data query '<predicate>'`
-- **CEL expressions** — `data.query('<predicate>')` in definitions and workflows
-- **Extension methods** — `context.queryData('<predicate>')` in model method
+- **CLI**: `swamp data query '<predicate>'`
+- **CEL expressions**: `data.query('<predicate>')` in definitions and workflows
+- **Extension methods**: `context.queryData('<predicate>')` in model method
   implementations
-
-All three accept the same CEL predicate syntax and operate on the same fields.
 
 ## Query is the primitive; helpers are shortcuts
 
-Every `swamp data` read subcommand and every `data.*` CEL helper answers the
-same question a `data query` predicate would, over the same `DataRecord`
-fields — but not all of them walk the catalog. On the CLI only `data search`
-and `data query` read `_catalog.db` (`src/cli/commands/data_search.ts`,
-`src/infrastructure/persistence/catalog_search_adapter.ts`); `get`, `list` and
-`versions` go through the filesystem repository
-(`src/libswamp/data/{get,list,versions}.ts`). The shortcuts exist because
-they read more clearly when your intent matches. **Prefer the shortcut when
-it fits** — `data.latest("m", "n")` is easier to understand than the
-equivalent predicate. Reach for `data query` / `data.query()` directly when
-you need a multi-field predicate, a projection, tag filters beyond a single
-key, or history access beyond a single version.
+Every `swamp data` read subcommand and every `data.*` CEL helper answers a
+question a `data query` predicate could, over the same `DataRecord` fields. Not
+all of them read the catalog. On the CLI, only `data search` and `data query`
+read `_catalog.db` (`src/cli/commands/data_search.ts`,
+`src/infrastructure/persistence/catalog_search_adapter.ts`). `get`, `list` and
+`versions` use the filesystem repository
+(`src/libswamp/data/{get,list,versions}.ts`).
+
+The shortcuts read more clearly, so **prefer the shortcut when it fits**. Use
+`data query` / `data.query()` directly for a multi-field predicate, a
+projection, tag filters beyond a single key, or history beyond a single
+version.
 
 ### CLI shortcuts
 
-| Shortcut                              | Underlying query                                                                             |
-| ------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                    |
+| Shortcut                              | Underlying query                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                   |
 | `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`   |
-| `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                      |
-| `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                            |
-| `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                   |
-| `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>"'`                                                 |
+| `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
+| `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
+| `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
+| `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>"'`                                                |
 | `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
-| `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                      |
+| `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
 
 ### CEL shortcuts
 
@@ -57,31 +56,29 @@ key, or history access beyond a single version.
 | `data.findByTag("k", "v")`    | `data.query('tags.k == "v"')`                                              |
 | `data.findBySpec("m", "s")`   | `data.query('modelName == "m" && specName == "s"')`                        |
 
-Results from any shortcut are structurally identical to the equivalent
-`data.query()` call — same `DataRecord[]` type, same fields. The execution
-path differs in three ways (`src/domain/expressions/model_resolver.ts`):
+A shortcut returns the same `DataRecord[]` type and fields as the equivalent
+`data.query()` call. Execution differs in three ways
+(`src/domain/expressions/model_resolver.ts`):
 
-- `data.latest()` / `data.version()` without a `*:` wildcard resolve
-  filesystem-first (`dataRepo.findByName` on the model's coordinates) and only
-  fall back to the catalog when that misses.
-- Every helper except `data.query()` injects `&& ns == "<own namespace>"`
-  unless the model name carries a namespace prefix (`routeNamespace`).
-- `data.findBySpec()` and `data.findByTag()` deduplicate to the newest record
-  per `(modelName, name, stepName)` (`deduplicateByName`).
+- `data.latest()` / `data.version()` without a `*:` wildcard look on the
+  filesystem first (`dataRepo.findByName` on the model's coordinates). They
+  fall back to the catalog only on a miss.
+- Every helper except `data.query()` adds `&& ns == "<own namespace>"` unless
+  the model name has a namespace prefix (`routeNamespace`).
+- `data.findBySpec()` and `data.findByTag()` keep only the newest record per
+  `(modelName, name, stepName)` (`deduplicateByName`).
 
-**specName ambiguity detection:** `data.latest()` throws a `UserError` when the
-lookup argument matches a `specName` tag that is shared by multiple data items
-under the same model. This fires only when the argument equals the specName —
-callers who pass an exact data name that differs from the specName are not
-affected, even when sibling items share the same spec. Use `data.findBySpec()`
-to explicitly query by specName. The raw `data.query()` equivalent does not
-perform this check.
+**specName ambiguity detection:** `data.latest()` throws a `UserError` when its
+lookup argument equals a `specName` tag shared by several data items under the
+same model. An exact data name that differs from the specName is unaffected,
+even if sibling items share the spec. Use `data.findBySpec()` to query by
+specName. The raw `data.query()` equivalent skips this check.
 
 ### Null-safe access (.?)
 
 `data.latest()` and `data.version()` return `null` when the named instance
-doesn't exist. Use `.?` (optional select) to chain through a potentially null
-result instead of throwing:
+doesn't exist. Use `.?` (optional select) to chain through a possibly-null
+result without throwing:
 
 ```cel
 data.latest("m", "n").?attributes.?payload.?findings           // null if missing
@@ -89,12 +86,12 @@ data.latest("m", "n").?attributes.?findings.orValue([])        // [] if missing
 data.latest("m", "n").attributes.findings                      // throws if missing
 ```
 
-See [expressions.md](./expressions.md#null-safe-optional-access-) for details.
+Details: [expressions.md](./expressions.md#null-safe-optional-access-).
 
 ### Cross-namespace queries (giga-swamp Phase 4)
 
 Model-name helpers (`data.latest`, `data.version`, `data.findBySpec`,
-`data.listVersions`) support namespace-prefixed model names. `data.findByTag`
+`data.listVersions`) accept namespace-prefixed model names. `data.findByTag`
 takes no model name and always searches the caller's own namespace
 (`model_resolver.ts` `findByTag`):
 
@@ -104,8 +101,8 @@ takes no model name and always searches the caller's own namespace
 | `data.latest("infra:model", "name")` | Target namespace `infra` |
 | `data.latest("*:model", "name")` | All namespaces (errors if ambiguous) |
 
-`data.query()` spans all namespaces by default — no implicit namespace filter
-is injected. Use the `ns` field to filter explicitly:
+`data.query()` spans all namespaces by default, with no implicit namespace
+filter. Filter with the `ns` field:
 
 | Query | Scope |
 | --- | --- |
@@ -113,15 +110,15 @@ is injected. Use the `ns` field to filter explicitly:
 | `data.query('ns == "security"')` | Security namespace only |
 | `data.query('ns == ""')` | Solo-mode data only |
 
-The `ns` field name (not `namespace`) is used because `namespace` is a reserved
+The field is `ns`, not `namespace`, because `namespace` is a reserved
 identifier in CEL.
 
 ## DataRecord
 
-`data.query()` returns `DataRecord[]` — the same type returned by
-`data.latest()`, `data.version()`, `data.findByTag()`, `data.findBySpec()`,
-and `context.readModelData()`. As part of this work, `DataRecord` is extended
-with metadata fields:
+`data.query()` returns `DataRecord[]`, the same type as `data.latest()`,
+`data.version()`, `data.findByTag()`, `data.findBySpec()`, and
+`context.readModelData()`. As part of this work, `DataRecord` gains metadata
+fields:
 
 ```typescript
 interface DataRecord {
@@ -160,47 +157,45 @@ interface DataRecord {
 }
 ```
 
-All `DataRecord` fields are populated by standalone exported mapper functions
-in `data_record_mapper.ts`: `fromRow()` for catalog-backed queries,
-`fromData()` for version lookups, `fromResourceHandle()` for workflow step
-resource outputs, and `fromFileHandle()` for file-kind outputs. This is
-backward-compatible: existing code that reads `record.name` or
-`record.attributes` continues to work; the provenance fields are additive.
+Standalone exported mapper functions in `data_record_mapper.ts` fill every
+`DataRecord` field: `fromRow()` for catalog-backed queries, `fromData()` for
+version lookups, `fromResourceHandle()` for workflow step resource outputs, and
+`fromFileHandle()` for file-kind outputs. The provenance fields are additive,
+so code reading `record.name` or `record.attributes` still works.
 
-`path` is the local filesystem path of the version's stored content (its
-`raw` file). It is only populated when the caller opts in with
-`DataQueryOptions.includeContentPath`, and the only caller that does is the CEL
+`path` is the local filesystem path of the version's stored content (its `raw`
+file). It is filled only when the caller opts in with
+`DataQueryOptions.includeContentPath`. The only caller that does is the CEL
 `data.*` namespace (`ModelResolver.buildDataNamespace`), so that
 `data.latest(...).path` can replace the deprecated
-`model.<name>.file.<spec>.<instance>.path`. Everywhere else — `swamp data
-query`, the serve `data.query` handler, remote-worker `queryData`, and
-extension `readModelData`/`queryData` — `path` is `""`, so host filesystem
-paths never cross the serve boundary, including through a `select` projection.
-Even when requested it is `""` for a record from another namespace in a shared
-datastore, for ephemeral data (held in memory), and when the file is not on
-local disk (see [datastores.md](./datastores.md), lazy hydration).
+`model.<name>.file.<spec>.<instance>.path`. Everywhere else `path` is `""`:
+`swamp data query`, the serve `data.query` handler, remote-worker `queryData`,
+and extension `readModelData`/`queryData`. Host filesystem paths therefore
+never cross the serve boundary, including through a `select` projection.
+
+Even when requested, `path` is `""` for a record from another namespace in a
+shared datastore, for ephemeral data (held in memory), and when the file is not
+on local disk (see [datastores.md](./datastores.md), lazy hydration).
 `localContentPath()` in `data_record_mapper.ts` holds that rule. `path` is not
-a predicate field: filtering on a host path is not a catalog query.
+a predicate field, because filtering on a host path is not a catalog query.
 
-For JSON resources (`contentType == "application/json"`), `attributes` contains
-the parsed content — matching the existing behavior of `data.latest()` and
-other accessors. For non-JSON data, `attributes` is `{}`.
+For JSON resources (`contentType == "application/json"`), `attributes` holds
+the parsed content, as `data.latest()` and other accessors already do. For
+non-JSON data, `attributes` is `{}`.
 
-Results from `data.query()` are interchangeable with results from any other
-data accessor. CEL expressions that work on `data.latest()` results work
-identically on `data.query()` results, and vice versa.
+`data.query()` results are interchangeable with those of any other data
+accessor, in both directions.
 
 ## Filter Context
 
-The predicate is evaluated against each `DataRecord`. The full set of
-filterable fields:
+The predicate is evaluated against each `DataRecord`. Filterable fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `id` | string | Data artifact UUID |
 | `name` | string | Data artifact name |
 | `version` | int | Version number |
-| `isLatest` | bool | Whether this is the latest version of the artifact |
+| `isLatest` | bool | Whether this is the artifact's latest version |
 | `createdAt` | string | ISO-8601 timestamp |
 | `attributes` | map | Parsed JSON content (lazy-loaded; `{}` unless `contentType` is `application/json`) |
 | `tags` | map | All tags as key-value pairs |
@@ -220,65 +215,63 @@ filterable fields:
 | `jobName` | string | Job name (`""` outside workflows) |
 | `stepName` | string | Step name (`""` outside workflows) |
 | `source` | string | Provenance source (e.g. `"step-output"`, `""`) |
-| `ns` | string | Namespace slug (`""` in solo mode). Alias for `DataRecord.namespace` — CEL reserves `namespace` as an identifier |
+| `ns` | string | Namespace slug (`""` in solo mode); alias for `DataRecord.namespace` |
 
 All fields except `attributes` and `content` are metadata stored in the
-catalog. `attributes` and `content` are loaded from disk on demand, per row:
-only when evaluating the predicate actually touches them (a metadata term
-earlier in `&&` skips the read) or when a matching row's result or `select`
-projection needs them. A body read that fails for a matching row fails the
-query rather than silently skipping the row. `attributes` contains parsed
-JSON (for `application/json` only). `content` is the raw text string for
-`text/*`, `application/yaml` and `application/x-yaml`
-(`src/domain/data/content_type.ts` `isTextContentType`); for
+catalog. Those two load from disk per row, on demand. They load only when the predicate
+touches them (a metadata term earlier in `&&` skips the read), or when a
+matching row's result or `select` projection needs them. If a body read fails
+for a matching row, the query fails instead of silently skipping the row.
+
+`attributes` holds parsed JSON (for `application/json` only). `content` is the
+raw text string for `text/*`, `application/yaml` and `application/x-yaml`
+(`src/domain/data/content_type.ts` `isTextContentType`). For
 `application/json` it is the same parsed object as `attributes`
 (`src/domain/data/data_record_mapper.ts` `parseContent`). For binary content
 types, `content` is `""`.
 
 ## Provenance-Based Filtering
 
-Data produced inside a workflow carries first-class provenance fields
-(`workflowRunId`, `workflowName`, `stepName`, etc.). These fields are
-queryable just like any other `DataRecord` field — no hidden scoping is
-applied by the framework.
+Data produced inside a workflow carries provenance fields directly on the
+record (`workflowRunId`, `workflowName`, `stepName`, etc.). They are queryable like
+any other `DataRecord` field; the framework applies no hidden scoping.
 
-To scope results to a specific workflow run, write an explicit predicate:
+To scope results to one workflow run, write the predicate yourself:
 
 ```cel
 modelName == "dedup" && specName == "episode" && workflowRunId == "run-uuid"
 ```
 
 No data access function scopes by workflow run. Only `data.query()` and
-`context.queryData()` are fully unscoped — the model-name helpers and
-`context.readModelData()` add an own-namespace filter (see above), but nothing
-else. The predicate string is the contract — if it doesn't say it, it isn't
-happening.
+`context.queryData()` are fully unscoped. The model-name helpers and
+`context.readModelData()` add an own-namespace filter (see above) and nothing
+else. Any other scoping must be written into the predicate.
 
-**Step-aware versioning:** The `is_latest` flag follows asymmetric
-demotion rules based on `step_name`:
+**Step-aware versioning:** the `is_latest` flag follows asymmetric demotion
+rules based on `step_name`:
 
-- **Model-method writes** (`step_name = ""`) demote ALL prior latest rows
-  for the same `(model, data)`, regardless of their `step_name`. A
-  model-method write always produces exactly one latest.
-- **Workflow-step writes** (`step_name != ""`) demote prior rows with the
-  same `step_name` AND prior model-method rows (`step_name = ""`), but
-  leave other steps' latest rows untouched. Different workflow steps
-  writing to the same data name maintain independent version chains.
+- **Model-method writes** (`step_name = ""`) demote all prior latest rows for
+  the same `(model, data)`, whatever their `step_name`. A model-method write
+  always leaves exactly one latest.
+- **Workflow-step writes** (`step_name != ""`) demote prior rows with the same
+  `step_name` and prior model-method rows (`step_name = ""`). Other steps'
+  latest rows are untouched, so different workflow steps writing the same data
+  name keep independent version chains.
 
-Collection helpers (`findBySpec`, `findByTag`) return the latest version
-per step, so multiple records may be returned for the same data name when
-produced by different workflow steps. `data.latest()` returns the single
-most-recently-written record regardless of step.
+Collection helpers (`findBySpec`, `findByTag`) return the latest version per
+step, so they may return several records for one data name written by
+different workflow steps. `data.latest()` returns the single most recently
+written record regardless of step.
 
 **Vault resolution:** JSON attributes containing `vault.get(...)` references
 are resolved automatically in async data access paths (extension methods,
-`data.query()` in CEL). Resolution failures leave the reference unresolved
-rather than failing the record.
+`data.query()` in CEL). A failed resolution leaves the reference unresolved
+instead of failing the record.
 
 ## Predicate Syntax
 
-Predicates are standard CEL expressions that evaluate to a boolean. Any CEL
-operator or built-in function can be used.
+Predicates are standard CEL expressions that return a boolean. Any CEL
+operator or built-in function works.
 
 ```cel
 modelName == "ingest-pipeline" && specName == "result"
@@ -296,10 +289,10 @@ modelName == "scanner" && attributes.status == "failed"
 
 ### Field Validation
 
-Before evaluation, the predicate AST is walked to verify that all referenced
-identifiers are known query record fields. Unknown fields produce an error
-(`src/domain/data/query_predicate.ts` `validateFieldReferences`; the message
-pluralises to `Unknown fields` and lists the available names alphabetically):
+Before evaluation, swamp walks the predicate AST to check that every identifier
+is a known query record field. Unknown fields produce an error
+(`src/domain/data/query_predicate.ts` `validateFieldReferences`). The message
+pluralises to `Unknown fields` and lists the available names alphabetically:
 
 ```
 Error: Unknown field "model" in query predicate.
@@ -311,14 +304,16 @@ Available: attributes, content, contentType, createdAt, dataType, id, isLatest,
 
 ## Catalog
 
-Query performance is backed by a SQLite metadata catalog at `_catalog.db`
-inside the local-tier `data/` directory (`.swamp/data/_catalog.db` by default;
-`catalogDbPath` in `src/infrastructure/persistence/repository_factory.ts`
-resolves it via `localPath("data")`, never the datastore tier), using
-`node:sqlite` (built into the Deno runtime).
-The catalog stores one row per artifact version, with an `is_latest` column
-distinguishing the current version. It contains all metadata fields from the
-query record except `attributes`.
+A SQLite metadata catalog, `_catalog.db`, backs query performance. It lives in
+the local-tier `data/` directory (`.swamp/data/_catalog.db` by default), never
+the datastore tier. `catalogDbPath` in
+`src/infrastructure/persistence/repository_factory.ts` resolves it via
+`localPath("data")`. It uses `node:sqlite`, which is built into the Deno
+runtime.
+
+The catalog has one row per artifact version, with an `is_latest` column
+marking the current version. It holds every query record metadata field except
+`attributes`.
 
 ### Schema
 
@@ -366,11 +361,11 @@ CREATE TABLE catalog_meta (
 );
 ```
 
-The catalog includes a `schema_version` key in `catalog_meta`. When the
-version changes, the catalog table is dropped and rebuilt via self-healing
-backfill on next query.
+`catalog_meta` holds a `schema_version` key. When the version changes, the
+catalog table is dropped and rebuilt by self-healing backfill on the next
+query.
 
-Content is not stored in the catalog. It remains on disk in the existing
+Content is not stored in the catalog. It stays on disk in the existing
 versioned file layout.
 
 ### Write-Through Updates
@@ -379,8 +374,8 @@ Every mutation in `UnifiedDataRepository` updates the catalog inline:
 
 | Repository Method | Catalog Operation |
 | --- | --- |
-| `save()` | `upsertNewVersion` — full row for the new version, size, createdAt (no checksum column) |
-| `append()` | `upsertNewVersion` — full row for the appended version |
+| `save()` | `upsertNewVersion`: full row for the new version, size, createdAt (no checksum column) |
+| `append()` | `upsertNewVersion`: full row for the appended version |
 | `delete()` | Remove row, or update version if only one version deleted |
 | `rename()` | Remove old row, insert new row |
 | `finalizeVersion()` | Upsert row |
@@ -388,105 +383,100 @@ Every mutation in `UnifiedDataRepository` updates the catalog inline:
 | `collectGarbage()` | Update version or remove row |
 
 `UnifiedDataRepository` is an interface (in `repositories.ts`). The concrete
-`FileSystemUnifiedDataRepository` takes `CatalogStore` as a required
-constructor parameter. Every repository instance maintains write-through
-catalog consistency. Use `createCatalogStore()` from `repository_factory.ts`
-to construct one from a repo directory.
+`FileSystemUnifiedDataRepository` requires a `CatalogStore` constructor
+parameter, so every repository instance keeps the catalog consistent. Build one
+from a repo directory with `createCatalogStore()` from `repository_factory.ts`.
 
 ### Population Strategy
 
-The catalog builds up incrementally:
+The catalog fills incrementally:
 
-1. **Write-through** — every data mutation upserts or removes a catalog row.
-   New data is immediately queryable.
-2. **Scoped backfill** — `getLatestRecord()` uses a three-tier lookup that
-   avoids the full `findAllGlobal()` walk. First it tries the indexed SQL
-   lookup (O(1) — catches write-through rows). If the catalog is not populated
-   and the row is missing (or stale), it runs a scoped filesystem walk for just
-   the requested `(modelName, dataName)` pair, upserts matching rows, and
-   retries. The `populated` flag is not set by scoped backfill.
-3. **Full backfill on first query or search** — on the first call to
-   `DataQueryService.query()` or `ensurePopulated()` (used by `data search`),
-   if the catalog is not marked as populated, a one-time `findAllGlobal()` runs,
-   commits every row it found, and sets a `populated` flag in the
-   `catalog_meta` table. Both `data search` and `data query` use the catalog
-   after backfill — `data search` iterates `is_latest` rows directly rather
-   than re-walking the filesystem.
-4. **Self-healing** — if `_catalog.db` is deleted or corrupted, the next query
-   triggers a backfill automatically.
+1. **Write-through**: every data mutation upserts or removes a catalog row, so
+   new data is queryable at once.
+2. **Scoped backfill**: `getLatestRecord()` uses a three-tier lookup that
+   avoids the full `findAllGlobal()` walk. It first tries the indexed SQL
+   lookup (O(1); catches write-through rows). If the catalog is not populated
+   and the row is missing or stale, it walks the filesystem for only the
+   requested `(modelName, dataName)` pair, upserts matching rows, and retries.
+   Scoped backfill does not set the `populated` flag.
+3. **Full backfill on first query or search**: the first call to
+   `DataQueryService.query()` or `ensurePopulated()` (used by `data search`)
+   on an unpopulated catalog runs a one-time `findAllGlobal()`. It commits
+   every row found and sets a `populated` flag in the `catalog_meta` table.
+   After that, both `data search` and `data query` use the catalog;
+   `data search` iterates `is_latest` rows directly instead of re-walking the
+   filesystem.
+4. **Self-healing**: if `_catalog.db` is deleted or corrupted, the next query
+   triggers a backfill.
 
-Full backfill **upserts** rather than replaces. It commits through
-`bulkUpsert()`, which uses `INSERT OR REPLACE` without a preceding `DELETE`.
-Rows the on-disk walk finds are added or updated; rows it cannot see are left
-untouched. This is critical for `hydrationStrategy: lazy`, where the local
-cache is intentionally incomplete — data lives in the remote datastore and is
-materialized on demand. Under the previous destructive replace semantics, a
-walk gap was data loss in the catalog; under additive upsert, a walk gap is a
-no-op for the rows it misses.
+Full backfill upserts instead of replacing. It commits through
+`bulkUpsert()`, which uses `INSERT OR REPLACE` with no preceding `DELETE`.
+Rows the walk finds are added or updated; rows it cannot see are left alone.
+This matters for `hydrationStrategy: lazy`, where the local cache is
+incomplete on purpose: data lives in the remote datastore and is fetched on
+demand. Under the old destructive replace, a walk gap meant data loss in the
+catalog. Under additive upsert, a walk gap does nothing to the rows it misses.
 
 ### Stale-Row Filtering
 
-`DataQueryService` accepts a `filterStaleRows` option. When enabled, the
-query hydration loop calls `Deno.statSync` on each row's `raw` content file
-and drops rows where the file is absent. This catches catalog rows orphaned
-by a model retype (type field changed, UUID kept), where data moves to a new
-type directory path and the old catalog row becomes stale.
+`DataQueryService` accepts a `filterStaleRows` option. When it is on, the query
+hydration loop calls `Deno.statSync` on each row's `raw` content file and drops
+rows whose file is absent. This catches rows orphaned by a model retype (type
+field changed, UUID kept): the data moves to a new type directory and the old
+catalog row goes stale.
 
-`filterStaleRows` must be **disabled** for remote datastores (S3/GCS) where
-content may not yet be hydrated into the local cache. A missing `raw` file in
-that context means "not yet downloaded", not "stale". The repo-context
-composition root sets `filterStaleRows: !isCustomDatastoreConfig(...)`.
+`filterStaleRows` must be **disabled** for remote datastores (S3/GCS), where
+content may not be hydrated into the local cache yet. There, a missing `raw`
+file means "not yet downloaded", not "stale". The repo-context composition root
+sets `filterStaleRows: !isCustomDatastoreConfig(...)`.
 
-The trade-off is that the catalog can accumulate orphaned rows for data that
-was genuinely deleted or renamed outside the write-through path (e.g. manual
-file deletion). Write-through handles normal deletes and renames, and
-`swamp doctor datastores --repair -y` removes `_catalog.db` so the next query
-rebuilds it from scratch for full reconciliation. That rebuild also clears
-foreign-namespace rows fetched by `swamp datastore catalog pull` — they
-describe data that is not on local disk, so a local walk cannot recreate
-them; re-pull to restore them.
+The trade-off is that the catalog can collect orphaned rows for data deleted or
+renamed outside the write-through path (e.g. manual file deletion).
+Write-through handles normal deletes and renames. For full reconciliation,
+`swamp doctor datastores --repair -y` removes `_catalog.db` and the next query
+rebuilds it from scratch. That rebuild also clears foreign-namespace rows
+fetched by `swamp datastore catalog pull`. Those rows describe data that is not
+on local disk, so a local walk cannot recreate them; re-pull to restore them.
 
 ### Remote Datastores (S3)
 
-The catalog is local-only. It lives in the local cache directory and is excluded
-from sync — it is never pushed to or pulled from S3.
+The catalog is local-only. It lives in the local cache directory and is
+excluded from sync, so it is never pushed to or pulled from S3.
 
 After a `pullChanged()` that reports work, core sets `synced = true` and the
-caller invalidates the catalog (`catalogStore.invalidate()`), so the next query
-backfills from the freshly-pulled cache (`src/cli/repo_context.ts`
+caller invalidates the catalog (`catalogStore.invalidate()`). The next query
+then backfills from the freshly pulled cache (`src/cli/repo_context.ts`
 `acquireModelLocks`). There is no incremental row-level update from a pull
-diff — `pullChanged()` returns `Promise<number | void>`, not a structured
-diff.
+diff: `pullChanged()` returns `Promise<number | void>`, not a structured diff.
 
 On cold start (new machine, empty cache), the initial pull downloads all files.
-The catalog doesn't exist yet, so the first query triggers a backfill from the
-freshly-pulled cache.
+The catalog doesn't exist yet, so the first query backfills from the pulled
+cache.
 
 ## Query Execution
 
-Queries use a two-phase evaluation: SQL pre-filtering narrows the candidate
-set, then the full CEL predicate evaluates on every row returned by SQL. The
-CEL evaluation is always the correctness authority — SQL pushdown is a
-performance optimization only.
+Queries run in two phases. SQL pre-filtering narrows the candidate set, then
+the full CEL predicate runs on every row SQL returns. CEL is always the
+authority on correctness; SQL pushdown is only a performance optimization.
 
 ### SQL Pushdown
 
 Before iterating, the query service extracts trivially correct predicates from
-the CEL AST and pushes them down to SQL WHERE clauses:
+the CEL AST and pushes them into SQL WHERE clauses:
 
-| CEL pattern                     | SQL pushdown                  | Notes                                              |
-| ------------------------------- | ----------------------------- | -------------------------------------------------- |
-| implicit `isLatest == true`     | `WHERE is_latest = 1`         | Applied when predicate doesn't reference `version` or `isLatest` |
-| `modelName == "<literal>"`      | `WHERE model_name = ?`        | Extracted from top-level AND conjuncts only         |
+| CEL pattern                 | SQL pushdown           | Notes                                                    |
+| --------------------------- | ---------------------- | -------------------------------------------------------- |
+| implicit `isLatest == true` | `WHERE is_latest = 1`  | When the predicate doesn't reference `version` or `isLatest` |
+| `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only                             |
 
-All other predicates (OR expressions, comparisons, tag filters, `attributes`
-references, complex expressions) remain CEL-only and are evaluated per-row on
-the narrowed result set. Future versions may push down additional patterns
-(tag equality via `json_extract`, comparisons on indexed columns).
+All other predicates stay CEL-only and run per row on the narrowed set: OR
+expressions, comparisons, tag filters, `attributes` references, and complex
+expressions. Future versions may push down more patterns (tag equality via
+`json_extract`, comparisons on indexed columns).
 
-The pushdown invariant: SQL must produce a **superset** of matching rows. CEL
-can only narrow, never widen. If a pushdown translation is uncertain, the
-conjunct stays in CEL.
+SQL pushdown must return a superset of matching rows. CEL can only narrow,
+never widen. If a translation is uncertain, the conjunct stays
+in CEL.
 
 ### Execution Flow
 
@@ -509,31 +499,29 @@ conjunct stays in CEL.
 7. Return results
 ```
 
-Iteration uses paged `stmt.all()` with `LIMIT/OFFSET` so that rows are fetched
-in bounded batches. Content is loaded per-row only when needed. The query stops
-as soon as the limit is reached.
+Iteration uses paged `stmt.all()` with `LIMIT/OFFSET`, so rows arrive in
+bounded batches. Content loads per row only when needed, and the query stops as
+soon as it reaches the limit.
 
-When neither the predicate nor the projection references `attributes` or
-`content`, no content is loaded at all. This is detected by walking both ASTs
-for those identifiers before execution
-(`src/domain/data/data_query_service.ts`).
+If neither the predicate nor the projection references `attributes` or
+`content`, no content loads at all. Both ASTs are walked for those identifiers
+before execution (`src/domain/data/data_query_service.ts`).
 
 ## Projection (`--select`)
 
-The `--select` flag takes a second CEL expression that controls what to show
-from each matched row. The filter predicate decides **which rows** match. The
-projection decides **what to extract**.
+The `--select` flag takes a second CEL expression. The filter predicate decides
+which rows match; the projection decides what to extract from each.
 
 ```bash
 swamp data query '<filter predicate>' --select '<projection expression>'
 ```
 
-Both expressions operate on the same `DataRecord` fields. The filter returns a
+Both expressions see the same `DataRecord` fields. The filter returns a
 boolean; the projection returns any value.
 
 ### Output Format by Return Type
 
-The projection result type determines the output format:
+The projection's result type sets the output format:
 
 | Projection returns | Log mode | JSON mode |
 | --- | --- | --- |
@@ -542,15 +530,15 @@ The projection result type determines the output format:
 | list (array) | Markdown table with positional numeric headers (`1`, `2`, …) | Array of arrays |
 | null | Empty line (scalar) or empty cells (map/list) | `null` in array |
 
-The first **non-null** result's type sets the format
+The first non-null result's type decides
 (`src/libswamp/data/query.ts` `classifyProjection`). If it is a map, all
-results render as a table; if it is a scalar, all results render as lines
+results render as a table; if it is a scalar, all render as lines
 (`src/presentation/renderers/data_query.ts`).
 
 ### Map Key Syntax
 
-CEL map literals require **quoted string keys**. Bare identifiers are resolved
-as variable references, not key names:
+CEL map literals need quoted string keys. Bare identifiers resolve as
+variables, not key names:
 
 ```cel
 {"name": name, "status": attributes.status}    ✓ correct
@@ -559,7 +547,7 @@ as variable references, not key names:
 
 ### Examples
 
-**Scalar projection** — one value per row, pipe-friendly:
+**Scalar projection**: one value per row, pipe-friendly:
 
 ```bash
 $ swamp data query 'modelName == "ingest"' --select 'name'
@@ -569,7 +557,7 @@ episode-002
 episode-003
 ```
 
-**String expression** — formatted output:
+**String expression**: formatted output:
 
 ```bash
 $ swamp data query 'specName == "result"' \
@@ -580,7 +568,7 @@ ingest/episode-002 v1
 scanner/scan-result v7
 ```
 
-**Map projection** — custom-columned table:
+**Map projection**: a table with custom columns:
 
 ```bash
 $ swamp data query 'modelName == "ingest"' \
@@ -593,8 +581,8 @@ episode-002      ok         1
 episode-003      failed     5
 ```
 
-The map keys become column headers. This is the primary way to build custom
-views — pick exactly which fields you want, name them how you want.
+The map keys become column headers. This is the main way to build custom
+views: pick the fields you want and name them.
 
 With `--json`, map projections produce a JSON array of objects:
 
@@ -608,7 +596,7 @@ $ swamp data query 'modelName == "ingest"' \
 ]
 ```
 
-**Nested map projection** — complex structures as table values:
+**Nested map projection**: complex structures as table values:
 
 ```bash
 $ swamp data query 'modelName == "scanner"' \
@@ -621,11 +609,11 @@ ip-10-0-3-42     `{"kernel":"6.1.161-183","arch":"arm64"}`
 ```
 
 Complex values (objects, arrays) in table cells render as inline JSON code
-spans. Any object-valued projection is classified as a map and rendered as a
-table — there is no pretty-printed JSON block mode in log output. To dump
-whole objects, use `--json`:
+spans. Any object-valued projection counts as a map and renders as a table;
+log output has no pretty-printed JSON block mode. To dump whole objects, use
+`--json`:
 
-**Bare attributes** — dump content from matching records:
+**Bare attributes**: dump content from matching records:
 
 ```bash
 $ swamp data query 'modelName == "ingest" && specName == "result"' \
@@ -651,7 +639,7 @@ ok   episode-002
 FAIL episode-003
 ```
 
-**List projection** — positional columns with numeric headers:
+**List projection**: positional columns with numeric headers:
 
 ```bash
 $ swamp data query 'tags.env == "prod"' \
@@ -667,25 +655,25 @@ config       platform  45
 ### Default (no `--select`)
 
 Without `--select`, the CLI renders a Cliffy `Table` (not markdown) with fixed
-columns `name`, `modelName`, `specName`, `dataType`, `version`, `size`, prefixed
-by a `namespace` column when any result has a non-empty namespace
+columns `name`, `modelName`, `specName`, `dataType`, `version`, `size`. A
+`namespace` column is added in front when any result has a non-empty namespace
 (`src/presentation/renderers/data_query.ts` `renderDefaultTable`).
 
 ### Interaction with Other Flags
 
-`--select` and `--json` compose naturally: `--json` changes the rendering of
-projected values from human-readable to JSON. `--select` and `--limit` compose
-naturally: limit applies to matched rows, projection applies to output.
+`--select` composes with `--json`, which renders projected values as JSON
+instead of human-readable text. It also composes with `--limit`: the limit
+applies to matched rows, the projection to output.
 
 ### Implementation
 
-Projection is a domain/application concern. The `DataQueryService` returns
-`DataRecord[]` as before, but accepts a `select` option so it loads
+Projection is a domain/application concern. `DataQueryService` still returns
+`DataRecord[]`, but accepts a `select` option so it loads
 `attributes`/`content` from disk when the projection references them. The
-libswamp generator evaluates the projection against each result, classifies
-the output shape, and yields typed events. On the `--select` path the renderer
+libswamp generator evaluates the projection on each result, classifies the
+output shape, and yields typed events. On the `--select` path the renderer
 builds markdown from the event data and passes it through
-`renderMarkdownToTerminal()`; the default (no `--select`) path builds a Cliffy
+`renderMarkdownToTerminal()`. The default path (no `--select`) builds a Cliffy
 `Table` directly.
 
 ## Usage
@@ -703,9 +691,9 @@ swamp data query 'specName == "result"' --select '{"name": name, "err": attribut
 
 ### CEL Expressions
 
-`data.query()` accepts a predicate and an optional projection expression.
-Without projection, it returns `DataRecord[]`. With projection, it returns
-the projected values directly.
+`data.query()` takes a predicate and an optional projection expression. Without
+a projection it returns `DataRecord[]`; with one, it returns the projected
+values directly.
 
 ```yaml
 attributes:
@@ -730,7 +718,7 @@ Results without projection are interchangeable with `data.latest()`,
 
 ### Extension Methods
 
-`context.queryData()` accepts the same two arguments:
+`context.queryData()` takes the same two arguments:
 
 ```typescript
 // Without projection — returns DataRecord[]
@@ -752,15 +740,17 @@ const names = await context.queryData!(
 ## Architecture
 
 `CatalogStore` is an infrastructure component wrapping `node:sqlite`
-(`src/infrastructure/persistence/catalog_store.ts`). It exposes row writes
-(`upsert`, `upsertNewVersion`, `bulkUpsert`, `bulkUpsertForeign`), removal
-(`remove`, `removeVersion`, `bulkRemoveVersions`), reads (`iterate`,
-`iterateFiltered`, `findLatestRow`, `findLatestRowsBySpecName`, `count`,
-`distinctValues`, `distinctTagKeys`/`distinctTagValues`), population
-management (`isPopulated`, `markPopulated`, `invalidate`) and maintenance
-(`checkpoint`, `vacuum`).
+(`src/infrastructure/persistence/catalog_store.ts`). It exposes:
 
-`DataQueryService` is a domain service. It owns the query lifecycle: catalog
+- row writes: `upsert`, `upsertNewVersion`, `bulkUpsert`, `bulkUpsertForeign`
+- removal: `remove`, `removeVersion`, `bulkRemoveVersions`
+- reads: `iterate`, `iterateFiltered`, `findLatestRow`,
+  `findLatestRowsBySpecName`, `count`, `distinctValues`,
+  `distinctTagKeys`/`distinctTagValues`
+- population management: `isPopulated`, `markPopulated`, `invalidate`
+- maintenance: `checkpoint`, `vacuum`
+
+`DataQueryService` is a domain service that owns the query lifecycle: catalog
 population, AST validation, row iteration, content loading, and CEL evaluation.
 
 ```
@@ -786,33 +776,33 @@ Both `CatalogStore` and `DataQueryService` are wired through
 
 ## Ephemeral Data
 
-Data with `lifetime: "ephemeral"` lives only in memory for the duration of a
+Data with `lifetime: "ephemeral"` lives only in memory for the length of a
 workflow run or method run. It uses a parallel in-memory stack:
 
-- **`InMemoryUnifiedDataRepository`** — `Map`-based storage, no disk I/O.
+- **`InMemoryUnifiedDataRepository`**: `Map`-based storage with no disk I/O.
   `allocateVersion` creates a temp file for `DataWriter` compatibility;
   `finalizeVersion` reads it into memory and deletes it.
-- **`:memory:` `CatalogStore`** — a separate SQLite instance so queries work
-  transparently. Marked as pre-populated to skip filesystem backfill.
-- **`CompositeUnifiedDataRepository`** — wraps the filesystem and in-memory
-  repos. Writes route by `data.lifetime === "ephemeral"`. Reads check ephemeral
-  first, fall back to persistent. `data.latest()` resolves transparently.
-- **`CompositeDataQueryService`** — merges query results from both catalogs
+- **`:memory:` `CatalogStore`**: a separate SQLite instance so queries work
+  transparently. It is marked pre-populated to skip filesystem backfill.
+- **`CompositeUnifiedDataRepository`**: wraps the filesystem and in-memory
+  repos. Writes route by `data.lifetime === "ephemeral"`. Reads check
+  ephemeral first, then persistent, so `data.latest()` resolves transparently.
+- **`CompositeDataQueryService`**: merges query results from both catalogs,
   with deduplication.
 
 ### Lifecycle scoping
 
-The ephemeral store is created at the start of each execution and disposed in
-the `finally` block:
+Each execution creates the ephemeral store at the start and disposes it in the
+`finally` block:
 
-- **Workflow runs** — `workflowRun()` creates the store, passes it through
+- **Workflow runs**: `workflowRun()` creates the store and passes it through
   `createExecutionService` → `WorkflowExecutionService` constructor. All steps
-  share the same store so downstream steps can read upstream ephemeral data.
-- **Standalone method runs** — `modelMethodRun()` creates and disposes its own
+  share it, so downstream steps can read upstream ephemeral data.
+- **Standalone method runs**: `modelMethodRun()` creates and disposes its own
   store.
-- **Workflow resume** — a fresh store is created. Ephemeral data from before
-  suspension is lost (by design — use `"workflow"` or `"infinite"` lifetime for
-  data that must survive suspension).
+- **Workflow resume**: gets a fresh store. Ephemeral data from before
+  suspension is lost. Use `"workflow"` or `"infinite"` lifetime for data that
+  must survive suspension.
 
 ### Definition-level overrides
 
@@ -825,12 +815,11 @@ resources:
     garbageCollection: 3
 ```
 
-These are converted to `dataOutputOverrides` and merged with any workflow step
-overrides (step wins).
+These become `dataOutputOverrides` and merge with any workflow step overrides
+(step wins).
 
 ### Remote execution
 
 Each `ActiveDispatch` carries the per-execution composite repo. The data plane
 resolves `dispatch.dataRepo` for each worker's reads and writes, so remote
-workers transparently access ephemeral data through the same composite as local
-steps.
+workers reach ephemeral data through the same composite as local steps.

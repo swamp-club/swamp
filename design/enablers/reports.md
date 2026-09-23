@@ -6,15 +6,14 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Reports
 
-Reports are post-execution analysis functions that produce markdown and JSON
-output from model and workflow execution context. They run after a method
-completes (or on demand) and persist their results as data artifacts. Reports
-are generic — they operate on whatever context they receive at runtime, not on
-specific model types. This decouples report logic from model implementation.
+Reports are analysis functions that run after a method completes, or on demand.
+They turn model and workflow execution context into markdown and JSON, saved as
+data artifacts. Reports work on whatever context they get at runtime, not on
+specific model types, so report logic stays separate from model code.
 
 ## Report Definition
 
-A report is defined by the `ReportDefinition` interface:
+A report implements the `ReportDefinition` interface:
 
 ```typescript
 interface ReportDefinition {
@@ -30,19 +29,19 @@ interface ReportResult {
 }
 ```
 
-- **description** — what the report produces (human-readable).
-- **scope** — `"method"`, `"model"`, or `"workflow"`. Determines which context
-  variant the report receives.
-- **labels** — optional categorization tags for filtering (e.g., `["cost",
+- **description**: what the report produces, for humans.
+- **scope**: `"method"`, `"model"` or `"workflow"`. Sets which context variant
+  the report receives.
+- **labels**: optional tags for filtering (e.g., `["cost",
   "finops"]`).
-- **execute** — the function that analyzes context and returns a result.
+- **execute**: analyses the context and returns a result.
 
-See `src/domain/reports/report.ts` for the full interface.
+The full interface is in `src/domain/reports/report.ts`.
 
 ## Scopes
 
-Each report declares the scope at which it operates. The scope determines the
-shape of the context passed to `execute`.
+Each report declares a scope, which sets the shape of the context passed to
+`execute`.
 
 | Scope      | When it runs                             | Context variant          |
 | ---------- | ---------------------------------------- | ------------------------ |
@@ -50,23 +49,22 @@ shape of the context passed to `execute`.
 | `model`    | After a method execution (model-level)   | `ModelReportContext`     |
 | `workflow`  | After a full workflow run completes      | `WorkflowReportContext`  |
 
-Reports with `scope: "method"` or `scope: "model"` run in the context of a
-specific model instance and method invocation. Reports with `scope: "workflow"`
-run after all workflow steps complete and receive summary data about every step.
+Reports with `scope: "method"` or `scope: "model"` run against one model
+instance and method call. Reports with `scope: "workflow"` run after all
+workflow steps complete and get summary data for every step.
 
 ### Execution Path Parity
 
-Method-scope and model-scope reports run with identical context fields regardless
-of whether the method was invoked directly via `swamp model method run` or
-triggered by a workflow step. Both paths populate `swampSha`, `outputSpecs`,
-`executionStatus`, and all other `MethodReportContext` fields. Reports also run
-on failed executions in both paths, with `executionStatus: "failed"` and the
-`errorMessage` field set.
+Method-scope and model-scope reports get the same context fields whether the
+method ran directly via `swamp model method run` or from a workflow step. Both
+paths fill `swampSha`, `outputSpecs`, `executionStatus` and every other
+`MethodReportContext` field. In both paths, reports also run on failed
+executions, with `executionStatus: "failed"` and `errorMessage` set.
 
 ## Report Context
 
-The three context variants share a base set of fields and diverge based on
-scope. See `src/domain/reports/report_context.ts`.
+The three context variants share base fields and differ by scope
+(`src/domain/reports/report_context.ts`).
 
 ### Base Fields (all scopes)
 
@@ -80,8 +78,8 @@ scope. See `src/domain/reports/report_context.ts`.
 
 ### MethodReportContext / ModelReportContext
 
-Both method and model scope contexts carry the same core fields. Method-scope
-contexts additionally carry `extensionFile`.
+Method and model scope contexts have the same core fields. Only method-scope
+contexts also have `extensionFile`.
 
 | Field             | Type                         | Description                                  |
 | ----------------- | ---------------------------- | -------------------------------------------- |
@@ -110,19 +108,18 @@ contexts additionally carry `extensionFile`.
 | `inputs?`          | `Record<string, unknown>`        | Workflow inputs captured for the run          |
 | `stepExecutions`   | `StepExecution[]`                | Per-step details (job, task, status)          |
 
-Each `stepExecutions` entry contains `jobName`, `stepName`, `taskType`,
-`modelName`, `modelType`, `methodName`, `status` (`"succeeded"`, `"failed"`, or
-`"skipped"`), `dataHandles`, `methodArgs`, `modelId`, `globalArgs`, and an
-optional `errorMessage`. The `taskType` field
-identifies the step's task kind (`model_method`, `assert`, `manual_approval`,
-`workflow`). For non-model tasks, the model-specific fields (`modelName`,
-`modelType`, `methodName`, `modelId`) are empty strings and `errorMessage`
-carries the failure reason when the step failed.
+Each `stepExecutions` entry has `jobName`, `stepName`, `taskType`, `modelName`,
+`modelType`, `methodName`, `status` (`"succeeded"`, `"failed"` or
+`"skipped"`), `dataHandles`, `methodArgs`, `modelId`, `globalArgs` and an
+optional `errorMessage`. `taskType` is the step's task kind (`model_method`,
+`assert`, `manual_approval`, `workflow`). For non-model tasks, the model fields
+(`modelName`, `modelType`, `methodName`, `modelId`) are empty strings, and
+`errorMessage` holds the failure reason if the step failed.
 
 ## Standalone Report Extensions
 
-Reports are implemented as TypeScript files in `extensions/reports/`. Each file
-exports a `report` object:
+Reports are TypeScript files in `extensions/reports/`. Each file exports a
+`report` object:
 
 ```typescript
 export const report = {
@@ -142,80 +139,74 @@ export const report = {
 
 ### Name Convention
 
-Report names follow the `@collective/name` pattern with optional nested path
-segments (e.g., `@myorg/cost-report` or `@myorg/aws/cost-report`). This matches
-the same naming convention used by models and other extension types. The
-collective must match the extension's collective when distributed via
-`extension push`.
+Report names use the `@collective/name` pattern, with optional nested path
+segments (e.g., `@myorg/cost-report` or `@myorg/aws/cost-report`), as models
+and other extension types do. When distributed via `extension push`, the
+collective must match the extension's collective.
 
 ### Loader Validation
 
-The shared extension loader (`src/domain/extensions/extension_loader.ts`),
+The shared extension loader (`src/domain/extensions/extension_loader.ts`) is
 configured with `reportKindAdapter`
-(`src/domain/extensions/report_kind_adapter.ts`), discovers `.ts` files
-recursively in the reports directory (excluding `_test.ts`), bundles each with
-Deno (zod externalized), and validates the `report` export against the
-adapter's Zod schema (`UserReportSchema`) requiring:
+(`src/domain/extensions/report_kind_adapter.ts`). It finds `.ts` files
+recursively in the reports directory (except `_test.ts`) and bundles each with
+Deno (zod externalized). It then validates the `report` export against the
+adapter's Zod schema (`UserReportSchema`), which requires:
 
-- `name` — matches `@collective/name[/subname/...]` or
-  `collective/name[/subname/...]`, lowercase `[a-z0-9_-]` segments only
+- `name`: matches `@collective/name[/subname/...]` or
+  `collective/name[/subname/...]`, with lowercase `[a-z0-9_-]` segments only
   (`USER_REPORT_NAME_PATTERN`)
-- `description` — non-empty string
-- `scope` — one of `"method"`, `"model"`, `"workflow"`
-- `labels` — optional `string[]`
-- `execute` — function
+- `description`: non-empty string
+- `scope`: one of `"method"`, `"model"`, `"workflow"`
+- `labels`: optional `string[]`
+- `execute`: function
 
-Files without a `report` export are silently skipped (they may be utility
-modules). Bundles are cached in `.swamp/report-bundles/` with
-content-fingerprint invalidation (sha-256 over the entry point plus every
-local `.ts` dep) — mtime-based freshness was unreliable under atomic-rename
-saves, mtime-preserving sync tools, and sub-millisecond edits (issue #125).
+Files without a `report` export are silently skipped; they may be utility
+modules. Bundles are cached in `.swamp/report-bundles/` and invalidated by
+content fingerprint (sha-256 over the entry point plus every local `.ts` dep).
+mtime checks were unreliable with atomic-rename saves, mtime-preserving sync
+tools and sub-millisecond edits (issue #125).
 
 ## Report Registry
 
-The `ReportRegistry` is a `Map`-backed registry of report definitions keyed by
-name. Every report type exists in one of two states:
+`ReportRegistry` is a `Map`-backed registry of report definitions keyed by
+name. Each report type is in one of two states:
 
-- **Fully loaded** — the bundle has been imported and the `ReportDefinition`
-  (including its `execute` function) is available in the internal `reports`
-  map. `register`, `get`, `getAll`, `getByScope`, and `has` all operate on
-  fully-loaded entries.
-- **Lazy** — the type is known to exist from the extension bundle catalog,
-  but its bundle has not been imported yet. Lazy entries live in a separate
-  `lazyTypes` map and are materialized from the on-disk catalog on second
-  and subsequent process starts without touching the bundle files.
-  `registerLazy`, `isLazy`, `getAllLazy`, and the `LazyReportEntry` type
-  describe this state.
+- **Fully loaded**: the bundle is imported and the `ReportDefinition` (with its
+  `execute` function) is in the internal `reports` map. `register`, `get`,
+  `getAll`, `getByScope` and `has` all work on fully loaded entries.
+- **Lazy**: the extension bundle catalog lists the type, but its bundle is not
+  imported yet. Lazy entries live in a separate `lazyTypes` map, built from the
+  on-disk catalog on the second and later process starts without reading the
+  bundles. `registerLazy`, `isLazy`, `getAllLazy` and the `LazyReportEntry`
+  type cover this state.
 
-`ensureTypeLoaded(name)` promotes a single lazy entry to fully loaded by
-importing its bundle on demand and invoking `promoteFromLazy`. Concurrent
-callers for the same type share a single in-flight promise via an internal
-`typeLoadPromises` map, so a burst of promotions still triggers at most one
-bundle import per type. `ensureTypeLoaded` is a no-op for types that are
-already loaded or not registered at all.
+`ensureTypeLoaded(name)` imports one lazy entry's bundle on demand and calls
+`promoteFromLazy` to make it fully loaded. Concurrent callers for the same type
+share one in-flight promise through an internal `typeLoadPromises` map, so a
+burst of promotions imports each bundle at most once. `ensureTypeLoaded` does
+nothing for types that are already loaded or not registered.
 
-The CLI wires two hooks into the registry at startup (see `src/cli/mod.ts`):
+The CLI sets two hooks on the registry at startup (`src/cli/mod.ts`):
 
-- `setLoader` — a full eager-load fallback that walks the reports directory
-  and imports every bundle. Triggered by `ensureLoaded()` and used when no
-  catalog is available.
-- `setTypeLoader` — a per-type loader that imports a single bundle via the
-  catalog entry for that type. Backs `ensureTypeLoaded` in normal operation.
+- `setLoader`: a full eager-load fallback that walks the reports directory and
+  imports every bundle. `ensureLoaded()` triggers it when no catalog is
+  available.
+- `setTypeLoader`: a per-type loader that imports one bundle via that type's
+  catalog entry. It backs `ensureTypeLoaded` in normal operation.
 
-**Promotion contract for iteration.** Because `getAll()` returns only
-fully-loaded entries, any domain service that iterates the registry (most
-notably `executeReports` in `report_execution_service.ts`) must first call
-`ensureTypeLoaded` for every candidate report name — typically the union of
-`selection.require` and the model type's declared report defaults — before
-calling `getAll()` and filtering the result. Skipping this promotion step
-causes lazy user-extension reports to be silently filtered out of the
-applicable set on the second and subsequent process runs (the catalog is
-populated, so the fully-loaded map contains only eagerly-registered builtin
-reports). Iteration without promotion is the regression fixed by issue #81
-after the lazy-loading rework in #1089.
+**Promotion contract for iteration.** `getAll()` returns only fully loaded
+entries. Any domain service that iterates the registry (chiefly
+`executeReports` in `report_execution_service.ts`) must first call
+`ensureTypeLoaded` for every candidate name, then call `getAll()` and filter.
+Candidates are usually `selection.require` plus the model type's declared
+report defaults. Skip this and lazy user-extension reports silently vanish on
+the second and later process runs, when the populated catalog leaves only
+eagerly registered builtins in the fully loaded map. Issue #81 fixed this
+regression after the lazy-loading rework in #1089.
 
-The global singleton uses `globalThis` so the same registry is shared across
-module boundaries (important when extensions are loaded outside the bundle):
+The global singleton uses `globalThis` so every module shares the same
+registry. This matters when extensions are loaded outside the bundle:
 
 ```typescript
 const REPORT_REGISTRY_KEY = "__swampReportRegistry";
@@ -223,18 +214,18 @@ export const reportRegistry: ReportRegistry =
   (globalThis as any)[REPORT_REGISTRY_KEY] ??= new ReportRegistry();
 ```
 
-Duplicate name registration throws an error. See
-`src/domain/reports/report_registry.ts` for the full API.
+Registering a duplicate name throws. The full API is in
+`src/domain/reports/report_registry.ts`.
 
 ## Three-Level Control Model
 
-Reports are selected through three layers, from broadest to most specific:
+Three layers select reports, from broadest to most specific.
 
 ### 1. Model-Type Defaults
 
-A model type declares default reports via `ModelDefinition.reports: string[]`.
-These are report names (not values) — the model references reports by name,
-decoupling the model and report bounded contexts:
+A model type declares default reports in `ModelDefinition.reports: string[]`.
+These are report names, not values, so the model and report bounded contexts
+stay separate:
 
 ```typescript
 export const model = {
@@ -244,12 +235,12 @@ export const model = {
 };
 ```
 
-All registered reports whose name appears in this list are candidates whenever
-a method runs on this model type.
+Every registered report named in this list is a candidate whenever a method
+runs on this model type.
 
 ### 2. Definition YAML Overrides
 
-Each definition can refine which reports run via a `reports` field:
+Each definition can adjust which reports run with a `reports` field:
 
 ```yaml
 reports:
@@ -261,17 +252,15 @@ reports:
     - "@myorg/compliance-check"
 ```
 
-- **`require`** — reports listed here are added to the candidate set and are
-  immune to CLI skip flags. Entries can be a plain string (applies to all
-  methods) or an object with `name` and optional `methods` array for method
-  scoping.
-- **`skip`** — reports listed here are always skipped. Skip wins over require
-  if the same report appears in both.
+- **`require`**: these reports join the candidate set and ignore CLI skip
+  flags. An entry is a plain string (all methods) or an object with `name` and
+  an optional `methods` array to limit it to those methods.
+- **`skip`**: these reports never run. If a report is in both lists, skip wins.
 
 ### 3. Workflow YAML Overrides
 
-Workflows also support a `reports` field at the workflow level with the same
-`require`/`skip` structure. This applies to workflow-scope reports.
+Workflows also accept a workflow-level `reports` field with the same
+`require`/`skip` structure. It applies to workflow-scope reports.
 
 ```yaml
 reports:
@@ -283,8 +272,8 @@ reports:
 
 ## Report Selection
 
-The `ReportSelection` type and `ReportRef` union define the YAML-driven
-selection schema. See `src/domain/reports/report_selection.ts`.
+The `ReportSelection` type and `ReportRef` union define the YAML selection
+schema (`src/domain/reports/report_selection.ts`).
 
 ```typescript
 type ReportRef = string | { name: string; methods?: string[] };
@@ -295,79 +284,76 @@ type ReportSelection = {
 };
 ```
 
-The `ReportSelectionSchema` (Zod) validates report selection in both definition
-and workflow YAML files.
+`ReportSelectionSchema` (Zod) validates report selection in both definition and
+workflow YAML files.
 
 ## Filtering Semantics
 
-The `filterReports` function in `report_execution_service.ts` applies the full
-filtering pipeline. The algorithm:
+`filterReports` in `report_execution_service.ts` runs these steps:
 
-1. **Build candidate set** — union of model-type defaults
-   (`ModelDefinition.reports`) and `selection.require` names. For workflow scope
-   (no model-type defaults), candidates are `selection.require` only.
-2. **Scope filter** — only reports matching the requested scope pass.
-3. **Definition/workflow skip** — `selection.skip` names are removed. Skip
+1. **Build candidate set**: the union of model-type defaults
+   (`ModelDefinition.reports`) and `selection.require` names. Workflow scope has
+   no model-type defaults, so its candidates are `selection.require` only.
+2. **Scope filter**: only reports for the requested scope pass.
+3. **Definition/workflow skip**: `selection.skip` names are removed. Skip
    always wins.
-4. **Method scoping** — required refs with a `methods` array are excluded when
-   the current method is not in the list.
-5. **Required immunity** — reports in `selection.require` survive all CLI skip
-   flags.
-6. **CLI skip flags** — `--skip-reports` removes all non-required reports.
+4. **Method scoping**: required refs with a `methods` array are dropped when
+   the current method is not listed.
+5. **Required immunity**: reports in `selection.require` survive every CLI
+   skip flag.
+6. **CLI skip flags**: `--skip-reports` removes all non-required reports.
    `--skip-report <name>` and `--skip-report-label <label>` remove matching
    non-required reports.
-7. **Inclusion filters** — `--report <name>` and `--report-label <label>`
-   narrow the remaining set to only matching reports.
+7. **Inclusion filters**: `--report <name>` and `--report-label <label>` keep
+   only matching reports.
 
 ### Unresolvable Required Reports
 
-A name in `selection.require` that resolves to nothing — neither loaded nor
-lazy-indexed after the promotion pass — is a contract violation, not a silent
-no-op (swamp-club#640). `executeReports` logs a warning naming the report,
-emits a `report_failed` event, persists a fallback error artifact (so
-`swamp report search` surfaces the failure), and counts it in
-`ReportExecutionSummary.failures` — which flips a `swamp model method run` to
-failed, exactly as a required report that loads and then throws would. Names
-that also appear in `selection.skip` are exempt (skip wins over require, so
-the report was never going to run).
+A `selection.require` name that matches nothing, neither loaded nor
+lazy-indexed after promotion, is a contract violation and is not silently
+ignored (swamp-club#640). `executeReports` then logs a warning naming the
+report and emits a `report_failed` event. It saves a fallback error artifact,
+so `swamp report search` shows the failure, and counts it in
+`ReportExecutionSummary.failures`. That makes `swamp model method run` fail,
+as a required report that loads and then throws would. Names also listed
+in `selection.skip` are exempt, because skip wins and the report was never
+going to run.
 
 Runners that call `executeReports` more than once with the same selection
-(method + model scope passes) suppress the duplicate via the
+(method and model scope passes) avoid a duplicate failure with the
 `emitUnresolvableRequireFailures` parameter, passing `true` on exactly one
 call.
 
 ### Filter Options Are Optional
 
-`ReportFilterOptions` carries CLI flags; callers of the workflow execution
-service that have no CLI flags to thread (workflow resume, embedded runs)
-simply omit it. An absent filter means "no filtering" — the service defaults
-it to `{}` so reports, including required ones, always execute. Report
-execution must never depend on presentation-layer plumbing supplying an
-options object.
+`ReportFilterOptions` carries CLI flags. Callers of the workflow execution
+service with no CLI flags to pass (workflow resume, embedded runs) leave it
+out. No filter means no filtering: the service defaults it to `{}`, so all
+reports, including required ones, run. Report execution must never depend on
+the presentation layer providing an options object.
 
 Key invariants:
 
-- **Skip always wins over require.** If a report is in both `skip` and
-  `require`, it is skipped.
+- **Skip always wins over require.** A report in both `skip` and `require` is
+  skipped.
 - **Required reports are immune to CLI skip flags.** `--skip-reports` and
-  `--skip-report <name>` cannot suppress a required report.
+  `--skip-report <name>` cannot stop a required report.
 - **Only candidates run.** A report must be in model-type defaults or in
-  `require` to be considered. Registration alone is not enough.
+  `require`. Being registered is not enough.
 
 ## Data Persistence
 
-Report results are automatically persisted as data artifacts via
-`persistReportData`. Each report produces two artifacts:
+`persistReportData` saves report results as data artifacts. Each report
+produces two:
 
 | Artifact   | Data name                     | Content type         |
 | ---------- | ----------------------------- | -------------------- |
 | Markdown   | `report-{reportName}`         | `text/markdown`      |
 | JSON       | `report-{reportName}-json`    | `application/json`   |
 
-`{reportName}` is the report name passed through `sanitizeReportNameForData`
-(path-unsafe characters such as `/` are replaced). For forEach iterations the
-vary suffix is appended: `report-{reportName}-{suffix}` and
-`report-{reportName}-{suffix}-json`.
+`{reportName}` is the report name after `sanitizeReportNameForData`, which
+replaces path-unsafe characters such as `/`. forEach iterations add the vary
+suffix: `report-{reportName}-{suffix}` and `report-{reportName}-{suffix}-json`.
 
 Both artifacts are written with:
 
@@ -375,27 +361,25 @@ Both artifacts are written with:
 - **Garbage collection**: `5` (keep latest 5 versions)
 - **Tags**: `{ type: "report", reportName, reportScope }`
 
-**Empty results are not persisted.** When a report's `execute()` returns empty
-markdown (trimmed), persistence is skipped entirely — no version is created and
-the previous version stays `latest`. This prevents method-scoped reports that
-return empty for inapplicable methods from masking real content with 0-byte
-versions.
+**Empty results are not persisted.** If `execute()` returns empty markdown
+(after trimming), nothing is saved and the previous version stays `latest`.
+This stops method-scoped reports that return nothing for some methods from
+hiding real content behind 0-byte versions.
 
 Data handles are returned in the `ReportExecutionResult` and included in the
 final view.
 
 ## Error Handling
 
-Report `execute()` throws **flip the run status to "failed"** and change the
-exit code. A report failure counts as a run failure — the final
-`ModelMethodRunView.status` is set to `"failed"` when `reportFailures > 0`.
+A throw from a report's `execute()` **flips the run status to "failed"** and
+changes the exit code. The final `ModelMethodRunView.status` is `"failed"` when
+`reportFailures > 0`.
 
-When `execute()` throws, swamp generates a fallback error artifact using the
+When `execute()` throws, swamp builds a fallback error artifact with the
 built-in `buildReportErrorResult` function
-(`src/domain/reports/builtin/report_error_report.ts`). The fallback artifact is
-persisted under the **same data name** as the original report would have used,
-so `swamp data get report-{reportName}-json` still returns useful diagnostic
-data.
+(`src/domain/reports/builtin/report_error_report.ts`). It is saved under the
+same data name the report would have used, so
+`swamp data get report-{reportName}-json` still returns useful diagnostics.
 
 The fallback JSON artifact contains:
 
@@ -408,32 +392,30 @@ The fallback JSON artifact contains:
 }
 ```
 
-Consumers can check the `error` field to distinguish a successful report result
-from a fallback error artifact.
+Consumers check the `error` field to tell a fallback error artifact from a real
+result.
 
-The same fallback artifact is generated for a required report that cannot be
-resolved at all (see "Unresolvable Required Reports" above) — the `message`
-field then carries the "Required report not found" diagnostic instead of a
-throw from `execute()`.
+A required report that cannot be resolved at all gets the same fallback
+artifact (see "Unresolvable Required Reports" above). Its `message` field holds
+the "Required report not found" diagnostic instead of a throw from `execute()`.
 
-If persisting the fallback artifact itself fails, the error is silently absorbed
-to avoid masking the original report error. In this case, only the `WRN` log
-line carries the error information.
+If saving the fallback artifact fails, that error is silently dropped so it
+does not hide the original report error. Only the `WRN` log line then carries
+the error.
 
 ## Sensitive Argument Redaction
 
-The builtin `@swamp/method-summary` report records argument **names only** — it
-never persists argument values. Both the markdown and JSON artifacts list
-argument keys (`string[]`) instead of key-value objects. This eliminates the risk
-of leaking secrets passed as literal `--input` values or resolved from
-expressions (swamp-club#1746).
+The builtin `@swamp/method-summary` report records argument names only and
+never saves argument values. Its markdown and JSON artifacts list argument keys
+(`string[]`), not key-value objects. This removes the risk of leaking secrets
+passed as literal `--input` values or resolved from expressions
+(swamp-club#1746).
 
-Report contexts also include an optional `redactSensitiveArgs` helper for custom
-extension reports that choose to display argument values. The helper replaces
-values marked `{ sensitive: true }` in the model type's Zod schema with `"***"`.
-It is built by `buildRedactSensitiveArgs` in
-`src/domain/reports/report_execution_service.ts` and attached to the context
-before report execution.
+Report contexts also include an optional `redactSensitiveArgs` helper for
+custom extension reports that show argument values. It replaces values marked
+`{ sensitive: true }` in the model type's Zod schema with `"***"`.
+`buildRedactSensitiveArgs` builds it and attaches it to the context before the
+report runs (`src/domain/reports/report_execution_service.ts`).
 
 ```typescript
 redactSensitiveArgs?(
@@ -442,49 +424,48 @@ redactSensitiveArgs?(
 ): Record<string, unknown>;
 ```
 
-The helper delegates to the shared `redactSensitiveValues(schema, data)`
-primitive in `src/domain/models/sensitive_field_extractor.ts`, which walks the
-model type's Zod schema via `extractSensitiveFields`, deep-clones the args, and
-replaces matching values with `"***"`.
+The helper calls the shared `redactSensitiveValues(schema, data)` primitive
+(`src/domain/models/sensitive_field_extractor.ts`). That walks the model type's
+Zod schema via `extractSensitiveFields`, deep-clones the args, and replaces
+matching values with `"***"`.
 
-- **Method/model scope** — looks up the schema via `modelRegistry.get(modelType)`
+- **Method/model scope**: looks up the schema via `modelRegistry.get(modelType)`
   and returns a redacted clone.
-- **Workflow scope** — returns args unchanged (no single model type to look up).
-- **No model definition found** — returns all values as `"***"` via
-  `redactAllValues`. This is the safe default when no schema is available to
-  drive field-level redaction.
-- **No argument schema found** — returns all values as `"***"` via
+- **Workflow scope**: returns args unchanged, since there is no single model
+  type to look up.
+- **No model definition found**: returns every value as `"***"` via
+  `redactAllValues`. This is the safe default when there is no schema for
+  field-level redaction.
+- **No argument schema found**: returns every value as `"***"` via
   `redactAllValues`.
 
-Custom extension reports that include argument values in their output should call
-`context.redactSensitiveArgs(args, kind)` to avoid persisting secrets.
+Custom extension reports that output argument values should call
+`context.redactSensitiveArgs(args, kind)` so they do not save secrets.
 
-`redactSensitiveValues` is the single redaction primitive shared across the
-surfaces that honor the `sensitive: true` flag. `swamp model get` applies it to a
-model's global arguments in the libswamp read path
-(`src/libswamp/models/get.ts`) before assembling `ModelGetData`, so both the log
-and JSON renderers — and `swamp model search`, which routes through the same
-read path — display `"***"` instead of literal sensitive values. When the model
-type is unavailable the schema is unknown, so values are fully redacted via
-`redactAllValues`, matching the report path's fallback behavior.
+`redactSensitiveValues` is the one redaction primitive for every surface that
+honors the `sensitive: true` flag. `swamp model get` applies it to a model's
+global arguments in the libswamp read path before building `ModelGetData`
+(`src/libswamp/models/get.ts`). The log and JSON renderers, and
+`swamp model search` (same read path), therefore show `"***"`. With no model
+type, the schema is unknown and `redactAllValues` redacts everything, as in the
+report path.
 
-Additionally, report contexts receive **pre-vault** arguments — args are
-captured before `resolveRuntimeExpressionsInDefinition` replaces vault
-expressions with sentinel tokens. This ensures vault expression strings like
-`${{ vault.get('default', 'password') }}` appear in reports, never the resolved
-secret values.
+Report contexts also get pre-vault arguments. Args are captured before
+`resolveRuntimeExpressionsInDefinition` replaces vault expressions with
+sentinel tokens. Reports therefore show vault expression strings like
+`${{ vault.get('default', 'password') }}`, never the resolved secrets.
 
 ## CLI
 
 ### `swamp report list` / `swamp report type search`
 
-Lists registered report *definitions* — the report types currently loaded from
-extensions and builtins. This is distinct from `swamp report search`, which
-lists stored report *results* (artifacts from past runs).
+These list registered report definitions: the report types currently loaded
+from extensions and builtins. `swamp report search` is different; it lists
+stored report results (artifacts from past runs).
 
 `swamp report list` is an alias for `swamp report type search`. Both open an
-interactive TUI picker showing each report's name, scope, and description.
-Pass `--json` for structured output.
+interactive TUI picker with each report's name, scope and description. Pass
+`--json` for structured output.
 
 ```bash
 swamp report list
@@ -495,8 +476,8 @@ swamp report type search --json
 
 ### `swamp report get`
 
-Retrieves a stored report's content. Reports are persisted automatically after
-method execution; this command reads the stored artifact.
+Reads a stored report's content. Reports are saved automatically after method
+execution.
 
 ```bash
 swamp report get cost-summary --model my-model
@@ -511,7 +492,7 @@ swamp report get cost-summary --workflow deploy-pipeline
 | `--workflow <name>`     | Scope to a specific workflow                         |
 | `--version <version>`   | Get specific version number (default: latest)        |
 | `--variant <variant>`   | Select a specific forEach variant                    |
-| `--markdown`            | Output as plain markdown instead of terminal-formatted (conflicts with `--json`) |
+| `--markdown`            | Plain markdown, not terminal-formatted; conflicts with `--json` |
 | `--json`                | Output in JSON format                                |
 | `--max-width <width>`   | Cap total output width in columns                    |
 | `--max-col-width <width>` | Cap individual table column width in characters   |
@@ -528,39 +509,33 @@ swamp report get cost-summary --workflow deploy-pipeline
 
 ### Report Flags on `workflow run`
 
-| Flag                              | Description                                      |
-| --------------------------------- | ------------------------------------------------ |
-| `--skip-reports`                  | Skip all post-run reports                        |
-| `--skip-report <name>`           | Skip a specific report by name (repeatable)      |
-| `--skip-report-label <label>`    | Skip reports matching a label (repeatable)       |
-| `--report <name>`                | Only run this report (inclusion, repeatable)     |
-| `--report-label <label>`         | Only run reports with this label (inclusion)     |
+The same five flags as on `model method run`, with the same meanings:
+`--skip-reports`, `--skip-report <name>`, `--skip-report-label <label>`,
+`--report <name>`, `--report-label <label>`.
 
 ## Output
 
-Reports support two output modes, consistent with the rest of the CLI:
+Reports support the CLI's two output modes:
 
-- **Log mode** — renders each report's markdown to the terminal with a
-  separator header showing the report name. Uses `renderMarkdownToTerminal`
-  for terminal-friendly formatting.
-- **JSON mode** — emits a single JSON object with the full `ModelReportView`
-  containing all report results (name, scope, success, markdown, json, error).
+- **Log mode**: renders each report's markdown to the terminal under a
+  separator header with the report name, using `renderMarkdownToTerminal`.
+- **JSON mode**: emits one JSON object, the full `ModelReportView`, with all
+  report results (name, scope, success, markdown, json, error).
 
 See `src/presentation/renderers/model_method_run.ts`.
 
 ## Reports Directory Resolution
 
-The reports directory is resolved with the same priority as other extension
+The reports directory is resolved in the same order as other extension
 directories:
 
 1. `SWAMP_REPORTS_DIR` environment variable
 2. `reportsDir` in `.swamp.yaml`
 3. Default: `extensions/reports/`
 
-Additionally, reports co-located with models in `paths.base: manifest`
-extensions are discovered automatically. When a manifest in e.g.
-`extensions/models/myext/manifest.yaml` declares `reports:` entries with
-`paths.base: manifest`, the manifest's directory is added as an additional
+Reports placed next to models in `paths.base: manifest` extensions are also
+found. If a manifest such as `extensions/models/myext/manifest.yaml` declares
+`reports:` entries with `paths.base: manifest`, its directory is added as a
 report source directory at startup (`discoverManifestCrossKindDirs` in
 `src/cli/mod.ts`).
 

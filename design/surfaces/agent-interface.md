@@ -5,26 +5,25 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Global Skills
 
-This document describes how swamp installs its bundled skills (`swamp`,
-`swamp-getting-started`) into each AI tool's **global (user-level)** skills
-directory, and what stays per-repo.
+How swamp installs its bundled skills (`swamp`, `swamp-getting-started`) into
+each AI tool's **global (user-level)** skills directory, and what stays per
+repo.
 
 ## Background
 
-Earlier versions of `swamp repo init` and `swamp repo upgrade` copied the
-bundled skill files into each repo's tool-specific directory
-(`.claude/skills/`, `.agents/skills/`, `.kiro/skills/`, etc.). That meant
-skills went stale whenever the binary was upgraded without re-running
-`repo upgrade` in every repo, N repos held N identical copies, and generated
-files sat in version control next to user code.
+`swamp repo init` and `swamp repo upgrade` used to copy the bundled skills into
+each repo's tool directory (`.claude/skills/`, `.agents/skills/`,
+`.kiro/skills/`, etc.). Skills went stale whenever the binary was upgraded
+without re-running `repo upgrade` in every repo, N repos held N identical
+copies, and generated files sat in version control beside user code.
 
-Built-in tools now receive skills only in their global directories
-(`RepoService.installGlobalSkills` in `src/domain/repo/repo_service.ts`);
-no per-repo copy is written for them.
+Built-in tools now get skills only in their global directories, with no
+per-repo copy (`RepoService.installGlobalSkills` in
+`src/domain/repo/repo_service.ts`).
 
 ## Global Skill Paths (Built-in Tools)
 
-Each AI tool has a native global skills path that it reads at runtime:
+Each AI tool reads skills at runtime from its own global path:
 
 | Tool     | Global skills path                       | Reads `~/.agents/skills/`? |
 | -------- | ---------------------------------------- | -------------------------- |
@@ -38,12 +37,11 @@ Each AI tool has a native global skills path that it reads at runtime:
 | pi       | reads from `~/.agents/skills/` directly  | Yes                        |
 | antigravity | reads from `~/.agents/skills/` directly | Yes                     |
 
-Tools that read from `~/.agents/skills/` natively (Amp, Cursor, OpenCode, Codex,
-Copilot, Pi, AntiGravity) share a single copy. Claude Code and Kiro require
-their own copies at their vendor-specific global paths.
+Tools that read `~/.agents/skills/` (Amp, Cursor, OpenCode, Codex, Copilot, Pi,
+AntiGravity) share one copy. Claude Code and Kiro need their own.
 
-The `GLOBAL_SKILL_DIRS` mapping in `src/domain/repo/skill_dirs.ts` defines
-the home-relative path per built-in tool:
+`GLOBAL_SKILL_DIRS` in `src/domain/repo/skill_dirs.ts` gives each built-in
+tool's path relative to home:
 
 ```typescript
 export const GLOBAL_SKILL_DIRS: Record<string, string> = {
@@ -59,67 +57,64 @@ export const GLOBAL_SKILL_DIRS: Record<string, string> = {
 };
 ```
 
-`resolveUniqueGlobalSkillsDirs(tools)` resolves these against the home
-directory and deduplicates, so a repo enrolled for codex + copilot + opencode
-writes `~/.agents/skills/` once. After deduplication swamp writes to at most
-three directories: `~/.claude/skills/`, `~/.agents/skills/`, and
-`~/.kiro/skills/`, each holding `swamp/` and `swamp-getting-started/`.
+`resolveUniqueGlobalSkillsDirs(tools)` resolves these against the home directory
+and dedupes, so codex + copilot + opencode write `~/.agents/skills/` once. At
+most three directories are written, `~/.claude/skills/`, `~/.agents/skills/`
+and `~/.kiro/skills/`, each holding `swamp/` and `swamp-getting-started/`.
 
-The `none` tool has no global directory; skill directory resolution for it
-(and for unknown tools) falls back to `.swamp/pulled-extensions/skills/`,
-which only extension-installed skills use.
+The `none` tool has no global directory. For it and for unknown tools, skill
+directory resolution falls back to `.swamp/pulled-extensions/skills/`, used only
+by extension-installed skills.
 
 ## Skill Reference Style
 
-All built-in tools use `skillReferenceStyle: "name"`, meaning generated
-instructions files (CLAUDE.md, AGENTS.md, `.cursor/rules/swamp.mdc`,
-`.kiro/steering/swamp-rules.md`) reference skills by name (e.g. "use the
-`swamp` skill") rather than by project-local path. This is required because
-skills are installed globally — project-local skill directories do not exist
-after init, so path-based references would dangle.
+All built-in tools use `skillReferenceStyle: "name"`. Generated instructions
+files (CLAUDE.md, AGENTS.md, `.cursor/rules/swamp.mdc`,
+`.kiro/steering/swamp-rules.md`) name skills (e.g. "use the `swamp` skill")
+rather than give a project path. Skills are global, so a project path would not
+exist after init.
 
-Custom tools may use either `"name"` or `"path"`. Tools with `"path"` style
-must install skills to a project-local directory or provide a mechanism for
-the agent to resolve the referenced paths.
+Custom tools may use `"name"` or `"path"`. A `"path"` tool must install skills
+to a project directory or give the agent another way to resolve the paths.
 
 ## Custom Tools
 
-Custom tools are defined via `swamp agent setup` and stored in
+Custom tools are defined with `swamp agent setup` and stored in
 `.swamp-custom-tools.yaml`. `CustomToolDefinition`
-(`src/domain/repo/custom_tool.ts`) has a single `skillsDir` field — there is
-no separate global-vs-local field. Global intent is inferred from the path:
+(`src/domain/repo/custom_tool.ts`) has one `skillsDir` field; the path alone
+decides global or local:
 
-- A home-relative `skillsDir` (starting with `~/`) is a global skill
-  directory. During `repo init` and `repo upgrade`, swamp expands the `~/`
-  prefix, copies bundled skills to the resolved path, and registers the
+- A home-relative `skillsDir` (starting `~/`) is global. `repo init` and
+  `repo upgrade` expand `~/`, copy bundled skills there, and register the
   absolute path in `~/.config/swamp/custom-tool-skill-dirs.json` so the
-  repo-less `swamp update` command can find it later.
-- A repo-relative `skillsDir` (e.g. `.agents/skills/`) is project-local. Swamp
-  resolves it against the repo root and copies bundled skills there during
-  `repo init` / `repo upgrade`, but does not register it — `swamp update`
-  runs without repo context and cannot sync it.
+  repo-less `swamp update` command can find it.
+- A repo-relative `skillsDir` (e.g. `.agents/skills/`) is project-local.
+  `repo init` / `repo upgrade` resolve it against the repo root and copy bundled
+  skills there. It is not registered, because `swamp update` runs without a repo
+  and cannot sync it.
 
-The `swamp agent setup` wizard (`src/cli/commands/agent_setup.ts`) builds the
-skills-directory choices with `buildSkillsDirChoices()`: the default derived
-from the tool name, the tool's detected `skillsDir` (if the tool was found on
-disk), `<configDir>/skills` (if a config directory was detected), plus an
-"Other path" free-text option. When only the derived default is available,
-the wizard offers it inline with Enter-to-accept.
+The `swamp agent setup` wizard (`src/cli/commands/agent_setup.ts`) builds its
+skills-directory choices with `buildSkillsDirChoices()`. The choices are the
+default derived from the tool name, the tool's detected `skillsDir` (if found on
+disk), `<configDir>/skills` (if a config directory was found), and an "Other
+path" free-text option. If only the derived default exists, it is offered inline with
+Enter-to-accept.
 
 ## What `repo init` / `repo upgrade` Write
 
 **`repo init`:**
 
 1. Detect enrolled tools.
-2. Write skills to each enrolled built-in tool's global directory
-   (deduplicated — `~/.agents/skills/` is written once even if amp, codex, copilot and opencode are all enrolled) and to each custom tool's `skillsDir`.
+2. Write skills to each enrolled built-in tool's global directory and to each
+   custom tool's `skillsDir`. Directories are deduplicated: `~/.agents/skills/`
+   is written once even if amp, codex, copilot and opencode are all enrolled.
 3. Register the built-in global directories in
    `~/.config/swamp/builtin-tool-skill-dirs.json` and `~/`-prefixed custom
    directories in `custom-tool-skill-dirs.json`.
-4. Write instructions files to the **repo** (CLAUDE.md, AGENTS.md,
-   `.cursor/rules/swamp.mdc`, `.kiro/steering/swamp-rules.md`) — these stay
-   per-repo because they reference repo-specific context.
-5. Write tool-specific settings/hooks to the **repo**.
+4. Write instructions files to the repo (CLAUDE.md, AGENTS.md,
+   `.cursor/rules/swamp.mdc`, `.kiro/steering/swamp-rules.md`). These stay per
+   repo because they refer to repo-specific context.
+5. Write tool-specific settings/hooks to the repo.
 6. Do **not** copy skills into repo tool directories for built-in tools.
 
 **`repo upgrade`:**
@@ -130,55 +125,49 @@ the wizard offers it inline with Enter-to-accept.
 4. Update `.swamp.yaml` version.
 
 Skill files are copied as bundled from the asset list in
-`src/infrastructure/assets/skill_assets.ts`; there is no version stamp in the
-installed SKILL.md frontmatter.
+`src/infrastructure/assets/skill_assets.ts`. The installed SKILL.md frontmatter
+has no version stamp.
 
 ## Keeping Global Skills Current
 
 Global skills are synced in three places:
 
-1. **`swamp update`** (`src/cli/commands/update.ts`) — after the binary is
-   updated (interactive and background), skills are written to the
-   directories in both registries. Built-in entries whose directory does not
-   exist on disk are skipped; custom entries whose directory does not exist
-   are pruned from the registry. Directories outside the home directory are
-   skipped. If no built-in registry file exists (pre-registry CLI version), a
-   heuristic fallback syncs to all built-in directories that already exist on
-   disk. The sync is refused when running as root (a warning tells the user
-   to run `swamp update` without sudo or `swamp repo upgrade` in a repo), so
-   files under `~/` never end up root-owned.
-2. **`swamp repo init`** — writes global skills as part of first-time setup.
-3. **`swamp repo upgrade`** — writes global skills as part of the upgrade
-   flow.
+1. **`swamp update`** (`src/cli/commands/update.ts`). After the binary updates
+   (interactive or background), skills are written to the directories in both
+   registries. Missing built-in directories are skipped; missing custom ones
+   are removed from the registry. Directories outside home are skipped. With no
+   built-in registry file (a pre-registry CLI), it syncs every built-in
+   directory that already exists. It refuses to sync as root, so files under
+   `~/` never become root-owned, and warns the user to run `swamp update`
+   without sudo or `swamp repo upgrade` in a repo.
+2. **`swamp repo init`**: during first-time setup.
+3. **`swamp repo upgrade`**: during the upgrade.
 
-Skills are not synced on ordinary CLI startup; this avoids writing to `~/`
-on arbitrary invocations. The bundled skill files in the binary are the
-source of truth and the sync is idempotent — concurrent syncs from several
-repos produce the same result. Failures during sync (permissions, disk full)
-log a warning and do not block the update or command.
+Ordinary CLI startup does not sync, so arbitrary commands never write to `~/`.
+The bundled files are the source of truth and the sync is idempotent;
+concurrent syncs from several repos give the same result. Sync failures
+(permissions, disk full) log a warning and do not block the command.
 
 ### Registries
 
-Both registries are simple JSON arrays of absolute directory paths under
+Both registries are JSON arrays of absolute directory paths under
 `~/.config/swamp/`:
 
-- `builtin-tool-skill-dirs.json` — additive; initializing multiple repos
-  with different tools unions their directories. If the file exists but is
-  empty (no built-in tools enrolled anywhere), `swamp update` syncs no
-  built-in directories.
-- `custom-tool-skill-dirs.json` — `~/`-prefixed custom tool directories.
+- `builtin-tool-skill-dirs.json`: additive. Initializing repos with different
+  tools unions their directories. If the file exists but is empty (no built-in
+  tools enrolled anywhere), `swamp update` syncs no built-in directories.
+- `custom-tool-skill-dirs.json`: `~/`-prefixed custom tool directories.
 
 ## Local Copies Shadowing Global Skills
 
-Repos initialized before global installation still hold local skill copies.
-Most tools give a project-level skill precedence over a global one with the
-same name, so a stale local copy pins the user to old skills.
+Repos initialized before global installation still have local skill copies.
+Most tools prefer a project skill over a global one of the same name, so a stale
+local copy keeps the user on old skills.
 
 `repo init` and `repo upgrade` run `detectLocalBundledSkills()`
-(`src/domain/repo/repo_service.ts`) over each enrolled tool's project-local
-skill directory, looking for subdirectories matching the bundled skill names
-(`swamp`, `swamp-getting-started`). Any found are reported by the repo-init
-renderer (`src/presentation/renderers/repo_init.ts`):
+(`src/domain/repo/repo_service.ts`) over each enrolled tool's project skill
+directory, looking for subdirectories named `swamp` or `swamp-getting-started`.
+The repo-init renderer reports them (`src/presentation/renderers/repo_init.ts`):
 
 ```
 WRN Local copies of swamp, swamp-getting-started are shadowing the globally installed skills.
@@ -187,34 +176,33 @@ WRN Local copies of swamp, swamp-getting-started are shadowing the globally inst
       .claude/skills/swamp-getting-started
 ```
 
-Local copies are never deleted automatically. For repos that intentionally
-keep local skills (e.g. the swamp source repo), set
-`skillMigrationDismissed: true` in `.swamp.yaml` to suppress the warning.
-The older `lastSkillMigrationWarning` / `lastStalenessWarning` marker fields
-are legacy runtime state and are stripped on the next marker write.
+Local copies are never deleted automatically. Repos that keep local skills on
+purpose (e.g. the swamp source repo) can set `skillMigrationDismissed: true` in
+`.swamp.yaml` to hide the warning. The older `lastSkillMigrationWarning` /
+`lastStalenessWarning` marker fields are legacy runtime state, removed on the
+next marker write.
 
-A separate, startup-time warning covers **superseded** skill directories
-(old per-topic skills consolidated into the bundled `swamp` skill); see
+A separate startup warning covers **superseded** skill directories: old
+per-topic skills merged into the bundled `swamp` skill. See
 [repo.md](./repo.md#superseded-skill-detection).
 
 ### Extension-Installed Skills
 
-Extensions install skills via `swamp extension install`. These are separate
-from the bundled swamp skills, remain project-local (installed per extension
-per repo), and are not touched by the local-copy detection.
+`swamp extension install` installs extension skills. They are separate from the
+bundled swamp skills, stay project-local (per extension, per repo), and are
+ignored by local-copy detection.
 
 ## What Stays Per-Repo
 
-These files remain project-local because they contain repo-specific content:
+These files stay in the project because their content is specific to the repo:
 
 - **Instructions files**: `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/swamp.mdc`,
-  `.kiro/steering/swamp-rules.md` — reference the repo's models, extensions,
-  and project purpose
+  `.kiro/steering/swamp-rules.md`. They describe the repo's models, extensions
+  and purpose.
 - **Settings/hooks**: `.claude/settings.local.json`, `.cursor/hooks.json`,
   `.kiro/hooks/`, `.kiro/agents/`, `.kiro/settings/cli.json`,
-  `.vscode/settings.local.json` (Kiro trusted commands),
-  `.opencode/plugins/`, `.github/hooks/` — contain repo-contextual
-  configuration
-- **Extension skills**: Installed by `swamp extension install`, scoped to the
-  repo
-- **`.swamp.yaml` marker**: Tracks repo version and enrolled tools
+  `.vscode/settings.local.json` (Kiro trusted commands), `.opencode/plugins/`,
+  `.github/hooks/`. They hold repo-specific configuration.
+- **Extension skills**: installed by `swamp extension install`, scoped to the
+  repo.
+- **`.swamp.yaml` marker**: tracks repo version and enrolled tools.

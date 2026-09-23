@@ -6,24 +6,22 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Datastores
 
-A datastore in swamp determines where runtime data is stored. Runtime data
-includes versioned model data, workflow runs, method outputs, audit logs,
-telemetry, encrypted secrets, and cached bundles.
+A datastore is where swamp keeps runtime data: versioned model data, workflow
+runs, method outputs, audit logs, telemetry, encrypted secrets and cached
+bundles.
 
-**Important:** Source-of-truth files (model definitions, workflow definitions,
-vault configs) always live in the top-level `models/`, `workflows/`, `vaults/`
-directories of the repository and are tracked in git. They are never part of the
-datastore.
+Source-of-truth files (model definitions, workflow definitions, vault configs)
+are never in the datastore. They live in the repo's top-level
+`models/`, `workflows/` and `vaults/` directories, tracked in git.
 
 ## Backends
 
-Swamp has one built-in datastore backend (filesystem) and supports extension
-backends via the datastore extension system.
+Filesystem is the one built-in backend. Others come from datastore extensions.
 
 ### Filesystem
 
-Stores runtime data at a local filesystem path. This is the default backend —
-when no datastore is configured, runtime data lives in `{repoDir}/.swamp/`.
+Stores runtime data at a local path. This is the default: with no datastore
+configured, runtime data lives in `{repoDir}/.swamp/`.
 
 ```yaml
 # .swamp.yaml
@@ -32,14 +30,13 @@ datastore:
   path: /mnt/shared/swamp-data
 ```
 
-An external filesystem path is useful for shared NFS mounts or keeping runtime
-data out of the git repository.
+An external path suits shared NFS mounts, or keeps runtime data out of git.
 
 ### S3 (via `@swamp/s3-datastore` extension)
 
-Stores runtime data in an S3 bucket with a local cache at
-`~/.swamp/repos/{repoId}/`. All reads and writes hit the local cache;
-synchronization with S3 happens automatically before and after each CLI command.
+Stores runtime data in an S3 bucket. All reads and writes use a local cache at
+`~/.swamp/repos/{repoId}/`, which syncs with S3 before and after each CLI
+command.
 
 ```yaml
 # .swamp.yaml
@@ -51,76 +48,73 @@ datastore:
     region: us-east-1
 ```
 
-Legacy `type: s3` configs are automatically remapped to `@swamp/s3-datastore`
-with a deprecation warning. The extension is auto-installed on first use when
-the logged-in user has at least one trusted collective
-(`src/cli/mod.ts` `resolveTrustedCollectives`; no trusted collective means no
-auto-resolver). `@swamp/gcs-datastore` is the GCS equivalent
-(`src/cli/commands/datastore_setup.ts`).
+Legacy `type: s3` configs are remapped to `@swamp/s3-datastore` with a
+deprecation warning. The extension installs itself on first use if the
+logged-in user has a trusted collective; with none, there is no auto-resolver
+(`src/cli/mod.ts` `resolveTrustedCollectives`). `@swamp/gcs-datastore` is the
+GCS equivalent (`src/cli/commands/datastore_setup.ts`).
 
-The local cache is fully disposable. Deleting it or cloning the repo on a new
-machine repopulates the cache from S3 on the next command.
+The local cache is disposable. If it is deleted, or the repo is cloned on a new
+machine, the next command refills it from S3.
 
 ## Custom Backends
 
-Extensions can register custom datastore backends via `extensions/datastores/`.
-These are TypeScript files that export a `datastore` object conforming to the
-`DatastoreProvider` interface, enabling storage on any backend swamp doesn't
-ship with.
+Extensions add datastore backends in `extensions/datastores/`. Each is a
+TypeScript file exporting a `datastore` object that implements the
+`DatastoreProvider` interface, so data can live on any backend.
 
 ### Type Registry
 
-The `DatastoreTypeRegistry` is a Map-backed singleton
-(`datastoreTypeRegistry`). The built-in type (filesystem) is registered at
-startup. Extension types (e.g., `@swamp/s3-datastore`) are loaded from
-`extensions/datastores/` via `ExtensionLoader` with `datastoreKindAdapter` or
-auto-resolved from the registry on first use. Types must follow the `@collective/name` or
-`collective/name` pattern (e.g., `@myorg/redis-store`). Duplicate type
-registrations are rejected with an error.
+The `DatastoreTypeRegistry` is a Map-backed singleton (`datastoreTypeRegistry`).
+The filesystem type is registered at startup. Extension types (e.g.
+`@swamp/s3-datastore`) are loaded from `extensions/datastores/` by
+`ExtensionLoader` with `datastoreKindAdapter`, or auto-resolved from the
+registry on first use. Names must match `@collective/name` or `collective/name`
+(e.g. `@myorg/redis-store`). Registering a type twice is an error.
 
 ### DatastoreProvider Interface
 
-A custom datastore implements seven methods, three of them required:
+A custom datastore implements seven methods; three are required:
 
-- **`createLock`** — returns a `DistributedLock` for concurrency control
-- **`createVerifier`** — returns a `DatastoreVerifier` for health checks
-- **`createSyncService?`** — optional; returns a `DatastoreSyncService` for
-  remote sync (pull/push)
-- **`resolveDatastorePath`** — resolves the datastore path relative to the repo
-- **`resolveCachePath?`** — optional; resolves a local cache path (for remote
-  backends)
-- **`registerNamespace?`** — optional; writes the namespace manifest, failing
-  if the slug is already claimed
-- **`listNamespaces?`** — optional; returns the slugs found in namespace
-  manifests (see [Namespace manifests](#namespace-manifests))
+- **`createLock`**: returns a `DistributedLock` for concurrency control.
+- **`createVerifier`**: returns a `DatastoreVerifier` for health checks.
+- **`createSyncService?`** (optional): returns a `DatastoreSyncService` for
+  remote sync (pull/push).
+- **`resolveDatastorePath`**: resolves the datastore path relative to the repo.
+- **`resolveCachePath?`** (optional): resolves a local cache path for remote
+  backends.
+- **`registerNamespace?`** (optional): writes the namespace manifest; fails if
+  the slug is taken.
+- **`listNamespaces?`** (optional): returns the slugs in namespace manifests
+  (see [Namespace manifests](#namespace-manifests)).
 
-See `src/domain/datastore/datastore_provider.ts` for the full interface.
+Full interface: `src/domain/datastore/datastore_provider.ts`.
 
 ### Loading & Bundling
 
-`ExtensionLoader` (with `datastoreKindAdapter`) discovers `.ts` files
-recursively in the datastores directory (excluding `_test.ts` files), bundles
-each via Deno with zod externalized, and validates the export against
-`UserDatastoreSchema` — a Zod schema requiring `type`, `name`, `description`,
-an optional `configSchema`, and a `createProvider` factory function. Files
-without a `datastore` export are silently skipped. Bundles are cached in
-`.swamp/datastore-bundles/` with
-content-fingerprint invalidation (sha-256 over the entry point plus every
-local `.ts` dep) to avoid redundant compilation — mtime-based freshness was
-unreliable under atomic-rename saves, mtime-preserving sync tools, and
-sub-millisecond edits (issue #125; `src/domain/extensions/bundle_freshness.ts`).
-If re-bundling fails for any reason and a cached bundle exists, the cached
-bundle is used (`extension_loader.ts`). The failure is logged at debug level
-when it is expected — bare specifiers such as `from "zod"` instead of
+`ExtensionLoader` (with `datastoreKindAdapter`) finds `.ts` files recursively in
+the datastores directory, skipping `_test.ts`. It bundles each with Deno (zod
+externalized) and validates the export against `UserDatastoreSchema`. That Zod
+schema requires `type`, `name`, `description`, an optional `configSchema` and a
+`createProvider` factory. Files with no `datastore` export are silently skipped.
+
+Bundles are cached in `.swamp/datastore-bundles/` and rebuilt when their content
+fingerprint changes: a sha-256 over the entry point and every local `.ts`
+dependency. Mtime-based freshness was unreliable with atomic-rename saves,
+mtime-preserving sync tools and sub-millisecond edits (issue #125;
+`src/domain/extensions/bundle_freshness.ts`).
+
+If re-bundling fails and a cached bundle exists, the cached bundle is used
+(`extension_loader.ts`). Expected failures log at debug level, others at warn.
+The expected case is a bare specifier such as `from "zod"` instead of
 `from "npm:zod@4"`, which cannot resolve without the project's `deno.json`
-import map — and at warn level otherwise. Only the module's own static imports
-count — import statements inside template literals are generated code and are
-ignored.
+import map. Only the module's own static imports count; imports inside template
+literals are generated code and are ignored.
 
 ### Custom Type Configuration
 
-Custom types use the same resolution priority as built-in types. In
-`.swamp.yaml`, custom types use the `type:` and `config:` fields:
+Custom types resolve in the same priority order as built-in ones. In
+`.swamp.yaml` they use `type:` and `config:`:
 
 ```yaml
 datastore:
@@ -130,9 +124,8 @@ datastore:
     port: 6379
 ```
 
-In environment variable format: `SWAMP_DATASTORE=@org/name:{"key":"val"}`. The
-config object is validated against the optional `configSchema` Zod schema
-defined by the extension.
+As an environment variable: `SWAMP_DATASTORE=@org/name:{"key":"val"}`. The
+config is validated against the extension's optional `configSchema` Zod schema.
 
 ### Custom Backend Implementation Files
 
@@ -141,25 +134,24 @@ defined by the extension.
 | `src/domain/datastore/datastore_provider.ts` | `DatastoreProvider` interface |
 | `src/domain/datastore/datastore_type_registry.ts` | Type registry singleton |
 | `src/domain/extensions/extension_loader.ts` | Generic extension loader (used with kind adapters) |
-| `src/domain/extensions/datastore_kind_adapter.ts` | Datastore-specific kind adapter for ExtensionLoader |
+| `src/domain/extensions/datastore_kind_adapter.ts` | Datastore kind adapter for ExtensionLoader |
 | `src/domain/datastore/datastore_sync_service.ts` | `DatastoreSyncService` interface |
-| `src/cli/datastore_expression_resolver.ts` | Resolves `${{ env.* }}` and `${{ vault.get() }}` expressions in datastore config values |
+| `src/cli/datastore_expression_resolver.ts` | Resolves `${{ env.* }}` and `${{ vault.get() }}` in datastore config values |
 
 ### Config Value Interpolation
 
-String values in the datastore `config` object support expression interpolation
-using the same `${{ }}` delimiter syntax as model and workflow definitions.
-Expressions are resolved during config resolution, before the config is passed
-to the extension's schema validation and `createProvider()` factory.
+String values in the datastore `config` can use `${{ }}` expressions, as model
+and workflow definitions do. They are resolved before the extension's schema
+validation and `createProvider()` factory see the config.
 
-Two expression namespaces are supported:
+Two namespaces are supported.
 
-**Environment variables** — `${{ env.VAR_NAME }}`
+**Environment variables**: `${{ env.VAR_NAME }}`
 
-Resolves to the value of the named environment variable. Throws a startup error
-if the variable is not set or empty. This is the simplest approach for keeping
-secrets out of `.swamp.yaml` — the token comes from the operator's environment
-(direnv, shell profile, 1Password CLI, etc.).
+Resolves to the named environment variable. Startup fails if it is unset or
+empty. This is the simplest way to keep secrets out of `.swamp.yaml`: the token
+comes from the operator's environment (direnv, shell profile, 1Password CLI,
+etc.).
 
 ```yaml
 datastore:
@@ -169,12 +161,12 @@ datastore:
     endpoint: "https://${{ env.GITLAB_HOST }}/api/v4"
 ```
 
-**Vault secrets** — `${{ vault.get(vaultName, secretKey) }}`
+**Vault secrets**: `${{ vault.get(vaultName, secretKey) }}`
 
-Resolves to the decrypted value of the named secret from the named vault. All
-installed vault types are supported (native `local_encryption` and extension
-providers like `@swamp/aws-sm`). The vault service is initialized lazily — only
-when a `vault.get()` expression is encountered.
+Resolves to the decrypted secret from the named vault. Every installed vault
+type works: native `local_encryption` and extension providers like
+`@swamp/aws-sm`. The vault service starts only when a `vault.get()` expression
+appears.
 
 ```yaml
 datastore:
@@ -185,21 +177,20 @@ datastore:
 
 **Limitations:**
 
-- Only `env.*` and `vault.get()` are supported. The full CEL evaluation context
-  (model references, data lookups) is not available at this bootstrap phase.
-- All installed vault types work (native and extension). Extension vault
-  bundles are loaded directly from the `.swamp/vault-bundles/` cache during
-  early boot, bypassing the extension loader. If an extension vault is not
-  installed, install it before referencing it in datastore config.
-- Vault expressions are not supported when `managedConfig: true` — managed
-  config stores vault configurations in the datastore tier, creating a circular
-  dependency. Use environment variable expressions instead.
+- Only `env.*` and `vault.get()` work. The full CEL context (model references,
+  data lookups) does not exist this early in startup.
+- Extension vault bundles load straight from the `.swamp/vault-bundles/` cache
+  during early boot, bypassing the extension loader. Install an extension vault
+  before referencing it here.
+- Vault expressions do not work with `managedConfig: true`, which stores vault
+  configs in the datastore tier and would create a circular dependency. Use
+  environment variables instead.
 
 ## Configuration
 
 ### Resolution Priority
 
-Datastore config is resolved from multiple sources (highest priority first):
+Datastore config comes from, highest priority first:
 
 1. `SWAMP_DATASTORE` environment variable
 2. CLI `--datastore` argument
@@ -213,23 +204,22 @@ export SWAMP_DATASTORE=filesystem:/path/to/dir
 export SWAMP_DATASTORE=@swamp/s3-datastore:{"bucket":"my-bucket","region":"us-east-1"}
 ```
 
-Legacy `s3:bucket-name/prefix` format is auto-remapped to the
-`@swamp/s3-datastore` extension.
+The legacy `s3:bucket-name/prefix` format is remapped to `@swamp/s3-datastore`.
 
 ### Fine-Grained Control
 
-Two optional fields control which data goes to the datastore:
+Two optional fields decide which data goes to the datastore:
 
-- **`directories`** — which subdirectories belong to the datastore. Defaults to
+- **`directories`**: subdirectories in the datastore. Defaults to
   `DEFAULT_DATASTORE_SUBDIRS` (`datastore_config.ts`): `auto-definitions`,
   `definitions-evaluated`, `workflows-evaluated`, `config`, `data`, `outputs`,
   `workflow-runs`, `audit`, `telemetry`, `logs`, `files`, plus the bundle
-  directories. Anything not listed stays in local `.swamp/`. Note:
+  directories. Anything unlisted stays in local `.swamp/`. The
   `ALWAYS_LOCAL_SUBDIRS` (`secrets`, `bundles`, `vault-bundles`,
-  `report-bundles`) stay local regardless of this setting.
-  `swamp datastore setup filesystem --directories` sets the list at setup time.
-- **`exclude`** — gitignore-style glob patterns. Files matching these patterns
-  stay local even if their parent directory is in the datastore.
+  `report-bundles`) always stay local.
+  `swamp datastore setup filesystem --directories` sets the list at setup.
+- **`exclude`**: gitignore-style globs. Matching files stay local even if their
+  directory is in the datastore.
 
 ```yaml
 datastore:
@@ -245,45 +235,38 @@ datastore:
 
 ### Sync Timeout
 
-Each direction of a remote sync (push / pull) is bounded by a hard deadline
-enforced in the coordinator, so a stuck or slow extension cannot hang the CLI
-indefinitely. The effective timeout is resolved from the first source that
-yields a positive value:
+The coordinator enforces a hard deadline on each direction of a remote sync
+(push and pull), so a slow or stuck extension cannot hang the CLI. The first
+source giving a positive value wins:
 
-1. `--timeout <seconds>` CLI flag — per-invocation override, bounded at 21,600
-   seconds (6 hours): `swamp datastore sync` rejects larger values
-   (`datastore_sync.ts` `SYNC_TIMEOUT_CLI_MAX_SECONDS`), while
-   `swamp datastore setup extension` clamps them (`datastore_setup.ts`).
-   Preferred escape hatch for one-off large syncs or initial setup of large
-   repos.
-2. `CustomDatastoreConfig.syncTimeoutMs` — per-datastore config in
-   `.swamp.yaml`. Applies to both explicit `swamp datastore sync` calls and
-   the implicit syncs triggered by write commands. Not used by
-   `datastore setup extension` (setup runs outside the flush coordinator).
-3. `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` — environment variable, uncapped. Useful
-   for shell-session-scoped overrides during long-haul migrations. Applies to
-   both sync and setup extension.
-4. `DEFAULT_SYNC_TIMEOUT_MS` — 5 minutes.
+1. `--timeout <seconds>` CLI flag, per invocation, limited to 21,600 seconds
+   (6 hours). `swamp datastore sync` rejects larger values (`datastore_sync.ts`
+   `SYNC_TIMEOUT_CLI_MAX_SECONDS`); `swamp datastore setup extension` clamps
+   them (`datastore_setup.ts`). The preferred override for a one-off large sync
+   or first setup of a large repo.
+2. `CustomDatastoreConfig.syncTimeoutMs` in `.swamp.yaml`. Applies to explicit
+   `swamp datastore sync` and to the implicit syncs of write commands. Not used
+   by `datastore setup extension`, which runs outside the flush coordinator.
+3. `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` environment variable, uncapped. Useful for
+   a shell session during a long migration. Applies to sync and setup
+   extension.
+4. `DEFAULT_SYNC_TIMEOUT_MS`: 5 minutes.
 
-The deadline fires a `SyncTimeoutError` regardless of whether the extension
-honored the `AbortSignal` passed to `pushChanged(options)` /
-`pullChanged(options)`. Timeouts propagate as a non-zero CLI exit so the user
-sees that data did not make it to the remote; other push errors still
-warn-downgrade (preserves historical behavior where a transient S3 blip does not
-kill a run).
+The deadline raises `SyncTimeoutError` even if the extension ignores the
+`AbortSignal` passed to `pushChanged(options)` / `pullChanged(options)`. A
+timeout exits the CLI non-zero, so the user sees the data did not reach the
+remote. Other push errors are still downgraded to warnings, as before, so a
+brief S3 failure does not kill a run.
 
-**Setup timeout behavior.** During `datastore setup extension`, a push or pull
-timeout is treated as recoverable: the datastore type is still committed to
-`.swamp.yaml` so the user can resume with `swamp datastore sync --push
---timeout <big>`. Hard failures (auth errors, network errors, config errors)
-still block the type commit. This avoids the scenario where a slow first push
-leaves the repo un-migrated despite valid credentials and config.
+**Setup timeout behavior.** In `datastore setup extension`, a push or pull
+timeout is recoverable. The datastore type is still written to `.swamp.yaml`,
+and the user resumes with `swamp datastore sync --push --timeout <big>`. Hard
+failures (auth, network, config) still block writing the type. Otherwise a slow
+first push would leave a repo with valid credentials un-migrated.
 
-The `SyncTimeoutError` message lists every available remedy inline
-(`--timeout`, the env var, updating the datastore extension, releasing a stuck
-lock) so users get actionable next steps without chasing docs. The wording is
-version-free — it points at "the latest extension" rather than a specific
-version that would rot across releases.
+The `SyncTimeoutError` message lists every fix: `--timeout`, the env var,
+updating the datastore extension, releasing a stuck lock. It says "the latest
+extension" rather than a version number, so it does not go stale.
 
 See `src/domain/datastore/datastore_config.ts` (`DEFAULT_SYNC_TIMEOUT_MS`,
 `SYNC_TIMEOUT_ENV_VAR`, `resolveSyncTimeoutMs`),
@@ -295,106 +278,100 @@ See `src/domain/datastore/datastore_config.ts` (`DEFAULT_SYNC_TIMEOUT_MS`,
 
 ## Path Resolution
 
-Every file operation goes through a `DatastorePathResolver` that decides whether
-a path belongs to the local tier or the datastore tier:
+Every file operation goes through a `DatastorePathResolver`, which decides
+whether a path is in the local tier or the datastore tier:
 
 ```
 DatastorePathResolver.resolvePath(subdir, ...rest) → string
 ```
 
-For filesystem datastores, this returns `{config.path}/{subdir}/...`. For
-extension datastores (e.g., S3), this returns `{datastorePath}/{subdir}/...`
-(typically the local cache path). The `DefaultDatastorePathResolver`
-pre-compiles exclude patterns at construction time.
+For filesystem datastores it returns `{config.path}/{subdir}/...`. For extension
+datastores (e.g. S3) it returns `{datastorePath}/{subdir}/...`, usually the
+local cache. The `DefaultDatastorePathResolver` compiles exclude patterns once,
+at construction.
 
 ### Namespace prefixing (giga-swamp)
 
-When a `namespace` is configured (giga-swamp multi-repo shared datastores), the
-resolver prepends it as the **outermost** segment of the datastore tier:
-`{base}/{namespace}/{subdir}/...` — never `{base}/{subdir}/{namespace}/...`.
-This is applied at the single `datastorePath()` chokepoint, so it covers every
-datastore-tier subdir uniformly. Solo mode (empty namespace) produces
-byte-identical paths to a non-namespaced repo — no prefix, no stray separator.
-The local tier (`localPath`, `.swamp/`) is never namespaced.
+When a `namespace` is set (several repos sharing one datastore, "giga-swamp"),
+the resolver adds it as the outermost datastore-tier segment:
+`{base}/{namespace}/{subdir}/...`, never `{base}/{subdir}/{namespace}/...`. It
+is applied only in `datastorePath()`, so every datastore-tier subdir gets it.
+Solo mode (empty namespace) gives byte-identical paths to an un-namespaced repo,
+with no prefix or stray separator. The local tier (`localPath`, `.swamp/`) is
+never namespaced.
 
 #### Migration
 
-`swamp datastore namespace migrate` re-keys data from the solo layout to the
-namespaced layout. For each directory in `DEFAULT_DATASTORE_SUBDIRS` that exists
-at the un-namespaced path `{base}/{subdir}/`, it moves it to
-`{base}/{namespace}/{subdir}/` via `Deno.rename()`. The catalog is invalidated
-after migration so backfill rebuilds from the new paths.
+`swamp datastore namespace migrate` moves data from the solo layout to the
+namespaced one. Each `DEFAULT_DATASTORE_SUBDIRS` directory found at
+`{base}/{subdir}/` is moved to `{base}/{namespace}/{subdir}/` with
+`Deno.rename()`. The catalog is then invalidated so backfill rebuilds it from
+the new paths.
 
-When a file exists at both the source (root) and destination (namespace) paths,
-forward migration compares their contents byte-by-byte. Byte-identical
-duplicates (e.g. from a buggy pull that wrote namespace-stripped copies to the
-cache root) are auto-resolved by deleting the root-level copy. Non-identical
-collisions still error — the user must resolve them manually.
+If a file exists at both the root and namespace paths, forward migration
+compares them byte by byte. Identical copies (e.g. left by a buggy pull that
+wrote namespace-stripped files to the cache root) are resolved by deleting the
+root copy. Differing files still error, for the user to resolve by hand.
 
-The reverse (`--reverse`) flattens namespaced paths back to solo layout, with
-conflict detection — it refuses if the un-namespaced path already contains data
-files, except for the subdirectories in `MERGEABLE_ON_REVERSE`
-(`src/libswamp/datastores/namespace_migrate.ts`), which are merged.
-`swamp datastore namespace unset --migrate` combines unset + reverse migration.
-Both `namespace migrate` and `namespace unset --migrate` only preview until
-`--yes`/`--confirm` is passed.
+`--reverse` flattens namespaced paths back to solo layout. It refuses if the
+un-namespaced path already holds data files, except in the subdirectories in
+`MERGEABLE_ON_REVERSE` (`src/libswamp/datastores/namespace_migrate.ts`), which
+are merged. `swamp datastore namespace unset --migrate` does unset plus reverse
+migration. Both `namespace migrate` and `namespace unset --migrate` only preview
+until `--yes`/`--confirm` is passed.
 
-Two things are deliberately **not** namespaced:
+Two things are not namespaced:
 
-- **The `_catalog.db` catalog** is repo-local at `{repoDir}/.swamp/data/`,
-  resolved via the centralized `catalogDbPath` helper (not `resolvePath`).
-  Under a shared datastore each repo owns a private catalog, so a per-repo
-  backfill never clobbers another repo's rows; the catalog's
-  `namespace` column distinguishes own rows from foreign rows pulled in a later
-  phase.
+- **The `_catalog.db` catalog** is repo-local at `{repoDir}/.swamp/data/`, found
+  via the `catalogDbPath` helper, not `resolvePath`. On a shared datastore each
+  repo has its own catalog, so one repo's backfill never overwrites another's
+  rows. The `namespace` column separates the repo's own rows from foreign rows
+  pulled in a later phase.
 - **Secrets and vault bundles** are written through `swampPath`/`localPath`
-  (`.swamp/secrets`, `.swamp/vault-bundles`), never through `resolvePath`, so
-  the namespace prefix cannot reach them — vaults stay repo-local by
-  construction.
+  (`.swamp/secrets`, `.swamp/vault-bundles`), never `resolvePath`. The namespace
+  prefix cannot reach them, so vaults are always repo-local.
 
 #### Orphaned data reclamation (`swamp data prune`)
 
-**Orphaned data** is persisted data whose owning model definition no longer
-exists in its namespace — e.g. after the definition is deleted from the repo, or
-after a model instance is migrated to a different namespace leaving its
-historical data behind. Because the on-disk layout and the catalog `DELETE`
-predicate are keyed by model **type** (`{typeDir}/{modelId}/...` and
-`type_normalized`), and the type is normally re-derived by resolving the
-definition, both `swamp data delete` and `swamp data gc` fail on orphaned data:
-`delete` throws `Model not found`, and `gc` only enforces each item's frozen
-`lifetime`/`garbageCollection` policy (so `infinite`-lifetime orphans are never
-collected). The rows then accumulate in the catalog indefinitely, inflating
-index size and per-write sync cost.
+**Orphaned data** is stored data whose model definition no longer exists in its
+namespace: the definition was deleted, or the model instance moved to another
+namespace and left its old data behind.
 
-`swamp data prune` reclaims them. It walks the datastore data root
-(`findAllGlobal`), groups by `(type, modelId)`, and for each group asks a
-per-item predicate whether the owning model definition still exists. The
-predicate uses the definition repository's `findById` — which resolves **both**
-`models/` and `.swamp/auto-definitions/`, matching `swamp model get` — so
+`swamp data delete` and `swamp data gc` cannot remove it. The on-disk layout and
+the catalog `DELETE` predicate are keyed by model type
+(`{typeDir}/{modelId}/...` and `type_normalized`), and the type normally comes
+from the definition. So `delete` throws `Model not found`, and `gc` only applies
+each item's frozen `lifetime`/`garbageCollection` policy, never collecting
+`infinite`-lifetime orphans. The rows pile up, growing the index and the sync
+cost of every write.
+
+`swamp data prune` reclaims them. It walks the data root (`findAllGlobal`),
+groups by `(type, modelId)`, and checks whether each group's definition still
+exists. The check uses the definition repository's `findById`, which searches
+both `models/` and `.swamp/auto-definitions/`, like `swamp model get`. So
 auto-definition-backed models (auto-created model-run/workflow models, installed
-`@swamp/*` models) are correctly treated as live and never pruned. Groups with
-no live definition are reclaimed via the existing definition-free
-`delete(type, modelId, dataName)`, which removes all versions on disk and their
-catalog rows. Reclamation is irreversible and inferential (a definition can be
-transiently absent — a branch switch or an in-flight migration), so prune is
-opt-in per invocation, defaults to a confirmation prompt, supports `--dry-run`
-for a preview (which uses the lock-free read-only path), and otherwise acquires
-the global datastore lock (via `requireInitializedRepo`) like `gc`/`delete`.
+`@swamp/*` models) count as live and are never pruned. Groups with no live
+definition are removed by the definition-free `delete(type, modelId, dataName)`,
+which deletes all versions on disk and their catalog rows.
 
-This is distinct from two neighbouring concepts:
+Reclamation is irreversible and based on inference: a definition can be briefly
+absent during a branch switch or migration. So prune runs only when invoked,
+asks for confirmation by default, and offers `--dry-run` for a preview on the
+lock-free read-only path. Otherwise it takes the global datastore lock (via
+`requireInitializedRepo`), like `gc`/`delete`.
 
-- **`swamp data gc`** enforces the retention policy a model *declared*
-  (lifetime + version-cap). `prune` removes data whose model is *gone*. They are
-  deliberately separate commands; `gc` stays safe to run unattended, while
-  `prune` gates the inferential deletion behind its own verb.
-- **"Orphan recovery"** in `data_access_service.ts` is the *opposite* intent — a
-  read-time mechanism that keeps data reachable across a model's UUID change. It
-  never deletes anything.
+Two neighbouring concepts differ:
+
+- **`swamp data gc`** applies the retention policy a model declared (lifetime
+  and version cap). `prune` removes data whose model is gone. `gc` stays safe
+  to run unattended; `prune` keeps the inferential deletion behind its own verb.
+- **"Orphan recovery"** in `data_access_service.ts` does the opposite: at read
+  time it keeps data reachable across a model's UUID change. It never deletes.
 
 ## Remote Datastore Sync
 
-When a remote datastore (e.g., S3 via `@swamp/s3-datastore`) is configured,
-synchronization happens automatically:
+With a remote datastore (e.g. S3 via `@swamp/s3-datastore`), sync is
+automatic:
 
 ```
 Write commands (create, edit, delete, run, gc, etc.):
@@ -433,62 +410,56 @@ Explicit datastore sync (`swamp datastore sync` and `--push`):
     └─ release distributed lock
 ```
 
-`swamp datastore sync` deliberately bypasses the coordinator's implicit
-pull/push. Without `skipImplicitSync` the implicit pull would silently
-move files and the explicit pull would fast-path to 0, causing
-`filesPulled: 0` to be reported even when data was hydrated (lab #220).
-The explicit sync command is the user-facing "tell me what I synced"
-command — it owns its I/O and reports honest counts.
+`swamp datastore sync` skips the coordinator's implicit pull/push on purpose.
+Without `skipImplicitSync`, the implicit pull would move the files and the
+explicit pull would find nothing, reporting `filesPulled: 0` even though data
+was hydrated (lab #220). This command's job is to report what it synced, so it
+does its own I/O and reports true counts.
 
-`--pull` mode uses `requireInitializedRepoReadOnly` (no lock at all),
-matching the existing read-only pattern.
+`--pull` mode uses `requireInitializedRepoReadOnly` (no lock), like other
+read-only commands.
 
-Read-only commands skip the lock and sync entirely, allowing them to run
-concurrently with write operations. On filesystem datastores, reads see writes
-immediately (same directory). On S3 datastores, reads see whatever was last
-synced to the local cache by a write command; users can run
-`swamp datastore sync --pull` to refresh manually.
+Read-only commands skip lock and sync, so they can run alongside writes. On
+filesystem datastores reads see writes at once (same directory). On S3
+datastores reads see what a write command last synced to the local cache; run
+`swamp datastore sync --pull` to refresh.
 
 ### Serve Runtime Data Refresh
 
-In a multi-instance `swamp serve` deployment sharing a remote datastore, an idle
-server does not automatically see runtime output written by a peer. Write
-commands sync on execution, but `data.query` reads the local cache without
-triggering a remote pull.
+In a multi-instance `swamp serve` deployment on a shared remote datastore, an
+idle server does not see a peer's runtime output by itself. Write commands sync
+when they run, but `data.query` reads the local cache without pulling.
 
-Three background pollers address this for serve:
+Serve runs three background pollers to fix this:
 
-- **ConfigPoller** — refreshes managed configuration. Pulls extension files
-  (`config/pulled-extensions/`) separately from definitions (`config/`), so
-  extension registry reloads only trigger when extension files change.
-- **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) — refreshes
+- **ConfigPoller** refreshes managed configuration. It pulls extension files
+  (`config/pulled-extensions/`) separately from definitions (`config/`), so the
+  extension registry reloads only when extension files change.
+- **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) refreshes
   access-control grants and groups, then reloads the policy snapshot.
-- **RuntimeDataPoller** (`subdirs: ["data"]`) — refreshes the `data/` subtree
+- **RuntimeDataPoller** (`subdirs: ["data"]`) refreshes the `data/` subtree
   (runtime model output), then invalidates the query catalog so the next
-  `data.query` rebuilds from the updated local files.
+  `data.query` rebuilds from the new local files.
 
-All three run at 30-second intervals by default and start when a
-`DatastoreSyncService` is available. Each poller is independent — a
-configuration-only pull does not satisfy the runtime refresh, and vice versa.
+All three run every 30 seconds by default, starting when a
+`DatastoreSyncService` is available. They are independent: a config-only pull
+does not count as a runtime refresh, and vice versa.
 
-Every poller pull runs under serve's **sync gate** (`src/serve/sync_gate.ts`)
-and is hard-bounded by `POLLER_PULL_TIMEOUT_MS`. The gate is a single
-in-process permit that a pull and a handler's whole mutation+push unit both
-have to hold, so a pull can never land between a local delete and the push
-that would delete the remote object — see the serve handler obligation below.
-The bound guarantees the permit comes back even when an extension ignores the
-AbortSignal.
+Every poller pull runs under serve's **sync gate** (`src/serve/sync_gate.ts`),
+so it can never land between a local delete and the push that deletes the
+remote object (see the serve handler obligation below). Each pull is
+hard-limited by `POLLER_PULL_TIMEOUT_MS`, so the permit comes back even if an
+extension ignores the AbortSignal.
 
-The RuntimeDataPoller provides **eventual visibility**, not immediate
-consistency. An idle peer discovers a peer's committed output within one
-polling interval after the data reaches the remote datastore. The query
-catalog is invalidated only after a successful pull that reports changes,
-preserving fast cached reads on quiet cycles.
+The RuntimeDataPoller gives **eventual visibility**, not immediate consistency.
+An idle peer sees committed output within one polling interval of it reaching
+the remote. The query catalog is invalidated only after a successful pull that
+reports changes, so quiet cycles keep fast cached reads.
 
 ### SyncContext and SyncCapabilities
 
-Extensions can advertise capabilities by implementing the optional
-`capabilities()` method on `DatastoreSyncService`:
+Extensions advertise capabilities through the optional `capabilities()` method
+on `DatastoreSyncService`:
 
 ```typescript
 capabilities(): SyncCapabilities {
@@ -496,19 +467,18 @@ capabilities(): SyncCapabilities {
 }
 ```
 
-`SyncCapabilities` (`src/domain/datastore/datastore_sync_service.ts`) carries
+`SyncCapabilities` (`src/domain/datastore/datastore_sync_service.ts`) has
 `scopedSync`, `lazyHydration`, `namespacedSync`, `twoPhaseSync`, `previewPush`
-(gates `sync --push` behind a preview unless `--yes`/`--confirm`),
-`controlPlane` and `configRefresh`.
+(makes `sync --push` preview first unless `--yes`/`--confirm`), `controlPlane`
+and `configRefresh`.
 
-**`namespacedSync`** (Phase 6): when `true`, the extension correctly handles
-the `namespace` field on `DatastoreSyncOptions` — scoping its index walk and
-upload to `{namespace}/` in the remote datastore. Extensions that don't
-advertise this capability still receive the namespace field but are expected to
-ignore it and sync everything (solo-mode behavior).
+**`namespacedSync`** (Phase 6): when `true`, the extension handles the
+`namespace` field on `DatastoreSyncOptions`, limiting its index walk and upload
+to `{namespace}/` in the remote. Extensions without it still receive the field
+but should ignore it and sync everything, as in solo mode.
 
-When `scopedSync` is `true`, swamp core passes a `SyncContext` to
-`pullChanged()` and `pushChanged()` containing the models being operated on:
+When `scopedSync` is `true`, swamp core passes `pullChanged()` and
+`pushChanged()` a `SyncContext` listing the models being worked on:
 
 ```typescript
 interface SyncContext {
@@ -516,55 +486,48 @@ interface SyncContext {
 }
 ```
 
-Extensions translate this domain context to their own storage model — S3
-extensions filter by key prefix, MongoDB extensions build a query filter, etc.
+Extensions map this to their own storage: S3 extensions filter by key prefix,
+MongoDB extensions build a query filter, and so on.
 
-**Capability gating.** Core only passes context when the extension advertises
-`scopedSync`. Extensions that don't implement `capabilities()` (or return
-`{ scopedSync: false }`) receive `pullChanged()` / `pushChanged()` with no
-arguments — exactly today's behavior.
+**Capability gating.** Core passes context only if the extension advertises
+`scopedSync`. Without `capabilities()`, or with `{ scopedSync: false }`, the
+extension gets `pullChanged()` / `pushChanged()` with no arguments, as today.
 
-**Graceful degradation.** If `capabilities()` throws, core catches the error
-and falls back to full sync. The try/catch wraps only the `capabilities()` call,
-not pull/push.
+**Graceful degradation.** If `capabilities()` throws, core falls back to full
+sync. The try/catch wraps only the `capabilities()` call, not pull/push.
 
-**Per-model loop behavior.** `acquireModelLocks` calls `pullChanged()` once
-per model in the lock acquisition loop. When `scopedSync` is `true`, each call
-receives a context containing only the current model whose lock was just
-acquired. The extension pulls exactly one model per call.
+**Per-model loop behavior.** `acquireModelLocks` calls `pullChanged()` once per
+model as it takes each lock. With `scopedSync`, each call's context holds only
+the model whose lock was taken, so the extension pulls one model per call.
 
-**Push path.** The flush function calls `pushChanged()` once (not per-model)
-under the global lock. When `scopedSync` is `true`, context contains all
-deduplicated models. When `twoPhaseSync` is `true`, the push is split into
-`preparePush` (outside global lock) and `commitPush` (under global lock) — see
-"Two-Phase Sync" below.
+**Push path.** The flush function calls `pushChanged()` once (not per model)
+under the global lock. With `scopedSync`, the context holds all models,
+deduplicated. With `twoPhaseSync`, the push splits into `preparePush` (outside
+the global lock) and `commitPush` (under it); see "Two-Phase Sync" below.
 
 **Catalog rebuild invariant.** `synced = true` is set after `pullChanged()`
-succeeds on both the scoped and full paths. This boolean is returned in
-`{ flush, synced }` and checked at every call site across `src/cli` and
-`src/serve` (21 at last count) to trigger `catalogStore.invalidate()`. It must
-never be skipped or moved.
+succeeds, on both scoped and full paths. It is returned in `{ flush, synced }`
+and checked at every call site in `src/cli` and `src/serve` (21 at last count)
+to trigger `catalogStore.invalidate()`. It must never be skipped or moved.
 
 ### Namespace-Scoped Sync
 
-When a repo has a `namespace` configured in `.swamp.yaml`, the sync lifecycle
-scopes push and pull to the namespace's subtree in the remote datastore. This
-is how two repos sharing a single S3 bucket avoid syncing each other's data.
+When a repo sets a `namespace` in `.swamp.yaml`, push and pull cover only that
+namespace's subtree in the remote. This is how two repos share one S3 bucket
+without syncing each other's data.
 
 #### How namespace flows through sync
 
-1. **Config → coordinator.** `repo_context.ts` reads `datastoreConfig.namespace`
-   and passes it to `registerDatastoreSync({ namespace })`. The coordinator
+1. **Config → coordinator.** `repo_context.ts` passes
+   `datastoreConfig.namespace` to `registerDatastoreSync({ namespace })`, which
    stores it on the `SyncEntry`.
-2. **Coordinator → extension.** On pull, the coordinator passes
-   `{ signal, namespace }` to `pullChanged()`. On push (flush), it passes
-   `{ signal, namespace }` to `pushChanged()`. The namespace field is only
-   included when non-empty — solo-mode calls omit it entirely.
-3. **Per-model path.** `acquireModelLocks` reads `datastoreConfig.namespace`
-   and passes it alongside the `SyncContext` (model list). When
-   `namespacedSync` is advertised, both namespace and context are passed; when
-   only namespace is available (no `scopedSync`), the extension receives
-   `{ namespace }` alone.
+2. **Coordinator → extension.** The coordinator passes `{ signal, namespace }`
+   to `pullChanged()` on pull and to `pushChanged()` on push (flush). The
+   namespace field is included only when non-empty; solo-mode calls omit it.
+3. **Per-model path.** `acquireModelLocks` reads `datastoreConfig.namespace` and
+   passes it with the `SyncContext` (model list). With `namespacedSync`
+   advertised, both are passed. With only a namespace (no `scopedSync`), the
+   extension gets `{ namespace }` alone.
 
 #### Per-namespace index partitioning
 
@@ -573,32 +536,31 @@ is how two repos sharing a single S3 bucket avoid syncing each other's data.
 
 > **See also:** The [shard-first index](#shard-first-index) design extends
 > partitioning beyond per-namespace to per-model shards covering all datastore
-> subdirectories, eliminating the monolithic index entirely.
+> subdirectories and removes the monolithic index.
 
-Extensions that advertise `namespacedSync: true` partition their remote index
-per namespace:
+Extensions advertising `namespacedSync: true` partition their remote index per
+namespace:
 
-- **Pull**: fetch `{namespace}/.datastore-index.json`, walk only keys under
+- **Pull**: fetch `{namespace}/.datastore-index.json`; walk only keys under
   `{namespace}/`.
-- **Push**: upload only files under `{namespace}/`, write
+- **Push**: upload only files under `{namespace}/`; write
   `{namespace}/.datastore-index.json`.
-- **Solo mode** (no namespace): use the global `.datastore-index.json` and
-  walk all keys — identical to pre-namespace behavior.
+- **Solo mode** (no namespace): use the global `.datastore-index.json` and walk
+  all keys, as before namespaces.
 
-The zero-diff fast path (sidecar fingerprint + dirty flag) operates
-per-namespace: the sidecar caches the ETag of the namespace's index, not the
-global index. A repo that hasn't written anything skips sync in O(1)
-regardless of how much data other namespaces contain.
+The zero-diff fast path (sidecar fingerprint + dirty flag) is per namespace: the
+sidecar caches the ETag of the namespace's index, not the global one. A repo
+that has written nothing skips sync in O(1), however much data other namespaces
+hold.
 
-Push must never delete keys outside the namespace prefix. A namespace-scoped
-push uploads files under `{namespace}/` and updates only that namespace's
-index. Keys belonging to other namespaces are invisible to the walk and
-untouched.
+Push must never delete keys outside the namespace prefix. It uploads files under
+`{namespace}/` and updates only that namespace's index. Other namespaces' keys
+are invisible to the walk and untouched.
 
 #### Namespace manifests
 
-Each namespace writes a `.namespace.json` manifest to the datastore on
-registration (`swamp datastore namespace set`):
+Registering a namespace (`swamp datastore namespace set`) writes a
+`.namespace.json` manifest to the datastore:
 
 ```json
 {
@@ -608,41 +570,34 @@ registration (`swamp datastore namespace set`):
 }
 ```
 
-The manifest lives at `{namespace}/.namespace.json` in the remote datastore
-(for extension backends) or at `{datastorePath}/{namespace}/.namespace.json`
-(for filesystem). It serves two purposes:
+It lives at `{namespace}/.namespace.json` in the remote (extension backends) or
+`{datastorePath}/{namespace}/.namespace.json` (filesystem). It has two uses:
 
-- **Conflict detection**: before registering a namespace, the system checks
-  if a manifest already exists with a different `repoId`. If so, the
-  registration fails with a clear error.
-- **Discovery**: `swamp datastore namespace list` lists all registered
-  namespaces by scanning for `.namespace.json` files
-  (`src/cli/commands/datastore_namespaces.ts`,
+- **Conflict detection**: registration fails with a clear error if a manifest
+  already exists with a different `repoId`.
+- **Discovery**: `swamp datastore namespace list` scans for `.namespace.json`
+  files (`src/cli/commands/datastore_namespaces.ts`,
   `src/libswamp/datastores/namespace_list.ts`).
 
 For extension datastores, `DatastoreProvider.registerNamespace()` and
-`DatastoreProvider.listNamespaces()` manage manifests via the remote API
-(S3 PUT/GET, GCS equivalent). After writing to the remote, swamp core also
-materializes the manifest into the local cache at
-`{cachePath}/{namespace}/.namespace.json`. This ensures the extension's
-`pushChanged()` orphan detection sees a local counterpart for the manifest
-and does not delete the remote copy (swamp-club#834). For filesystem
-datastores, the built-in `namespace_manifest.ts` utility reads and writes
-manifest files directly. Both methods are optional on `DatastoreProvider` —
-when the extension does not implement them, the CLI warns that conflict
-detection is unavailable and proceeds with only the `.swamp.yaml` update.
+`DatastoreProvider.listNamespaces()` manage manifests through the remote API
+(S3 PUT/GET, or GCS). After the remote write, swamp core also writes the
+manifest to the local cache at `{cachePath}/{namespace}/.namespace.json`.
+Otherwise the extension's `pushChanged()` orphan detection would find no local
+copy and delete the remote one (swamp-club#834). For filesystem datastores, the
+built-in `namespace_manifest.ts` utility reads and writes manifests directly.
+Both methods are optional on `DatastoreProvider`. Without them, the CLI warns
+that conflict detection is unavailable and only updates `.swamp.yaml`.
 
 ### Two-Phase Sync
 
-> **Next step:** The two-phase sync narrows the critical section to the index
-> merge, but `commitPush` still reads/merges/writes the full monolithic index.
-> The [shard-first index](#shard-first-index) design eliminates the monolithic
-> index entirely — `commitPush` reads and writes only the touched per-model
-> partition shard(s), making lock-hold time proportional to the write size, not
-> the total index.
+> **Next step:** `commitPush` still reads, merges and writes the full monolithic
+> index. The [shard-first index](#shard-first-index) design removes it:
+> `commitPush` touches only the affected per-model partition shard(s), so
+> lock-hold time scales with the write size, not the total index.
 
-When an extension advertises `twoPhaseSync: true` in its capabilities, swamp
-core splits the push into two phases to narrow the global-lock critical section:
+When an extension advertises `twoPhaseSync: true`, swamp core splits the push
+in two to shorten the global-lock critical section:
 
 ```
 Single-phase (default — pushChanged under global lock):
@@ -659,55 +614,49 @@ Two-phase (twoPhaseSync: true):
   release global lock
 ```
 
-This matters for workloads with many concurrent per-model writers in the same
-namespace. Without two-phase sync, every writer acquires the global lock to
-do a full push — serializing all concurrent writes behind the lock. With
-two-phase sync, the expensive file I/O (`preparePush`) overlaps across
-writers, and only the fast index merge (`commitPush`) serializes.
+This helps when many per-model writers in one namespace run at once. Without
+it, each writer holds the global lock for a full push, so all writes queue. With
+it, the slow file I/O (`preparePush`) overlaps across writers and only the fast
+index merge (`commitPush`) is serialized.
 
 #### Extension contract
 
 Extensions implement two optional methods on `DatastoreSyncService`:
 
-- **`preparePush(options?)`** — Upload new/changed files to the remote.
-  Return an opaque `PushManifest` describing what changed. Do NOT update the
-  remote index. Do NOT clear the dirty flag (if `commitPush` fails, the dirty
-  flag must remain set so the next push retries).
+- **`preparePush(options?)`**: upload new and changed files and return an opaque
+  `PushManifest` of what changed. Do NOT update the remote index. Do NOT clear
+  the dirty flag; if `commitPush` fails, it must stay set so the next push
+  retries.
+- **`commitPush(manifest, options?)`**: read the **current** remote index, not
+  a cached copy, since another writer may have committed after `preparePush`.
+  **Merge** the manifest entries in; never replace the whole index. Write the
+  index back, and clear the dirty flag only after that write succeeds.
 
-- **`commitPush(manifest, options?)`** — Read the **current** remote index
-  (not a cached copy — another writer may have committed between
-  `preparePush` and `commitPush`). **Merge** the manifest entries into the
-  index — never replace the entire index. Write the updated index back. Clear
-  the dirty flag only after the index write succeeds.
-
-The manifest type (`PushManifest`) is opaque to core — core passes it through
-from `preparePush` to `commitPush` without inspection. The extension defines
-what goes inside.
+`PushManifest` is opaque to core, which passes it from `preparePush` to
+`commitPush` unread. The extension defines its contents.
 
 #### Integrity guarantees
 
-Core provides the integrity guarantees; extensions do not need to implement
-their own concurrency control:
+Core provides these, so extensions need no concurrency control of their own:
 
-1. **Global lock on `commitPush`** — the index read-modify-write is always
-   serialized. Two concurrent `commitPush` calls never overlap.
-2. **Per-model locks across both phases** — held from before `preparePush`
-   through after `commitPush`. Structural commands' symmetric drain waits
-   for these locks, so a concurrent delete/GC cannot interfere.
-3. **Additive merge** — since per-model locks guarantee non-overlapping file
-   paths between concurrent writers, manifests from different writers never
-   conflict. `commitPush` merges into whatever the current index contains.
-4. **Catalog export before upload** — `.catalog-export.json` is written
-   before `preparePush` so it is included in the file upload phase. The
-   export is a full snapshot of the local catalog, so concurrent writers
-   that overwrite it produce a correct (more complete) result. This avoids
-   a gap where the export is dirty but never uploaded.
+1. **Global lock on `commitPush`.** The index read-modify-write is always
+   serialized; two `commitPush` calls never overlap.
+2. **Per-model locks across both phases**, held from before `preparePush` to
+   after `commitPush`. The symmetric drain in structural commands waits for
+   them, so a concurrent delete or GC cannot interfere.
+3. **Additive merge.** Per-model locks keep concurrent writers on separate file
+   paths, so their manifests never conflict. `commitPush` merges into whatever
+   the index currently holds.
+4. **Catalog export before upload.** `.catalog-export.json` is written before
+   `preparePush`, so it is uploaded with the files. It is a full snapshot of the
+   local catalog, so a concurrent overwrite still gives a correct (more
+   complete) result. This avoids an export that changed but was never uploaded.
 
 #### Fallback
 
-Extensions that do not advertise `twoPhaseSync` (or do not implement
-`preparePush`/`commitPush`) continue to use the single-phase
-`pushChanged`-under-global-lock path — zero regression.
+Extensions that do not advertise `twoPhaseSync`, or lack
+`preparePush`/`commitPush`, keep the single-phase
+`pushChanged`-under-global-lock path, with no regression.
 
 ### Shard-First Index
 
@@ -717,21 +666,19 @@ Extensions that do not advertise `twoPhaseSync` (or do not implement
 > `DatastoreSyncService`, its `MigrateIndexResult`, and the
 > `swamp datastore migrate-index` command that calls it.
 
-The two-phase sync narrows the critical section to the index merge in
-`commitPush`, but `commitPush` still reads, parses, merges, and rewrites the
-full monolithic `.datastore-index.json` under the lock. On a high-churn
-namespace with a large index this can take long enough that few concurrent
-writers fit within the 60-second lock timeout.
+Even with two-phase sync, `commitPush` reads, parses, merges and rewrites the
+whole monolithic `.datastore-index.json` under the lock. On a busy namespace
+with a large index, this can take so long that few concurrent writers fit in
+the 60-second lock timeout.
 
-The shard-first index design eliminates the monolithic index as the source of
-truth during `commitPush`. Instead, the index is partitioned into per-model
-shard files under `_index/`, and `commitPush` reads and writes only the touched
-shard(s). Lock-hold time becomes proportional to the write size (typically KB),
-not the total index size (potentially hundreds of MB).
+Shard-first splits the index into per-model shard files under `_index/`, and
+`commitPush` reads and writes only the shard(s) it touches. The monolith is no
+longer the source of truth. Lock-hold time depends on the write size (typically
+KB), not the index size (possibly hundreds of MB).
 
 #### Partition scheme
 
-Every datastore subdirectory is assigned a partition key strategy:
+Each datastore subdirectory has a partition key strategy:
 
 | Subdirectory              | Partition key pattern                      | Granularity  |
 |---------------------------|--------------------------------------------|--------------|
@@ -746,12 +693,12 @@ Every datastore subdirectory is assigned a partition key strategy:
 | `logs/`                   | `logs`                                     | Single shard |
 | `files/`                  | `files`                                    | Single shard |
 
-Model-scoped subdirectories (`data/`, `outputs/`, `definitions-evaluated/`)
-partition per model. Low-cardinality subdirectories (`audit/`, `telemetry/`,
-etc.) use a single shard each — they are small and rarely written concurrently.
+Model-scoped subdirectories (`data/`, `outputs/`, `definitions-evaluated/`) get
+a shard per model. Low-cardinality ones (`audit/`, `telemetry/`, etc.) get one
+shard each, since they are small and rarely written concurrently.
 
-Each shard is stored as `_index/{partitionKey}.json`. A `_meta.json` file
-tracks all partition keys and a monotonic `commitSeq` counter:
+Each shard is `_index/{partitionKey}.json`. A `_meta.json` file lists all
+partition keys and a monotonic `commitSeq` counter:
 
 ```json
 {
@@ -762,206 +709,196 @@ tracks all partition keys and a monotonic `commitSeq` counter:
 }
 ```
 
-- `version: 2` distinguishes shard-first from the earlier `version: 1`
-  (dual-write) format. Readers seeing `version: 1` know the monolith is still
+- `version: 2` marks shard-first, unlike the earlier `version: 1` (dual-write)
+  format. A reader seeing `version: 1` knows the monolith is still
   authoritative.
-- `commitSeq` is bumped on every `commitPush`, replacing the monolith ETag as
+- `commitSeq` increments on every `commitPush` and replaces the monolith ETag as
   the zero-diff fast path fingerprint.
 
 #### Push path (`commitPush`)
 
-Every index write is a compare-and-swap merge. The global lock is not the
-serializer here — serve-handler pushes take the same path without holding it,
-so a writer must assume the remote shard changed under it:
+Every index write is a compare-and-swap merge. The global lock does not
+serialize it, because serve-handler pushes take this path without the lock. A
+writer must assume the remote shard changed under it:
 
-1. Read `_meta.json` to get the current partition list and `commitSeq`.
-2. Read each shard touched by the manifest entries, keeping its etag
-   (S3) or generation (GCS).
+1. Read `_meta.json` for the current partition list and `commitSeq`.
+2. Read each shard the manifest entries touch, keeping its etag (S3) or
+   generation (GCS).
 3. Apply **only this writer's** upserts and removals to the shard as read.
-   Never rewrite a shard from the local view — entries the local view lacks
-   belong to other writers and must survive.
-4. Write each shard back conditionally (`If-Match` / `ifGenerationMatch`).
-   On a lost race, re-read and re-merge rather than overwriting.
-5. Merge `_meta.json` the same way, appending any new partition keys and
-   setting `commitSeq` to the value just read plus one.
+   Never rewrite a shard from the local view: entries it lacks belong to other
+   writers and must survive.
+4. Write each shard back conditionally (`If-Match` / `ifGenerationMatch`). On a
+   lost race, re-read and re-merge instead of overwriting.
+5. Merge `_meta.json` the same way: append new partition keys and set
+   `commitSeq` to the value read plus one.
 6. Clear the dirty flag.
 
 A store that answers `NotImplemented` to a conditional PUT falls back to
-merge-on-write without the compare-and-swap, and warns once.
+merge-on-write without compare-and-swap, and warns once.
 
-`preparePush` is unchanged — it uploads files outside the lock and returns an
-opaque manifest containing the affected relative paths, from which `commitPush`
-derives partition keys.
+`preparePush` is unchanged. It uploads files outside the lock and returns an
+opaque manifest of the affected relative paths, from which `commitPush` derives
+partition keys.
 
 #### Pull path
 
 **Scoped pull** (`pullChanged` with `context.models`): read the relevant model
-shard(s) from `_index/`. No monolith fallback needed when `_meta.json` version
-is 2.
+shard(s) from `_index/`. With `_meta.json` at version 2, no monolith fallback is
+needed.
 
-**Unscoped pull** (`pullChanged` without context): read `_meta.json` to discover
-all partition keys, then fetch all shards in parallel. Merge into the in-memory
-index. This replaces the single monolith GET with N parallel GETs — on S3/GCS
-this is typically faster because parallelism beats single-large-object latency.
+**Unscoped pull** (`pullChanged` without context): read `_meta.json` for all
+partition keys, fetch every shard in parallel, and merge into the in-memory
+index. N parallel GETs replace one monolith GET, which on S3/GCS is usually
+faster than fetching one large object.
 
 #### Memory contract
 
-`pullChanged` implementations run on a process-lifetime singleton in
-`swamp serve` — the sync service is created once at startup and shared across
-all pollers and handlers for the entire process. Any internal state that
-accumulates across calls is a memory leak.
+In `swamp serve`, the sync service is a singleton created at startup and shared
+by all pollers and handlers for the life of the process. Any state
+`pullChanged` accumulates across calls is a memory leak.
 
 Rules:
 
-1. **Stream file content to disk.** Downloaded file bodies (`Uint8Array`,
-   `ArrayBuffer`) must not be retained in instance state after writing to the
-   local cache. Prefer streaming (`ReadableStream.pipeTo`) over buffering
-   (`transformToByteArray`) for file downloads. If buffering is unavoidable,
-   scope the reference to the download function so it becomes unreachable once
-   the write completes.
+1. **Stream file content to disk.** Do not keep downloaded bodies
+   (`Uint8Array`, `ArrayBuffer`) in instance state after writing them to the
+   cache. Prefer streaming (`ReadableStream.pipeTo`) to buffering
+   (`transformToByteArray`). If you must buffer, scope the reference to the
+   download function so it is freed once the write completes.
 
-2. **Bound or flush internal indexes.** If the implementation maintains an
-   in-memory index (e.g. a `Record<string, IndexEntry>`), write it to disk
-   after each `pullChanged` rather than accumulating entries across calls.
-   An in-memory-only index on a serve singleton grows unboundedly as the
-   datastore grows.
+2. **Bound or flush internal indexes.** An in-memory index (e.g. a
+   `Record<string, IndexEntry>`) should be written to disk after each
+   `pullChanged`, not grown across calls. On a serve singleton it would grow
+   without bound along with the datastore.
 
-3. **No file-content hashing in JS heap.** When comparing local files against
-   remote hashes, use a streaming hasher (`node:crypto.createHash`) rather than
-   reading entire files into memory with `Deno.readFile`.
+3. **No file-content hashing in the JS heap.** Compare local files to remote
+   hashes with a streaming hasher (`node:crypto.createHash`), not by reading
+   whole files with `Deno.readFile`.
 
-These rules are enforced by convention, not at the type level — the interface
-cannot assert memory behavior. The conformance suite in `packages/testing/`
-documents the expectation.
+These rules are convention only; the interface cannot express memory behavior.
+The conformance suite in `packages/testing/` documents the expectation.
 
 #### Shard cleanup
 
-When deletions empty a shard (all entries removed), the shard file is left in
-place as an empty object rather than deleted — S3-compatible stores ignore
-`If-Match` on DELETE, so a delete cannot be made conditional and would race a
-concurrent add to the same shard. Its key is unlisted from the `_meta.json`
-partitions list only while a HEAD still shows the etag/generation this push
-wrote; if another writer has since re-populated the shard, the key stays.
+A shard emptied by deletions is left in place as an empty object, not deleted.
+S3-compatible stores ignore `If-Match` on DELETE, so a delete cannot be
+conditional and would race a concurrent add to the same shard. The key is
+removed from the `_meta.json` partitions list only while a HEAD still shows the
+etag/generation this push wrote. If another writer has refilled the shard, the
+key stays.
 
 #### Zero-diff fast path
 
-The sidecar caches `commitSeq`. On the next sync, the extension reads
-`_meta.json` and compares `commitSeq`. If unchanged, skip — no per-entry work.
-If changed, fetch the relevant shard(s).
+The sidecar caches `commitSeq`. On the next sync the extension reads
+`_meta.json` and compares `commitSeq`. Unchanged means skip, with no per-entry
+work. Changed means fetch the relevant shard(s).
 
 #### Migration
 
-Migration from monolithic to shard-first is an explicit one-time operation, not
-auto-triggered during normal writes. This avoids a race where multiple
-concurrent writers all independently read a large monolith and write redundant
-shards on a freshly upgraded extension.
+Migrating from the monolith to shard-first is a one-time explicit step, never
+triggered by normal writes. Otherwise several writers on a freshly upgraded
+extension could each read a large monolith and write redundant shards.
 
-The migration is triggered via the CLI:
+Run it from the CLI:
 
 ```
 swamp datastore migrate-index
 ```
 
-The command acquires the distributed lock and calls
-`migrateMonolithToShards()` on the active sync service, which:
+The command takes the distributed lock and calls `migrateMonolithToShards()` on
+the active sync service, which:
 
 1. Reads the existing `.datastore-index.json`.
-2. Partitions all entries into shards using the partition key scheme above.
+2. Partitions all entries into shards using the scheme above.
 3. Writes all shard files to `_index/`.
 4. Writes `_meta.json` with `version: 2` and `commitSeq: 1`.
 
-This runs under the lock (it is a structural command) so there is no
-concurrent-migration race. It is idempotent — running it again produces the
-same result. If the monolithic index is empty, the command recovers by listing
-existing shard files in `_index/` and rebuilding `_meta.json`.
+As a structural command it runs under the lock, so migrations cannot race. It is
+idempotent. If the monolithic index is empty, it lists existing shard files in
+`_index/` and rebuilds `_meta.json`.
 
-The command handles several edge cases:
+Edge cases:
 
-- **Filesystem datastore** — reports that index migration is only available for
+- **Filesystem datastore**: reports that index migration is only for
   sync-capable custom datastores.
-- **Extension without migration support** — advises updating the datastore
-  extension to a version that supports shard-first indexing.
-- **Empty datastore** — recovers from `_index/` listing if shards already exist.
+- **Extension without migration support**: advises updating to an extension
+  version that supports shard-first indexing.
+- **Empty datastore**: recovers from the `_index/` listing if shards exist.
 
 **Pre-migration behavior:** When `_meta.json` is missing or `version: 1`,
-`commitPush` and `pullChanged` fall back to the monolithic path — identical to
-pre-shard-first behavior. An info-level log hints that migration is available
-via `swamp datastore migrate-index`. This means upgrading the extension alone
-causes zero regression.
+`commitPush` and `pullChanged` use the monolithic path, as before shard-first.
+An info-level log says migration is available via
+`swamp datastore migrate-index`. Upgrading the extension alone causes no
+regression.
 
 #### Backward compatibility
 
-**Phase 1 (initial release):** `commitPush` writes shards as the source of
-truth and also dual-writes the monolith as a derived artifact. Old extension
-versions continue to read the monolith. New versions read shards.
+**Phase 1 (initial release):** `commitPush` writes shards as the source of truth
+and also writes the monolith as a derived copy. Old extension versions read the
+monolith; new ones read shards.
 
 **Phase 2 (future major version):** Stop writing the monolith. Old extension
 versions must upgrade.
 
-**Old writers:** If an old extension version writes the monolith but not shards,
-shard-first readers fall back to the monolith when `_meta.json` is missing or
-`version: 1`. This fallback is permanent, not just a migration path.
+**Old writers:** An old version may write the monolith but not shards.
+Shard-first readers fall back to the monolith when `_meta.json` is missing or
+`version: 1`. This fallback is permanent and stays after migration.
 
 #### Namespace interaction
 
-In namespaced mode, the shard path is `{namespace}/_index/`. The partition
-scheme is unchanged — the namespace prefix is applied by existing path
-resolution logic. `_meta.json` and all shards are per-namespace.
+In namespaced mode the shard path is `{namespace}/_index/`. The partition scheme
+is unchanged; existing path resolution adds the namespace prefix. `_meta.json`
+and all shards are per namespace.
 
 #### Recovery
 
-If `_meta.json` is missing or corrupted, the extension lists the `_index/`
-prefix via `ListObjectsV2` to discover all shard files and rebuilds `_meta.json`
-automatically. This is a self-healing path — no operator intervention required.
+If `_meta.json` is missing or corrupt, the extension lists the `_index/` prefix
+with `ListObjectsV2` to find all shards and rebuilds `_meta.json`, with no
+operator action.
 
-If an individual shard is missing or corrupted, the extension falls back to the
-monolith for that shard's entries (if the monolith exists). If no monolith, the
-shard is rebuilt by listing objects under the shard's path prefix.
+If one shard is missing or corrupt, the extension uses the monolith for that
+shard's entries, if the monolith exists. If not, it rebuilds the shard by
+listing objects under the shard's path prefix.
 
 ### Zero-Diff Fast Path (Extension Guidance)
 
-At production scale, most sync invocations are "nothing to do" — the local
-cache already matches the remote index. Sync implementations that walk every
-index entry unconditionally become O(n) in wall time on invocations that
-should be O(1). Extension authors implementing `DatastoreSyncService` SHOULD
-provide a zero-diff fast path that returns `0` without per-entry work when it
-can prove the cache and remote are in sync.
+At production scale most syncs have nothing to do: the local cache already
+matches the remote index. Walking every index entry each time makes these O(n)
+when they could be O(1). Extension authors implementing `DatastoreSyncService`
+SHOULD add a zero-diff fast path that returns `0` with no per-entry work when it
+can prove cache and remote match.
 
-The recommended pattern is a **fingerprint + local-dirty watermark** stored
-in a small sidecar file under the cache directory:
+The recommended pattern is a **fingerprint + local-dirty watermark** in a small
+sidecar file in the cache directory:
 
-- **Remote fingerprint** — a cheap, backend-native change token for the remote
-  index. S3 uses the object ETag; GCS uses the `generation` number; any
-  monotonic identifier exposed by a metadata-only request (HEAD-equivalent,
-  not the full index body) works. Cache the last-observed fingerprint on disk.
-- **Local-dirty flag** — flipped `true` by every code path that writes to the
-  cache (e.g. the extension's `pushFile`-equivalent); cleared only after a
-  successful writeback or a verified zero-diff pull. Default must be `true`
-  on missing/corrupt sidecar so the slow path runs.
+- **Remote fingerprint**: a cheap, backend-native change token for the remote
+  index. S3 uses the object ETag; GCS the `generation` number. Any monotonic
+  identifier from a metadata-only request (HEAD-equivalent, not the index body)
+  works. Cache the last value seen on disk.
+- **Local-dirty flag**: set `true` by every code path that writes to the cache
+  (e.g. the extension's `pushFile` equivalent). Cleared only after a successful
+  writeback or a verified zero-diff pull. It defaults to `true` if the sidecar
+  is missing or corrupt, so the slow path runs.
 
-On `pullChanged` and `pushChanged`, the fast path issues one metadata request
-against the remote index. If the returned fingerprint matches the sidecar and
-the local-dirty flag is `false`, return `0` immediately. On any mismatch,
-corruption, or uncertainty, fall through to the full walk — the fast path
-must never skip real work.
+On `pullChanged` and `pushChanged`, the fast path makes one metadata request for
+the remote index. If the fingerprint matches the sidecar and the dirty flag is
+`false`, it returns `0`. On any mismatch, corruption or doubt it falls through
+to the full walk. The fast path must never skip real work.
 
-The sidecar is client-local state. It is never uploaded, is excluded from the
-sync walker, and can always be deleted to force a full re-verification.
+The sidecar is client-local: never uploaded, excluded from the sync walker, and
+always safe to delete to force a full re-check.
 
 #### `markDirty()` contract
 
-Swamp core writes into the cache directly — the persistence repositories
+Swamp core writes into the cache directly. The persistence repositories
 (`FileSystemUnifiedDataRepository`, `YamlOutputRepository`,
 `YamlWorkflowRunRepository`, `YamlEvaluatedDefinitionRepository`) call
-`atomicWriteFile` / `atomicWriteTextFile` / `Deno.remove` against paths that
-the sync service walks. These writes bypass the extension's own write path, so
-the fast path's local-dirty flag would stay `false` and the next `pushChanged`
-would short-circuit past real work.
+`atomicWriteFile` / `atomicWriteTextFile` / `Deno.remove` on paths the sync
+service walks. These writes bypass the extension's write path, so the dirty flag
+would stay `false` and the next `pushChanged` would skip real work.
 
-The `markDirty()` method on `DatastoreSyncService` is the contract that closes
-this gap. The signature accepts an options bag with an optional `relPath` so
-extensions tracking per-path dirty state can record exactly which path
-changed instead of only flipping a single global bit:
+`markDirty()` on `DatastoreSyncService` closes this gap. It takes an options bag
+with an optional `relPath`, so extensions that track dirty state per path can
+record which path changed instead of flipping one global bit:
 
 ```typescript
 markDirty(options?: DatastoreSyncOptions): Promise<void>;
@@ -981,69 +918,59 @@ interface DatastoreSyncOptions {
 }
 ```
 
-The contract is eight load-bearing rules:
+The contract has eight rules:
 
-1. **Pre-write timing.** `markDirty` fires *before* the cache write begins.
-   Extensions MUST NOT act synchronously on `relPath` — the file isn't on
-   disk yet. Treat `relPath` as a hint to record for the next `pushChanged`.
-2. **Absence-on-disk = delete.** When `pushChanged` later consumes a
-   recorded `relPath` and the file no longer exists in the cache, the
-   extension SHOULD delete the corresponding remote record. This collapses
-   create/update/delete into one signal — no separate op-kind needed.
-3. **`undefined` `relPath` = bulk.** A call without `relPath` signals a
-   mutation core couldn't attribute to a single path (`rename`,
-   `deleteAllByWorkflowId`, `clearAll`).
-   Extensions maintaining a per-path dirty set MUST honor this by either
-   invalidating the set or flagging the next `pushChanged` for a full
-   walk.
-4. **Process restart loses the set.** Extensions holding the dirty set in
-   memory MUST fall back to a full walk on the first `pushChanged` after
-   process start. Persisting the set to a sidecar is allowed but optional.
-5. **`relPath` is cache-relative + forward-slash.** Relative to the
-   directory returned by `DatastoreProvider.resolveCachePath`, with
-   forward-slash separators on the wire regardless of host OS — matching
-   the `.datastore-index.json` key convention. **Extensions consuming
-   `relPath` for disk access on Windows MUST convert to native separators**
-   (e.g. via `@std/path` `join`) before `Deno.stat`/`Deno.readFile`/etc.
-6. **Backward compatibility.** `relPath` is optional. Existing
-   implementations (`@swamp/s3-datastore`, `@swamp/gcs-datastore`,
-   filesystem no-op, every test mock) keep working unchanged because the
-   old single-watermark pattern still satisfies the contract — any
-   `markDirty` call still flips the dirty flag.
-7. **Field scope.** swamp core only sets `relPath` on `markDirty` calls.
-   The field has no defined meaning on `pullChanged` or `pushChanged`
-   (it lives on the shared `DatastoreSyncOptions` for source
-   compatibility, not because pull/push consume it).
-8. **Bulk overrides per-path within one operation.** Some core mutations
-   emit a bulk signal AND one or more per-path signals from the same
-   logical operation — `rename` is the canonical example: the upfront
-   `markDirty()` call has no `relPath` (bulk, for the tombstone +
-   latest-marker writes that don't decompose), and the inner `save()` of
-   the new name then emits a per-path signal. Extensions MUST treat any
-   bulk signal as overriding per-path signals from the same operation.
-   Easiest implementation: keep both a `bulkInvalidated: boolean` flag
-   and the dirty set; in `pushChanged`, fall back to a full walk when
-   `bulkInvalidated` is true regardless of the set's contents.
+1. **Pre-write timing.** `markDirty` fires before the cache write. The file is
+   not on disk yet, so extensions MUST NOT act on `relPath` synchronously. Record
+   it as a hint for the next `pushChanged`.
+2. **Absence-on-disk = delete.** If `pushChanged` later finds a recorded
+   `relPath` missing from the cache, the extension SHOULD delete the remote
+   record. One signal covers create, update and delete.
+3. **`undefined` `relPath` = bulk.** No `relPath` means core could not tie the
+   change to one path (`rename`, `deleteAllByWorkflowId`, `clearAll`).
+   Extensions with a per-path dirty set MUST either clear the set or mark the
+   next `pushChanged` for a full walk.
+4. **Process restart loses the set.** Extensions holding the set in memory MUST
+   do a full walk on the first `pushChanged` after start. Persisting it to a
+   sidecar is allowed but optional.
+5. **`relPath` is cache-relative + forward-slash.** It is relative to the
+   directory from `DatastoreProvider.resolveCachePath`, with forward slashes on
+   every OS, matching the `.datastore-index.json` key convention. **Extensions
+   using `relPath` for disk access on Windows MUST convert to native
+   separators** (e.g. `@std/path` `join`) before `Deno.stat`/`Deno.readFile`/etc.
+6. **Backward compatibility.** `relPath` is optional. Existing implementations
+   (`@swamp/s3-datastore`, `@swamp/gcs-datastore`, the filesystem no-op, every
+   test mock) work unchanged: the single-watermark pattern still meets the
+   contract, since any `markDirty` call sets the dirty flag.
+7. **Field scope.** Core sets `relPath` only on `markDirty`. It means nothing on
+   `pullChanged` or `pushChanged`; it sits on the shared `DatastoreSyncOptions`
+   for source compatibility only.
+8. **Bulk overrides per-path within one operation.** Some operations send both a
+   bulk signal and per-path signals. In `rename`, the first `markDirty()` has no
+   `relPath` (bulk, for tombstone and latest-marker writes that do not split by
+   path), then the inner `save()` of the new name sends a per-path signal.
+   Extensions MUST let a bulk signal override per-path signals from the same
+   operation. Simplest approach: keep a `bulkInvalidated: boolean` flag beside
+   the dirty set, and do a full walk in `pushChanged` whenever it is true.
 
-**Core obligation.** Repositories writing into the cache call the dirty
-hook at the start of every public mutation method (`save`, `append`,
-`delete`, `rename`, `allocateVersion`, `finalizeVersion`,
-`removeLatestMarker`, non-dry-run `collectGarbage`, and the equivalents
-on the three yaml repositories). The call happens **before** any write
-begins so a crash mid-write leaves the watermark dirty —
-markDirty-then-slow-walk is always recoverable; a lost dirty-flip is not.
+**Core obligation.** Repositories writing into the cache call the dirty hook at
+the start of every public mutation method. These are `save`, `append`,
+`delete`, `rename`, `allocateVersion`, `finalizeVersion`, `removeLatestMarker`,
+non-dry-run `collectGarbage`, and the equivalents on the three yaml
+repositories. The call comes before any write, so a crash mid-write leaves the watermark dirty. A
+dirty flag plus a slow walk always recovers; a lost dirty flag does not.
 
 **Per-call granularity emitted by core.**
 
 | Method                                     | `relPath`                                                       |
 | ------------------------------------------ | --------------------------------------------------------------- |
-| `save`, `append`, `allocateVersion`        | data-name directory (version not yet allocated at notify time)  |
+| `save`, `append`, `allocateVersion`        | data-name directory (version not yet allocated)                 |
 | `removeLatestMarker`                       | data-name directory                                              |
 | `delete(version=specific)`                 | version directory                                                |
-| `delete(version=undefined)`                | one signal per version directory + latest marker file (matches `collectGarbage` pattern; falls back to data-name directory if version enumeration fails) |
+| `delete(version=undefined)`                | one signal per version directory + latest marker file (see below) |
 | `finalizeVersion`, `finalizeVersionDeferred` | version directory (version known)                              |
 | `saveDeferred`                             | data-name directory                                              |
-| `rename`                                   | old-name data-name directory (inner `save()` emits its own per-path signal for new name) |
+| `rename`                                   | old name's data-name directory (see below)                       |
 | `collectGarbage` (non-dry-run)             | one signal per removed version directory, or the data-name directory when the whole name goes |
 | `pruneExcessVersions` (write-time cap)     | one signal per removed version directory                         |
 | Yaml repos: `save`, `delete`, `deleteOlderThan` | per-yaml file path                                          |
@@ -1054,116 +981,118 @@ markDirty-then-slow-walk is always recoverable; a lost dirty-flip is not.
 | `deleteAllByWorkflowId`                    | workflow's runs directory                                        |
 | Evaluated definition repo: `clearAll`      | definitions-evaluated base directory                             |
 
-`advanceLatestMarkers` and `rollbackVersions` emit nothing — they rely on the
-signal their `saveDeferred` / `finalizeVersionDeferred` already sent
+`delete(version=undefined)` matches the `collectGarbage` pattern and falls back
+to the data-name directory if it cannot list versions. For `rename`, the inner
+`save()` sends its own per-path signal for the new name.
+
+`advanceLatestMarkers` and `rollbackVersions` send nothing; they rely on the
+signal from `saveDeferred` / `finalizeVersionDeferred`
 (`src/infrastructure/persistence/unified_data_repository.ts`).
 
-Filesystem datastores have no fast path and wire no sync service, so the
-markDirty plumbing is a no-op for them.
+Filesystem datastores have no fast path and no sync service, so markDirty is a
+no-op for them.
 
-**Serve handler obligation.** Serve code whose mutations route through
-repositories with per-path `markDirty` wired (model, workflow, data, output
-and definition repos) must NOT call bare `syncService.markDirty()` before
-`pushChanged()`. This includes the mutation handlers and the OAuth
-server-token mint in `device_auth_handler.ts`, which saves a definition and
-writes a token resource. The per-path signals from the repositories are
-sufficient and drive the extension's scoped-walk optimization, which
-correctly detects deletions via absence-on-disk (rule 2). A bare
-`markDirty()` call sets `bulkInvalidated` in the extension and overrides the
-per-path signal. That has two costs:
+**Serve handler obligation.** Serve code whose mutations go through
+repositories with per-path `markDirty` wired (model, workflow, data, output and
+definition repos) must not call a bare `syncService.markDirty()` before
+`pushChanged()`. This covers the mutation handlers and the OAuth server-token
+mint in `device_auth_handler.ts`, which saves a definition and writes a token
+resource. The per-path signals are enough, and they drive the extension's scoped
+walk, which detects deletions by absence on disk (rule 2). A bare `markDirty()`
+sets `bulkInvalidated` in the extension and overrides the per-path signal. That
+has two costs:
 
 - **Dropped deletions.** The full walk skips deletion detection unless the
-  per-path set overflowed, so remote object deletions are silently lost
+  per-path set overflowed, so remote deletions are silently lost
   (swamp-club#2273).
 - **A full-cache push.** The push rebuilds the index from every remote shard
-  and walks every cached file, hashing each one on a cache filled by pulling.
-  A mutation of a few files then costs time proportional to the whole cache.
-  On the login mint this made every `swamp auth server-login` slower as the
-  datastore grew (swamp-club#2408).
+  and hashes every cached file. On a cache filled by pulling, a change to a few
+  files then costs time proportional to the whole cache. On the login mint this
+  made every `swamp auth server-login` slower as the datastore grew
+  (swamp-club#2408).
 
-The repositories mark a path dirty *before* they write it. Serve's post-run
-and post-resume pushes are ungated (`UNGATED_PUSH_HANDLERS`), so one can land
+The repositories mark a path dirty before they write it. Serve's post-run and
+post-resume pushes are ungated (`UNGATED_PUSH_HANDLERS`), so one can land
 between a repository's mark and its write. That push finds the path absent,
-takes it as a delete and clears the mark, and the handler's own push then
-has nothing to upload. A mutation whose writes must reach the remote even
-when a run finishes at the same moment re-marks its paths, by path, after
-the writes and just before `pushChanged()`. The OAuth mint does this for
-the token's definition file and data folder. A push that is already running
-when the re-mark lands still clears it, because the extension resets the
-whole dirty set when a push completes. swamp-club#2421 tracks the proper
-fix: repositories that mark after the write, and extensions that clear only
-the marks a push actually handled.
+treats it as a delete and clears the mark, and the handler's own push then has
+nothing to upload. A mutation whose writes must reach the remote even when a run
+finishes at the same moment re-marks its paths, one by one, after the writes and
+just before `pushChanged()`. The OAuth mint does this for the token's definition
+file and data folder. A push already running when the re-mark lands still clears
+it, because the extension resets the whole dirty set when a push completes.
+swamp-club#2421 tracks the proper fix: repositories that mark after the write,
+and extensions that clear only the marks a push handled.
 
-`integration/datastore_sync_rules_test.ts` enforces this at build time. One
-rule rejects bare `notifyDirty()` inside the per-path-wired repositories.
-Another pins the remaining bare `markDirty()` call sites in `src/serve` and
-`src/cli/commands/serve.ts`, so the list can shrink but not grow. It matches
-the `.markDirty()` and `.markDirty?.()` forms on any receiver, and records one
-entry per top-level function with its call count, so a second call inside a
-pinned function also fails. The pinned sites are the vault, access-reload and
-extension handlers, plus the serve startup migration. The handlers' writes do
-not all flow through per-path-wired repos, so bare `markDirty()` may still be
-their only dirty signal; swamp-club#2415 audits each one. The startup
-migration moves server-token definitions from `models/` to
-`auto-definitions/` directly on disk, so no repository marks them and the
-bare call is its only signal.
+`integration/datastore_sync_rules_test.ts` enforces this at build time:
 
-Every serve mutation handler must call `pushChanged()` after a mutation —
-including the data-domain handlers (`data.delete`, `data.rename`, `data.gc`,
-`data.prune`, `run.gc`), which push in a `finally` so a cancelled or failed
-request still pushes whatever it already changed in the local cache.
-`markDirty` only records dirty state; until a push runs, the remote still holds
-the old objects, and the next serve poller pull restores anything deleted from
-the local cache (swamp-club#2240).
+- One rule rejects a bare `notifyDirty()` inside the per-path-wired
+  repositories.
+- Another pins the remaining bare `markDirty()` call sites in `src/serve` and
+  `src/cli/commands/serve.ts`, so the list can shrink but not grow. It matches
+  the `.markDirty()` and `.markDirty?.()` forms on any receiver. It records one
+  entry per top-level function with its call count, so a second call inside a
+  pinned function also fails.
 
-**The mutation and its push are one unit.** A delete is two steps — remove the
-file from the local cache, then `pushChanged()` — and the push decides
-delete-vs-upload by looking at the file on disk (rule 2 above). A poller pull
-that downloads the item between those steps puts it back on disk, so the push
-re-uploads it instead of deleting it and the delete is silently undone
-(swamp-club#2247). Serve closes that window with the **sync gate**: one
-in-process permit (`src/serve/sync_gate.ts`), held across a whole mutating
-handler at its dispatch site in `connection.ts`, across the server-token mint
-in `device_auth_handler.ts`, and across each poller's `pullChanged`. The
-fitness test in `integration/serve_deps_rules_test.ts` fails the build if a
-serve function pushes without being gated or pinned in
-`UNGATED_PUSH_HANDLERS`.
+The pinned sites are the vault, access-reload and extension handlers, plus the
+serve startup migration. Not all of the handlers' writes go through
+per-path-wired repos, so a bare `markDirty()` may still be their only dirty
+signal; swamp-club#2415 audits each one. The startup migration moves
+server-token definitions from `models/` to `auto-definitions/` directly on disk.
+No repository marks them, so the bare call is its only signal.
 
-Four properties of the gate are load-bearing and easy to misread:
+Every serve mutation handler must call `pushChanged()` after a mutation. The
+data-domain handlers (`data.delete`, `data.rename`, `data.gc`, `data.prune`,
+`run.gc`) push in a `finally`, so a cancelled or failed request still pushes
+what it already changed locally. `markDirty` only records dirty state. Until a
+push runs, the remote keeps the old objects, and the next poller pull restores
+anything deleted locally (swamp-club#2240).
 
-- **Not reentrant.** Acquiring it inside an already-gated handler
-  self-deadlocks. This is why the long-running run paths
-  (`model.method.run`, `workflow.run`, `workflow.resume`, and the post-run
-  push in `executeWorkflowWithLocks`) are pinned as ungated rather than
-  gated: a gated handler that triggered a run would wedge itself.
-- **Runs are not gated**, so a run's own version GC can still be resurrected
-  by an overlapping poll, and pushes are not globally serial — concurrent
-  `pushChanged()` calls remain possible, which extensions have had to
-  tolerate since swamp-club#2235.
-- **In-process only.** It says nothing about HA peers: another instance's
-  dirty path can still re-upload what this instance deleted. The
-  cross-process `DistributedLock` covers the CLI flush path, not serve pushes.
-- **A request cancelled while queued still mutates.** The cancel signal is
-  deliberately not passed to the gate acquisition — a rejected acquisition
-  would leave the client with no response frame — so the handler runs and then
-  reports `cancelled` from its own abort check. A mutation that waits longer
-  than `GATE_WAIT_TIMEOUT_MS` proceeds *without* the gate and logs a warning,
-  so a wedged holder degrades to the pre-gate behaviour instead of stalling
-  every mutation and all three pollers.
+**The mutation and its push are one unit.** A delete is two steps: remove the
+file from the cache, then `pushChanged()`. The push picks delete or upload by
+checking the file on disk (rule 2). A poller pull between the steps puts the
+file back, so the push re-uploads it and the delete is silently undone
+(swamp-club#2247). Serve closes this window with the **sync gate**, one
+in-process permit (`src/serve/sync_gate.ts`), held across:
 
-**Sync is not a content-integrity tool.** The fingerprint detects index-level
-changes, not per-file corruption — a silently damaged cache file (bit rot,
-truncated write after a crash) can slip through the fast path if the index
-itself has not changed. Cache integrity is the verifier's job; use
-`DatastoreVerifier.verify()` when integrity needs to be re-established, or
-`rm -rf` the cache and re-pull.
+- a whole mutating handler, at its dispatch site in `connection.ts`;
+- the server-token mint in `device_auth_handler.ts`;
+- each poller's `pullChanged`.
+
+The fitness test in `integration/serve_deps_rules_test.ts` fails the build if a
+serve function pushes without being gated or pinned in `UNGATED_PUSH_HANDLERS`.
+
+Four properties of the gate are easy to misread:
+
+- **Not reentrant.** Acquiring it inside a gated handler deadlocks. So the
+  long-running run paths (`model.method.run`, `workflow.run`,
+  `workflow.resume`, and the post-run push in `executeWorkflowWithLocks`) are
+  pinned as ungated: a gated handler that started a run would block itself.
+- **Runs are not gated.** An overlapping poll can still restore data a run's
+  version GC removed. Pushes are not globally serial either; concurrent
+  `pushChanged()` calls remain possible, as extensions have had to tolerate
+  since swamp-club#2235.
+- **In-process only.** It does not cover HA peers: another instance's dirty
+  path can still re-upload what this one deleted. The cross-process
+  `DistributedLock` covers the CLI flush path, not serve pushes.
+- **A request cancelled while queued still mutates.** The cancel signal is not
+  passed to the gate acquisition, because a rejected acquisition would leave the
+  client with no response frame. The handler runs, then reports `cancelled` from
+  its own abort check. A mutation waiting longer than `GATE_WAIT_TIMEOUT_MS`
+  proceeds without the gate and logs a warning, so a stuck holder falls back
+  to pre-gate behaviour instead of stalling every mutation and all three
+  pollers.
+
+**Sync is not a content-integrity tool.** The fingerprint detects index changes,
+not per-file corruption. A damaged cache file (bit rot, a truncated write after
+a crash) can pass the fast path if the index is unchanged. Integrity is the
+verifier's job: use `DatastoreVerifier.verify()`, or `rm -rf` the cache and
+re-pull.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
-In a giga-swamp, each namespace publishes a `.catalog-export.json` after each
-push — a flat JSON array of catalog rows for that namespace. Foreign catalog
-pull fetches these exports from other namespaces and upserts into the local
-catalog.
+In a giga-swamp, each namespace publishes `.catalog-export.json` after each
+push: a flat JSON array of its catalog rows. Foreign catalog pull fetches other
+namespaces' exports and upserts them into the local catalog.
 
 **Interface methods** (optional on `DatastoreSyncService`):
 
@@ -1173,116 +1102,108 @@ pullForeignCatalogs?(namespaces: readonly string[]): Promise<CatalogExportEntry[
 fetchForeignContent?(namespace: string, relPath: string): Promise<Uint8Array | null>;
 ```
 
-- `exportCatalog` — writes `{namespace}/.catalog-export.json` to the remote
-- `pullForeignCatalogs` — fetches exports from named namespaces, returns rows
-- `fetchForeignContent` — downloads a single file from a foreign namespace
+- `exportCatalog`: writes `{namespace}/.catalog-export.json` to the remote.
+- `pullForeignCatalogs`: fetches exports from named namespaces, returns rows.
+- `fetchForeignContent`: downloads one file from a foreign namespace.
 
-**Catalog backfill** uses `bulkUpsert(rows)` (INSERT OR REPLACE) to additively
-merge the on-disk walk into the catalog, preserving rows the walk cannot see
-(e.g. lazily-hydrated remote data). Foreign rows are upserted via
-`bulkUpsertForeign` which records a `foreign_synced:{namespace}` timestamp in
-`catalog_meta`.
+**Catalog backfill** uses `bulkUpsert(rows)` (INSERT OR REPLACE) to merge the
+on-disk walk into the catalog, keeping rows the walk cannot see (e.g. lazily
+hydrated remote data). Foreign rows go through `bulkUpsertForeign`, which
+records a `foreign_synced:{namespace}` timestamp in `catalog_meta`.
 
 **On-demand content fetch** (Phase 6d): when a cross-namespace CEL expression
-accesses `attributes` and the content is not locally available, the
-`DataQueryService` calls `fetchForeignContent` through its `ForeignContentFetcher`
-callback. Fetched content is cached in-memory for the command duration, not
-persisted. Missing content or errors leave attributes empty (graceful
-degradation).
+reads `attributes` whose content is not local, the `DataQueryService` calls
+`fetchForeignContent` through its `ForeignContentFetcher` callback. Content is
+cached in memory for the command, not persisted. Missing content or errors
+leave attributes empty.
 
 **CLI**: `swamp datastore catalog pull --namespaces infra,security` pulls
-foreign catalog metadata from the specified namespaces.
+foreign catalog metadata from those namespaces.
 
 ### Lazy Hydration
 
-When `hydrationStrategy: "lazy"` is configured on a custom datastore, the
-initial pull downloads only metadata files (`metadata.yaml`, `latest` markers,
-partition indexes) and skips content files (`raw`) under `data/`. This gives
-full catalog visibility — `data list`, `data query`, and CEL expressions all
-work immediately — while deferring the expensive content download until the data
-is actually needed.
+With `hydrationStrategy: "lazy"` on a custom datastore, the initial pull fetches
+only metadata files (`metadata.yaml`, `latest` markers, partition indexes) and
+skips content files (`raw`) under `data/`. The catalog is fully visible, so
+`data list`, `data query` and CEL expressions work at once, while the costly
+content download waits until needed.
 
 #### How it works
 
-1. **Setup/initial pull**: The extension's `pullChanged` filters files by
-   suffix. Files ending in `/metadata.yaml` or `/latest` under `data/` are
-   downloaded. Files ending in `/raw` under `data/` are skipped, but their
-   parent directories are created so the catalog backfill walker (which uses
-   `readdir`) finds the version directories. Files outside `data/` (outputs,
-   workflow-runs, definitions-evaluated) are downloaded fully — they have no
-   metadata/raw split.
-
-2. **Model runs / workflow runs**: `acquireModelLocks` performs a scoped pull via
-   `pullChanged({ context })`. The pull reads the partition file, compares
-   against local files, sees `raw` is missing, and downloads it. No new code
-   needed — the existing Phase 2 scoped sync handles this.
-
+1. **Setup/initial pull**: the extension's `pullChanged` filters by suffix.
+   Under `data/`, files ending `/metadata.yaml` or `/latest` are downloaded.
+   Files ending `/raw` are skipped, but their parent directories are created so
+   the catalog backfill walker (which uses `readdir`) finds the version
+   directories. Files outside `data/` (outputs, workflow-runs,
+   definitions-evaluated) have no metadata/raw split and are downloaded fully.
+2. **Model runs / workflow runs**: `acquireModelLocks` does a scoped pull via
+   `pullChanged({ context })`. It reads the partition file, sees `raw` missing
+   locally, and downloads it. The existing Phase 2 scoped sync handles this; no
+   new code is needed.
 3. **`data get` (read-only, no sync)**: `UnifiedDataRepository.getContent()`
-   attempts to read the `raw` file. If missing and a `HydrateFileHook` is
-   wired, it calls the hook to download just that file from the remote, then
-   retries the read.
+   tries to read `raw`. If it is missing and a `HydrateFileHook` is wired, it
+   calls the hook to download that file, then retries the read.
 
 #### `HydrateFileHook` contract
 
-`HydrateFileHook` mirrors `MarkDirtyHook` — a thin callback injected into
-repositories so they do not need a handle on the full sync service.
-Repositories pass an absolute path; the composition root in `repo_context.ts`
-wraps `DatastoreSyncService.hydrateFile` with path normalization
-(absolute → cache-relative, forward-slash-normalized). Same contract as
-`MarkDirtyHook` — repositories never convert paths themselves.
+`HydrateFileHook` mirrors `MarkDirtyHook`: a thin callback injected into
+repositories so they need no handle on the sync service. Repositories pass an
+absolute path. The composition root in `repo_context.ts` wraps
+`DatastoreSyncService.hydrateFile` with path normalization (absolute to
+cache-relative, forward slashes). As with `MarkDirtyHook`, repositories never
+convert paths themselves.
 
-- Wired in `requireInitializedRepo`, `requireInitializedRepoUnlocked`, and
-  `requireInitializedRepoReadOnly` (the read-only variant creates a lightweight
-  sync service without a lock, solely for single-file downloads).
+- Wired in `requireInitializedRepo`, `requireInitializedRepoUnlocked` and
+  `requireInitializedRepoReadOnly`. The read-only variant creates a lightweight
+  sync service with no lock, only for single-file downloads.
 - Wired in `WorkflowExecutionService` → `DefaultStepExecutor` via the
   `RepositoryContext.hydrateFile` field, so workflow steps on serve can hydrate
   lazy content during `readResource` calls.
-- Returns `true` if the file was downloaded, `false` if it does not exist on the
-  remote.
-- Implementations MUST write atomically (tmp + rename) to avoid partial reads
-  from concurrent consumers.
+- Returns `true` if the file was downloaded, `false` if it is not on the remote.
+- Implementations MUST write atomically (tmp + rename) so concurrent readers
+  never see a partial file.
 
 #### `getContentSync` limitation
 
 `getContentSync()` is synchronous and cannot call the async `HydrateFileHook`.
-Its callers are:
+Its callers:
 
-- `data_record_mapper.ts` — query predicate attribute/content loading during
-  `data query '<predicate>'` evaluation.
-- `model_resolver.ts` — CEL expression resolution during model runs.
+- `data_record_mapper.ts`: loads attributes/content for query predicates during
+  `data query '<predicate>'`.
+- `model_resolver.ts`: resolves CEL expressions during model runs.
 - The composite and in-memory repositories, which delegate to it.
 
 The `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
-→ scoped pull, which downloads `raw` files before CEL evaluation begins.
+→ scoped pull, which downloads `raw` files before CEL evaluation.
 
-`DataQueryService.getLatestRecord()` — the lookup behind `data.latest()` —
-confirms a catalog row still has content before trusting it while the catalog
-is unpopulated (every datastore sync invalidates it). That check uses the
-async `getContent()`, so on a lazy-hydration datastore it downloads the `raw`
-file rather than mistaking a metadata-only row for a stale one; a row whose
-content is absent remotely too is still stale (swamp-club#2288).
+`DataQueryService.getLatestRecord()`, the lookup behind `data.latest()`, checks
+that a catalog row still has content before trusting it while the catalog is
+unpopulated (every datastore sync invalidates it). The check uses the async
+`getContent()`, so on a lazy-hydration datastore it downloads the `raw` file
+instead of mistaking a metadata-only row for a stale one. A row whose content
+is also absent remotely is still stale (swamp-club#2288).
 
-That scoped pull covers the step's own model only. `DataRecord.path` from
-`data.latest()` / `data.version()` must name a file that is present, so those
-two lookups stat the path and, when it is missing, call the async
-`getContent()` to hydrate it; if the file is still absent (or hydration
-throws) `path` is `""`. List lookups (`data.findBySpec()`, `data.findByTag()`,
-`data.query()` record results) only stat and clear missing paths — they never
-download, so a metadata query cannot pull every matching `raw` file.
+That scoped pull covers only the step's own model. `DataRecord.path` from
+`data.latest()` / `data.version()` must name a present file, so those lookups
+stat the path and, if missing, call the async `getContent()` to hydrate it. If
+the file is still absent, or hydration throws, `path` is `""`. List lookups
+(`data.findBySpec()`, `data.findByTag()`, `data.query()` record results) only
+stat and clear missing paths. They never download, so a metadata query cannot
+pull every matching `raw` file.
 
-The `data_record_mapper.ts` path means `data query` predicates referencing
-`attributes` or `content` on un-hydrated data will see `null` values. This is a
-documented limitation of lazy hydration — queries that filter only on metadata
-fields (tags, version, owner, etc.) work correctly.
+Through the `data_record_mapper.ts` path, `data query` predicates on
+`attributes` or `content` of un-hydrated data see `null`. This is a documented
+limitation of lazy hydration. Queries filtering only on metadata fields (tags,
+version, owner, etc.) work.
 
 #### Configuration
 
-- `CustomDatastoreConfig.hydrationStrategy` — `"full"` (default) or `"lazy"`.
-- `SyncCapabilities.lazyHydration` — advertised by extensions that support
+- `CustomDatastoreConfig.hydrationStrategy`: `"full"` (default) or `"lazy"`.
+- `SyncCapabilities.lazyHydration`: advertised by extensions supporting
   selective pull and single-file hydration.
-- `DatastoreSyncService.hydrateFile` — optional method; extensions without lazy
-  hydration do not implement it. Core wires the `HydrateFileHook` only when
-  `hydrationStrategy === "lazy"` **and** the service implements `hydrateFile`
+- `DatastoreSyncService.hydrateFile`: optional; omitted by extensions without
+  lazy hydration. Core wires the `HydrateFileHook` only when
+  `hydrationStrategy === "lazy"` and the service implements `hydrateFile`
   (`src/cli/repo_context.ts`).
 
 ### Index
@@ -1290,10 +1211,10 @@ fields (tags, version, owner, etc.) work correctly.
 > **Extension behaviour.** This and the next three sections describe the
 > `@swamp/s3-datastore` extension; none of it is implemented in this repo.
 
-A metadata index (`.datastore-index.json`) tracks all files in the S3 bucket.
-It is a JSON manifest mapping relative paths to their size and last-modified
-timestamp. The index is fetched once per command, with a short local cache TTL
-to avoid redundant fetches during rapid command sequences.
+A metadata index (`.datastore-index.json`) tracks every file in the S3 bucket.
+It is a JSON manifest mapping relative paths to size and last-modified time. It
+is fetched once per command, with a short local cache TTL to avoid refetching
+during rapid command sequences.
 
 ### Change Detection
 
@@ -1301,23 +1222,22 @@ to avoid redundant fetches during rapid command sequences.
 
 Changes are detected by comparing `stat.size` and `stat.mtime`:
 
-- **Pull**: files in the remote index that are missing locally or have a
-  different size are downloaded.
-- **Push**: files in the local cache that are new or have a different
-  size/mtime compared to the index are uploaded.
+- **Pull**: downloads remote-index files that are missing locally or differ in
+  size.
+- **Push**: uploads cache files that are new or differ from the index in size or
+  mtime.
 
-No content hashing is used. The write paths (`atomicWriteTextFile`,
-`Deno.writeFile`) always update mtime, so mtime changes reliably detect
-rewrites even when the file size doesn't change.
+There is no content hashing. The write paths (`atomicWriteTextFile`,
+`Deno.writeFile`) always update mtime, so rewrites are detected even when size
+is unchanged.
 
 ### Transfer Concurrency
 
 > **Extension behaviour** (`@swamp/s3-datastore`), not implemented in this repo.
 
-All pull and push operations download/upload files concurrently in bounded
-batches. This reduces wall-clock time for syncs with many files by overlapping
-S3 round trips. The concurrency limit prevents overwhelming the network or
-hitting S3 request rate limits.
+Pull and push transfer files concurrently in bounded batches. Overlapping S3
+round trips speeds up syncs with many files; the limit avoids overloading the
+network or hitting S3 rate limits.
 
 ### Offline Behavior
 
@@ -1325,18 +1245,16 @@ hitting S3 request rate limits.
 > Core's own contribution is the sync timeout above and the diagnostics in
 > `src/infrastructure/persistence/sync_error_diagnostic.ts`.
 
-If S3 is unreachable, pull and push warn and continue. The command runs against
-the local cache. Data is pushed on the next successful connection.
+If S3 is unreachable, pull and push warn and continue against the local cache.
+Data is pushed on the next successful connection.
 
 ## Concurrency Control
 
-Both backends use a distributed lock to prevent concurrent write access. The
-lock is acquired by write commands at command start and released at command end
-(on both success and error paths). Read-only commands
-(`requireInitializedRepoReadOnly`) bypass the lock entirely, allowing concurrent
-reads alongside writes. This is safe because all file writes use atomic
-write-to-temp-then-rename (`atomicWriteTextFile`), so reads never see
-partial/corrupt files.
+Both backends use a distributed lock against concurrent writes. Write commands
+take it at start and release it at end, on success or error. Read-only commands
+(`requireInitializedRepoReadOnly`) skip it and can run alongside writes. This is
+safe because every write goes to a temp file that is then renamed into place
+(`atomicWriteTextFile`), so reads never see partial or corrupt files.
 
 ### DistributedLock Interface
 
@@ -1350,12 +1268,12 @@ interface DistributedLock {
 }
 ```
 
-`forceRelease` re-verifies the lock's nonce immediately before deleting and
-returns `false` if the holder has changed, narrowing the TOCTOU window to
-the gap between that final read and the delete itself. It is the
-breakglass primitive used by `swamp datastore lock release --force` and
-by `acquireModelLocks` to clean up stale global locks observed during
-per-model lock acquisition (see "Lock Lifecycle" below).
+`forceRelease` re-checks the lock's nonce just before deleting and returns
+`false` if the holder changed. That shrinks the TOCTOU window to the gap between
+the final read and the delete. It is the breakglass primitive behind
+`swamp datastore lock release --force`, and `acquireModelLocks` uses it to
+clear stale global locks seen while taking per-model locks (see "Lock
+Lifecycle" below).
 
 Lock metadata (`LockInfo`) is stored as JSON:
 
@@ -1375,67 +1293,63 @@ Lock metadata (`LockInfo`) is stored as JSON:
 > **Extension behaviour.** The S3 mechanism below is the
 > `@swamp/s3-datastore` extension's design, not implemented in this repo.
 
-Extension datastores provide their own `DistributedLock` implementation via the
-`DatastoreProvider.createLock()` method. For example, the `@swamp/s3-datastore`
-extension uses S3 conditional writes (`PutObject` with `If-None-Match: *`) for
-atomic lock acquisition with background heartbeat.
+Extension datastores supply their own `DistributedLock` via
+`DatastoreProvider.createLock()`. For example, `@swamp/s3-datastore` takes the
+lock atomically with S3 conditional writes (`PutObject` with
+`If-None-Match: *`) and keeps it alive with a background heartbeat.
 
 ### FileLock
 
 Uses advisory lockfiles (`Deno.open({ createNew: true })`) for atomic
-check-and-create. The lockfile is at `{datastorePath}/.datastore.lock` in solo
-mode. A background heartbeat rewrites the lockfile content with a fresh
-timestamp. Stale locks (where `acquiredAt + ttlMs < now`) are removed and
-retried.
+check-and-create. In solo mode the lockfile is `{datastorePath}/.datastore.lock`.
+A background heartbeat rewrites it with a fresh timestamp. Stale locks (where
+`acquiredAt + ttlMs < now`) are removed and the acquire retried.
 
-When a `namespace` is configured, `datastoreGlobalLockOptions` returns
-`{ lockKey: ".datastore.lock", namespace }`. Both `FileLock` and remote lock
-providers (S3, GCS) prefix the lock key under `{namespace}/`, placing it at
-`{datastorePath}/{namespace}/.datastore.lock`. Two repos writing to different
-namespaces of a shared datastore never contend on structural commands, and the
-lock key stays within the namespace prefix so IAM credentials scoped to the
-prefix can access it. This is a lock-**path** change only — the lifecycle
-protocol below is unchanged. Per-model lock keys are namespaced:
-`{namespace}/data/{type}/{modelId}/.lock` when a namespace is set,
-`data/{type}/{modelId}/.lock` otherwise. The `modelLockKey()` helper in
-`lock.ts` constructs the key; `createModelLock` and `acquireModelLocks` read
-`config.namespace` to thread it through. `parseModelLockKey` is unchanged —
-callers use `stripNamespacePrefix()` to strip the namespace from
-filesystem-relative paths before parsing.
+With a `namespace` set, `datastoreGlobalLockOptions` returns
+`{ lockKey: ".datastore.lock", namespace }`. `FileLock` and the remote lock
+providers (S3, GCS) put the key under `{namespace}/`, at
+`{datastorePath}/{namespace}/.datastore.lock`. Repos on different namespaces of
+a shared datastore then never contend on structural commands, and IAM
+credentials scoped to the namespace prefix can reach the lock. Only the lock
+path changes; the lifecycle below is the same.
+
+Per-model lock keys are namespaced too: `{namespace}/data/{type}/{modelId}/.lock`
+with a namespace, `data/{type}/{modelId}/.lock` without. The `modelLockKey()`
+helper in `lock.ts` builds the key; `createModelLock` and `acquireModelLocks`
+read `config.namespace` to pass it through. `parseModelLockKey` is unchanged:
+callers strip the namespace from filesystem-relative paths with
+`stripNamespacePrefix()` before parsing.
 
 ### Lock Timeout and Retry Behavior
 
-The default lock acquisition timeout is **60 seconds** (`DEFAULT_LOCK_TIMEOUT_MS`).
-This is sufficient for most workloads because per-step locking gives each model
-method step a fresh timeout budget.
+The default lock timeout is **60 seconds** (`DEFAULT_LOCK_TIMEOUT_MS`). That is
+enough for most workloads, because per-step locking gives each model method step
+a fresh timeout.
 
-The timeout can be overridden via the `SWAMP_LOCK_TIMEOUT_MS` environment
-variable (`LOCK_TIMEOUT_ENV_VAR` in `datastore_config.ts`). Resolution order
-(first positive value wins):
+`SWAMP_LOCK_TIMEOUT_MS` overrides it (`LOCK_TIMEOUT_ENV_VAR` in
+`datastore_config.ts`). The first positive value wins:
 
-1. Per-invocation override (internal; no CLI flag currently exposes this)
+1. Per-invocation override (internal; no CLI flag exposes it yet)
 2. `SWAMP_LOCK_TIMEOUT_MS` env var (must parse as a positive integer)
 3. `DEFAULT_LOCK_TIMEOUT_MS` (60,000 ms)
 
 Invalid env values (non-numeric, zero, negative) are silently ignored.
 
-The resolved timeout is threaded into every lock creation site: per-model
-locks (`createModelLock`), global datastore locks (`createDatastoreLock`),
-and inline lock constructions in `requireInitializedRepo` and flush paths.
-Custom datastore providers receive `maxWaitMs` in `LockOptions` — whether
-they honor it depends on their implementation.
+Every lock creation site gets the resolved timeout: per-model locks
+(`createModelLock`), global datastore locks (`createDatastoreLock`), and inline
+locks in `requireInitializedRepo` and the flush paths. Custom providers receive
+`maxWaitMs` in `LockOptions`; honouring it is up to them.
 
-**Retry backoff.** `FileLock.acquire` uses jittered exponential backoff:
-starting at `retryIntervalMs` (default 1 second), doubling each attempt,
-capped at 8 seconds, with ±25% random jitter. Each sleep is also clamped to
-the remaining timeout budget so the loop never overshoots `maxWaitMs`.
-Per-model locks (`createModelLock`) start at 25 ms instead, because they
-guard brief local writes and the 1 second default made a waiter sleep
-through a release that happened milliseconds later. Backoff still doubles
-from there, so sustained contention converges on the same cadence.
+**Retry backoff.** `FileLock.acquire` uses jittered exponential backoff. It
+starts at `retryIntervalMs` (default 1 second), doubles per attempt up to 8
+seconds, and adds ±25% jitter. Each sleep is clamped to the remaining budget, so
+the loop never overshoots `maxWaitMs`. Per-model locks (`createModelLock`) start
+at 25 ms instead: they guard brief local writes, and the 1 second default made
+waiters sleep through a release that came milliseconds later. Backoff still
+doubles, so sustained contention reaches the same pace.
 
-**Contention logging.** When a lock is acquired after one or more retries,
-an info-level log line reports the retry count and total wait time:
+**Contention logging.** A lock taken after one or more retries logs the retry
+count and total wait at info level:
 
 ```
 INF datastore·lock Acquired lock "/abs/path/to/datastore/.datastore.lock" after 3 retries (4521ms)
@@ -1445,114 +1359,100 @@ The path is the absolute `lockPath` (`file_lock.ts`).
 
 ### Lock Lifecycle
 
-The sync coordinator (`datastore_sync_coordinator.ts`) manages the lock
-lifecycle as a global singleton:
+The sync coordinator (`datastore_sync_coordinator.ts`), a global singleton,
+manages the lock lifecycle:
 
 - `registerDatastoreSync({ service?, lock?, label?, syncTimeoutMs?,
-  metadataOnly?, namespace? })` — acquire lock, pull if S3
-- `flushDatastoreSync()` — push if S3, release lock
+  metadataOnly?, namespace? })`: take the lock, pull if S3.
+- `flushDatastoreSync()`: push if S3, release the lock.
 
-Per-model commands (`model method run`) acquire only per-model locks via
-`acquireModelLocks`; they do not acquire the global lock but do `inspect()`
-it to wait out any in-flight structural command. The `inspect()` must
-target the **same** namespaced global-lock key the structural command
-acquires (`datastoreGlobalLockOptions`); otherwise the drain coordination
-would inspect a different lock than the one held and silently become a
-no-op in namespaced mode. When a stale global lock is observed during this
-wait, `acquireModelLocks` calls `forceRelease(expectedNonce)` to clear
-it — without this, the post-acquire TOCTOU re-check would re-detect the
-same stale lock on every iteration and recurse indefinitely.
+Per-model commands (`model method run`) take only per-model locks, via
+`acquireModelLocks`. They do not take the global lock, but `inspect()` it to
+wait out any running structural command. That `inspect()` must target the
+same namespaced global-lock key the structural command takes
+(`datastoreGlobalLockOptions`). Otherwise, in namespaced mode, it would check a
+different lock and the drain would silently do nothing. If it sees a stale
+global lock, `acquireModelLocks` calls `forceRelease(expectedNonce)` to clear
+it. Without that, the post-acquire TOCTOU re-check would find the same stale
+lock on every pass and recurse forever.
 
-Workflow commands (`workflow run`, `workflow resume`) and serve-hosted
-workflow execution do **not** acquire locks upfront. Instead, per-model
-locks are acquired per-step via a `StepLockHook` callback injected into
-the workflow execution engine. Each model method step acquires its own
-per-model lock before execution and releases it in a finally block after
-the method completes. This per-step locking prevents deadlocks when a
-model method spawns a subprocess `swamp model method run` targeting a
-model that would otherwise be locked by the parent workflow. Parallel
-workflow steps on different models lock independently; parallel steps on
-the same model serialize at the lock (correct — concurrent writes to the
-same model are unsafe). The coordinator uses unique keys per lock
-acquisition (suffixed with a random ID) so parallel steps on the same
-model get separate entries and do not overwrite each other.
+Workflow commands (`workflow run`, `workflow resume`) and serve-hosted workflow
+runs do not lock up front. A `StepLockHook` callback injected into the
+workflow engine takes per-model locks per step. Each model method step takes its
+lock before running and releases it in a finally block afterwards. This avoids
+deadlock when a model method starts a subprocess `swamp model method run` on a
+model the parent workflow would otherwise hold.
 
-Per-model lock keys are namespace-scoped, so `waitForPerModelLocks` uses
-`stripNamespacePrefix` to match locks under the repo's namespace. The walk
-still starts from the datastore root, so locks from other namespaces are
-visible but filtered out by the prefix check — only the current namespace's
-per-model locks are drained.
+Parallel steps on different models lock independently. Parallel steps on the
+same model serialize at the lock, which is correct since concurrent writes to
+one model are unsafe. The coordinator gives each acquisition a unique key (with
+a random ID suffix), so parallel steps on the same model do not overwrite each
+other's entries.
+
+Because per-model lock keys are namespace-scoped, `waitForPerModelLocks` uses
+`stripNamespacePrefix` to match locks in the repo's namespace. The walk starts
+at the datastore root and sees other namespaces' locks, but the prefix check
+filters them out, so only this namespace's per-model locks are drained.
 
 #### Symmetric Drain (structural commands)
 
-Structural commands (`requireInitializedRepo`) acquire the global lock with
-a **symmetric drain** — `waitForPerModelLocks` is invoked twice, once
-before the global lock is acquired and once after:
+Structural commands (`requireInitializedRepo`) take the global lock with a
+**symmetric drain**: `waitForPerModelLocks` runs once before and once after
+acquiring it.
 
-1. **First drain (pre-acquire).** Wait for any per-model locks visible at
-   command start to be released. A writer that is already past its own
-   TOCTOU recheck (in `acquireModelLocks`) is committed to writing data
-   and must be allowed to finish.
-2. **Acquire global lock.** From this point on, any writer that runs
-   `inspect()` against the global lock will see it held and back off.
-3. **Second drain (post-acquire).** Wait for any per-model locks that
-   slipped past the first drain — i.e., writers that inspected the global
-   lock between the first drain ending and the global-lock acquisition,
-   saw it not held, and went on to acquire a per-model lock.
+1. **First drain (pre-acquire).** Wait for per-model locks visible at command
+   start to be released. A writer past its own TOCTOU recheck (in
+   `acquireModelLocks`) is committed to writing and must be allowed to finish.
+2. **Acquire global lock.** From here, any writer that runs `inspect()` on the
+   global lock sees it held and backs off.
+3. **Second drain (post-acquire).** Wait for per-model locks that slipped past
+   the first drain: writers that inspected the global lock between the first
+   drain and the acquire, saw it free, and took a per-model lock.
 
-The second drain is what closes the symmetric TOCTOU window between the
-two sides of the protocol. Without it, a writer can:
+The second drain closes the TOCTOU window on the other side. Without it, a
+writer can:
 
 1. Inspect global → not held (deleter has not yet acquired)
 2. Take per-model lock
 3. Pass its TOCTOU recheck → not held (deleter still has not acquired)
 4. Begin writing a new version directory
 
-…while the deleter completes its first drain, acquires the global lock,
-and runs `Deno.remove(dataNameDir, { recursive: true })`. The recursive
-removal then races the writer's new version subdirectory and fails with
-ENOTEMPTY (Linux: `os error 39`, macOS: `os error 66`) — the failure mode
-behind swamp-club#234.
+…while the deleter finishes its first drain, takes the global lock, and runs
+`Deno.remove(dataNameDir, { recursive: true })`. The recursive remove races the
+writer's new version subdirectory and fails with ENOTEMPTY (Linux:
+`os error 39`, macOS: `os error 66`), as in swamp-club#234.
 
-The second drain catches the writer's still-held per-model lock and waits
-for the writer to finish (and either commit cleanly or release on its own
-TOCTOU recheck) before structural work proceeds. Because the writer's
-recheck runs *immediately* after taking the per-model lock — before any
-data I/O — there is no remaining window where the writer can write data
-without the deleter's second drain seeing the per-model lock.
+The second drain sees the writer's per-model lock and waits until the writer
+commits or releases on its own recheck before structural work starts. The
+writer's recheck runs right after it takes the per-model lock, before any
+data I/O, so no window remains for it to write unseen by the second drain.
 
-> **Maintainer note.** Both drain calls are required to keep this
-> contract sound. The bidirectional citation
-> (`src/cli/repo_context.ts:requireInitializedRepo` ↔ this section) is
-> there so a future change cannot silently remove one of the two waits
-> without confronting the contract. When changing this lifecycle, update
-> both sites.
+> **Maintainer note.** Both drain calls are required. The two sites cite each
+> other (`src/cli/repo_context.ts:requireInitializedRepo` ↔ this section) so
+> anyone removing one wait sees the contract first. If
+> you change this lifecycle, update both.
 
-Caveat: `waitForPerModelLocks` only scans the local filesystem. Custom
-(S3, distributed) datastores use their own `DistributedLock`
-implementation and rely on its semantics rather than the local drain.
+Caveat: `waitForPerModelLocks` scans only the local filesystem. Custom (S3,
+distributed) datastores rely on their own `DistributedLock` semantics instead.
 
 #### Parent-Process Lock Awareness
 
-When `acquireModelLocks` acquires per-model locks it sets the environment
-variable `SWAMP_LOCK_HOLDER_PID` to the current process PID.
-`waitForPerModelLocks` reads this variable and skips any lock file whose
-`pid` field matches — those locks are held by the parent process, so
-waiting for them would deadlock (the parent is blocked on the child, and
-the child is blocked on the parent's locks).
+`acquireModelLocks` sets `SWAMP_LOCK_HOLDER_PID` to the current process PID when
+it takes per-model locks. `waitForPerModelLocks` skips any lock file whose `pid`
+matches. Those locks belong to the parent, and waiting on them would deadlock:
+the parent waits on the child, the child on the parent's locks.
 
-This arises when a workflow shell step spawns a nested `swamp` command
-(e.g. `swamp extension push`). The child inherits the env var and avoids
-polling on its parent's locks. The env var is cleared when the parent
-flushes its locks.
+This happens when a workflow shell step runs a nested `swamp` command (e.g.
+`swamp extension push`). The child inherits the env var and does not poll its
+parent's locks. The parent clears the variable when it flushes its locks.
 
-A SIGINT handler ensures best-effort lock release on Ctrl-C. If the process
+A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
 default).
 
 ### Lock Breakglass
 
-Two CLI commands for inspecting and force-releasing stuck locks:
+Two CLI commands inspect and force-release stuck locks:
 
 ```bash
 swamp datastore lock status                          # Show who holds the lock
@@ -1560,38 +1460,35 @@ swamp datastore lock release --force                 # Delete the global lock di
 swamp datastore lock release --force --model type/id # Release one per-model lock
 ```
 
-The `--force` flag is required. The release command bypasses `acquire()`/
-`release()` and directly deletes the lock, which is necessary when a crashed
-process left a lock that hasn't expired yet.
+`--force` is required. Release bypasses `acquire()`/`release()` and deletes the
+lock directly, for when a crashed process left a lock that has not expired.
 
 ### Other maintenance commands
 
-- `swamp datastore type search` — search the registry for datastore extension
+- `swamp datastore type search`: search the registry for datastore extension
   types (`src/cli/commands/datastore_type_search.ts`).
-- `swamp datastore compact` — checkpoint the WAL and vacuum `_catalog.db`
+- `swamp datastore compact`: checkpoint the WAL and vacuum `_catalog.db`
   (`datastore_compact.ts`).
-- `swamp datastore config migrate` — copy definitions, vault configs, the
-  extension lockfile and pulled extensions into the datastore `config/` tier
-  and set `managedConfig: true`; the marker flag is the sole authority for
-  activation — `resolveManagedConfigPaths` (`src/cli/repo_context.ts`)
-  points the pulled-extensions root and lockfile at the datastore-resolved
-  config path whenever `managedConfig` is true. For custom datastores
-  (S3, GCS), `ensureManagedConfigBase` resolves the datastore config to
-  derive the cache-relative config path — extension commands call it before
-  `resolveManagedConfigPaths` so the module-level registry is populated
-  correctly (`datastore_config_migrate.ts`).
-- `swamp doctor datastores [--repair [-y]]` — health check plus optional
-  repair of catalog completeness, root-level unmigrated data and foreign
-  namespace contamination, the last via the optional
-  `repairNamespaceContamination?()` on `DatastoreSyncService`
-  (`src/cli/commands/doctor_datastores.ts`).
+- `swamp datastore config migrate`: copy definitions, vault configs, the
+  extension lockfile and pulled extensions into the datastore `config/` tier and
+  set `managedConfig: true` (`datastore_config_migrate.ts`). That flag alone
+  activates managed config: whenever it is true, `resolveManagedConfigPaths`
+  (`src/cli/repo_context.ts`) points the pulled-extensions root and lockfile at
+  the datastore-resolved config path. For custom datastores (S3, GCS),
+  `ensureManagedConfigBase` resolves the datastore config to derive the
+  cache-relative config path. Extension commands call it before
+  `resolveManagedConfigPaths` so the module-level registry is filled correctly.
+- `swamp doctor datastores [--repair [-y]]`: health check with optional repair
+  of catalog completeness, unmigrated root-level data, and foreign namespace
+  contamination (the last via the optional `repairNamespaceContamination?()` on
+  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`).
 
 ## Setup and Migration
 
 ### Initial Setup
 
-`swamp repo init` creates a default filesystem datastore at `.swamp/`. To use
-a different backend, run `swamp datastore setup` after init:
+`swamp repo init` creates a default filesystem datastore at `.swamp/`. For
+another backend, run `swamp datastore setup` after init:
 
 ```bash
 swamp datastore setup filesystem --path /mnt/shared/swamp-data
@@ -1600,61 +1497,60 @@ swamp datastore setup extension @swamp/s3-datastore \
 ```
 
 Each setup command (`src/libswamp/datastores/setup.ts`):
-1. Verifies the target is accessible (writable directory or reachable S3 bucket)
-2. Migrates existing runtime data from `.swamp/` to the new location
-   (skipped when `--skip-migration` is used)
-3. Pushes migrated data to the remote (extension datastores; skipped when
-   `--skip-migration` is used or when there is nothing to push)
-4. **Hydrates** the local cache from the remote datastore (extension
-   datastores only) — runs unconditionally, regardless of `--skip-migration`
-5. Persists and cleans up — the order differs by backend:
-   - **extension**: cleans up migrated directories from `.swamp/` (only when
-     no step reported an error), then updates `.swamp.yaml` (when there were
-     no errors, or only timeouts — see below), then registers the namespace
-     manifest via `provider.registerNamespace` when `--namespace` was given
-   - **filesystem**: updates `.swamp.yaml`, then cleans up migrated
-     directories, so a crash between the two leaves harmless orphaned source
-     data rather than a repo pointing at a cleaned-up datastore
+
+1. Checks the target is accessible (writable directory or reachable S3 bucket).
+2. Migrates existing runtime data from `.swamp/` to the new location (skipped
+   with `--skip-migration`).
+3. Pushes migrated data to the remote (extension datastores; skipped with
+   `--skip-migration` or when there is nothing to push).
+4. Hydrates the local cache from the remote (extension datastores only).
+   Always runs, regardless of `--skip-migration`.
+5. Persists and cleans up, in an order that depends on the backend:
+   - **extension**: removes migrated directories from `.swamp/`, only if no step
+     reported an error. It then updates `.swamp.yaml` if there were no errors,
+     or only timeouts (see below). Last, it registers the namespace manifest via
+     `provider.registerNamespace` if `--namespace` was given.
+   - **filesystem**: updates `.swamp.yaml`, then removes migrated directories.
+     A crash in between leaves harmless orphaned source data, not a repo
+     pointing at a cleaned-up datastore.
 
 `setup extension` also takes `--namespace <slug>` and
-`--hydration-strategy full|lazy`, both persisted into the datastore block.
+`--hydration-strategy full|lazy`, both saved in the datastore block.
 
-`--skip-migration` controls only step 2 (the local→remote push of existing
-`.swamp/` data). It does NOT skip step 4 (hydration). A contributor joining a
-shared datastore that already has data needs hydration even when there is
-nothing local to migrate; without it the local cache stays empty and reads
-return nothing until a manual `swamp datastore sync --pull` runs.
+`--skip-migration` affects only step 2 (pushing existing `.swamp/` data to the
+remote), not step 4 (hydration). A contributor joining a shared datastore that
+already has data needs hydration even with nothing local to migrate. Without it
+the cache stays empty and reads return nothing until a manual
+`swamp datastore sync --pull`.
 
-**Hydration invariant.** After `swamp datastore setup extension` succeeds
-with no errors, the local cache contains every entry advertised by the
-remote `.datastore-index.json` at setup time. Subsequent reads from
-datastore-tier repositories see consistent data without an explicit
-`swamp datastore sync --pull` first.
+**Hydration invariant.** After `swamp datastore setup extension` succeeds with
+no errors, the local cache holds every entry in the remote
+`.datastore-index.json` at setup time. Datastore-tier repositories then read
+consistent data without a prior `swamp datastore sync --pull`.
 
 ### Partial Failure and Retry
 
-If `swamp datastore setup extension` fails partway through (network blip,
-auth error, Ctrl-C, transient 5xx), the repo stays in a safe, resumable state:
+If `swamp datastore setup extension` fails partway (network blip, auth error,
+Ctrl-C, transient 5xx), the repo stays safe and resumable:
 
-- `.swamp.yaml` is **not updated** — the repo remains filesystem-typed — unless
-  the only errors were sync timeouts, in which case the type **is** committed
-  so the user can resume with `swamp datastore sync --push --timeout <big>`
-  (see [Sync Timeout](#sync-timeout)).
-- `.swamp/` data is **not cleaned up** — local data stays intact for retry.
-- Objects already pushed to the remote are harmless — S3 PutObject is
-  idempotent, so a subsequent push overwrites with identical content.
+- `.swamp.yaml` is not updated, so the repo stays filesystem-typed. If the
+  only errors were sync timeouts, the type is written so the user can
+  resume with `swamp datastore sync --push --timeout <big>` (see
+  [Sync Timeout](#sync-timeout)).
+- `.swamp/` data is not cleaned up; it stays intact for a retry.
+- Objects already pushed are harmless: S3 PutObject is idempotent, so the next
+  push overwrites them with identical content.
 
-**To retry:** re-run the exact same `swamp datastore setup extension` command
-(or, after a timeout-only failure, `swamp datastore sync --push`).
+**To retry:** re-run the same `swamp datastore setup extension` command (or,
+after a timeout-only failure, `swamp datastore sync --push`).
 
 ### Directory Relocation
 
-When a datastore is enabled on a repo that previously used the default
-filesystem layout, the runtime directories (`data`, `outputs`, `workflow-runs`,
-and others listed in `DEFAULT_DATASTORE_SUBDIRS`) are relocated from
-`{repoDir}/.swamp/` to the datastore path. For extension datastores this is the
-local cache (`~/.swamp/repos/{repoId}/`), not the remote. The setup command
-prints which directories moved and where:
+Enabling a datastore on a repo with the default filesystem layout moves the
+runtime directories (`data`, `outputs`, `workflow-runs` and the rest of
+`DEFAULT_DATASTORE_SUBDIRS`) from `{repoDir}/.swamp/` to the datastore path. For
+extension datastores that is the local cache (`~/.swamp/repos/{repoId}/`), not
+the remote. Setup prints what moved and where:
 
 ```
 Relocated: data, outputs, workflow-runs now resolve under /new/path
@@ -1663,54 +1559,55 @@ Relocated: data, outputs, workflow-runs now resolve under /new/path
 
 After setup, `DefaultDatastorePathResolver.resolvePath()` routes these
 subdirectories to the new location. Code that hardcodes `.swamp/workflow-runs/`
-or similar paths will silently break — use `swamp workflow run search --json`,
-`swamp data get`, or equivalent CLI commands instead of direct filesystem access.
-The migration copies files to the cache (overwriting any partial cache from the
-previous attempt), pushes to the remote (idempotent), pulls from the remote,
-and only then cleans up `.swamp/` and updates `.swamp.yaml` (in that order for
-extension datastores — see [Initial Setup](#initial-setup)).
+or similar paths silently breaks. Use `swamp workflow run search --json`,
+`swamp data get` or other CLI commands instead of direct filesystem access.
 
-The same applies to `swamp datastore setup filesystem` — the config update is
-guarded behind a successful migration, so a partial copy leaves `.swamp.yaml`
-unchanged and a retry is safe.
+The migration copies files to the cache (overwriting any partial cache from an
+earlier attempt), pushes to the remote (idempotent), and pulls from it. Only
+then does it clean up `.swamp/` and update `.swamp.yaml`, in that order for
+extension datastores (see [Initial Setup](#initial-setup)).
 
-The CLI surfaces a retry hint in the output whenever setup completes with
-errors, so the user knows re-running is safe without consulting documentation.
+`swamp datastore setup filesystem` is the same: the config update waits for a
+successful migration, so a partial copy leaves `.swamp.yaml` unchanged and a
+retry is safe.
+
+If setup finishes with errors, the CLI prints a retry hint so the user knows
+re-running is safe.
 
 ### Migrating Between Backends
 
-Run `swamp datastore setup` again with the new backend type. The setup command
-migrates data from the current location to the new one.
+Run `swamp datastore setup` again with the new backend type. It migrates data
+from the current location to the new one.
 
 When switching **from a remote/sync-based datastore to filesystem**, the CLI
-resolves the outgoing datastore's local cache path
-(`~/.swamp/repos/{repoId}/`) and passes it to `datastoreSetupFilesystem` as
-`outgoingCachePath`. The migration copies content from the cache — not from
-`{repoDir}/.swamp`, which is empty for remote datastores. If the cache path
-does not exist or cannot be resolved (e.g. the outgoing extension was
-uninstalled), the setup falls back to `{repoDir}/.swamp` and logs a warning.
+resolves the old datastore's local cache path (`~/.swamp/repos/{repoId}/`) and
+passes it to `datastoreSetupFilesystem` as `outgoingCachePath`. Content is
+copied from the cache, not from `{repoDir}/.swamp`, which is empty for remote
+datastores. If the cache path is missing or unresolvable (e.g. the old
+extension was uninstalled), setup falls back to `{repoDir}/.swamp` and logs a
+warning.
 
-To ensure the cache is fully up to date before switching, run
-`swamp datastore sync --pull` first.
+Run `swamp datastore sync --pull` first so the cache is up to date before
+switching.
 
 ### Health Verification
 
-The per-command entry points do only a light accessibility check
+The per-command entry points only do a light accessibility check
 (`src/cli/repo_context.ts`):
 
 - **Filesystem**: `requireInitializedRepo()` and
   `requireInitializedRepoReadOnly()` `Deno.stat` the path and fail only if it
-  exists but is not a directory; a missing directory is allowed (it is created
-  on first write). Writability is not tested here.
-- **Extension datastores**: the write path ensures the cache directory exists
-  and creates the sync service; the read-only path does the same without a
-  lock and without any health check. Neither calls `createVerifier()`.
+  exists and is not a directory. A missing directory is allowed; it is created on
+  first write. Writability is not tested.
+- **Extension datastores**: the write path creates the cache directory if needed
+  and creates the sync service. The read-only path does the same with no lock
+  and no health check. Neither calls `createVerifier()`.
 
 Full health checks (`DatastoreVerifier.verify()` from `createVerifier()`, or
 `filesystem_datastore_verifier.ts`) run in `swamp datastore status`,
 `swamp datastore setup`, `swamp doctor datastores`, and at `swamp serve`
-startup. `swamp datastore status` shows the current config, health, latency,
-directories, and exclude patterns.
+startup. `swamp datastore status` shows config, health, latency, directories and
+exclude patterns.
 
 ## Implementation Files
 
@@ -1726,7 +1623,7 @@ directories, and exclude patterns.
 | `src/domain/datastore/distributed_lock.ts` | `DistributedLock` interface, `LockInfo`, `LockTimeoutError` |
 | `src/domain/datastore/datastore_types.ts` | Datastore type name parsing/validation |
 | `src/infrastructure/persistence/namespace_manifest.ts` | `.namespace.json` read/write for filesystem datastores |
-| `src/infrastructure/persistence/sync_error_diagnostic.ts` | Classifies sync failures into user-facing summaries |
+| `src/infrastructure/persistence/sync_error_diagnostic.ts` | Turns sync failures into user-facing summaries |
 | `src/infrastructure/persistence/lockfile_repository.ts` | Extension lockfile persistence (local or managed-config tier) |
 | `src/domain/extensions/bundle_freshness.ts` | Content-fingerprint bundle invalidation |
 
@@ -1741,7 +1638,7 @@ directories, and exclude patterns.
 
 ### Application Layer (libswamp)
 
-`src/libswamp/datastores/` holds one generator per command: `setup.ts`,
+`src/libswamp/datastores/` has one generator per command: `setup.ts`,
 `status.ts`, `sync.ts`, `lock.ts`, `compact.ts`, `migrate_index.ts`,
 `type_search.ts`, `namespace_set.ts`, `namespace_unset.ts`,
 `namespace_migrate.ts`, `namespace_list.ts`, `doctor_datastores.ts`.
@@ -1778,18 +1675,17 @@ directories, and exclude patterns.
 
 ## Managed Config Deployment Architecture
 
-When `managedConfig: true` is set in `.swamp.yaml`, model definitions, workflow
-definitions, vault configs, the extension lockfile, and pulled extension sources
-are stored in the datastore's `config/` tier instead of the repository's
-top-level directories. This enables stateless pod deployments where the
-datastore (e.g. S3) is the sole source of truth for configuration.
+With `managedConfig: true` in `.swamp.yaml`, model definitions, workflow
+definitions, vault configs, the extension lockfile and pulled extension sources
+live in the datastore's `config/` tier instead of the repo's top-level
+directories. This allows stateless pod deployments, with the datastore (e.g.
+S3) as the only source of truth for configuration.
 
 ### Where mutations write
 
-Every CLI command and serve handler that mutates config-tier files writes to the
-`config/` subdirectory resolved by `DatastorePathResolver` and then pushes the
-changes to the remote datastore via `pushManagedConfigChanges`
-(`src/cli/managed_config_sync.ts`):
+Every CLI command and serve handler that changes config-tier files writes to the
+`config/` subdirectory resolved by `DatastorePathResolver`, then pushes to the
+remote with `pushManagedConfigChanges` (`src/cli/managed_config_sync.ts`):
 
 | Mutation type | Config-tier path | CLI push | Serve push |
 |---------------|-----------------|----------|------------|
@@ -1799,41 +1695,41 @@ changes to the remote datastore via `pushManagedConfigChanges`
 | Extension pull/install/rm/update | `config/pulled-extensions/`, `config/upstream_extensions.json` | `pushManagedConfigChangesDeferred` | `ctx.syncService.pushChanged` |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 
-Auto-definitions are a regular datastore subdirectory (`DEFAULT_DATASTORE_SUBDIRS`
-includes `auto-definitions`). They are synced through the normal write-command
-lifecycle (pull on lock acquire, push on flush), not through the config-tier push.
+Auto-definitions are a normal datastore subdirectory
+(`DEFAULT_DATASTORE_SUBDIRS` includes `auto-definitions`). They sync through the
+usual write-command lifecycle (pull on lock acquire, push on flush), not the
+config-tier push.
 
 ### Extension commands and the chicken-and-egg
 
-Extension commands (`pull`, `install`, `rm`, `update`) use lightweight
-`requireRepoMarker` initialization instead of `requireInitializedRepoUnlocked`
-to avoid circular failure when the datastore extension itself is being
-pulled/updated (see #445). After the mutation completes,
+Extension commands (`pull`, `install`, `rm`, `update`) use the lightweight
+`requireRepoMarker` initialization instead of `requireInitializedRepoUnlocked`.
+This avoids a circular failure when the datastore extension itself is being
+pulled or updated (see #445). After the change,
 `pushManagedConfigChangesDeferred` resolves the datastore and creates a sync
-service for the push. This is safe because `managedConfig: true` implies the
-datastore extension is already installed — `config migrate` requires a working
-datastore.
+service for the push. This is safe because `config migrate` needs a working
+datastore, so `managedConfig: true` implies the datastore extension is
+installed.
 
 ### Pod boot sequence under managed config
 
-The recommended init container sequence for a stateless pod:
+Recommended init container sequence for a stateless pod:
 
-1. **Create `.swamp.yaml`** — copy the marker file with the datastore config and
-   `managedConfig: true`.
-2. **`swamp datastore setup extension`** — configure the datastore backend.
-3. **`swamp datastore sync --pull`** — hydrate the local cache from the remote
-   datastore, including `config/` (definitions, pulled extensions, lockfile).
-4. **`swamp datastore config migrate`** — idempotent; on first boot it copies
-   local config into the datastore tier and pushes. On subsequent boots the
-   sentinel skips the copy.
-5. **`swamp extension install`** — restore any pulled extensions whose source
-   files are missing from the hydrated cache. This writes to the config tier
-   and pushes to the remote datastore.
+1. **Create `.swamp.yaml`**: copy in the marker file with the datastore config
+   and `managedConfig: true`.
+2. **`swamp datastore setup extension`**: configure the datastore backend.
+3. **`swamp datastore sync --pull`**: hydrate the local cache from the remote,
+   including `config/` (definitions, pulled extensions, lockfile).
+4. **`swamp datastore config migrate`**: idempotent. First boot copies local
+   config into the datastore tier and pushes; later boots the sentinel skips the
+   copy.
+5. **`swamp extension install`**: restore pulled extensions whose source files
+   are missing from the hydrated cache. It writes to the config tier and pushes
+   to the remote.
 
-**Critical:** `extension install` (step 5) must run to ensure pulled extension
-source files are complete. The `config/pulled-extensions/` tree in the remote
-datastore may be incomplete if the initial `config migrate` ran before extensions
-were installed.
+Step 5 (`extension install`) must run so pulled extension sources
+are complete. The remote `config/pulled-extensions/` tree may be incomplete if
+the first `config migrate` ran before extensions were installed.
 
 ### Recovery from missing-extensions state
 
@@ -1843,26 +1739,25 @@ When a pod boots and logs "N pulled extension(s) have missing source files":
    ```bash
    swamp extension install --repo-dir /path/to/repo
    ```
-   This restores source files and pushes to the remote datastore. The next pod
-   boot pulls the complete tree.
+   This restores source files and pushes them to the remote. The next pod boot
+   pulls the complete tree.
 
 2. **Via the serve API (with `--hot-reload` enabled):**
    ```bash
    swamp extension install --server https://pod-url
    swamp serve reload --server https://pod-url
    ```
-   The serve handler installs and pushes to the remote datastore. `serve reload`
-   re-bundles the updated extensions. Without `--hot-reload`, the reload step
-   fails and a pod restart is required.
+   The serve handler installs and pushes to the remote. `serve reload`
+   re-bundles the updated extensions. Without `--hot-reload` the reload step
+   fails and the pod must be restarted.
 
 ### Extension auto-reload via config poller
 
 With `managedConfig`, the config poller pulls `config/pulled-extensions/`
-separately from the rest of `config/` and only triggers `performServeReload`
-when extension files have changed. Definition-only changes (model, vault, or
-workflow YAML edits) invalidate catalogs without reloading extension registries.
-Extensions that arrive after boot (via another instance's
-`extension install --server` or `extension pull`) are discovered and loaded
-without a restart or manual SIGHUP. `--hot-reload` is still useful for
-trigger-override and workflow reloading via `swamp serve reload`, but extension
-registration no longer requires it.
+separately from the rest of `config/` and calls `performServeReload` only when
+extension files changed. Definition-only changes (model, vault or workflow YAML
+edits) invalidate catalogs without reloading extension registries. Extensions
+that arrive after boot (from another instance's `extension install --server` or
+`extension pull`) are found and loaded without a restart or manual SIGHUP.
+`--hot-reload` is still useful for trigger overrides and workflow reloading via
+`swamp serve reload`, but extension registration no longer needs it.

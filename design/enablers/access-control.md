@@ -6,129 +6,121 @@ last-verified: 2026-09-14 @ 626d7507
 
 # Access Control
 
-Serve evaluates authorization per request against an in-memory policy built from
-grant and group data. The entire access-control subsystem exists so that the
-serve primitive can answer one question: "may this principal perform this action
-on this resource?"
+Serve checks every request against an in-memory policy built from grant and
+group data. Each check asks: "may this principal perform this action on this
+resource?"
 
-Authorization is checked at the serve handler boundary
-(`authorizeOrReject` in `src/serve/handlers/shared.ts`), not at the domain
-layer. The domain provides the decision service; only serve handlers call it.
-This means a local `swamp` invocation (no `--server`) is never subject to
-grants — grants govern serve access only.
+The check happens in serve handlers, not the domain layer
+(`authorizeOrReject` in `src/serve/handlers/shared.ts`). The domain provides the
+decision service and only serve handlers call it. A local `swamp` invocation (no
+`--server`) is never subject to grants.
 
 ## Principals
 
-A principal is the authenticated identity making a request. Two kinds exist:
+A principal is the authenticated identity making a request. There are two kinds:
 
-| Kind     | Format         | Source                                                               |
-| -------- | -------------- | -------------------------------------------------------------------- |
-| `user`   | `user:<id>`    | OAuth sub claim, or the username on a server token                   |
-| `worker` | `worker:<id>`  | Worker enrollment via the `rpc.enroll` frame                         |
+| Kind     | Format        | Source                                          |
+| -------- | ------------- | ----------------------------------------------- |
+| `user`   | `user:<id>`   | OAuth sub claim, or the username on a server token |
+| `worker` | `worker:<id>` | Worker enrollment via the `rpc.enroll` frame    |
 
-Minting a server token rejects any other kind, naming the valid ones. A stored
-token whose principal does not parse — minted before that check existed, or
-edited by hand — is refused at authentication with `401 invalid-principal`.
+Minting a server token rejects any other kind and names the valid ones. A stored
+token whose principal does not parse (minted before that check, or hand-edited)
+is refused with `401 invalid-principal`.
 
-The principal is resolved once at connection time and attached to every
-subsequent request on that WebSocket. In `none` auth mode there is no principal
-and authorization is skipped entirely.
+The principal is resolved once per connection and attached to every request on
+that WebSocket. In `none` auth mode there is no principal and no authorization.
 
 Implementation: `src/domain/access/principal.ts`.
 
 ### Server-token authentication
 
-Server tokens use the `<name>.<secret>` credential format. At HTTP and WebSocket
-authentication ingress, serve resolves only a `swamp/server-token` definition,
-reads its `token-main` lifecycle resource and vault secret, then applies the
-same pure lifecycle and timing-safe secret validation used by the model's
-explicit `redeem` method. Ingress authentication is read-only: it does not
-write `lastUsedAt`, execute a model method, or create a model run. Explicit
-`redeem` invocations retain their lifecycle usage update.
+Server tokens use the `<name>.<secret>` format. To authenticate an HTTP or
+WebSocket request, serve resolves only a `swamp/server-token` definition and
+reads its `token-main` lifecycle resource and vault secret. It applies the same
+lifecycle check and timing-safe comparison as the model's `redeem` method, but
+read-only: it does not write `lastUsedAt`, run a model method, or create a model
+run. Calling `redeem` directly still updates usage.
 
 Implementation: `src/serve/token_auth.ts`,
 `src/domain/models/access/server_token_model.ts`.
 
 ## Admission
 
-Before authorization, a separate admission gate controls who may connect at all.
-In OAuth mode, the operator must configure at least one of:
+Before authorization, an admission gate decides who may connect at all. In
+OAuth mode the operator must configure at least one of:
 
-- `--allowed-collectives` — the user must belong to one of these collectives
-  (checked against the IdP's group claims)
-- `--allowed-users` — the user's OAuth sub must appear in this list
+- `--allowed-collectives`: the user must belong to one of these collectives,
+  checked against the IdP's group claims.
+- `--allowed-users`: the user's OAuth sub must be in this list.
 
-If neither list is configured, the server refuses to start (preventing an
-open-to-anyone server). A user who passes admission proceeds to per-request
-authorization; a user who fails admission is disconnected before any request is
-evaluated.
+If neither is set, the server refuses to start rather than admit anyone. A user
+who fails admission is disconnected before any request is evaluated; one who
+passes moves on to per-request authorization.
 
 Implementation: `src/domain/access/admission.ts`.
 
 ## Subjects
 
-A grant targets a _subject_, not a principal directly. Three subject kinds exist:
+A grant targets a _subject_, not a principal. There are three subject kinds:
 
-| Kind        | Format              | Matches when                                                |
-| ----------- | ------------------- | ----------------------------------------------------------- |
-| `user`      | `user:<name>`       | The principal's `kind:id` matches exactly                   |
-| `group`     | `group:<name>`      | The principal is a member of the named local group          |
-| `idp-group` | `idp-group:<name>`  | The principal's IdP group claims include the named group    |
+| Kind        | Format             | Matches when                                    |
+| ----------- | ------------------ | ----------------------------------------------- |
+| `user`      | `user:<name>`      | The principal's `kind:id` matches exactly       |
+| `group`     | `group:<name>`     | The principal is in the named local group       |
+| `idp-group` | `idp-group:<name>` | The principal's IdP group claims include the group |
 
 ### Local groups
 
-Local groups are defined as `swamp/group` model instances. Each group has a name
-and a list of principal members. The `PolicySnapshot` indexes groups by principal
-so that subject resolution is a map lookup, not a scan.
+Local groups are `swamp/group` model instances, each with a name and a list of
+principal members. The `PolicySnapshot` indexes groups by principal, so
+resolving subjects is a single map lookup.
 
 ### Subject resolution
 
-When evaluating a request, the decision service builds the full subject list for
-the principal:
+For each request, the decision service builds the principal's subject list:
 
-1. `user:<id>` — the principal itself
-2. `group:<name>` — for every local group the principal belongs to
-3. `idp-group:<name>` — for every group claim from the IdP (carried on the
-   connection)
+1. `user:<id>`: the principal itself.
+2. `group:<name>`: every local group the principal belongs to.
+3. `idp-group:<name>`: every IdP group claim carried on the connection.
 
-All grants whose subject matches any entry in this list are candidates.
+Every grant whose subject is in this list is a candidate.
 
 Implementation: `src/domain/access/subject.ts`,
 `src/domain/models/access/group_model.ts`.
 
 ## Grants
 
-A grant is a rule that allows or denies a specific action on a specific resource
-for a specific subject. Grants are persisted as `swamp/grant` model instances
-with state `active` or `revoked`.
+A grant allows or denies an action on a resource for a subject. Grants are
+stored as `swamp/grant` model instances with state `active` or `revoked`.
 
 ### Schema
 
-| Field       | Type                    | Description                                         |
-| ----------- | ----------------------- | --------------------------------------------------- |
-| `id`        | string                  | Unique grant identifier                             |
-| `subject`   | string                  | Target subject (`user:adam`, `group:ops`)            |
-| `effect`    | `allow` \| `deny`       | Whether this grant permits or blocks                |
-| `actions`   | `Action[]`              | One or more of `run`, `read`, `write`, `admin`      |
-| `resource`  | string                  | Resource selector (`workflow:@acme/*`)               |
-| `condition` | string (optional)       | CEL expression over resource fields and principal context |
-| `methods`   | string[] (optional)     | Restrict to specific model methods (omit for all)   |
-| `state`     | `active` \| `revoked`   | Only `active` grants participate in evaluation      |
-| `source`    | string                  | Origin of the grant (see below)                     |
+| Field       | Type                  | Description                                    |
+| ----------- | --------------------- | ---------------------------------------------- |
+| `id`        | string                | Unique grant identifier                        |
+| `subject`   | string                | Target subject (`user:adam`, `group:ops`)      |
+| `effect`    | `allow` \| `deny`     | Whether the grant permits or blocks            |
+| `actions`   | `Action[]`            | One or more of `run`, `read`, `write`, `admin` |
+| `resource`  | string                | Resource selector (`workflow:@acme/*`)         |
+| `condition` | string (optional)     | CEL over resource fields and principal context |
+| `methods`   | string[] (optional)   | Limit to these model methods (omit for all)    |
+| `state`     | `active` \| `revoked` | Only `active` grants are evaluated             |
+| `source`    | string                | Where the grant came from (see below)          |
 
 ### Grant sources
 
-| Source               | Meaning                                             |
-| -------------------- | --------------------------------------------------- |
-| `method`             | Created via `swamp access grant create`              |
-| `config`             | Loaded from server configuration at startup          |
-| `file:<filename>`    | Reconciled from a YAML file in the grants directory  |
-| `extension:<name>`   | Bundled with an extension                            |
+| Source             | Meaning                                         |
+| ------------------ | ----------------------------------------------- |
+| `method`           | Created via `swamp access grant create`         |
+| `config`           | Loaded from server configuration at startup     |
+| `file:<filename>`  | Reconciled from a YAML file in the grants directory |
+| `extension:<name>` | Bundled with an extension                       |
 
 ### Grant files
 
-Operators can define grants declaratively in YAML files placed in the grants
-directory (configured via `--grants-dir`). Each file contains:
+Operators can declare grants in YAML files in the grants directory, set with
+`--grants-dir`. Each file contains:
 
 ```yaml
 grants:
@@ -148,9 +140,9 @@ grants:
     methods: [read, list]
 ```
 
-Each entry must specify exactly one of `resource` (single string) or `resources`
-(array of strings). The `resources` form is syntactic sugar — it expands into one
-grant per resource string, identical in all other fields:
+Each entry sets exactly one of `resource` (a string) or `resources` (an array of
+strings). `resources` is shorthand that expands into one grant per string, with
+all other fields identical:
 
 ```yaml
 grants:
@@ -162,15 +154,14 @@ grants:
       - "workflow:@acme/connect-thing"
 ```
 
-This is equivalent to two separate entries with `resource:` each. The expansion
-happens at parse time — the domain model, reconciler, and evaluation engine all
-operate on single-resource grants. Specifying both `resource` and `resources` on
-the same entry is an error. The `resources` array accepts up to 100 entries.
+This equals two entries, each with `resource:`. It expands at parse time, so
+the domain model, reconciler and evaluation engine only see single-resource
+grants. Setting both `resource` and `resources` is an error. `resources` takes
+up to 100 entries.
 
-The `GrantFileReconciler` syncs file-based grants into model data, creating,
-updating, or revoking grants as files change. File-sourced grants carry the
-`file:<filename>` source so they can be distinguished from method-created grants
-during reconciliation.
+The `GrantFileReconciler` syncs file grants into model data, creating, updating
+or revoking them as files change. The `file:<filename>` source separates them
+from method-created grants during reconciliation.
 
 Implementation: `src/domain/access/grant_file.ts`,
 `src/domain/access/grant_file_reconciler.ts`.
@@ -194,48 +185,45 @@ Patterns support a trailing `*` wildcard:
 
 #### Model resource dual-identity matching
 
-For `model` resources, grants match against **both** the model instance name and
-the extension type. A grant on `model:@xero/segment/*` matches any model
-instance whose extension type falls under `@xero/segment/` (e.g., a model named
-`segment-test-audiences` with type `@xero/segment/audience`). The instance name
-is checked first; if it does not match, the extension type from the model's
-definition is checked as a fallback. This applies to all grant evaluation paths:
-`decide()`, `explain()`, and `filterByAuthorization` for collection operations.
+For `model` resources, grants match **both** the instance name and the
+extension type. A grant on `model:@xero/segment/*` matches any instance whose
+type is under `@xero/segment/`, such as `segment-test-audiences` with type
+`@xero/segment/audience`. The name is checked first, then the type from the
+model's definition. This holds on every evaluation path: `decide()`,
+`explain()`, and `filterByAuthorization` for collection operations.
 
 Implementation: `src/domain/access/resource_selector.ts`,
 `src/domain/access/grant_based_access_decision_service.ts`.
 
 ### Actions
 
-| Action    | Typical operations                                          |
-| --------- | ----------------------------------------------------------- |
-| `run`     | Execute a workflow or model method (implies `approve`)      |
-| `read`    | Query data, view definitions, list resources                |
-| `write`   | Create or update models, definitions, data                  |
-| `approve` | Approve or reject a workflow manual-approval gate           |
-| `admin`   | Manage grants, groups, tokens, restricted models            |
+| Action    | Typical operations                                     |
+| --------- | ------------------------------------------------------ |
+| `run`     | Execute a workflow or model method (implies `approve`) |
+| `read`    | Query data, view definitions, list resources           |
+| `write`   | Create or update models, definitions, data             |
+| `approve` | Approve or reject a workflow manual-approval gate      |
+| `admin`   | Manage grants, groups, tokens, restricted models       |
 
-**`run` implies `approve`**: a grant with `actions: [run]` also satisfies
-`approve` checks. This preserves backwards compatibility — existing `run` grants
-continue to permit approval. To grant approval without execution authority, use
-`actions: [approve]` alone.
+**`run` implies `approve`**: a grant with `actions: [run]` also passes `approve`
+checks, so existing `run` grants can still approve. To allow approval without
+execution, use `actions: [approve]` alone.
 
 **Requiring an explicit `approve` grant** (opt-in): `swamp serve
---approve-requires-explicit-grant` (config `auth.approve-requires-explicit-grant`,
-env `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT`) stops an *allow* grant on `run`
-from satisfying `approve`, so an automation principal granted `run` cannot clear
-a manual approval gate meant for a person. It is off by default; the default
-semantics above are unchanged. The implication always holds for *deny* grants: a
-deny on `run` denies `approve` whether or not the setting is on, so turning it
-on can only narrow what is allowed. The setting is per process, like the other
-`auth.*` settings, so every replica behind a load balancer must share it.
+--approve-requires-explicit-grant` stops an allow grant on `run` from passing
+`approve`. The config key is `auth.approve-requires-explicit-grant` and the env
+var is `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT`. With it on, an automation
+principal granted `run` cannot clear a gate meant for a person. It is off by
+default. A deny on `run` always denies
+`approve`, setting or not, so turning it on can only narrow access. Like other
+`auth.*` settings it is per process; every replica behind a load balancer must
+share it.
 
-The decision records how a grant matched: an `AccessDecision` whose grant
-satisfied `approve` only through `run` carries `impliedBy: "run"`.
-`swamp access check` and `swamp access can-i` show these as
-`[implied by run]`, and `can-i` without an action lists an implied `approve`
-row for each such grant. The server's `access.check` and `access.can-i`
-responses report its policy as `approveRequiresExplicitGrant`.
+An `AccessDecision` whose grant passed `approve` only through `run` carries
+`impliedBy: "run"`. `swamp access check` and `swamp access can-i` show it as
+`[implied by run]`, and `can-i` without an action lists an implied `approve` row
+per such grant. The server's `access.check` and `access.can-i` responses report
+the policy as `approveRequiresExplicitGrant`.
 
 Implementation: `src/domain/access/action.ts`,
 `src/domain/access/grant_based_access_decision_service.ts`
@@ -243,34 +231,31 @@ Implementation: `src/domain/access/action.ts`,
 
 ## Grant evaluation model
 
-The `GrantBasedAccessDecisionService` implements the evaluation algorithm. For a
-given (principal, action, resource) triple:
+The `GrantBasedAccessDecisionService` runs the evaluation. For a (principal,
+action, resource) triple:
 
-1. **Resolve subjects** — build the full subject list (user + local groups + IdP
-   groups)
-2. **Collect candidates** — find all grants whose subject is in the list
-3. **Filter** — keep only grants that match the resource selector, the requested
-   action (including implied actions: `run` implies `approve`, except for allow
-   grants when the server requires an explicit `approve` grant), and the method
-   name (when the grant specifies a `methods` list)
-4. **Partition** — separate into deny grants and allow grants
-5. **Evaluate denies first** — for each deny grant, evaluate the condition (if
-   any). The first matching deny wins and the request is rejected
-6. **Evaluate allows** — for each allow grant, evaluate the condition (if any).
-   The first matching allow wins and the request proceeds
-7. **No match** — if no grant matches, check for an `admin` grant on
-   `access:*`. If that matches, the request proceeds (admin fallback). Otherwise
-   the request is denied by default
+1. **Resolve subjects**: user, local groups, IdP groups.
+2. **Collect candidates**: every grant whose subject is in the list.
+3. **Filter**: keep grants matching the resource selector, the action and the
+   method name (when the grant has a `methods` list). Implied actions count:
+   `run` implies `approve`, except for allow grants when the server requires an
+   explicit `approve` grant.
+4. **Partition**: split into deny and allow grants.
+5. **Evaluate denies first**: check each deny's condition, if any. The first
+   matching deny wins and the request is rejected.
+6. **Evaluate allows**: check each allow's condition, if any. The first matching
+   allow wins and the request proceeds.
+7. **No match**: if an `admin` grant on `access:*` matches, the request proceeds
+   (admin fallback). Otherwise it is denied by default.
 
-**Deny-first**: a deny grant always beats an allow grant for the same subject,
-action, and resource. This is evaluated per-request — there is no grant priority
-or ordering beyond "denies win."
+**Deny-first**: a deny always beats an allow for the same subject, action and
+resource. There is no other priority or ordering.
 
 ### Condition evaluation
 
 Grant conditions are CEL expressions evaluated in the sealed grant-condition
-environment (see `design/enablers/expressions.md`, surface 3). Available
-variables per resource kind:
+environment (see `design/enablers/expressions.md`, surface 3). Variables by
+resource kind:
 
 | Resource kind | Available fields                                             |
 | ------------- | ------------------------------------------------------------ |
@@ -279,12 +264,11 @@ variables per resource kind:
 | `data`        | `name`, `ns`, `tags`, `owner`                                |
 | `access`      | `name`                                                       |
 
-All resource kinds also have access to `principal.sub`, `principal.groups`, and
+Every kind can also use `principal.sub`, `principal.groups` and
 `principal.collectives`.
 
-An **aggregate condition budget** of 100 evaluations per request prevents
-unbounded CEL execution. If the budget is exceeded, the request is denied
-regardless of remaining grants.
+Each request has an **aggregate condition budget** of 100 CEL evaluations. If it
+runs out, the request is denied whatever grants remain.
 
 Implementation: `src/domain/access/grant_based_access_decision_service.ts`,
 `src/domain/access/policy_snapshot.ts`.
@@ -292,117 +276,100 @@ Implementation: `src/domain/access/grant_based_access_decision_service.ts`,
 ## PolicySnapshot lifecycle
 
 The `PolicySnapshot` is the in-memory aggregate of all active grants and groups.
-It is loaded at serve startup and rebuilt when grant or group model data changes.
+It loads at serve startup and is rebuilt when grant or group model data changes.
 
-1. **Initial load** — `PolicySnapshotLoader.load()` reads all `swamp/grant` and
-   `swamp/group` data records from the repository
-2. **Auto-rebuild** — the loader subscribes to `ModelCreated`, `ModelUpdated`,
-   `DefinitionCreated`, and `DefinitionUpdated` events. When a grant or group
-   model changes, a debounced rebuild (500 ms) fires
-3. **Remote datastore** — when using a remote datastore, an `AccessDataPoller`
-   pulls `data/swamp/grant` and `data/swamp/group` every 30 s and triggers a
-   reload when anything changed (`src/serve/access_data_poller.ts`)
-4. **OAuth group refresh** — a `CollectiveRefreshService` re-fetches each
-   logged-in user's collectives from the provider at
-   `--group-refresh-interval` and closes connections whose admission lapsed
-   (`src/serve/collective_refresh_service.ts`)
+1. **Initial load**: `PolicySnapshotLoader.load()` reads every `swamp/grant` and
+   `swamp/group` data record from the repository.
+2. **Auto-rebuild**: the loader subscribes to `ModelCreated`, `ModelUpdated`,
+   `DefinitionCreated` and `DefinitionUpdated`. When a grant or group model
+   changes, it rebuilds after a 500 ms debounce.
+3. **Remote datastore**: an `AccessDataPoller` pulls `data/swamp/grant` and
+   `data/swamp/group` every 30 s and reloads on any change
+   (`src/serve/access_data_poller.ts`).
+4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
+   logged-in user's collectives every `--group-refresh-interval` and closes
+   connections whose admission lapsed
+   (`src/serve/collective_refresh_service.ts`).
 
-The `GrantBasedAccessDecisionService` holds a reference to the current snapshot.
-When the snapshot is rebuilt, the service picks up the new one on the next
-request — there is no request-level locking or snapshot versioning.
+The `GrantBasedAccessDecisionService` picks up a rebuilt snapshot on the next
+request. There is no per-request locking or snapshot versioning.
 
 Implementation: `src/domain/access/policy_snapshot_loader.ts`.
 
 ## Collection operations and grant-scoped filtering
 
 Single-resource operations (`model.get`, `workflow.run`, `data.get`) authorize
-against the specific resource name — e.g., `model:@acme/deploy`. Collection
+against the named resource, for example `model:@acme/deploy`. Collection
 operations (`model.search`, `workflow.search`, `data.search`, `data.query`, and
-their history/output/approval variants) cannot name a single resource upfront
-because they return multiple results.
+their history, output and approval variants) return many results and cannot
+name one up front.
 
-These handlers use **post-query filtering**: they run the query, then filter each
-result item through `decide()` using the item's resource name. A user with
-`model:@acme/*` running `model search` sees only models whose names match that
-pattern. A user with `model:*` sees everything (unchanged behavior). A user with
-no `read` grants for the resource kind sees an empty result set.
+These handlers run the query, then pass each item through `decide()` with the
+item's resource name. With `model:@acme/*`, `model search` shows only matching
+models. With `model:*` it shows everything. With no `read` grant for the kind,
+the result is empty.
 
-Metadata-only endpoints that return type definitions or schemas (e.g.,
-`model.type.search`, `workflow.schema`) require at least one `read` grant for
-the resource kind but do not filter per item — they return static metadata, not
-per-resource data.
+Endpoints that return only type definitions or schemas (`model.type.search`,
+`workflow.schema`) need at least one `read` grant for the kind but do not filter
+per item.
 
-**CEL conditions and search results**: search result items carry a subset of the
-fields available to the condition evaluator (typically `name` and `modelType`).
-Conditional grants that reference fields not present in search results (e.g.,
-`resource.tags`) fail closed — the condition evaluator returns `false` for
-unknown variables, so the grant does not match. This means conditional grants may
-be more restrictive for collection operations than for single-resource
-operations where the full field set is available.
+**CEL conditions and search results**: search items carry only some condition
+fields, usually `name` and `modelType`. A condition that uses a missing field,
+such as `resource.tags`, fails closed because the evaluator returns `false` for
+unknown variables. Conditional grants can therefore be stricter on collection
+operations than on single-resource ones.
 
 Implementation: `filterByAuthorization` and `authorizeAnyOrReject` in
 `src/serve/handlers/shared.ts`.
 
 ## Workflow execution context
 
-Authorization is checked at the serve handler boundary, not at the domain layer.
-When a client sends a `workflow.run` request, the handler checks whether the
-principal has `run` on `workflow:<name>`. If that check passes, the workflow
-executes — including all model method calls within its steps — without further
-authorization checks.
+On a `workflow.run` request, the handler checks that the principal has `run` on
+`workflow:<name>`. If so, the workflow runs, including every model method call
+in its steps, with no further checks. The workflow is the unit of authorization:
+the caller may run all of it or none of it.
 
-A `run` grant on a workflow resource is sufficient for all model method calls
-within that workflow. Individual model grants are not required for
-workflow-internal steps. The workflow is the authorization unit: either the
-caller may run the whole workflow, or they may not.
-
-This is by design. A workflow is an operator-authored DAG of steps. The operator
-chose which models the workflow calls; granting `run` on the workflow delegates
-that authority. Requiring per-model grants within a workflow would force
-operators to grant `run` on every model a workflow touches, defeating the
-purpose of workflow-level authorization and leading to overly broad grant
-configurations.
+The reason is that the operator who wrote the workflow chose which models it
+calls, and a `run` grant delegates that choice. Per-model grants would force
+operators to grant `run` on every model a workflow touches, which leads to
+overly broad grants.
 
 **Direct model method calls through serve** (`model.method.run`) are authorized
-independently against `model:<name>` — the workflow exemption applies only to
-model calls made internally by the workflow engine.
+on their own against `model:<name>`. The workflow exemption covers only model
+calls the workflow engine makes internally.
 
 ## The can-i request
 
-`swamp access can-i` lets a user check their own permissions against a running
-server. It operates in two modes:
+`swamp access can-i` lets a user check their own permissions on a running
+server. It has two modes.
 
-**Specific check** — test a single (action, resource) pair:
+**Specific check**: test one (action, resource) pair:
 
 ```
 swamp access can-i --action run --on workflow:@acme/deploy --server wss://swamp.acme.internal:9090
 ```
 
-For method-scoped grants, add `--method` to test a specific model method:
+For method-scoped grants, add `--method` to test one model method:
 
 ```
 swamp access can-i --action run --on model:@acme/my-model --method read --server wss://swamp.acme.internal:9090
 ```
 
-Returns the matching grant decision (allow or deny) and exits with code 0 for
-allow, 1 for deny. When `--method` is provided, the JSON response includes a
-`method` field echoing the method that was tested.
+It exits 0 for allow and 1 for deny. With `--method`, the JSON response echoes
+the tested method in a `method` field.
 
-**List all permissions** — omit `--action` and `--on` to see every grant that
-applies to the caller:
+**List all permissions**: omit `--action` and `--on` to see every grant that
+applies to the caller across all resource kinds:
 
 ```
 swamp access can-i --server wss://swamp.acme.internal:9090
 ```
 
-Returns all matching grant decisions across all resource kinds.
-
-Under the hood, the command sends an `access.can-i` WebSocket request to the
-server. The server resolves the caller's principal and subjects, then calls the
-decision service's `explain` method — which returns all matching grants (both
-allow and deny), not just the first match. The `--collectives` flag lets the
-caller simulate IdP group memberships for testing grant configurations before
-deploying them.
+The command sends an `access.can-i` WebSocket request. The server resolves the
+caller's subjects and calls the decision service's `explain` method, which
+returns every matching grant (allow and deny), not only the first.
+`--collectives` simulates IdP group memberships so grant configurations can be
+tested before deployment.
 
 Implementation: `src/cli/commands/access_can_i.ts`,
 `src/serve/handlers/access_handlers.ts`.

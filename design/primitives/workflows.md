@@ -5,33 +5,27 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Workflows
 
-The workflow is the overall definition of what to execution, represented by a
-_Workflow Run_.
+A workflow defines what to execute. Each execution is a _Workflow Run_.
 
-Each workflow is made up of one or more _jobs_.
+A workflow is made up of one or more _jobs_, and each job of one or more
+_steps_. A step calls a method on a model or invokes another workflow.
 
-Jobs are made up for one or more _steps_, where a step can be calling a method
-on a model or invoking another workflow. Jobs can be dependent on each other,
-and only execute if their dependcy condition is met (for example, only run this
-job if one of its upstream dependencies fail).
+Jobs can depend on each other. A job runs only if its dependency condition is
+met, for example only when one of its upstream dependencies fails. Like steps,
+jobs have conditions that trigger them.
 
-Within a job, steps are executed with a weighted topological sort, so that they
-have maximum parallelism through the job. Steps support an optional
-`concurrency` field that caps how many steps in a topological level run
-simultaneously — particularly useful for `forEach` expansions that hit
-rate-limited APIs.
-
-Jobs can have dependencies on other jobs. The entire workflow is executed with a
-weighted topological sort, so that they have maximum parallelism through the
-workflow. Like steps, jobs also have conditions that trigger them.
+Steps within a job, and jobs within the workflow, run in a weighted topological
+sort for maximum parallelism. An optional `concurrency` field caps how many
+steps in a topological level run at once. This helps with `forEach` expansions
+that hit rate-limited APIs.
 
 ## Step Task Variants
 
-A `model_method` step task supports two mutually exclusive variants:
+A `model_method` step task has two mutually exclusive variants.
 
 ### Existing Definition (`modelIdOrName`)
 
-References a pre-created definition by name or ID:
+Refers to an existing definition by name or ID:
 
 ```yaml
 task:
@@ -44,8 +38,8 @@ task:
 
 ### Direct Type Execution (`modelType` + `modelName`)
 
-Auto-creates a definition if it doesn't exist, using the type's schemas to route
-inputs between global arguments and method arguments:
+Creates the definition if it doesn't exist. The type's schemas decide which
+inputs are global arguments and which are method arguments:
 
 ```yaml
 task:
@@ -58,13 +52,11 @@ task:
     cidr: "10.0.0.0/16"
 ```
 
-These variants are mutually exclusive — a step cannot have both `modelIdOrName`
-and `modelType`. Auto-created definitions are stored in
-`.swamp/auto-definitions/`.
+A step cannot have both `modelIdOrName` and `modelType`. Auto-created
+definitions are stored in `.swamp/auto-definitions/`.
 
-An optional `globalArgs` field passes global arguments explicitly, bypassing
-schema-based input routing. When present, `inputs` are treated as method
-arguments only:
+The optional `globalArgs` field passes global arguments directly and skips
+schema-based input routing. When it is set, `inputs` are method arguments only:
 
 ```yaml
 task:
@@ -78,11 +70,11 @@ task:
     version: "1.0"
 ```
 
-`globalArgs` is only valid with direct type execution — the schema rejects it
+`globalArgs` is valid only with direct type execution. The schema rejects it
 for `modelIdOrName` tasks.
 
-Both `inputs` and `globalArgs` accept either a literal YAML record or a single
-CEL expression that evaluates to a record at runtime:
+`inputs` and `globalArgs` each accept a literal YAML record or a single CEL
+expression that evaluates to a record at runtime:
 
 ```yaml
 # Literal record (individual values may contain expressions)
@@ -95,14 +87,13 @@ inputs: ${{ self.item.implementation.inputs }}
 globalArgs: ${{ self.item.implementation.globalArgs }}
 ```
 
-Whole-field expressions are validated after evaluation — if the expression
-produces a non-record value (null, array, number, string), the step fails with a
-clear error.
+A whole-field expression is validated after evaluation. If it produces a
+non-record value (null, array, number, string), the step fails with an error.
 
-For `forEach` steps, `self.*` CEL template expressions resolve in every task
-target field — `modelIdOrName`, `modelName`, `methodName`, and (for workflow
-tasks) `workflowIdOrName` — as well as the step `name`, `inputs`, and
-`globalArgs`:
+For `forEach` steps, `self.*` CEL template expressions resolve in the step
+`name`, `inputs` and `globalArgs`, and in every task target field:
+`modelIdOrName`, `modelName`, `methodName`, and (for workflow tasks)
+`workflowIdOrName`:
 
 ```yaml
 - name: scan-${{self.host}}
@@ -116,17 +107,17 @@ tasks) `workflowIdOrName` — as well as the step `name`, `inputs`, and
       host: ${{ self.host }}
 ```
 
-A task target (`modelIdOrName`, `modelName`, `workflowIdOrName`) that reads
-`data.*` or `steps.*`, or whose step carries a `guard`, resolves when its step
-runs rather than at run start, so it sees records earlier steps of the same run
-wrote. See "Task-target deferral" in
+A task target (`modelIdOrName`, `modelName`, `workflowIdOrName`) resolves when
+its step runs, not at run start, if it reads `data.*` or `steps.*` or its step
+has a `guard`. It then sees records that earlier steps in the same run wrote.
+See "Task-target deferral" in
 [../enablers/expressions.md](../enablers/expressions.md).
 
 ### Manual Approval (`manual_approval`)
 
-Suspends workflow execution at a step boundary and persists the run to disk. The
-operator (or another user) approves or rejects via CLI, then the original
-operator resumes the workflow to continue executing remaining steps.
+Pauses the workflow at a step boundary and saves the run to disk. The operator
+or another user approves or rejects it through the CLI. The original operator
+then resumes the workflow to run the remaining steps.
 
 ```yaml
 steps:
@@ -139,52 +130,49 @@ steps:
 
 **Fields:**
 
-- `prompt` (required, string) — message displayed to the operator.
-- `timeout` (optional, number) — seconds. Checked at approve **and** reject
-  time against the step's suspension timestamp (`evaluateApprovalTimeout` in
-  `src/libswamp/workflows/approve.ts` and `reject.ts`). When expired, both
-  approve and reject are refused, the run is omitted from
-  `swamp workflow approvals` (`src/libswamp/workflows/approvals.ts`), and the
-  run stays `suspended` — cancel it to clear it.
+- `prompt` (required, string): message shown to the operator.
+- `timeout` (optional, number): seconds. Checked at both approve and reject
+  time against when the step was suspended (`evaluateApprovalTimeout` in
+  `src/libswamp/workflows/approve.ts` and `reject.ts`). Once it expires,
+  approve and reject are both refused and the run is left out of
+  `swamp workflow approvals` (`src/libswamp/workflows/approvals.ts`). The run
+  stays `suspended`; cancel it to clear it.
 
 **Lifecycle: suspend → approve → resume**
 
-1. `swamp workflow run` executes until hitting a `manual_approval` step. The step
-   is marked `waiting_approval` and the run status is set to `suspended`.
-   Parallel sibling steps that are already in-flight continue executing until
-   they reach a terminal state (succeeded, failed, or skipped) — the executor
-   drains all generators at the current level before persisting. The saved run
-   record is a consistent checkpoint: every step is either completed, parked in
-   `waiting_approval`, or has not started. Before starting execution, `workflow run` **supersedes** any prior
-   suspended runs of the same workflow whose resolved inputs match the new run's
-   inputs (deep equality). Matching suspended runs are cancelled with reason
-   "Superseded by new run with matching inputs". Runs with different inputs are
-   left alone — they represent independent intents. Serve-owned suspended runs
-   are also skipped (cancel those via the serve API). Use `--no-supersede` to
-   opt out. The CLI then exits once the new run suspends.
-2. `swamp workflow approve <workflow> <step> --run <id>` marks the step as
-   succeeded in the persisted run record. Lightweight — no execution. The
-   local command performs no authorization of its own: `decidedBy` is recorded
-   from `$USER`/`$USERNAME`, falling back to `"unknown"`
-   (`src/libswamp/workflows/approve.ts`); authorization applies only on the
-   `--server` path via the `workflow.approve` handler, which checks the
-   `approve` action (not `run`). A `run` grant implies `approve`, so existing
-   grants continue to work; an `approve`-only grant permits gate decisions
-   without workflow execution authority. A server started with
-   `--approve-requires-explicit-grant` stops counting `run` grants for
-   `approve`, so only a principal with a grant naming `approve` can decide a
-   gate (see "Actions" in `design/enablers/access-control.md`). The `--run` flag
-   disambiguates when multiple runs are suspended; it is optional when only
-   one run is suspended.
+1. `swamp workflow run` executes until it reaches a `manual_approval` step,
+   marks it `waiting_approval`, and sets the run to `suspended`. Parallel
+   siblings already in flight run on to a terminal state (succeeded, failed,
+   or skipped); the executor drains all generators at the current level before
+   saving. The saved record is a consistent checkpoint: each step is
+   completed, parked in `waiting_approval`, or not started.
+
+   Before starting, `workflow run` **supersedes** suspended runs of the same
+   workflow whose resolved inputs deep-equal the new run's. They are cancelled
+   with reason "Superseded by new run with matching inputs". Runs with
+   different inputs are separate intents and are left alone, as are
+   serve-owned runs (cancel those through the serve API). `--no-supersede`
+   opts out. The CLI exits once the new run suspends.
+2. `swamp workflow approve <workflow> <step> --run <id>` marks the step
+   succeeded in the saved record; nothing executes. The local command does no
+   authorization. It records `decidedBy` from `$USER`/`$USERNAME`, or
+   `"unknown"` (`src/libswamp/workflows/approve.ts`). Only the `--server` path
+   authorizes: the `workflow.approve` handler checks the `approve` action, not
+   `run`. A `run` grant implies `approve`, so existing grants keep working, and
+   an `approve`-only grant can decide gates without being able to execute the
+   workflow. With `--approve-requires-explicit-grant`, serve stops counting
+   `run` grants, so only a grant naming `approve` can decide a gate (see
+   "Actions" in `design/enablers/access-control.md`). `--run` is optional when
+   only one run is suspended.
 3. `swamp workflow resume <workflow> --run <id>` re-enters the executor, skips
-   completed steps, and runs remaining pending steps. The dashboard's Resume
-   action on an approved run sends the same `workflow.resume` request. Like a
-   CLI resume without `--input`, it supplies no new inputs.
+   completed steps, and runs the pending ones. The dashboard's Resume action
+   on an approved run sends the same `workflow.resume` request, with no new
+   inputs (like a CLI resume without `--input`).
 
 **Auto-resume.** Approve and resume are separate so that resume can take
-inputs, but most gated workflows need none. For those, serve can continue the
-run itself. After a `workflow.approve` that decides the run's last gate
-(`allGatesDecided` on `WorkflowApproveData`), serve launches a detached resume
+inputs. Most gated workflows need none, so serve can continue the run itself.
+When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
+`WorkflowApproveData`), serve launches a detached resume
 (`autoResumeAfterApproval` in `src/serve/resume_launcher.ts`, which shares
 `startDetachedResume` with `handleWorkflowResume`). The policy is
 `Workflow.shouldAutoResume(serverDefault)` (`src/domain/workflows/workflow.ts`):
@@ -193,133 +181,129 @@ run itself. After a `workflow.approve` that decides the run's last gate
 - Otherwise `swamp serve --auto-resume` (`SWAMP_AUTO_RESUME`, serve.yaml
   `auto-resume`; default off) applies, but **only to a workflow that declares
   no inputs**. Resume-time inputs are never declared separately, so a workflow
-  with inputs may depend on the placeholder-then-resume pattern below and must
+  with inputs may rely on the placeholder-then-resume pattern below. It must
   opt in with `autoResume: true` itself.
 
-The resume addresses the run by the workflow name and run id that the approval
-resolved, not by the request fields. It is charged to the approver's principal
-for the `ActiveRunRegistry` caps, and the run keeps its original `initiatedBy`.
-When auto-resume is in effect, an `approve` grant releases execution of a run
-that was authorized when it started. This is the point of the opt-in, and the
-approver cannot supply inputs on this path. Serve audits the launch as
-`workflow.auto_resume`, and the approve response carries `autoResumed: true`.
-If the launch is refused or the resume fails, serve logs it and audits it as
-`workflow.auto_resume_failed`, and the run stays `suspended` and awaiting
-resume. The same happens when two sibling gates are approved concurrently and
-neither approval observes the other. Auto-resume only happens when the approval
-goes through serve (the dashboard, or `swamp workflow approve --server`). A
-local `swamp workflow approve` against the same repository never triggers it.
-The run record carries the derived `awaitingResume: true` while it is suspended
-with every gate decided, so the run index and `workflow.run.search` can list it.
+The resume uses the workflow name and run id the approval resolved, not the
+request fields. It counts against the approver's principal for the
+`ActiveRunRegistry` caps, and the run keeps its original `initiatedBy`. So with
+auto-resume on, an `approve` grant releases a run that was authorized when it
+started, and the approver cannot supply inputs, which is why it is opt-in.
 
-`swamp workflow reject <workflow> <step> --run <id>` marks the step as failed and
-the run as failed. No resume needed.
+Serve audits the launch as `workflow.auto_resume`, and the approve response
+carries `autoResumed: true`. If the launch is refused or the resume fails,
+serve logs and audits `workflow.auto_resume_failed`, and the run stays
+`suspended`, awaiting resume. The same happens if two sibling gates are
+approved concurrently and neither approval sees the other.
 
-`swamp workflow approvals` lists suspended runs awaiting approval — one row per
-run, naming the first waiting gate (`findWaitingApprovalStep` in
-`src/domain/workflows/workflow_run.ts`), with runs whose gate has timed out
-omitted — showing each run's id, suspended-at timestamp, inputs digest, and
-ready-to-run `--run <id>` approve/reject/resume commands. Supports `--server` /
-`SWAMP_SERVE_URL` / `SWAMP_SERVER_URL` via the `workflow.approvals`
-wire-protocol endpoint (read-only, `read` authorization verb).
+Auto-resume needs the approval to go through serve (the dashboard, or
+`swamp workflow approve --server`). A local `swamp workflow approve` on the
+same repository never triggers it. A suspended run with every gate decided
+carries the derived `awaitingResume: true`, so the run index and
+`workflow.run.search` can list it.
+
+`swamp workflow reject <workflow> <step> --run <id>` marks the step and the run
+as failed. No resume is needed.
+
+`swamp workflow approvals` lists suspended runs awaiting approval, one row per
+run, leaving out runs whose gate timed out. Each row names the first waiting
+gate (`findWaitingApprovalStep` in `src/domain/workflows/workflow_run.ts`) and
+shows the run id, suspended-at time, inputs digest, and ready-to-run
+`--run <id>` approve/reject/resume commands. It supports `--server` /
+`SWAMP_SERVE_URL` / `SWAMP_SERVER_URL` through the read-only
+`workflow.approvals` wire-protocol endpoint (`read` authorization verb).
 
 **Programmatic gate control (not wired):** `MethodContext` declares
-`context.approveWorkflowGate()` / `context.rejectWorkflowGate()`, but no
-production path constructs the `WorkflowGateService` behind them
-(`createWorkflowGateService` in `src/libswamp/models/workflow_gate.ts` has no
-callers outside tests; `src/libswamp/workflows/run.ts` leaves the service
-deliberately unwired because model code bypasses authorization), and on a
-remote worker both return `{ ok: false }`
-(`src/worker/remote_method_context.ts`). Approve and reject via the CLI or the
+`context.approveWorkflowGate()` / `context.rejectWorkflowGate()`, but nothing in
+production builds the `WorkflowGateService` behind them.
+`createWorkflowGateService` (`src/libswamp/models/workflow_gate.ts`) is called
+only from tests. `src/libswamp/workflows/run.ts` leaves it unwired on purpose,
+because model code bypasses authorization. On a remote worker both return
+`{ ok: false }` (`src/worker/remote_method_context.ts`). Use the CLI or the
 `workflow.approve` / `workflow.reject` WebSocket requests instead.
 
 **Resume inputs (`--input`):** `swamp workflow resume` accepts `--input`,
-`--input-file`, and `--stdin` (same parsing as `swamp workflow run`). These let
-an operator supply values that were not available at the original run time —
-elevated credentials, environment-specific overrides, or a freshly minted auth
-key issued during the gate. Resume inputs are **deep-merged** (`deepMerge` in
-`src/domain/workflows/execution_service.ts`) over the inputs captured when the
-run suspended: existing keys are preserved, nested records merge key by key,
-and a resume `--input` wins on a key collision. The merged set is placed on the expression context before
-evaluation, so post-gate `inputs.*` expressions resolve to the updated values.
-Workflow evaluation remains **strict**: a workflow must declare (at run time)
-every input it references, so the pattern is _declare the input at run, supply
-or override its value at resume_ — e.g. start with `authKey` set to a
-placeholder and pass the real key at resume. For audit, the run record captures
-the **key names** of resume-time inputs (never their values, so secrets are not
-written to the persisted run).
+`--input-file`, and `--stdin`, parsed as in `swamp workflow run`. They supply
+values not available at the original run, such as elevated credentials,
+environment overrides, or an auth key issued during the gate. Resume inputs are
+deep-merged over the inputs captured at suspension (`deepMerge` in
+`src/domain/workflows/execution_service.ts`): existing keys stay, nested
+records merge key by key, and the resume `--input` wins on a collision. The
+merged set is on the expression context before evaluation, so post-gate
+`inputs.*` expressions see the new values.
+
+Evaluation stays strict: a workflow must declare at run time every input it
+references. The pattern is to declare the input at run time and supply or
+override its value at resume. For example, start with `authKey` as a
+placeholder and pass the real key at resume. For audit, the run record keeps
+the key names of resume-time inputs, never their values, so secrets are not saved.
 
 **Input persistence:** A run's effective inputs are captured on the run record
-at run **start** (`run.captureInputs` in
-`src/domain/workflows/execution_service.ts`, persisted by the first `saveRun`)
-and re-captured when the run suspends, so every run's `inputs` block is on
-disk and steps after a gate can resolve `inputs.*` on resume. Only the *key
-names* of resume-time inputs are recorded, never their values.
+at run start (`run.captureInputs` in
+`src/domain/workflows/execution_service.ts`, saved by the first `saveRun`) and
+again at suspension. Every run's `inputs` block is on disk, so post-gate steps
+can resolve `inputs.*` on resume.
 
-**Execution report:** The approval decision (who approved/rejected, when, and
-the reason for rejection) is surfaced in the workflow execution report via
-`swamp workflow history get --json`. The step view includes an `approval`
+**Execution report:** `swamp workflow history get --json` shows who approved or
+rejected, when, and why a rejection was made. The step view has an `approval`
 block with `status` (`approved` | `rejected` | `timed_out`), actor identity,
-timestamp, and optional reason. See `ApprovalView` in
-`src/libswamp/workflows/workflow_run_view.ts`.
+timestamp, and optional reason (`ApprovalView` in
+`src/libswamp/workflows/workflow_run_view.ts`).
 
-**Persistence:** The run record survives process restarts. The approval and
-resume can happen from any machine with access to the repo (or synced
-datastore).
+**Persistence:** The run record survives process restarts. Approve and resume
+can happen from any machine with access to the repo (or a synced datastore).
 
 **forEach compatibility:** A `forEach` expansion of a `manual_approval` step
-creates N parallel approval gates, each independently approvable via its expanded
-step name. `resume()` refuses to start while *any* step is still
-`waiting_approval` (`src/domain/workflows/execution_service.ts`), so all N
-gates must be decided before the run resumes.
+creates N parallel gates, each approved by its expanded step name. `resume()`
+refuses to start while any step is still `waiting_approval`
+(`src/domain/workflows/execution_service.ts`), so all N must be decided first.
 
 ### Resume from Failed Step (`--from`)
 
-Re-enters a **failed** run's DAG at a named step. Combined with the `guard`
-field, this enables safe workflow recovery — guards decide which steps actually
-re-execute while `--from` controls where to re-enter.
+Re-enters a failed run's DAG at a named step. With `guard`, this gives safe
+recovery: `--from` sets where to re-enter, and guards decide which steps run
+again.
 
 ```
 $ swamp workflow resume <workflow> --from <step>
 $ swamp workflow resume <workflow> --from <step> --run <run-id>
 ```
 
-If there is exactly one failed run for the workflow, `--run` can be omitted.
+`--run` can be left out if the workflow has exactly one failed run.
 
 **Semantics:**
 
 1. The `--from` step and all its transitive downstream dependents are reset to
    `pending`.
-2. Steps before `--from` retain their terminal status (`succeeded`, `failed`,
-   `skipped`) and are skipped by the executor's existing resume-skip logic.
-3. Guards on reset steps are evaluated normally — a step with a truthy guard is
-   skipped even if reset.
-4. Steps without a guard always execute on resume. If you didn't write a guard,
-   you're saying "always run this step."
+2. Steps before `--from` keep their terminal status (`succeeded`, `failed`,
+   `skipped`) and the executor's existing resume-skip logic skips them.
+3. Guards on reset steps are evaluated as usual, so a reset step with a truthy
+   guard is still skipped.
+4. Steps without a guard always run on resume. No guard means "always run this
+   step."
 
-**Step name resolution:** `--from` targets template step names as written in the
-workflow YAML, not forEach-expanded iteration names. For forEach steps, all
-expanded iterations are reset and re-evaluated — completed iterations with truthy
-guards are skipped; failed or unstarted iterations execute.
+**Step name resolution:** `--from` targets template step names as written in
+the workflow YAML, not forEach-expanded iteration names. All iterations of a
+forEach step are reset and re-evaluated: completed ones with truthy guards are
+skipped, failed or unstarted ones run.
 
-**Status restriction:** `--from` only works on failed runs. It cannot be used
-with suspended runs (use the gate-approval resume path instead) or succeeded
-runs. When `--from` is omitted, resume behaves as before (gate-suspend only).
+**Status restriction:** `--from` works only on failed runs, not succeeded or
+suspended ones (use the gate-approval resume path for suspended runs). Without
+`--from`, resume behaves as before (gate-suspend only).
 
-**Cross-job propagation:** If the `--from` step is in job B, only job B and any
-downstream jobs containing transitive dependents are reset. Upstream jobs (job A)
-that completed successfully retain their terminal status.
+**Cross-job propagation:** If the `--from` step is in job B, only job B and
+downstream jobs containing transitive dependents are reset. Upstream jobs
+(job A) that succeeded keep their terminal status.
 
 **Trigger conditions:** Trigger conditions on reset steps are still evaluated.
-If `--from` targets a step whose upstream dependency also failed, the trigger
-condition will see the upstream's `failed` status. Resume from the earlier step
-instead.
+If the `--from` step's upstream dependency also failed, the condition sees that
+`failed` status. Resume from the earlier step instead.
 
 ### Assert (`assert`)
 
-Evaluates a CEL predicate over prior step data, records a pass/fail result, and
-fails the step when the predicate is false. Can optionally invoke model methods
-via `model.method()` to check external state as part of the assertion.
+Evaluates a CEL predicate over earlier step data, records a pass/fail result,
+and fails the step when the predicate is false. It can also call model methods
+with `model.method()` to check external state.
 
 ```yaml
 steps:
@@ -333,38 +317,37 @@ steps:
 
 **Fields:**
 
-- `expr` (required, string) — CEL expression evaluated via `evaluateAsync()`.
-  Has access to the full expression context including `data.latest()`,
-  `inputs.*`, `self.*`, and `model.method()` (see
+- `expr` (required, string): CEL expression evaluated with `evaluateAsync()`.
+  It has the full expression context, including `data.latest()`, `inputs.*`,
+  `self.*`, and `model.method()` (see
   [model.method() in guards](#modelmethod-in-guards) for syntax).
-- `message` (required, string) — human-readable message. Supports `${{ }}`
-  expression interpolation. Displayed on failure and included in JUnit XML
-  output.
-- `severity` (optional, `low` | `medium` | `high`, default `high`) — controls
-  whether a failure triggers the `--fail-on` exit code threshold.
+- `message` (required, string): human-readable message. Supports `${{ }}`
+  interpolation. Shown on failure and included in JUnit XML output.
+- `severity` (optional, `low` | `medium` | `high`, default `high`): decides
+  whether a failure counts toward the `--fail-on` exit code threshold.
 
-**Execution:** The CEL `expr` is evaluated asynchronously. A truthy result marks
-the step as succeeded; a falsy result marks it as failed with the resolved
-`message`. The `assertResult` (passed, expr, resolved message, severity) is
-recorded on the `StepRun` and persisted to the workflow run record.
+**Execution:** The CEL `expr` is evaluated asynchronously. Truthy marks the
+step succeeded; falsy marks it failed with the resolved `message`. The
+`assertResult` (passed, expr, resolved message, severity) is recorded on the
+`StepRun` and saved to the workflow run record.
 
 **Exit code control (`--fail-on`):** `swamp workflow run` accepts
-`--fail-on <severity>` (default `low`). The run exits non-zero only when at
-least one assert failure is at or above the threshold. A `low` severity failure
-under `--fail-on high` is recorded but does not affect the exit code.
+`--fail-on <severity>` (default `low`). The run exits non-zero only if an
+assert failure is at or above the threshold. A `low` failure under
+`--fail-on high` is recorded but does not change the exit code.
 
 **JUnit XML output (`--junit`):** `swamp workflow run --junit [--out <file>]`
-emits one `<testcase>` per assert step, with a `<failure>` element on false.
-Non-assert steps are omitted from the JUnit output.
+emits one `<testcase>` per assert step, with a `<failure>` element when false.
+Non-assert steps are left out.
 
-**model.method() in assert:** Assert expressions can invoke model methods using
+**model.method() in assert:** Assert expressions can call
 `model.method(modelName, methodName)` or
 `model.method(modelName, methodName, inputs)`, with the same semantics as
-[guard expressions](#modelmethod-in-guards). The method executes through the step
-executor. When the method produced a `resource` data handle, the return value
-is that resource's parsed content; otherwise the raw execution result is
-returned as-is (`src/domain/workflows/execution_service.ts`). This enables
-assertions that check external state:
+[guard expressions](#modelmethod-in-guards). The method runs through the step
+executor. It returns the parsed content of the method's `resource` data handle
+if there is one, and otherwise the raw execution result as-is
+(`src/domain/workflows/execution_service.ts`). This lets assertions check
+external state:
 
 ```yaml
 steps:
@@ -377,31 +360,31 @@ steps:
 ```
 
 **forEach compatibility:** Assert steps support `forEach` expansion. Each
-expanded iteration produces its own assert result and JUnit `<testcase>`.
+iteration produces its own assert result and JUnit `<testcase>`.
 
-**Known limitation — message interpolation:** The `${{ }}` pattern in `message`
-uses non-greedy matching. A CEL expression containing a literal `}}` (e.g.
-map/struct literals) will be split prematurely. The error is silently caught and
-the expression left as-is, so it degrades gracefully. Keep `message`
-interpolation to simple value lookups; use the `expr` field for complex CEL.
+**Known limitation (message interpolation):** The `${{ }}` pattern in
+`message` matches non-greedily, so a CEL expression with a literal `}}` (e.g.
+map or struct literals) is split too early. The error is caught silently and
+the expression is left as-is. Keep `message` interpolation to simple value
+lookups and put complex CEL in `expr`.
 
 **Known limits:**
 
-- `expr` must be a raw CEL expression. Wrapping it in `${{ }}` is a
-  validation failure (`validateAssertExprNotInterpolated` in
+- `expr` must be a raw CEL expression. Wrapping it in `${{ }}` fails
+  validation (`validateAssertExprNotInterpolated` in
   `src/domain/workflows/validation_service.ts`).
 - An assert failure below the `--fail-on` threshold is recorded as an
-  **allowed failure** (`markAllowedFailure`), so downstream `succeeded`
-  conditions see the step as failed while the run can still succeed.
+  **allowed failure** (`markAllowedFailure`). Downstream `succeeded` conditions
+  see the step as failed, but the run can still succeed.
 - `--fail-on` is rejected together with `--server`
-  (`src/cli/commands/workflow_run.ts`); `--junit` cannot be combined with
+  (`src/cli/commands/workflow_run.ts`). `--junit` cannot be combined with
   `--json` or with NDJSON `--stdin` batches, and `--out` requires `--junit`.
 
 ## Concurrency Limits
 
-By default, all jobs in a topological level and all steps in a topological level
-run concurrently (maximum parallelism). The optional `concurrency` field caps
-the number of simultaneously executing units at each level:
+By default, all jobs in a topological level run at once, and so do all steps in
+a topological level (maximum parallelism). The optional `concurrency` field caps
+how many units run at once at each level:
 
 ```yaml
 concurrency: 10  # workflow level — caps parallel jobs
@@ -420,120 +403,112 @@ jobs:
 
 **Semantics:**
 
-- A positive integer is a hard cap on simultaneously executing units at that
-  level.
-- `0` or absent means unbounded (current default behavior).
-- Resolution order: step > job > workflow > unbounded. Step-level values are
-  collected across the topological level and the **minimum** is applied to
-  every step stream in that level (`src/domain/workflows/execution_service.ts`).
-  Fall-through only happens for *absent* values: an explicit `0` at the job
-  level does not fall through to the workflow value — it resolves to
-  unbounded (or the global ceiling).
-- A global `SWAMP_MAX_CONCURRENT_STEPS` environment variable provides a
-  host-level ceiling. The effective limit is `min(local, global)` when both are
-  set. On `workflow resume` the ceiling is applied at the step level only — the
-  job-level limit is taken from the workflow as written.
+- A positive integer is a hard cap on units running at once at that level.
+- `0` or absent means unbounded (the current default).
+- Resolution order is step > job > workflow > unbounded. Step-level values are
+  collected across the topological level, and the minimum applies to every
+  step stream in that level (`src/domain/workflows/execution_service.ts`).
+  Only absent values fall through. An explicit `0` at the job level does not
+  fall through to the workflow value; it resolves to unbounded (or the global
+  ceiling).
+- The global `SWAMP_MAX_CONCURRENT_STEPS` environment variable sets a
+  host-level ceiling. When both are set, the effective limit is
+  `min(local, global)`. On `workflow resume` the ceiling applies at the step
+  level only; the job-level limit comes from the workflow as written.
 
-Concurrency limiting is implemented via a semaphore-gated
-`mergeWithConcurrency()` that wraps the existing `merge()` stream combinator.
-When the limit is unset or exceeds the stream count, the unbounded `merge()` path
-is used with zero overhead.
+Limiting uses a semaphore-gated `mergeWithConcurrency()` that wraps the
+existing `merge()` stream combinator. When the limit is unset or above the
+stream count, the unbounded `merge()` path runs with zero overhead.
 
-Workflows are specified in YAML files, that are validated with Zod, in the
-top-level `workflows/` directory of the repository, as
-`workflows/workflow-{name}.yaml` (legacy `workflow-{uuid}.yaml` files are also
-supported). Workflow run output is stored in the datastore at
-`workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml` (default path:
-`.swamp/workflow-runs/`).
+Workflows are YAML files in the repository's top-level `workflows/` directory,
+named `workflows/workflow-{name}.yaml` and validated with Zod. Legacy
+`workflow-{uuid}.yaml` files are also supported. Run output is stored in the
+datastore at `workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml` (default
+path: `.swamp/workflow-runs/`).
 
 ## Validation
 
 `swamp workflow validate` checks structure (schema, unique names, dependency
-references, cycles) and validates each step's inputs against the resolved
+references, cycles) and checks each step's inputs against the resolved
 method's required arguments. To resolve a step's model type, the local path
 first hot-loads pulled and local extensions (`modelRegistry.ensureLoaded()` in
-`src/cli/commands/workflow_validate.ts`), matching the resolution available to
-`swamp model type describe` and `swamp model validate`. With `--server` the
-command delegates to the serve instance, which resolves types from its own
-loaded registry.
+`src/cli/commands/workflow_validate.ts`), as `swamp model type describe` and
+`swamp model validate` do. With `--server`, the serve instance validates,
+resolving types from its own loaded registry.
 
-Validation results have three severity levels:
+Results have three severity levels:
 
-- **Pass** (green ✓) — the check succeeded.
-- **Warning** (yellow ⚠) — the check passed but something looks suspicious.
-  Warnings do not fail validation or affect the exit code.
-- **Fail** (red ✗) — the check failed. At least one failure causes non-zero
-  exit.
+- **Pass** (green ✓): the check succeeded.
+- **Warning** (yellow ⚠): the check passed but something looks suspicious.
+  Warnings do not fail validation or change the exit code.
+- **Fail** (red ✗): the check failed. Any failure gives a non-zero exit.
 
 Step-input checks fail when the resolved method does not exist
-(`method_not_found`) or when a required argument is missing. A step whose model
-**type cannot be resolved** also fails: an unresolvable type is reported as a
-validation failure (non-zero exit), never silently skipped as a pass — a silent
-skip would mask real contract bugs such as non-existent method names or wrong
-argument keys. Dynamic CEL references (`${{ ... }}`) in model/type names are
-skipped, since they can only be resolved at run time. A step that references a
-model **instance** which does not exist locally (`model_not_found`) produces a
-**warning**: the instance may be created by an upstream step during the run, but
-it could also be a typo. The warning surfaces the reference without failing
-validation.
+(`method_not_found`) or a required argument is missing. A step whose model
+type cannot be resolved also fails. It is never skipped as a pass, which
+would hide real contract bugs such as non-existent method names or wrong
+argument keys. Dynamic CEL references (`${{ ... }}`) in model or type names are
+skipped, since they only resolve at run time. A reference to a model
+instance that does not exist locally (`model_not_found`) is a warning, not a
+failure: an upstream step may create it during the run, but it could
+also be a typo.
 
 ### GlobalArgument Input References
 
-When a model definition's `globalArguments` or method-level argument defaults
-contain `${{ inputs.* }}` expressions, the validator checks that each referenced
-input is supplied by the calling step's `inputs:` block. This catches cases where
-a model definition expects an input (e.g. `host: ${{ inputs.ip }}`) that the
-workflow step never provides, which would fail at runtime with an unresolved
-expression. The check resolves against the step's inputs — not the workflow's
-top-level inputs — because `${{ inputs.* }}` in a model definition refers to the
-model's own input namespace, populated by the step at runtime.
+A model definition's `globalArguments` or method-level argument defaults may
+contain `${{ inputs.* }}` expressions. The validator checks that the calling
+step's `inputs:` block supplies each referenced input. Otherwise the run would
+fail with an unresolved expression, for example when a definition expects
+`host: ${{ inputs.ip }}` and the step never provides it. The check uses the
+step's inputs, not the workflow's top-level inputs, because in a model
+definition `${{ inputs.* }}` is the model's own input namespace, filled by the
+step at runtime.
 
-Steps with dynamic inputs (a single `${{ ... }}` expression as the entire
-`inputs` value) are skipped, as are steps with dynamic model references, since
-neither can be statically analysed. A nested-workflow step whose target
-workflow cannot be found reports its input check as "skipped" rather than
-failing (`src/domain/workflows/validation_service.ts`). Other checks the
-validator runs: placement fields (`queueTimeout`, `affinity`, `writes` without
-a placement) and the assert-`expr` interpolation rule described above.
+Steps with dynamic inputs (a single `${{ ... }}` expression as the whole
+`inputs` value) or dynamic model references are skipped, since neither can be
+analysed statically. A nested-workflow step whose target workflow cannot be
+found reports its input check as "skipped", not failed
+(`src/domain/workflows/validation_service.ts`). The validator also checks
+placement fields (`queueTimeout`, `affinity`, `writes` without a placement) and
+the assert-`expr` interpolation rule above.
 
 ### Unknown Keys Are Rejected
 
 The workflow, job, and step schemas reject unknown keys at parse time with an
-actionable error (swamp-club#1240). Zod's default unknown-key stripping is
-disabled by a `rejectUnknownKeys` preprocess hook (chained after the
-removed-driver-fields guard, which keeps its specific migration message):
+actionable error (swamp-club#1240). A `rejectUnknownKeys` preprocess hook turns
+off Zod's default stripping. It runs after the removed-driver-fields guard,
+which keeps its own migration message.
 
 - Placement properties (`labels`, `target`, `platform`, `queueTimeout`) are
   valid at the workflow, job, and step level (swamp-club#1685). Workflow-level
-  placement applies to all steps as a default, job-level overrides workflow,
-  and step-level overrides job.
-- Any unknown key gets a did-you-mean suggestion (Levenshtein) plus the
-  list of valid keys for that entity.
+  placement is the default for all steps; job level overrides workflow, and
+  step level overrides job.
+- Any unknown key gets a did-you-mean suggestion (Levenshtein) and the list of
+  valid keys for that entity.
 
-Because a schema-rejected file is invisible to the repository loader (it is
-skipped with a warning), `workflow validate` and `workflow run` re-scan the raw
-files on a lookup miss and surface the parse error inline — a broken file fails
-validation naming the offending key, and can never make `validate` (or
-validate-all) report green.
+The repository loader skips a schema-rejected file with a warning, so it is
+invisible there. On a lookup miss, `workflow validate` and `workflow run`
+re-scan the raw files and show the parse error inline. A broken file fails
+validation naming the bad key, and can never make `validate` (or validate-all)
+report green.
 
-**Schema evolution consequence**: persisted evaluated-workflow snapshots and
-suspended approval runs are re-parsed on resume through these same schemas.
-Removing a schema field is therefore a breaking change for data persisted
-before the removal — it now requires an explicit migration or tolerance
-decision (the removed `driver`/`driverConfig` fields chose a hard, actionable
-failure), never a silent strip.
+**Schema evolution consequence**: saved evaluated-workflow snapshots and
+suspended approval runs are re-parsed through these schemas on resume. Removing
+a schema field therefore breaks data saved before the removal and needs an
+explicit migration or tolerance decision, never a silent strip. The removed
+`driver`/`driverConfig` fields chose a hard, actionable failure.
 
 ## Workflow Definition
 
-Workflows are specified in `workflows/workflow-{name}.yaml` (legacy
-`workflow-{uuid}.yaml` files are also supported). They have a unique id, a
-globally unique name, a set of jobs, and optionally workflow inputs.
+Workflows live in `workflows/workflow-{name}.yaml` (legacy
+`workflow-{uuid}.yaml` files are also supported). Each has a unique id, a
+globally unique name, a set of jobs, and optional workflow inputs.
 
 ### Workflow Inputs
 
-Like model definitions, workflows can specify custom inputs (workflow inputs) as
-JsonSchema. These inputs allow parameterizing workflows without modifying the
-workflow definition file:
+Like model definitions, workflows can declare their own inputs (workflow
+inputs) as JsonSchema. Inputs let you parameterize a workflow without editing
+its definition file:
 
 ```yaml
 id: abc123
@@ -558,18 +533,17 @@ jobs:
 
 - Specified as JsonSchema (same rules as model inputs)
 - Can be required or optional
-- Accessed through CEL expressions: `${{ inputs.someWorkflowParameter }}`
-- Distinguish as "workflow inputs" (different from "model inputs")
+- Read through CEL expressions: `${{ inputs.someWorkflowParameter }}`
+- Called "workflow inputs" to tell them apart from "model inputs"
 - Provide dynamic configuration for workflow execution
 
-See [expressions](../enablers/expressions.md) for CEL expression syntax and [models](./models.md) for detailed
-input specification patterns.
+See [expressions](../enablers/expressions.md) for CEL syntax and
+[models](./models.md) for detailed input specification patterns.
 
 ### Workflow Triggers
 
-Workflows can declare a `trigger` section to enable automatic execution via
-`swamp serve`. The `trigger` section is an optional object that contains trigger
-configuration.
+A workflow can declare an optional `trigger` object holding trigger
+configuration, so that `swamp serve` runs it automatically.
 
 #### Schedule Trigger
 
@@ -586,37 +560,36 @@ jobs:
 
 **Schedule behavior:**
 
-- Uses [croner](https://github.com/Hexagon/croner) grammar: standard 5-field
-  cron (minute, hour, day-of-month, month, day-of-week); a 6-field expression
-  puts **seconds first**; `@daily`-style nicknames and the `L` / `#` modifiers
-  are accepted
-- Validated at parse time by constructing a croner `Cron`
-  (`src/domain/workflows/workflow.ts`)
-- On `swamp serve` startup, all workflows with schedules are registered
-- A filesystem watcher monitors the `workflows/` directory for live reload —
-  adding, changing, or removing a schedule takes effect without restart
+- Uses [croner](https://github.com/Hexagon/croner) grammar. Standard cron has 5
+  fields (minute, hour, day-of-month, month, day-of-week). A 6-field expression
+  puts **seconds first**. `@daily`-style nicknames and the `L` / `#` modifiers
+  are accepted.
+- Validated at parse time by building a croner `Cron`
+  (`src/domain/workflows/workflow.ts`).
+- On `swamp serve` startup, every workflow with a schedule is registered.
+- A filesystem watcher on the `workflows/` directory reloads live. Adding,
+  changing, or removing a schedule takes effect without a restart.
 - Each scheduled fire calls the `executeWorkflow` callback injected into
-  `ScheduledExecutionService` (`src/libswamp/workflows/scheduled_execution.ts`),
-  which serve wires to `executeWorkflowWithLocks` (`src/serve/deps.ts`) — the
-  same path as WebSocket `workflow.run` and webhooks, not the local CLI path
-- In an HA deployment each fire is claimed once across instances via the
-  `cronFireDedup` hook, and a workflow fires single-flight per instance
-- **Overlap prevention:** If a workflow is still running from a previous
-  scheduled trigger, the next trigger is skipped with a warning
-- **No catch-up:** If serve was down during a scheduled time, it does not fire
-  missed schedules on startup — it waits for the next natural cron tick
-- Use `--no-schedule` on `swamp serve` to disable scheduled execution
+  `ScheduledExecutionService` (`src/libswamp/workflows/scheduled_execution.ts`).
+  Serve wires it to `executeWorkflowWithLocks` (`src/serve/deps.ts`), the same
+  path as WebSocket `workflow.run` and webhooks, not the local CLI path.
+- In an HA deployment, the `cronFireDedup` hook makes sure each fire is
+  claimed once across instances. A workflow fires single-flight per instance.
+- **Overlap prevention:** if a workflow is still running from the previous
+  scheduled trigger, the next trigger is skipped with a warning.
+- **No catch-up:** serve does not fire schedules it missed while it was down.
+  On startup it waits for the next natural cron tick.
+- `--no-schedule` on `swamp serve` turns off scheduled execution.
 
 The `ScheduledExecutionService` lives in libswamp, so any consumer (serve, a
-future daemon, or programmatic use) can use the same scheduling infrastructure.
+future daemon, or programmatic use) can reuse the same scheduling code.
 
 #### Trigger Overrides
 
-Extension-bundled workflows are read-only — users cannot modify their YAML to
-add or change a trigger. The `triggers` section in `.swamp/serve.yaml` provides
-per-workflow overrides that survive extension updates.
-
-Overrides can be managed via the CLI or by editing `serve.yaml` directly:
+Extension-bundled workflows are read-only, so users cannot edit their YAML to
+add or change a trigger. The `triggers` section in `.swamp/serve.yaml` holds
+per-workflow overrides that survive extension updates. Manage them with the CLI
+or by editing `serve.yaml` directly:
 
 ```bash
 # Set a trigger override (replace semantics — writes the full entry)
@@ -630,7 +603,7 @@ swamp workflow trigger get @swamp/cve/researcher/scan
 swamp workflow trigger remove daily-report
 ```
 
-The equivalent `serve.yaml` representation:
+The same overrides in `serve.yaml`:
 
 ```yaml
 # .swamp/serve.yaml
@@ -643,48 +616,47 @@ triggers:
     schedule: "0 8 * * 1-5"
 ```
 
-Each key is a workflow name (including scoped `@collective/name` patterns). An
+Each key is a workflow name, including scoped `@collective/name` patterns. An
 override `schedule` **replaces** the workflow's built-in schedule
-(`resolveSchedule` in `src/libswamp/workflows/scheduled_execution.ts`); an
+(`resolveSchedule` in `src/libswamp/workflows/scheduled_execution.ts`). An
 override `inputs` map is deep-merged over the built-in `trigger.inputs` at fire
-time. A workflow with no built-in trigger block gains one from the override.
+time. A workflow with no built-in trigger block gets one from the override.
 `swamp workflow trigger set` requires `--schedule`
-(`src/cli/commands/workflow_trigger_set.ts`); unknown keys in an override
-entry are warned about and ignored (`src/serve/serve_config.ts`).
+(`src/cli/commands/workflow_trigger_set.ts`). Unknown keys in an override entry
+produce a warning and are ignored (`src/serve/serve_config.ts`).
 
 **Override behavior:**
 
-- Applied at `ScheduledExecutionService` startup in a two-phase scan: every
+- Applied when `ScheduledExecutionService` starts, in two phases. Every
   workflow with a schedule (built-in or override, resolved through
   `resolveSchedule`) is registered first, then the override map is walked for
-  any remaining names. An inputs-only override on a workflow that has no
-  schedule from either source is a logged no-op
-- The `handleScheduleChange` callback also consults the override map, so
-  live-reloaded workflows respect overrides
-- Overrides for unknown workflow names are logged as warnings and skipped
+  any remaining names. An inputs-only override on a workflow with no schedule
+  from either source is logged and does nothing.
+- The `handleScheduleChange` callback also reads the override map, so
+  live-reloaded workflows respect overrides.
+- Overrides for unknown workflow names are logged as warnings and skipped.
 - Overrides are read at startup. Two paths apply changes to a running instance:
-  1. `swamp workflow trigger set/remove --server` calls
-     `updateTriggerOverrides` directly on the `ScheduledExecutionService` after
-     writing to `serve.yaml` — no `--hot-reload` flag required
-     (`src/serve/handlers/workflow_handlers.ts`)
+  1. `swamp workflow trigger set/remove --server` writes `serve.yaml`, then
+     calls `updateTriggerOverrides` directly on the `ScheduledExecutionService`.
+     No `--hot-reload` flag is needed
+     (`src/serve/handlers/workflow_handlers.ts`).
   2. `swamp serve reload` (SIGHUP or WebSocket `serve.reload`) re-reads all
-     overrides from `serve.yaml` as part of a full reload — requires
-     `--hot-reload`
-- Works with both extension and local workflows — but the primary use case is
-  extension workflows that cannot be edited directly
+     overrides from `serve.yaml` as part of a full reload. This requires
+     `--hot-reload`.
+- Works with both extension and local workflows. The main use case is extension
+  workflows that cannot be edited directly.
 
 **Precedence for schedule:** `serve.yaml override > workflow YAML trigger`
 
-**Precedence for trigger inputs:** override inputs are deep-merged on top of
-the workflow's built-in `trigger.inputs` — override keys win, but built-in keys
-not present in the override fall through. The existing
-`caller inputs > trigger.inputs > schema defaults` layering remains unchanged;
-override inputs occupy the caller inputs slot, layered above built-in
-`trigger.inputs`.
+**Precedence for trigger inputs:** override inputs are deep-merged over the
+workflow's built-in `trigger.inputs`. Override keys win; built-in keys missing
+from the override fall through. The existing
+`caller inputs > trigger.inputs > schema defaults` layering is unchanged.
+Override inputs take the caller inputs slot, above built-in `trigger.inputs`.
 
 #### Trigger Inputs
 
-Scheduled (and webhook) runs have no `--input` flag, so a `trigger.inputs` map
+Scheduled and webhook runs have no `--input` flag. A `trigger.inputs` map
 supplies baseline input values at fire time:
 
 ```yaml
@@ -696,30 +668,30 @@ jobs:
   # ... runs with projectId already populated
 ```
 
-This lets a workflow declare `required` inputs without abusing the input
-schema's `default` (which would apply to every caller, not just trigger-fired
-runs). `trigger.inputs` is a free values map — the runtime values to inject —
-distinct from the workflow's `inputs` block, which is the JSON-Schema
-description of allowed inputs.
+A workflow can then declare `required` inputs without misusing the input
+schema's `default`, which would apply to every caller, not only trigger-fired
+runs. `trigger.inputs` is a plain map of runtime values to inject. The
+workflow's `inputs` block is different: it is the JSON-Schema description of
+allowed inputs.
 
-**Precedence:** the values are merged exactly like `--input` on
+**Precedence:** the values merge like `--input` on
 `swamp workflow run`, layered as `caller inputs > trigger.inputs > schema
-defaults`. For a scheduled run there is no caller, so `trigger.inputs` becomes
-the baseline. The merged inputs flow through the same coercion,
-default-application, and validation pipeline as every other run, so a `required`
-input satisfied only by `trigger.inputs` validates successfully.
+defaults`. A scheduled run has no caller, so `trigger.inputs` is the baseline.
+The merged inputs go through the same coercion, default-application, and
+validation pipeline as every other run, so a `required` input satisfied only
+by `trigger.inputs` validates.
 
-Trigger inputs are layered in by `executeWorkflowWithLocks`
-(`workflow.baselineInputs` in `src/serve/deps.ts`), so they apply to every
-serve-executed run — scheduled, webhook, **and** ad-hoc `workflow.run` requests
-from `swamp workflow run --server`. Only a local `swamp workflow run` (which
-calls `workflowRun` directly, `src/cli/commands/workflow_run.ts`) is unaffected
-by `trigger.inputs` — there the operator supplies inputs explicitly.
+`executeWorkflowWithLocks` layers in trigger inputs (`workflow.baselineInputs`
+in `src/serve/deps.ts`), so they apply to every serve-executed run: scheduled,
+webhook, and ad-hoc `workflow.run` requests from
+`swamp workflow run --server`. Only a local `swamp workflow run`, which calls
+`workflowRun` directly (`src/cli/commands/workflow_run.ts`), ignores
+`trigger.inputs`. There the operator supplies inputs.
 
 #### Webhook Payload Extraction
 
 For webhook runs, `trigger.inputs` values may be CEL expressions that read the
-inbound request through the `webhook` namespace, mapping payload fields onto
+incoming request through the `webhook` namespace. This maps payload fields onto
 named workflow inputs:
 
 ```yaml
@@ -738,37 +710,37 @@ jobs:
 
 The `webhook` namespace exposes:
 
-- `webhook.body` — the request body, parsed as JSON when the payload is valid
+- `webhook.body`: the request body, parsed as JSON when the payload is valid
   JSON, otherwise the raw string.
-- `webhook.headers` — request headers as a map of lowercased names to values.
+- `webhook.headers`: request headers as a map of lowercased names to values.
   The active scheme's signature header and sensitive credential headers are
-  excluded. Redacted headers (`REDACTED_HEADERS` in `src/serve/webhook.ts`)
-  include authentication (`authorization`, `proxy-authorization`, `cookie`,
-  `set-cookie`, `x-api-key`, `x-auth-token`), provider signatures
-  (`x-hub-signature`, `x-shopify-hmac-sha256`), proxy credentials
-  (`x-amzn-oidc-accesstoken`, `x-amzn-oidc-data`,
-  `x-goog-iap-jwt-assertion`, `cf-access-jwt-assertion`,
-  `x-forwarded-client-cert`), and any header ending in `-token` or `-secret`.
-- `webhook.route` — the matched webhook route (e.g. `/hooks/linear`).
+  removed. Redacted headers (`REDACTED_HEADERS` in `src/serve/webhook.ts`) are:
+  - authentication: `authorization`, `proxy-authorization`, `cookie`,
+    `set-cookie`, `x-api-key`, `x-auth-token`
+  - provider signatures: `x-hub-signature`, `x-shopify-hmac-sha256`
+  - proxy credentials: `x-amzn-oidc-accesstoken`, `x-amzn-oidc-data`,
+    `x-goog-iap-jwt-assertion`, `cf-access-jwt-assertion`,
+    `x-forwarded-client-cert`
+  - any header ending in `-token` or `-secret`
+- `webhook.route`: the matched webhook route (e.g. `/hooks/linear`).
 
-The signature scheme is selected per endpoint on the `--webhook` flag:
-`<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`. `scheme` is one
-of `github` (the default, `X-Hub-Signature-256`), `jira` (`X-Hub-Signature`),
-`linear`, `stripe`, `slack`, or `generic` (which requires a header name and
-accepts an optional value prefix), or a webhook extension type
-(`@collective/name`, e.g. `@swamp/telegram`). When no
-scheme is given the flag behaves exactly as before, so the secret may still
-contain colons; a scheme is recognized only when the fourth field is a known
-scheme keyword or an extension type. An extension may `transform` the body
-before it is exposed as `webhook.body`; `webhook.headers` is always the
-redacted map computed by core.
+Each endpoint picks its signature scheme on the `--webhook` flag:
+`<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`. `scheme` is
+`github` (the default, `X-Hub-Signature-256`), `jira` (`X-Hub-Signature`),
+`linear`, `stripe`, `slack`, `generic`, or a webhook extension type
+(`@collective/name`, e.g. `@swamp/telegram`). `generic` requires a header name
+and accepts an optional value prefix. With no scheme the flag behaves as
+before, so the secret may still contain colons: a scheme is recognized only
+when the fourth field is a known scheme keyword or an extension type. An
+extension may `transform` the body before it becomes `webhook.body`, but
+`webhook.headers` is always the redacted map computed by core.
 
-These expressions are evaluated against the verified payload **at fire time,
-before input validation**, so a payload field can satisfy a `required` input.
-A whole-value expression preserves the field's native type (object, number,
-boolean); an expression embedded in a larger string is interpolated.
+These expressions are evaluated against the verified payload at fire time,
+before input validation, so a payload field can satisfy a `required` input.
+A whole-value expression keeps the field's native type (object, number,
+boolean); one inside a larger string is interpolated.
 
-swamp's CEL has no `??` operator — guard optional payload fields with the
+swamp's CEL has no `??` operator. Guard optional payload fields with the
 `has()` macro and a ternary instead:
 
 ```yaml
@@ -779,62 +751,58 @@ trigger:
         webhook.body.data.issue.identifier : webhook.body.data.identifier }}
 ```
 
-A hard reference to a missing field (without a `has()` guard) surfaces an error
-and the run does not start. The `webhook` namespace is available only inside
-`trigger.inputs`; the rest of the workflow reads the extracted values as normal
+A hard reference to a missing field (without a `has()` guard) raises an error
+and the run does not start. The `webhook` namespace exists only inside
+`trigger.inputs`. The rest of the workflow reads the extracted values as normal
 inputs (`${{ inputs.identifier }}`).
 
-**Security:** Sensitive headers (authentication, proxy credentials, and headers
-ending in `-token` or `-secret`) are redacted before the payload is persisted or
-exposed to workflow expressions. Provider event headers (e.g. `x-github-event`,
-`content-type`) are preserved.
+**Security:** Sensitive headers are redacted before the payload is saved or
+exposed to workflow expressions. Provider event headers (e.g.
+`x-github-event`, `content-type`) are kept.
 
-**Limits** (`src/serve/webhook.ts`): request bodies are capped at 10 MB, the
-in-memory run queue at 100 entries, and every verification failure returns a
-uniform `401` so the response cannot be used as an oracle. Webhook endpoints
-can also be declared under a `webhooks:` array in `.swamp/serve.yaml`
+**Limits** (`src/serve/webhook.ts`): request bodies are capped at 10 MB and the
+in-memory run queue at 100 entries. Every verification failure returns the
+same `401`, so the response cannot be used as an oracle. Webhook endpoints can
+also be declared in a `webhooks:` array in `.swamp/serve.yaml`
 (`src/serve/serve_config.ts`), with secrets given as `@env=`, `@file=`, or
-`@vault=` references; CLI `--webhook` flags replace the config-file entries
-entirely.
+`@vault=` references. CLI `--webhook` flags replace the config-file entries
+completely.
 
 ## Jobs
 
-Each job has a name, a description, a series of steps, and an array of objects
-that specify other jobs it depends on that also includes the trigger for this
-job to execute. Each `dependsOn` entry is `{ job, condition }`; the condition
-is one of `always`, `succeeded`, `failed`, `completed`, `skipped`, or a
-boolean combination via `and` / `or` / `not`
-(`src/domain/workflows/trigger_condition.ts`, `src/domain/workflows/job.ts`).
-For example, job C can depend on jobs A and B and run only if either failed.
+Each job has a name, a description, a series of steps, and a list of the jobs
+it depends on, each with the condition that triggers this job. Each `dependsOn`
+entry is `{ job, condition }`. The condition is `always`, `succeeded`,
+`failed`, `completed`, `skipped`, or a boolean combination with `and` / `or` /
+`not` (`src/domain/workflows/trigger_condition.ts`,
+`src/domain/workflows/job.ts`). For example, job C can depend on jobs A and B
+and run only if either failed.
 
 ## Steps
 
-Each step has a name, a descirption, and a task (which is either a method on a
-model to run or a nested workflow to invoke). Each step has dependency logic that
-is identical to jobs, only for steps rather than jobs.
+Each step has a name, a description, and a task: a model method to run or a
+nested workflow to invoke. Steps use the same dependency logic as jobs.
 
-When a step invokes a mutating model method (`create`, `update`, `delete`,
-`action`), the model's pre-flight checks run automatically before execution. If
-any check fails, the step fails immediately without executing the method. Use
-`allowFailure: true` on the step to allow the workflow to continue past a
-pre-flight failure.
+When a step calls a mutating model method (`create`, `update`, `delete`,
+`action`), the model's pre-flight checks run first. If any check fails, the step
+fails without running the method. Set `allowFailure: true` on the step to let
+the workflow continue past a pre-flight failure.
 
 ## Allow Failure
 
-Steps can be marked with `allowFailure: true` to indicate that their failure
-should not cause the job or workflow to fail. This is useful for test or
-diagnostic workflows where some steps may fail due to external constraints (e.g.,
-billing plan limitations).
+A step marked `allowFailure: true` can fail without failing the job or
+workflow. This helps test or diagnostic workflows where some steps may fail for
+external reasons (e.g., billing plan limitations).
 
-When a step with `allowFailure: true` fails:
+When such a step fails:
 
-- The step is recorded as **failed** with its error message
-- The failure is **not propagated** to the job — the job can still succeed
-- The step run is flagged with `allowedFailure: true` in the run output
-- Trigger conditions behave normally: `succeeded` evaluates to `false` (step did
-  fail), `failed` evaluates to `true`, `completed` evaluates to `true`
-- Downstream steps with `dependsOn: succeeded` will skip; `dependsOn: completed`
-  will fire
+- The step is recorded as failed with its error message.
+- The failure is not propagated to the job, so the job can still succeed.
+- The step run is flagged with `allowedFailure: true` in the run output.
+- Trigger conditions behave normally: `succeeded` evaluates to `false` (the
+  step did fail), and `failed` and `completed` evaluate to `true`.
+- Downstream steps with `dependsOn: succeeded` skip; those with
+  `dependsOn: completed` fire.
 
 ```yaml
 steps:
@@ -857,13 +825,12 @@ steps:
 
 ## Guard (Idempotent Step Execution)
 
-A step can declare a `guard` — a CEL expression evaluated before execution. When
-the guard evaluates truthy, the step is skipped (already done). When falsy or
-absent, the step executes normally.
+A step can declare a `guard`, a CEL expression evaluated before the step runs.
+A truthy guard skips the step (already done). A falsy or absent guard lets it
+run normally.
 
-Guard is the workflow-level primitive for idempotent step execution, enabling safe
-workflow resume, re-run, and cron scheduling without re-executing completed
-steps.
+Guard is the workflow-level primitive for idempotent steps. It makes resume,
+re-run, and cron scheduling safe without re-running completed steps.
 
 ### Evaluation order
 
@@ -875,11 +842,11 @@ steps.
 
 ### Expression context
 
-Guard expressions have access to the same context as other step expressions:
+Guards see the same context as other step expressions:
 
-- `inputs` — workflow inputs
-- `data` — data namespace (e.g., `data.latest()`)
-- `self` — for forEach steps, includes the iteration variable
+- `inputs`: workflow inputs
+- `data`: data namespace (e.g., `data.latest()`)
+- `self`: for forEach steps, includes the iteration variable
 
 ### Guard patterns
 
@@ -914,20 +881,19 @@ steps:
 ### model.method() in guards
 
 `model.method(modelName, methodName)` or
-`model.method(modelName, methodName, inputs)` invokes a model method and returns
-the content of its first resource data output (parsed as JSON if possible). This
-lets guards check external state by running a lightweight probe method.
+`model.method(modelName, methodName, inputs)` calls a model method and returns
+the content of its first resource data output, parsed as JSON if possible.
+Guards use it to check external state with a lightweight probe method.
 
-The method executes through the same step executor as regular workflow steps, so
-it has full access to vault secrets, expression context, and data storage. The
-return value is the parsed data output content — for command/shell models this is
-`{exitCode, stdout, stderr, ...}`, so guard expressions typically access a
-specific field like `.stdout`.
+The method runs through the same step executor as regular workflow steps, so it
+has full access to vault secrets, expression context, and data storage. For
+command/shell models the returned content is `{exitCode, stdout, stderr, ...}`,
+so guards usually read one field such as `.stdout`.
 
 ### forEach compatibility
 
-Guard expressions can reference `self.*` (the forEach variable), so each
-expanded iteration evaluates its own guard independently:
+Guards can reference `self.*` (the forEach variable), so each expanded
+iteration evaluates its own guard:
 
 ```yaml
 - name: read-plate
@@ -940,21 +906,19 @@ expanded iteration evaluates its own guard independently:
     method: read-single-well
 ```
 
-On resume, each iteration's guard evaluates independently — completed wells are
-skipped, failed/unstarted wells execute.
+On resume, completed wells are skipped and failed or unstarted wells run.
 
 ### Error handling
 
-A CEL parse error or runtime error in a guard expression fails the step. Guard
-errors are not silently swallowed — they produce a `step_failed` event with the
-error message.
+A CEL parse or runtime error in a guard fails the step. Guard errors are not
+swallowed. They produce a `step_failed` event with the error message.
 
 ### Events and rendering
 
-Guard-skipped steps emit a `step_skipped` event with `reason: "guarded"` (vs
-`"dependency"` for dependency skips). The event includes `guardExpression` (the
-raw CEL expression string) and `guardResult` (the evaluated value) so consumers
-can display why the step was skipped.
+Guard-skipped steps emit a `step_skipped` event with `reason: "guarded"`
+(`"dependency"` for dependency skips). The event includes `guardExpression`
+(the raw CEL string) and `guardResult` (the evaluated value), so consumers can
+show why the step was skipped.
 
 Console output shows the guard expression inline:
 
@@ -968,15 +932,14 @@ JSON output includes both fields:
 {"step":"do-work","job":"main","status":"skipped","reason":"guarded","guardExpression":"data.latest(\"checker\", \"result\").attributes.exitCode == 0","guardResult":true}
 ```
 
-Debug-level logging (`--log-level debug`) emits guard evaluation results for both
-skipped and non-skipped steps, showing the expression and its result.
+Debug-level logging (`--log-level debug`) shows the guard expression and its
+result for both skipped and non-skipped steps.
 
 ## Data Output Overrides with Vary Dimensions
 
-Steps can declare `vary` on `dataOutputOverrides` to produce
-environment-isolated data storage. The `vary` field lists input key names whose
-values are appended to the data instance name, creating composite names like
-`result-prod` or `result-dev-us-east-1`.
+Steps can set `vary` on `dataOutputOverrides` to keep data separate per
+environment. `vary` lists input key names whose values are appended to the data
+instance name, giving names like `result-prod` or `result-dev-us-east-1`.
 
 ### Syntax
 
@@ -1000,7 +963,7 @@ steps:
 
 ### On-Disk Layout
 
-With `environments: ["dev", "staging", "prod"]`, the above produces:
+With `environments: ["dev", "staging", "prod"]`, the example above produces:
 
 ```
 data/scanner/{id}/
@@ -1015,13 +978,13 @@ data/scanner/{id}/
     latest → 1
 ```
 
-Each environment gets its own versioning and `latest` marker, preventing
-cross-environment data interleaving.
+Each environment gets its own versions and `latest` marker, so data from
+different environments never interleaves.
 
 ### Accessing Varied Data
 
-Use the 3-argument form of `data.latest()` to dynamically access varied data,
-typically from a forEach step or via workflow inputs:
+Use the 3-argument form of `data.latest()` to read varied data, usually from a
+forEach step or through workflow inputs:
 
 ```yaml
 # In a forEach step, use the iteration variable:
@@ -1033,12 +996,13 @@ inputs:
   scanResult: ${{ data.latest('scanner', 'result', [inputs.environment]).attributes.count }}
 ```
 
-See [Expressions](../enablers/expressions.md) for the full vary dimensions syntax.
+See [Expressions](../enablers/expressions.md) for the full vary dimensions
+syntax.
 
 ## Pre-flight Check Control
 
 Workflow runs support the same pre-flight check skip options as direct model
-method invocations. These flags apply to all model method steps in the workflow:
+method runs. The flags apply to every model method step in the workflow:
 
 | Flag                         | Behavior                                   |
 | ---------------------------- | ------------------------------------------ |
@@ -1046,124 +1010,118 @@ method invocations. These flags apply to all model method steps in the workflow:
 | `--skip-check <name>`        | Skip a specific check by name (repeatable) |
 | `--skip-check-label <label>` | Skip all checks with a label (repeatable)  |
 
-Check skip options are threaded from the CLI through `WorkflowRunInput` →
-`StepExecutionContext` → `MethodContext`, ensuring consistent behavior with
+The options pass from the CLI through `WorkflowRunInput` →
+`StepExecutionContext` → `MethodContext`, so behavior matches
 `swamp model method run`.
 
 ## Workflow Runs
 
-When a workflow is run, it executes the jobs and steps in the correct order. The
-order should be topologically sorted for dependencies, and weighted so it does
-not vary between identical inputs. (If the inputs are identical, the run order
-should be deterministic.)
+A run executes the jobs and steps in dependency order. The order should be a
+weighted topological sort, so identical inputs always give the same run order.
 
-The output of the run will be written to a workflow run log, kept in the
-datastore at `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml`
-(default path: `.swamp/workflow-runs/`).
+The run's output is written to a workflow run log in the datastore at
+`workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml` (default path:
+`.swamp/workflow-runs/`).
 
 ### Run Statuses
 
-- `pending` — created but not yet started
-- `running` — actively executing jobs/steps
-- `suspended` — paused at a manual approval gate
-- `succeeded` — all jobs completed successfully
-- `failed` — at least one job failed or an error occurred
-- `cancelled` — explicitly cancelled by a user
-- `interrupted` — the owning process crashed; in-flight steps are `unknown`
-  and the run is recoverable (see [Recovery](#recovery) below)
+- `pending`: created but not yet started
+- `running`: executing jobs/steps
+- `suspended`: paused at a manual approval gate
+- `succeeded`: all jobs completed successfully
+- `failed`: at least one job failed or an error occurred
+- `cancelled`: cancelled by a user
+- `interrupted`: the owning process crashed. In-flight steps are `unknown` and
+  the run is recoverable (see [Recovery](#recovery) below)
 
 ### Cancellation
 
-Runs can be cancelled via `swamp workflow cancel <workflow> [--run <runId>]`.
-When `swamp serve` is running, the cancel command sends a request to the serve
-cancel API (`POST /api/v1/cancel/workflow-run/<id>`), which fires the
-AbortController for live cancellation. When serve is not running, the command
-writes the cancelled status directly to the run YAML (offline cancel).
+Cancel a run with `swamp workflow cancel <workflow> [--run <runId>]`. When
+`swamp serve` is running, the command calls the serve cancel API
+(`POST /api/v1/cancel/workflow-run/<id>`), which fires the AbortController to
+stop the run live. When serve is not running, the command writes the cancelled
+status to the run YAML directly (offline cancel).
 
 `swamp workflow cancel --all` cancels all active runs across all workflows.
 With `--server`, `--run <id>` is required, `--all` is rejected, and `--reason`
-is ignored (the cancel endpoint accepts no reason;
-`src/cli/commands/workflow_cancel.ts`).
+is ignored, because the cancel endpoint takes no reason
+(`src/cli/commands/workflow_cancel.ts`).
 
-On daemon restart, `swamp serve` automatically reaps orphaned runs left in
-`running` state by the previous process (`reapOrphanedWorkflowRuns` in
-`src/cli/commands/serve.ts`): each is interrupted via
-`run.interrupt("server_crash")` (`src/domain/workflows/workflow_run.ts`), which
-marks in-flight steps as **`unknown`** and the run as **`interrupted`**, tagged
-with `interrupt_reason: server_crash`. Interrupted runs are recoverable — see
+When the daemon restarts, `swamp serve` reaps orphaned runs that the previous
+process left in `running` state (`reapOrphanedWorkflowRuns` in
+`src/cli/commands/serve.ts`). Each is interrupted with
+`run.interrupt("server_crash")` (`src/domain/workflows/workflow_run.ts`). This
+marks in-flight steps as `unknown` and the run as `interrupted`, tagged
+with `interrupt_reason: server_crash`. Interrupted runs are recoverable; see
 [Recovery](#recovery) below.
 
-A `RunCancelRegistry` in the serve layer centralises AbortController tracking
-across all execution paths (scheduled, WebSocket ad-hoc, webhook). The cancel
-API checks both the registry and the `ScheduledExecutionService` running map.
+A `RunCancelRegistry` in the serve layer tracks AbortControllers for every
+execution path (scheduled, WebSocket ad-hoc, webhook). The cancel API checks
+both the registry and the `ScheduledExecutionService` running map.
 
-The same mechanism applies to model method runs via
+Model method runs cancel the same way, with
 `swamp model cancel <model> [--all] [--reason <reason>]`.
 
 ### Post-Cancellation Cleanup
 
-When a workflow is cancelled (via `--timeout`, Ctrl+C, or `swamp workflow
-cancel`), steps with `always` or `completed` dependency conditions still run.
-This allows cleanup branches (notifications, resource teardown, metric
-reporting) to execute even after cancellation.
+When a workflow is cancelled (by `--timeout`, Ctrl+C, or `swamp workflow
+cancel`), steps with `always` or `completed` dependency conditions still run,
+so cleanup branches (notifications, resource teardown, metric reporting) can
+run. The engine evaluates the remaining steps in topological order:
 
-The execution engine evaluates remaining steps in topological order after
-cancellation:
-
-- Steps whose dependency conditions are met (`always` returns true
-  unconditionally; `completed` returns true when the dependency reached
-  `succeeded` or `failed`) run with a fresh 30-second cleanup signal.
+- Steps whose dependency conditions are met run with a fresh 30-second cleanup
+  signal. `always` is true unconditionally; `completed` is true when the
+  dependency reached `succeeded` or `failed`.
 - Steps whose conditions are not met (`succeeded` on a failed dependency) are
   skipped.
-- In-flight steps interrupted by the cancellation signal are marked `failed`
-  with reason `cancelled`.
+- In-flight steps stopped by the cancellation signal are marked `failed` with
+  reason `cancelled`.
 
-The same behavior applies after normal step failure (without cancellation):
-steps with `always` or `completed` conditions in subsequent topological levels
-run instead of being skipped.
+The same applies after a normal step failure without cancellation. Steps with
+`always` or `completed` conditions in later topological levels run instead of
+being skipped.
 
 The `--timeout` flag kills in-flight subprocesses (SIGTERM) when the deadline
-elapses, then runs cleanup steps. It does not wait for the subprocess to finish
-before marking it failed.
+passes, then runs cleanup steps. It marks a subprocess failed without waiting
+for it to finish.
 
 ### Recovery
 
-When a serve instance crashes during a workflow run, the run is marked
-`interrupted` and its in-flight steps are marked `unknown`. An `unknown` step
-means the step was running at crash time and its outcome is ambiguous — it may
-have completed externally but Swamp did not record the result.
+When a serve instance crashes during a run, the run is marked `interrupted` and
+its in-flight steps `unknown`. An `unknown` step was running at crash time, so
+its outcome is unclear: it may have completed externally without Swamp
+recording the result.
 
-**Step-boundary checkpoints:** the run is saved after each step reaches a
-terminal state (succeeded, failed, skipped), not just at topological level
-boundaries. This means a crash mid-level preserves completed steps in that level.
+**Step-boundary checkpoints:** the run is saved each time a step reaches a
+terminal state (succeeded, failed, skipped), not only at topological level
+boundaries, so a crash mid-level keeps that level's completed steps.
 
 **Run plan identity:** at run start, the evaluated workflow is fingerprinted and
 a per-run snapshot is stored in `.swamp/workflows-evaluated/runs/{runId}/`. On
-recovery, the current workflow definition's fingerprint is compared to the run's
-stored fingerprint. If they differ, auto-recovery is refused — the operator must
-use `swamp workflow resume --from <step>` instead.
+recovery, the current definition's fingerprint is compared with the stored one.
+If they differ, auto-recovery is refused and the operator must use
+`swamp workflow resume --from <step>` instead.
 
-**Recovery assessment (`swamp workflow recover --assess-only`):** inspects each
-`unknown` step and classifies it as auto-recoverable (the step has a `guard`
-expression) or requires-acknowledgement (no guard). A guard-protected step can
-be safely re-executed because the guard will skip it if the work was already done.
+**Recovery assessment (`swamp workflow recover --assess-only`):** classifies
+each `unknown` step as auto-recoverable (it has a `guard` expression) or
+requires-acknowledgement (no guard). A guarded step is safe to re-run, because
+the guard skips it if the work was already done.
 
 **Recovery flow:**
 
-1. `swamp workflow recover <workflow>` — assesses the interrupted run. If all
-   unknown steps have guards and fingerprints match, resets unknown steps to
-   `pending` and transitions the run to `suspended`.
-2. `swamp workflow resume <workflow> --run <id>` — re-enters the executor. The
-   guard evaluates each reset step: if the step's work completed before the
-   crash, the guard returns truthy and the step is skipped; otherwise it
-   re-executes.
+1. `swamp workflow recover <workflow>` assesses the interrupted run. If every
+   unknown step has a guard and the fingerprints match, it resets unknown steps
+   to `pending` and moves the run to `suspended`.
+2. `swamp workflow resume <workflow> --run <id>` re-enters the executor. Each
+   reset step's guard is evaluated: truthy (the work finished before the crash)
+   skips the step, otherwise it runs again.
 
-When unknown steps lack guards, `--acknowledge-unknown` explicitly accepts the
-risk of re-executing steps whose external side effects may have already fired.
+When unknown steps have no guards, `--acknowledge-unknown` accepts the risk of
+re-running steps whose external side effects may already have happened.
 
 **Non-goals:** recovery does not promise exactly-once execution. A crash can
-occur after an external side effect succeeds but before Swamp records step
-completion. The `unknown` status makes this ambiguity visible.
+happen after an external side effect succeeds but before Swamp records the step
+as complete. The `unknown` status makes this visible.
 
 ## Domain Events
 
@@ -1171,26 +1129,25 @@ The WorkflowRepository and WorkflowRunRepository emit domain events:
 
 **Workflow Events:**
 
-- `WorkflowCreated` - Emitted when a new workflow is created via
-  `workflow create`
-- `WorkflowUpdated` - Emitted when a workflow definition is modified
-- `WorkflowDeleted` - Emitted when a workflow is deleted
+- `WorkflowCreated`: a new workflow is created with `workflow create`
+- `WorkflowUpdated`: a workflow definition is modified
+- `WorkflowDeleted`: a workflow is deleted
 
 **WorkflowRun Events:**
 
-- `WorkflowRunStarted` - Emitted when `workflow run` begins execution
-- `WorkflowRunCompleted` - Emitted when a workflow run completes successfully
-- `WorkflowRunFailed` - Emitted when a workflow run fails
+- `WorkflowRunStarted`: `workflow run` begins execution
+- `WorkflowRunCompleted`: a workflow run completes successfully
+- `WorkflowRunFailed`: a workflow run fails
 
-The RepoIndexService subscribes to these events (currently a noop
-implementation). See [repo](../surfaces/repo.md) for details on domain events.
+The RepoIndexService subscribes to these events (currently a no-op
+implementation). See [repo](../surfaces/repo.md) for more on domain events.
 
 ## Per-Method Telemetry
 
 A workflow run emits one parent telemetry entry for the outer
-`swamp workflow run` invocation plus one child entry per workflow YAML step
-that resolves to a model method. Children are linked to the parent through
-`parentInvocationId` and carry a `workflowContext` block:
+`swamp workflow run` invocation. It also emits one child entry per workflow YAML
+step that resolves to a model method. Each child links to the parent through
+`parentInvocationId` and carries a `workflowContext` block:
 
 ```yaml
 workflowContext:
@@ -1202,81 +1159,77 @@ workflowContext:
   executor: loopback
 ```
 
-Children use the same `cli_invocation` event shape as a direct
-`swamp model method run <name> <method>` invocation, with the same
-redactions: `command="model"`, `subcommand="method"`,
-`args=["run", "<REDACTED>", <methodName>]`. Analytics that aggregate by
-command/method roll up direct invocations and workflow-internal
-invocations uniformly; per-executor and per-model-type queries read
-`workflowContext` directly without joining through the parent.
+Children use the same `cli_invocation` event shape and redactions as a direct
+`swamp model method run <name> <method>` invocation: `command="model"`,
+`subcommand="method"`, `args=["run", "<REDACTED>", <methodName>]`. Analytics
+that group by command or method therefore count direct and workflow-internal
+invocations the same way. Per-executor and per-model-type queries read
+`workflowContext` directly, without joining through the parent.
 
 ### Failure Semantics
 
-- A step that fails AFTER `method_executing` was yielded records an error
-  child entry with the actual duration.
-- A step that fails BEFORE `method_executing` (model lookup failure, vault
+- A step that fails after `method_executing` was yielded records an error child
+  entry with the measured duration.
+- A step that fails before `method_executing` (model lookup failure, vault
   expression resolution failure, vary-key validation failure, env-var
-  validation) records a synthesized child entry with `durationMs = 0` —
-  the method was never actually invoked, so duration is honestly zero.
-  Dashboards that filter zero-duration entries will hide
-  failure-by-validation cases by design.
-- A step with `allowFailure: true` records as `error` in the child entry
-  (the method outcome) while the parent records its overall workflow
-  outcome — `success` if all unallowed failures were absent. Joining
-  `child.error_category × parent.success` on `parentInvocationId` surfaces
-  "how many allowed failures" without changing the entry shape.
+  validation) records a synthesized child entry with `durationMs = 0`. The
+  method was never invoked, so its duration is zero. Dashboards that filter
+  out zero-duration entries will hide these validation failures; this is
+  expected.
+- A step with `allowFailure: true` records `error` in the child entry (the
+  method outcome). The parent records the overall workflow outcome: `success`
+  if there were no unallowed failures. Joining
+  `child.error_category × parent.success` on `parentInvocationId` shows how
+  many failures were allowed, without changing the entry shape.
 
 ### V1 Limitations
 
-- **Workflow-step granularity only.** Sub-method follow-up calls inside
-  `DefaultMethodExecutionService.execute` (e.g. one method that internally
-  invokes another method) are NOT captured as separate child entries; the
-  workflow-step boundary is the unit of measurement.
-- **Workflow-task steps** (a step whose task is a nested workflow) emit no
-  child entry of their own. The nested workflow's own model-method steps
-  generate child entries linked to the same parent CLI invocation.
+- **Workflow-step granularity only.** Follow-up calls inside
+  `DefaultMethodExecutionService.execute` (e.g. a method that internally
+  invokes another method) are not captured as separate child entries. The
+  workflow step is the unit of measurement.
+- **Workflow-task steps** (steps whose task is a nested workflow) emit no child
+  entry of their own. The nested workflow's model-method steps produce child
+  entries linked to the same parent CLI invocation.
 - **Failures before workflow validation** (e.g. workflow not found, input
-  schema validation) produce no child entry — no method was ever resolved.
-- **Cancellation** during a method invocation (AbortSignal, timeout)
-  records the in-flight method as an error child entry via the bridge's
-  finalize path with a synthetic "workflow run terminated before
-  completion" message.
+  schema validation) produce no child entry, because no method was resolved.
+- **Cancellation** during a method invocation (AbortSignal, timeout) records
+  the in-flight method as an error child entry. The bridge's finalize path adds
+  a synthetic "workflow run terminated before completion" message.
 
-The bridge lives in `src/libswamp/workflows/telemetry_bridge.ts`. The
-domain `step_failed` event carries optional `modelName` and `methodName`
-fields populated only at the model-method failure site (other yield
-sites — nesting depth, cycle detection, nested-workflow failure — leave
-them undefined so the bridge can distinguish structural failures from
-method failures).
+The bridge lives in `src/libswamp/workflows/telemetry_bridge.ts`. The domain
+`step_failed` event has optional `modelName` and `methodName` fields, set only
+at the model-method failure site. Other yield sites (nesting depth, cycle
+detection, nested-workflow failure) leave them undefined, so the bridge can tell
+structural failures from method failures.
 
 ### Runs Executed by `swamp serve`
 
 Scheduled, webhook, and API-triggered runs record the same parent and child
 entries as an interactive `swamp workflow run`, with two differences.
 
-**The parent is the run, not the process.** The CLI allocates one invocation
-id per process, because for a CLI one process is one invocation. A daemon
-breaks that assumption: its own process-level entry is not written until it
-exits, possibly weeks later, so hanging children off it would leave every
-child with a dangling `parentInvocationId` for the daemon's entire uptime.
-Each serve-executed run therefore forks its own service
+**The parent is the run, not the process.** The CLI allocates one invocation id
+per process, because one CLI process is one invocation. A daemon's own
+process-level entry is not written until it exits, possibly weeks later, so
+children attached to it would have a dangling `parentInvocationId` for its whole
+uptime. Instead, each serve-executed run forks its own service
 (`TelemetryService.forkForRun`) and records a per-run parent shaped like the
-`swamp workflow run` invocation it stands in for, with the workflow name
-redacted exactly as the CLI redacts it.
+`swamp workflow run` invocation it stands in for. The workflow name is redacted
+the same way the CLI redacts it.
 
 **Entries carry a `triggerSource`** of `schedule`, `webhook`, or `api`.
-Interactive runs leave the field unset, so their events are unchanged. The
-field is deliberately not called `source`: the telemetry backend derives a
-field by that name from the recorded command, and overloading it would
-collide two independently-owned concerns.
+Interactive runs leave it unset, so their events are unchanged. The field is
+not called `source` because the telemetry backend derives a field by that name
+from the recorded command, and reusing it would mix two separately owned
+concerns.
 
-Because a run reports failure through its event stream rather than by
-throwing — input validation, a failed step, and cancellation all return
-normally — the outcome is read from the stream. A run that did not reach
-`succeeded` records an error parent, which matters because only successful
-invocations are counted downstream.
+A run reports failure through its event stream, not by throwing: input
+validation, a failed step, and cancellation all return normally. So the outcome
+is read from the stream, and a run that did not reach `succeeded` records an
+error parent. This matters because only successful invocations are counted
+downstream.
 
-The composition lives in `src/serve/telemetry.ts`; the sink is threaded
-through `executeWorkflowWithLocks` in `src/serve/deps.ts`, which is the
-single path all three trigger types share. Callers that supply no trigger
-source (libswamp consumers, tests) produce no telemetry at all.
+The composition lives in `src/serve/telemetry.ts`. The sink is passed through
+`executeWorkflowWithLocks` in `src/serve/deps.ts`, the single path all three
+trigger types share. Callers that supply no trigger source (libswamp consumers,
+tests) produce no telemetry.
