@@ -37,3 +37,13 @@ export interface CelExpressionEvaluator {
     context: Record<string, unknown>,
   ): Promise<unknown>;
 }
+
+/**
+ * Syntax check without evaluation. Lets a caller tell `${{ ... }}` text that
+ * is not CEL at all (prose documenting the syntax) from an expression that
+ * failed to evaluate. The infrastructure CelEvaluator implements this
+ * structurally.
+ */
+export interface CelExpressionValidator {
+  validate(expression: string): { valid: boolean; error?: string };
+}

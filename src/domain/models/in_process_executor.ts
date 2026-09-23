@@ -42,6 +42,26 @@ import {
 import { DataAccessService } from "../data/data_access_service.ts";
 import { withConsoleGuard } from "./console_guard.ts";
 
+/**
+ * Renders a LogTape string template the way LogTape does for its own sinks:
+ * `{{` and `}}` are escaped braces, and `{key}` is a placeholder filled from
+ * `props`. Without props, a single-brace span is left as written so plain
+ * output (JSON, say) still displays verbatim.
+ */
+function renderMessageTemplate(
+  tpl: string,
+  props: Record<string, unknown> | undefined,
+): string {
+  return tpl.replace(
+    /\{\{|\}\}|\{(\w+)\}/g,
+    (match, key: string | undefined) => {
+      if (match === "{{") return "{";
+      if (match === "}}") return "}";
+      return props ? String(props[key!] ?? "") : match;
+    },
+  );
+}
+
 export function wrapLoggerWithOutput(
   logger: Logger,
   onEvent: ((event: MethodExecutionEvent) => void) | undefined,
@@ -61,13 +81,10 @@ export function wrapLoggerWithOutput(
           const tpl = args[0];
           let line: string;
           if (typeof tpl === "string") {
-            const props = args[1] as Record<string, unknown> | undefined;
-            line = props
-              ? tpl.replace(
-                /\{(\w+)\}/g,
-                (_, k) => String(props[k] ?? ""),
-              )
-              : tpl;
+            line = renderMessageTemplate(
+              tpl,
+              args[1] as Record<string, unknown> | undefined,
+            );
           } else if (Array.isArray(tpl)) {
             const values = args.slice(1);
             line = (tpl as string[]).reduce(

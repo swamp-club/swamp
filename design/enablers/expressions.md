@@ -551,6 +551,33 @@ raw as a fresh run.
 `task.methodName` and `task.modelType` are not task targets and still resolve
 at run start.
 
+## Definition Evaluation
+
+The CLI and workflow paths share one pass over a model definition
+(`evaluateDefinitionExpressions`, `src/domain/expressions/`). Vault, `env`, and
+deferred references are left for the runtime pass.
+
+**Global arguments are evaluated first.** Everything else is then evaluated with
+`self.globalArguments` bound to the result, so a method argument that reads
+`self.globalArguments.X` gets X's value, not its source text. A global argument
+that could not be evaluated, or that is a runtime reference, keeps its raw
+text there. A copied runtime reference is still resolved by the runtime pass,
+since its text is author-written. A global argument that reads another global
+argument sees the raw values.
+
+**Evaluation is lenient across the definition, strict for the method being
+run.** The pass covers every method's arguments, but a method must not fail
+because another method references an input only that method is given (the
+factory `delete` case). So an expression that throws, or that reads
+`model.<name>.resource`/`file` data that does not exist yet, is left in place
+and recorded with its reason. Before a method runs, after `--input` or step
+`inputs:` overrides are applied, `assertMethodArgumentsEvaluated` checks that
+method's arguments. If one still holds a recorded failure, the run fails with
+the original CEL message and the argument path, rather than handing the method
+`${{ ... }}` text. Global arguments the method reads directly are guarded
+lazily by the Proxy on `context.globalArgs`. `${{ ... }}` text that is not
+valid CEL is prose and is never recorded.
+
 ## Sensitive Data
 
 Vault secrets are read with `vault.get('<vault-name>', '<key>')`, the only

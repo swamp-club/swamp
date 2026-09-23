@@ -131,6 +131,10 @@ import {
   DefinitionExpressionEvaluator,
   WorkflowExpressionEvaluator,
 } from "./expression_evaluators.ts";
+import {
+  assertMethodArgumentsEvaluated,
+  type FailedExpressions,
+} from "../expressions/unresolved_expression_guard.ts";
 import { UserError } from "../errors.ts";
 import {
   getRunLogger,
@@ -1004,6 +1008,7 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Evaluate CEL expressions (vault left raw for persistence)
     let evaluatedDefinition = originalDefinition;
+    let failedExpressions: FailedExpressions = new Map();
     let stepInputs: Record<string, unknown> = {};
     // Provenance for every pass from here on. Union the workflow source's
     // authored expressions with the model's own, where the model has an
@@ -1092,13 +1097,14 @@ export class DefaultStepExecutor implements StepExecutor {
       const originalInputs = ctx.expressionContext.inputs ?? {};
       ctx.expressionContext.inputs = { ...originalInputs, ...stepInputs };
 
-      evaluatedDefinition = await new DefinitionExpressionEvaluator(
-        new CelEvaluator(),
-      ).evaluate(
-        originalDefinition,
-        ctx.expressionContext,
-        authoredExpressions,
-      );
+      ({ definition: evaluatedDefinition, failedExpressions } =
+        await new DefinitionExpressionEvaluator(
+          new CelEvaluator(),
+        ).evaluate(
+          originalDefinition,
+          ctx.expressionContext,
+          authoredExpressions,
+        ));
     }
 
     // Forward all step inputs as method arguments.
@@ -1113,6 +1119,15 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       }
     }
+
+    // A failed expression the method is about to receive would otherwise be
+    // handed over as its raw ${{ ... }} text. Checked after the step-input
+    // overrides above, so an input that replaces the value lets the step run.
+    assertMethodArgumentsEvaluated(
+      task.methodName,
+      evaluatedDefinition.getMethodArguments(task.methodName),
+      failedExpressions,
+    );
 
     // Save evaluated definition (with vault expressions still raw) for --last-evaluated
     await evaluatedDefRepo.save(

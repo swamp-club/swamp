@@ -814,3 +814,39 @@ Deno.test("wrapLoggerWithOutput: tagged template interpolation works", () => {
   assertEquals(events[0].line, "found 42 items");
   assertEquals(events[0].stream, "stdout");
 });
+
+// swamp-club#2453: process output is escaped with escapeLogTemplate before it
+// reaches the logger ({ -> {{), and the displayed line must undo that.
+Deno.test("wrapLoggerWithOutput: escaped braces in a plain string render once", () => {
+  const logger = getLogger(["test", "wrap-escaped"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  wrapped.warn("/bin/sh: ${{{{ 1 + 'a' }}}}: bad substitution");
+  wrapped.info('{{"a": 1}}');
+  assertEquals(events.map((e) => e.line), [
+    "/bin/sh: ${{ 1 + 'a' }}: bad substitution",
+    '{"a": 1}',
+  ]);
+});
+
+Deno.test("wrapLoggerWithOutput: props fill placeholders and escaped braces still render once", () => {
+  const logger = getLogger(["test", "wrap-props"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  wrapped.info("{name} wrote {{literal}}", { name: "worker" });
+  assertEquals(events[0].line, "worker wrote {literal}");
+});
+
+Deno.test("wrapLoggerWithOutput: single braces without props are left as written", () => {
+  const logger = getLogger(["test", "wrap-single"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  wrapped.info("config {key} unchanged");
+  assertEquals(events[0].line, "config {key} unchanged");
+});

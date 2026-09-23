@@ -47,6 +47,11 @@ import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { collectAuthoredExpressions } from "../../domain/expressions/expression_evaluation_service.ts";
+import { UnresolvedExpressionError } from "../../domain/expressions/errors.ts";
+import {
+  assertMethodArgumentsEvaluated,
+  type FailedExpressions,
+} from "../../domain/expressions/unresolved_expression_guard.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
@@ -544,6 +549,7 @@ export async function* modelMethodRun(
           );
 
           let deferredExpressions: readonly DeferredExpression[] = [];
+          let failedExpressions: FailedExpressions = new Map();
           if (input.lastEvaluated) {
             const lastEval = await deps.loadEvaluatedDefinition(
               modelType,
@@ -571,6 +577,8 @@ export async function* modelMethodRun(
                 inputs,
               );
               evaluatedDefinition = evalResult.definition;
+              failedExpressions = evalResult.failedExpressions ??
+                failedExpressions;
             }
             await deps.saveEvaluatedDefinition(
               modelType,
@@ -622,6 +630,29 @@ export async function* modelMethodRun(
                 value,
               );
             }
+          }
+
+          // A failed expression this method is about to receive would
+          // otherwise be handed over as its raw ${{ ... }} text. Checked after
+          // the overrides above, so an --input that replaces it wins.
+          try {
+            assertMethodArgumentsEvaluated(
+              input.methodName,
+              evaluatedDefinition.getMethodArguments(input.methodName),
+              failedExpressions,
+            );
+          } catch (error) {
+            if (!(error instanceof UnresolvedExpressionError)) throw error;
+            exprSpan.end();
+            setupSpan.end();
+            yield {
+              kind: "error",
+              error: validationFailed(error.message, {
+                path: error.path,
+                expression: error.expression,
+              }),
+            };
+            return;
           }
 
           exprSpan.end();

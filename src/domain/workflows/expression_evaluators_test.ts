@@ -47,6 +47,9 @@ class ThrowingEvaluator implements CelExpressionEvaluator {
   evaluateAsync(_expr: string): Promise<unknown> {
     return Promise.reject(new Error("forced eval failure"));
   }
+  validate(): { valid: boolean } {
+    return { valid: true };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -369,8 +372,8 @@ Deno.test("DefinitionExpressionEvaluator: returns definition unchanged when no e
     methods: { run: { arguments: { hello: "world" } } },
   });
   const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
-  assertEquals(result.name, "no-expr");
-  assertEquals(result.getMethodArguments("run"), { hello: "world" });
+  assertEquals(result.definition.name, "no-expr");
+  assertEquals(result.definition.getMethodArguments("run"), { hello: "world" });
 });
 
 Deno.test("DefinitionExpressionEvaluator: skips runtime expressions (vault/env)", async () => {
@@ -386,7 +389,7 @@ Deno.test("DefinitionExpressionEvaluator: skips runtime expressions (vault/env)"
   const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
   // Vault remains raw — resolved at runtime by the executor.
   assertEquals(
-    result.getMethodArguments("run"),
+    result.definition.getMethodArguments("run"),
     { token: "${{ vault.get('v', 'tok') }}" },
   );
 });
@@ -401,11 +404,15 @@ Deno.test("DefinitionExpressionEvaluator: LENIENT — per-expression eval error 
   });
   // No throw despite the evaluator rejecting every async call.
   const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
-  // The expression is left raw — the Proxy on globalArgs surfaces an
-  // error later if the unresolved value is actually needed.
+  // The expression is left raw, and the failure is returned so the caller
+  // can fail the step if the method it runs uses the value.
   assertEquals(
-    result.getMethodArguments("run"),
+    result.definition.getMethodArguments("run"),
     { thing: "${{ inputs.thing }}" },
+  );
+  assertEquals(
+    result.failedExpressions.get("${{ inputs.thing }}")?.message,
+    "forced eval failure",
   );
 });
 
@@ -426,9 +433,78 @@ Deno.test("DefinitionExpressionEvaluator: skips expressions referencing missing 
   });
   const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
   assertEquals(
-    result.getMethodArguments("run"),
+    result.definition.getMethodArguments("run"),
     { vpc_id: "${{ model.foo.resource.bar.attributes.vpc_id }}" },
   );
+  assertEquals(
+    result.failedExpressions.get(
+      "${{ model.foo.resource.bar.attributes.vpc_id }}",
+    )?.message,
+    "Model foo has no resource data",
+  );
+});
+
+Deno.test("DefinitionExpressionEvaluator: does not record runtime, invalid-syntax or unauthored expressions as failures", async () => {
+  const evaluator = new DefinitionExpressionEvaluator(new ThrowingEvaluator());
+  const def = Definition.create({
+    name: "not-failures",
+    methods: {
+      run: {
+        arguments: {
+          token: "${{ vault.get('v', 'tok') }}",
+          injected: "${{ inputs.note }}",
+        },
+      },
+    },
+  });
+  const result = await evaluator.evaluate(
+    def,
+    emptyContext(),
+    new Set(["${{ vault.get('v', 'tok') }}"]),
+  );
+  assertEquals(result.failedExpressions.size, 0);
+
+  const prose = await new DefinitionExpressionEvaluator(new CelEvaluator())
+    .evaluate(
+      Definition.create({
+        name: "prose",
+        methods: {
+          run: { arguments: { body: "use ${{ not valid cel !!! }} here" } },
+        },
+      }),
+      emptyContext(),
+      "unrestricted",
+    );
+  assertEquals(prose.failedExpressions.size, 0);
+});
+
+Deno.test("DefinitionExpressionEvaluator: self.globalArguments sees evaluated global arguments without mutating the caller's context (swamp-club#2455)", async () => {
+  const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
+  const def = Definition.create({
+    name: "global-copy",
+    globalArguments: { target: "${{ 'web-' + inputs.host }}" },
+    methods: {
+      run: { arguments: { run: "echo ${{ self.globalArguments.target }}" } },
+    },
+  });
+  const rawGlobals = def.globalArguments;
+  const context: ExpressionContext = {
+    ...emptyContext(),
+    inputs: { host: "a" },
+    self: {
+      id: def.id,
+      name: def.name,
+      version: def.version,
+      tags: def.tags,
+      globalArguments: rawGlobals,
+    },
+  };
+  const result = await evaluator.evaluate(def, context, "unrestricted");
+  assertEquals(result.definition.globalArguments.target, "web-a");
+  assertEquals(result.definition.getMethodArguments("run"), {
+    run: "echo web-a",
+  });
+  assertEquals(context.self?.globalArguments, rawGlobals);
 });
 
 // ---------------------------------------------------------------------------
@@ -451,7 +527,7 @@ Deno.test("DefinitionExpressionEvaluator: refuses an expression absent from the 
     new Set<string>(),
   );
   assertEquals(
-    result.getMethodArguments("run"),
+    result.definition.getMethodArguments("run"),
     { run: "echo ${{ inputs.note }}" },
   );
 });
@@ -475,7 +551,7 @@ Deno.test("DefinitionExpressionEvaluator: resolves an authored expression and re
     new Set(["${{ inputs.ok }}"]),
   );
   assertEquals(
-    result.getMethodArguments("run"),
+    result.definition.getMethodArguments("run"),
     { authored: "fine", injected: "${{ inputs.bad }}" },
   );
 });
