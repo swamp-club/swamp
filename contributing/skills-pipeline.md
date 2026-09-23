@@ -196,8 +196,10 @@ description and content.
 **Review a single skill:**
 
 ```bash
-npx tessl skill review .claude/skills/<skill-name> --json
+npx tessl review run .claude/skills/<skill-name> --json --workspace swamp-club
 ```
+
+It authenticates with `TESSL_TOKEN` (or an interactive `tessl login`).
 
 This returns three metrics:
 

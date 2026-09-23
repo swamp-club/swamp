@@ -27,9 +27,12 @@ Repo-specific rules on top of skill-creator's guidance:
 
 After creating or modifying a skill, verify it before submitting:
 
-- `npx tessl skill review .claude/skills/<skill-name>` — quality review of the
-  description and content; aim for an average score ≥ 90%. CI enforces that
-  threshold for the bundled skills (`swamp`, `swamp-getting-started`) via
+- `npx tessl review run .claude/skills/<skill-name> --workspace swamp-club` —
+  quality review of the description and content; aim for an average score ≥ 90%.
+  It needs `TESSL_TOKEN` in the environment (export
+  `~/.config/swamp/verify.env`, see
+  `agent-constraints/verification-conventions.md`). CI enforces that threshold
+  for the bundled skills (`swamp`, `swamp-getting-started`) via
   `deno run review-skills`; for other skills it is good hygiene, not a gate.
 - `deno run eval-skill-triggers` — promptfoo trigger-routing evals for the
   bundled skills (needs `ANTHROPIC_API_KEY`); run when a bundled skill's
