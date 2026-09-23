@@ -28,6 +28,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parsePrincipal } from "../../domain/access/principal.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
@@ -85,7 +86,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     )
     .option(
       "--principal <principal:string>",
-      "Principal identity for the token (e.g. user:adam)",
+      "Principal identity for the token: user:<id> or worker:<id> (e.g. user:adam)",
       { required: true },
     )
     .option(
@@ -109,9 +110,13 @@ export const accessTokenMintCommand = withRemoteOptions(
   ]);
 
   const principal = options.principal as string;
-  if (!principal.includes(":")) {
+  try {
+    parsePrincipal(principal);
+  } catch (error) {
     throw new UserError(
-      `Invalid --principal value "${principal}": expected format "user:<id>"`,
+      `Invalid --principal value: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     );
   }
 

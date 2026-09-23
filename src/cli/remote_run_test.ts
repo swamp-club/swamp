@@ -1929,3 +1929,101 @@ Deno.test("subscribeServerEvents: terminates on socket close", async () => {
     await server.shutdown();
   }
 });
+
+// ── server-error classification tests (swamp-club#2383) ──────────────
+
+function upgradeFailingServer(status: number): {
+  url: string;
+  shutdown: () => Promise<void>;
+} {
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      if (req.headers.get("upgrade") === "websocket") {
+        return new Response("upgrade failed", { status });
+      }
+      const url = new URL(req.url);
+      if (url.pathname === "/health") {
+        return Response.json({ status: "ok" });
+      }
+      return new Response("Not found", { status: 404 });
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+  };
+}
+
+Deno.test({
+  name:
+    "remote run: a 500 on the WebSocket upgrade shows a server error, not an auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = upgradeFailingServer(500);
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "Server error (HTTP 500)");
+      assertEquals(error.message.includes("Authentication failed"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: a 500 on the WebSocket upgrade shows a server error, not an auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = upgradeFailingServer(500);
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Server error (HTTP 500)");
+      assertEquals(error.message.includes("Authentication failed"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: another non-auth status keeps the original message instead of an auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = upgradeFailingServer(404);
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Invalid status code: 404");
+      assertEquals(error.message.includes("Authentication failed"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});

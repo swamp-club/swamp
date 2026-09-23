@@ -34,7 +34,7 @@ import {
 import { createInMemoryWorkerContext } from "../worker/worker_test_helpers.ts";
 
 const mintArgs = {
-  principalId: "oauth|user-123",
+  principalId: "user:oauth|user-123",
   principalEmail: "user@example.com",
   vaultName: "local",
 };
@@ -61,7 +61,7 @@ Deno.test("serverTokenModel: mint writes the secret to the vault, never to data"
   assertEquals(token.state, "active");
   assertEquals(token.vaultName, "local");
   assertEquals(token.secretKey, serverTokenSecretKey("user-token-1"));
-  assertEquals(token.principalId, "oauth|user-123");
+  assertEquals(token.principalId, "user:oauth|user-123");
   assertEquals(token.principalEmail, "user@example.com");
   assertEquals(typeof plaintext, "string");
   assertEquals(plaintext.length, 64);
@@ -107,6 +107,44 @@ Deno.test("serverTokenModel: mint after expire succeeds with fresh credentials",
     `local/${serverTokenSecretKey("user-token-1")}`,
   )!;
   assertNotEquals(newPlaintext, oldPlaintext);
+});
+
+for (
+  const [principalId, expected] of [
+    ["agent:swamp-resumer", 'Invalid principal kind "agent"'],
+    ["adam", 'expected "user:<id>" or "worker:<id>"'],
+    ["user:", "id cannot be empty"],
+  ]
+) {
+  Deno.test(`serverTokenModel: mint rejects principal ${principalId} before writing anything`, async () => {
+    const harness = createInMemoryWorkerContext(
+      SERVER_TOKEN_MODEL_TYPE,
+      "bad-principal-token",
+    );
+    await assertRejects(
+      () =>
+        serverTokenModel.methods.mint.execute(
+          { ...mintArgs, principalId },
+          harness.context,
+        ),
+      Error,
+      expected,
+    );
+    assertEquals(harness.vault.size, 0);
+    assertEquals(harness.store.has("token-main"), false);
+  });
+}
+
+Deno.test("serverTokenModel: mint accepts a worker principal", async () => {
+  const harness = createInMemoryWorkerContext(
+    SERVER_TOKEN_MODEL_TYPE,
+    "worker-token",
+  );
+  await serverTokenModel.methods.mint.execute(
+    { ...mintArgs, principalId: "worker:runner-1" },
+    harness.context,
+  );
+  assertEquals(harness.store.get("token-main")!.principalId, "worker:runner-1");
 });
 
 Deno.test("serverTokenModel: mint succeeds for active token past its expiresAt without explicit expire", async () => {
@@ -374,7 +412,7 @@ Deno.test("serverTokenModel: rotate active token produces new credentials", asyn
   await serverTokenModel.methods.rotate.execute({}, context);
   const token = store.get("token-main")!;
   assertEquals(token.state, "active");
-  assertEquals(token.principalId, "oauth|user-123");
+  assertEquals(token.principalId, "user:oauth|user-123");
   assertEquals(token.principalEmail, "user@example.com");
   const newPlaintext = vault.get(`local/${oldSecretKey}`)!;
   assertNotEquals(newPlaintext, plaintext);
@@ -384,7 +422,7 @@ Deno.test("serverTokenModel: rotate preserves principal from original token", as
   const { context, store } = await mintToken();
   await serverTokenModel.methods.rotate.execute({}, context);
   const token = store.get("token-main")!;
-  assertEquals(token.principalId, "oauth|user-123");
+  assertEquals(token.principalId, "user:oauth|user-123");
   assertEquals(token.principalEmail, "user@example.com");
 });
 
