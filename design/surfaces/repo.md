@@ -131,7 +131,12 @@ options are:
   serve-aware command uses it without `SWAMP_SERVE_URL` or `--server`.
   Precedence: `--server` flag > `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env >
   `.swamp.yaml serverAddress`. Set it with `swamp repo init --server <url>` or
-  by editing `.swamp.yaml`.
+  by editing `.swamp.yaml`. `repo init` refuses a URL with a username,
+  password, query string or fragment, because `.swamp.yaml` is usually
+  committed. The value is never used to authenticate: the token comes from
+  `--token`, `SWAMP_SERVER_TOKEN`, `SWAMP_SERVER_TOKEN_FILE` or
+  `~/.config/swamp/servers.json`. Keep credentials out of it when editing by
+  hand too.
 
 ### Run Garbage Collection
 

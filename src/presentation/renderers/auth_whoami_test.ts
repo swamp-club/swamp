@@ -462,3 +462,49 @@ Deno.test("JsonAuthWhoamiRenderer - omits effectiveServeUrl when not set", () =>
   const parsed = JSON.parse(output);
   assertEquals("effectiveServeUrl" in parsed, false);
 });
+
+const CREDENTIAL_SERVE_URL =
+  "https://zz9user:zz9password@serve.example.com/base?token=zz9token#zz9frag";
+
+Deno.test("LogAuthWhoamiRenderer - redacts credentials in the effective serve URL", () => {
+  const output = captureLog(
+    makeIdentity(),
+    "log",
+    { effectiveServeUrl: CREDENTIAL_SERVE_URL },
+  );
+  assertStringIncludes(output, "Serve: https://serve.example.com/base");
+  assertEquals(output.includes("zz9"), false);
+});
+
+Deno.test("JsonAuthWhoamiRenderer - redacts credentials in effectiveServeUrl", () => {
+  const output = captureLog(
+    makeIdentity(),
+    "json",
+    { effectiveServeUrl: CREDENTIAL_SERVE_URL },
+  );
+  assertEquals(
+    JSON.parse(output).effectiveServeUrl,
+    "https://serve.example.com/base",
+  );
+  assertEquals(output.includes("zz9"), false);
+});
+
+Deno.test("LogAuthWhoamiRenderer - omits serve line for an unparseable serve URL", () => {
+  const output = captureLog(
+    makeIdentity(),
+    "log",
+    { effectiveServeUrl: "not a url zz9token" },
+  );
+  assertEquals(output.includes("Serve:"), false);
+  assertEquals(output.includes("zz9"), false);
+});
+
+Deno.test("JsonAuthWhoamiRenderer - omits effectiveServeUrl for an unparseable serve URL", () => {
+  const output = captureLog(
+    makeIdentity(),
+    "json",
+    { effectiveServeUrl: "not a url zz9token" },
+  );
+  assertEquals("effectiveServeUrl" in JSON.parse(output), false);
+  assertEquals(output.includes("zz9"), false);
+});

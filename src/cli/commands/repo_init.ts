@@ -153,7 +153,7 @@ export const repoInitCommand = new Command()
   })
   .option(
     "--server <url:string>",
-    "Default serve URL for this repository — stored in .swamp.yaml as serverAddress (env: SWAMP_SERVE_URL overrides at runtime)",
+    "Default serve URL for this repository — stored in .swamp.yaml as serverAddress (env: SWAMP_SERVE_URL overrides at runtime). A URL with credentials, a query string or a fragment is refused — give remote commands the token with --token, or store it with swamp auth server-login",
   )
   .action(repoInitAction);
 

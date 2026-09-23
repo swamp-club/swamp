@@ -27,6 +27,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { bold, cyan, dim } from "@std/fmt/colors";
 
 /**
@@ -191,8 +192,16 @@ class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
 
 export function createAuthWhoamiRenderer(
   mode: OutputMode,
-  options: AuthWhoamiRendererOptions = {},
+  rawOptions: AuthWhoamiRendererOptions = {},
 ): Renderer<AuthWhoamiEvent> {
+  // The serve URL can come from SWAMP_SERVE_URL or .swamp.yaml and may carry
+  // a credential; both modes show only its redacted form, or nothing.
+  const options: AuthWhoamiRendererOptions = {
+    ...rawOptions,
+    effectiveServeUrl: rawOptions.effectiveServeUrl === undefined
+      ? undefined
+      : redactServerUrl(rawOptions.effectiveServeUrl),
+  };
   switch (mode) {
     case "json":
       return new JsonAuthWhoamiRenderer(options);
