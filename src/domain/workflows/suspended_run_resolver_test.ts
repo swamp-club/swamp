@@ -361,8 +361,10 @@ Deno.test("resolveResumableRun: bare resume with only a failed run names the ret
   );
   assertStringIncludes(
     error.message,
-    `Retry it with 'workflow resume --run ${run.id}'.`,
+    `The latest run is failed. Retry it with 'swamp workflow resume test-wf --run ${run.id}'.`,
   );
+  // The hint names the run, so the message does not repeat the id.
+  assertEquals(error.message.split(run.id).length - 1, 1);
 });
 
 Deno.test("resolveSuspendedRun: ignores failed runs, as approve and reject need", async () => {
@@ -406,6 +408,6 @@ Deno.test("resolveSuspendedRun: approve and reject on a failed run name the resu
   );
   assertStringIncludes(
     error.message,
-    `Retry it with 'workflow resume --run ${run.id}'.`,
+    `Retry it with 'swamp workflow resume test-wf --run ${run.id}'.`,
   );
 });

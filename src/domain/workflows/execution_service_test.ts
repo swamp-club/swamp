@@ -8198,7 +8198,7 @@ Deno.test("resume: suspendedOnly refuses a failed run", async () => {
     );
     assertStringIncludes(
       error.message,
-      `Retry it with 'workflow resume --run ${failed.id}'.`,
+      `Retry it with 'swamp workflow resume retry-wf --run ${failed.id}'.`,
     );
     assertEquals(runRepo.saves, saves);
     assertEquals(failed.status, "failed");
