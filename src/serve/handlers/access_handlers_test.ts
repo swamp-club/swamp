@@ -468,8 +468,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-// Models an ungated push (post-run, post-resume) landing right after each
-// mark: the repositories mark a path before writing it, so that push finds
+// Models a concurrent push landing right after each mark: the repositories
+// mark a path before writing it, so that push finds
 // the path absent, takes it as a delete and clears the mark. Only marks made
 // after the write are still set when the handler pushes.
 function createRacingSyncService(cacheRoot: string): {

@@ -727,9 +727,11 @@ export async function handleAccessReload(
       ctx.repoContext.markDirty,
     );
     // Paths the reconcile wrote, re-marked just before the push. The
-    // repositories mark each path before writing it, and an ungated push
-    // (post-run, post-resume) that lands in between takes the path as a
-    // delete and clears the mark (swamp-club#2408).
+    // repositories mark each path before writing it, and a push that lands
+    // in between takes the path as a delete and clears the mark. The sync
+    // gate keeps run pushes out of this handler (swamp-club#2405); the
+    // re-mark, as in the OAuth mint, keeps the push correct if one ever
+    // interleaves (swamp-club#2408, swamp-club#2421).
     const writtenPaths: string[] = [];
     const store = createFileGrantStore(
       ctx.repoContext.definitionRepo,
