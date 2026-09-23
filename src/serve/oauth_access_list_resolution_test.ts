@@ -244,6 +244,47 @@ Deno.test("resolveAccessLists: full mode re-resolves names that are already cach
   assertEquals(calls, ["alice", "bob"]);
 });
 
+Deno.test("resolveAccessLists: a 404 for a name that resolved before keeps its cached sub", async () => {
+  // Adding carol looks every resolved name up again. A spurious 404 for
+  // alice must not revoke her grant or record her as not found.
+  const cache = { alice: "sub-alice", "allowed:alice": "sub-alice" };
+  const { resolve } = fakeResolver(["carol"]);
+  const result = await run({
+    admins: ["alice", "carol"],
+    allowedUsers: ["alice"],
+    cache,
+    mode: chooseResolutionMode(["alice", "carol"], ["alice"], cache),
+    resolve,
+  });
+  assertEquals(result.admins, ["user:sub-alice", "user:sub-carol"]);
+  assertEquals(result.allowedUsers, ["sub-alice"]);
+  assertEquals(result.unresolved, []);
+  assertEquals(result.cache[unresolvedCacheKey("admin", "alice")], undefined);
+  assertEquals(result.cache["alice"], "sub-alice");
+  const alice = result.resolved.find((r) =>
+    r.kind === "admin" && r.username === "alice"
+  );
+  assertEquals(alice?.fromCache, true);
+  assertStringIncludes(alice?.notFoundNow ?? "", "not found");
+  const carol = result.resolved.find((r) => r.username === "carol");
+  assertEquals(carol?.notFoundNow, undefined);
+});
+
+Deno.test("resolveAccessLists: a transient error for a name that resolved before still aborts", async () => {
+  const cache = { alice: "sub-alice" };
+  await assertRejects(
+    () =>
+      run({
+        admins: ["alice", "carol"],
+        cache,
+        mode: "full",
+        resolve: fakeResolver(["carol"], ["alice"]).resolve,
+      }),
+    UserError,
+    "Failed to resolve admin 'alice'",
+  );
+});
+
 Deno.test("resolveAccessLists: full mode keeps a previously missing name skipped", async () => {
   // Adding carol triggers full mode, but alic_e was recorded as not found:
   // an unrelated edit must not look it up, or a squatted typo would be

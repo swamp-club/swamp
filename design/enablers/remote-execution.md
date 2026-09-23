@@ -271,8 +271,13 @@ Username resolution: at startup serve turns each `--admins` and
 `oauth-resolved-admins` vault key, and a start whose names are all cached makes
 no lookups. The rules for a name that does not resolve:
 
-- **Not found (HTTP 404)**: the name is skipped with an ERROR log, and serve
-  starts with the rest. The failure is recorded in the cache, and the name
+- **Not found (HTTP 404), name resolved before**: serve keeps the cached `sub`
+  and logs a WARN. One wrong answer from the provider must not revoke an
+  existing grant. The `sub` still identifies the original account, so whoever
+  registers the name afterwards does not inherit it. Remove the name to drop it.
+- **Not found (HTTP 404), name never resolved**: the name is skipped with an
+  ERROR log, and serve starts with the rest. The failure is recorded in the
+  cache, and the name
   stays skipped: restarts and edits to other entries never look it up again.
   Removing the name drops its record, so adding it back later looks it up
   fresh. Fixing a typo therefore takes one deploy; an account created after

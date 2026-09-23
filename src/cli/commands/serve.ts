@@ -2544,7 +2544,16 @@ export const serveCommand = new Command()
         now: () => new Date().toISOString(),
       });
 
-      for (const { kind, username, sub, fromCache } of resolution.resolved) {
+      for (const resolvedEntry of resolution.resolved) {
+        const { kind, entry, username, sub, fromCache, notFoundNow } =
+          resolvedEntry;
+        if (notFoundNow !== undefined) {
+          const list = kind === "admin"
+            ? "--admins / auth.admins"
+            : "--allowed-users / auth.allowed-users";
+          logger
+            .warn`Keeping ${entry} from ${list} as ${sub}: the provider now reports it not found (${notFoundNow}), but it resolved before. If the account was deleted or renamed, remove the name.`;
+        }
         if (kind === "admin") {
           logger.info(
             fromCache

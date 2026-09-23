@@ -27,9 +27,12 @@
  * found maps to the time it was first seen missing (`unresolved:<name>`,
  * `unresolved:allowed:<name>`).
  *
- * A name is only ever skipped on a definitive not-found. Any other lookup
- * failure aborts startup, because dropping an existing admin from the list
- * makes `materializeAdmins` revoke their grant.
+ * A name is only ever skipped on a definitive not-found, and only when it
+ * has never resolved. A name that resolved before keeps its cached sub if
+ * the provider now reports it not found: dropping it would make
+ * `materializeAdmins` revoke the grant on a single bad answer. The sub still
+ * identifies the original account, so whoever registers the name afterwards
+ * does not inherit it. Any other lookup failure aborts startup.
  *
  * A skipped name stays skipped: restarts and edits to other entries never
  * look it up again. Removing it from the list drops its record, so adding
@@ -76,6 +79,11 @@ export interface ResolvedEntry {
   readonly sub: string;
   /** True when the sub came from the cache rather than a lookup. */
   readonly fromCache: boolean;
+  /**
+   * Set when the lookup reported the name not found and the cached sub was
+   * kept instead; holds the lookup error.
+   */
+  readonly notFoundNow?: string;
 }
 
 export interface AccessListResolution {
@@ -215,9 +223,19 @@ export async function resolveAccessLists(
   const resolved: ResolvedEntry[] = [];
   const unresolved: UnresolvedEntry[] = [];
 
-  const accept = (entry: ConfiguredEntry, sub: string, fromCache: boolean) => {
+  const accept = (
+    entry: ConfiguredEntry,
+    sub: string,
+    fromCache: boolean,
+    notFoundNow?: string,
+  ) => {
     nextCache[resolvedCacheKey(entry.kind, entry.username)] = sub;
-    resolved.push({ ...entry, sub, fromCache });
+    resolved.push({
+      ...entry,
+      sub,
+      fromCache,
+      ...(notFoundNow !== undefined ? { notFoundNow } : {}),
+    });
     usernamesBySub[sub] = entry.username;
     if (entry.kind === "admin") {
       admins.push(`user:${sub}`);
@@ -263,7 +281,11 @@ export async function resolveAccessLists(
       accept(entry, await resolve!(entry.username), false);
     } catch (err) {
       if (err instanceof UsernameNotFoundError) {
-        skip(entry, errorMessage(err));
+        if (cachedSub) {
+          accept(entry, cachedSub, true, errorMessage(err));
+        } else {
+          skip(entry, errorMessage(err));
+        }
         continue;
       }
       const label = entry.kind === "admin" ? "admin" : "allowed-user";

@@ -122,6 +122,20 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
         assert(!result.admins.includes(`user:sub-${name}`));
         assert(!result.allowedUsers.includes(`sub-${name}`));
       }
+      // A name that resolved before is never dropped by a later 404: it
+      // keeps its cached sub, so one bad answer cannot revoke a grant.
+      for (const entry of s.admins) {
+        const name = entry.startsWith("user:") ? entry.slice(5) : entry;
+        if (s.cachedExisting.includes(name)) {
+          assert(result.admins.includes(`user:sub-${name}`));
+        }
+      }
+      for (const entry of s.allowedUsers) {
+        const name = entry.startsWith("user:") ? entry.slice(5) : entry;
+        if (s.cachedExisting.includes(name)) {
+          assert(result.allowedUsers.includes(`sub-${name}`));
+        }
+      }
 
       let usable = true;
       try {
