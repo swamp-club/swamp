@@ -175,6 +175,8 @@ async function suspendAtGate(
       if (event.kind === "started") runId = event.runId;
     },
     syncService,
+    undefined,
+    { syncGate: undefined },
   );
   if (!runId) throw new Error("no run id observed");
 

@@ -58,6 +58,7 @@ import {
   type TypeSearchDeps,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunDeps } from "../deps.ts";
+import { withSharedSyncGate } from "../sync_gate.ts";
 import { createCommandTelemetry } from "../telemetry.ts";
 import { serializeEvent } from "../serializer.ts";
 import type {
@@ -216,6 +217,8 @@ export async function handleModelMethodRun(
             ctx.repoDir,
             ctx.syncService,
             ctx.repoContext.catalogStore,
+            undefined,
+            { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
           );
           if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
           flushLocks = lockResult.flush;
@@ -284,8 +287,12 @@ export async function handleModelMethodRun(
         const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
           ? ctx.datastoreConfig.namespace
           : undefined;
+        const syncService = ctx.syncService;
         try {
-          await ctx.syncService.pushChanged({ namespace });
+          await withSharedSyncGate(
+            ctx.syncGate,
+            () => syncService.pushChanged({ namespace }),
+          );
         } catch (pushError) {
           logger.warn("Failed to push changes to remote datastore: {error}", {
             error: pushError instanceof Error
@@ -451,6 +458,8 @@ export async function handleModelMethodRun(
           ctx.repoDir,
           ctx.syncService,
           ctx.repoContext.catalogStore,
+          undefined,
+          { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
         );
         if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
         flushLocks = lockResult.flush;
@@ -515,8 +524,12 @@ export async function handleModelMethodRun(
         const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
           ? ctx.datastoreConfig.namespace
           : undefined;
+        const syncService = ctx.syncService;
         try {
-          await ctx.syncService.pushChanged({ namespace });
+          await withSharedSyncGate(
+            ctx.syncGate,
+            () => syncService.pushChanged({ namespace }),
+          );
         } catch (pushError) {
           logger.warn("Failed to push changes to remote datastore: {error}", {
             error: pushError instanceof Error

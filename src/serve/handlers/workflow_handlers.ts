@@ -59,7 +59,12 @@ import {
   type WorkflowSearchDeps,
   workflowValidate,
 } from "../../libswamp/mod.ts";
-import { createWorkflowRunDeps, executeWorkflowWithLocks } from "../deps.ts";
+import {
+  createStepLockHook,
+  createWorkflowRunDeps,
+  executeWorkflowWithLocks,
+} from "../deps.ts";
+import { withSharedSyncGate } from "../sync_gate.ts";
 import { serializeEvent } from "../serializer.ts";
 import type {
   WorkflowApprovePayload,
@@ -82,7 +87,6 @@ import type {
   WorkflowTriggerSetPayload,
   WorkflowValidatePayload,
 } from "../protocol.ts";
-import { acquireModelLocks } from "../../cli/repo_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import {
@@ -90,7 +94,6 @@ import {
   type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import type { StepLockHook } from "../../domain/workflows/execution_service.ts";
 import {
   type Principal,
   principalToString,
@@ -236,7 +239,7 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { triggerSource: "api", initiatedBy },
+        { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
       );
       send(socket, { type: "done", id: requestId });
     } catch (error) {
@@ -357,7 +360,7 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { triggerSource: "api", initiatedBy },
+        { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
       );
       buffer.finish({ kind: "done" });
     } catch (error) {
@@ -1237,17 +1240,13 @@ export async function handleWorkflowResume(
         { fromStep: payload.from },
       );
 
-      const stepLockHook: StepLockHook = async (modelType, modelId) => {
-        const lockResult = await acquireModelLocks(
-          ctx.datastoreConfig,
-          [{ modelType, modelId }],
-          ctx.repoDir,
-          ctx.syncService,
-          ctx.repoContext.catalogStore,
-        );
-        if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-        return lockResult;
-      };
+      const stepLockHook = createStepLockHook(
+        ctx.repoDir,
+        ctx.repoContext,
+        ctx.datastoreConfig,
+        ctx.syncService,
+        ctx.syncGate,
+      );
 
       const deps = await createWorkflowRunDeps(
         ctx.repoDir,
@@ -1326,8 +1325,12 @@ export async function handleWorkflowResume(
         const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
           ? ctx.datastoreConfig.namespace
           : undefined;
+        const syncService = ctx.syncService;
         try {
-          await ctx.syncService.pushChanged({ namespace });
+          await withSharedSyncGate(
+            ctx.syncGate,
+            () => syncService.pushChanged({ namespace }),
+          );
         } catch (pushErr) {
           logger.warn(
             "Post-resume push failed; terminal status may be delayed: {error}",

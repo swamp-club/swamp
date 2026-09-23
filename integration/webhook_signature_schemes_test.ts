@@ -116,6 +116,7 @@ async function withService(
       datastoreConfig,
       endpoints: [await parseWebhookFlag(flag)],
       syncService,
+      syncGate: undefined,
     });
 
     try {

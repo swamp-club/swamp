@@ -26,6 +26,7 @@
 
 import { mapWorkflowExecutionEvent } from "../libswamp/mod.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
+import { withSharedSyncGate } from "./sync_gate.ts";
 import { serializeEvent } from "./serializer.ts";
 import { isCustomDatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import {
@@ -167,6 +168,7 @@ export async function startDetachedResume(
       ctx.repoContext,
       ctx.datastoreConfig,
       ctx.syncService,
+      ctx.syncGate,
     );
 
     let ephemeral: ReturnType<typeof createEphemeralStore> | null = null;
@@ -249,8 +251,12 @@ export async function startDetachedResume(
         const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
           ? ctx.datastoreConfig.namespace
           : undefined;
+        const syncService = ctx.syncService;
         try {
-          await ctx.syncService.pushChanged({ namespace });
+          await withSharedSyncGate(
+            ctx.syncGate,
+            () => syncService.pushChanged({ namespace }),
+          );
         } catch (pushErr) {
           logger.warn(
             "Post-resume push failed; terminal status may be delayed: {error}",

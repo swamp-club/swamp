@@ -25,6 +25,8 @@ import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { WorkflowTelemetrySink } from "../libswamp/mod.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { createSyncGate } from "./sync_gate.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 
 // CLI-adjacent code needs logging initialized and the models barrel imported
 // before it can run.
@@ -141,6 +143,8 @@ Deno.test("executeWorkflowWithLocks: calls pushChanged after run completes", asy
     new AbortController().signal,
     () => {},
     syncService,
+    undefined,
+    { syncGate: undefined },
   );
 
   assertEquals(syncService.pushCalledCount, 1);
@@ -162,6 +166,8 @@ Deno.test("executeWorkflowWithLocks: calls pushChanged even when onEvent throws"
         throw new Error("deliberate onEvent failure");
       },
       syncService,
+      undefined,
+      { syncGate: undefined },
     );
   } catch {
     threw = true;
@@ -182,5 +188,78 @@ Deno.test("executeWorkflowWithLocks: skips pushChanged when no syncService", asy
     new AbortController().signal,
     () => {},
     undefined,
+    undefined,
+    { syncGate: undefined },
   );
+});
+
+Deno.test("executeWorkflowWithLocks: the post-run push waits while a pull holds the sync gate", async () => {
+  // swamp-club#2405: a poller pull that overlaps a run's push prunes the
+  // entries that push commits. The push must queue behind the pull.
+  const syncService = stubSyncService();
+  const ctx = stubRepoContextWithRepos();
+  const gate = createSyncGate();
+  await gate.acquire(); // a poller pull in flight
+
+  const run = executeWorkflowWithLocks(
+    "/tmp/repo",
+    ctx,
+    datastoreConfig,
+    { workflowIdOrName: "nonexistent" },
+    new AbortController().signal,
+    () => {},
+    syncService,
+    undefined,
+    { syncGate: gate },
+  );
+
+  await waitFor(() => gate.waiters === 1, "post-run push queued on the gate");
+  assertEquals(syncService.pushCalledCount, 0);
+
+  gate.release();
+  await run;
+
+  assertEquals(syncService.pushCalledCount, 1);
+  assertEquals(gate.sharedHolders, 0);
+});
+
+Deno.test("executeWorkflowWithLocks: post-run pushes of concurrent runs share the gate", async () => {
+  const ctx = stubRepoContextWithRepos();
+  const gate = createSyncGate();
+  let active = 0;
+  let maxActive = 0;
+  let release!: () => void;
+  const released = new Promise<void>((r) => {
+    release = r;
+  });
+  const syncService: DatastoreSyncService = {
+    pullChanged: () => Promise.resolve(),
+    pushChanged: async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await released;
+      active--;
+    },
+    markDirty: () => Promise.resolve(),
+  };
+
+  const runOnce = () =>
+    executeWorkflowWithLocks(
+      "/tmp/repo",
+      ctx,
+      datastoreConfig,
+      { workflowIdOrName: "nonexistent" },
+      new AbortController().signal,
+      () => {},
+      syncService,
+      undefined,
+      { syncGate: gate },
+    );
+  const runs = [runOnce(), runOnce()];
+
+  await waitFor(() => active === 2, "both post-run pushes in flight");
+  release();
+  await Promise.all(runs);
+
+  assertEquals(maxActive, 2);
 });

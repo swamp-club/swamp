@@ -112,7 +112,7 @@ async function runViaLocks(
     (event) => events.push(event),
     syncService,
     undefined,
-    options,
+    { syncGate: undefined, ...options },
   );
   return events;
 }

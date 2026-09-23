@@ -84,6 +84,7 @@ import {
   extractTraceContext,
   runWithParentTrace,
 } from "../infrastructure/tracing/mod.ts";
+import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
 
 const logger = getSwampLogger(["serve", "deps"]);
 
@@ -337,12 +338,18 @@ export async function createModelMethodRunDeps(
  * Builds the per-step model lock hook serve's workflow executions use: it
  * acquires the step's model lock and invalidates the catalog when acquiring it
  * synced remote state.
+ *
+ * The step's pull and its flush push run under the sync gate's shared mode
+ * (swamp-club#2405), so they never overlap a poller pull. `syncGate` is
+ * required — pass `undefined` explicitly where no gate exists — so a new
+ * caller cannot silently run its syncs ungated.
  */
 export function createStepLockHook(
   repoDir: string,
   repoContext: RepositoryContext,
   datastoreConfig: DatastoreConfig,
-  syncService?: DatastoreSyncService,
+  syncService: DatastoreSyncService | undefined,
+  syncGate: SyncGate | undefined,
 ): StepLockHook {
   return async (modelType, modelId) => {
     const result = await acquireModelLocks(
@@ -351,6 +358,8 @@ export function createStepLockHook(
       repoDir,
       syncService,
       repoContext.catalogStore,
+      undefined,
+      { wrapSync: (fn) => withSharedSyncGate(syncGate, fn) },
     );
     if (result.synced) repoContext.catalogStore.invalidate();
     return result;
@@ -373,9 +382,16 @@ export async function executeWorkflowWithLocks(
   input: WorkflowRunInput,
   signal: AbortSignal,
   onEvent: (event: WorkflowRunEvent) => void,
-  syncService?: DatastoreSyncService,
-  runTracker?: RunTrackerRepository,
-  options?: {
+  syncService: DatastoreSyncService | undefined,
+  runTracker: RunTrackerRepository | undefined,
+  options: {
+    /**
+     * Serve's sync gate. The run's step syncs and post-run push take its
+     * shared mode so they never overlap a poller pull (swamp-club#2405).
+     * Required — pass `undefined` explicitly where no gate exists — so a new
+     * caller cannot silently run ungated.
+     */
+    syncGate: SyncGate | undefined;
     /**
      * What caused this run. Supplied by serve's trigger sites (scheduled,
      * webhook, API) so the run is recorded and distinguishable from
@@ -399,12 +415,13 @@ export async function executeWorkflowWithLocks(
     repoContext,
     datastoreConfig,
     syncService,
+    options.syncGate,
   );
 
   // Undefined when no trigger source was supplied (library/test callers) or
   // when telemetry is disabled for this process, in which case the run
   // produces no telemetry at all — exactly as before this was wired.
-  const runTelemetry = options?.triggerSource
+  const runTelemetry = options.triggerSource
     ? createRunTelemetry(options.triggerSource, {
       initiatedBy: options.initiatedBy,
     })
@@ -450,7 +467,7 @@ export async function executeWorkflowWithLocks(
         ),
       }
       : input),
-    triggerSource: options?.triggerSource,
+    triggerSource: options.triggerSource,
   };
 
   // A workflow run reports failure through the event stream, not by
@@ -512,7 +529,10 @@ export async function executeWorkflowWithLocks(
         ? datastoreConfig.namespace
         : undefined;
       try {
-        await syncService.pushChanged({ namespace });
+        await withSharedSyncGate(
+          options.syncGate,
+          () => syncService.pushChanged({ namespace }),
+        );
       } catch (pushErr) {
         logger.warn(
           "Post-run push failed; terminal status may be delayed: {error}",

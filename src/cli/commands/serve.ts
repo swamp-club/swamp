@@ -3686,7 +3686,7 @@ export const serveCommand = new Command()
             onEvent,
             syncService,
             runTracker,
-            { triggerSource: "schedule" },
+            { syncGate, triggerSource: "schedule" },
           ),
         pendingRunHook: {
           enqueue: async (entry) => {
@@ -4072,6 +4072,7 @@ export const serveCommand = new Command()
         datastoreConfig,
         endpoints,
         syncService,
+        syncGate,
         runTracker,
         instanceId,
         controlPlaneStore,

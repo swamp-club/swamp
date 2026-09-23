@@ -434,6 +434,7 @@ Deno.test("parseWebhookFlag: resolves @file= secret", async () => {
 Deno.test("listEndpoints: includes scheme from each endpoint verifier", async () => {
   const service = new WebhookService({
     repoDir: "/tmp/fake",
+    syncGate: undefined,
     // deno-lint-ignore no-explicit-any
     repoContext: {} as any,
     // deno-lint-ignore no-explicit-any
@@ -658,6 +659,7 @@ function extensionService(scheme: ExtensionWebhookScheme): {
   const pendingRuns: unknown[] = [];
   const service = new WebhookService({
     repoDir: "/tmp/fake",
+    syncGate: undefined,
     repoContext: {} as unknown as RepositoryContext,
     datastoreConfig: {} as unknown as DatastoreConfig,
     endpoints: [{
@@ -849,6 +851,7 @@ Deno.test("updateEndpoints: swaps active endpoints and returns change count", as
   const ep2 = await parseWebhookFlag("/hooks/b:wf-b:secret-b");
   const service = new WebhookService({
     repoDir: "/tmp/fake",
+    syncGate: undefined,
     repoContext: {} as RepositoryContext,
     datastoreConfig: {} as DatastoreConfig,
     endpoints: [ep1],
@@ -868,6 +871,7 @@ Deno.test("updateEndpoints: returns 0 when endpoints are unchanged", async () =>
   const ep = await parseWebhookFlag("/hooks/a:wf:secret");
   const service = new WebhookService({
     repoDir: "/tmp/fake",
+    syncGate: undefined,
     repoContext: {} as RepositoryContext,
     datastoreConfig: {} as DatastoreConfig,
     endpoints: [ep],
@@ -882,6 +886,7 @@ Deno.test("updateEndpoints: detects workflow binding change on same route", asyn
   const ep2 = await parseWebhookFlag("/hooks/a:wf-new:secret");
   const service = new WebhookService({
     repoDir: "/tmp/fake",
+    syncGate: undefined,
     repoContext: {} as RepositoryContext,
     datastoreConfig: {} as DatastoreConfig,
     endpoints: [ep1],
@@ -897,6 +902,7 @@ Deno.test("updateEndpoints: clears all endpoints when given empty list", async (
   const ep = await parseWebhookFlag("/hooks/a:wf:secret");
   const service = new WebhookService({
     repoDir: "/tmp/fake",
+    syncGate: undefined,
     repoContext: {} as RepositoryContext,
     datastoreConfig: {} as DatastoreConfig,
     endpoints: [ep],
