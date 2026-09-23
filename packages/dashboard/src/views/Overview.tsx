@@ -25,6 +25,7 @@ import type { HealthSnapshot } from "../client/useHealthStream";
 import { StatusDot } from "../components/StatusDot";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
+import { ResumeAction } from "../components/ResumeAction";
 
 interface WorkflowRunSearchItem {
   runId: string;
@@ -37,6 +38,8 @@ interface WorkflowRunSearchItem {
   stepProgress?: { completed: number; total: number };
   failedStep?: string;
   failureReason?: string;
+  awaitingResume?: boolean;
+  workflowHasInputs?: boolean;
 }
 
 interface ApprovalInfo {
@@ -51,13 +54,22 @@ interface ApprovalInfo {
 interface OverviewProps {
   health: HealthSnapshot | null;
   onOpenRun?: (workflowName: string, runId?: string) => void;
+  /** Called after a gate decision or resume, so the sidebar count refreshes. */
+  onApprovalsChanged?: () => void;
 }
 
-export function Overview({ health, onOpenRun }: OverviewProps) {
+export function Overview(
+  { health, onOpenRun, onApprovalsChanged }: OverviewProps,
+) {
   const { request } = useSwamp();
 
-  const { data: runsData } = useRequest("workflow.run.search", { limit: 500 });
-  const { data: approvalsData } = useRequest("workflow.approvals");
+  const { data: runsData, refetch: refetchRuns } = useRequest(
+    "workflow.run.search",
+    { limit: 500 },
+  );
+  const { data: approvalsData, refetch: refetchApprovals } = useRequest(
+    "workflow.approvals",
+  );
 
   const runs = extractArray<WorkflowRunSearchItem>(runsData);
   const approvals = extractArray<ApprovalInfo>(approvalsData);
@@ -72,24 +84,34 @@ export function Overview({ health, onOpenRun }: OverviewProps) {
     (r) => r.status === "running" || r.status === "suspended",
   );
 
+  const refresh = useCallback(() => {
+    refetchRuns();
+    refetchApprovals();
+    onApprovalsChanged?.();
+  }, [refetchRuns, refetchApprovals, onApprovalsChanged]);
+
   const handleApprove = useCallback(
-    async (workflowName: string, stepName: string) => {
+    async (a: ApprovalInfo) => {
       await request("workflow.approve", {
-        workflowIdOrName: workflowName,
-        stepName,
+        workflowIdOrName: a.workflowName,
+        stepName: a.stepName,
+        runId: a.runId,
       });
+      refresh();
     },
-    [request],
+    [request, refresh],
   );
 
   const handleReject = useCallback(
-    async (workflowName: string, stepName: string) => {
+    async (a: ApprovalInfo) => {
       await request("workflow.reject", {
-        workflowIdOrName: workflowName,
-        stepName,
+        workflowIdOrName: a.workflowName,
+        stepName: a.stepName,
+        runId: a.runId,
       });
+      refresh();
     },
-    [request],
+    [request, refresh],
   );
 
   return (
@@ -176,6 +198,7 @@ export function Overview({ health, onOpenRun }: OverviewProps) {
                       </div>
                     )}
                   </div>
+                  <ResumeAction run={run} onResumed={refresh} />
                 </div>
                 <span className="run-duration">
                   {formatDuration(run.duration)}
@@ -242,7 +265,7 @@ export function Overview({ health, onOpenRun }: OverviewProps) {
                     type="button"
                     className="btn-sm btn-approve"
                     onClick={() =>
-                      handleApprove(a.workflowName, a.stepName)}
+                      handleApprove(a)}
                   >
                     Approve
                   </button>
@@ -250,7 +273,7 @@ export function Overview({ health, onOpenRun }: OverviewProps) {
                     type="button"
                     className="btn-sm btn-reject"
                     onClick={() =>
-                      handleReject(a.workflowName, a.stepName)}
+                      handleReject(a)}
                   >
                     Reject
                   </button>

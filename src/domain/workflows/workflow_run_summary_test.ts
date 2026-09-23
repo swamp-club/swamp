@@ -99,6 +99,7 @@ Deno.test("parseWorkflowRunSummary: never retains the heavy jobs/output subtree"
     "failedStep",
     "failureReason",
     "stepProgress",
+    "awaitingResume",
   ]);
   for (const key of Object.keys(summary)) {
     assert(allowedKeys.has(key), `unexpected key "${key}" on summary`);
@@ -135,8 +136,10 @@ Deno.test("parseWorkflowRunSummary: projects instanceId, triggerSource, and fail
     failedStep: "build",
     failureReason: "exit code 1",
     stepProgress: { completed: 2, total: 5 },
+    awaitingResume: true,
   });
 
+  assertEquals(summary.awaitingResume, true);
   assertEquals(summary.instanceId, "inst-abc");
   assertEquals(summary.triggerSource, "schedule");
   assertEquals(summary.failedStep, "build");
@@ -157,6 +160,7 @@ Deno.test("parseWorkflowRunSummary: new fields default to undefined when absent"
   assertEquals(summary.failedStep, undefined);
   assertEquals(summary.failureReason, undefined);
   assertEquals(summary.stepProgress, undefined);
+  assertEquals(summary.awaitingResume, undefined);
 });
 
 Deno.test("parseWorkflowRunSummary: rejects records missing required identity fields", () => {

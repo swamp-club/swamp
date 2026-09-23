@@ -81,7 +81,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const health = useHealthStream();
   const auditStream = useAuditStream();
 
-  const { data: approvalsData } = useRequest("workflow.approvals");
+  const { data: approvalsData, refetch: refetchApprovals } = useRequest(
+    "workflow.approvals",
+  );
   const approvalCount = extractArray(approvalsData).length;
 
   useEffect(() => {
@@ -131,7 +133,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           : (
             <>
               {view === "overview" && (
-                <Overview health={health} onOpenRun={openRun} />
+                <Overview
+                  health={health}
+                  onOpenRun={openRun}
+                  onApprovalsChanged={refetchApprovals}
+                />
               )}
               {view === "workflows" && (
                 <Workflows onOpenWorkflow={openWorkflow} />
@@ -140,7 +146,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "models" && <Models onOpenModel={openModel} />}
               {view === "schedules" && <Schedules health={health} />}
               {view === "webhooks" && <Webhooks health={health} />}
-              {view === "approvals" && <Approvals />}
+              {view === "approvals" && (
+                <Approvals onApprovalsChanged={refetchApprovals} />
+              )}
               {view === "activity" && <Activity auditStream={auditStream} />}
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}

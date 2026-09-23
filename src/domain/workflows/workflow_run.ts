@@ -193,6 +193,9 @@ export const WorkflowRunSchema = z.object({
     completed: z.number().int().nonnegative(),
     total: z.number().int().nonnegative(),
   }).optional(),
+  // Derived on save: the run is suspended with every approval gate decided,
+  // so it is waiting for a resume rather than an approval.
+  awaitingResume: z.boolean().optional(),
   runPlan: z.object({
     fingerprint: z.string(),
     evaluatedWorkflowId: z.string().optional(),
@@ -1200,11 +1203,23 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (stepProgress !== undefined) {
       data.stepProgress = stepProgress;
     }
+    if (this.isAwaitingResume()) {
+      data.awaitingResume = true;
+    }
     if (this._runPlan !== undefined) {
       data.runPlan = { ...this._runPlan };
     }
 
     return data;
+  }
+
+  /**
+   * True when the run is suspended and no step is still waiting for approval:
+   * every gate has been decided and the run needs a resume to continue.
+   */
+  isAwaitingResume(): boolean {
+    return this._status === "suspended" &&
+      this.findWaitingApprovalStep() === undefined;
   }
 
   private computeFailureInfo(): {

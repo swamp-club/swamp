@@ -38,6 +38,13 @@ steps. Resume accepts `--input` to supply or override values that were not
 available at the original run time (e.g., elevated credentials issued during the
 gate).
 
+Under `swamp serve`, a workflow with `autoResume: true` resumes without that
+second invocation. Serve launches the resume once an approval made through serve
+decides the last gate. `--auto-resume` does the same for workflows that declare
+no inputs. An automatic resume supplies no inputs. If it fails to start, the run
+stays suspended and needs a manual resume. The dashboard lists
+approved-but-suspended runs with a Resume action and the equivalent CLI command.
+
 ### Resume from a Failed Step
 
 `swamp workflow resume <workflow> --from <step>` re-enters a failed run's DAG at

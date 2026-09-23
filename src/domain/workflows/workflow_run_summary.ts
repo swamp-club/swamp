@@ -46,6 +46,7 @@ export interface WorkflowRunSummary {
   failedStep?: string;
   failureReason?: string;
   stepProgress?: { completed: number; total: number };
+  awaitingResume?: boolean;
 }
 
 /**
@@ -77,6 +78,7 @@ const WorkflowRunSummarySchema = z.object({
     completed: z.number().int().nonnegative(),
     total: z.number().int().nonnegative(),
   }).optional(),
+  awaitingResume: z.boolean().optional(),
 });
 
 /**
@@ -139,5 +141,6 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
     failedStep: detached.failedStep,
     failureReason: detached.failureReason,
     stepProgress: detached.stepProgress,
+    awaitingResume: v.awaitingResume,
   };
 }

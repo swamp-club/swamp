@@ -144,6 +144,10 @@ export const UNGATED_PUSH_HANDLERS: ReadonlySet<string> = new Set([
   // resurrected by an overlapping poll — a documented ceiling.
   "handleModelMethodRun",
   "handleWorkflowResume",
+  // The detached resume behind handleWorkflowResume and auto-resume on
+  // approval. Long-running for the same reason, and launched after a gated
+  // approve has done its work: the gate is not reentrant.
+  "startDetachedResume",
   // Post-run push for scheduled, webhook and resumed runs. Called from
   // ungated run paths, and gating it would deadlock any gated handler that
   // ever comes to trigger a run — the gate is not reentrant.

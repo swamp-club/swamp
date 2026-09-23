@@ -1197,6 +1197,59 @@ Deno.test("loadServeConfig: boolean remote-only is accepted", () => {
   });
 });
 
+// ── auto-resume merge ─────────────────────────────────────────────────
+
+Deno.test("mergeServeOptions: auto-resume defaults to false", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.autoResume, false);
+});
+
+Deno.test("mergeServeOptions: auto-resume CLI flag wins over config and env", () => {
+  const merged = mergeServeOptions(
+    { "auto-resume": false },
+    { autoResume: true },
+    new Set(["auto-resume"]),
+    (name: string) => name === "SWAMP_AUTO_RESUME" ? "false" : undefined,
+  );
+  assertEquals(merged.autoResume, true);
+});
+
+Deno.test("mergeServeOptions: auto-resume env var wins over config when CLI not explicit", () => {
+  const merged = mergeServeOptions(
+    { "auto-resume": false },
+    {},
+    new Set<string>(),
+    (name: string) => name === "SWAMP_AUTO_RESUME" ? "true" : undefined,
+  );
+  assertEquals(merged.autoResume, true);
+});
+
+Deno.test("mergeServeOptions: auto-resume from config when no CLI or env", () => {
+  const merged = mergeServeOptions(
+    { "auto-resume": true },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.autoResume, true);
+});
+
+Deno.test("loadServeConfig: non-boolean auto-resume produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "auto-resume": "yes" });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid auto-resume",
+    );
+  });
+});
+
 // ── dashboard ──────────────────────────────────────────────────────────
 
 Deno.test("mergeServeOptions: dashboard defaults to false", () => {

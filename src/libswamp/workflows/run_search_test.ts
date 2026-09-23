@@ -262,3 +262,58 @@ Deno.test("workflowRunSearch: filters by inputs", async () => {
   assertEquals(completed.data.results.length, 1);
   assertEquals(completed.data.results[0].runId, "run-plt-1033");
 });
+
+Deno.test("workflowRunSearch: surfaces awaitingResume and workflowHasInputs", async () => {
+  const deps = makeDeps({
+    findAllWorkflows: () =>
+      Promise.resolve([
+        {
+          id: "wf-1",
+          name: "deploy",
+          inputs: {
+            type: "object",
+            properties: { authKey: { type: "string" } },
+          },
+        },
+        { id: "wf-2", name: "test" },
+      ]),
+    findAllRunsByWorkflowId: (id: string) =>
+      Promise.resolve(
+        id === "wf-1"
+          ? [{
+            ...makeRun({
+              id: "run-approved",
+              workflowId: "wf-1",
+              workflowName: "deploy",
+              status: "suspended",
+              startedAt: new Date(now - 1000),
+            }),
+            awaitingResume: true,
+          }]
+          : [makeRun({
+            id: "run-gated",
+            workflowId: "wf-2",
+            workflowName: "test",
+            status: "suspended",
+            startedAt: new Date(now - 2000),
+          })],
+      ),
+  });
+
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {}),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind !== "completed") return;
+
+  const approved = completed.data.results.find((r) =>
+    r.runId === "run-approved"
+  );
+  assertEquals(approved?.awaitingResume, true);
+  assertEquals(approved?.workflowHasInputs, true);
+
+  const gated = completed.data.results.find((r) => r.runId === "run-gated");
+  assertEquals(gated?.awaitingResume, undefined);
+  assertEquals(gated?.workflowHasInputs, undefined);
+});

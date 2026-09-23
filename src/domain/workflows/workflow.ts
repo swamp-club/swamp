@@ -107,6 +107,7 @@ export const WorkflowObjectSchema = z.object({
   reports: ReportSelectionSchema,
   affinity: z.boolean().optional(),
   writes: z.boolean().optional(),
+  autoResume: z.boolean().optional(),
   ...PlacementFieldsSchema.shape,
 });
 
@@ -124,6 +125,19 @@ export const WorkflowSchema = z.preprocess(
     WorkflowObjectSchema,
   ),
 );
+
+/**
+ * Whether a workflow's inputs schema declares any inputs: named properties,
+ * or open-ended additional properties.
+ */
+export function workflowDeclaresInputs(
+  inputs: InputsSchema | undefined,
+): boolean {
+  if (!inputs) return false;
+  if (Object.keys(inputs.properties ?? {}).length > 0) return true;
+  return inputs.additionalProperties !== undefined &&
+    inputs.additionalProperties !== false;
+}
 
 /**
  * Type representing workflow data (output — defaults applied).
@@ -155,6 +169,7 @@ export interface CreateWorkflowProps {
   labels?: Record<string, string>;
   platform?: string;
   queueTimeout?: number;
+  autoResume?: boolean;
 }
 
 /**
@@ -187,6 +202,7 @@ export class Workflow {
     readonly labels: Record<string, string> | undefined,
     readonly platform: string | undefined,
     readonly queueTimeout: number | undefined,
+    readonly autoResume: boolean | undefined,
   ) {}
 
   /**
@@ -216,6 +232,7 @@ export class Workflow {
       labels: props.labels,
       platform: props.platform,
       queueTimeout: props.queueTimeout,
+      autoResume: props.autoResume,
     };
 
     // Scoped @collective/name is validated by workflowNameBase (in the schema);
@@ -248,6 +265,7 @@ export class Workflow {
       data.labels,
       data.platform,
       data.queueTimeout,
+      data.autoResume,
     );
   }
 
@@ -275,6 +293,7 @@ export class Workflow {
       validated.labels,
       validated.platform,
       validated.queueTimeout,
+      validated.autoResume,
     );
   }
 
@@ -347,6 +366,20 @@ export class Workflow {
     this._jobs.push(job);
   }
 
+  /**
+   * Whether serve should resume a run of this workflow once every approval
+   * gate on it is decided.
+   *
+   * An explicit `autoResume` always wins. Otherwise the server default
+   * applies, but only to a workflow that declares no inputs: resume-time
+   * inputs are never declared separately, so a workflow with inputs may rely
+   * on supplying real values at resume and must opt in itself.
+   */
+  shouldAutoResume(serverDefault: boolean): boolean {
+    if (this.autoResume !== undefined) return this.autoResume;
+    return serverDefault && !workflowDeclaresInputs(this.inputs);
+  }
+
   get placementFields(): PlacementFields {
     return {
       target: this.target,
@@ -377,6 +410,7 @@ export class Workflow {
       labels: this.labels,
       platform: this.platform,
       queueTimeout: this.queueTimeout,
+      autoResume: this.autoResume,
     };
   }
 }

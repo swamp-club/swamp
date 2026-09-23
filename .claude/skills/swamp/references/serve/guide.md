@@ -268,6 +268,21 @@ Also settable as `remote-only: true` in the serve config YAML. See the
 [remote-execution guide](../workflow/references/remote-execution.md#remote-only-mode)
 for the error message, the fix, and the control-plane exemption.
 
+## Auto-Resume After Approval
+
+Resume a suspended run automatically once every approval gate on it is decided
+through serve (dashboard or `swamp workflow approve --server`).
+
+| Flag / env var      | Default | Description                                          |
+| ------------------- | ------- | ---------------------------------------------------- |
+| `--auto-resume`     | `false` | Auto-resume workflows that declare no inputs         |
+| `SWAMP_AUTO_RESUME` | `false` | Env var equivalent (serve.yaml: `auto-resume: true`) |
+
+A workflow's own `autoResume: true | false` always wins. A workflow that
+declares inputs is never covered by the server flag and must set
+`autoResume: true` itself, since it may need resume-time `--input`. The approve
+response reports `autoResumed: true` when serve resumed the run.
+
 ## When to Use What
 
 | Scenario                           | Approach                  |
