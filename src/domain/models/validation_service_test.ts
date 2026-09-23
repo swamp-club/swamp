@@ -1025,7 +1025,8 @@ Deno.test("validateModel passes for data.latest expression", async () => {
 // the validation path was missed.
 Deno.test("validateModel loads lazy types before resolving cross-model references", async () => {
   // Unique type string avoids collision with other tests sharing the
-  // global modelRegistry singleton — defineModel is intentionally NOT
+  // global modelRegistry singleton; the finally block removes it again so
+  // the test also holds under --repeats. defineModel is intentionally NOT
   // used here because it would eagerly register the type and defeat the
   // whole point of simulating the lazy state.
   const LAZY_TYPE = "@test/issue-89-lazy-regression";
@@ -1096,6 +1097,9 @@ Deno.test("validateModel loads lazy types before resolving cross-model reference
     );
   } finally {
     modelRegistry.setTypeLoader(() => Promise.resolve());
+    // The loader promoted the type to fully loaded; drop it so a repeated
+    // run starts from the lazy state again.
+    modelRegistry.invalidateType(LAZY_TYPE);
   }
 });
 

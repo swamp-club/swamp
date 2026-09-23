@@ -392,64 +392,66 @@ Deno.test("requireInitializedRepoReadOnly - pull calls pullChanged when managedC
   let pullSubdirs: readonly string[] | undefined;
   const typeName = "test-readonly-pull";
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test readonly pull",
-      description: "Test extension for readonly pull wiring",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: (opts?: { subdirs?: readonly string[] }) => {
-            pullCount++;
-            pullSubdirs = opts?.subdirs;
-            return Promise.resolve(0);
-          },
-          pushChanged: () => Promise.resolve(0),
-          markDirty: () => Promise.resolve(),
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test readonly pull",
+    description: "Test extension for readonly pull wiring",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-    await configureManagedConfigDatastore(dir, typeName);
-
-    pullCount = 0;
-    pullSubdirs = undefined;
-
-    await requireInitializedRepoReadOnly({
-      repoDir: dir,
-      outputMode: "json",
-      pull: true,
-    });
-
-    assertEquals(pullCount, 1, "pull: true must call pullChanged once");
-    assertEquals(
-      pullSubdirs,
-      ["config"],
-      "pull must restrict to config subdirectory",
-    );
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: (opts?: { subdirs?: readonly string[] }) => {
+          pullCount++;
+          pullSubdirs = opts?.subdirs;
+          return Promise.resolve(0);
+        },
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureManagedConfigDatastore(dir, typeName);
+
+      pullCount = 0;
+      pullSubdirs = undefined;
+
+      await requireInitializedRepoReadOnly({
+        repoDir: dir,
+        outputMode: "json",
+        pull: true,
+      });
+
+      assertEquals(pullCount, 1, "pull: true must call pullChanged once");
+      assertEquals(
+        pullSubdirs,
+        ["config"],
+        "pull must restrict to config subdirectory",
+      );
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 Deno.test("requireInitializedRepoReadOnly - pull is no-op without managedConfig", async () => {
@@ -833,75 +835,77 @@ Deno.test("requireInitializedRepo - skipImplicitSync prevents coordinator pull",
   let pushCount = 0;
   const typeName = "test-skip-implicit-sync";
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test skipImplicitSync",
-      description: "Test extension for the skipImplicitSync wiring",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: () => {
-            pullCount++;
-            return Promise.resolve(0);
-          },
-          pushChanged: () => {
-            pushCount++;
-            return Promise.resolve(0);
-          },
-          markDirty: () => Promise.resolve(),
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test skipImplicitSync",
+    description: "Test extension for the skipImplicitSync wiring",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-    await configureExtensionDatastore(dir, typeName);
-
-    pullCount = 0;
-    pushCount = 0;
-
-    await requireInitializedRepo({
-      repoDir: dir,
-      outputMode: "json",
-      skipImplicitSync: true,
-    });
-
-    assertEquals(
-      pullCount,
-      0,
-      "skipImplicitSync must prevent the coordinator's implicit pull",
-    );
-
-    // Flush should also not trigger an implicit push, since the sync
-    // service was never registered with the coordinator.
-    await flushDatastoreSync();
-
-    assertEquals(
-      pushCount,
-      0,
-      "skipImplicitSync must prevent the coordinator's implicit push on flush",
-    );
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: () => {
+          pullCount++;
+          return Promise.resolve(0);
+        },
+        pushChanged: () => {
+          pushCount++;
+          return Promise.resolve(0);
+        },
+        markDirty: () => Promise.resolve(),
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pullCount = 0;
+      pushCount = 0;
+
+      await requireInitializedRepo({
+        repoDir: dir,
+        outputMode: "json",
+        skipImplicitSync: true,
+      });
+
+      assertEquals(
+        pullCount,
+        0,
+        "skipImplicitSync must prevent the coordinator's implicit pull",
+      );
+
+      // Flush should also not trigger an implicit push, since the sync
+      // service was never registered with the coordinator.
+      await flushDatastoreSync();
+
+      assertEquals(
+        pushCount,
+        0,
+        "skipImplicitSync must prevent the coordinator's implicit push on flush",
+      );
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 Deno.test("requireInitializedRepo - default behavior still triggers coordinator pull", async () => {
@@ -914,62 +918,64 @@ Deno.test("requireInitializedRepo - default behavior still triggers coordinator 
   let pullCount = 0;
   const typeName = "test-default-implicit-sync";
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test default implicit sync",
-      description: "Test extension for default coordinator wiring",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: () => {
-            pullCount++;
-            return Promise.resolve(0);
-          },
-          pushChanged: () => Promise.resolve(0),
-          markDirty: () => Promise.resolve(),
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test default implicit sync",
+    description: "Test extension for default coordinator wiring",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-    await configureExtensionDatastore(dir, typeName);
-
-    pullCount = 0;
-
-    await requireInitializedRepo({
-      repoDir: dir,
-      outputMode: "json",
-    });
-
-    assertEquals(
-      pullCount,
-      1,
-      "default requireInitializedRepo must run the coordinator's implicit pull exactly once",
-    );
-
-    await flushDatastoreSync();
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: () => {
+          pullCount++;
+          return Promise.resolve(0);
+        },
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pullCount = 0;
+
+      await requireInitializedRepo({
+        repoDir: dir,
+        outputMode: "json",
+      });
+
+      assertEquals(
+        pullCount,
+        1,
+        "default requireInitializedRepo must run the coordinator's implicit pull exactly once",
+      );
+
+      await flushDatastoreSync();
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 Deno.test(
@@ -990,104 +996,106 @@ Deno.test(
     const typeName = "test-markdirty-relpath";
     const markDirtyCalls: Array<{ relPath?: string }> = [];
 
-    if (!datastoreTypeRegistry.has(typeName)) {
-      datastoreTypeRegistry.register({
-        type: typeName,
-        name: "Test markDirty relPath wiring",
-        description: "Captures markDirty options to assert relPath threading",
-        isBuiltIn: false,
-        createProvider: () => ({
-          createLock: () => ({
-            acquire: () => Promise.resolve(),
-            release: () => Promise.resolve(),
-            withLock: <T>(fn: () => Promise<T>) => fn(),
-            inspect: () => Promise.resolve(null),
-            forceRelease: () => Promise.resolve(true),
-          }),
-          createVerifier: () => ({
-            verify: () =>
-              Promise.resolve({
-                healthy: true,
-                message: "ok",
-                latencyMs: 1,
-                datastoreType: typeName,
-              }),
-          }),
-          resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-          resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-          createSyncService: () => ({
-            pullChanged: () => Promise.resolve(0),
-            pushChanged: () => Promise.resolve(0),
-            markDirty: (options?: { relPath?: string }) => {
-              markDirtyCalls.push({ relPath: options?.relPath });
-              return Promise.resolve();
-            },
-          }),
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test markDirty relPath wiring",
+      description: "Captures markDirty options to assert relPath threading",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
         }),
-      });
-    }
-
-    await withTempDir(async (dir) => {
-      await initializeRepo(dir);
-      await configureExtensionDatastore(dir, typeName);
-
-      markDirtyCalls.length = 0;
-
-      const repo = await requireInitializedRepo({
-        repoDir: dir,
-        outputMode: "json",
-        skipImplicitSync: true,
-      });
-
-      const testType = ModelType.create("test/relpath");
-      const data = Data.create({
-        name: "wiring-probe",
-        contentType: "text/plain",
-        lifetime: "infinite",
-        garbageCollection: 100,
-        tags: { type: "test" },
-        ownerDefinition: {
-          ownerType: "manual",
-          ownerRef: "test-user",
-        },
-      });
-
-      await repo.repoContext.unifiedDataRepo.save(
-        testType,
-        "model-x",
-        data,
-        new TextEncoder().encode("payload"),
-      );
-
-      // save fires one markDirty call with the data-name directory as relPath.
-      assertEquals(markDirtyCalls.length, 1);
-      const relPath = markDirtyCalls[0].relPath;
-      if (relPath === undefined) {
-        throw new Error("expected relPath to be set");
-      }
-      // Forward-slash normalized — the data-name directory under the cache
-      // root contains at least one separator (data/<type>/.../wiring-probe).
-      if (relPath.includes("\\")) {
-        throw new Error(
-          `relPath must be forward-slash normalized, got: ${relPath}`,
-        );
-      }
-      // Cache-relative — must not start with the cache root or be absolute.
-      if (relPath.startsWith("/") || relPath.includes(":")) {
-        throw new Error(
-          `relPath must be cache-relative, got: ${relPath}`,
-        );
-      }
-      // Must contain at least one separator (data-name dir lives under
-      // data/.../<dataName>) so the normalization is exercised.
-      if (!relPath.includes("/")) {
-        throw new Error(
-          `relPath must contain a separator to exercise normalization, got: ${relPath}`,
-        );
-      }
-
-      await flushDatastoreSync();
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: () => ({
+          pullChanged: () => Promise.resolve(0),
+          pushChanged: () => Promise.resolve(0),
+          markDirty: (options?: { relPath?: string }) => {
+            markDirtyCalls.push({ relPath: options?.relPath });
+            return Promise.resolve();
+          },
+        }),
+      }),
     });
+
+    try {
+      await withTempDir(async (dir) => {
+        await initializeRepo(dir);
+        await configureExtensionDatastore(dir, typeName);
+
+        markDirtyCalls.length = 0;
+
+        const repo = await requireInitializedRepo({
+          repoDir: dir,
+          outputMode: "json",
+          skipImplicitSync: true,
+        });
+
+        const testType = ModelType.create("test/relpath");
+        const data = Data.create({
+          name: "wiring-probe",
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 100,
+          tags: { type: "test" },
+          ownerDefinition: {
+            ownerType: "manual",
+            ownerRef: "test-user",
+          },
+        });
+
+        await repo.repoContext.unifiedDataRepo.save(
+          testType,
+          "model-x",
+          data,
+          new TextEncoder().encode("payload"),
+        );
+
+        // save fires one markDirty call with the data-name directory as relPath.
+        assertEquals(markDirtyCalls.length, 1);
+        const relPath = markDirtyCalls[0].relPath;
+        if (relPath === undefined) {
+          throw new Error("expected relPath to be set");
+        }
+        // Forward-slash normalized — the data-name directory under the cache
+        // root contains at least one separator (data/<type>/.../wiring-probe).
+        if (relPath.includes("\\")) {
+          throw new Error(
+            `relPath must be forward-slash normalized, got: ${relPath}`,
+          );
+        }
+        // Cache-relative — must not start with the cache root or be absolute.
+        if (relPath.startsWith("/") || relPath.includes(":")) {
+          throw new Error(
+            `relPath must be cache-relative, got: ${relPath}`,
+          );
+        }
+        // Must contain at least one separator (data-name dir lives under
+        // data/.../<dataName>) so the normalization is exercised.
+        if (!relPath.includes("/")) {
+          throw new Error(
+            `relPath must contain a separator to exercise normalization, got: ${relPath}`,
+          );
+        }
+
+        await flushDatastoreSync();
+      });
+    } finally {
+      datastoreTypeRegistry.invalidateType(typeName);
+    }
   },
 );
 
@@ -1103,127 +1111,129 @@ Deno.test(
     const typeName = "test-hydratefile-relpath";
     const hydrateFileCalls: string[] = [];
 
-    if (!datastoreTypeRegistry.has(typeName)) {
-      datastoreTypeRegistry.register({
-        type: typeName,
-        name: "Test hydrateFile relPath wiring",
-        description:
-          "Captures hydrateFile relPath to assert absolute→cache-relative conversion",
-        isBuiltIn: false,
-        createProvider: () => ({
-          createLock: () => ({
-            acquire: () => Promise.resolve(),
-            release: () => Promise.resolve(),
-            withLock: <T>(fn: () => Promise<T>) => fn(),
-            inspect: () => Promise.resolve(null),
-            forceRelease: () => Promise.resolve(true),
-          }),
-          createVerifier: () => ({
-            verify: () =>
-              Promise.resolve({
-                healthy: true,
-                message: "ok",
-                latencyMs: 1,
-                datastoreType: typeName,
-              }),
-          }),
-          resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-          resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-          createSyncService: (_repoDir: string, cachePath: string) => ({
-            pullChanged: () => Promise.resolve(0),
-            pushChanged: () => Promise.resolve(0),
-            markDirty: () => Promise.resolve(),
-            hydrateFile: (relPath: string) => {
-              hydrateFileCalls.push(relPath);
-              // Write the file so getContent retries successfully
-              const absPath = join(cachePath, ...relPath.split("/"));
-              Deno.mkdirSync(join(absPath, ".."), { recursive: true });
-              Deno.writeFileSync(
-                absPath,
-                new TextEncoder().encode("hydrated"),
-              );
-              return Promise.resolve(true);
-            },
-            capabilities: () => ({ scopedSync: true, lazyHydration: true }),
-          }),
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test hydrateFile relPath wiring",
+      description:
+        "Captures hydrateFile relPath to assert absolute→cache-relative conversion",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
         }),
-      });
-    }
-
-    await withTempDir(async (dir) => {
-      await initializeRepo(dir);
-      await configureExtensionDatastore(dir, typeName);
-
-      hydrateFileCalls.length = 0;
-
-      const repo = await requireInitializedRepo({
-        repoDir: dir,
-        outputMode: "json",
-        skipImplicitSync: true,
-      });
-
-      const testType = ModelType.create("test/hydrate");
-      const data = Data.create({
-        name: "hydrate-probe",
-        contentType: "text/plain",
-        lifetime: "infinite",
-        garbageCollection: 100,
-        tags: { type: "test" },
-        ownerDefinition: {
-          ownerType: "manual",
-          ownerRef: "test-user",
-        },
-      });
-
-      // Save data then delete the raw file to simulate lazy hydration state
-      await repo.repoContext.unifiedDataRepo.save(
-        testType,
-        "model-h",
-        data,
-        new TextEncoder().encode("original"),
-      );
-      const contentPath = repo.repoContext.unifiedDataRepo.getContentPath(
-        testType,
-        "model-h",
-        "hydrate-probe",
-        1,
-      );
-      await Deno.remove(contentPath);
-
-      // getContent should trigger hydrateFile through the wired hook
-      const result = await repo.repoContext.unifiedDataRepo.getContent(
-        testType,
-        "model-h",
-        "hydrate-probe",
-        1,
-      );
-
-      assertExists(result);
-      assertEquals(new TextDecoder().decode(result), "hydrated");
-
-      // The hydrateFile call must receive a cache-relative, forward-slash path
-      assertEquals(hydrateFileCalls.length, 1);
-      const relPath = hydrateFileCalls[0];
-
-      // Must be cache-relative (not absolute)
-      if (relPath.startsWith("/") || relPath.includes(":")) {
-        throw new Error(
-          `hydrateFile relPath must be cache-relative, got: ${relPath}`,
-        );
-      }
-      // Must be forward-slash normalized
-      if (relPath.includes("\\")) {
-        throw new Error(
-          `hydrateFile relPath must be forward-slash normalized, got: ${relPath}`,
-        );
-      }
-      // Must include the data/ prefix so extensions can map to S3 keys
-      assertStringIncludes(relPath, "data/");
-      // Must end with /raw (the content file)
-      assertStringIncludes(relPath, "/raw");
-
-      await flushDatastoreSync();
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: (_repoDir: string, cachePath: string) => ({
+          pullChanged: () => Promise.resolve(0),
+          pushChanged: () => Promise.resolve(0),
+          markDirty: () => Promise.resolve(),
+          hydrateFile: (relPath: string) => {
+            hydrateFileCalls.push(relPath);
+            // Write the file so getContent retries successfully
+            const absPath = join(cachePath, ...relPath.split("/"));
+            Deno.mkdirSync(join(absPath, ".."), { recursive: true });
+            Deno.writeFileSync(
+              absPath,
+              new TextEncoder().encode("hydrated"),
+            );
+            return Promise.resolve(true);
+          },
+          capabilities: () => ({ scopedSync: true, lazyHydration: true }),
+        }),
+      }),
     });
+
+    try {
+      await withTempDir(async (dir) => {
+        await initializeRepo(dir);
+        await configureExtensionDatastore(dir, typeName);
+
+        hydrateFileCalls.length = 0;
+
+        const repo = await requireInitializedRepo({
+          repoDir: dir,
+          outputMode: "json",
+          skipImplicitSync: true,
+        });
+
+        const testType = ModelType.create("test/hydrate");
+        const data = Data.create({
+          name: "hydrate-probe",
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 100,
+          tags: { type: "test" },
+          ownerDefinition: {
+            ownerType: "manual",
+            ownerRef: "test-user",
+          },
+        });
+
+        // Save data then delete the raw file to simulate lazy hydration state
+        await repo.repoContext.unifiedDataRepo.save(
+          testType,
+          "model-h",
+          data,
+          new TextEncoder().encode("original"),
+        );
+        const contentPath = repo.repoContext.unifiedDataRepo.getContentPath(
+          testType,
+          "model-h",
+          "hydrate-probe",
+          1,
+        );
+        await Deno.remove(contentPath);
+
+        // getContent should trigger hydrateFile through the wired hook
+        const result = await repo.repoContext.unifiedDataRepo.getContent(
+          testType,
+          "model-h",
+          "hydrate-probe",
+          1,
+        );
+
+        assertExists(result);
+        assertEquals(new TextDecoder().decode(result), "hydrated");
+
+        // The hydrateFile call must receive a cache-relative, forward-slash path
+        assertEquals(hydrateFileCalls.length, 1);
+        const relPath = hydrateFileCalls[0];
+
+        // Must be cache-relative (not absolute)
+        if (relPath.startsWith("/") || relPath.includes(":")) {
+          throw new Error(
+            `hydrateFile relPath must be cache-relative, got: ${relPath}`,
+          );
+        }
+        // Must be forward-slash normalized
+        if (relPath.includes("\\")) {
+          throw new Error(
+            `hydrateFile relPath must be forward-slash normalized, got: ${relPath}`,
+          );
+        }
+        // Must include the data/ prefix so extensions can map to S3 keys
+        assertStringIncludes(relPath, "data/");
+        // Must end with /raw (the content file)
+        assertStringIncludes(relPath, "/raw");
+
+        await flushDatastoreSync();
+      });
+    } finally {
+      datastoreTypeRegistry.invalidateType(typeName);
+    }
   },
 );
 
@@ -1593,79 +1603,81 @@ Deno.test("acquireModelLocks - scopedSync passes SyncContext to pull and push", 
   const pullArgs: unknown[] = [];
   const pushArgs: unknown[] = [];
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test scoped sync",
-      description: "Test extension for scoped sync capability",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: (options?: unknown) => {
-            pullArgs.push(options);
-            return Promise.resolve(0);
-          },
-          pushChanged: (options?: unknown) => {
-            pushArgs.push(options);
-            return Promise.resolve(0);
-          },
-          markDirty: () => Promise.resolve(),
-          capabilities: () => ({ scopedSync: true }),
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test scoped sync",
+    description: "Test extension for scoped sync capability",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-    await configureExtensionDatastore(dir, typeName);
-
-    pullArgs.length = 0;
-    pushArgs.length = 0;
-
-    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-    const lockResult = await acquireModelLocks(datastoreConfig, [
-      { modelType: "aws-ec2", modelId: "server-1" },
-    ], dir);
-
-    assertEquals(lockResult.synced, true);
-    assertEquals(pullArgs.length, 1);
-
-    const pullOpts = pullArgs[0] as {
-      context?: { models: Array<{ modelType: string; modelId: string }> };
-    };
-    assertExists(pullOpts?.context, "pullChanged must receive context");
-    assertEquals(pullOpts.context.models.length, 1);
-    assertEquals(pullOpts.context.models[0].modelType, "aws-ec2");
-    assertEquals(pullOpts.context.models[0].modelId, "server-1");
-
-    await lockResult.flush();
-
-    assertEquals(pushArgs.length, 1);
-    const pushOpts = pushArgs[0] as {
-      context?: { models: Array<{ modelType: string; modelId: string }> };
-    };
-    assertExists(pushOpts?.context, "pushChanged must receive context");
-    assertEquals(pushOpts.context.models.length, 1);
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: (options?: unknown) => {
+          pullArgs.push(options);
+          return Promise.resolve(0);
+        },
+        pushChanged: (options?: unknown) => {
+          pushArgs.push(options);
+          return Promise.resolve(0);
+        },
+        markDirty: () => Promise.resolve(),
+        capabilities: () => ({ scopedSync: true }),
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pullArgs.length = 0;
+      pushArgs.length = 0;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(datastoreConfig, [
+        { modelType: "aws-ec2", modelId: "server-1" },
+      ], dir);
+
+      assertEquals(lockResult.synced, true);
+      assertEquals(pullArgs.length, 1);
+
+      const pullOpts = pullArgs[0] as {
+        context?: { models: Array<{ modelType: string; modelId: string }> };
+      };
+      assertExists(pullOpts?.context, "pullChanged must receive context");
+      assertEquals(pullOpts.context.models.length, 1);
+      assertEquals(pullOpts.context.models[0].modelType, "aws-ec2");
+      assertEquals(pullOpts.context.models[0].modelId, "server-1");
+
+      await lockResult.flush();
+
+      assertEquals(pushArgs.length, 1);
+      const pushOpts = pushArgs[0] as {
+        context?: { models: Array<{ modelType: string; modelId: string }> };
+      };
+      assertExists(pushOpts?.context, "pushChanged must receive context");
+      assertEquals(pushOpts.context.models.length, 1);
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 Deno.test("acquireModelLocks - no capabilities calls pull/push with no args", async () => {
@@ -1677,75 +1689,77 @@ Deno.test("acquireModelLocks - no capabilities calls pull/push with no args", as
   const pullArgs: unknown[] = [];
   const pushArgs: unknown[] = [];
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test no capabilities",
-      description: "Test extension without capabilities method",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: (...args: unknown[]) => {
-            pullArgs.push(args);
-            return Promise.resolve(0);
-          },
-          pushChanged: (...args: unknown[]) => {
-            pushArgs.push(args);
-            return Promise.resolve(0);
-          },
-          markDirty: () => Promise.resolve(),
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test no capabilities",
+    description: "Test extension without capabilities method",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-    await configureExtensionDatastore(dir, typeName);
-
-    pullArgs.length = 0;
-    pushArgs.length = 0;
-
-    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-    const lockResult = await acquireModelLocks(datastoreConfig, [
-      { modelType: "aws-ec2", modelId: "server-1" },
-    ], dir);
-
-    assertEquals(lockResult.synced, true);
-    assertEquals(pullArgs.length, 1);
-    assertEquals(
-      (pullArgs[0] as unknown[]).length,
-      0,
-      "pullChanged must be called with no arguments when capabilities absent",
-    );
-
-    await lockResult.flush();
-
-    assertEquals(pushArgs.length, 1);
-    assertEquals(
-      (pushArgs[0] as unknown[]).length,
-      0,
-      "pushChanged must be called with no arguments when capabilities absent",
-    );
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: (...args: unknown[]) => {
+          pullArgs.push(args);
+          return Promise.resolve(0);
+        },
+        pushChanged: (...args: unknown[]) => {
+          pushArgs.push(args);
+          return Promise.resolve(0);
+        },
+        markDirty: () => Promise.resolve(),
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pullArgs.length = 0;
+      pushArgs.length = 0;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(datastoreConfig, [
+        { modelType: "aws-ec2", modelId: "server-1" },
+      ], dir);
+
+      assertEquals(lockResult.synced, true);
+      assertEquals(pullArgs.length, 1);
+      assertEquals(
+        (pullArgs[0] as unknown[]).length,
+        0,
+        "pullChanged must be called with no arguments when capabilities absent",
+      );
+
+      await lockResult.flush();
+
+      assertEquals(pushArgs.length, 1);
+      assertEquals(
+        (pushArgs[0] as unknown[]).length,
+        0,
+        "pushChanged must be called with no arguments when capabilities absent",
+      );
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 Deno.test("acquireModelLocks - buggy capabilities degrades to full sync", async () => {
@@ -1756,67 +1770,69 @@ Deno.test("acquireModelLocks - buggy capabilities degrades to full sync", async 
   const typeName = "test-buggy-caps";
   const pullArgs: unknown[] = [];
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test buggy capabilities",
-      description: "Test extension whose capabilities() throws",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: (...args: unknown[]) => {
-            pullArgs.push(args);
-            return Promise.resolve(0);
-          },
-          pushChanged: () => Promise.resolve(0),
-          markDirty: () => Promise.resolve(),
-          capabilities: () => {
-            throw new Error("buggy extension");
-          },
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test buggy capabilities",
+    description: "Test extension whose capabilities() throws",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-    await configureExtensionDatastore(dir, typeName);
-
-    pullArgs.length = 0;
-
-    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-    const lockResult = await acquireModelLocks(datastoreConfig, [
-      { modelType: "aws-ec2", modelId: "server-1" },
-    ], dir);
-
-    assertEquals(lockResult.synced, true);
-    assertEquals(pullArgs.length, 1);
-    assertEquals(
-      (pullArgs[0] as unknown[]).length,
-      0,
-      "pullChanged must be called with no arguments when capabilities throws",
-    );
-
-    await lockResult.flush();
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: (...args: unknown[]) => {
+          pullArgs.push(args);
+          return Promise.resolve(0);
+        },
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+        capabilities: () => {
+          throw new Error("buggy extension");
+        },
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pullArgs.length = 0;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(datastoreConfig, [
+        { modelType: "aws-ec2", modelId: "server-1" },
+      ], dir);
+
+      assertEquals(lockResult.synced, true);
+      assertEquals(pullArgs.length, 1);
+      assertEquals(
+        (pullArgs[0] as unknown[]).length,
+        0,
+        "pullChanged must be called with no arguments when capabilities throws",
+      );
+
+      await lockResult.flush();
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 Deno.test("acquireModelLocks - scopedSync deduplicates models in context", async () => {
@@ -1827,79 +1843,81 @@ Deno.test("acquireModelLocks - scopedSync deduplicates models in context", async
   const typeName = "test-scoped-dedup";
   const pullArgs: unknown[] = [];
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test scoped dedup",
-      description: "Test extension for scoped sync deduplication",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: (options?: unknown) => {
-            pullArgs.push(options);
-            return Promise.resolve(0);
-          },
-          pushChanged: () => Promise.resolve(0),
-          markDirty: () => Promise.resolve(),
-          capabilities: () => ({ scopedSync: true }),
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test scoped dedup",
+    description: "Test extension for scoped sync deduplication",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-    await configureExtensionDatastore(dir, typeName);
-
-    pullArgs.length = 0;
-
-    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-    const lockResult = await acquireModelLocks(datastoreConfig, [
-      { modelType: "aws-ec2", modelId: "server-1" },
-      { modelType: "aws-ec2", modelId: "server-1" },
-      { modelType: "aws-ec2", modelId: "server-2" },
-    ], dir);
-
-    assertEquals(lockResult.synced, true);
-    // unique deduplicates to 2 models, so 2 pull calls
-    assertEquals(pullArgs.length, 2);
-
-    const firstPull = pullArgs[0] as { context?: { models: unknown[] } };
-    assertExists(firstPull?.context, "pullChanged must receive context");
-    assertEquals(
-      firstPull.context.models.length,
-      1,
-      "each pull call must receive only the current model",
-    );
-
-    const secondPull = pullArgs[1] as { context?: { models: unknown[] } };
-    assertExists(secondPull?.context, "pullChanged must receive context");
-    assertEquals(
-      secondPull.context.models.length,
-      1,
-      "each pull call must receive only the current model",
-    );
-
-    await lockResult.flush();
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: (options?: unknown) => {
+          pullArgs.push(options);
+          return Promise.resolve(0);
+        },
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+        capabilities: () => ({ scopedSync: true }),
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pullArgs.length = 0;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(datastoreConfig, [
+        { modelType: "aws-ec2", modelId: "server-1" },
+        { modelType: "aws-ec2", modelId: "server-1" },
+        { modelType: "aws-ec2", modelId: "server-2" },
+      ], dir);
+
+      assertEquals(lockResult.synced, true);
+      // unique deduplicates to 2 models, so 2 pull calls
+      assertEquals(pullArgs.length, 2);
+
+      const firstPull = pullArgs[0] as { context?: { models: unknown[] } };
+      assertExists(firstPull?.context, "pullChanged must receive context");
+      assertEquals(
+        firstPull.context.models.length,
+        1,
+        "each pull call must receive only the current model",
+      );
+
+      const secondPull = pullArgs[1] as { context?: { models: unknown[] } };
+      assertExists(secondPull?.context, "pullChanged must receive context");
+      assertEquals(
+        secondPull.context.models.length,
+        1,
+        "each pull call must receive only the current model",
+      );
+
+      await lockResult.flush();
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 // ── Giga-swamp per-namespace global lock (Phase 3) ──────────────────────────
@@ -1952,103 +1970,105 @@ Deno.test("acquireModelLocks - namespace is threaded to pull and push", async ()
   const pullArgs: unknown[] = [];
   const pushArgs: unknown[] = [];
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test namespace sync",
-      description: "Test extension for namespace threading",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: (options?: unknown) => {
-            pullArgs.push(options);
-            return Promise.resolve(1);
-          },
-          pushChanged: (options?: unknown) => {
-            pushArgs.push(options);
-            return Promise.resolve(0);
-          },
-          markDirty: () => Promise.resolve(),
-          capabilities: () => ({ scopedSync: true, namespacedSync: true }),
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test namespace sync",
+    description: "Test extension for namespace threading",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-
-    const markerPath = join(dir, ".swamp.yaml");
-    const existing = await Deno.readTextFile(markerPath);
-    const datastoreYaml = [
-      "datastore:",
-      `  type: '${typeName}'`,
-      "  config:",
-      "    bucket: test-bucket",
-      "  namespace: infra",
-    ].join("\n");
-    await Deno.writeTextFile(
-      markerPath,
-      existing.trimEnd() + "\n" + datastoreYaml + "\n",
-    );
-
-    pullArgs.length = 0;
-    pushArgs.length = 0;
-
-    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-    const lockResult = await acquireModelLocks(datastoreConfig, [
-      { modelType: "aws-ec2", modelId: "server-1" },
-    ], dir);
-
-    // PR #1386 regression gate: synced must be true after namespace-scoped
-    // pull so callers fire catalogStore.invalidate(). A false here means
-    // pulled files land in cache but the catalog is never re-indexed.
-    assertEquals(lockResult.synced, true);
-
-    assertEquals(pullArgs.length, 1);
-    const pullOpts = pullArgs[0] as {
-      context?: { models: unknown[] };
-      namespace?: string;
-    };
-    assertEquals(
-      pullOpts?.namespace,
-      "infra",
-      "pullChanged must receive namespace from config",
-    );
-    assertExists(pullOpts?.context, "pullChanged must still receive context");
-
-    await lockResult.flush();
-
-    assertEquals(pushArgs.length, 1);
-    const pushOpts = pushArgs[0] as {
-      context?: { models: unknown[] };
-      namespace?: string;
-    };
-    assertEquals(
-      pushOpts?.namespace,
-      "infra",
-      "pushChanged must receive namespace from config",
-    );
-    assertExists(pushOpts?.context, "pushChanged must still receive context");
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: (options?: unknown) => {
+          pullArgs.push(options);
+          return Promise.resolve(1);
+        },
+        pushChanged: (options?: unknown) => {
+          pushArgs.push(options);
+          return Promise.resolve(0);
+        },
+        markDirty: () => Promise.resolve(),
+        capabilities: () => ({ scopedSync: true, namespacedSync: true }),
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+
+      const markerPath = join(dir, ".swamp.yaml");
+      const existing = await Deno.readTextFile(markerPath);
+      const datastoreYaml = [
+        "datastore:",
+        `  type: '${typeName}'`,
+        "  config:",
+        "    bucket: test-bucket",
+        "  namespace: infra",
+      ].join("\n");
+      await Deno.writeTextFile(
+        markerPath,
+        existing.trimEnd() + "\n" + datastoreYaml + "\n",
+      );
+
+      pullArgs.length = 0;
+      pushArgs.length = 0;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(datastoreConfig, [
+        { modelType: "aws-ec2", modelId: "server-1" },
+      ], dir);
+
+      // PR #1386 regression gate: synced must be true after namespace-scoped
+      // pull so callers fire catalogStore.invalidate(). A false here means
+      // pulled files land in cache but the catalog is never re-indexed.
+      assertEquals(lockResult.synced, true);
+
+      assertEquals(pullArgs.length, 1);
+      const pullOpts = pullArgs[0] as {
+        context?: { models: unknown[] };
+        namespace?: string;
+      };
+      assertEquals(
+        pullOpts?.namespace,
+        "infra",
+        "pullChanged must receive namespace from config",
+      );
+      assertExists(pullOpts?.context, "pullChanged must still receive context");
+
+      await lockResult.flush();
+
+      assertEquals(pushArgs.length, 1);
+      const pushOpts = pushArgs[0] as {
+        context?: { models: unknown[] };
+        namespace?: string;
+      };
+      assertEquals(
+        pushOpts?.namespace,
+        "infra",
+        "pushChanged must receive namespace from config",
+      );
+      assertExists(pushOpts?.context, "pushChanged must still receive context");
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 // ── Two-Phase Sync Tests ─────────────────────────────────────────────────────
@@ -2309,107 +2329,109 @@ Deno.test("acquireModelLocks: uses two-phase push when twoPhaseSync is advertise
   const events: string[] = [];
   const mockManifest = {} as unknown as PushManifest;
 
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test two-phase sync",
-      description: "Test extension for two-phase sync",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => {
-            events.push("lock-acquire");
-            return Promise.resolve();
-          },
-          release: () => {
-            events.push("lock-release");
-            return Promise.resolve();
-          },
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: () => Promise.resolve(0),
-          pushChanged: () => {
-            events.push("pushChanged");
-            return Promise.resolve(0);
-          },
-          markDirty: () => Promise.resolve(),
-          capabilities: () => ({
-            scopedSync: true,
-            twoPhaseSync: true,
-          }),
-          preparePush: () => {
-            events.push("preparePush");
-            return Promise.resolve(mockManifest);
-          },
-          commitPush: () => {
-            events.push("commitPush");
-            return Promise.resolve(1);
-          },
-        }),
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test two-phase sync",
+    description: "Test extension for two-phase sync",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => {
+          events.push("lock-acquire");
+          return Promise.resolve();
+        },
+        release: () => {
+          events.push("lock-release");
+          return Promise.resolve();
+        },
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
       }),
-    });
-  }
-
-  await withTempDir(async (dir) => {
-    await initializeRepo(dir);
-
-    const markerPath = join(dir, ".swamp.yaml");
-    const existing = await Deno.readTextFile(markerPath);
-    const datastoreYaml = [
-      "datastore:",
-      `  type: '${typeName}'`,
-      "  config:",
-      "    bucket: test-bucket",
-    ].join("\n");
-    await Deno.writeTextFile(
-      markerPath,
-      existing.trimEnd() + "\n" + datastoreYaml + "\n",
-    );
-
-    events.length = 0;
-
-    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-    const lockResult = await acquireModelLocks(datastoreConfig, [
-      { modelType: "test-type", modelId: "m1" },
-    ], dir);
-
-    await lockResult.flush();
-
-    assertEquals(
-      events.includes("preparePush"),
-      true,
-      "two-phase path must call preparePush",
-    );
-    assertEquals(
-      events.includes("commitPush"),
-      true,
-      "two-phase path must call commitPush",
-    );
-    assertEquals(
-      events.includes("pushChanged"),
-      false,
-      "two-phase path must NOT call pushChanged",
-    );
-    assertEquals(
-      events.indexOf("preparePush") < events.indexOf("commitPush"),
-      true,
-      "preparePush must run before commitPush",
-    );
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: () => Promise.resolve(0),
+        pushChanged: () => {
+          events.push("pushChanged");
+          return Promise.resolve(0);
+        },
+        markDirty: () => Promise.resolve(),
+        capabilities: () => ({
+          scopedSync: true,
+          twoPhaseSync: true,
+        }),
+        preparePush: () => {
+          events.push("preparePush");
+          return Promise.resolve(mockManifest);
+        },
+        commitPush: () => {
+          events.push("commitPush");
+          return Promise.resolve(1);
+        },
+      }),
+    }),
   });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+
+      const markerPath = join(dir, ".swamp.yaml");
+      const existing = await Deno.readTextFile(markerPath);
+      const datastoreYaml = [
+        "datastore:",
+        `  type: '${typeName}'`,
+        "  config:",
+        "    bucket: test-bucket",
+      ].join("\n");
+      await Deno.writeTextFile(
+        markerPath,
+        existing.trimEnd() + "\n" + datastoreYaml + "\n",
+      );
+
+      events.length = 0;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(datastoreConfig, [
+        { modelType: "test-type", modelId: "m1" },
+      ], dir);
+
+      await lockResult.flush();
+
+      assertEquals(
+        events.includes("preparePush"),
+        true,
+        "two-phase path must call preparePush",
+      );
+      assertEquals(
+        events.includes("commitPush"),
+        true,
+        "two-phase path must call commitPush",
+      );
+      assertEquals(
+        events.includes("pushChanged"),
+        false,
+        "two-phase path must NOT call pushChanged",
+      );
+      assertEquals(
+        events.indexOf("preparePush") < events.indexOf("commitPush"),
+        true,
+        "preparePush must run before commitPush",
+      );
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 // ============================================================================

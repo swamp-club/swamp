@@ -1065,42 +1065,44 @@ Deno.test("datastoreSetupExtension: calls registerNamespace when provider suppor
     | { datastorePath: string; namespace: string; repoId: string }
     | undefined;
   const NS_REG_TYPE = "test-ext-ns-register";
-  if (!datastoreTypeRegistry.has(NS_REG_TYPE)) {
-    datastoreTypeRegistry.register({
-      type: NS_REG_TYPE,
-      name: "NS Register Test",
-      description: "Test namespace registration",
-      isBuiltIn: false,
-      createProvider: () => ({
-        ...createStubProvider(),
-        registerNamespace: (
-          datastorePath: string,
-          namespace: string,
-          repoId: string,
-        ) => {
-          registered = { datastorePath, namespace, repoId };
-          return Promise.resolve();
-        },
-        listNamespaces: () => Promise.resolve([]),
-      }),
-    });
-  }
-
-  const deps = makeDeps();
-  const input = makeExtensionInput({
+  datastoreTypeRegistry.register({
     type: NS_REG_TYPE,
-    namespace: "infra",
-    repoId: "repo-123",
-    skipMigration: true,
+    name: "NS Register Test",
+    description: "Test namespace registration",
+    isBuiltIn: false,
+    createProvider: () => ({
+      ...createStubProvider(),
+      registerNamespace: (
+        datastorePath: string,
+        namespace: string,
+        repoId: string,
+      ) => {
+        registered = { datastorePath, namespace, repoId };
+        return Promise.resolve();
+      },
+      listNamespaces: () => Promise.resolve([]),
+    }),
   });
 
-  await collect<DatastoreSetupEvent>(
-    datastoreSetupExtension(createLibSwampContext(), deps, input),
-  );
+  try {
+    const deps = makeDeps();
+    const input = makeExtensionInput({
+      type: NS_REG_TYPE,
+      namespace: "infra",
+      repoId: "repo-123",
+      skipMigration: true,
+    });
 
-  assertEquals(registered?.namespace, "infra");
-  assertEquals(registered?.repoId, "repo-123");
-  assertEquals(registered?.datastorePath, "/tmp/repo/.custom-store");
+    await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(createLibSwampContext(), deps, input),
+    );
+
+    assertEquals(registered?.namespace, "infra");
+    assertEquals(registered?.repoId, "repo-123");
+    assertEquals(registered?.datastorePath, "/tmp/repo/.custom-store");
+  } finally {
+    datastoreTypeRegistry.invalidateType(NS_REG_TYPE);
+  }
 });
 
 Deno.test("datastoreSetupExtension: skips registerNamespace when provider lacks it", async () => {
@@ -1128,39 +1130,41 @@ Deno.test("datastoreSetupExtension: skips registerNamespace when provider lacks 
 Deno.test("datastoreSetupExtension: skips registerNamespace when repoId is missing", async () => {
   let registerCalled = false;
   const NS_NO_REPO_TYPE = "test-ext-ns-no-repoid";
-  if (!datastoreTypeRegistry.has(NS_NO_REPO_TYPE)) {
-    datastoreTypeRegistry.register({
-      type: NS_NO_REPO_TYPE,
-      name: "NS No RepoId Test",
-      description: "Test namespace registration without repoId",
-      isBuiltIn: false,
-      createProvider: () => ({
-        ...createStubProvider(),
-        registerNamespace: () => {
-          registerCalled = true;
-          return Promise.resolve();
-        },
-      }),
-    });
-  }
-
-  const deps = makeDeps();
-  const input = makeExtensionInput({
+  datastoreTypeRegistry.register({
     type: NS_NO_REPO_TYPE,
-    namespace: "infra",
-    repoId: undefined,
-    skipMigration: true,
+    name: "NS No RepoId Test",
+    description: "Test namespace registration without repoId",
+    isBuiltIn: false,
+    createProvider: () => ({
+      ...createStubProvider(),
+      registerNamespace: () => {
+        registerCalled = true;
+        return Promise.resolve();
+      },
+    }),
   });
 
-  await collect<DatastoreSetupEvent>(
-    datastoreSetupExtension(createLibSwampContext(), deps, input),
-  );
+  try {
+    const deps = makeDeps();
+    const input = makeExtensionInput({
+      type: NS_NO_REPO_TYPE,
+      namespace: "infra",
+      repoId: undefined,
+      skipMigration: true,
+    });
 
-  assertEquals(
-    registerCalled,
-    false,
-    "registerNamespace must not be called when repoId is missing",
-  );
+    await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(createLibSwampContext(), deps, input),
+    );
+
+    assertEquals(
+      registerCalled,
+      false,
+      "registerNamespace must not be called when repoId is missing",
+    );
+  } finally {
+    datastoreTypeRegistry.invalidateType(NS_NO_REPO_TYPE);
+  }
 });
 
 Deno.test("datastoreSetupExtension: includes namespace in completed data", async () => {
@@ -1405,26 +1409,24 @@ Deno.test("datastoreSetupExtension: syncTimeoutMsOverride is honored", async () 
 
 Deno.test("datastoreSetupExtension: materializes namespace manifest in local cache", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp-setup-834-" });
+  const NS_CACHE_TYPE = "test-ext-ns-cache-834";
   try {
     let registered = false;
-    const NS_CACHE_TYPE = "test-ext-ns-cache-834";
-    if (!datastoreTypeRegistry.has(NS_CACHE_TYPE)) {
-      datastoreTypeRegistry.register({
-        type: NS_CACHE_TYPE,
-        name: "NS Cache Test",
-        description: "Test namespace manifest cache materialization",
-        isBuiltIn: false,
-        createProvider: () => ({
-          ...createStubProvider(),
-          resolveDatastorePath: () => join(tmpDir, "remote"),
-          resolveCachePath: () => join(tmpDir, "cache"),
-          registerNamespace: () => {
-            registered = true;
-            return Promise.resolve();
-          },
-        }),
-      });
-    }
+    datastoreTypeRegistry.register({
+      type: NS_CACHE_TYPE,
+      name: "NS Cache Test",
+      description: "Test namespace manifest cache materialization",
+      isBuiltIn: false,
+      createProvider: () => ({
+        ...createStubProvider(),
+        resolveDatastorePath: () => join(tmpDir, "remote"),
+        resolveCachePath: () => join(tmpDir, "cache"),
+        registerNamespace: () => {
+          registered = true;
+          return Promise.resolve();
+        },
+      }),
+    });
 
     const deps = makeDeps();
     const input = makeExtensionInput({
@@ -1453,6 +1455,7 @@ Deno.test("datastoreSetupExtension: materializes namespace manifest in local cac
     assertEquals(manifest?.namespace, "infra");
     assertEquals(manifest?.repoId, "repo-834");
   } finally {
+    datastoreTypeRegistry.invalidateType(NS_CACHE_TYPE);
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });

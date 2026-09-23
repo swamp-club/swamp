@@ -106,7 +106,7 @@ Deno.test("UserVaultLoader - allows @swamp/* namespace for local vaults", async 
 import { z } from "npm:zod";
 
 export const vault = {
-  type: "@swamp/my-vault",
+  type: "@swamp/my-vault-${crypto.randomUUID().slice(0, 8)}",
   name: "Swamp Vault",
   description: "Local dev vault using @swamp namespace",
   configSchema: z.object({ endpoint: z.string() }),
@@ -196,7 +196,7 @@ Deno.test("UserVaultLoader - loads valid non-@ vault type", async () => {
 import { z } from "npm:zod";
 
 export const vault = {
-  type: "hashicorp/vault",
+  type: "hashicorp/vault-${crypto.randomUUID().slice(0, 8)}",
   name: "HashiCorp Vault",
   description: "A test vault without @ prefix",
   configSchema: z.object({ endpoint: z.string() }),
@@ -231,7 +231,7 @@ Deno.test("UserVaultLoader - allows swamp/* namespace for local vaults", async (
 import { z } from "npm:zod";
 
 export const vault = {
-  type: "swamp/my-vault",
+  type: "swamp/my-vault-${crypto.randomUUID().slice(0, 8)}",
   name: "Swamp Vault",
   description: "Local dev vault using swamp namespace",
   configSchema: z.object({ endpoint: z.string() }),
@@ -344,7 +344,7 @@ Deno.test("UserVaultLoader - allows si/* namespace for local vaults", async () =
 import { z } from "npm:zod";
 
 export const vault = {
-  type: "si/my-vault",
+  type: "si/my-vault-${crypto.randomUUID().slice(0, 8)}",
   name: "SI Vault",
   description: "Local dev vault using si namespace",
   configSchema: z.object({ endpoint: z.string() }),
@@ -807,6 +807,7 @@ Deno.test(
 
       catalog.close();
     } finally {
+      vaultTypeRegistry.invalidateType("@test/lazy-vault");
       if (Deno.build.os === "windows") {
         await Deno.remove(repoDir, { recursive: true }).catch(() => {});
         await Deno.remove(vaultsDir, { recursive: true }).catch(() => {});

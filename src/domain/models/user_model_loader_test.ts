@@ -1700,11 +1700,12 @@ export const model = {
 // --- Namespace validation tests ---
 
 Deno.test("UserModelLoader accepts non-@ prefixed model", async () => {
+  const typeId = `mycompany/mymodel-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "mycompany/mymodel",
+  type: "${typeId}",
   version: "2026.02.09.1",
   globalArguments: z.object({ message: z.string() }),
   resources: {
@@ -1999,11 +2000,12 @@ export const model = {
 });
 
 Deno.test("UserModelLoader allows swamp/* namespace for local models", async () => {
+  const typeId = `swamp/mymodel-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "swamp/mymodel",
+  type: "${typeId}",
   version: "2026.02.09.1",
   globalArguments: z.object({ message: z.string() }),
   resources: {
@@ -2034,11 +2036,12 @@ export const model = {
 });
 
 Deno.test("UserModelLoader allows si/* namespace for local models", async () => {
+  const typeId = `si/mymodel-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "si/mymodel",
+  type: "${typeId}",
   version: "2026.02.09.1",
   globalArguments: z.object({ message: z.string() }),
   resources: {
@@ -2069,11 +2072,12 @@ export const model = {
 });
 
 Deno.test("UserModelLoader accepts non-@ model like digitalocean/app-platform", async () => {
+  const typeId = `digitalocean/app-platform-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "digitalocean/app-platform",
+  type: "${typeId}",
   version: "2026.02.09.1",
   globalArguments: z.object({ token: z.string() }),
   resources: {
@@ -2140,11 +2144,12 @@ export const model = {
 });
 
 Deno.test("UserModelLoader allows @swamp/* namespace for local models", async () => {
+  const typeId = `@swamp/mymodel-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "@swamp/mymodel",
+  type: "${typeId}",
   version: "2026.02.09.1",
   globalArguments: z.object({ message: z.string() }),
   resources: {
@@ -2176,11 +2181,12 @@ export const model = {
 });
 
 Deno.test("UserModelLoader allows @si/* namespace for local models", async () => {
+  const typeId = `@si/mymodel-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "@si/mymodel",
+  type: "${typeId}",
   version: "2026.02.09.1",
   globalArguments: z.object({ message: z.string() }),
   resources: {
@@ -4212,6 +4218,7 @@ export const model = {
 
       catalog.close();
     } finally {
+      modelRegistry.invalidateType("@test/lazy-promo");
       if (Deno.build.os === "windows") {
         await Deno.remove(repoDir, { recursive: true }).catch(() => {});
         await Deno.remove(modelsDir, { recursive: true }).catch(() => {});

@@ -214,6 +214,7 @@ Deno.test("DatastoreTypeRegistry standalone - rejects duplicate registration", (
 });
 
 Deno.test("UserDatastoreLoader - loads valid non-@ datastore type", async () => {
+  const datastoreType = `myorg/gcs-store-${crypto.randomUUID().slice(0, 8)}`;
   const tmpDir = await Deno.makeTempDir({
     prefix: "datastore_loader_test_",
   });
@@ -223,7 +224,7 @@ Deno.test("UserDatastoreLoader - loads valid non-@ datastore type", async () => 
       datastoreFile,
       `
 export const datastore = {
-  type: "myorg/gcs-store",
+  type: "${datastoreType}",
   name: "GCS Store",
   description: "A test datastore without @ prefix",
   createProvider: (_config: Record<string, unknown>) => ({
@@ -239,7 +240,7 @@ export const datastore = {
         healthy: true,
         message: "ok",
         latencyMs: 1,
-        datastoreType: "myorg/gcs-store",
+        datastoreType: "${datastoreType}",
       }),
     }),
     resolveDatastorePath: (repoDir: string) => repoDir,
