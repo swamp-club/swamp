@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -93,4 +93,46 @@ Deno.test("vaultListKeys yields error when no vaults configured", async () => {
   );
 
   assertEquals(events[1].kind, "error");
+  const error = events[1] as Extract<VaultListKeysEvent, { kind: "error" }>;
+  assertStringIncludes(
+    error.error.message,
+    "Create a vault using: swamp vault create <type> missing",
+  );
+});
+
+async function listKeysError(
+  vaultName: string,
+  vaultNames: string[],
+): Promise<string> {
+  const deps = makeDeps({
+    findVaultByName: () => Promise.resolve(null),
+    findAllVaults: () =>
+      Promise.resolve(vaultNames.map((name) => ({ name, type: "env" }))),
+  });
+  const events = await collect<VaultListKeysEvent>(
+    vaultListKeys(createLibSwampContext(), deps, { vaultName }),
+  );
+  const error = events[1] as Extract<VaultListKeysEvent, { kind: "error" }>;
+  assertEquals(error.error.code, "not_found");
+  return error.error.message;
+}
+
+Deno.test("vaultListKeys: explains the reserved token vault instead of suggesting vault create", async () => {
+  for (const configured of [[], ["dev-secrets"]]) {
+    const message = await listKeysError("_token-secrets", configured);
+    assertStringIncludes(message, "swamp's reserved control-plane vault");
+    assertStringIncludes(message, "swamp access token reveal <name>");
+    assertEquals(message.includes("swamp vault create <type> _"), false);
+  }
+  assertStringIncludes(
+    await listKeysError("_token-secrets", ["dev-secrets"]),
+    "Available vaults: dev-secrets",
+  );
+});
+
+Deno.test("vaultListKeys: does not suggest creating a vault with an invalid name", async () => {
+  const message = await listKeysError("MyVault", []);
+  assertStringIncludes(message, "'MyVault' is not a valid vault name.");
+  assertStringIncludes(message, "swamp vault create <type> <name>");
+  assertEquals(message.includes("swamp vault create <type> MyVault"), false);
 });

@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { VaultService } from "../../domain/vaults/vault_service.ts";
+import {
+  isReservedVaultName,
+  reservedVaultNameMessage,
+  vaultCreateHint,
+} from "../../domain/vaults/vault_name.ts";
 import { createVaultSecretDeleted } from "../../domain/events/types.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -132,10 +137,17 @@ export async function vaultDeletePreview(
   const config = await deps.findVault(vaultName);
   if (!config) {
     const names = await deps.listVaultNames();
+    if (isReservedVaultName(vaultName)) {
+      throw notFound(
+        "Vault",
+        `${vaultName}. ${reservedVaultNameMessage(vaultName)}` +
+          (names.length > 0 ? ` Available vaults: ${names.join(", ")}` : ""),
+      );
+    }
     if (names.length === 0) {
       throw notFound(
         "Vault",
-        `${vaultName}. No vaults are configured. Create a vault using: swamp vault create <type> ${vaultName}`,
+        `${vaultName}. No vaults are configured. ${vaultCreateHint(vaultName)}`,
       );
     }
     throw notFound(

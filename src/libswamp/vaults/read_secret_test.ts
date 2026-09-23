@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -105,6 +105,49 @@ Deno.test("vaultReadSecret: yields error when no vaults configured", async () =>
   assertEquals(events[1].kind, "error");
   const error = events[1] as Extract<VaultReadSecretEvent, { kind: "error" }>;
   assertEquals(error.error.code, "not_found");
+  assertStringIncludes(
+    error.error.message,
+    "Create a vault using: swamp vault create <type> missing",
+  );
+});
+
+async function readSecretError(
+  vaultName: string,
+  vaultNames: string[],
+): Promise<string> {
+  const deps = makeDeps({
+    findVault: () => Promise.resolve(null),
+    listVaultNames: () => Promise.resolve(vaultNames),
+  });
+  const events = await collect<VaultReadSecretEvent>(
+    vaultReadSecret(createLibSwampContext(), deps, {
+      vaultName,
+      secretKey: "key",
+    }),
+  );
+  const error = events[1] as Extract<VaultReadSecretEvent, { kind: "error" }>;
+  assertEquals(error.error.code, "not_found");
+  return error.error.message;
+}
+
+Deno.test("vaultReadSecret: explains the reserved token vault instead of suggesting vault create", async () => {
+  for (const configured of [[], ["dev-secrets"]]) {
+    const message = await readSecretError("_token-secrets", configured);
+    assertStringIncludes(message, "swamp's reserved control-plane vault");
+    assertStringIncludes(message, "swamp access token reveal <name>");
+    assertEquals(message.includes("swamp vault create <type> _"), false);
+  }
+  assertStringIncludes(
+    await readSecretError("_token-secrets", ["dev-secrets"]),
+    "Available vaults: dev-secrets",
+  );
+});
+
+Deno.test("vaultReadSecret: does not suggest creating a vault with an invalid name", async () => {
+  const message = await readSecretError("MyVault", []);
+  assertStringIncludes(message, "'MyVault' is not a valid vault name.");
+  assertStringIncludes(message, "swamp vault create <type> <name>");
+  assertEquals(message.includes("swamp vault create <type> MyVault"), false);
 });
 
 Deno.test("vaultReadSecret: yields error when vault name is empty", async () => {

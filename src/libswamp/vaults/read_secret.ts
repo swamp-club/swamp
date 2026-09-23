@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { VaultService } from "../../domain/vaults/vault_service.ts";
+import {
+  isReservedVaultName,
+  reservedVaultNameMessage,
+  vaultCreateHint,
+} from "../../domain/vaults/vault_name.ts";
 import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_refresh.ts";
 import { createVaultSecretRead } from "../../domain/events/types.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
@@ -147,13 +152,26 @@ export async function* vaultReadSecret(
       const vaultConfig = await deps.findVault(input.vaultName);
       if (!vaultConfig) {
         const names = await deps.listVaultNames();
-        if (names.length === 0) {
+        if (isReservedVaultName(input.vaultName)) {
+          yield {
+            kind: "error",
+            error: notFound(
+              "Vault",
+              `'${input.vaultName}'. ${
+                reservedVaultNameMessage(input.vaultName)
+              }` +
+                (names.length > 0
+                  ? `\nAvailable vaults: ${names.join(", ")}`
+                  : ""),
+            ),
+          };
+        } else if (names.length === 0) {
           yield {
             kind: "error",
             error: notFound(
               "Vault",
               `'${input.vaultName}'. No vaults are configured.\n` +
-                `Create a vault using: swamp vault create <type> ${input.vaultName}`,
+                vaultCreateHint(input.vaultName),
             ),
           };
         } else {

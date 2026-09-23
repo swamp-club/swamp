@@ -95,6 +95,72 @@ Deno.test("VaultService - missing vault configuration error handling", async (t)
   );
 
   await t.step(
+    "should describe other reserved names instead of suggesting vault create",
+    async () => {
+      for (const configured of [false, true]) {
+        const vaultService = new VaultService();
+        if (configured) {
+          vaultService.registerVault({
+            name: "production",
+            type: "mock",
+            config: {},
+          });
+        }
+
+        const error = await assertRejects(
+          () => vaultService.get("_foo", "test-key"),
+          Error,
+        );
+
+        assertStringIncludes(error.message, "Vault '_foo' is not available.");
+        assertStringIncludes(
+          error.message,
+          "reserved for swamp's internal vaults",
+        );
+        assertEquals(
+          error.message.includes("swamp vault create <type> _foo"),
+          false,
+        );
+      }
+    },
+  );
+
+  await t.step(
+    "should not suggest creating a vault with an invalid name",
+    async () => {
+      for (const configured of [false, true]) {
+        const vaultService = new VaultService();
+        if (configured) {
+          vaultService.registerVault({
+            name: "production",
+            type: "mock",
+            config: {},
+          });
+        }
+
+        const error = await assertRejects(
+          () => vaultService.get("MyVault", "test-key"),
+          Error,
+        );
+
+        assertStringIncludes(error.message, "Vault 'MyVault' not found.");
+        assertStringIncludes(
+          error.message,
+          "'MyVault' is not a valid vault name.",
+        );
+        assertStringIncludes(
+          error.message,
+          "swamp vault create <type> <name>",
+        );
+        assertEquals(
+          error.message.includes("swamp vault create <type> MyVault"),
+          false,
+        );
+      }
+    },
+  );
+
+  await t.step(
     "should provide helpful error when specific vault not found",
     async () => {
       const vaultService = new VaultService();
