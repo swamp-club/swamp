@@ -265,6 +265,30 @@ for later starts. There are two registration paths:
   (RFC 8628) and waits for an admin to approve in a browser. The device grant
   access token is stored in the vault for later admin resolution.
 
+Username resolution: at startup serve turns each `--admins` and
+`--allowed-users` username into the provider's `sub`
+(`src/serve/oauth_access_list_resolution.ts`). Results are cached in the
+`oauth-resolved-admins` vault key, and a start whose names are all cached makes
+no lookups. The rules for a name that does not resolve:
+
+- **Not found (HTTP 404)**: the name is skipped with an ERROR log, and serve
+  starts with the rest. The failure is cached. It is looked up again on every
+  start when `SWAMP_API_KEY` is set, otherwise whenever the lists change.
+- **Any other lookup error** (5xx, timeout, network): startup aborts. Dropping
+  an existing admin would make `materializeAdmins` revoke their grant, so a
+  provider outage must never shrink the list. When serve re-checks only
+  previously missing names, an error leaves them skipped instead, since they
+  hold no grant.
+- **Fail closed**: serve refuses to start if no admin resolves, or if every
+  allowed-user was skipped and no `--allowed-collectives` are set.
+  `checkAdmission` admits everyone when both lists are empty.
+
+`swamp serve check-config` runs the same lookups against a config without
+starting the server or writing the cache. It exits non-zero on any unknown name,
+so a typo is caught before a deploy. It uses `SWAMP_API_KEY`, or the
+`swamp auth login` credential when the provider has the same origin as the
+logged-in swamp-club server.
+
 Collectives are snapshotted at login. The `CollectiveRefreshService`
 (`src/serve/collective_refresh_service.ts`) re-resolves them for active tokens
 every `--group-refresh-interval` (default 4 h, `0` to disable;

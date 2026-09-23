@@ -14,6 +14,12 @@ grant-based access control.
 OAuth mode requires `--allowed-collectives` or `--allowed-users` to control
 admission. Use `--admins` to grant admin access to specific principals.
 
+At startup, serve skips any `admins` or `allowed-users` username the provider
+does not know and logs an ERROR for it. It refuses to start if no admin
+resolves, or if every allowed-user is unknown and no collectives are set. Run
+`swamp serve check-config` (optionally `--config <path>`) to check the names
+before deploying. It exits non-zero on any unknown name.
+
 ```bash
 # Token auth
 swamp serve --auth-mode token --admins 'user:oauth|user-123'
