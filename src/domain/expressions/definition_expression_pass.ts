@@ -86,15 +86,16 @@ export async function evaluateDefinitionExpressions(
         );
         continue;
       }
-      if (!celEvaluator.validate(expr.celExpression).valid) {
-        continue;
-      }
       try {
         values.set(
           expr.raw,
           await celEvaluator.evaluateAsync(expr.celExpression, ctx),
         );
       } catch (error) {
+        // Syntax is only consulted once evaluation has failed, so a parser
+        // disagreement can misclassify a failure but never stop an
+        // expression that evaluates from resolving.
+        if (!celEvaluator.validate(expr.celExpression).valid) continue;
         // Most often an input referenced directly (not inside a conditional
         // branch) that only another method supplies — see #653.
         failedExpressions.set(

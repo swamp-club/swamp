@@ -627,7 +627,9 @@ export class CelEvaluator {
   }
 
   /**
-   * Validates a CEL expression without evaluating it.
+   * Validates a CEL expression without evaluating it. Parses the same text
+   * evaluation does — hyphenated model refs (`model.web-1a`) are rewritten
+   * first — so an expression that evaluates is never reported as invalid.
    *
    * @param expression - The CEL expression to validate
    * @returns Validation result with error message if invalid
@@ -636,7 +638,7 @@ export class CelEvaluator {
     try {
       // Attempt to parse the expression — ParseResult is callable, not a
       // success/error union.  If parse() doesn't throw, the syntax is valid.
-      this.env.parse(expression);
+      this.env.parse(transformHyphenatedModelRefs(expression));
       return { valid: true };
     } catch (error) {
       return {

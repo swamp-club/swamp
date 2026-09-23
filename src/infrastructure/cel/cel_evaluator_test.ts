@@ -180,6 +180,15 @@ Deno.test("CelEvaluator validate returns valid for correct syntax", () => {
   assertEquals(result.error, undefined);
 });
 
+Deno.test("CelEvaluator validate accepts hyphenated model refs that evaluation accepts", () => {
+  const evaluator = new CelEvaluator();
+  // Raw `web-1a` does not parse; evaluation rewrites it to model["web-1a"].
+  const result = evaluator.validate(
+    "model.web-1a.resource.state.main.attributes.id",
+  );
+  assertEquals(result.valid, true);
+});
+
 Deno.test("CelEvaluator validate returns invalid for syntax errors", () => {
   const evaluator = new CelEvaluator();
   const result = evaluator.validate("x + + y");

@@ -740,6 +740,38 @@ Deno.test("evaluateData: leaves invalid-CEL prose unchanged", async () => {
   });
 });
 
+Deno.test("evaluateData: resolves an expression naming a hyphenated model rather than treating it as prose", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const data = { id: "${{ model.web-1a.execution.status }}" };
+    const result = await service.evaluateData(
+      data,
+      makeContext({
+        model: {
+          "web-1a": {
+            input: {
+              id: "web-1a",
+              name: "web-1a",
+              version: 1,
+              tags: {},
+              globalArguments: {},
+            },
+            execution: {
+              id: "e1",
+              methodName: "create",
+              status: "succeeded",
+              startedAt: "2026-01-01T00:00:00Z",
+            },
+          },
+        },
+      }),
+      collectAuthoredExpressions(data),
+    ) as { id: string };
+    assertEquals(result.id, "succeeded");
+  });
+});
+
 Deno.test("resolveRuntimeExpressionsInData: leaves invalid env.* prose unchanged", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);

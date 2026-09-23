@@ -444,6 +444,53 @@ Deno.test("DefinitionExpressionEvaluator: skips expressions referencing missing 
   );
 });
 
+// A syntax check that parses differently from evaluation must never stop an
+// expression that evaluates from resolving.
+Deno.test("DefinitionExpressionEvaluator: resolves expressions naming a hyphenated model", async () => {
+  const modelData = (id: string) => ({
+    input: {
+      id,
+      name: id,
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    },
+    resource: {
+      state: {
+        main: { attributes: { id } },
+      },
+    },
+  });
+  const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
+  const def = Definition.create({
+    name: "hyphenated",
+    methods: {
+      run: {
+        arguments: {
+          a: "${{ model.web-1a.resource.state.main.attributes.id }}",
+          b: "${{ model.web-1.resource.state.main.attributes.id }}",
+        },
+      },
+    },
+  });
+  const result = await evaluator.evaluate(
+    def,
+    {
+      ...emptyContext(),
+      model: {
+        "web-1a": modelData("web-1a"),
+        "web-1": modelData("web-1"),
+      } as unknown as ExpressionContext["model"],
+    },
+    "unrestricted",
+  );
+  assertEquals(result.definition.getMethodArguments("run"), {
+    a: "web-1a",
+    b: "web-1",
+  });
+  assertEquals(result.failedExpressions.size, 0);
+});
+
 Deno.test("DefinitionExpressionEvaluator: does not record runtime, invalid-syntax or unauthored expressions as failures", async () => {
   const evaluator = new DefinitionExpressionEvaluator(new ThrowingEvaluator());
   const def = Definition.create({
