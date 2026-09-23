@@ -151,7 +151,10 @@ async function handleOAuthFlow(
     ? createTlsHttpClient({ caCerts })
     : undefined;
   const deps = createServerLoginDeps({ httpClient });
-  const input = { serverUrl: rawUrl, signal: AbortSignal.timeout(300_000) };
+  const input = {
+    serverUrl: normalizedUrl,
+    signal: AbortSignal.timeout(300_000),
+  };
   let waitingShown = false;
 
   for await (const event of serverLogin(deps, input)) {

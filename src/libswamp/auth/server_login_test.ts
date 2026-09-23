@@ -33,6 +33,7 @@ import {
   type ServerLoginInput,
 } from "./server_login.ts";
 import { UserError } from "../../domain/errors.ts";
+import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 
 function makeDeps(overrides: Partial<ServerLoginDeps> = {}): ServerLoginDeps {
   return {
@@ -268,6 +269,34 @@ Deno.test("serverLogin: normalizes server URL before use", async () => {
   await collect(serverLogin(deps, input));
 
   assertEquals(discoveredUrl, "https://swamp.acme.internal:9090");
+});
+
+Deno.test("serverLogin: credentials in the input URL never reach the server calls", async () => {
+  const seen: string[] = [];
+  const deps = makeDeps({
+    discoverAuthMode: (serverUrl) => {
+      seen.push(serverUrl);
+      return Promise.resolve({
+        mode: "oauth",
+        verificationBaseUri: "https://swamp-club.com",
+      });
+    },
+    startDeviceAuth: (serverUrl, signal) => {
+      seen.push(serverUrl);
+      return makeDeps().startDeviceAuth(serverUrl, signal);
+    },
+    normalizeServerUrl,
+  });
+  const input = makeInput({
+    serverUrl: "wss://alice:hunter2@serve.example.com/?token=abc.s3cret#frag",
+  });
+
+  await collect(serverLogin(deps, input));
+
+  assertEquals(seen, [
+    "https://serve.example.com",
+    "https://serve.example.com",
+  ]);
 });
 
 function timeoutError(): DOMException {
