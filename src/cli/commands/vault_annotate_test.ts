@@ -18,8 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { parseLabels } from "./vault_annotate.ts";
+import { buildVaultAnnotateInput, parseLabels } from "./vault_annotate.ts";
 import { UserError } from "../../domain/errors.ts";
+import { validateServerRequest } from "../../serve/connection.ts";
 
 Deno.test("parseLabels: undefined input returns undefined", () => {
   const result = parseLabels(undefined);
@@ -65,4 +66,69 @@ Deno.test("parseLabels: missing = sign throws UserError", () => {
 Deno.test("parseLabels: empty value is allowed", () => {
   const result = parseLabels(["key="]);
   assertEquals(result, { key: "" });
+});
+
+Deno.test("buildVaultAnnotateInput: labels become a key-value map the server accepts", () => {
+  const input = buildVaultAnnotateInput("my-vault", "API_KEY", {
+    label: ["team=infra", "env=prod"],
+    notes: "a note",
+  });
+  assertEquals(input, {
+    vaultName: "my-vault",
+    key: "API_KEY",
+    url: undefined,
+    notes: "a note",
+    labels: { team: "infra", env: "prod" },
+    removeLabels: undefined,
+    clear: false,
+  });
+  // The --server path sends this input as the vault.annotate payload.
+  assertEquals(
+    typeof validateServerRequest({
+      type: "vault.annotate",
+      id: "req-1",
+      payload: input,
+    }),
+    "object",
+  );
+});
+
+Deno.test("buildVaultAnnotateInput: --clear alone is accepted", () => {
+  const input = buildVaultAnnotateInput("my-vault", "API_KEY", {
+    clear: true,
+  });
+  assertEquals(input.clear, true);
+  assertEquals(input.labels, undefined);
+});
+
+Deno.test("buildVaultAnnotateInput: --clear combined with --label throws UserError", () => {
+  assertThrows(
+    () =>
+      buildVaultAnnotateInput("my-vault", "API_KEY", {
+        clear: true,
+        label: ["team=infra"],
+      }),
+    UserError,
+    "--clear cannot be combined",
+  );
+});
+
+Deno.test("buildVaultAnnotateInput: --clear combined with --notes throws UserError", () => {
+  assertThrows(
+    () =>
+      buildVaultAnnotateInput("my-vault", "API_KEY", {
+        clear: true,
+        notes: "a note",
+      }),
+    UserError,
+    "--clear cannot be combined",
+  );
+});
+
+Deno.test("buildVaultAnnotateInput: no annotation fields throws UserError", () => {
+  assertThrows(
+    () => buildVaultAnnotateInput("my-vault", "API_KEY", {}),
+    UserError,
+    "No annotation fields specified",
+  );
 });

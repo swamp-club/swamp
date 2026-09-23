@@ -672,11 +672,6 @@ export async function handleVaultAnnotate(
       ctx.repoContext.eventBus,
     );
 
-    // Convert labels from string[] to Record<string,string> if provided
-    const labelsRecord: Record<string, string> | undefined = payload.labels
-      ? Object.fromEntries(payload.labels.map((l) => [l, ""]))
-      : undefined;
-
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       vaultAnnotate(libCtx, deps, {
@@ -684,7 +679,7 @@ export async function handleVaultAnnotate(
         key: payload.key,
         url: payload.url,
         notes: payload.notes,
-        labels: labelsRecord,
+        labels: payload.labels,
         removeLabels: payload.removeLabels,
         clear: payload.clear ?? false,
       }),

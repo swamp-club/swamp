@@ -24,6 +24,7 @@ import {
   createVaultAnnotateDeps,
   vaultAnnotate,
   type VaultAnnotateData,
+  type VaultAnnotateInput,
 } from "../../libswamp/mod.ts";
 import { createVaultAnnotateRenderer } from "../../presentation/renderers/vault_annotate.ts";
 import {
@@ -42,7 +43,10 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-import type { VaultAnnotateResponse } from "../../serve/protocol.ts";
+import type {
+  VaultAnnotatePayload,
+  VaultAnnotateResponse,
+} from "../../serve/protocol.ts";
 
 export function parseLabels(
   labels: string[] | undefined,
@@ -66,6 +70,50 @@ export function parseLabels(
     result[key] = value;
   }
   return result;
+}
+
+export interface VaultAnnotateFlags {
+  url?: string;
+  notes?: string;
+  label?: string[];
+  removeLabel?: string[];
+  clear?: boolean;
+}
+
+/**
+ * Validates the annotate flags and builds the input shared by the local
+ * path and the `--server` request, so both reject the same combinations.
+ */
+export function buildVaultAnnotateInput(
+  vaultName: string,
+  key: string,
+  flags: VaultAnnotateFlags,
+): VaultAnnotateInput {
+  const clear = flags.clear === true;
+  const labels = parseLabels(flags.label);
+  const { url, notes } = flags;
+  const removeLabels = flags.removeLabel;
+
+  if (
+    clear &&
+    (url !== undefined || notes !== undefined ||
+      labels !== undefined || removeLabels !== undefined)
+  ) {
+    throw new UserError(
+      "--clear cannot be combined with --url, --notes, --label, or --remove-label. Use --clear alone to remove all annotations.",
+    );
+  }
+
+  if (
+    !clear && url === undefined && notes === undefined &&
+    labels === undefined && removeLabels === undefined
+  ) {
+    throw new UserError(
+      "No annotation fields specified. Use --url, --notes, --label, --remove-label, or --clear.",
+    );
+  }
+
+  return { vaultName, key, url, notes, labels, removeLabels, clear };
 }
 
 // deno-lint-ignore no-explicit-any
@@ -122,29 +170,19 @@ existing fields are preserved. Use --clear to remove all annotations.`,
   ]);
   cliCtx.logger.debug`Annotating secret in vault: ${vaultName}`;
 
+  const input = buildVaultAnnotateInput(vaultName, key, options);
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(
       server,
       options,
     );
-    const clear = options.clear === true;
-    const labels = parseLabels(options.label);
-    const notes: string | undefined = options.notes;
-    const removeLabels: string[] | undefined = options.removeLabel;
     const response = await requestServerResponse<VaultAnnotateResponse>(
       { server, token },
       {
         type: "vault.annotate",
-        payload: {
-          vaultName,
-          key,
-          url: options.url,
-          notes,
-          labels,
-          removeLabels,
-          clear,
-        },
+        payload: input satisfies VaultAnnotatePayload,
       },
     );
     const renderer = createVaultAnnotateRenderer(cliCtx.outputMode);
@@ -172,30 +210,6 @@ existing fields are preserved. Use --clear to remove all annotations.`,
   );
 
   try {
-    const clear = options.clear === true;
-    const labels = parseLabels(options.label);
-    const notes: string | undefined = options.notes;
-    const removeLabels: string[] | undefined = options.removeLabel;
-
-    if (
-      clear &&
-      (options.url !== undefined || notes !== undefined ||
-        labels !== undefined || removeLabels !== undefined)
-    ) {
-      throw new UserError(
-        "--clear cannot be combined with --url, --notes, --label, or --remove-label. Use --clear alone to remove all annotations.",
-      );
-    }
-
-    if (
-      !clear && options.url === undefined && notes === undefined &&
-      labels === undefined && removeLabels === undefined
-    ) {
-      throw new UserError(
-        "No annotation fields specified. Use --url, --notes, --label, --remove-label, or --clear.",
-      );
-    }
-
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createVaultAnnotateDeps(repoDir, repoContext.eventBus, {
       vaultsDir,
@@ -203,15 +217,7 @@ existing fields are preserved. Use --clear to remove all annotations.`,
 
     const renderer = createVaultAnnotateRenderer(cliCtx.outputMode);
     await consumeStream(
-      vaultAnnotate(ctx, deps, {
-        vaultName,
-        key,
-        url: options.url,
-        notes,
-        labels,
-        removeLabels,
-        clear,
-      }),
+      vaultAnnotate(ctx, deps, input),
       renderer.handlers(),
     );
   } finally {
