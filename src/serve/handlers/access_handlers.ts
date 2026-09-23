@@ -43,6 +43,8 @@ import {
 } from "../../domain/access/grant_file.ts";
 import {
   createFileGrantStore,
+  type FileGrantStore,
+  GRANT_DATA_NAME,
   reconcileAllFileGrants,
 } from "../../domain/access/grant_file_reconciler.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
@@ -724,11 +726,32 @@ export async function handleAccessReload(
       false,
       ctx.repoContext.markDirty,
     );
-    const fileGrantStore = createFileGrantStore(
+    // Paths the reconcile wrote, re-marked just before the push. The
+    // repositories mark each path before writing it, and a push that lands
+    // in between takes the path as a delete and clears the mark. The sync
+    // gate keeps run pushes out of this handler (swamp-club#2405); the
+    // re-mark, as in the OAuth mint, keeps the push correct if one ever
+    // interleaves (swamp-club#2408, swamp-club#2421).
+    const writtenPaths: string[] = [];
+    const store = createFileGrantStore(
       ctx.repoContext.definitionRepo,
       autoDefRepo,
       ctx.repoContext.unifiedDataRepo,
+      (path) => writtenPaths.push(path),
     );
+    const fileGrantStore: FileGrantStore = {
+      ...store,
+      async writeGrant(modelId, instanceName, grant) {
+        await store.writeGrant(modelId, instanceName, grant);
+        writtenPaths.push(
+          ctx.repoContext.unifiedDataRepo.getDataNameDir(
+            GRANT_MODEL_TYPE,
+            modelId,
+            GRANT_DATA_NAME,
+          ),
+        );
+      },
+    };
 
     const reconcileResult = await reconcileAllFileGrants(
       validEntries,
@@ -753,7 +776,12 @@ export async function handleAccessReload(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
+        // Per path, not bare: a bare markDirty() sets bulkInvalidated and
+        // turns every reload's push into a walk of the whole cache
+        // (swamp-club#2415). A reload that changed nothing marks nothing.
+        for (const path of writtenPaths) {
+          await ctx.repoContext.markDirty?.(path);
+        }
         await ctx.syncService.pushChanged({ namespace });
       } catch (error) {
         logger

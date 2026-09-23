@@ -1981,13 +1981,25 @@ export const serveCommand = new Command()
         join(tokenSourceDir, "_placeholder"),
         modelsDir,
       );
-      if (syncService) {
-        const namespace = isCustomDatastoreConfig(datastoreConfig)
-          ? datastoreConfig.namespace
-          : undefined;
-        await syncService.markDirty();
-        await syncService.pushChanged({ namespace });
+    }
+
+    // The migrations move files on disk, outside any repository, so mark
+    // each moved file by path and push once. A bare markDirty() would turn
+    // the push into a walk of the whole cache (swamp-club#2415). Marking
+    // the destination directories instead would delete, remotely, any
+    // definition a partial startup pull left missing locally.
+    const migratedPaths = [
+      ...migrationResult.movedPaths,
+      ...tokenMigrationResult.movedPaths,
+    ];
+    if (syncService && migratedPaths.length > 0) {
+      const namespace = isCustomDatastoreConfig(datastoreConfig)
+        ? datastoreConfig.namespace
+        : undefined;
+      for (const path of migratedPaths) {
+        await repoContext.markDirty?.(path);
       }
+      await syncService.pushChanged({ namespace });
     }
 
     const caps = syncService?.capabilities?.();

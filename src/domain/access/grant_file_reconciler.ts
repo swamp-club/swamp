@@ -274,12 +274,18 @@ export async function reconcileAllFileGrants(
   };
 }
 
-const GRANT_DATA_NAME = "grant-main";
+export const GRANT_DATA_NAME = "grant-main";
 
+/**
+ * @param onDefinitionSaved - called with the path of each grant definition
+ *   this store creates, right after it is written, so a caller can re-mark
+ *   it dirty before pushing.
+ */
 export function createFileGrantStore(
   readRepo: DefinitionRepository,
   writeRepo: DefinitionRepository,
   dataRepo: UnifiedDataRepository,
+  onDefinitionSaved?: (path: string) => void,
 ): FileGrantStore {
   return {
     async queryFileGrants() {
@@ -341,6 +347,7 @@ export function createFileGrantStore(
           typeVersion: grantModel.version,
         });
         await writeRepo.save(GRANT_MODEL_TYPE, def);
+        onDefinitionSaved?.(writeRepo.getPath(GRANT_MODEL_TYPE, def.id));
       }
       return def.id;
     },

@@ -203,6 +203,34 @@ function resolveManagedPathsFromContext(
   };
 }
 
+/**
+ * Marks what an extension handler changed in the datastore cache, and says
+ * whether there is anything to push. Under managedConfig the only such file
+ * is the config-tier lockfile: extension sources still go to the repo-local
+ * pulled-extensions root (swamp-club#2429), so they are not marked here.
+ * Without managedConfig nothing these handlers write is in the cache.
+ */
+async function markExtensionLockfile(
+  ctx: ConnectionContext,
+  marker:
+    | import("../../infrastructure/persistence/repo_marker_repository.ts").RepoMarkerData
+    | null,
+  logger: ReturnType<typeof getSwampLogger>,
+): Promise<boolean> {
+  if (!ctx.syncService || !marker?.datastore?.managedConfig) return false;
+  const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
+  try {
+    // Per path, not bare: a bare markDirty() turns the push into a walk of
+    // the whole cache (swamp-club#2415).
+    await ctx.repoContext.markDirty?.(lockfilePath);
+  } catch (error) {
+    logger.warn("Failed to mark the extension lockfile dirty: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return true;
+}
+
 export async function handleWorkerList(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -651,6 +679,9 @@ export async function handleExtensionInstall(
   try {
     const libCtx = createLibSwampContext();
     const logger = getSwampLogger(["serve", "extension", "install"]);
+    const marker = await new RepoMarkerRepository().read(
+      RepoPath.create(ctx.repoDir),
+    );
     const deps = await createExtensionInstallDeps(ctx.repoDir, logger);
 
     let result: Record<string, unknown> | undefined;
@@ -681,20 +712,8 @@ export async function handleExtensionInstall(
       payload: { data: result ?? {} },
     });
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      try {
-        await ctx.syncService.markDirty();
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn("Failed to push changes to remote datastore: {error}", {
-          error: pushError instanceof Error
-            ? pushError.message
-            : String(pushError),
-        });
-      }
+    if (await markExtensionLockfile(ctx, marker, logger)) {
+      await pushChangedToRemote(ctx);
     }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -804,20 +823,8 @@ export async function handleExtensionPull(
       payload: { data: result ?? {} },
     });
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      try {
-        await ctx.syncService.markDirty();
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn("Failed to push changes to remote datastore: {error}", {
-          error: pushError instanceof Error
-            ? pushError.message
-            : String(pushError),
-        });
-      }
+    if (await markExtensionLockfile(ctx, marker, logger)) {
+      await pushChangedToRemote(ctx);
     }
   } catch (error) {
     const raw = error instanceof Error
@@ -884,20 +891,8 @@ export async function handleExtensionRm(
       payload: { data: result ?? {} },
     });
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      try {
-        await ctx.syncService.markDirty();
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn("Failed to push changes to remote datastore: {error}", {
-          error: pushError instanceof Error
-            ? pushError.message
-            : String(pushError),
-        });
-      }
+    if (await markExtensionLockfile(ctx, marker, logger)) {
+      await pushChangedToRemote(ctx);
     }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -1072,20 +1067,10 @@ export async function handleExtensionUpdate(
       payload: { data: result ?? {} },
     });
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      try {
-        await ctx.syncService.markDirty();
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn("Failed to push changes to remote datastore: {error}", {
-          error: pushError instanceof Error
-            ? pushError.message
-            : String(pushError),
-        });
-      }
+    if (
+      !payload?.checkOnly && await markExtensionLockfile(ctx, marker, logger)
+    ) {
+      await pushChangedToRemote(ctx);
     }
   } catch (error) {
     const raw = error instanceof Error
@@ -1221,6 +1206,11 @@ export async function handleVaultMigrate(
       targetConfig: payload.targetConfig,
       repoDir,
     });
+    // Read before migrating: the migration keeps the id but moves the
+    // config to the target type's directory.
+    const sourceConfig = await ctx.repoContext.vaultConfigRepo.findByName(
+      payload.vaultName,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1258,7 +1248,19 @@ export async function handleVaultMigrate(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
+        // The vault config repository has no markDirty hook, so mark both
+        // files by path: the config it wrote and the one it removed, which
+        // the scoped push then deletes remotely. A bare markDirty() walks
+        // the whole cache and skips deletion detection (swamp-club#2415).
+        if (sourceConfig) {
+          const vaultConfigRepo = ctx.repoContext.vaultConfigRepo;
+          await ctx.repoContext.markDirty?.(
+            vaultConfigRepo.getPath(payload.targetType, sourceConfig.id),
+          );
+          await ctx.repoContext.markDirty?.(
+            vaultConfigRepo.getPath(sourceConfig.type, sourceConfig.id),
+          );
+        }
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn("Failed to push changes to remote datastore: {error}", {

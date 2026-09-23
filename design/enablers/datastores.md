@@ -950,6 +950,14 @@ The contract has eight rules:
    every OS, matching the `.datastore-index.json` key convention. **Extensions
    using `relPath` for disk access on Windows MUST convert to native
    separators** (e.g. `@std/path` `join`) before `Deno.stat`/`Deno.readFile`/etc.
+   Core never sends a `relPath` that escapes the cache. The hook
+   (`buildMarkDirtyHook` in `src/cli/repo_context.ts`, shared by the CLI and
+   serve) maps a path under the repo's `.swamp/` onto the cache layout, and
+   sends nothing for a path outside both. That is repo-local config such as
+   `models/`, `workflows/` and `vaults/` without managedConfig, which the
+   datastore never syncs. The S3 and GCS extensions treat an escaping `relPath`
+   as bulk (rule 3), so forwarding one would turn the next push into a walk of
+   the whole cache (swamp-club#2415).
 6. **Backward compatibility.** `relPath` is optional. Existing implementations
    (`@swamp/s3-datastore`, `@swamp/gcs-datastore`, the filesystem no-op, every
    test mock) work unchanged: the single-watermark pattern still meets the
@@ -1005,15 +1013,15 @@ signal from `saveDeferred` / `finalizeVersionDeferred`
 Filesystem datastores have no fast path and no sync service, so markDirty is a
 no-op for them.
 
-**Serve handler obligation.** Serve code whose mutations go through
-repositories with per-path `markDirty` wired (model, workflow, data, output and
-definition repos) must not call a bare `syncService.markDirty()` before
-`pushChanged()`. This covers the mutation handlers and the OAuth server-token
-mint in `device_auth_handler.ts`, which saves a definition and writes a token
-resource. The per-path signals are enough, and they drive the extension's scoped
-walk, which detects deletions by absence on disk (rule 2). A bare `markDirty()`
-sets `bulkInvalidated` in the extension and overrides the per-path signal. That
-has two costs:
+**Serve handler obligation.** Serve code never calls a bare `markDirty()`.
+Mutations that go through repositories with per-path `markDirty` wired (model,
+workflow, data, output and definition repos) rely on the repositories' signals.
+This covers the mutation handlers, the OAuth server-token mint in
+`device_auth_handler.ts`, and `access.reload`, which reconciles grant files
+through the definition and data repos. The per-path signals are enough, and they
+drive the extension's scoped walk, which detects deletions by absence on disk
+(rule 2). A bare `markDirty()` sets `bulkInvalidated` in the extension and
+overrides the per-path signal. That has two costs:
 
 - **Dropped deletions.** The full walk skips deletion detection unless the
   per-path set overflowed, so remote deletions are silently lost
@@ -1022,7 +1030,8 @@ has two costs:
   and hashes every cached file. On a cache filled by pulling, a change to a few
   files then costs time proportional to the whole cache. On the login mint this
   made every `swamp auth server-login` slower as the datastore grew
-  (swamp-club#2408).
+  (swamp-club#2408), and every vault or access change did the same
+  (swamp-club#2415).
 
 The repositories mark a path dirty before they write it, so a push can land
 between a repository's mark and its write. That push finds the path absent,
@@ -1030,34 +1039,58 @@ treats it as a delete and clears the mark, and the writer's own push then has
 nothing to upload. Serve's gate now keeps run pushes (shared mode) out of every
 handler mutation (exclusive mode), so a run finishing at the same moment can no
 longer do this to a gated handler (swamp-club#2405). Concurrent runs still
-share the gate and can still do it to each other. The OAuth mint also re-marks
-its paths, by path, after the writes and just before `pushChanged()`, for the
-token's definition file and data folder. A push already running when the
-re-mark lands still clears it, because the extension resets the whole dirty set
-when a push completes. swamp-club#2421 tracks the proper fix: repositories that
-mark after the write, and extensions that clear only the marks a push handled.
+share the gate and can still do it to each other. The OAuth mint and
+`access.reload` also re-mark their paths, by path, after the writes and just
+before `pushChanged()`: the mint for the token's definition file and data
+folder, `access.reload` for each grant definition it created and each grant data
+folder it wrote. A reload that changes nothing marks nothing, so its push takes
+the fast path. A push already running when the re-mark lands still clears it,
+because the extension resets the whole dirty set when a push completes.
+swamp-club#2421 tracks the proper fix: repositories that mark after the write,
+and extensions that clear only the marks a push handled.
+
+**Writes outside a hooked repository.** Some serve mutations write cache files
+that no hooked repository covers. Each marks exactly those files, by path, after
+writing:
+
+- `vault.create` and `vault.migrate` mark the vault config file, because
+  `YamlVaultConfigRepository` has no hook. `vault.migrate` also marks the old
+  config it removed, so the scoped push deletes the remote copy. Otherwise the
+  config poller would bring it back as a second config with the same name.
+- The extension handlers (`extension.install`, `pull`, `rm`, `update`) mark the
+  config-tier lockfile. Serve still writes extension sources to the repo-local
+  pulled-extensions root (swamp-club#2429), so the lockfile is the only file
+  they change in the cache.
+- The serve startup migration moves grant and server-token definitions from
+  `models/` to `auto-definitions/` on disk, and marks each moved file.
+
+Without managedConfig, the vault config is repo-local and the hook drops the mark
+(rule 5). The extension handlers do not push at all then, since nothing they
+write is in the cache. Handlers that never write into the cache do not push:
+`vault.put`, `vault.annotate`, `vault.delete` and `vault.edit`. Secrets and
+annotations live in the always-local `.swamp/secrets`, and vault audit entries
+go to the repo-local `.swamp/audit`.
+
+Mark files, not shared directories. A directory mark makes the scoped walk
+delete remotely every index entry under it that is missing locally. That
+includes files another serve instance pushed that this one has not pulled yet,
+and definitions a partial startup pull left missing. A directory mark is safe
+only for a tree the mutation itself owns and has just written, such as a data
+item's folder.
 
 `integration/datastore_sync_rules_test.ts` enforces this at build time:
 
 - One rule rejects a bare `notifyDirty()` inside the per-path-wired
   repositories.
-- Another pins the remaining bare `markDirty()` call sites in `src/serve` and
-  `src/cli/commands/serve.ts`, so the list can shrink but not grow. It matches
-  the `.markDirty()` and `.markDirty?.()` forms on any receiver. It records one
-  entry per top-level function with its call count, so a second call inside a
-  pinned function also fails.
+- Another rejects any bare `markDirty()` call in `src/serve` and
+  `src/cli/commands/serve.ts`. It matches the `.markDirty()` and
+  `.markDirty?.()` forms on any receiver, and names the top-level function that
+  makes the call.
 
-The pinned sites are the vault, access-reload and extension handlers, plus the
-serve startup migration. Not all of the handlers' writes go through
-per-path-wired repos, so a bare `markDirty()` may still be their only dirty
-signal; swamp-club#2415 audits each one. The startup migration moves
-server-token definitions from `models/` to `auto-definitions/` directly on disk.
-No repository marks them, so the bare call is its only signal.
-
-Every serve mutation handler must call `pushChanged()` after a mutation. The
-data-domain handlers (`data.delete`, `data.rename`, `data.gc`, `data.prune`,
-`run.gc`) push in a `finally`, so a cancelled or failed request still pushes
-what it already changed locally. `markDirty` only records dirty state. Until a
+Every serve mutation handler that changes the cache must call `pushChanged()`
+after the mutation. The data-domain handlers (`data.delete`, `data.rename`,
+`data.gc`, `data.prune`, `run.gc`) push in a `finally`, so a cancelled or failed
+request still pushes what it already changed locally. `markDirty` only records dirty state. Until a
 push runs, the remote keeps the old objects, and the next poller pull restores
 anything deleted locally (swamp-club#2240).
 
@@ -1741,8 +1774,8 @@ remote with `pushManagedConfigChanges` (`src/cli/managed_config_sync.ts`):
 |---------------|-----------------|----------|------------|
 | Model definition create/edit | `config/models/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
-| Vault config create/edit/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
-| Extension pull/install/rm/update | `config/pulled-extensions/`, `config/upstream_extensions.json` | `pushManagedConfigChangesDeferred` | `ctx.syncService.pushChanged` |
+| Vault config create/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
+| Extension pull/install/rm/update | `config/pulled-extensions/`, `config/upstream_extensions.json` | `pushManagedConfigChangesDeferred` | `ctx.syncService.pushChanged` after marking the lockfile; serve still writes sources outside the tier (swamp-club#2429) |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 
 Auto-definitions are a normal datastore subdirectory

@@ -294,6 +294,10 @@ Deno.test("migrateGrantDefinitions: moves YAML files from source to destination"
 
     assertEquals(result.moved, 2);
     assertEquals(result.skipped, 0);
+    assertEquals(result.movedPaths.sort(), [
+      join(destDir, "abc-123.yaml"),
+      join(destDir, "def-456.yaml"),
+    ]);
 
     const destContent1 = await Deno.readTextFile(
       join(destDir, "abc-123.yaml"),
@@ -316,6 +320,7 @@ Deno.test("migrateGrantDefinitions: no-op when source directory does not exist",
 
     assertEquals(result.moved, 0);
     assertEquals(result.skipped, 0);
+    assertEquals(result.movedPaths, []);
   });
 });
 
@@ -344,6 +349,8 @@ Deno.test("migrateGrantDefinitions: skips files that already exist at destinatio
 
     assertEquals(result.moved, 1);
     assertEquals(result.skipped, 1);
+    // The skipped file was not written, so only the moved one is reported.
+    assertEquals(result.movedPaths, [join(destDir, "def-456.yaml")]);
 
     const destExisting = await Deno.readTextFile(
       join(destDir, "abc-123.yaml"),

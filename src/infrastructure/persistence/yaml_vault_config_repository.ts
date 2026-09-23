@@ -267,7 +267,7 @@ export class YamlVaultConfigRepository {
   /**
    * Gets the file path for a specific vault config.
    */
-  private getPath(vaultType: string, id: VaultConfigId): string {
+  getPath(vaultType: string, id: VaultConfigId): string {
     return join(this.getTypeDir(vaultType), `${id}.yaml`);
   }
 

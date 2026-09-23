@@ -28,6 +28,7 @@ import { join, resolve } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   acquireModelLocks,
+  buildMarkDirtyHook,
   createLockProgressWriter,
   createModelLock,
   datastoreGlobalLockOptions,
@@ -2930,4 +2931,73 @@ Deno.test("flushSinglePhasePush: writes catalog export before acquiring global l
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
+});
+
+function recordingSyncService(): {
+  service: DatastoreSyncService;
+  marks: Array<string | undefined>;
+} {
+  const marks: Array<string | undefined> = [];
+  return {
+    marks,
+    service: {
+      pullChanged: () => Promise.resolve(0),
+      pushChanged: () => Promise.resolve(0),
+      markDirty: (options) => {
+        marks.push(options?.relPath);
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
+Deno.test("buildMarkDirtyHook: forwards a cache path as a forward-slash relPath", async () => {
+  const base = resolve("mark-dirty-hook");
+  const cacheRoot = join(base, "cache");
+  const { service, marks } = recordingSyncService();
+  const hook = buildMarkDirtyHook(service, cacheRoot, join(base, "repo"));
+
+  await hook(join(cacheRoot, "data", "test", "model-1", "result"));
+
+  assertEquals(marks, ["data/test/model-1/result"]);
+});
+
+Deno.test("buildMarkDirtyHook: maps a repo .swamp path onto the cache layout", async () => {
+  const base = resolve("mark-dirty-hook");
+  const repoDir = join(base, "repo");
+  const { service, marks } = recordingSyncService();
+  const hook = buildMarkDirtyHook(service, join(base, "cache"), repoDir);
+
+  await hook(join(repoDir, ".swamp", "outputs", "test", "run-1.yaml"));
+
+  assertEquals(marks, ["outputs/test/run-1.yaml"]);
+});
+
+Deno.test("buildMarkDirtyHook: sends nothing for a path outside the cache and .swamp", async () => {
+  // Repo-local definitions without managedConfig are never synced. An
+  // escaping relPath would make the S3/GCS extensions fall back to a bulk
+  // push of the whole cache (swamp-club#2415).
+  const base = resolve("mark-dirty-hook");
+  const repoDir = join(base, "repo");
+  const { service, marks } = recordingSyncService();
+  const hook = buildMarkDirtyHook(service, join(base, "cache"), repoDir);
+
+  await hook(join(repoDir, "models", "command", "shell", "probe.yaml"));
+  await hook(join(repoDir, "vaults", "local_encryption", "v1.yaml"));
+
+  assertEquals(marks, []);
+});
+
+Deno.test("buildMarkDirtyHook: forwards an absent path as a bare call", async () => {
+  const base = resolve("mark-dirty-hook");
+  const { service, marks } = recordingSyncService();
+  const hook = buildMarkDirtyHook(
+    service,
+    join(base, "cache"),
+    join(base, "repo"),
+  );
+
+  await hook(undefined);
+
+  assertEquals(marks, [undefined]);
 });
