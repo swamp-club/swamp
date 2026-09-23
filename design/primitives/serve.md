@@ -74,6 +74,7 @@ path is optional.
 | `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id is auto-registered on first start if omitted                    |
 | `--groups-field` / `auth.groups-field`        | —                                | `collectives`               | Userinfo field holding group/collective memberships                      |
 | `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset                       | Comma lists that require admin authority; need mode `token` or `oauth`   |
+| `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in: deciding an approval gate needs a grant naming `approve`; see "Actions" in access-control.md. Every replica must share the value |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h              | OAuth only; `0` disables                                                 |
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR`  | unset, unset, `manual`      | `auto` starts a `GrantsDirectoryPoller` (30 s)                           |
 | `--no-schedule` / `schedule`                  | —                                | `true`                      | Disables cron triggers                                                   |

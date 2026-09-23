@@ -44,7 +44,10 @@ import type { PrincipalContext } from "./principal_context.ts";
 import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
 import type { ResourceKind } from "./resource_selector.ts";
-import { GrantBasedAccessDecisionService } from "./grant_based_access_decision_service.ts";
+import {
+  GrantBasedAccessDecisionService,
+  type GrantBasedAccessDecisionServiceOptions,
+} from "./grant_based_access_decision_service.ts";
 
 const logger = getLogger(["swamp", "domain", "access", "policy-snapshot"]);
 
@@ -110,13 +113,16 @@ export class PolicySnapshotLoader {
   #pendingRebuild: Promise<void> = Promise.resolve();
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
+  readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
 
   constructor(
     dataRepo: UnifiedDataRepository,
     eventBus: EventBus,
     mode: PolicyReloadMode = "auto",
+    decisionOptions: GrantBasedAccessDecisionServiceOptions = {},
   ) {
     this.#dataRepo = dataRepo;
+    this.#decisionOptions = decisionOptions;
     this.#conditionEvaluator = buildConditionEvaluator();
 
     if (mode === "auto") {
@@ -165,6 +171,7 @@ export class PolicySnapshotLoader {
     ) {
       this.#cachedDecisionService = new GrantBasedAccessDecisionService(
         this.#snapshot,
+        this.#decisionOptions,
       );
     }
     return this.#cachedDecisionService;

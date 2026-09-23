@@ -595,3 +595,67 @@ Deno.test("PolicySnapshotLoader.loadWithCounts: returns counts", async () => {
 
   await loader.dispose();
 });
+
+Deno.test("PolicySnapshotLoader.decisionService: defaults to run implying approve", async () => {
+  const dataRepo = createMockDataRepo(
+    [{
+      attrs: makeGrant({ actions: ["run"] }),
+      modelId: "g1",
+      dataName: "grant-main",
+    }],
+    [],
+  );
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus(), "manual");
+  await loader.load();
+
+  const principal = {
+    principal: { kind: "user" as const, id: "adam" },
+    collectives: [],
+    groups: [],
+  };
+  const resource = { kind: "workflow" as const, name: "deploy", fields: {} };
+  assertEquals(loader.decisionService.runImpliesApprove, true);
+  assertEquals(
+    loader.decisionService.decide(principal, "approve", resource)?.effect,
+    "allow",
+  );
+
+  await loader.dispose();
+});
+
+Deno.test("PolicySnapshotLoader.decisionService: keeps runImpliesApprove false across reloads", async () => {
+  const dataRepo = createMockDataRepo(
+    [{
+      attrs: makeGrant({ actions: ["run"] }),
+      modelId: "g1",
+      dataName: "grant-main",
+    }],
+    [],
+  );
+  const loader = new PolicySnapshotLoader(
+    dataRepo,
+    new EventBus(),
+    "manual",
+    { runImpliesApprove: false },
+  );
+  const principal = {
+    principal: { kind: "user" as const, id: "adam" },
+    collectives: [],
+    groups: [],
+  };
+  const resource = { kind: "workflow" as const, name: "deploy", fields: {} };
+
+  await loader.load();
+  const first = loader.decisionService;
+  assertEquals(first.runImpliesApprove, false);
+  assertEquals(first.decide(principal, "approve", resource), null);
+
+  await loader.loadWithCounts();
+  const rebuilt = loader.decisionService;
+  assertEquals(rebuilt === first, false);
+  assertEquals(rebuilt.runImpliesApprove, false);
+  assertEquals(rebuilt.decide(principal, "approve", resource), null);
+  assertEquals(rebuilt.decide(principal, "run", resource)?.effect, "allow");
+
+  await loader.dispose();
+});

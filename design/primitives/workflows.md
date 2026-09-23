@@ -170,7 +170,10 @@ steps:
    `--server` path via the `workflow.approve` handler, which checks the
    `approve` action (not `run`). A `run` grant implies `approve`, so existing
    grants continue to work; an `approve`-only grant permits gate decisions
-   without workflow execution authority. The `--run` flag
+   without workflow execution authority. A server started with
+   `--approve-requires-explicit-grant` stops counting `run` grants for
+   `approve`, so only a principal with a grant naming `approve` can decide a
+   gate (see "Actions" in `design/enablers/access-control.md`). The `--run` flag
    disambiguates when multiple runs are suspended; it is optional when only
    one run is suspended.
 3. `swamp workflow resume <workflow> --run <id>` re-enters the executor, skips

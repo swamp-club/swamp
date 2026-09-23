@@ -82,6 +82,7 @@ function makeCtx(
       groupsField: "groups",
       restrictedModelTypes: [],
       restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
     },
   };
 }

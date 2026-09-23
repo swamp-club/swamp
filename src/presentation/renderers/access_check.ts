@@ -27,6 +27,69 @@ export interface AccessCheckResult {
   resource: string;
   collectives: string[];
   decisions: AccessDecision[];
+  /**
+   * The server's approval policy. Undefined for a local check, or a server
+   * that predates the setting.
+   */
+  approveRequiresExplicitGrant?: boolean;
+}
+
+interface ApprovalDecision {
+  readonly effect: string;
+  readonly impliedBy?: "run";
+}
+
+/** Marks a decision that covers approve only through a run grant. */
+export function impliedMarker(decision: ApprovalDecision): string {
+  return decision.impliedBy === "run" ? " [implied by run]" : "";
+}
+
+function explicitGrantHint(
+  approveRequiresExplicitGrant: boolean | undefined,
+): string {
+  return approveRequiresExplicitGrant === false
+    ? "Set auth.approve-requires-explicit-grant on the server to require a grant that names approve."
+    : "A server started with --approve-requires-explicit-grant requires a grant that names approve.";
+}
+
+/**
+ * Explains how an approve check was decided, or returns null when there is
+ * nothing to add: approve is allowed only through run grants, or the server
+ * does not count run grants for approve.
+ */
+export function approvalPolicyNote(
+  action: string,
+  decisions: readonly ApprovalDecision[],
+  approveRequiresExplicitGrant: boolean | undefined,
+): string | null {
+  if (action !== "approve") return null;
+  if (approveRequiresExplicitGrant === true) {
+    return "Approval policy: this server requires a grant that names approve; run grants do not count.";
+  }
+  const allowedOnlyThroughRun = decisions.length > 0 &&
+    decisions[0].effect === "allow" &&
+    decisions.every((d) => d.impliedBy === "run");
+  if (!allowedOnlyThroughRun) return null;
+  return `Note: approve is allowed only through a run grant. ${
+    explicitGrantHint(approveRequiresExplicitGrant)
+  }`;
+}
+
+/**
+ * Explains implied approve rows in a permission listing, or returns null when
+ * the listing has none that allow.
+ */
+export function impliedApproveListingNote(
+  decisions: readonly ApprovalDecision[],
+  approveRequiresExplicitGrant: boolean | undefined,
+): string | null {
+  const hasImpliedAllow = decisions.some((d) =>
+    d.effect === "allow" && d.impliedBy === "run"
+  );
+  if (!hasImpliedAllow) return null;
+  return `Note: approve rows marked [implied by run] come from run grants. ${
+    explicitGrantHint(approveRequiresExplicitGrant)
+  }`;
 }
 
 export interface AccessCheckRenderer {
@@ -39,10 +102,17 @@ function formatSubject(subject: AccessDecision["subject"]): string {
 
 class LogAccessCheckRenderer implements AccessCheckRenderer {
   render(result: AccessCheckResult): void {
+    const note = approvalPolicyNote(
+      result.action,
+      result.decisions,
+      result.approveRequiresExplicitGrant,
+    );
+
     if (result.decisions.length === 0) {
       writeOutput(
         `DENY (implicit) — no matching grants for ${result.subject} ${result.action} ${result.resource}`,
       );
+      if (note) writeOutput(note);
       return;
     }
 
@@ -51,7 +121,9 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
     const via = `grant ${firstDecision.grantId.slice(0, 8)}…`;
     const subject = formatSubject(firstDecision.subject);
     writeOutput(
-      `${effect} via ${via} (${subject} → ${result.action} → ${result.resource})`,
+      `${effect} via ${via} (${subject} → ${result.action} → ${result.resource})${
+        impliedMarker(firstDecision)
+      }`,
     );
 
     if (result.decisions.length > 1) {
@@ -62,8 +134,13 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
         const g = decision.grantId.slice(0, 8);
         const s = formatSubject(decision.subject);
         const cond = decision.condition ? ` [when: ${decision.condition}]` : "";
-        writeOutput(`  ${e}  ${g}…  via ${s}${cond}`);
+        writeOutput(`  ${e}  ${g}…  via ${s}${cond}${impliedMarker(decision)}`);
       }
+    }
+
+    if (note) {
+      writeOutput("");
+      writeOutput(note);
     }
   }
 }
@@ -82,6 +159,11 @@ class JsonAccessCheckRenderer implements AccessCheckRenderer {
           collectives: result.collectives,
           effect: finalEffect,
           matchingGrants: result.decisions,
+          ...(result.approveRequiresExplicitGrant !== undefined
+            ? {
+              approveRequiresExplicitGrant: result.approveRequiresExplicitGrant,
+            }
+            : {}),
         },
         null,
         2,

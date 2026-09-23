@@ -83,11 +83,34 @@ function grantMatchesResource(grant: Grant, resource: AccessResource): boolean {
   return false;
 }
 
-function grantMatchesAction(grant: Grant, action: Action): boolean {
-  if (grant.actions.includes(action)) return true;
-  // run implies approve: a grant with "run" also matches "approve" requests
-  if (action === "approve" && grant.actions.includes("run")) return true;
-  return false;
+export interface GrantBasedAccessDecisionServiceOptions {
+  /**
+   * Whether an allow grant for `run` also satisfies `approve`. Defaults to
+   * true, the original semantics. A deny grant for `run` denies `approve`
+   * regardless, so turning this off can only narrow what is allowed.
+   */
+  readonly runImpliesApprove?: boolean;
+}
+
+/** An action a grant covers, and whether it is covered only through `run`. */
+export interface ActionCoverage {
+  readonly action: Action;
+  readonly impliedBy?: "run";
+}
+
+/** How a grant matched a requested action, or null when it did not. */
+type ActionMatch = "direct" | "implied-by-run" | null;
+
+function grantMatchesAction(
+  grant: Grant,
+  action: Action,
+  runImpliesApprove: boolean,
+): ActionMatch {
+  if (grant.actions.includes(action)) return "direct";
+  if (action === "approve" && grant.actions.includes("run")) {
+    if (grant.effect === "deny" || runImpliesApprove) return "implied-by-run";
+  }
+  return null;
 }
 
 function grantMatchesMethods(
@@ -128,20 +151,53 @@ function evaluateGrant(
   );
 }
 
-function toDecision(grant: Grant): AccessDecision {
+interface MatchedGrant {
+  readonly grant: Grant;
+  readonly match: ActionMatch;
+}
+
+function toDecision(grant: Grant, match: ActionMatch): AccessDecision {
   return {
     effect: grant.effect,
     grantId: grant.id,
     subject: grant.subject,
     condition: grant.condition,
+    ...(match === "implied-by-run" ? { impliedBy: "run" as const } : {}),
   };
 }
 
 export class GrantBasedAccessDecisionService implements AccessDecisionService {
   #snapshot: PolicySnapshot;
+  readonly #runImpliesApprove: boolean;
 
-  constructor(snapshot: PolicySnapshot) {
+  constructor(
+    snapshot: PolicySnapshot,
+    options: GrantBasedAccessDecisionServiceOptions = {},
+  ) {
     this.#snapshot = snapshot;
+    this.#runImpliesApprove = options.runImpliesApprove ?? true;
+  }
+
+  get runImpliesApprove(): boolean {
+    return this.#runImpliesApprove;
+  }
+
+  /**
+   * The actions a grant covers under this service's policy: the grant's own
+   * actions in order, then `approve` when the grant covers it only through
+   * `run`.
+   */
+  actionsCoveredBy(grant: Grant): ActionCoverage[] {
+    const covered: ActionCoverage[] = grant.actions.map((action) => ({
+      action,
+    }));
+    if (
+      grantMatchesAction(grant, "approve", this.#runImpliesApprove) ===
+        "implied-by-run"
+    ) {
+      covered.push({ action: "approve", impliedBy: "run" });
+    }
+    return covered;
   }
 
   get snapshot(): PolicySnapshot {
@@ -164,22 +220,23 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const candidates = snapshot.grantsForSubjects(subjects);
     const principalContext = buildPrincipalContext(principal, localGroups);
 
-    const denies: Grant[] = [];
-    const allows: Grant[] = [];
+    const denies: MatchedGrant[] = [];
+    const allows: MatchedGrant[] = [];
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
-      if (!grantMatchesAction(grant, action)) continue;
+      const match = grantMatchesAction(grant, action, this.#runImpliesApprove);
+      if (!match) continue;
       if (!grantMatchesMethods(grant, resource)) continue;
       if (grant.effect === "deny") {
-        denies.push(grant);
+        denies.push({ grant, match });
       } else {
-        allows.push(grant);
+        allows.push({ grant, match });
       }
     }
 
     let conditionsEvaluated = 0;
 
-    for (const grant of denies) {
+    for (const { grant, match } of denies) {
       if (grant.condition) {
         conditionsEvaluated++;
         if (conditionsEvaluated > MAX_AGGREGATE_CONDITIONS) {
@@ -193,11 +250,11 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         }
       }
       if (evaluateGrant(grant, snapshot, resource, principalContext)) {
-        return toDecision(grant);
+        return toDecision(grant, match);
       }
     }
 
-    for (const grant of allows) {
+    for (const { grant, match } of allows) {
       if (grant.condition) {
         conditionsEvaluated++;
         if (conditionsEvaluated > MAX_AGGREGATE_CONDITIONS) {
@@ -211,7 +268,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         }
       }
       if (evaluateGrant(grant, snapshot, resource, principalContext)) {
-        return toDecision(grant);
+        return toDecision(grant, match);
       }
     }
 
@@ -235,7 +292,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const allowDecisions: AccessDecision[] = [];
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
-      if (!grantMatchesAction(grant, action)) continue;
+      const match = grantMatchesAction(grant, action, this.#runImpliesApprove);
+      if (!match) continue;
       if (!grantMatchesMethods(grant, resource)) continue;
       if (grant.condition) {
         conditionsEvaluated++;
@@ -247,9 +305,9 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       }
       if (evaluateGrant(grant, snapshot, resource, principalContext)) {
         if (grant.effect === "deny") {
-          denyDecisions.push(toDecision(grant));
+          denyDecisions.push(toDecision(grant, match));
         } else {
-          allowDecisions.push(toDecision(grant));
+          allowDecisions.push(toDecision(grant, match));
         }
       }
     }
@@ -271,7 +329,9 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     for (const grant of candidates) {
       if (grant.effect !== "allow") continue;
       if (grant.resource.kind !== kind) continue;
-      if (!grantMatchesAction(grant, action)) continue;
+      if (!grantMatchesAction(grant, action, this.#runImpliesApprove)) {
+        continue;
+      }
       return true;
     }
     return false;

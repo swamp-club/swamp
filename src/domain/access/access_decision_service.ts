@@ -39,6 +39,11 @@ export interface AccessDecision {
   readonly grantId: string;
   readonly subject: Subject;
   readonly condition?: string;
+  /**
+   * Set when the grant matched `approve` only because it grants `run`, not
+   * because it names `approve` itself.
+   */
+  readonly impliedBy?: "run";
 }
 
 export interface AccessDecisionService {

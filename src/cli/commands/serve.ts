@@ -578,6 +578,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.restrictedCommands as string,
     );
   }
+  if (options.approveRequiresExplicitGrant) {
+    args.push("--approve-requires-explicit-grant");
+  }
   if (options.groupRefreshInterval) {
     args.push(
       "--group-refresh-interval",
@@ -858,6 +861,13 @@ const daemonEnableCommand = new Command()
   .option(
     "--restricted-commands <cmds:string>",
     "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install). Requires --auth-mode token or oauth",
+  )
+  .option(
+    "--approve-requires-explicit-grant",
+    "Require a grant that names approve to decide a manual approval gate; " +
+      "a run grant alone no longer implies approve. Off by default. " +
+      "Requires --auth-mode token or oauth " +
+      "(env: SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -1259,6 +1269,13 @@ export const serveCommand = new Command()
     "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install). Requires --auth-mode token or oauth",
   )
   .option(
+    "--approve-requires-explicit-grant",
+    "Require a grant that names approve to decide a manual approval gate; " +
+      "a run grant alone no longer implies approve. Off by default. " +
+      "Requires --auth-mode token or oauth " +
+      "(env: SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
     "--group-refresh-interval <duration:string>",
     "How often to re-fetch IdP group memberships for active server tokens (env: SWAMP_GROUP_REFRESH_INTERVAL). " +
       "Accepts seconds (14400), explicit units (4h, 30m), or 0 to disable. Default: 4h. Requires --auth-mode oauth.",
@@ -1528,6 +1545,7 @@ export const serveCommand = new Command()
       groupsField: merged.groupsField,
       restrictedModelTypes: merged.restrictedModelTypes,
       restrictedCommands: merged.restrictedCommands,
+      approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
     });
 
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
@@ -1553,6 +1571,15 @@ export const serveCommand = new Command()
     ) {
       logger.warn(
         "--restricted-commands is set but --auth-mode is {mode} — command restrictions will have no effect",
+        { mode: authConfig.mode },
+      );
+    }
+
+    if (
+      authConfig.mode === "none" && authConfig.approveRequiresExplicitGrant
+    ) {
+      logger.warn(
+        "--approve-requires-explicit-grant is set but --auth-mode is {mode} — approval policy will have no effect",
         { mode: authConfig.mode },
       );
     }
@@ -2663,11 +2690,17 @@ export const serveCommand = new Command()
       repoContext.unifiedDataRepo,
       repoContext.eventBus,
       grantReloadMode as PolicyReloadMode,
+      { runImpliesApprove: !authConfig.approveRequiresExplicitGrant },
     );
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
       mode: grantReloadMode,
     });
+    logger.info(
+      authConfig.approveRequiresExplicitGrant
+        ? "Approval policy: deciding an approval gate requires a grant that names approve"
+        : "Approval policy: a run grant also permits deciding approval gates",
+    );
 
     let grantsDirectoryPoller: GrantsDirectoryPoller | null = null;
     if (grantReloadMode === "auto") {

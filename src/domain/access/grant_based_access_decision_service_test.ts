@@ -999,3 +999,179 @@ Deno.test("explain: includes model type fallback matches", () => {
   assertEquals(decisions.length, 1);
   assertEquals(decisions[0].effect, "allow");
 });
+
+// --- runImpliesApprove: false (approve requires an explicit grant) ---
+
+function strictService(
+  grants: Grant[],
+  groups: Group[] = [],
+): GrantBasedAccessDecisionService {
+  return new GrantBasedAccessDecisionService(
+    new PolicySnapshot(grants, groups, celEvaluator),
+    { runImpliesApprove: false },
+  );
+}
+
+Deno.test("runImpliesApprove: defaults to true", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  assertEquals(service.runImpliesApprove, true);
+});
+
+Deno.test("decide: run grant does not imply approve when runImpliesApprove is false", () => {
+  const service = strictService([makeGrant({ actions: ["run"] })]);
+  assertEquals(service.runImpliesApprove, false);
+  assertEquals(
+    service.decide(makePrincipal("adam"), "approve", makeResource()),
+    null,
+  );
+});
+
+Deno.test("decide: run grant still permits run when runImpliesApprove is false", () => {
+  const service = strictService([makeGrant({ actions: ["run"] })]);
+  assertEquals(
+    service.decide(makePrincipal("adam"), "run", makeResource())?.effect,
+    "allow",
+  );
+});
+
+Deno.test("decide: explicit approve grant allows approve when runImpliesApprove is false", () => {
+  const service = strictService([
+    makeGrant({ actions: ["run"] }),
+    makeGrant({ actions: ["approve"] }),
+  ]);
+  const result = service.decide(
+    makePrincipal("adam"),
+    "approve",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "allow");
+  assertEquals(result?.impliedBy, undefined);
+});
+
+Deno.test("decide: deny on run still denies approve when runImpliesApprove is false", () => {
+  const service = strictService([
+    makeGrant({ actions: ["approve"], effect: "allow" }),
+    makeGrant({ actions: ["run"], effect: "deny" }),
+  ]);
+  const result = service.decide(
+    makePrincipal("adam"),
+    "approve",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "deny");
+  assertEquals(result?.impliedBy, "run");
+});
+
+Deno.test("decide: group run grant does not imply approve when runImpliesApprove is false", () => {
+  const service = strictService(
+    [
+      makeGrant({
+        subject: { kind: "group", name: "swamp-lanes" },
+        actions: ["run", "read"],
+      }),
+    ],
+    [makeGroup("swamp-lanes", ["swamp-resumer"])],
+  );
+  assertEquals(
+    service.decide(makePrincipal("swamp-resumer"), "approve", makeResource()),
+    null,
+  );
+});
+
+Deno.test("decide: marks an approve allowed through a run grant as impliedBy run", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([makeGrant({ actions: ["run"] })], [], celEvaluator),
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "approve", makeResource())
+      ?.impliedBy,
+    "run",
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "run", makeResource())?.impliedBy,
+    undefined,
+  );
+});
+
+Deno.test("explain: omits run-only allow grants for approve when runImpliesApprove is false", () => {
+  const service = strictService([
+    makeGrant({ actions: ["run"] }),
+    makeGrant({ actions: ["run"], effect: "deny" }),
+  ]);
+  const results = service.explain(
+    makePrincipal("adam"),
+    "approve",
+    makeResource(),
+  );
+  assertEquals(results.length, 1);
+  assertEquals(results[0].effect, "deny");
+  assertEquals(results[0].impliedBy, "run");
+});
+
+Deno.test("explain: marks implied and explicit approve decisions", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [makeGrant({ actions: ["run"] }), makeGrant({ actions: ["approve"] })],
+      [],
+      celEvaluator,
+    ),
+  );
+  const results = service.explain(
+    makePrincipal("adam"),
+    "approve",
+    makeResource(),
+  );
+  assertEquals(results.map((d) => d.impliedBy), ["run", undefined]);
+});
+
+Deno.test("actionsCoveredBy: appends approve implied by an allow run grant", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["run", "read"] })),
+    [{ action: "run" }, { action: "read" }, {
+      action: "approve",
+      impliedBy: "run",
+    }],
+  );
+});
+
+Deno.test("actionsCoveredBy: does not duplicate an explicit approve", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["run", "approve"] })),
+    [{ action: "run" }, { action: "approve" }],
+  );
+});
+
+Deno.test("actionsCoveredBy: omits implied approve for allow grants when runImpliesApprove is false", () => {
+  const service = strictService([]);
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["run", "read"] })),
+    [{ action: "run" }, { action: "read" }],
+  );
+});
+
+Deno.test("actionsCoveredBy: keeps implied approve for deny grants when runImpliesApprove is false", () => {
+  const service = strictService([]);
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["run"], effect: "deny" })),
+    [{ action: "run" }, { action: "approve", impliedBy: "run" }],
+  );
+});
+
+Deno.test("hasAnyGrantForKind: run does not imply approve when runImpliesApprove is false", () => {
+  const service = strictService([
+    makeGrant({
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "@acme/*" },
+    }),
+  ]);
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "approve", "workflow"),
+    false,
+  );
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "run", "workflow"),
+    true,
+  );
+});

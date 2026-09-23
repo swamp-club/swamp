@@ -419,6 +419,7 @@ export function handleAccessCheck(
         collectives: [...collectives],
         groups: [...groups],
         decisions: decisions as unknown as Record<string, unknown>[],
+        approveRequiresExplicitGrant: !service.runImpliesApprove,
       },
     });
     return Promise.resolve();
@@ -500,7 +501,9 @@ export function handleAccessCanI(
             grantId: d.grantId,
             via: `${d.subject.kind}:${d.subject.name}`,
             ...(d.condition ? { condition: d.condition } : {}),
+            ...(d.impliedBy ? { impliedBy: d.impliedBy } : {}),
           })),
+          approveRequiresExplicitGrant: !service.runImpliesApprove,
         },
       });
     } else {
@@ -514,13 +517,15 @@ export function handleAccessCanI(
       }
 
       const grants = snapshot.grantsForSubjects(subjects);
+      const service = ctx.policySnapshotLoader.decisionService;
       send(socket, {
         type: "access.can-i",
         id: requestId,
         payload: {
           principal: principalStr,
+          approveRequiresExplicitGrant: !service.runImpliesApprove,
           decisions: grants.flatMap((g) =>
-            g.actions.map((a) => ({
+            service.actionsCoveredBy(g).map(({ action: a, impliedBy }) => ({
               action: a,
               resource: `${g.resource.kind}:${g.resource.pattern}`,
               effect: g.effect,
@@ -530,6 +535,7 @@ export function handleAccessCanI(
               ...(g.methods && g.methods.length > 0
                 ? { methods: g.methods }
                 : {}),
+              ...(impliedBy ? { impliedBy } : {}),
             }))
           ),
         },

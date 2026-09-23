@@ -312,3 +312,17 @@ Deno.test("buildServeAuthConfig: restrictedModelTypes parses and normalizes type
     "aws/lambda/function",
   ]);
 });
+
+Deno.test("buildServeAuthConfig: approveRequiresExplicitGrant defaults to false", () => {
+  const config = buildServeAuthConfig({});
+  assertEquals(config.approveRequiresExplicitGrant, false);
+});
+
+Deno.test("buildServeAuthConfig: approveRequiresExplicitGrant passes through", () => {
+  const config = buildServeAuthConfig({
+    authMode: "token",
+    admins: "user:admin",
+    approveRequiresExplicitGrant: true,
+  });
+  assertEquals(config.approveRequiresExplicitGrant, true);
+});

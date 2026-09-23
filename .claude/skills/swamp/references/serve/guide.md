@@ -33,11 +33,19 @@ means denied.
 | ---------- | ------------------------------------------------------- |
 | Subjects   | `user:<id>`, `group:<name>`, `idp-group:<collective>`   |
 | Effects    | `allow`, `deny` (deny wins)                             |
-| Actions    | `run`, `read`, `write`, `admin`                         |
+| Actions    | `run`, `read`, `write`, `approve`, `admin`              |
 | Resources  | `workflow:@acme/*`, `model:hello`, `data:*`, `access:*` |
 | Conditions | CEL expressions via `--when 'tags.env == "staging"'`    |
 
 Admin on `access:*` implies all actions (superuser).
+
+`approve` decides manual approval gates. By default a `run` grant also permits
+`approve`, so any principal that can run a workflow can clear its gates. To stop
+an automation principal granted `run` from clearing a gate meant for a person,
+start serve with `--approve-requires-explicit-grant` (config
+`auth.approve-requires-explicit-grant`): only grants that name `approve` then
+count. A deny on `run` still denies `approve`. `swamp access can-i` marks
+approvals that come from a `run` grant as `[implied by run]`.
 
 ## CLI Grant Management
 

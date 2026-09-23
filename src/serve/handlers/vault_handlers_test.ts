@@ -148,6 +148,7 @@ function createAnnotateCtx(
       groupsField: "collectives",
       restrictedModelTypes: [],
       restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
     },
   } as ConnectionContext;
 }

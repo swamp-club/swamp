@@ -1250,6 +1250,69 @@ Deno.test("loadServeConfig: non-boolean auto-resume produces error", () => {
   });
 });
 
+// ── auth.approve-requires-explicit-grant ─────────────────────────────
+
+Deno.test("mergeServeOptions: approve-requires-explicit-grant defaults to false", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.approveRequiresExplicitGrant, false);
+});
+
+Deno.test("mergeServeOptions: approve-requires-explicit-grant CLI flag wins over config and env", () => {
+  const merged = mergeServeOptions(
+    { auth: { "approve-requires-explicit-grant": false } },
+    { approveRequiresExplicitGrant: true },
+    new Set(["approve-requires-explicit-grant"]),
+    (name: string) =>
+      name === "SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT" ? "false" : undefined,
+  );
+  assertEquals(merged.approveRequiresExplicitGrant, true);
+});
+
+Deno.test("mergeServeOptions: approve-requires-explicit-grant env var wins over config when CLI not explicit", () => {
+  const merged = mergeServeOptions(
+    { auth: { "approve-requires-explicit-grant": false } },
+    {},
+    new Set<string>(),
+    (name: string) =>
+      name === "SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT" ? "true" : undefined,
+  );
+  assertEquals(merged.approveRequiresExplicitGrant, true);
+});
+
+Deno.test("mergeServeOptions: approve-requires-explicit-grant from auth config when no CLI or env", () => {
+  const merged = mergeServeOptions(
+    { auth: { "approve-requires-explicit-grant": true } },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.approveRequiresExplicitGrant, true);
+});
+
+Deno.test("loadServeConfig: reads auth.approve-requires-explicit-grant", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "approve-requires-explicit-grant": true } });
+    const config = loadServeConfig(undefined, dir);
+    assertEquals(config?.auth?.["approve-requires-explicit-grant"], true);
+  });
+});
+
+Deno.test("loadServeConfig: non-boolean auth.approve-requires-explicit-grant produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "approve-requires-explicit-grant": "false" } });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid auth.approve-requires-explicit-grant",
+    );
+  });
+});
+
 // ── dashboard ──────────────────────────────────────────────────────────
 
 Deno.test("mergeServeOptions: dashboard defaults to false", () => {

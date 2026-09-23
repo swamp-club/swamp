@@ -61,6 +61,7 @@ function makeMockDeps(
       groupsField: "collectives",
       restrictedModelTypes: [],
       restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
     },
     repoDir: "/tmp/test-repo",
     repoContext: {} as RepositoryContext,
