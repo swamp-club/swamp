@@ -234,6 +234,11 @@ function childEnv(): Record<string, string> {
     if (/^LD_|DYLD/i.test(key)) continue;
     env[key] = value;
   }
+  // Every captured value lands in the attestation verbatim, so no child may
+  // colour its output. swamp honours this on its own since swamp-club#2414, but
+  // the attestation is generated with whatever binary is on PATH — which may
+  // predate that fix.
+  env.NO_COLOR = "1";
   return env;
 }
 
@@ -934,7 +939,11 @@ async function main(): Promise<number> {
     setIn(configIntegrity, file.jsonPath, await computeChecksum(content));
   }
 
-  const swampVersion = (await capture("swamp", ["--version"]))?.trim();
+  // Cliffy's version action branches on which spelling was used: `--version`
+  // takes `showLongVersion()`, which is the program name plus the version, and
+  // `-V` takes `showVersion()`, which is the version alone. Ask for the bare one
+  // — the CI summary supplies the program name itself.
+  const swampVersion = (await capture("swamp", ["-V"]))?.trim();
 
   const attestation = buildAttestation(sources, {
     commit,

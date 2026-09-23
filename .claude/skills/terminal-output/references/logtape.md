@@ -116,6 +116,9 @@ Configured in `initializeLogging()`:
 | `--log-level <level>` | specified level   | console/pretty |
 | `--no-color`          | info              | console (text) |
 
+`--no-color` and `NO_COLOR` select the text sink; a non-terminal **stdout** does
+not (sink choice follows stdin — see below).
+
 The pretty sink uses `@logtape/pretty` with dimmed timestamps/levels, bold green
 categories, and aligned output.
 
@@ -171,11 +174,27 @@ defined once in `src/infrastructure/logging/log_format.ts` (`TIMESTAMP_FORMAT`,
 
 Colors for `writeOutput` content come from `@std/fmt/colors`, **not** LogTape:
 
-- `@std/fmt/colors` checks `Deno.noColor` at startup
-- `--no-color` flag sets `NO_COLOR=1` env var AND calls `setColorEnabled(false)`
-  at runtime (in `src/cli/mod.ts`)
-- Both must be done because `@std/fmt/colors` reads the env var only at import
-  time
+- `@std/fmt/colors` reads `NO_COLOR` once, at import time
+- `applyColorPolicy` in `src/cli/context.ts` decides the rest at runtime and
+  calls `setColorEnabled(false)` — from the top of `runCli`, before the Cliffy
+  command exists, because `--version` and `--help` are answered during parsing
+  and never reach `globalAction` (swamp-club#2414). It disables colors for
+  `--no-color`, for `NO_COLOR` set to any value, and for a non-terminal stdout
+- It only ever _disables_. `setColorEnabled(true)` would override a disable
+  `@std/fmt` already applied from the environment, so production code never
+  calls it — `integration/color_policy_rules_test.ts` enforces that, along with
+  the single-`@std/fmt`-copy resolution the whole mechanism depends on
+- `--no-color` additionally sets `NO_COLOR=1` in the environment, in
+  `globalAction`, so spawned child processes inherit it
+- The pretty sink is **separate**: it colors through `@logtape/pretty`'s own
+  `colors` option, derived from the flag and the environment but not from
+  stdout. A run like `swamp ... -v > file` from a terminal still writes colored
+  _log_ records to the pipe; `writeOutput` content and Cliffy's own output are
+  clean
+- Tests that need to change color state should restore the previous value read
+  from `getColorEnabled()` rather than assuming it was on. Better still, inject
+  the effect — `applyColorPolicy` takes the terminal probe and the setter as
+  parameters so tests never touch process-global state
 
 ## Migration Pattern
 

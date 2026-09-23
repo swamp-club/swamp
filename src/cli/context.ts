@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Logger } from "@logtape/logtape";
+import { setColorEnabled } from "@std/fmt/colors";
 import { basename, dirname, join, resolve, SEPARATOR } from "@std/path";
 import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -56,6 +57,22 @@ function getVerbosity(options: GlobalOptions): Verbosity {
 export function isStdinTty(): boolean {
   try {
     return Deno.stdin.isTerminal();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks if stdout is a TTY (terminal).
+ * Returns false if stdout is not a terminal (e.g., piped or redirected).
+ *
+ * Wrapped like `isStdinTty` above: this runs before Cliffy parses anything, so
+ * a throw here would take down every invocation — including the `--version`
+ * and `--help` output the colour policy exists to clean up.
+ */
+export function isStdoutTty(): boolean {
+  try {
+    return Deno.stdout.isTerminal();
   } catch {
     return false;
   }
@@ -117,6 +134,66 @@ export function resolveOutputMode(
 function isTruthyOutputEnv(value: string | undefined): boolean {
   return value !== undefined && value !== "" && value !== "0" &&
     value !== "false";
+}
+
+/**
+ * Resolves whether ANSI colour should be emitted, without reading process
+ * state, so callers that run before command parsing and unit tests share
+ * identical behavior.
+ *
+ * `NO_COLOR` counts as set by presence, not by value — an empty string disables
+ * colour — which is both the informal standard and the check this replaced in
+ * `runCli`'s global action.
+ *
+ * The terminal probe is a thunk so the two decided cases cost no syscall: with
+ * the flag or the environment variable in play the answer is already known, and
+ * the hook fast path (`audit record --from-hook`) pays nothing for a question
+ * it does not need asked.
+ */
+export function resolveColorEnabled(
+  noColorRequested: boolean,
+  noColorEnv: string | undefined,
+  stdoutIsTerminal: () => boolean,
+): boolean {
+  if (noColorRequested || noColorEnv !== undefined) {
+    return false;
+  }
+  return stdoutIsTerminal();
+}
+
+/**
+ * Applies the colour policy for this invocation and returns what it decided.
+ *
+ * Cliffy resolves `--version` and `--help` while parsing arguments and exits
+ * before `globalAction` runs, so the decision has to be made — and applied —
+ * before the command is even constructed, or `--no-color` cannot reach it
+ * (swamp-club#2414). Colour lives in `@std/fmt`'s module state, which swamp and
+ * Cliffy share, so flipping it here reaches Cliffy's own output too;
+ * `integration/color_policy_rules_test.ts` guards that shared resolution.
+ *
+ * Only ever *disables*: `@std/fmt` applied `NO_COLOR` itself when it loaded, and
+ * an unconditional `setEnabled(true)` would override a disable this code did not
+ * make.
+ *
+ * The environment read, the terminal probe and the effect are all parameters
+ * with production defaults, so tests drive the policy through a spy instead of
+ * mutating process-global colour state.
+ */
+export function applyColorPolicy(
+  noColorRequested: boolean,
+  noColorEnv: string | undefined = Deno.env.get("NO_COLOR"),
+  stdoutIsTerminal: () => boolean = isStdoutTty,
+  setEnabled: (enabled: boolean) => void = setColorEnabled,
+): boolean {
+  const enabled = resolveColorEnabled(
+    noColorRequested,
+    noColorEnv,
+    stdoutIsTerminal,
+  );
+  if (!enabled) {
+    setEnabled(false);
+  }
+  return enabled;
 }
 
 /**

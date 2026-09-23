@@ -23,9 +23,16 @@
  * command path instead (`swamp worker exec-dispatch`).
  */
 
+import { setColorEnabled } from "@std/fmt/colors";
 import "../../domain/models/models.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { runDispatchRunner } from "../../worker/exec_dispatch.ts";
+
+// stdout is handed to the dispatch protocol below, where a stray escape
+// sequence is a parse failure rather than a cosmetic problem, and this process
+// has no interactive output to lose. The command path gets the same result from
+// the colour policy in `runCli`.
+setColorEnabled(false);
 
 const encoder = new TextEncoder();
 const write = (line: string) => {
