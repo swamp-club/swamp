@@ -8190,11 +8190,15 @@ Deno.test("resume: suspendedOnly refuses a failed run", async () => {
     const failed = await service.execute(workflow.name);
     const saves = runRepo.saves;
 
-    await assertRejects(
+    const error = await assertRejects(
       () =>
         drainResume(service, workflow.name, failed.id, { suspendedOnly: true }),
       Error,
       `Run ${failed.id} is not suspended (status: failed)`,
+    );
+    assertStringIncludes(
+      error.message,
+      `Retry it with 'workflow resume --run ${failed.id}'.`,
     );
     assertEquals(runRepo.saves, saves);
     assertEquals(failed.status, "failed");

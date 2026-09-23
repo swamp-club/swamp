@@ -361,7 +361,7 @@ Deno.test("resolveResumableRun: bare resume with only a failed run names the ret
   );
   assertStringIncludes(
     error.message,
-    `Add --run ${run.id} to retry its failed steps.`,
+    `Retry it with 'workflow resume --run ${run.id}'.`,
   );
 });
 
@@ -390,4 +390,22 @@ Deno.test("resolveResumableRun: the failed-run hint fits serve's 200-character e
     Error,
   );
   assertEquals(error.message.length <= 200, true, error.message);
+});
+
+Deno.test("resolveSuspendedRun: approve and reject on a failed run name the resume command", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = createFailedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  // approve and reject resolve through resolveSuspendedRun, so the hint must
+  // name `workflow resume` rather than a flag to add to their own command.
+  const error = await assertRejects(
+    () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf"),
+    Error,
+    "No suspended runs found",
+  );
+  assertStringIncludes(
+    error.message,
+    `Retry it with 'workflow resume --run ${run.id}'.`,
+  );
 });

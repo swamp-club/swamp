@@ -219,9 +219,9 @@ export function nextActionForStatus(
     case "succeeded":
       return ` The workflow has already completed — inspect results with 'swamp workflow history ${workflowName}'.`;
     case "failed":
-      // Short and target-agnostic: serve truncates client errors at 200
-      // characters, and only the caller knows its --server or --repo-dir.
-      return ` Add --run ${runId} to retry its failed steps.`;
+      // Names the command, since approve, reject and auto-resume show this
+      // too. Kept short: serve truncates client errors at 200 characters.
+      return ` Retry it with 'workflow resume --run ${runId}'.`;
     case "suspended":
       return ` Approve or resume the suspended run with 'swamp workflow approve ${workflowName}'.`;
     case "interrupted":
