@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { SEPARATOR } from "@std/path";
 import {
   handleDataDelete,
   handleDataGc,
@@ -351,9 +352,12 @@ Deno.test("handleDataDelete: pushes the deletion after per-path markDirty (no ba
     const bareCalls = markDirtyCalls.filter((c) => !c.relPath);
     assertEquals(bareCalls.length, 0, "bare markDirty() must not be called");
     // Full delete emits per-version-directory signals + latest marker
-    // (swamp-club#2277), not a single data-name directory signal.
+    // (swamp-club#2277), not a single data-name directory signal. The
+    // fixture hands the repository's absolute paths straight to the mock,
+    // so they use the platform separator; forward-slash normalization
+    // happens in the repo_context wiring and is pinned there.
     assertEquals(
-      markDirtyCalls.some((c) => c.relPath?.includes("result/")),
+      markDirtyCalls.some((c) => c.relPath?.includes(`result${SEPARATOR}`)),
       true,
       "repo must mark deleted version directories and latest marker dirty",
     );

@@ -168,6 +168,14 @@ changes that aren't tied to a single building block:
   elapsed times); assert on work done (call counts, events) instead.
 - Never sleep to advance a file's mtime — set it explicitly with `Deno.utime`.
 - Generate unique test IDs with `crypto.randomUUID()`, not `Date.now()`.
+- Keep tests correct under `deno test --repeats`, which the scheduled flaky-test
+  job runs: each repeat must exercise the code path again, not pass against
+  state an earlier repeat left behind. A test that registers a type in a
+  process-global registry (`modelRegistry`, `vaultTypeRegistry`,
+  `datastoreTypeRegistry`) either uses a per-run type name built with
+  `crypto.randomUUID()`, or registers unconditionally and calls `invalidateType`
+  in a `finally`. Guard with `has()` only when the registered provider captures
+  nothing from the test body.
 - Restore env vars with `if (original !== undefined)` — truthiness checks delete
   vars that were set to the empty string.
 
