@@ -26,6 +26,12 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  detachFrame,
+  settleDetached,
+  settleRequest,
+  type WireFrame,
+} from "./stream";
 
 interface AuthInfo {
   mode: "none" | "token" | "oauth";
@@ -43,6 +49,15 @@ interface SwampContextValue {
     type: string,
     payload?: Record<string, unknown>,
   ) => Promise<T>;
+  /**
+   * Starts a request whose run serve drives itself (e.g. `workflow.resume`),
+   * resolves once it has started, and stops following it without cancelling
+   * the run.
+   */
+  requestDetached: (
+    type: string,
+    payload?: Record<string, unknown>,
+  ) => Promise<void>;
 }
 
 const SwampContext = createContext<SwampContextValue | null>(null);
@@ -78,6 +93,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       {
         resolve: (value: unknown) => void;
         reject: (error: Error) => void;
+        detached?: boolean;
       }
     >
   >(new Map());
@@ -107,13 +123,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     };
 
     const handleFrame = (text: string) => {
-      let msg: {
-        type: string;
-        id: string;
-        payload?: unknown;
-        error?: { code: string; message: string };
-        event?: { kind: string; [k: string]: unknown };
-      };
+      let msg: WireFrame;
       try {
         msg = JSON.parse(text);
       } catch {
@@ -123,16 +133,20 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       const pending = pendingRef.current.get(msg.id);
       if (!pending) return;
 
-      if (msg.type === "error" && msg.error) {
-        pendingRef.current.delete(msg.id);
-        pending.reject(new Error(msg.error.message));
+      const outcome = pending.detached
+        ? settleDetached(msg)
+        : settleRequest(msg);
+      if (outcome.kind === "ignore") return;
+
+      pendingRef.current.delete(msg.id);
+      if (outcome.kind === "reject") {
+        pending.reject(new Error(outcome.message));
         return;
       }
-
-      if ("payload" in msg && msg.payload !== undefined) {
-        pendingRef.current.delete(msg.id);
-        pending.resolve(msg.payload);
+      if (outcome.detach && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(detachFrame(msg.id)));
       }
+      pending.resolve(outcome.value);
     };
 
     // Every frame goes through one chain so a text frame never overtakes an
@@ -189,11 +203,12 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     socketRef.current?.close();
   }, []);
 
-  const request = useCallback(
-    <T = Record<string, unknown>>(
+  const send = useCallback(
+    (
       type: string,
-      payload?: Record<string, unknown>,
-    ): Promise<T> => {
+      payload: Record<string, unknown> | undefined,
+      detached: boolean,
+    ): Promise<unknown> => {
       return new Promise((resolve, reject) => {
         if (
           !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN
@@ -202,10 +217,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
           return;
         }
         const id = crypto.randomUUID();
-        pendingRef.current.set(id, {
-          resolve: resolve as (v: unknown) => void,
-          reject,
-        });
+        pendingRef.current.set(id, { resolve, reject, detached });
         const msg: Record<string, unknown> = { type, id };
         if (payload !== undefined) {
           msg.payload = payload;
@@ -214,6 +226,21 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       });
     },
     [],
+  );
+
+  const request = useCallback(
+    <T = Record<string, unknown>>(
+      type: string,
+      payload?: Record<string, unknown>,
+    ): Promise<T> => send(type, payload, false) as Promise<T>,
+    [send],
+  );
+
+  const requestDetached = useCallback(
+    async (type: string, payload?: Record<string, unknown>): Promise<void> => {
+      await send(type, payload, true);
+    },
+    [send],
   );
 
   return (
@@ -226,6 +253,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         request,
+        requestDetached,
       }}
     >
       {children}

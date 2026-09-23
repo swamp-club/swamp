@@ -794,6 +794,21 @@ swamp workflow resume  <workflow-name> --run <run-id> --input authKey=tskey-abc1
 swamp workflow approvals  # list all pending approvals with run IDs
 ```
 
+**Auto-resume (serve only):** set `autoResume: true` at the top level of the
+workflow to have `swamp serve` resume the run by itself once every gate is
+approved. The approval must go through serve: the dashboard, or
+`workflow approve --server`. `swamp serve --auto-resume` turns this on for
+workflows that declare **no** `inputs` and leave `autoResume` unset. A workflow
+with inputs must opt in itself, because it may rely on resume-time `--input`,
+and `autoResume: false` opts a workflow out. Do not enable auto-resume on a
+workflow that expects resume inputs: the automatic resume supplies none.
+
+```yaml
+name: deploy-prod
+autoResume: true
+jobs: [...]
+```
+
 A fresh `workflow run` automatically supersedes (cancels) prior suspended runs
 of the same workflow whose resolved inputs match. Use `--no-supersede` to keep
 prior runs alive.

@@ -39,6 +39,7 @@ import {
   workflowApprovals,
   type WorkflowApprovalsEvent,
   workflowApprove,
+  type WorkflowApproveData,
   workflowCreate,
   workflowDelete,
   workflowEdit,
@@ -105,6 +106,10 @@ import {
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
+import {
+  autoResumeAfterApproval,
+  startDetachedResume,
+} from "../resume_launcher.ts";
 import {
   deleteActiveRun,
   rekeyActiveRun,
@@ -1050,6 +1055,7 @@ export async function handleWorkflowApprove(
     }, ctx).allowed
   ) return;
 
+  let result: WorkflowApproveData | undefined;
   try {
     const libCtx = createLibSwampContext();
     const deps = createWorkflowApproveDeps(
@@ -1057,7 +1063,6 @@ export async function handleWorkflowApprove(
       ctx.repoContext.workflowRunRepo,
     );
 
-    let result: Record<string, unknown> | undefined;
     await consumeStream(
       workflowApprove(libCtx, deps, {
         workflowIdOrName: payload.workflowIdOrName,
@@ -1069,7 +1074,7 @@ export async function handleWorkflowApprove(
       {
         resolving: () => {},
         completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
+          result = e.data;
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -1091,18 +1096,38 @@ export async function handleWorkflowApprove(
       );
       return;
     }
-
-    send(socket, {
-      type: "workflow.approve",
-      id: requestId,
-      payload: { data: result },
-    });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_approve_failed", message);
+    return;
   } finally {
     await pushChangedToRemote(ctx);
   }
+
+  // Launched only once the approval is saved and pushed. The resume runs
+  // detached and is never awaited here: this handler holds the sync gate,
+  // which is not reentrant.
+  // The approval is already saved: a failure deciding or launching the
+  // auto-resume must not cost the client its reply.
+  let autoResumed = false;
+  try {
+    autoResumed = await autoResumeAfterApproval(
+      ctx,
+      result,
+      principal ? principalToString(principal) : null,
+    );
+  } catch (error) {
+    logger.warn("Auto-resume after approval of run {runId} failed: {error}", {
+      runId: result.runId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  send(socket, {
+    type: "workflow.approve",
+    id: requestId,
+    payload: { data: { ...result, autoResumed } },
+  });
 }
 
 export async function handleWorkflowReject(
@@ -1327,216 +1352,21 @@ export async function handleWorkflowResume(
     return;
   }
 
-  // Resolve the run before spawning the detached task so we can fail
-  // fast with an error frame if the run doesn't exist.
-  const workflowRepo = ctx.repoContext.workflowRepo;
-  const runRepo = ctx.repoContext.workflowRunRepo;
-
-  let resolvedRun: WorkflowRun;
-  let workflowName: string;
-  try {
-    const result = payload.from
-      ? await resolveResumableRun(
-        workflowRepo,
-        runRepo,
-        payload.workflowIdOrName,
-        payload.runId,
-      )
-      : await resolveSuspendedRun(
-        workflowRepo,
-        runRepo,
-        payload.workflowIdOrName,
-        payload.runId,
-      );
-    resolvedRun = result.run;
-    workflowName = result.workflowName;
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "workflow_resume_failed", message);
+  const launched = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: payload.workflowIdOrName,
+    runId: payload.runId,
+    from: payload.from,
+    inputs: payload.inputs,
+    traceparent: payload.traceparent,
+    tracestate: payload.tracestate,
+    principalId: principal ? principalToString(principal) : null,
+  });
+  if (!launched.ok) {
+    sendError(socket, requestId, launched.code, launched.message);
     return;
   }
 
-  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
-  const runController = new AbortController();
-  const runId: string = resolvedRun.id;
-  const startedAt = new Date();
-
-  let resolveCompletion!: () => void;
-  const completion = new Promise<void>((r) => {
-    resolveCompletion = r;
-  });
-
-  try {
-    registry.register({
-      runId,
-      kind: "workflow-resume",
-      resourceName: payload.workflowIdOrName,
-      buffer,
-      controller: runController,
-      startedAt,
-      completion,
-      principalId: principal ? principalToString(principal) : null,
-    });
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    logger.warn("Detached workflow resume rejected: {error}", {
-      error: detail,
-    });
-    resolveCompletion();
-    if (err instanceof RegistryCapacityError) {
-      const clientMsg = err.code === "already_registered"
-        ? "A run with this ID is already in progress"
-        : "Too many concurrent runs; wait for active runs to complete";
-      sendError(socket, requestId, err.code, clientMsg);
-    } else {
-      sendError(socket, requestId, "internal_error", "Run registration failed");
-    }
-    return;
-  }
-
-  (async () => {
-    const stepLockHook: StepLockHook = async (modelType, modelId) => {
-      const lockResult = await acquireModelLocks(
-        ctx.datastoreConfig,
-        [{ modelType, modelId }],
-        ctx.repoDir,
-        ctx.syncService,
-        ctx.repoContext.catalogStore,
-      );
-      if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-      return lockResult;
-    };
-
-    let ephemeral: ReturnType<typeof createEphemeralStore> | null = null;
-    try {
-      const deps = await createWorkflowRunDeps(
-        ctx.repoDir,
-        ctx.repoContext,
-        ctx.datastoreConfig,
-        stepLockHook,
-        ctx.runTracker,
-      );
-
-      ephemeral = createEphemeralStore(
-        ctx.repoContext.unifiedDataRepo.namespace,
-        { isResume: true },
-      );
-
-      const service = deps.createExecutionService(
-        workflowRepo,
-        runRepo,
-        ctx.repoDir,
-        ctx.repoContext.catalogStore,
-        ephemeral.repo,
-        ephemeral.catalog,
-      );
-
-      const doResume = async () => {
-        for await (
-          const event of service.resume(workflowName, resolvedRun.id, {
-            signal: runController.signal,
-            inputs: payload.inputs ?? {},
-            fromStep: payload.from,
-          })
-        ) {
-          const mapped = mapWorkflowExecutionEvent(event, runRepo);
-          const serialized = serializeEvent(
-            mapped as { kind: string; [key: string]: unknown },
-          );
-          buffer.push(serialized);
-        }
-      };
-
-      if (payload.traceparent) {
-        const headers: Record<string, string> = {
-          traceparent: payload.traceparent,
-        };
-        if (payload.tracestate) headers.tracestate = payload.tracestate;
-        const traceCtx = extractTraceContext(headers);
-        await runWithParentTrace(traceCtx, doResume);
-      } else {
-        await doResume();
-      }
-
-      buffer.finish({ kind: "done" });
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        buffer.finish({
-          kind: "error",
-          code: "cancelled",
-          message: "Operation was cancelled",
-        });
-      } else if (error instanceof LockTimeoutError) {
-        const lt = lockTimeoutErrorForClient(error);
-        buffer.finish({
-          kind: "error",
-          code: lt.code,
-          message: lt.message,
-          details: lt.details,
-        });
-      } else {
-        buffer.finish({
-          kind: "error",
-          code: "workflow_resume_failed",
-          message: sanitizeErrorForClient(error),
-        });
-      }
-    } finally {
-      if (ctx.syncService) {
-        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-          ? ctx.datastoreConfig.namespace
-          : undefined;
-        try {
-          await ctx.syncService.pushChanged({ namespace });
-        } catch (pushErr) {
-          logger.warn(
-            "Post-resume push failed; terminal status may be delayed: {error}",
-            {
-              error: pushErr instanceof Error
-                ? pushErr.message
-                : String(pushErr),
-            },
-          );
-        }
-      }
-      try {
-        ephemeral?.dispose();
-      } catch (disposeErr) {
-        logger.warn("Failed to dispose ephemeral store: {error}", {
-          error: disposeErr instanceof Error
-            ? disposeErr.message
-            : String(disposeErr),
-        });
-      }
-      registry.deregister(runId);
-      try {
-        if (ctx.controlPlaneStore && ctx.instanceId) {
-          deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
-        }
-      } catch (cleanupErr) {
-        logger.warn("Failed to delete active run record: {error}", {
-          error: cleanupErr instanceof Error
-            ? cleanupErr.message
-            : String(cleanupErr),
-        });
-      }
-      resolveCompletion();
-    }
-  })().catch((err) => {
-    logger.warn("Unhandled error in detached workflow resume: {error}", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  });
-
-  if (ctx.controlPlaneStore && ctx.instanceId) {
-    writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
-      resourceName: payload.workflowIdOrName,
-      runKind: "workflow-resume",
-      startedAt: startedAt.toISOString(),
-    });
-  }
-
-  await subscribeUntilDetach(buffer, socket, requestId, controller);
+  await subscribeUntilDetach(launched.buffer, socket, requestId, controller);
 }
 
 export async function handleWorkflowCreate(

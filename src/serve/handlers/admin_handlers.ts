@@ -2539,6 +2539,7 @@ export function redactServeOptions(
     detachRuns: opts.detachRuns,
     hotReload: opts.hotReload,
     remoteOnly: opts.remoteOnly,
+    autoResume: opts.autoResume,
     trustProxy: opts.trustProxy,
     verifyOnEnroll: opts.verifyOnEnroll,
   };

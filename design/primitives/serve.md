@@ -89,6 +89,7 @@ path is optional.
 | `--enable-internal-api`                       | `SWAMP_ENABLE_INTERNAL_API`      | `false`                     | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000)         |
 | `--remote-only`                               | `SWAMP_REMOTE_ONLY`              | `false`                     | User steps run only on workers; built-in `swamp/*` control-plane models (server tokens, enrollment tokens, workers, step leases, etc.) always run on the orchestrator (`src/domain/remote/remote_dispatch.ts`) |
 | `--dashboard`                                 | `SWAMP_DASHBOARD`                | `false`                     | Serves `/dashboard/*` when the build embeds the SPA                       |
+| `--auto-resume`                               | `SWAMP_AUTO_RESUME`              | `false`                     | Resumes a run once every approval gate is decided, for workflows that declare no inputs and leave `autoResume` unset; see "Manual Approval" in workflows.md |
 | `--detach-runs`                               | —                                | `false`                     | Deprecated, no effect: runs are always detached                          |
 
 ### Deployment mode
@@ -423,7 +424,13 @@ is handled by the reconciliation loop after `--stale-ttl`.
   (`/dashboard/models/<name>`, `/dashboard/workflows/<name>/runs/<runId>`,
   etc.) so views are directly addressable and shareable; the server falls back
   to `index.html` for any sub-path under `/dashboard/` to support client-side
-  routing.
+  routing. The dashboard is a complete approval surface. Approve and reject
+  address the gate's run by `runId`. A run that is approved but still
+  suspended (`awaitingResume` on `workflow.run.search`) shows a Resume action
+  and the equivalent `swamp workflow resume` command. Resume sends
+  `workflow.resume` and then a `cancel` carrying the request id, which detaches
+  the dashboard from the serve-driven run without cancelling it
+  (`packages/dashboard/src/client/stream.ts`).
 - **Club heartbeat.** In OAuth mode — only when an OAuth client id is
   resolved, `--allowed-collectives` is non-empty and `SWAMP_API_KEY` is set;
   otherwise registration is silently skipped — serve registers itself with

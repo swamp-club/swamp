@@ -36,6 +36,54 @@ function activeRunKey(instanceId: string, runId: string): string {
 
 const encoder = new TextEncoder();
 
+/**
+ * The tail of each instance's queue of active-run writes, per store.
+ *
+ * Every write, rekey and delete for an instance runs on one chain, in call
+ * order. The callers fire and forget, so unordered they race. A rekey's
+ * delete can land before the placeholder write it replaces, orphaning that
+ * record. A run's final delete can overtake the rekey's write, leaving a
+ * finished run recorded as active. And on the filesystem store a delete
+ * removes the instance directory once it is empty, which can pull the
+ * directory out from under a concurrent write into it.
+ */
+const pendingByStore = new WeakMap<
+  ControlPlaneStore,
+  Map<string, Promise<void>>
+>();
+
+function enqueue(
+  store: ControlPlaneStore,
+  instanceId: string,
+  op: () => Promise<void>,
+  onError: (err: unknown) => void,
+): void {
+  let pending = pendingByStore.get(store);
+  if (!pending) {
+    pending = new Map();
+    pendingByStore.set(store, pending);
+  }
+  const queue = pending;
+  const tail: Promise<void> = (queue.get(instanceId) ?? Promise.resolve())
+    .then(op)
+    .catch(onError)
+    .then(() => {
+      if (queue.get(instanceId) === tail) queue.delete(instanceId);
+    });
+  queue.set(instanceId, tail);
+}
+
+/**
+ * Resolves once every active-run write already queued for the instance has
+ * been applied or has failed and been logged.
+ */
+export function activeRunWritesSettled(
+  store: ControlPlaneStore,
+  instanceId: string,
+): Promise<void> {
+  return pendingByStore.get(store)?.get(instanceId) ?? Promise.resolve();
+}
+
 export function writeActiveRun(
   store: ControlPlaneStore,
   instanceId: string,
@@ -43,16 +91,21 @@ export function writeActiveRun(
   record: Omit<ActiveRunRecord, "instanceId">,
 ): void {
   const full: ActiveRunRecord = { instanceId, ...record };
-  store.put(
-    activeRunKey(instanceId, runId),
-    encoder.encode(JSON.stringify(full)),
-  )
-    .catch((err: unknown) => {
+  enqueue(
+    store,
+    instanceId,
+    () =>
+      store.put(
+        activeRunKey(instanceId, runId),
+        encoder.encode(JSON.stringify(full)),
+      ),
+    (err: unknown) => {
       logger.warn("Failed to write active-run record for {runId}: {error}", {
         runId,
         error: err instanceof Error ? err.message : String(err),
       });
-    });
+    },
+  );
 }
 
 export function deleteActiveRun(
@@ -60,13 +113,17 @@ export function deleteActiveRun(
   instanceId: string,
   runId: string,
 ): void {
-  store.delete(activeRunKey(instanceId, runId))
-    .catch((err: unknown) => {
+  enqueue(
+    store,
+    instanceId,
+    () => store.delete(activeRunKey(instanceId, runId)),
+    (err: unknown) => {
       logger.warn("Failed to delete active-run record for {runId}: {error}", {
         runId,
         error: err instanceof Error ? err.message : String(err),
       });
-    });
+    },
+  );
 }
 
 export function rekeyActiveRun(
@@ -77,22 +134,29 @@ export function rekeyActiveRun(
   record: Omit<ActiveRunRecord, "instanceId">,
 ): void {
   const full: ActiveRunRecord = { instanceId, ...record };
-  Promise.all([
-    store.delete(activeRunKey(instanceId, oldRunId)),
-    store.put(
-      activeRunKey(instanceId, newRunId),
-      encoder.encode(JSON.stringify(full)),
-    ),
-  ]).catch((err: unknown) => {
-    logger.warn(
-      "Failed to rekey active-run record from {oldRunId} to {newRunId}: {error}",
-      {
-        oldRunId,
-        newRunId,
-        error: err instanceof Error ? err.message : String(err),
-      },
-    );
-  });
+  // Write the new key before deleting the old one, so the run is never
+  // without a record and the directory is never empty mid-rekey.
+  enqueue(
+    store,
+    instanceId,
+    async () => {
+      await store.put(
+        activeRunKey(instanceId, newRunId),
+        encoder.encode(JSON.stringify(full)),
+      );
+      await store.delete(activeRunKey(instanceId, oldRunId));
+    },
+    (err: unknown) => {
+      logger.warn(
+        "Failed to rekey active-run record from {oldRunId} to {newRunId}: {error}",
+        {
+          oldRunId,
+          newRunId,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    },
+  );
 }
 
 const decoder = new TextDecoder();

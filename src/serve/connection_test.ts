@@ -37,6 +37,12 @@ import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_load
 import type { Grant } from "../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { ActiveRunRegistry } from "./active_run_registry.ts";
+import { Workflow } from "../domain/workflows/workflow.ts";
+import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
+import { Job } from "../domain/workflows/job.ts";
+import { Step } from "../domain/workflows/step.ts";
+import { StepTask } from "../domain/workflows/step_task.ts";
 
 await initializeLogging({});
 
@@ -3964,4 +3970,119 @@ Deno.test("authorizeOrReject: admin on access:* allows all new command types", (
     0,
     "admin superuser should not be denied any new command type",
   );
+});
+
+// ── workflow.approve → auto-resume ─────────────────────────────────────────
+
+function makeApproveCtx(
+  autoResume: boolean | undefined,
+): {
+  ctx: ConnectionContext;
+  registry: ActiveRunRegistry;
+  run: WorkflowRun;
+  workflow: Workflow;
+} {
+  const workflow = Workflow.create({
+    name: "gated",
+    autoResume,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("Go?") }),
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("deployer", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const gate = job.getStep("gate")!;
+  gate.start();
+  gate.waitForApproval();
+  run.suspend();
+
+  const registry = new ActiveRunRegistry();
+  const ctx = {
+    ...makeCtx(modeNoneConfig),
+    activeRunRegistry: registry,
+    repoContext: {
+      ...stubRepoContext,
+      workflowRepo: {
+        findByName: (name: string) =>
+          Promise.resolve(name === workflow.name ? workflow : null),
+        findById: (id: string) =>
+          Promise.resolve(id === workflow.id ? workflow : null),
+      },
+      workflowRunRepo: {
+        findById: () => Promise.resolve(run),
+        findAllByWorkflowId: () => Promise.resolve([run]),
+        save: () => Promise.resolve(),
+      },
+    } as unknown as ConnectionContext["repoContext"],
+  } as ConnectionContext;
+  return { ctx, registry, run, workflow };
+}
+
+Deno.test("handleMessage: workflow.approve auto-resumes an opted-in run, addressed by its resolved identity", async () => {
+  const mock = createMockSocket();
+  const { ctx, registry, run, workflow } = makeApproveCtx(true);
+  const registered: string[] = [];
+  const register = registry.register.bind(registry);
+  registry.register = (r) => {
+    register(r);
+    registered.push(r.runId);
+  };
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({
+      type: "workflow.approve",
+      id: "approve-auto",
+      // Addressed by id: the resume must use the name approve resolved.
+      payload: { workflowIdOrName: workflow.id, stepName: "gate" },
+    })),
+    null,
+  );
+
+  await waitFor(() => mock.sent.length >= 1, "workflow.approve response sent");
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "workflow.approve");
+  const data = (msg.payload as { data: Record<string, unknown> }).data;
+  assertEquals(data.allGatesDecided, true);
+  assertEquals(data.autoResumed, true);
+  assertEquals(data.workflowName, "gated");
+  assertEquals(registered, [run.id]);
+  await waitFor(() => registry.get(run.id) === undefined, "resume settled");
+});
+
+Deno.test("handleMessage: workflow.approve leaves a run that has not opted in suspended", async () => {
+  const mock = createMockSocket();
+  const { ctx, registry, run } = makeApproveCtx(undefined);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({
+      type: "workflow.approve",
+      id: "approve-manual",
+      payload: { workflowIdOrName: "gated", stepName: "gate" },
+    })),
+    null,
+  );
+
+  await waitFor(() => mock.sent.length >= 1, "workflow.approve response sent");
+  const data = (parseSent(mock).payload as { data: Record<string, unknown> })
+    .data;
+  assertEquals(data.autoResumed, false);
+  assertEquals(registry.get(run.id), undefined);
+  assertEquals(run.status, "suspended");
 });

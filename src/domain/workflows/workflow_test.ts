@@ -22,6 +22,7 @@ import { parse as parseYaml } from "@std/yaml";
 import {
   isFilenameSafeName,
   Workflow,
+  workflowDeclaresInputs,
   type WorkflowInput,
   WorkflowObjectSchema,
 } from "./workflow.ts";
@@ -29,6 +30,7 @@ import { Job, JobObjectSchema } from "./job.ts";
 import { Step, StepObjectSchema } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
+import type { InputsSchema } from "../definitions/definition.ts";
 
 function createTestJob(name: string): Job {
   return Job.create({
@@ -1177,4 +1179,124 @@ Deno.test("toData serialises every schema field at each level", () => {
     [],
     "Step.toData() drops schema fields",
   );
+});
+
+Deno.test("Workflow autoResume: round-trips through toData", () => {
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: [createTestJob("main")],
+    autoResume: true,
+  });
+  assertEquals(workflow.autoResume, true);
+  const data = workflow.toData();
+  assertEquals(data.autoResume, true);
+  assertEquals(Workflow.fromData(data).autoResume, true);
+});
+
+Deno.test("Workflow autoResume: undefined when not set", () => {
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: [createTestJob("main")],
+  });
+  assertEquals(workflow.autoResume, undefined);
+  assertEquals(workflow.toData().autoResume, undefined);
+});
+
+Deno.test("workflowDeclaresInputs: detects named and open-ended inputs", () => {
+  assertEquals(workflowDeclaresInputs(undefined), false);
+  assertEquals(workflowDeclaresInputs({ type: "object" }), false);
+  assertEquals(
+    workflowDeclaresInputs({ type: "object", properties: {} }),
+    false,
+  );
+  assertEquals(
+    workflowDeclaresInputs({ type: "object", additionalProperties: false }),
+    false,
+  );
+  assertEquals(
+    workflowDeclaresInputs({
+      type: "object",
+      properties: { authKey: { type: "string" } },
+    }),
+    true,
+  );
+  assertEquals(
+    workflowDeclaresInputs({ type: "object", additionalProperties: true }),
+    true,
+  );
+});
+
+Deno.test("Workflow.shouldAutoResume: explicit setting wins, server default only covers input-less workflows", () => {
+  const withInputs: InputsSchema = {
+    type: "object",
+    properties: { authKey: { type: "string" } },
+  };
+  const cases: Array<{
+    autoResume: boolean | undefined;
+    inputs: InputsSchema | undefined;
+    serverDefault: boolean;
+    expected: boolean;
+  }> = [
+    {
+      autoResume: true,
+      inputs: undefined,
+      serverDefault: false,
+      expected: true,
+    },
+    {
+      autoResume: true,
+      inputs: withInputs,
+      serverDefault: false,
+      expected: true,
+    },
+    {
+      autoResume: false,
+      inputs: undefined,
+      serverDefault: true,
+      expected: false,
+    },
+    {
+      autoResume: false,
+      inputs: withInputs,
+      serverDefault: true,
+      expected: false,
+    },
+    {
+      autoResume: undefined,
+      inputs: undefined,
+      serverDefault: true,
+      expected: true,
+    },
+    {
+      autoResume: undefined,
+      inputs: undefined,
+      serverDefault: false,
+      expected: false,
+    },
+    {
+      autoResume: undefined,
+      inputs: withInputs,
+      serverDefault: true,
+      expected: false,
+    },
+    {
+      autoResume: undefined,
+      inputs: withInputs,
+      serverDefault: false,
+      expected: false,
+    },
+  ];
+  for (const c of cases) {
+    const workflow = Workflow.create({
+      name: "gated",
+      jobs: [createTestJob("main")],
+      autoResume: c.autoResume,
+      inputs: c.inputs,
+    });
+    assertEquals(
+      workflow.shouldAutoResume(c.serverDefault),
+      c.expected,
+      JSON.stringify(c),
+    );
+  }
 });

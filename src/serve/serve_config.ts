@@ -60,6 +60,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   enableInternalApi: "SWAMP_ENABLE_INTERNAL_API",
   remoteOnly: "SWAMP_REMOTE_ONLY",
   dashboard: "SWAMP_DASHBOARD",
+  autoResume: "SWAMP_AUTO_RESUME",
 };
 
 // ── Webhook Config Types ──────────────────────────────────────────────
@@ -127,6 +128,7 @@ export interface ServeConfigFile {
   "enable-internal-api"?: boolean;
   "remote-only"?: boolean;
   dashboard?: boolean;
+  "auto-resume"?: boolean;
   audit?: {
     stores?: AuditStoreConfigEntry[];
     "batch-size"?: number;
@@ -240,6 +242,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "enable-internal-api",
   "remote-only",
   "dashboard",
+  "auto-resume",
   "audit",
 ]);
 
@@ -434,6 +437,17 @@ function validateConfigValues(
     throw new UserError(
       `Invalid remote-only in ${path}: expected boolean, got ${typeof raw[
         "remote-only"
+      ]}`,
+    );
+  }
+
+  if (
+    raw["auto-resume"] !== undefined &&
+    typeof raw["auto-resume"] !== "boolean"
+  ) {
+    throw new UserError(
+      `Invalid auto-resume in ${path}: expected boolean, got ${typeof raw[
+        "auto-resume"
       ]}`,
     );
   }
@@ -761,6 +775,11 @@ export interface MergedServeOptions {
   enableInternalApi: boolean;
   remoteOnly: boolean;
   dashboard: boolean;
+  /**
+   * Resume a run once every approval gate on it is decided, for workflows
+   * that declare no inputs and do not set `autoResume` themselves.
+   */
+  autoResume: boolean;
 }
 
 export function mergeServeOptions(
@@ -1104,6 +1123,13 @@ export function mergeServeOptions(
     false,
   );
 
+  const autoResume = resolveBoolean(
+    "auto-resume",
+    cliOptions.autoResume as boolean,
+    config?.["auto-resume"],
+    false,
+  );
+
   const dashboard = resolveBoolean(
     "dashboard",
     cliOptions.dashboard as boolean,
@@ -1169,6 +1195,7 @@ export function mergeServeOptions(
     enableInternalApi,
     remoteOnly,
     dashboard,
+    autoResume,
   };
 }
 

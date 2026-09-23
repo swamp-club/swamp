@@ -334,6 +334,30 @@ export async function createModelMethodRunDeps(
 }
 
 /**
+ * Builds the per-step model lock hook serve's workflow executions use: it
+ * acquires the step's model lock and invalidates the catalog when acquiring it
+ * synced remote state.
+ */
+export function createStepLockHook(
+  repoDir: string,
+  repoContext: RepositoryContext,
+  datastoreConfig: DatastoreConfig,
+  syncService?: DatastoreSyncService,
+): StepLockHook {
+  return async (modelType, modelId) => {
+    const result = await acquireModelLocks(
+      datastoreConfig,
+      [{ modelType, modelId }],
+      repoDir,
+      syncService,
+      repoContext.catalogStore,
+    );
+    if (result.synced) repoContext.catalogStore.invalidate();
+    return result;
+  };
+}
+
+/**
  * Executes a workflow run with per-step model lock acquisition — the single
  * code path for both WebSocket-triggered and scheduled workflow execution.
  *
@@ -370,17 +394,12 @@ export async function executeWorkflowWithLocks(
     createWorkflowId(input.workflowIdOrName),
   );
 
-  const stepLockHook: StepLockHook = async (modelType, modelId) => {
-    const result = await acquireModelLocks(
-      datastoreConfig,
-      [{ modelType, modelId }],
-      repoDir,
-      syncService,
-      repoContext.catalogStore,
-    );
-    if (result.synced) repoContext.catalogStore.invalidate();
-    return result;
-  };
+  const stepLockHook = createStepLockHook(
+    repoDir,
+    repoContext,
+    datastoreConfig,
+    syncService,
+  );
 
   // Undefined when no trigger source was supplied (library/test callers) or
   // when telemetry is disabled for this process, in which case the run

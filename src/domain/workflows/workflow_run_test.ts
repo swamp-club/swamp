@@ -1665,3 +1665,53 @@ Deno.test("StepSkipReasonSchema: an expression is only representable on a guard"
     false,
   );
 });
+
+function createGatedWorkflow(): Workflow {
+  return Workflow.create({
+    name: "gated",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate-a",
+            task: StepTask.manualApproval("Approve a"),
+          }),
+          Step.create({
+            name: "gate-b",
+            task: StepTask.manualApproval("Approve b"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("WorkflowRun: isAwaitingResume is true only once every gate is decided", () => {
+  const run = WorkflowRun.create(createGatedWorkflow());
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  for (const name of ["gate-a", "gate-b"]) {
+    const step = job.getStep(name)!;
+    step.start();
+    step.waitForApproval();
+  }
+  run.suspend();
+  assertEquals(run.isAwaitingResume(), false);
+  assertEquals(run.toData().awaitingResume, undefined);
+
+  job.getStep("gate-a")!.succeed();
+  assertEquals(run.isAwaitingResume(), false);
+
+  job.getStep("gate-b")!.succeed();
+  assertEquals(run.isAwaitingResume(), true);
+  assertEquals(run.toData().awaitingResume, true);
+});
+
+Deno.test("WorkflowRun: isAwaitingResume is false for a run that is not suspended", () => {
+  const run = WorkflowRun.create(createGatedWorkflow());
+  run.start();
+  assertEquals(run.isAwaitingResume(), false);
+  assertEquals(run.toData().awaitingResume, undefined);
+});

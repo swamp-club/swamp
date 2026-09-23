@@ -20,6 +20,8 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
+import type { InputsSchema } from "../../domain/definitions/definition.ts";
+import { workflowDeclaresInputs } from "../../domain/workflows/workflow.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
@@ -41,6 +43,10 @@ export interface WorkflowRunSearchItem {
   failedStep?: string;
   failureReason?: string;
   stepProgress?: { completed: number; total: number };
+  /** Suspended with every approval gate decided: it needs a resume. */
+  awaitingResume?: boolean;
+  /** The run's workflow declares inputs, so a resume may need `--input`. */
+  workflowHasInputs?: boolean;
 }
 
 /**
@@ -60,7 +66,9 @@ export type WorkflowRunSearchEvent =
  * Dependencies for the workflow run search generator.
  */
 export interface WorkflowRunSearchDeps {
-  findAllWorkflows(): Promise<Array<{ id: string; name: string }>>;
+  findAllWorkflows(): Promise<
+    Array<{ id: string; name: string; inputs?: InputsSchema }>
+  >;
   findAllRunsByWorkflowId(id: string): Promise<
     Array<{
       id: string;
@@ -77,6 +85,7 @@ export interface WorkflowRunSearchDeps {
       failedStep?: string;
       failureReason?: string;
       stepProgress?: { completed: number; total: number };
+      awaitingResume?: boolean;
     }>
   >;
 }
@@ -113,6 +122,11 @@ export async function* workflowRunSearch(
       yield { kind: "resolving" };
 
       const allWorkflows = await deps.findAllWorkflows();
+      const workflowsWithInputs = new Set(
+        allWorkflows
+          .filter((w) => workflowDeclaresInputs(w.inputs))
+          .map((w) => w.id),
+      );
 
       // Fetch run summaries for all workflows with bounded concurrency. Each
       // per-workflow read streams one run file at a time; the bound keeps at
@@ -158,6 +172,10 @@ export async function* workflowRunSearch(
           failedStep: run.failedStep,
           failureReason: run.failureReason,
           stepProgress: run.stepProgress,
+          awaitingResume: run.awaitingResume ? true : undefined,
+          workflowHasInputs: workflowsWithInputs.has(run.workflowId)
+            ? true
+            : undefined,
         };
       });
 

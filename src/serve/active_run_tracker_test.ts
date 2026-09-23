@@ -20,12 +20,14 @@
 import { assertEquals } from "@std/assert";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
+  activeRunWritesSettled,
   cleanupActiveRunsForInstance,
   deleteActiveRun,
   findActiveRunByRunId,
   rekeyActiveRun,
   writeActiveRun,
 } from "./active_run_tracker.ts";
+import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
@@ -221,4 +223,72 @@ Deno.test("deleteActiveRun: does not throw on store failure", async () => {
   deleteActiveRun(store, "instance-1", "run-abc");
   await new Promise((r) => setTimeout(r, 10));
   // No throw — the error is caught and logged
+});
+
+async function withFsStore(
+  fn: (store: FileSystemControlPlaneStore) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_active_run_" });
+  try {
+    await fn(new FileSystemControlPlaneStore(dir));
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+const record = {
+  resourceName: "deploy-pipeline",
+  runKind: "workflow-run" as const,
+  startedAt: "2026-08-01T12:00:00Z",
+};
+
+Deno.test("rekeyActiveRun: a rekey issued straight after the write replaces it on the filesystem store", async () => {
+  await withFsStore(async (store) => {
+    // Serve writes under a placeholder id, then rekeys when the run starts,
+    // without waiting for the write. The rekey must not overtake it.
+    for (let i = 0; i < 50; i++) {
+      writeActiveRun(store, "instance-1", `placeholder-${i}`, record);
+      rekeyActiveRun(
+        store,
+        "instance-1",
+        `placeholder-${i}`,
+        `run-${i}`,
+        record,
+      );
+    }
+    await activeRunWritesSettled(store, "instance-1");
+
+    const keys = await store.list("active-runs/instance-1/");
+    assertEquals(keys.filter((k) => k.includes("placeholder-")), []);
+    assertEquals(keys.filter((k) => k.includes("/run-")).length, 50);
+  });
+});
+
+Deno.test("deleteActiveRun: a delete issued straight after a rekey removes the record", async () => {
+  await withFsStore(async (store) => {
+    // A short run can end before its rekey has been applied. The final
+    // delete must not leave the finished run recorded as active.
+    for (let i = 0; i < 50; i++) {
+      writeActiveRun(store, "instance-1", `placeholder-${i}`, record);
+      rekeyActiveRun(
+        store,
+        "instance-1",
+        `placeholder-${i}`,
+        `run-${i}`,
+        record,
+      );
+      deleteActiveRun(store, "instance-1", `run-${i}`);
+    }
+    await activeRunWritesSettled(store, "instance-1");
+
+    assertEquals(await store.list("active-runs/instance-1/"), []);
+  });
+});
+
+Deno.test("activeRunWritesSettled: resolves at once when nothing is queued", async () => {
+  await activeRunWritesSettled(createMockStore(), "instance-1");
 });

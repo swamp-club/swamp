@@ -17,11 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
+import { type ResumableRun, resumeStateFor } from "../client/resume_state";
 import { StatusPill } from "../components/StatusPill";
+import { ResumeAction } from "../components/ResumeAction";
 
 interface ApprovalInfo {
   workflowName: string;
@@ -32,31 +34,80 @@ interface ApprovalInfo {
   inputs?: Readonly<Record<string, unknown>>;
 }
 
-export function Approvals() {
+interface ApprovalsProps {
+  /** Called after a gate decision or resume, so the sidebar count refreshes. */
+  onApprovalsChanged?: () => void;
+}
+
+export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
   const { request } = useSwamp();
   const { data, refetch } = useRequest("workflow.approvals");
+  const { data: suspendedData, refetch: refetchSuspended } = useRequest(
+    "workflow.run.search",
+    { status: "suspended", limit: 200 },
+  );
   const approvals = extractArray<ApprovalInfo>(data);
+  const awaitingResume = extractArray<ResumableRun>(suspendedData).filter(
+    (run) => resumeStateFor(run) !== null,
+  );
+  const [notice, setNotice] = useState<string | null>(null);
+  const [resumingRuns, setResumingRuns] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
+  const refresh = useCallback(() => {
+    refetch();
+    refetchSuspended();
+    onApprovalsChanged?.();
+  }, [refetch, refetchSuspended, onApprovalsChanged]);
+
+  const [error, setError] = useState<string | null>(null);
 
   const handleApprove = useCallback(
-    async (workflowName: string, stepName: string) => {
-      await request("workflow.approve", {
-        workflowIdOrName: workflowName,
-        stepName,
-      });
-      refetch();
+    async (a: ApprovalInfo) => {
+      setError(null);
+      setNotice(null);
+      try {
+        const result = await request<{ data?: { autoResumed?: boolean } }>(
+          "workflow.approve",
+          {
+            workflowIdOrName: a.workflowName,
+            stepName: a.stepName,
+            runId: a.runId,
+          },
+        );
+        if (result.data?.autoResumed) {
+          setResumingRuns((prev) => new Set(prev).add(a.runId));
+          setNotice(`${a.workflowName}: approved — serve is resuming the run`);
+        }
+      } catch (err) {
+        setError(
+          `Approve failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      refresh();
     },
-    [request, refetch],
+    [request, refresh],
   );
 
   const handleReject = useCallback(
-    async (workflowName: string, stepName: string) => {
-      await request("workflow.reject", {
-        workflowIdOrName: workflowName,
-        stepName,
-      });
-      refetch();
+    async (a: ApprovalInfo) => {
+      setError(null);
+      setNotice(null);
+      try {
+        await request("workflow.reject", {
+          workflowIdOrName: a.workflowName,
+          stepName: a.stepName,
+          runId: a.runId,
+        });
+      } catch (err) {
+        setError(
+          `Reject failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      refresh();
     },
-    [request, refetch],
+    [request, refresh],
   );
 
   const totalGates = approvals.length;
@@ -79,6 +130,9 @@ export function Approvals() {
           )}
         </div>
       </div>
+
+      {notice && <div className="resume-label">{notice}</div>}
+      {error && <div className="resume-error">{error}</div>}
 
       <div className="panel">
         {approvals.length === 0
@@ -127,14 +181,14 @@ export function Approvals() {
                   <button
                     type="button"
                     className="btn-sm btn-approve"
-                    onClick={() => handleApprove(a.workflowName, a.stepName)}
+                    onClick={() => handleApprove(a)}
                   >
                     Approve
                   </button>
                   <button
                     type="button"
                     className="btn-sm btn-reject"
-                    onClick={() => handleReject(a.workflowName, a.stepName)}
+                    onClick={() => handleReject(a)}
                   >
                     Reject
                   </button>
@@ -143,6 +197,42 @@ export function Approvals() {
             ))
           )}
       </div>
+
+      {awaitingResume.length > 0 && (
+        <div className="panel" style={{ marginTop: 14 }}>
+          <div className="panel-header">
+            <div className="panel-title">
+              Awaiting resume{" "}
+              <span className="panel-count">{awaitingResume.length}</span>
+            </div>
+          </div>
+          {awaitingResume.map((run) => (
+            <div className="approval-row" key={run.runId}>
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontWeight: 500,
+                    fontSize: "0.85rem",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  {run.workflowName}
+                  <span className="mono" style={{ color: "var(--text-3)" }}>
+                    {run.runId.slice(0, 8)}
+                  </span>
+                </div>
+                <ResumeAction
+                  run={run}
+                  onResumed={refresh}
+                  resuming={resumingRuns.has(run.runId)}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   );
 }

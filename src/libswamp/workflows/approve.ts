@@ -38,6 +38,11 @@ export interface WorkflowApproveData {
   approved: true;
   decidedBy: string;
   reason: string | null;
+  /**
+   * True when this approval decided the run's last pending gate, so the run
+   * is suspended with nothing left awaiting approval and can be resumed.
+   */
+  allGatesDecided: boolean;
 }
 
 export type WorkflowApproveEvent =
@@ -164,6 +169,7 @@ export async function* workflowApprove(
           approved: true,
           decidedBy,
           reason: input.reason ?? null,
+          allGatesDecided: run.isAwaitingResume(),
         },
       };
     })(),

@@ -455,6 +455,11 @@ Deno.test("collectServeExtraArgs: omits --hot-reload when false", () => {
   assertEquals(args, []);
 });
 
+Deno.test("collectServeExtraArgs: forwards --auto-resume", () => {
+  const args = collectServeExtraArgs({ autoResume: true });
+  assertEquals(args, ["--auto-resume"]);
+});
+
 Deno.test("collectServeExtraArgs: forwards --enable-internal-api", () => {
   const args = collectServeExtraArgs({ enableInternalApi: true });
   assertEquals(args, ["--enable-internal-api"]);

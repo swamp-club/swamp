@@ -174,7 +174,40 @@ steps:
    disambiguates when multiple runs are suspended; it is optional when only
    one run is suspended.
 3. `swamp workflow resume <workflow> --run <id>` re-enters the executor, skips
-   completed steps, and runs remaining pending steps.
+   completed steps, and runs remaining pending steps. The dashboard's Resume
+   action on an approved run sends the same `workflow.resume` request. Like a
+   CLI resume without `--input`, it supplies no new inputs.
+
+**Auto-resume.** Approve and resume are separate so that resume can take
+inputs, but most gated workflows need none. For those, serve can continue the
+run itself. After a `workflow.approve` that decides the run's last gate
+(`allGatesDecided` on `WorkflowApproveData`), serve launches a detached resume
+(`autoResumeAfterApproval` in `src/serve/resume_launcher.ts`, which shares
+`startDetachedResume` with `handleWorkflowResume`). The policy is
+`Workflow.shouldAutoResume(serverDefault)` (`src/domain/workflows/workflow.ts`):
+
+- A workflow's own `autoResume: true | false` always wins.
+- Otherwise `swamp serve --auto-resume` (`SWAMP_AUTO_RESUME`, serve.yaml
+  `auto-resume`; default off) applies, but **only to a workflow that declares
+  no inputs**. Resume-time inputs are never declared separately, so a workflow
+  with inputs may depend on the placeholder-then-resume pattern below and must
+  opt in with `autoResume: true` itself.
+
+The resume addresses the run by the workflow name and run id that the approval
+resolved, not by the request fields. It is charged to the approver's principal
+for the `ActiveRunRegistry` caps, and the run keeps its original `initiatedBy`.
+When auto-resume is in effect, an `approve` grant releases execution of a run
+that was authorized when it started. This is the point of the opt-in, and the
+approver cannot supply inputs on this path. Serve audits the launch as
+`workflow.auto_resume`, and the approve response carries `autoResumed: true`.
+If the launch is refused or the resume fails, serve logs it and audits it as
+`workflow.auto_resume_failed`, and the run stays `suspended` and awaiting
+resume. The same happens when two sibling gates are approved concurrently and
+neither approval observes the other. Auto-resume only happens when the approval
+goes through serve (the dashboard, or `swamp workflow approve --server`). A
+local `swamp workflow approve` against the same repository never triggers it.
+The run record carries the derived `awaitingResume: true` while it is suspended
+with every gate decided, so the run index and `workflow.run.search` can list it.
 
 `swamp workflow reject <workflow> <step> --run <id>` marks the step as failed and
 the run as failed. No resume needed.

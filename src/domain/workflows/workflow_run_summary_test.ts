@@ -99,6 +99,7 @@ Deno.test("parseWorkflowRunSummary: never retains the heavy jobs/output subtree"
     "failedStep",
     "failureReason",
     "stepProgress",
+    "awaitingResume",
   ]);
   for (const key of Object.keys(summary)) {
     assert(allowedKeys.has(key), `unexpected key "${key}" on summary`);
@@ -135,8 +136,10 @@ Deno.test("parseWorkflowRunSummary: projects instanceId, triggerSource, and fail
     failedStep: "build",
     failureReason: "exit code 1",
     stepProgress: { completed: 2, total: 5 },
+    awaitingResume: true,
   });
 
+  assertEquals(summary.awaitingResume, true);
   assertEquals(summary.instanceId, "inst-abc");
   assertEquals(summary.triggerSource, "schedule");
   assertEquals(summary.failedStep, "build");
@@ -157,6 +160,7 @@ Deno.test("parseWorkflowRunSummary: new fields default to undefined when absent"
   assertEquals(summary.failedStep, undefined);
   assertEquals(summary.failureReason, undefined);
   assertEquals(summary.stepProgress, undefined);
+  assertEquals(summary.awaitingResume, undefined);
 });
 
 Deno.test("parseWorkflowRunSummary: rejects records missing required identity fields", () => {
@@ -228,4 +232,56 @@ Deno.test("parseWorkflowRunSummary: does not retain the parsed source buffer (OO
     "child OOMed or errored — summary projection likely retains parsed source buffers",
   );
   assert(out.includes("RETENTION_OK"), "child did not complete the loop");
+});
+
+Deno.test("parseWorkflowRunSummary: derives awaitingResume for a legacy approved run", () => {
+  // Written before awaitingResume was persisted: suspended, gate decided.
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "suspended",
+    jobs: [{
+      jobName: "main",
+      steps: [
+        { stepName: "gate", status: "succeeded" },
+        { stepName: "deploy", status: "pending" },
+      ],
+    }],
+  });
+
+  assertEquals(summary.awaitingResume, true);
+});
+
+Deno.test("parseWorkflowRunSummary: a legacy run still waiting at a gate is not awaiting resume", () => {
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "suspended",
+    jobs: [{
+      jobName: "main",
+      steps: [
+        { stepName: "gate", status: "waiting_approval" },
+        { stepName: "deploy", status: "pending" },
+      ],
+    }],
+  });
+
+  assertEquals(summary.awaitingResume, undefined);
+});
+
+Deno.test("parseWorkflowRunSummary: only a suspended run can be awaiting resume", () => {
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "succeeded",
+    jobs: [{
+      jobName: "main",
+      steps: [{ stepName: "gate", status: "succeeded" }],
+    }],
+  });
+
+  assertEquals(summary.awaitingResume, undefined);
 });

@@ -43,6 +43,14 @@ import type { WorkflowApproveResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/**
+ * Whether serve reported that it resumed the run itself after this approval
+ * (the workflow opted into auto-resume and every gate is now decided).
+ */
+export function serveIsResuming(data: Record<string, unknown>): boolean {
+  return data.autoResumed === true;
+}
+
 export const workflowApproveCommand = withRemoteOptions(
   new Command()
     .name("approve")
@@ -106,8 +114,13 @@ export const workflowApproveCommand = withRemoteOptions(
             } else {
               cliCtx.logger
                 .info`Approved step ${e.data.stepName} in workflow ${e.data.workflowName}`;
-              cliCtx.logger
-                .info`After approval: swamp workflow resume ${e.data.workflowName}`;
+              if (serveIsResuming(response.data)) {
+                cliCtx.logger
+                  .info`Serve is resuming run ${e.data.runId} automatically`;
+              } else {
+                cliCtx.logger
+                  .info`After approval: swamp workflow resume ${e.data.workflowName}`;
+              }
             }
           },
           error: (e) => {

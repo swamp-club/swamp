@@ -929,6 +929,7 @@ function summaryToIndexEntry(
     failedStep: summary.failedStep,
     failureReason: summary.failureReason,
     stepProgress: summary.stepProgress,
+    awaitingResume: summary.awaitingResume,
   };
 }
 
@@ -949,6 +950,7 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
       failedStep: entry.failedStep,
       failureReason: entry.failureReason,
       stepProgress: entry.stepProgress,
+      awaitingResume: entry.awaitingResume,
     });
   }
   return summaries.sort((a, b) => {

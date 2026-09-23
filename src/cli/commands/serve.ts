@@ -641,6 +641,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.dashboard) {
     args.push("--dashboard");
   }
+  if (options.autoResume) {
+    args.push("--auto-resume");
+  }
   return args;
 }
 
@@ -937,6 +940,13 @@ const daemonEnableCommand = new Command()
     "--dashboard",
     "Enable the web dashboard at /dashboard " +
       "(env: SWAMP_DASHBOARD)",
+  )
+  .option(
+    "--auto-resume",
+    "Resume a suspended run once every approval gate on it is decided. " +
+      "Applies to workflows that declare no inputs; a workflow with inputs " +
+      "must set autoResume: true itself, and autoResume: false opts out " +
+      "(env: SWAMP_AUTO_RESUME)",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
@@ -1346,6 +1356,13 @@ export const serveCommand = new Command()
     "Enable the web dashboard at /dashboard " +
       "(env: SWAMP_DASHBOARD)",
   )
+  .option(
+    "--auto-resume",
+    "Resume a suspended run once every approval gate on it is decided. " +
+      "Applies to workflows that declare no inputs; a workflow with inputs " +
+      "must set autoResume: true itself, and autoResume: false opts out " +
+      "(env: SWAMP_AUTO_RESUME)",
+  )
   .example(
     "Enable TLS",
     "swamp serve --cert-file server.crt --key-file server.key",
@@ -1665,6 +1682,11 @@ export const serveCommand = new Command()
       setRemoteOnlyMode(true);
       logger.info(
         "Remote-only mode enabled — all steps require explicit placement",
+      );
+    }
+    if (merged.autoResume) {
+      logger.info(
+        "Auto-resume enabled — runs resume once every approval gate is decided, for workflows that declare no inputs (a workflow with inputs must set autoResume: true)",
       );
     }
     const dataPlane = new DataPlane({

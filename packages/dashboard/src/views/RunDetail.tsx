@@ -18,8 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useRequest } from "../client/useRequest";
-import { extractObject } from "../client/extract";
+import { extractArray, extractObject } from "../client/extract";
+import { type ResumableRun, resumeStateFor } from "../client/resume_state";
 import { StatusPill } from "../components/StatusPill";
+import { ResumeAction } from "../components/ResumeAction";
 import { StatusDot } from "../components/StatusDot";
 
 interface LogsData {
@@ -85,10 +87,21 @@ interface RunDetailProps {
 }
 
 export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
-  const { data, loading, error } = useRequest(
+  const { data, loading, error, refetch } = useRequest(
     "workflow.history.get",
     { workflowIdOrName: runId ?? workflowName },
   );
+  // Run search carries the derived awaiting-resume state for this run.
+  const { data: suspendedData, refetch: refetchSuspended } = useRequest(
+    "workflow.run.search",
+    { workflow: workflowName, status: "suspended" },
+  );
+  // Only a run with every gate decided gets the resume panel.
+  const resumable = runId
+    ? extractArray<ResumableRun>(suspendedData).find((r) =>
+      r.runId === runId && resumeStateFor(r) !== null
+    )
+    : undefined;
   const { data: logsData } = useRequest(
     "workflow.history.logs",
     { runIdOrWorkflow: runId ?? workflowName, tail: 200 },
@@ -147,6 +160,21 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
           )}
         </div>
       </div>
+
+      {resumable && (
+        <div
+          className="panel"
+          style={{ padding: "12px 18px", marginBottom: 14 }}
+        >
+          <ResumeAction
+            run={resumable}
+            onResumed={() => {
+              refetch();
+              refetchSuspended();
+            }}
+          />
+        </div>
+      )}
 
       {loading && <div className="loading">Loading run details...</div>}
 

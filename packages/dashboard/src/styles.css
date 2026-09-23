@@ -536,6 +536,49 @@ body {
   border-color: var(--danger);
 }
 
+.btn-sm:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Resume control for approved runs */
+.resume-action {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.resume-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.resume-label {
+  font-size: 0.75rem;
+  color: var(--warning);
+}
+
+.resume-note {
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.resume-command {
+  font-size: 0.72rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.resume-error {
+  font-size: 0.75rem;
+  color: var(--danger);
+}
+
 /* System view */
 .sys-grid {
   display: grid;
