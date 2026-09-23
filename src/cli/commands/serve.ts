@@ -679,7 +679,7 @@ export function parseDatastorePollInterval(
   if (raw === undefined) return undefined;
   if (/^\d+ms$/i.test(raw.trim())) {
     throw new UserError(
-      `--datastore-poll-interval must be at least 1s and in whole seconds or larger units (e.g. 1s, 30s, 1m); got ${raw}`,
+      `--datastore-poll-interval must be in whole seconds or larger units (minimum 1s, e.g. 1s, 30s, 1m); got ${raw}`,
     );
   }
   return parseTimerDuration(raw, "--datastore-poll-interval");
@@ -945,7 +945,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--datastore-poll-interval <duration:string>",
-    "Datastore poll interval (default: 30s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
+    "Datastore poll interval (default: 30s, minimum: 1s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
     "--remote-only",

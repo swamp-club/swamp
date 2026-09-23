@@ -120,7 +120,7 @@ Deno.test("parseDatastorePollInterval: rejects milliseconds with the 1s floor", 
     assertThrows(
       () => parseDatastorePollInterval(raw),
       UserError,
-      "--datastore-poll-interval must be at least 1s",
+      "--datastore-poll-interval must be in whole seconds or larger units (minimum 1s",
     );
   }
 });
