@@ -28,7 +28,7 @@ Models can reference their inputs:
 
 ```yaml
 type: command/shell
-typeVersion: 1
+typeVersion: 2026.02.09.1
 id: b015aac3-fdc6-41c5-9d91-b130fb65e78d
 name: shell-env
 version: 1
