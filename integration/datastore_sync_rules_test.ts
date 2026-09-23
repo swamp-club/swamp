@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join, relative, SEPARATOR } from "@std/path";
 import { walk } from "@std/fs/walk";
+import { assertPinnedSet } from "./arch_fitness_helpers.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
 const PERSISTENCE_DIR = join(
