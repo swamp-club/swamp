@@ -210,7 +210,6 @@ const PINNED_SERVE_CLI_EDGES: readonly string[] = [
   "src/serve/handlers/admin_handlers.ts -> src/cli/resolve_models_dir.ts",
   "src/serve/handlers/model_handlers.ts -> src/cli/repo_context.ts",
   "src/serve/handlers/vault_handlers.ts -> src/cli/repo_context.ts",
-  "src/serve/handlers/workflow_handlers.ts -> src/cli/repo_context.ts",
   "src/serve/telemetry.ts -> src/cli/telemetry_integration.ts",
 ];
 
