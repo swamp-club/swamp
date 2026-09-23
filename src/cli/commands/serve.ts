@@ -1156,9 +1156,9 @@ const checkConfigCommand = new Command()
       "Loads the config the same way 'swamp serve' does (config file, then env vars), " +
       "validates the auth settings, and in oauth mode looks up every auth.admins and " +
       "auth.allowed-users name on the OAuth provider. Exits non-zero if a name is unknown " +
-      "or serve would refuse to start. Uses SWAMP_API_KEY, or your 'swamp auth login' " +
-      "credential when the provider is the swamp-club you are logged in to. " +
-      "Nothing is written to the repository or the vault.",
+      "or serve would refuse to start. Uses SWAMP_API_KEY or your 'swamp auth login' " +
+      "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
+      "for a custom provider). Nothing is written to the repository or the vault.",
   )
   .example("Check the repository's serve config", "swamp serve check-config")
   .example(
@@ -1213,11 +1213,18 @@ const checkConfigCommand = new Command()
     }
 
     const providerUrl = authConfig.oauthProvider;
-    const envApiKey = Deno.env.get("SWAMP_API_KEY");
+    // AuthRepository.load() returns SWAMP_API_KEY (issued by SWAMP_CLUB_URL
+    // or the default server) when set, otherwise the stored login.
+    const creds = await new AuthRepository().load();
     const token = selectCheckConfigToken(
       providerUrl,
-      envApiKey,
-      envApiKey ? null : await new AuthRepository().load(),
+      creds
+        ? {
+          serverUrl: creds.serverUrl,
+          apiKey: creds.apiKey,
+          source: Deno.env.get("SWAMP_API_KEY") ? "env" : "login",
+        }
+        : null,
     );
     const { resolveUsername } = await import("../../serve/oauth_client.ts");
     const { checkAccessLists } = await import(
@@ -1247,13 +1254,9 @@ const checkConfigCommand = new Command()
       ...(check.refusal !== undefined ? { refusal: check.refusal } : {}),
     }, ctx.outputMode);
 
-    if (!passed) {
-      throw new UserError(
-        check.wouldStart
-          ? `Serve config check failed: ${notFound.length} name(s) not found on ${providerUrl}`
-          : "Serve config check failed: swamp serve would refuse to start",
-      );
-    }
+    // The rendered result already says what failed; like `access can-i`,
+    // report failure through the exit code rather than a second error.
+    if (!passed) Deno.exitCode = 1;
   });
 
 const daemonCommand = new Command()
@@ -2402,20 +2405,15 @@ export const serveCommand = new Command()
         resolveAccessLists,
       } = await import("../../serve/oauth_access_list_resolution.ts");
       const cachedMap = credentials.resolvedAdmins ?? {};
-      // With SWAMP_API_KEY a lookup needs no interaction, so names the
-      // provider reported as not found are checked again on every start.
       const resolutionMode = chooseResolutionMode(
         authConfig.admins,
         authConfig.allowedUsers,
         cachedMap,
-        clubApiKey !== null,
       );
 
       let accessToken = credentials.accessToken;
 
-      if (resolutionMode === "retry") {
-        accessToken = clubApiKey;
-      } else if (resolutionMode === "full" && !accessToken) {
+      if (resolutionMode === "full" && !accessToken) {
         const missingNames = listUncachedNames(
           authConfig.admins,
           authConfig.allowedUsers,
@@ -2543,10 +2541,10 @@ export const serveCommand = new Command()
         const list = u.kind === "admin" ? "auth.admins" : "auth.allowed-users";
         if (u.reason !== undefined) {
           logger
-            .error`Skipping ${u.entry} from ${list}: ${u.reason}. First reported not found at ${u.notFoundSince}. Fix or remove it in the serve config.`;
+            .error`Skipping ${u.entry} from ${list}: ${u.reason}. Fix or remove it in the serve config.`;
         } else {
           logger
-            .error`Skipping ${u.entry} from ${list}: ${authConfig.oauthProvider} reported it not found at ${u.notFoundSince} (cached). Fix or remove it in the serve config.`;
+            .error`Skipping ${u.entry} from ${list}: ${authConfig.oauthProvider} reported it not found at ${u.notFoundSince} (cached). Fix or remove it in the serve config. It is not looked up again until ${list} changes; run swamp serve check-config to see whether it exists now.`;
         }
       }
 
@@ -2562,7 +2560,7 @@ export const serveCommand = new Command()
         authConfig.oauthProvider,
       );
 
-      if (resolutionMode !== "cached" && resolution.cacheChanged) {
+      if (resolutionMode === "full" && resolution.cacheChanged) {
         await storeResolvedAdmins(
           {
             putVaultSecret: (_v, k, val) =>

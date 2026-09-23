@@ -28,8 +28,13 @@
  * `unresolved:allowed:<name>`).
  *
  * A name is only ever skipped on a definitive not-found. Any other lookup
- * failure aborts startup in full mode, because dropping an existing admin
- * from the list makes `materializeAdmins` revoke their grant.
+ * failure aborts startup, because dropping an existing admin from the list
+ * makes `materializeAdmins` revoke their grant.
+ *
+ * A skipped name is never looked up again on its own. It stays skipped
+ * until the operator changes the lists, which re-resolves every name. An
+ * automatic re-check would promote the name as soon as anyone registered
+ * it, so a typo in `auth.admins` could be claimed by someone else.
  */
 
 import { UserError } from "../domain/errors.ts";
@@ -40,12 +45,11 @@ export type AccessListKind = "admin" | "allowed-user";
 
 /**
  * How startup resolves the lists:
- * - `full`: some name is not in the cache at all. Every name is looked up.
- * - `retry`: every name is cached, some as not-found, and a non-interactive
- *   token is available. Only the not-found names are looked up again.
- * - `cached`: every name is cached. No lookups.
+ * - `full`: some name is not in the cache at all, i.e. the lists changed.
+ *   Every name is looked up, including ones previously not found.
+ * - `cached`: every name is cached, as resolved or as not found. No lookups.
  */
-export type ResolutionMode = "full" | "retry" | "cached";
+export type ResolutionMode = "full" | "cached";
 
 /** Looks up one username on the provider and returns its sub. */
 export type UsernameResolver = (username: string) => Promise<string>;
@@ -58,7 +62,7 @@ export interface UnresolvedEntry {
   readonly username: string;
   /** When the provider first reported the name as not found. */
   readonly notFoundSince: string;
-  /** Why the latest lookup failed; absent when the cache was used. */
+  /** Why the lookup failed; absent when the cache was used. */
   readonly reason?: string;
 }
 
@@ -92,7 +96,7 @@ export interface ResolveAccessListsInput {
   readonly allowedUsers: readonly string[];
   readonly cache: Readonly<Record<string, string>>;
   readonly mode: ResolutionMode;
-  /** Required unless `mode` is `cached`. */
+  /** Required in `full` mode. */
   readonly resolve: UsernameResolver | null;
   readonly providerUrl: string;
   /** Current time as an ISO string; injected for tests. */
@@ -167,15 +171,10 @@ export function chooseResolutionMode(
   admins: readonly string[],
   allowedUsers: readonly string[],
   cache: Readonly<Record<string, string>>,
-  retryUnresolved: boolean,
 ): ResolutionMode {
-  if (listUncachedNames(admins, allowedUsers, cache).length > 0) {
-    return "full";
-  }
-  const hasUnresolved = configuredEntries(admins, allowedUsers).some((
-    { kind, username },
-  ) => !cache[resolvedCacheKey(kind, username)]);
-  return hasUnresolved && retryUnresolved ? "retry" : "cached";
+  return listUncachedNames(admins, allowedUsers, cache).length > 0
+    ? "full"
+    : "cached";
 }
 
 function errorMessage(err: unknown): string {
@@ -192,8 +191,8 @@ export async function resolveAccessLists(
   input: ResolveAccessListsInput,
 ): Promise<AccessListResolution> {
   const { cache, mode, resolve, providerUrl, now } = input;
-  if (mode !== "cached" && !resolve) {
-    throw new Error(`A resolver is required in ${mode} mode`);
+  if (mode === "full" && !resolve) {
+    throw new Error("A resolver is required in full mode");
   }
 
   const admins: string[] = [];
@@ -230,7 +229,7 @@ export async function resolveAccessLists(
   for (const entry of configuredEntries(input.admins, input.allowedUsers)) {
     const cachedSub = cache[resolvedCacheKey(entry.kind, entry.username)];
 
-    if (mode === "cached" || (mode === "retry" && cachedSub)) {
+    if (mode === "cached") {
       if (cachedSub) {
         accept(entry, cachedSub, true);
       } else {
@@ -242,9 +241,7 @@ export async function resolveAccessLists(
     try {
       accept(entry, await resolve!(entry.username), false);
     } catch (err) {
-      if (err instanceof UsernameNotFoundError || mode === "retry") {
-        // In retry mode only not-found names are looked up. They hold no
-        // grant, so a transient failure can safely leave them skipped.
+      if (err instanceof UsernameNotFoundError) {
         skip(entry, errorMessage(err));
         continue;
       }
@@ -252,7 +249,7 @@ export async function resolveAccessLists(
       throw new UserError(
         `Failed to resolve ${label} '${entry.entry}': ${
           errorMessage(err)
-        }. Ensure the username exists on ${providerUrl}.`,
+        }. Check that ${providerUrl} is reachable and retry.`,
       );
     }
   }

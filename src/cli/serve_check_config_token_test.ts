@@ -19,50 +19,77 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
-import { selectCheckConfigToken } from "./serve_check_config_token.ts";
+import {
+  type CheckConfigCredential,
+  selectCheckConfigToken,
+} from "./serve_check_config_token.ts";
 
 const CLUB = "https://swamp-club.com";
-const login = { serverUrl: CLUB, apiKey: "swamp_login_key" };
+const login: CheckConfigCredential = {
+  serverUrl: CLUB,
+  apiKey: "swamp_login_key",
+  source: "login",
+};
+const envKey: CheckConfigCredential = {
+  serverUrl: CLUB,
+  apiKey: "swamp_org_env",
+  source: "env",
+};
 
-Deno.test("selectCheckConfigToken: prefers SWAMP_API_KEY", () => {
-  assertEquals(
-    selectCheckConfigToken("https://other.test", "swamp_org_env", login),
-    "swamp_org_env",
-  );
-});
+const OTHER_ORIGINS = [
+  "https://evil.test",
+  "http://swamp-club.com",
+  "https://swamp-club.com:8443",
+  "https://sub.swamp-club.com",
+];
 
-Deno.test("selectCheckConfigToken: uses the stored login for the same origin", () => {
-  assertEquals(
-    selectCheckConfigToken(`${CLUB}/`, undefined, login),
-    "swamp_login_key",
-  );
+Deno.test("selectCheckConfigToken: sends a credential to the origin that issued it", () => {
+  assertEquals(selectCheckConfigToken(`${CLUB}/`, login), "swamp_login_key");
+  assertEquals(selectCheckConfigToken(CLUB, envKey), "swamp_org_env");
 });
 
 Deno.test("selectCheckConfigToken: never sends the stored login to another origin", () => {
-  for (
-    const provider of [
-      "https://evil.test",
-      "http://swamp-club.com",
-      "https://swamp-club.com:8443",
-      "https://sub.swamp-club.com",
-    ]
-  ) {
+  for (const provider of OTHER_ORIGINS) {
     assertThrows(
-      () => selectCheckConfigToken(provider, undefined, login),
+      () => selectCheckConfigToken(provider, login),
       UserError,
-      "Set SWAMP_API_KEY",
+      "You are logged in to https://swamp-club.com",
     );
   }
 });
 
-Deno.test("selectCheckConfigToken: an empty SWAMP_API_KEY falls back to the login", () => {
-  assertEquals(selectCheckConfigToken(CLUB, "", login), "swamp_login_key");
+Deno.test("selectCheckConfigToken: never sends SWAMP_API_KEY to another origin", () => {
+  for (const provider of OTHER_ORIGINS) {
+    assertThrows(
+      () => selectCheckConfigToken(provider, envKey),
+      UserError,
+      "SWAMP_API_KEY is a credential for https://swamp-club.com",
+    );
+  }
+});
+
+Deno.test("selectCheckConfigToken: a key for a custom provider works when SWAMP_CLUB_URL points at it", () => {
+  assertEquals(
+    selectCheckConfigToken("https://idp.example.com/", {
+      ...envKey,
+      serverUrl: "https://idp.example.com",
+    }),
+    "swamp_org_env",
+  );
 });
 
 Deno.test("selectCheckConfigToken: fails without any credential", () => {
   assertThrows(
-    () => selectCheckConfigToken(CLUB, undefined, null),
+    () => selectCheckConfigToken(CLUB, null),
     UserError,
     "Run 'swamp auth login'",
+  );
+});
+
+Deno.test("selectCheckConfigToken: a malformed stored server URL is a UserError", () => {
+  assertThrows(
+    () => selectCheckConfigToken(CLUB, { ...login, serverUrl: "not a url" }),
+    UserError,
+    'Invalid swamp-club server URL "not a url"',
   );
 });

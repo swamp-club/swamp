@@ -272,22 +272,26 @@ Username resolution: at startup serve turns each `--admins` and
 no lookups. The rules for a name that does not resolve:
 
 - **Not found (HTTP 404)**: the name is skipped with an ERROR log, and serve
-  starts with the rest. The failure is cached. It is looked up again on every
-  start when `SWAMP_API_KEY` is set, otherwise whenever the lists change.
+  starts with the rest. The failure is cached. A restart with unchanged lists
+  does not look the name up again. Only a change to `--admins` or
+  `--allowed-users` does, because that change re-resolves every name. An
+  automatic re-check would promote the name as soon as anyone registered it,
+  so a typo in `--admins` could be claimed by someone else and become an admin.
 - **Any other lookup error** (5xx, timeout, network): startup aborts. Dropping
   an existing admin would make `materializeAdmins` revoke their grant, so a
-  provider outage must never shrink the list. When serve re-checks only
-  previously missing names, an error leaves them skipped instead, since they
-  hold no grant.
+  provider outage must never shrink the list.
 - **Fail closed**: serve refuses to start if no admin resolves, or if every
   allowed-user was skipped and no `--allowed-collectives` are set.
   `checkAdmission` admits everyone when both lists are empty.
 
 `swamp serve check-config` runs the same lookups against a config without
 starting the server or writing the cache. It exits non-zero on any unknown name,
-so a typo is caught before a deploy. It uses `SWAMP_API_KEY`, or the
-`swamp auth login` credential when the provider has the same origin as the
-logged-in swamp-club server.
+so a typo is caught before a deploy. It uses `SWAMP_API_KEY` or the
+`swamp auth login` credential, and sends it only when the provider has the same
+origin as the swamp-club server that issued it (`SWAMP_CLUB_URL` for a custom
+provider). The command is meant for configs that are not yet deployed, possibly
+written by someone else, so a crafted `oauth-provider` must not receive the
+token.
 
 Collectives are snapshotted at login. The `CollectiveRefreshService`
 (`src/serve/collective_refresh_service.ts`) re-resolves them for active tokens

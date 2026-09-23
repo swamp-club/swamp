@@ -48,7 +48,6 @@ const arbScenario = fc.record({
   allowedCollectives: fc.subarray(["eng", "ops"]),
   cachedExisting: fc.subarray(NAMES),
   cachedMissing: fc.subarray(NAMES),
-  retryUnresolved: fc.boolean(),
 }).filter((s) => s.allowedUsers.length > 0 || s.allowedCollectives.length > 0);
 
 function priorCache(
@@ -73,12 +72,7 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
   await fc.assert(
     fc.asyncProperty(arbScenario, async (s) => {
       const cache = priorCache(s.cachedExisting, s.cachedMissing);
-      const mode = chooseResolutionMode(
-        s.admins,
-        s.allowedUsers,
-        cache,
-        s.retryUnresolved,
-      );
+      const mode = chooseResolutionMode(s.admins, s.allowedUsers, cache);
       const resolve = (username: string) => {
         if (s.failing.includes(username)) {
           return Promise.reject(new Error("503"));
@@ -101,7 +95,7 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
           now: () => "2026-09-23T12:00:00.000Z",
         });
       } catch (err) {
-        // Only full mode may abort, and only on a non-not-found error.
+        // Only full mode looks anything up, so only it may abort.
         assert(err instanceof UserError);
         assert(mode === "full");
         return;

@@ -90,7 +90,7 @@ function run(
 
 Deno.test("chooseResolutionMode: full when a name is not cached at all", () => {
   assertEquals(
-    chooseResolutionMode(["alice", "bob"], [], { alice: "sub-alice" }, false),
+    chooseResolutionMode(["alice", "bob"], [], { alice: "sub-alice" }),
     "full",
   );
 });
@@ -101,30 +101,25 @@ Deno.test("chooseResolutionMode: cached when every name is resolved in the cache
       ["user:alice"],
       ["bob"],
       { alice: "sub-alice", "allowed:bob": "sub-bob" },
-      true,
     ),
     "cached",
   );
 });
 
-Deno.test("chooseResolutionMode: a not-found marker counts as cached without retry", () => {
+Deno.test("chooseResolutionMode: a not-found marker never triggers a lookup on its own", () => {
   const cache = {
     alice: "sub-alice",
     [unresolvedCacheKey("admin", "alic_e")]: EARLIER,
   };
   assertEquals(
-    chooseResolutionMode(["alice", "alic_e"], [], cache, false),
+    chooseResolutionMode(["alice", "alic_e"], [], cache),
     "cached",
-  );
-  assertEquals(
-    chooseResolutionMode(["alice", "alic_e"], [], cache, true),
-    "retry",
   );
 });
 
 Deno.test("chooseResolutionMode: admin and allowed-user markers are separate", () => {
   const cache = { [unresolvedCacheKey("admin", "bob")]: EARLIER };
-  assertEquals(chooseResolutionMode([], ["bob"], cache, false), "full");
+  assertEquals(chooseResolutionMode([], ["bob"], cache), "full");
 });
 
 Deno.test("listUncachedNames: lists names with neither a sub nor a marker", () => {
@@ -219,7 +214,7 @@ Deno.test("resolveAccessLists: full mode aborts on an admin lookup error other t
   );
   assertEquals(
     err.message,
-    `Failed to resolve admin 'bob': Failed to resolve username 'bob': 503. Ensure the username exists on ${PROVIDER}.`,
+    `Failed to resolve admin 'bob': Failed to resolve username 'bob': 503. Check that ${PROVIDER} is reachable and retry.`,
   );
 });
 
@@ -249,62 +244,45 @@ Deno.test("resolveAccessLists: full mode re-resolves names that are already cach
   assertEquals(calls, ["alice", "bob"]);
 });
 
-// ── resolveAccessLists: retry mode ─────────────────────────────────────
-
-Deno.test("resolveAccessLists: retry mode looks up only not-found names", async () => {
-  const { resolve, calls } = fakeResolver(["alice", "bob"]);
+Deno.test("resolveAccessLists: full mode looks up a previously missing name again", async () => {
+  // Full mode only runs when the lists changed, which is the operator's cue
+  // to re-check every name.
+  const { resolve, calls } = fakeResolver(["alice", "alic_e"]);
   const result = await run({
-    admins: ["alice", "bob", "alic_e"],
+    admins: ["alice", "alic_e", "carol"],
     cache: {
       alice: "sub-alice",
-      bob: "sub-bob",
       [unresolvedCacheKey("admin", "alic_e")]: EARLIER,
     },
-    mode: "retry",
+    mode: "full",
     resolve,
   });
-  assertEquals(calls, ["alic_e"]);
-  assertEquals(result.admins, ["user:sub-alice", "user:sub-bob"]);
-  assertEquals(result.unresolved[0].notFoundSince, EARLIER);
-  assertEquals(result.cacheChanged, false);
+  assertEquals(calls, ["alice", "alic_e", "carol"]);
+  assertEquals(result.admins, ["user:sub-alice", "user:sub-alic_e"]);
+  assertEquals(result.cache[unresolvedCacheKey("admin", "alic_e")], undefined);
 });
 
-Deno.test("resolveAccessLists: retry mode keeps a name skipped on a transient error", async () => {
-  const { resolve } = fakeResolver(["alice"], ["alic_e"]);
+// ── resolveAccessLists: cached mode ────────────────────────────────────
+
+Deno.test("resolveAccessLists: a restart never promotes a skipped name", async () => {
+  // Even if the account now exists, an unchanged config must not turn a
+  // skipped name into a grant: anyone who registered a typo'd admin name
+  // would become an admin.
   const cache = {
     alice: "sub-alice",
     [unresolvedCacheKey("admin", "alic_e")]: EARLIER,
   };
+  const { resolve, calls } = fakeResolver(["alice", "alic_e"]);
   const result = await run({
     admins: ["alice", "alic_e"],
     cache,
-    mode: "retry",
+    mode: chooseResolutionMode(["alice", "alic_e"], [], cache),
     resolve,
   });
+  assertEquals(calls, []);
   assertEquals(result.admins, ["user:sub-alice"]);
-  assertEquals(result.unresolved.length, 1);
-  assertStringIncludes(result.unresolved[0].reason ?? "", "503");
-  assertEquals(result.cache, cache);
+  assertEquals(result.unresolved.map((u) => u.entry), ["alic_e"]);
 });
-
-Deno.test("resolveAccessLists: retry mode promotes a name that now exists", async () => {
-  const { resolve } = fakeResolver(["alice", "alic_e"]);
-  const result = await run({
-    admins: ["alice", "alic_e"],
-    cache: {
-      alice: "sub-alice",
-      [unresolvedCacheKey("admin", "alic_e")]: EARLIER,
-    },
-    mode: "retry",
-    resolve,
-  });
-  assertEquals(result.admins, ["user:sub-alice", "user:sub-alic_e"]);
-  assertEquals(result.unresolved, []);
-  assertEquals(result.cache, { alice: "sub-alice", alic_e: "sub-alic_e" });
-  assert(result.cacheChanged);
-});
-
-// ── resolveAccessLists: cached mode ────────────────────────────────────
 
 Deno.test("resolveAccessLists: cached mode uses the cache and skips markers", async () => {
   const result = await run({

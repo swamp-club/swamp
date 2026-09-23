@@ -19,32 +19,52 @@
 
 import { UserError } from "../domain/errors.ts";
 
+/** The swamp-club credential available to the CLI, and where it came from. */
+export interface CheckConfigCredential {
+  /** The swamp-club server the credential was issued by. */
+  readonly serverUrl: string;
+  readonly apiKey: string;
+  /** `env` for SWAMP_API_KEY, `login` for the stored `swamp auth login`. */
+  readonly source: "env" | "login";
+}
+
+function originOf(url: string, what: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    throw new UserError(`Invalid ${what} URL "${url}": expected a valid URL`);
+  }
+}
+
 /**
  * Picks the bearer token `swamp serve check-config` uses to look up
  * usernames on the OAuth provider.
  *
- * `SWAMP_API_KEY` is used as-is, as `swamp serve` does. A stored login key
- * is only sent to the origin it was issued by, so a config pointing at
- * another provider can never receive the user's swamp-club credential.
+ * The credential is only sent to the origin it was issued by. The command
+ * is meant to be run on configs before they are deployed, including ones
+ * the user did not write, so a crafted `oauth-provider` must never receive
+ * the user's token.
  */
 export function selectCheckConfigToken(
   providerUrl: string,
-  envApiKey: string | undefined,
-  storedLogin: { readonly serverUrl: string; readonly apiKey: string } | null,
+  credential: CheckConfigCredential | null,
 ): string {
-  if (envApiKey) return envApiKey;
-
-  if (!storedLogin?.apiKey) {
+  if (!credential?.apiKey) {
     throw new UserError(
       `Checking auth.admins and auth.allowed-users needs a credential for ${providerUrl}. ` +
         "Run 'swamp auth login', or set SWAMP_API_KEY to a collective token with the oauth:manage scope.",
     );
   }
-  if (new URL(storedLogin.serverUrl).origin !== new URL(providerUrl).origin) {
+  const providerOrigin = originOf(providerUrl, "oauth-provider");
+  if (originOf(credential.serverUrl, "swamp-club server") !== providerOrigin) {
+    const held = credential.source === "env"
+      ? `SWAMP_API_KEY is a credential for ${credential.serverUrl}`
+      : `You are logged in to ${credential.serverUrl}`;
     throw new UserError(
-      `You are logged in to ${storedLogin.serverUrl}, but the config's oauth-provider is ${providerUrl}. ` +
-        `Set SWAMP_API_KEY to a collective token for ${providerUrl} with the oauth:manage scope.`,
+      `${held}, but the config's oauth-provider is ${providerUrl}. ` +
+        `To check against ${providerUrl}, set SWAMP_CLUB_URL to ${providerOrigin} and ` +
+        "SWAMP_API_KEY to a collective token for it with the oauth:manage scope.",
     );
   }
-  return storedLogin.apiKey;
+  return credential.apiKey;
 }
