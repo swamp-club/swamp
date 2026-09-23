@@ -27,7 +27,9 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildAttestation,
   checkCommitBinding,
+  checkWorkflowProvenance,
   describeSkip,
+  evaluatedWorkflowPath,
   matchRunsToWorkflows,
   modelNames,
   reviewModels,
@@ -35,7 +37,9 @@ import {
   type RunSource,
   type WorkflowDef,
 } from "./build_attestation.ts";
+import { join } from "@std/path";
 import { AttestationSchema } from "../extensions/models/_lib/schemas.ts";
+import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
 
 const COMMIT = "a".repeat(40);
 
@@ -473,6 +477,133 @@ Deno.test("checkCommitBinding: a run with no commit input cannot be bound", () =
 
 Deno.test("checkCommitBinding: matching commits bind cleanly", () => {
   assertEquals(checkCommitBinding(sources(), COMMIT), []);
+});
+
+/** A committed setup job, as the workflow file spells it. */
+function committedDefinition() {
+  return {
+    name: "verify-reviews",
+    concurrency: 4,
+    jobs: [{
+      name: "setup",
+      steps: [{
+        name: "checkout",
+        task: {
+          modelName: "review-setup-${{ run.id }}",
+          inputs: {
+            run: "set -e\ngit fetch origin main || git fetch origin main\n" +
+              'git worktree add --detach "$DIR" "${{ inputs.commit }}"\n',
+          },
+        },
+      }],
+    }],
+  };
+}
+
+/** The same job as swamp records it after evaluating the run. */
+function evaluatedDefinition() {
+  return {
+    name: "verify-reviews",
+    concurrency: 4,
+    jobs: [{
+      name: "setup",
+      dependsOn: [],
+      weight: 0,
+      steps: [{
+        name: "checkout",
+        dependsOn: [],
+        weight: 0,
+        allowFailure: false,
+        task: {
+          modelName: "review-setup-${{ run.id }}",
+          inputs: {
+            run: "set -e\ngit fetch origin main || git fetch origin main\n" +
+              `git worktree add --detach "$DIR" "${COMMIT}"\n`,
+          },
+        },
+      }],
+    }],
+  };
+}
+
+Deno.test("checkWorkflowProvenance: an evaluation of the committed file matches", () => {
+  assertEquals(
+    checkWorkflowProvenance(committedDefinition(), evaluatedDefinition()),
+    [],
+  );
+});
+
+Deno.test("checkWorkflowProvenance: a run of a different script is refused", () => {
+  // The case that motivated the check: the runs loaded another checkout's
+  // verification/ directory, whose setup step predates the committed one.
+  const evaluated = evaluatedDefinition();
+  evaluated.jobs[0].steps[0].task.inputs.run = "set -e\n" +
+    "git fetch origin main\n" +
+    `git worktree add --detach "$DIR" "${COMMIT}"\n`;
+
+  const errors = checkWorkflowProvenance(committedDefinition(), evaluated);
+
+  assertEquals(errors, [
+    "jobs[0].steps[0].task.inputs.run differs from the committed definition",
+  ]);
+});
+
+Deno.test("checkWorkflowProvenance: an expression cannot absorb literal text around it", () => {
+  const evaluated = evaluatedDefinition();
+  evaluated.jobs[0].steps[0].task.modelName = "reviewer-setup-run-1";
+
+  const errors = checkWorkflowProvenance(committedDefinition(), evaluated);
+
+  assertEquals(errors.length, 1);
+  assertStringIncludes(errors[0], "jobs[0].steps[0].task.modelName");
+});
+
+Deno.test("checkWorkflowProvenance: an extra step is refused", () => {
+  const evaluated = evaluatedDefinition();
+  evaluated.jobs[0].steps.push({ ...evaluated.jobs[0].steps[0] });
+
+  const errors = checkWorkflowProvenance(committedDefinition(), evaluated);
+
+  assertEquals(errors, [
+    "jobs[0].steps has 2 entries where the committed definition has 1",
+  ]);
+});
+
+Deno.test("checkWorkflowProvenance: a filled-in default is accepted, a set value is not", () => {
+  const evaluated = evaluatedDefinition();
+  evaluated.jobs[0].steps[0].allowFailure = true;
+
+  const errors = checkWorkflowProvenance(committedDefinition(), evaluated);
+
+  assertEquals(errors, [
+    "jobs[0].steps[0].allowFailure is in the evaluated workflow but not the committed definition",
+  ]);
+});
+
+Deno.test("checkWorkflowProvenance: a committed field the run lacks is refused", () => {
+  const evaluated: Record<string, unknown> = evaluatedDefinition();
+  delete evaluated.concurrency;
+
+  assertEquals(
+    checkWorkflowProvenance(committedDefinition(), evaluated),
+    ["concurrency is missing from the evaluated workflow"],
+  );
+});
+
+Deno.test("evaluatedWorkflowPath: found beside the run record", () => {
+  const swampDir = join("repo", ".swamp");
+  const record = run("verify-reviews", "run-1", [], {
+    path: join(swampDir, "workflow-runs", "wf-id", "workflow-run-run-1.yaml"),
+  });
+
+  assertPathEquals(
+    evaluatedWorkflowPath(record)!,
+    join(swampDir, "workflows-evaluated", "runs", "run-1", "evaluated-workflow.yaml"),
+  );
+});
+
+Deno.test("evaluatedWorkflowPath: a record with no path locates nothing", () => {
+  assertEquals(evaluatedWorkflowPath(run("verify-reviews", "run-1", [])), null);
 });
 
 Deno.test("describeSkip: each kind reads as what it was", () => {
