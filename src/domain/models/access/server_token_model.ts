@@ -141,8 +141,8 @@ async function mint(
   args: z.infer<typeof MintArgsSchema>,
   context: MethodContext,
 ): Promise<MethodResult> {
-  // A token for a principal serve cannot parse authenticates and is then
-  // rejected on every connection, so refuse it here (swamp-club#2383).
+  // A token whose principal serve cannot parse will be rejected on every
+  // connection, so refuse it at mint time (swamp-club#2383).
   parsePrincipal(args.principalId);
   if (!context.vaultService) {
     throw new Error("Minting a server token requires a vault service");

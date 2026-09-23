@@ -114,7 +114,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     parsePrincipal(principal);
   } catch (error) {
     throw new UserError(
-      `Invalid --principal value: ${
+      `Invalid --principal value "${principal}": ${
         error instanceof Error ? error.message : String(error)
       }`,
     );

@@ -94,7 +94,7 @@ Deno.test("accessTokenMintCommand: rejects an unsupported principal kind before 
         "/nonexistent-swamp-repo",
       ]),
     UserError,
-    'Invalid principal kind "agent": expected "user" or "worker"',
+    'Invalid --principal value "agent:swamp-resumer": Invalid principal kind "agent": expected "user" or "worker"',
   );
 });
 
