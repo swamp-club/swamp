@@ -241,9 +241,9 @@ swamp access token reveal <name> --repo-dir /repo -y --json \
   | <store-command>   # e.g. kubectl create secret generic …
 ```
 
-To deliver a credential to a shared Swamp vault, first mint or rotate without
-`--vault`. Then, on the serve host, use `vault put` as the `reveal` pipeline's
-target. This keeps the full credential out of terminal output:
+To deliver a credential to a shared Swamp vault, first mint or rotate the token.
+Then, on the serve host, use `vault put` as the `reveal` pipeline's target. This
+keeps the full credential out of terminal output:
 
 ```bash
 swamp access token reveal <name> --repo-dir /repo -y --json \
