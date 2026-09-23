@@ -184,18 +184,27 @@ Deno.test("initializeControlPlaneVaultForCli: skips pullChanged when no namespac
   assertEquals(storeCalls.length, 1, "controlPlaneStore must still be called");
 });
 
-Deno.test("initializeControlPlaneVaultForCli: propagates pullChanged failure", async () => {
-  const { syncService } = createMockSyncService({ pullShouldFail: true });
+Deno.test("initializeControlPlaneVaultForCli: surfaces a pullChanged failure as a control-plane init error", async () => {
+  const { syncService, calls } = createMockSyncService({
+    pullShouldFail: true,
+  });
 
-  await assertRejects(
+  const error = await assertRejects(
     () =>
       initializeControlPlaneVaultForCli(
         "/tmp/test-repo",
         syncService,
         { namespace: "my-namespace" },
       ),
-    Error,
-    "S3 unreachable",
+    UserError,
+  );
+  assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+  assertStringIncludes(error.message, "remote datastore");
+  assertStringIncludes(error.message, "S3 unreachable");
+  assertEquals(
+    calls.some((c) => c.method === "controlPlaneStore"),
+    false,
+    "controlPlaneStore must not be reached after pullChanged fails",
   );
 });
 

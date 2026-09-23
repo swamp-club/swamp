@@ -112,6 +112,10 @@ Deno.test("initializeControlPlaneVault: throws the store failure for a remote co
   assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
   assertStringIncludes(error.message, "remote datastore");
   assertStringIncludes(error.message, "S3 unreachable");
+  assertStringIncludes(
+    error.message,
+    "Check the datastore credentials and endpoint, then rerun.",
+  );
 });
 
 Deno.test("initializeControlPlaneVault: throws the store failure for a local control plane", async () => {
@@ -123,6 +127,10 @@ Deno.test("initializeControlPlaneVault: throws the store failure for a local con
   assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
   assertStringIncludes(error.message, "local control plane");
   assertStringIncludes(error.message, "S3 unreachable");
+  assertStringIncludes(
+    error.message,
+    "Check that the local control-plane store is readable and intact",
+  );
 });
 
 Deno.test("initializeControlPlaneVault: a failed init does not replace the registered provider", async () => {

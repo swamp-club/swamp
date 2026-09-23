@@ -34,6 +34,26 @@ export interface ControlPlaneVaultInitResult {
 }
 
 /**
+ * Builds the UserError reported when the control-plane vault cannot be
+ * initialized, keeping the cause's message and logging the original error
+ * (with its stack) at debug level.
+ */
+export function controlPlaneVaultInitError(
+  err: unknown,
+  isRemote: boolean,
+): UserError {
+  logger.debug`Control-plane vault initialization error: ${err}`;
+  const hint = isRemote
+    ? "Check the datastore credentials and endpoint, then rerun."
+    : "Check that the local control-plane store is readable and intact, then rerun.";
+  return new UserError(
+    `Failed to initialize the ${TOKEN_SECRETS_VAULT_NAME} control-plane vault (${
+      isRemote ? "remote datastore" : "local control plane"
+    }): ${err instanceof Error ? err.message : String(err)}\n${hint}`,
+  );
+}
+
+/**
  * Initializes the `_token-secrets` control-plane vault and registers it as a
  * global vault provider.
  *
@@ -50,12 +70,7 @@ export async function initializeControlPlaneVault(
   try {
     await provider.initialize();
   } catch (err) {
-    logger.debug`Control-plane vault initialization error: ${err}`;
-    throw new UserError(
-      `Failed to initialize the ${TOKEN_SECRETS_VAULT_NAME} control-plane vault (${
-        isRemote ? "remote datastore" : "local control plane"
-      }): ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw controlPlaneVaultInitError(err, isRemote);
   }
 
   VaultService.registerGlobalProvider(

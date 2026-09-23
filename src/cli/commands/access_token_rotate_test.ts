@@ -68,3 +68,24 @@ Deno.test("accessTokenRotateCommand: --vault rejected when --server is set", asy
     "swamp vault put 'my-vault' 'server-token-test-token' --yes",
   );
 });
+
+Deno.test("accessTokenRotateCommand: rejects --vault before any repo work", async () => {
+  const { accessTokenRotateCommand } = await import("./access_token_rotate.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("rotate", accessTokenRotateCommand);
+
+  await assertRejects(
+    () =>
+      root.parse([
+        "rotate",
+        "test-token",
+        "--vault",
+        "my-vault",
+        "--repo-dir",
+        "/nonexistent-swamp-repo",
+      ]),
+    UserError,
+    "--vault is not supported when a datastore is configured",
+  );
+});

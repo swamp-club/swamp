@@ -136,6 +136,13 @@ export const accessTokenRotateCommand = withRemoteOptions(
     return;
   }
 
+  const requestedVault = options.vault as string | undefined;
+  if (requestedVault !== undefined) {
+    throw new UserError(
+      tokenVaultRejectedMessage("rotate", name, requestedVault),
+    );
+  }
+
   const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
@@ -156,13 +163,6 @@ export const accessTokenRotateCommand = withRemoteOptions(
       catalogInvalidate: () => repoContext.catalogStore.invalidate(),
     },
   );
-
-  const requestedVault = options.vault as string | undefined;
-  if (requestedVault !== undefined) {
-    throw new UserError(
-      tokenVaultRejectedMessage("rotate", name, requestedVault),
-    );
-  }
 
   const migrationVaultService = await VaultService.fromRepository(repoDir, {
     vaultsDir,

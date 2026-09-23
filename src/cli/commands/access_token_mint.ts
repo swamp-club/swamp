@@ -161,6 +161,13 @@ export const accessTokenMintCommand = withRemoteOptions(
     return;
   }
 
+  const requestedVault = options.vault as string | undefined;
+  if (requestedVault !== undefined) {
+    throw new UserError(
+      tokenVaultRejectedMessage("mint", name, requestedVault),
+    );
+  }
+
   const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
@@ -181,13 +188,6 @@ export const accessTokenMintCommand = withRemoteOptions(
       catalogInvalidate: () => repoContext.catalogStore.invalidate(),
     },
   );
-
-  const requestedVault = options.vault as string | undefined;
-  if (requestedVault !== undefined) {
-    throw new UserError(
-      tokenVaultRejectedMessage("mint", name, requestedVault),
-    );
-  }
 
   const libCtx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = await createServerTokenCreateDeps(

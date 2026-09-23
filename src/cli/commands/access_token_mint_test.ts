@@ -77,6 +77,29 @@ Deno.test("accessTokenMintCommand: --vault rejected when --server is set", async
   );
 });
 
+Deno.test("accessTokenMintCommand: rejects --vault before any repo work", async () => {
+  const { accessTokenMintCommand } = await import("./access_token_mint.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("mint", accessTokenMintCommand);
+
+  await assertRejects(
+    () =>
+      root.parse([
+        "mint",
+        "test-token",
+        "--principal",
+        "user:adam",
+        "--vault",
+        "my-vault",
+        "--repo-dir",
+        "/nonexistent-swamp-repo",
+      ]),
+    UserError,
+    "--vault is not supported when a datastore is configured",
+  );
+});
+
 Deno.test("accessTokenMintCommand: rejects an unsupported principal kind before any repo work", async () => {
   const { accessTokenMintCommand } = await import("./access_token_mint.ts");
   const root = new Command()

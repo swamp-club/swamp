@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { Command } from "@cliffy/command";
+import { UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -66,4 +68,27 @@ Deno.test("workerTokenCreateCommand is registered under worker token", async () 
   const commands = workerTokenCommand.getCommands();
   const createCmd = commands.find((c) => c.getName() === "create");
   assertEquals(createCmd !== undefined, true);
+});
+
+Deno.test("workerTokenCreateCommand: rejects --vault before any repo work", async () => {
+  const { workerTokenCreateCommand } = await import("./worker_token_create.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("create", workerTokenCreateCommand);
+
+  await assertRejects(
+    () =>
+      root.parse([
+        "create",
+        "test-worker",
+        "--duration",
+        "1d",
+        "--vault",
+        "my-vault",
+        "--repo-dir",
+        "/nonexistent-swamp-repo",
+      ]),
+    UserError,
+    "--vault is not supported when a datastore is configured",
+  );
 });

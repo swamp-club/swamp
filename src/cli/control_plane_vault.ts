@@ -19,6 +19,7 @@
 
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import {
+  controlPlaneVaultInitError,
   type ControlPlaneVaultInitResult,
   initializeControlPlaneVault,
 } from "../domain/vaults/control_plane_vault_init.ts";
@@ -45,7 +46,11 @@ export async function initializeControlPlaneVaultForCli(
   // causing all subsequent namespace-aware pushChanged calls to fail with
   // "Namespace mismatch". This mirrors the serve.ts boot sequence.
   if (hasRemote && options?.namespace) {
-    await syncService!.pullChanged({ namespace: options.namespace });
+    try {
+      await syncService!.pullChanged({ namespace: options.namespace });
+    } catch (err) {
+      throw controlPlaneVaultInitError(err, true);
+    }
     options.catalogInvalidate?.();
   }
 

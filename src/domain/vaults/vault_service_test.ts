@@ -83,6 +83,10 @@ Deno.test("VaultService - missing vault configuration error handling", async (t)
         error.message,
         "swamp's reserved control-plane vault",
       );
+      assertStringIncludes(
+        error.message,
+        "swamp access token reveal <name>",
+      );
       assertEquals(
         error.message.includes("swamp vault create <type>"),
         false,

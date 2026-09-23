@@ -146,6 +146,15 @@ export const workerTokenCreateCommand = withRemoteOptions(
     return;
   }
 
+  const requestedVault = options.vault as string | undefined;
+  if (requestedVault !== undefined) {
+    throw new UserError(
+      `--vault is not supported when a datastore is configured — ` +
+        `enrollment token secrets are stored in the control-plane vault ` +
+        `(${TOKEN_SECRETS_VAULT_NAME}). Remove --vault and retry.`,
+    );
+  }
+
   const {
     repoDir,
     repoContext,
@@ -171,15 +180,6 @@ export const workerTokenCreateCommand = withRemoteOptions(
       catalogInvalidate: () => repoContext.catalogStore.invalidate(),
     },
   );
-
-  const requestedVault = options.vault as string | undefined;
-  if (requestedVault !== undefined) {
-    throw new UserError(
-      `--vault is not supported when a datastore is configured — ` +
-        `enrollment token secrets are stored in the control-plane vault ` +
-        `(${TOKEN_SECRETS_VAULT_NAME}). Remove --vault and retry.`,
-    );
-  }
 
   const libCtx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = await createWorkerTokenCreateDeps(

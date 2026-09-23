@@ -302,7 +302,8 @@ export class VaultService {
           `Vault '${vaultName}' is not available. It is swamp's reserved ` +
             `control-plane vault for token secrets and cannot be created with ` +
             `'swamp vault create'. It is registered automatically by ` +
-            `'swamp serve' and the access token and worker token commands.`,
+            `'swamp serve' and the access token and worker token commands. ` +
+            `To read a token's secret, use 'swamp access token reveal <name>'.`,
         );
       }
       const availableVaults = Array.from(this.providers.keys());
