@@ -229,6 +229,7 @@ const searchAuthBase: Omit<ServeAuthConfig, "mode"> = {
   groupsField: "",
   restrictedModelTypes: [],
   restrictedCommands: [],
+  approveRequiresExplicitGrant: false,
 };
 
 const searchPrincipal: Principal = { kind: "user", id: "reader" };

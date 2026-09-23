@@ -33,6 +33,11 @@ export interface ServeAuthConfig {
   groupsField: string;
   restrictedModelTypes: string[];
   restrictedCommands: string[];
+  /**
+   * When true, deciding a manual approval gate needs a grant that names
+   * `approve`; a `run` grant alone no longer implies it. Off by default.
+   */
+  approveRequiresExplicitGrant: boolean;
 }
 
 const VALID_AUTH_MODES: ReadonlySet<string> = new Set([
@@ -53,6 +58,7 @@ export interface ServeAuthConfigInput {
   groupsField?: string;
   restrictedModelTypes?: string;
   restrictedCommands?: string;
+  approveRequiresExplicitGrant?: boolean;
 }
 
 function parseCommaSeparated(value: string | undefined): string[] {
@@ -154,5 +160,6 @@ export function buildServeAuthConfig(
     groupsField,
     restrictedModelTypes,
     restrictedCommands,
+    approveRequiresExplicitGrant: input.approveRequiresExplicitGrant ?? false,
   };
 }

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertGreater } from "@std/assert";
-import { handleAccessCheck, handleAccessReload } from "./access_handlers.ts";
+import {
+  handleAccessCanI,
+  handleAccessCheck,
+  handleAccessReload,
+} from "./access_handlers.ts";
 import { type ConnectionContext, setConnectionCollectives } from "./shared.ts";
 import type { AccessCheckPayload } from "../protocol.ts";
 import type {
@@ -29,6 +33,9 @@ import type {
 import type { Action } from "../../domain/access/action.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import type { Grant } from "../../domain/models/access/grant_model.ts";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -100,6 +107,7 @@ function createCtx(
       groupsField: "collectives",
       restrictedModelTypes: [],
       restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
     },
   };
 }
@@ -255,6 +263,7 @@ function createReloadCtx(
       groupsField: "collectives",
       restrictedModelTypes: [],
       restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
     },
   };
 }
@@ -297,4 +306,141 @@ Deno.test("handleAccessReload: works without syncService (local-only mode)", asy
 
   const response = JSON.parse(socket.sent[0]);
   assertEquals(response.payload.success, true);
+});
+
+// --- approval policy: run implying approve ---
+
+function makeGrant(overrides: Partial<Grant> = {}): Grant {
+  return {
+    id: crypto.randomUUID(),
+    subject: { kind: "user", name: "resumer" },
+    effect: "allow",
+    actions: ["run", "read"],
+    resource: { kind: "workflow", pattern: "*" },
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function createPolicyCtx(
+  grants: Grant[],
+  runImpliesApprove: boolean,
+): ConnectionContext {
+  const snapshot = new PolicySnapshot(grants, []);
+  const decisionService = new GrantBasedAccessDecisionService(snapshot, {
+    runImpliesApprove,
+  });
+  const ctx = createCtx(decisionService);
+  return {
+    ...ctx,
+    policySnapshotLoader: {
+      snapshot,
+      decisionService,
+    } as unknown as PolicySnapshotLoader,
+    authConfig: {
+      ...ctx.authConfig!,
+      approveRequiresExplicitGrant: !runImpliesApprove,
+    },
+  };
+}
+
+const RESUMER: Principal = { kind: "user", id: "resumer" };
+
+Deno.test("handleAccessCanI: listing shows approve implied by a run grant", async () => {
+  const socket = createMockSocket();
+  const ctx = createPolicyCtx([makeGrant()], true);
+
+  await handleAccessCanI(socket, ctx, "req-1", {}, RESUMER);
+
+  const payload = JSON.parse(socket.sent[0]).payload;
+  assertEquals(payload.approveRequiresExplicitGrant, false);
+  assertEquals(
+    payload.decisions.map((d: { action: string; impliedBy?: string }) => [
+      d.action,
+      d.impliedBy,
+    ]),
+    [["run", undefined], ["read", undefined], ["approve", "run"]],
+  );
+});
+
+Deno.test("handleAccessCanI: listing omits implied approve when approve requires an explicit grant", async () => {
+  const socket = createMockSocket();
+  const ctx = createPolicyCtx([makeGrant()], false);
+
+  await handleAccessCanI(socket, ctx, "req-1", {}, RESUMER);
+
+  const payload = JSON.parse(socket.sent[0]).payload;
+  assertEquals(payload.approveRequiresExplicitGrant, true);
+  assertEquals(
+    payload.decisions.map((d: { action: string }) => d.action),
+    ["run", "read"],
+  );
+});
+
+Deno.test("handleAccessCanI: listing keeps approve implied by a deny on run in both policies", async () => {
+  for (const runImpliesApprove of [true, false]) {
+    const socket = createMockSocket();
+    const ctx = createPolicyCtx(
+      [makeGrant({ effect: "deny", actions: ["run"] })],
+      runImpliesApprove,
+    );
+
+    await handleAccessCanI(socket, ctx, "req-1", {}, RESUMER);
+
+    const payload = JSON.parse(socket.sent[0]).payload;
+    assertEquals(
+      payload.decisions.map((
+        d: { action: string; effect: string; impliedBy?: string },
+      ) => [d.action, d.effect, d.impliedBy]),
+      [["run", "deny", undefined], ["approve", "deny", "run"]],
+    );
+  }
+});
+
+Deno.test("handleAccessCanI: specific approve check carries impliedBy", async () => {
+  const socket = createMockSocket();
+  const ctx = createPolicyCtx([makeGrant()], true);
+
+  await handleAccessCanI(
+    socket,
+    ctx,
+    "req-1",
+    { action: "approve", resource: "workflow:@acme/deploy" },
+    RESUMER,
+  );
+
+  const payload = JSON.parse(socket.sent[0]).payload;
+  assertEquals(payload.decisions.length, 1);
+  assertEquals(payload.decisions[0].effect, "allow");
+  assertEquals(payload.decisions[0].impliedBy, "run");
+  assertEquals(payload.approveRequiresExplicitGrant, false);
+});
+
+Deno.test("handleAccessCheck: reports the approval policy and omits run-only grants when approve requires an explicit grant", async () => {
+  const socket = createMockSocket();
+  const policyCtx = createPolicyCtx([makeGrant()], false);
+  // access.check requires admin; auth mode none lets the check itself run.
+  const ctx = {
+    ...policyCtx,
+    authConfig: { ...policyCtx.authConfig!, mode: "none" as const },
+  };
+
+  await handleAccessCheck(
+    socket,
+    ctx,
+    "req-1",
+    {
+      subject: "user:resumer",
+      action: "approve",
+      resource: "workflow:@acme/deploy",
+    },
+    null,
+  );
+
+  const payload = JSON.parse(socket.sent[0]).payload;
+  assertEquals(payload.approveRequiresExplicitGrant, true);
+  assertEquals(payload.decisions, []);
 });

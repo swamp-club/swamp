@@ -256,3 +256,77 @@ Deno.test("accessCanIRenderer json: method is omitted when not in query", () => 
   const parsed = JSON.parse(output.join(""));
   assertEquals(parsed.method, undefined);
 });
+
+// --- approval policy ---
+
+Deno.test("accessCanIRenderer log: enumeration marks implied approve rows and explains them", () => {
+  const output = captureRender("log", {
+    principal: "user:swamp-resumer",
+    approveRequiresExplicitGrant: false,
+    decisions: [
+      makeDecision({ action: "run", via: "group:swamp-lanes" }),
+      makeDecision({
+        action: "approve",
+        via: "group:swamp-lanes",
+        impliedBy: "run",
+      }),
+    ],
+  });
+  const approveRow = output.find((l) => l.includes(" approve "));
+  assertStringIncludes(approveRow!, "[implied by run]");
+  const runRow = output.find((l) => l.includes(" run "));
+  assertEquals(runRow!.includes("[implied by run]"), false);
+  assertStringIncludes(
+    output[output.length - 1],
+    "auth.approve-requires-explicit-grant",
+  );
+});
+
+Deno.test("accessCanIRenderer log: enumeration has no note without implied approve rows", () => {
+  const output = captureRender("log", {
+    principal: "user:adam",
+    approveRequiresExplicitGrant: true,
+    decisions: [makeDecision({ action: "run" })],
+  });
+  assertEquals(output.some((l) => l.includes("Note:")), false);
+});
+
+Deno.test("accessCanIRenderer log: enumeration keeps columns aligned for approve", () => {
+  const output = captureRender("log", {
+    principal: "user:adam",
+    decisions: [
+      makeDecision({ action: "run" }),
+      makeDecision({ action: "approve" }),
+    ],
+  });
+  const markerColumns = output
+    .filter((l) => l.includes("✓"))
+    .map((l) => l.indexOf("✓"));
+  assertEquals(markerColumns.length, 2);
+  assertEquals(markerColumns[0], markerColumns[1]);
+});
+
+Deno.test("accessCanIRenderer log: specific approve check explains a run-only allow", () => {
+  const output = captureRender("log", {
+    principal: "user:swamp-resumer",
+    query: { action: "approve", resource: "workflow:@acme/deploy" },
+    approveRequiresExplicitGrant: false,
+    decisions: [makeDecision({ action: "approve", impliedBy: "run" })],
+  });
+  assertStringIncludes(output[0], "[implied by run]");
+  assertStringIncludes(
+    output[output.length - 1],
+    "allowed only through a run grant",
+  );
+});
+
+Deno.test("accessCanIRenderer json: includes impliedBy and the approval policy", () => {
+  const output = captureRender("json", {
+    principal: "user:swamp-resumer",
+    approveRequiresExplicitGrant: true,
+    decisions: [makeDecision({ action: "approve", impliedBy: "run" })],
+  });
+  const parsed = JSON.parse(output.join(""));
+  assertEquals(parsed.approveRequiresExplicitGrant, true);
+  assertEquals(parsed.decisions[0].impliedBy, "run");
+});

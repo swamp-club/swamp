@@ -321,6 +321,7 @@ async function createSyncFixture(
       groupsField: "collectives",
       restrictedModelTypes: [],
       restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
     },
   } as unknown as ConnectionContext;
 

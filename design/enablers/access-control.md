@@ -216,7 +216,26 @@ Implementation: `src/domain/access/resource_selector.ts`,
 continue to permit approval. To grant approval without execution authority, use
 `actions: [approve]` alone.
 
-Implementation: `src/domain/access/action.ts`.
+**Requiring an explicit `approve` grant** (opt-in): `swamp serve
+--approve-requires-explicit-grant` (config `auth.approve-requires-explicit-grant`,
+env `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT`) stops an *allow* grant on `run`
+from satisfying `approve`, so an automation principal granted `run` cannot clear
+a manual approval gate meant for a person. It is off by default; the default
+semantics above are unchanged. The implication always holds for *deny* grants: a
+deny on `run` denies `approve` whether or not the setting is on, so turning it
+on can only narrow what is allowed. The setting is per process, like the other
+`auth.*` settings, so every replica behind a load balancer must share it.
+
+The decision records how a grant matched: an `AccessDecision` whose grant
+satisfied `approve` only through `run` carries `impliedBy: "run"`.
+`swamp access check` and `swamp access can-i` show these as
+`[implied by run]`, and `can-i` without an action lists an implied `approve`
+row for each such grant. The server's `access.check` and `access.can-i`
+responses report its policy as `approveRequiresExplicitGrant`.
+
+Implementation: `src/domain/access/action.ts`,
+`src/domain/access/grant_based_access_decision_service.ts`
+(`runImpliesApprove` option, `actionsCoveredBy`).
 
 ## Grant evaluation model
 
@@ -227,7 +246,8 @@ given (principal, action, resource) triple:
    groups)
 2. **Collect candidates** — find all grants whose subject is in the list
 3. **Filter** — keep only grants that match the resource selector, the requested
-   action (including implied actions: `run` implies `approve`), and the method
+   action (including implied actions: `run` implies `approve`, except for allow
+   grants when the server requires an explicit `approve` grant), and the method
    name (when the grant specifies a `methods` list)
 4. **Partition** — separate into deny grants and allow grants
 5. **Evaluate denies first** — for each deny grant, evaluate the condition (if

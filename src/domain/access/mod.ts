@@ -26,7 +26,11 @@ export {
 
 export { type Action, ActionSchema } from "./action.ts";
 
-export { GrantBasedAccessDecisionService } from "./grant_based_access_decision_service.ts";
+export {
+  type ActionCoverage,
+  GrantBasedAccessDecisionService,
+  type GrantBasedAccessDecisionServiceOptions,
+} from "./grant_based_access_decision_service.ts";
 
 export { type ConditionEvaluator, PolicySnapshot } from "./policy_snapshot.ts";
 

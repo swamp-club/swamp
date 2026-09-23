@@ -61,6 +61,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   remoteOnly: "SWAMP_REMOTE_ONLY",
   dashboard: "SWAMP_DASHBOARD",
   autoResume: "SWAMP_AUTO_RESUME",
+  approveRequiresExplicitGrant: "SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT",
 };
 
 // ── Webhook Config Types ──────────────────────────────────────────────
@@ -100,6 +101,7 @@ export interface ServeConfigFile {
     "restricted-model-types"?: string[];
     "restricted-commands"?: string[];
     "group-refresh-interval"?: string;
+    "approve-requires-explicit-grant"?: boolean;
   };
   tls?: {
     "cert-file"?: string;
@@ -258,6 +260,7 @@ const KNOWN_AUTH_KEYS = new Set([
   "restricted-model-types",
   "restricted-commands",
   "group-refresh-interval",
+  "approve-requires-explicit-grant",
 ]);
 
 const KNOWN_TLS_KEYS = new Set([
@@ -487,6 +490,16 @@ function validateConfigValues(
           `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
         );
       }
+    }
+    const approveRequiresExplicitGrant =
+      authObj["approve-requires-explicit-grant"];
+    if (
+      approveRequiresExplicitGrant !== undefined &&
+      typeof approveRequiresExplicitGrant !== "boolean"
+    ) {
+      throw new UserError(
+        `Invalid auth.approve-requires-explicit-grant in ${path}: expected boolean, got ${typeof approveRequiresExplicitGrant}`,
+      );
     }
   }
 
@@ -757,6 +770,11 @@ export interface MergedServeOptions {
   restrictedModelTypes?: string;
   restrictedCommands?: string;
   groupRefreshInterval?: string;
+  /**
+   * Require an explicit `approve` grant to decide a manual approval gate,
+   * instead of accepting any `run` grant. Off by default.
+   */
+  approveRequiresExplicitGrant: boolean;
   trustProxy: boolean;
   wsIdleTimeout?: string;
   queueTimeout?: string;
@@ -1130,6 +1148,13 @@ export function mergeServeOptions(
     false,
   );
 
+  const approveRequiresExplicitGrant = resolveBoolean(
+    "approve-requires-explicit-grant",
+    cliOptions.approveRequiresExplicitGrant as boolean,
+    config?.auth?.["approve-requires-explicit-grant"],
+    false,
+  );
+
   const dashboard = resolveBoolean(
     "dashboard",
     cliOptions.dashboard as boolean,
@@ -1177,6 +1202,7 @@ export function mergeServeOptions(
     restrictedModelTypes,
     restrictedCommands,
     groupRefreshInterval,
+    approveRequiresExplicitGrant,
     trustProxy,
     wsIdleTimeout,
     queueTimeout,

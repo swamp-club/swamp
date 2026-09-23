@@ -460,6 +460,16 @@ Deno.test("collectServeExtraArgs: forwards --auto-resume", () => {
   assertEquals(args, ["--auto-resume"]);
 });
 
+Deno.test("collectServeExtraArgs: forwards --approve-requires-explicit-grant", () => {
+  const args = collectServeExtraArgs({ approveRequiresExplicitGrant: true });
+  assertEquals(args, ["--approve-requires-explicit-grant"]);
+});
+
+Deno.test("collectServeExtraArgs: omits --approve-requires-explicit-grant when not set", () => {
+  const args = collectServeExtraArgs({});
+  assertEquals(args.includes("--approve-requires-explicit-grant"), false);
+});
+
 Deno.test("collectServeExtraArgs: forwards --enable-internal-api", () => {
   const args = collectServeExtraArgs({ enableInternalApi: true });
   assertEquals(args, ["--enable-internal-api"]);

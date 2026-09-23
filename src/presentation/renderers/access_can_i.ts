@@ -19,6 +19,11 @@
 
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  approvalPolicyNote,
+  impliedApproveListingNote,
+  impliedMarker,
+} from "./access_check.ts";
 
 export interface CanIDecision {
   action: string;
@@ -27,6 +32,8 @@ export interface CanIDecision {
   grantId: string;
   via: string;
   condition?: string;
+  /** Set when the grant covers approve only because it grants run. */
+  impliedBy?: "run";
 }
 
 export interface AccessCanIResult {
@@ -34,6 +41,8 @@ export interface AccessCanIResult {
   method?: string;
   decisions: CanIDecision[];
   query?: { action: string; resource: string; method?: string };
+  /** The server's approval policy; undefined for servers that predate it. */
+  approveRequiresExplicitGrant?: boolean;
 }
 
 export interface AccessCanIRenderer {
@@ -50,12 +59,19 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
   }
 
   #renderSpecificCheck(result: AccessCanIResult): void {
+    const note = approvalPolicyNote(
+      result.query!.action,
+      result.decisions,
+      result.approveRequiresExplicitGrant,
+    );
+
     if (result.decisions.length === 0) {
       writeOutput(
         `DENY (implicit) — no matching grants for ${result.principal} ${
           result.query!.action
         } ${result.query!.resource}`,
       );
+      if (note) writeOutput(note);
       return;
     }
 
@@ -65,7 +81,7 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
     writeOutput(
       `${effect} via ${via} (${first.via} → ${result.query!.action} → ${
         result.query!.resource
-      })`,
+      })${impliedMarker(first)}`,
     );
 
     if (result.decisions.length > 1) {
@@ -75,8 +91,13 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
         const e = d.effect.toUpperCase().padEnd(5);
         const g = d.grantId.slice(0, 8);
         const cond = d.condition ? ` [when: ${d.condition}]` : "";
-        writeOutput(`  ${e}  ${g}…  via ${d.via}${cond}`);
+        writeOutput(`  ${e}  ${g}…  via ${d.via}${cond}${impliedMarker(d)}`);
       }
+    }
+
+    if (note) {
+      writeOutput("");
+      writeOutput(note);
     }
   }
 
@@ -97,11 +118,28 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       const cond = decision.condition ? ` [when: ${decision.condition}]` : "";
       writeOutput(
         `${decision.resource.padEnd(resourceWidth + 2)} ${
-          decision.action.padEnd(6)
-        } ${marker} ${via}${cond}`,
+          decision.action.padEnd(7)
+        } ${marker} ${via}${cond}${impliedMarker(decision)}`,
       );
     }
+
+    const note = impliedApproveListingNote(
+      result.decisions,
+      result.approveRequiresExplicitGrant,
+    );
+    if (note) {
+      writeOutput("");
+      writeOutput(note);
+    }
   }
+}
+
+function policyField(
+  result: AccessCanIResult,
+): { approveRequiresExplicitGrant?: boolean } {
+  return result.approveRequiresExplicitGrant !== undefined
+    ? { approveRequiresExplicitGrant: result.approveRequiresExplicitGrant }
+    : {};
 }
 
 class JsonAccessCanIRenderer implements AccessCanIRenderer {
@@ -119,6 +157,7 @@ class JsonAccessCanIRenderer implements AccessCanIRenderer {
             ...(result.query.method ? { method: result.query.method } : {}),
             effect,
             decisions: result.decisions,
+            ...policyField(result),
           },
           null,
           2,
@@ -127,7 +166,11 @@ class JsonAccessCanIRenderer implements AccessCanIRenderer {
     } else {
       writeOutput(
         JSON.stringify(
-          { principal: result.principal, decisions: result.decisions },
+          {
+            principal: result.principal,
+            decisions: result.decisions,
+            ...policyField(result),
+          },
           null,
           2,
         ),
