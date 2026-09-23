@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -181,9 +182,9 @@ export const workflowCancelCommand = withRemoteOptions(
       } catch (error) {
         if (error instanceof UserError) throw error;
         throw new UserError(
-          `Could not connect to ${server}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Could not connect to ${
+            redactServerUrl(server) ?? "(invalid URL)"
+          }: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
       if (
