@@ -259,6 +259,108 @@ creates N parallel gates, each approved by its expanded step name. `resume()`
 refuses to start while any step is still `waiting_approval`
 (`src/domain/workflows/execution_service.ts`), so all N must be decided first.
 
+### Retry Failed Steps
+
+`swamp workflow resume <workflow> --run <id>` on a **failed** run retries it
+without naming a step: every failed step and its dependents run again, in the
+same run. A failed run prints this command when it finishes
+(`To retry failed steps:`), keeping an explicit `--server` or `--repo-dir`; the
+server URL is printed without userinfo, query string, or fragment. When no
+failed step is recorded, it points to `swamp workflow history logs <id>`
+instead. Serve's `workflow.resume` request behaves the same.
+
+**Terms:**
+
+- **Failed step** — a stored step with status `failed` whose recorded
+  `allowedFailure` is not true. The recorded value already reflects
+  `allowFailure` and the assertion severity threshold in force when the run
+  failed.
+- **Entry template** — the workflow step a failed step came from: its
+  `forEachTemplate`, else its step name.
+- **Reset set** — the entry templates and their transitive dependents, as
+  stored step names: the union of `computeStepsToReset()` over each entry
+  template.
+
+**Run selection:** a bare `resume` (no `--run`, no `--from`) still matches only
+a suspended run, so approve followed by resume never becomes ambiguous because
+of old failed runs, which are never superseded. A failed run is retried only
+when named with `--run`. One resolver (`resolveResumableRun` in
+`src/domain/workflows/suspended_run_resolver.ts`) serves the CLI, serve's
+`workflow.resume` handler, and the detached launcher. `approve` and `reject`
+keep `resolveSuspendedRun`. Auto-resume passes `suspendedOnly`, so an approval
+never starts a retry, even if the run fails between the approval and the
+launch.
+
+**Eligibility** (`selectRetryTemplates` in
+`src/domain/workflows/failed_step_retry.ts`). A retry is refused, naming the
+job or step and pointing to `swamp workflow history logs <id>`, unless:
+
+1. No failed step is a rejected approval. Retry never re-opens a gate;
+   `--from <gate>` does, and the gate then asks for a new decision.
+2. Every job and step is `succeeded`, `failed`, or `skipped`. This excludes
+   pending, running, waiting, and unknown work, including a job left running
+   by a `forEach` expansion error.
+3. At least one failed step exists, and every failed job contains one.
+4. Each entry template is a step of the same job in the current workflow. A
+   renamed or removed step, or an older `forEach` record without
+   `forEachTemplate`, needs `--from` or a new run.
+5. Step names are unique across the workflow and across the stored run. The
+   reset helper and the `steps.*` expression context key steps by name alone.
+
+The resolver runs these checks before anything starts, so serve refuses before
+it registers the run or charges the principal's cap. `resume()` runs them again
+before its first change, so a refusal persists nothing and invokes no method.
+
+**Reset:** `resetForResumeFrom()` with the reset set, then
+`resumeFromFailed()`, then the existing resume executor, the same path as
+`--from`. The run keeps its id and `startedAt`. `--input` overrides merge over
+the stored inputs as for any resume, but an override does not reset steps that
+used the old value. Reset clears each selected step's outputs, error, approval
+decision, and assertion result. Only jobs that contain a reset step return to
+`pending`; steps outside the set keep their state and outputs. Guards still
+decide whether a reset step runs, and a guard that skips it does not restore
+its old outputs. A template reset repeats some successful work: every stored
+iteration of a selected `forEach` template, and every dependent, including a
+successful cleanup or notify-on-failure step.
+
+**Failure while retrying:** `resume()` snapshots the run before changing it. If
+anything throws after the run is saved as running but before steps start
+(context build, `steps.*` output resolution, evaluation, log sink
+registration), it saves the snapshot back and rethrows, so the run is exactly
+as it was. This covers suspended and `--from` resumes too. A retry that throws
+once steps are running completes the run as failed and can leave pending reset
+steps; automatic retry refuses such a run and suggests
+`resume --run <id> --from <step>`.
+
+**Run tracker:** the tracker row follows the resuming process; see
+[run tracker](../enablers/run-tracker.md).
+
+**Limits.** These are part of the operator contract:
+
+- **Retry can repeat external effects.** A method can change an external system
+  and then fail. Resume does not guarantee exactly-once execution.
+- **Definitions and inputs must stay compatible.** Resume uses the current
+  workflow and model definitions. It does not detect definition changes or
+  prove that stored results remain valid. If an input change affects earlier
+  work, use `--from` or start a new run.
+- **`forEach` collections must stay stable.** Item identity is not preserved
+  across collection changes. Use a new run for a changed collection.
+- **Stored references do not guarantee data.** Ephemeral data is gone after
+  restart, and retention can remove artifacts. Resume does not reconstruct
+  missing outputs or pin `data.latest()` to its old value.
+- **A retried nested workflow starts a new child run.** It does not resume the
+  earlier child.
+- **One operator per run.** There is no ownership lock. Separate CLI processes
+  or serve instances can race.
+- **Approvals are never reused silently.** Retry refuses a rejected approval,
+  and a gate in the reset set loses its decision and asks again, so the `run`
+  grant and `approveRequiresExplicitGrant` still govern every gate.
+- **The run record keeps the original process identity.** During a resume the
+  run record still carries the pid and instance id of the process that started
+  it, so `workflow cancel` may not stop the resume (swamp-club#2420).
+- **Interrupted, cancelled, and running runs are out of scope.** Interrupted
+  runs still use `recover`. This adds no crash-recovery guarantee.
+
 ### Resume from Failed Step (`--from`)
 
 Re-enters a failed run's DAG at a named step. With `guard`, this gives safe
@@ -290,7 +392,9 @@ skipped, failed or unstarted ones run.
 
 **Status restriction:** `--from` works only on failed runs, not succeeded or
 suspended ones (use the gate-approval resume path for suspended runs). Without
-`--from`, resume behaves as before (gate-suspend only).
+`--from`, a failed run named with `--run` is retried (see
+[Retry Failed Steps](#retry-failed-steps)), and a suspended run continues once
+its gates are decided.
 
 **Cross-job propagation:** If the `--from` step is in job B, only job B and
 downstream jobs containing transitive dependents are reset. Upstream jobs

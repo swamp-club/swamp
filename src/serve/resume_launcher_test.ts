@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   autoResumeAfterApproval,
@@ -323,4 +323,86 @@ Deno.test("autoResumeAfterApproval: audits a launch the registry refuses and rep
   assertEquals(launched, false);
   assertEquals(audit.map((e) => e.action), ["workflow.auto_resume_failed"]);
   registry.deregister(run.id);
+});
+
+/** A run whose deploy step failed after its gate was approved. */
+function makeFailedRun(workflow: Workflow): WorkflowRun {
+  const run = makeApprovedRun(workflow);
+  const job = run.getJob("main")!;
+  const deploy = job.getStep("deploy")!;
+  deploy.start();
+  deploy.fail("deploy failed");
+  job.fail();
+  run.complete();
+  return run;
+}
+
+Deno.test("startDetachedResume: registers a retry of a failed run named by id", async () => {
+  const workflow = makeWorkflow();
+  const run = makeFailedRun(workflow);
+  const { ctx, registry } = makeHarness(workflow, run);
+
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: "gated",
+    runId: run.id,
+    principalId: null,
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(registry.registered.length, 1);
+  assertEquals(registry.registered[0].runId, run.id);
+  await waitFor(() => registry.get(run.id) === undefined, "resume finished");
+});
+
+Deno.test("startDetachedResume: refuses an ineligible failed run before registering it", async () => {
+  const workflow = makeWorkflow();
+  const run = makeFailedRun(workflow);
+  run.getJob("main")!.getStep("deploy")!.resetToPending();
+  const { ctx, registry } = makeHarness(workflow, run);
+
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: "gated",
+    runId: run.id,
+    principalId: "user:operator",
+  });
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.code, "workflow_resume_failed");
+    assertStringIncludes(result.message, `Step "deploy" in job "main"`);
+  }
+  assertEquals(registry.registered.length, 0);
+});
+
+Deno.test("startDetachedResume: suspendedOnly refuses a failed run before registering it", async () => {
+  const workflow = makeWorkflow();
+  const run = makeFailedRun(workflow);
+  const { ctx, registry } = makeHarness(workflow, run);
+
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: "gated",
+    runId: run.id,
+    suspendedOnly: true,
+    principalId: null,
+  });
+
+  assertEquals(result.ok, false);
+  if (!result.ok) assertStringIncludes(result.message, "is not suspended");
+  assertEquals(registry.registered.length, 0);
+});
+
+Deno.test("autoResumeAfterApproval: never retries a run that failed before launch", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeFailedRun(workflow);
+  const { ctx, registry, audit } = makeHarness(workflow, run);
+
+  const launched = await autoResumeAfterApproval(
+    ctx,
+    outcomeFor(run),
+    "user:approver",
+  );
+
+  assertEquals(launched, false);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit.map((e) => e.action), ["workflow.auto_resume_failed"]);
 });

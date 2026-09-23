@@ -27,6 +27,7 @@ import { UserError } from "../domain/errors.ts";
 import {
   createTlsHttpClient,
   diagnoseTlsMessage,
+  formatCommandTarget,
   probeServerHealth,
   readTokenFile,
   requestServerResponse,
@@ -2026,4 +2027,43 @@ Deno.test({
       await server.shutdown();
     }
   },
+});
+
+Deno.test("formatCommandTarget: is empty without explicit target flags", () => {
+  assertEquals(formatCommandTarget({}), "");
+});
+
+Deno.test("formatCommandTarget: keeps an explicit server URL", () => {
+  assertEquals(
+    formatCommandTarget({ server: "ws://build-host:9000" }),
+    " --server ws://build-host:9000",
+  );
+  assertEquals(
+    formatCommandTarget({ server: "https://swamp.example.com/serve/" }),
+    " --server https://swamp.example.com/serve/",
+  );
+});
+
+Deno.test("formatCommandTarget: drops userinfo, query string, and fragment from the server", () => {
+  assertEquals(
+    formatCommandTarget({
+      server: "wss://alice:s3cret@swamp.example.com:8443/?token=abc#frag",
+    }),
+    " --server wss://swamp.example.com:8443",
+  );
+});
+
+Deno.test("formatCommandTarget: omits an unparseable server", () => {
+  assertEquals(formatCommandTarget({ server: "not a url" }), "");
+});
+
+Deno.test("formatCommandTarget: shell-quotes a repo dir that needs it", () => {
+  assertEquals(
+    formatCommandTarget({ repoDir: "./infra" }),
+    " --repo-dir ./infra",
+  );
+  assertEquals(
+    formatCommandTarget({ repoDir: "my repo's dir" }),
+    ` --repo-dir 'my repo'"'"'s dir'`,
+  );
 });

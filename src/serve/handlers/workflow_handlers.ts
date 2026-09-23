@@ -84,10 +84,7 @@ import type {
 } from "../protocol.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import {
-  resolveResumableRun,
-  resolveSuspendedRun,
-} from "../../domain/workflows/suspended_run_resolver.ts";
+import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import {
   createWorkflowId,
   type WorkflowRunId,
@@ -1232,19 +1229,13 @@ export async function handleWorkflowResume(
       const workflowRepo = ctx.repoContext.workflowRepo;
       const runRepo = ctx.repoContext.workflowRunRepo;
 
-      const { run, workflowName } = payload.from
-        ? await resolveResumableRun(
-          workflowRepo,
-          runRepo,
-          payload.workflowIdOrName,
-          payload.runId,
-        )
-        : await resolveSuspendedRun(
-          workflowRepo,
-          runRepo,
-          payload.workflowIdOrName,
-          payload.runId,
-        );
+      const { run, workflowName } = await resolveResumableRun(
+        workflowRepo,
+        runRepo,
+        payload.workflowIdOrName,
+        payload.runId,
+        { fromStep: payload.from },
+      );
 
       const stepLockHook: StepLockHook = async (modelType, modelId) => {
         const lockResult = await acquireModelLocks(

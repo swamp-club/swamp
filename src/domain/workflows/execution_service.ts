@@ -32,7 +32,9 @@ import { coerceToSuffix } from "./data_suffix.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 // deno-lint-ignore verbatim-module-syntax
-import { JobRun, WorkflowRun } from "./workflow_run.ts";
+import { JobRun, WorkflowRun, type WorkflowRunData } from "./workflow_run.ts";
+import { selectRetryTemplates } from "./failed_step_retry.ts";
+import { nextActionForStatus } from "./suspended_run_resolver.ts";
 import {
   type GraphNode,
   TopologicalSortService,
@@ -132,6 +134,7 @@ import {
 import { UserError } from "../errors.ts";
 import {
   getRunLogger,
+  getSwampLogger,
   getWorkflowRunLogger,
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
@@ -2519,9 +2522,16 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Resumes a suspended workflow run from the point where it was paused.
-   * The approval step must already be marked as succeeded (by the approve command).
-   * Skips completed/failed/skipped steps and executes remaining pending ones.
+   * Resumes a workflow run, keeping its run ID and completed step results.
+   *
+   * - A suspended run continues once every approval gate is decided.
+   * - A failed run with `fromStep` re-enters at that step and its dependents.
+   * - A failed run without `fromStep` retries: every failed step's entry
+   *   template and its dependents are reset (see {@link selectRetryTemplates}).
+   *
+   * Terminal steps outside the reset set are skipped and their outputs are
+   * restored into `steps.*`. A refusal changes nothing; a failure after the
+   * run is marked running but before execution starts restores the run.
    */
   async *resume(
     workflowIdOrName: string,
@@ -2537,6 +2547,11 @@ export class WorkflowExecutionService {
       assertFailOnSeverity?: AssertSeverity;
       /** Re-enter the DAG at this step (template name from the workflow YAML). */
       fromStep?: string;
+      /**
+       * Accept only a suspended run. Auto-resume after an approval sets it so
+       * an approval can never start a retry of a failed run.
+       */
+      suspendedOnly?: boolean;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -2555,21 +2570,38 @@ export class WorkflowExecutionService {
 
     const fromStep = options?.fromStep;
 
+    // Every check runs before the first mutation, so a refusal persists
+    // nothing and invokes no method.
+    let stepsToReset: Set<string> | undefined;
     if (fromStep) {
       if (existingRun.status !== "failed") {
         throw new UserError(
           `--from requires a failed run, but run ${runId} has status "${existingRun.status}"`,
         );
       }
-    } else {
-      if (existingRun.status !== "suspended") {
-        throw new UserError(
-          `Run ${runId} is not suspended (status: ${existingRun.status})`,
-        );
+      stepsToReset = computeStepsToReset(workflow, existingRun, fromStep);
+    } else if (
+      existingRun.status === "failed" && !options?.suspendedOnly
+    ) {
+      // Retry: reset the entry template of every failed step, and each
+      // template's dependents, through the same path as --from.
+      stepsToReset = new Set();
+      for (const template of selectRetryTemplates(workflow, existingRun)) {
+        for (
+          const name of computeStepsToReset(workflow, existingRun, template)
+        ) {
+          stepsToReset.add(name);
+        }
       }
-    }
-
-    if (!fromStep) {
+    } else if (existingRun.status !== "suspended") {
+      const accepted = options?.suspendedOnly
+        ? "is not suspended"
+        : "is not suspended or failed";
+      throw new UserError(
+        `Run ${runId} ${accepted} (status: ${existingRun.status}).` +
+          nextActionForStatus(existingRun.status, workflow.name, runId),
+      );
+    } else {
       const waiting = existingRun.findWaitingApprovalStep();
       if (waiting) {
         throw new UserError(
@@ -2579,8 +2611,12 @@ export class WorkflowExecutionService {
       }
     }
 
-    if (fromStep) {
-      const stepsToReset = computeStepsToReset(workflow, existingRun, fromStep);
+    // Taken before any mutation. If anything throws after the save below and
+    // before execution starts, the run is restored to exactly this state
+    // rather than left running with nothing driving it.
+    const snapshot = existingRun.toData();
+
+    if (stepsToReset) {
       existingRun.resetForResumeFrom(stepsToReset);
       existingRun.resumeFromFailed();
     } else {
@@ -2594,86 +2630,107 @@ export class WorkflowExecutionService {
     if (Object.keys(resumeInputs).length > 0) {
       existingRun.recordResumeInputs(Object.keys(resumeInputs));
     }
+    // The running status saved here also stops a second resume of this run
+    // from starting while this one prepares.
     await this.saveRun(workflow.id, existingRun);
 
-    const expressionContext = await this.buildRunContext(
-      workflow,
-      false,
-      existingRun.deferredExpressions,
-    );
+    const {
+      expressionContext,
+      secretRedactor,
+      authoredExpressions,
+      resolvedWorkflow,
+      workflowLogPath,
+      workflowLogHandle,
+    } = await this.restoreRunOnFailure(workflow.id, snapshot, async () => {
+      const expressionContext = await this.buildRunContext(
+        workflow,
+        false,
+        existingRun.deferredExpressions,
+      );
 
-    // Merge resume-time inputs over the inputs captured when the run suspended.
-    // Resume overrides win on key collision; new keys are additive. Set before
-    // evaluation so workflow- and step-level `inputs.*` expressions resolve.
-    expressionContext.inputs = deepMerge(
-      { ...existingRun.inputs },
-      resumeInputs,
-    );
+      // Merge resume-time inputs over the inputs captured when the run
+      // suspended. Resume overrides win on key collision; new keys are
+      // additive. Set before evaluation so workflow- and step-level
+      // `inputs.*` expressions resolve.
+      expressionContext.inputs = deepMerge(
+        { ...existingRun.inputs },
+        resumeInputs,
+      );
 
-    expressionContext.workflowRunId = existingRun.id;
-    expressionContext.run = {
-      id: existingRun.id,
-      workflowId: workflow.id,
-      workflowName: workflow.name,
-      startedAt: existingRun.startedAt!.toISOString(),
-      tags: { ...existingRun.tags },
-      initiatedBy: existingRun.initiatedBy,
-      inputs: existingRun.inputs,
-    };
-    // Declared here so vault values resolved into prior step outputs below
-    // are redacted from this resume's logs.
-    const secretRedactor = new SecretRedactor();
+      expressionContext.workflowRunId = existingRun.id;
+      expressionContext.run = {
+        id: existingRun.id,
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        startedAt: existingRun.startedAt!.toISOString(),
+        tags: { ...existingRun.tags },
+        initiatedBy: existingRun.initiatedBy,
+        inputs: existingRun.inputs,
+      };
+      // Declared here so vault values resolved into prior step outputs below
+      // are redacted from this resume's logs.
+      const secretRedactor = new SecretRedactor();
 
-    expressionContext.steps = {};
-    const stepOutputResolver = this.createStepOutputResolver(secretRedactor);
-    for (const job of existingRun.jobs) {
-      for (const step of job.steps) {
-        if (
-          step.status === "succeeded" || step.status === "failed" ||
-          step.status === "skipped" || step.status === "unknown"
-        ) {
-          expressionContext.steps[step.stepName] = {
-            status: step.status,
-            outputs: (await stepOutputResolver.resolve(step)).outputs,
-          };
+      expressionContext.steps = {};
+      const stepOutputResolver = this.createStepOutputResolver(secretRedactor);
+      for (const job of existingRun.jobs) {
+        for (const step of job.steps) {
+          if (
+            step.status === "succeeded" || step.status === "failed" ||
+            step.status === "skipped" || step.status === "unknown"
+          ) {
+            expressionContext.steps[step.stepName] = {
+              status: step.status,
+              outputs: (await stepOutputResolver.resolve(step)).outputs,
+            };
+          }
         }
       }
-    }
 
-    const evaluator = new WorkflowExpressionEvaluator(
-      new CelEvaluator(),
-    );
-    // Collected before evaluation, for the same reason as the fresh-run seam:
-    // afterwards, spliced data content is indistinguishable from source. The
-    // run's captured inputs may still hold a parent's unresolved runtime
-    // expression, which only the persisted inherited set can vouch for.
-    const authoredExpressions = collectWorkflowAuthoredExpressions(
-      workflow,
-      new Set(existingRun.inheritedExpressions),
-    );
-    expressionContext.deferredExpressions = existingRun.deferredExpressions;
-    const evaluated = await evaluator.evaluate(
-      workflow,
-      expressionContext,
-      authoredExpressions,
-    );
-    const resolvedWorkflow = evaluated.workflow;
-
-    // Re-register the log file sink so resume output is captured.
-    // Append to preserve records from earlier attempts.
-    const workflowLogPath = existingRun.logFile ??
-      join(
-        swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
-        workflow.id,
-        `workflow-run-${existingRun.id}.log`,
+      const evaluator = new WorkflowExpressionEvaluator(
+        new CelEvaluator(),
       );
-    const workflowLogHandle = await runFileSink.register(
-      [],
-      workflowLogPath,
-      secretRedactor,
-      swampPath(this.repoDir),
-      { append: true, runId: existingRun.id },
-    );
+      // Collected before evaluation, for the same reason as the fresh-run
+      // seam: afterwards, spliced data content is indistinguishable from
+      // source. The run's captured inputs may still hold a parent's
+      // unresolved runtime expression, which only the persisted inherited
+      // set can vouch for.
+      const authoredExpressions = collectWorkflowAuthoredExpressions(
+        workflow,
+        new Set(existingRun.inheritedExpressions),
+      );
+      expressionContext.deferredExpressions = existingRun.deferredExpressions;
+      const evaluated = await evaluator.evaluate(
+        workflow,
+        expressionContext,
+        authoredExpressions,
+      );
+      const resolvedWorkflow = evaluated.workflow;
+
+      // Re-register the log file sink so resume output is captured.
+      // Append to preserve records from earlier attempts.
+      const workflowLogPath = existingRun.logFile ??
+        join(
+          swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
+          workflow.id,
+          `workflow-run-${existingRun.id}.log`,
+        );
+      const workflowLogHandle = await runFileSink.register(
+        [],
+        workflowLogPath,
+        secretRedactor,
+        swampPath(this.repoDir),
+        { append: true, runId: existingRun.id },
+      );
+      return {
+        expressionContext,
+        secretRedactor,
+        authoredExpressions,
+        resolvedWorkflow,
+        workflowLogPath,
+        workflowLogHandle,
+      };
+    });
 
     // Declared before the try so the finally at the end of this method can
     // clear it. The try opens immediately after register() — before the
@@ -2709,9 +2766,10 @@ export class WorkflowExecutionService {
         assertFailOnSeverity: options?.assertFailOnSeverity,
       };
 
-      // Re-activate the tracker row (suspended → running) and start heartbeat
+      // Hand the tracker row to this process (suspended, failed, or
+      // interrupted → running) and start heartbeat
       if (this.runTracker) {
-        this.runTracker.reactivate(existingRun.id);
+        this.runTracker.reactivate(existingRun.id, Deno.pid, hostname());
         const tracker = this.runTracker;
         const runId = existingRun.id;
         resumeHeartbeatInterval = setInterval(() => {
@@ -4417,6 +4475,35 @@ export class WorkflowExecutionService {
   }
 
   /**
+   * Runs `prepare`; if it throws, saves the run back as `snapshot` and
+   * rethrows. A failed restore is logged and the original error still wins.
+   */
+  private async restoreRunOnFailure<T>(
+    workflowId: WorkflowId,
+    snapshot: WorkflowRunData,
+    prepare: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await prepare();
+    } catch (error) {
+      try {
+        await this.saveRun(workflowId, WorkflowRun.fromData(snapshot));
+      } catch (restoreError) {
+        getSwampLogger(["workflow", "resume"]).warn(
+          "Could not restore run {runId} after a failed resume: {error}",
+          {
+            runId: snapshot.id,
+            error: restoreError instanceof Error
+              ? restoreError.message
+              : String(restoreError),
+          },
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Runs workflow-scope reports after the workflow completes and appends
    * their data artifacts to the WorkflowRun aggregate so the `--workflow`
    * retrieval path can resolve them.
@@ -4711,8 +4798,10 @@ function resolveEffectiveConcurrency(
 
 /**
  * Computes the set of persisted step names (including forEach-expanded names)
- * to reset for a --from resume. The result includes the fromStep itself and
- * all its transitive downstream dependents across all jobs.
+ * to reset when re-entering a failed run at `fromStep`. The result includes
+ * the fromStep itself and all its transitive downstream dependents across all
+ * jobs. Used by a `--from` resume, and once per entry template by a retry
+ * (a resume of a failed run without `--from`).
  */
 export function computeStepsToReset(
   workflow: Workflow,

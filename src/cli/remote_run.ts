@@ -75,6 +75,51 @@ export function resolveServeUrl(
     _cachedMarkerServerAddress;
 }
 
+/** A POSIX shell word made only of these characters needs no quoting. */
+const SHELL_SAFE_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+function quoteShellWord(value: string): string {
+  return SHELL_SAFE_WORD.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+/**
+ * The target arguments to append to a follow-up command that this command
+ * prints, so the printed command reaches the same server or repository.
+ *
+ * Takes only the explicit `--server` and `--repo-dir` flag values:
+ * environment variables and the repository marker already carry over in the
+ * same shell. The server URL loses its userinfo, query string, and fragment,
+ * since serve accepts a token as a query parameter; an unparseable URL is
+ * left out. Returns "" or a string starting with a space.
+ */
+export function formatCommandTarget(
+  flags: { server?: string; repoDir?: string },
+): string {
+  let target = "";
+  if (flags.server) {
+    const server = serverWithoutCredentials(flags.server);
+    if (server) target += ` --server ${quoteShellWord(server)}`;
+  }
+  if (flags.repoDir) {
+    target += ` --repo-dir ${quoteShellWord(flags.repoDir)}`;
+  }
+  return target;
+}
+
+function serverWithoutCredentials(server: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(server);
+  } catch {
+    return undefined;
+  }
+  if (!url.host) return undefined;
+  const path = url.pathname === "/" ? "" : url.pathname;
+  return `${url.protocol}//${url.host}${path}`;
+}
+
 export function writeRemoteIndicator(serverUrl: string): void {
   console.error(gutterLine("Remote", STATUS_COLORS.warn, serverUrl));
 }

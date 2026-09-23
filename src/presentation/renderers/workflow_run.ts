@@ -50,6 +50,11 @@ export interface WorkflowRunRenderOpts {
   isAuthenticated?: boolean;
   quiet?: boolean;
   failOnSeverity?: AssertSeverity;
+  /**
+   * Appended to every follow-up command the renderer prints, so it targets
+   * the same server or repository (for example " --server ws://host:9000").
+   */
+  commandTarget?: string;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -72,6 +77,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private isAuthenticated: boolean;
   private quiet: boolean;
   private failOnSeverity: AssertSeverity;
+  private commandTarget: string;
   private _failed = false;
   private pipe: PipeWriter | null = null;
   private outputBuffers = new Map<string, string[]>();
@@ -97,6 +103,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     this.isAuthenticated = opts.isAuthenticated ?? false;
     this.quiet = opts.quiet ?? false;
     this.failOnSeverity = opts.failOnSeverity ?? "low";
+    this.commandTarget = opts.commandTarget ?? "";
   }
 
   private getDisplayName(jobId: string, stepId: string, event?: {
@@ -394,7 +401,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             name,
             `${
               yellow("To approve:")
-            }  swamp workflow approve ${this.workflowName} ${e.stepId} --run ${e.runId}`,
+            }  swamp workflow approve ${this.workflowName} ${e.stepId} --run ${e.runId}${this.commandTarget}`,
           ),
         );
         writeOutput(
@@ -402,7 +409,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             name,
             `${
               yellow("To reject:")
-            }   swamp workflow reject ${this.workflowName} ${e.stepId} --run ${e.runId}`,
+            }   swamp workflow reject ${this.workflowName} ${e.stepId} --run ${e.runId}${this.commandTarget}`,
           ),
         );
       },
@@ -618,6 +625,10 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           );
           writeBlankLine();
           writeOutput(this.pipe.line("system", STATUS_COLORS.error(stepError)));
+          writeBlankLine();
+          writeOutput(
+            this.pipe.line("system", this.nextActionForFailedRun(e.run)),
+          );
         } else if (this._failed) {
           const duration = e.run.duration
             ? ` ${dim(`in ${formatDuration(e.run.duration)}`)}`
@@ -688,7 +699,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             "system",
             `${
               yellow("To approve:")
-            }  swamp workflow approve ${this.workflowName} ${e.stepId} --run ${e.run.id}`,
+            }  swamp workflow approve ${this.workflowName} ${e.stepId} --run ${e.run.id}${this.commandTarget}`,
           ),
         );
         writeOutput(
@@ -696,7 +707,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             "system",
             `${
               dim("After approval:")
-            }  swamp workflow resume ${this.workflowName} --run ${e.run.id}`,
+            }  swamp workflow resume ${this.workflowName} --run ${e.run.id}${this.commandTarget}`,
           ),
         );
       },
@@ -709,6 +720,23 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
 
   workflowFailed(): boolean {
     return this._failed;
+  }
+
+  /**
+   * The command to run after a failed run: retry its failed steps, or, when
+   * no failed step is recorded, read its logs.
+   */
+  private nextActionForFailedRun(run: WorkflowRunView): string {
+    const hasFailedStep = run.jobs.some((job) =>
+      job.steps.some((step) => step.status === "failed" && !step.allowedFailure)
+    );
+    return hasFailedStep
+      ? `${
+        yellow("To retry failed steps:")
+      }  swamp workflow resume ${this.workflowName} --run ${run.id}${this.commandTarget}`
+      : `${
+        yellow("To inspect the run:")
+      }  swamp workflow history logs ${run.id}${this.commandTarget}`;
   }
 
   private renderDataArtifacts(run: WorkflowRunView): void {

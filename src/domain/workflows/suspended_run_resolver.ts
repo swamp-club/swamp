@@ -25,6 +25,7 @@ import type {
 } from "./repositories.ts";
 import { createWorkflowId, createWorkflowRunId } from "./workflow_id.ts";
 import { UserError } from "../errors.ts";
+import { selectRetryTemplates } from "./failed_step_retry.ts";
 
 export interface SuspendedRunInfo {
   workflowName: string;
@@ -92,16 +93,39 @@ export async function resolveSuspendedRun(
 
 export type ResumableRunInfo = SuspendedRunInfo;
 
+export interface ResolveResumableRunOptions {
+  /** The --from step; when set, only a failed run is resumable. */
+  fromStep?: string;
+}
+
 /**
- * Resolves a failed run for --from resume. Accepts runs with status "failed".
- * A runId is required since --from targets a specific failed run.
+ * Resolves the run for `workflow resume`.
+ *
+ * - With `runId`: loads that run. With --from it must be failed; without,
+ *   suspended or failed (a failed run is retried).
+ * - Without `runId`: requires exactly one failed run with --from, or exactly
+ *   one suspended run without it. A failed run is retried only when named,
+ *   so approve followed by a bare resume never becomes ambiguous because of
+ *   old failed runs.
+ *
+ * A failed run resolved without --from is checked for retry eligibility
+ * here, so callers fail before starting anything; resume() checks again.
  */
 export async function resolveResumableRun(
   workflowRepo: WorkflowRepository,
   runRepo: WorkflowRunRepository,
   workflowIdOrName: string,
   runId?: string,
+  options: ResolveResumableRunOptions = {},
 ): Promise<ResumableRunInfo> {
+  if (!options.fromStep && !runId) {
+    return await resolveSuspendedRun(
+      workflowRepo,
+      runRepo,
+      workflowIdOrName,
+    );
+  }
+
   const workflow = await workflowRepo.findByName(workflowIdOrName) ??
     await workflowRepo.findById(createWorkflowId(workflowIdOrName));
   if (!workflow) {
@@ -116,9 +140,18 @@ export async function resolveResumableRun(
     if (!run) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
-    if (run.status !== "failed") {
+    if (options.fromStep) {
+      if (run.status !== "failed") {
+        throw new UserError(
+          `--from requires a failed run, but run ${runId} has status "${run.status}"`,
+        );
+      }
+    } else if (run.status === "failed") {
+      selectRetryTemplates(workflow, run);
+    } else if (run.status !== "suspended") {
       throw new UserError(
-        `--from requires a failed run, but run ${runId} has status "${run.status}"`,
+        `Run ${runId} is not suspended or failed (status: ${run.status}).` +
+          nextActionForStatus(run.status, workflow.name, run.id),
       );
     }
     return {
@@ -163,13 +196,22 @@ function noRunsInStateMessage(
     return `${base}. No runs exist — run the workflow first with 'swamp workflow run ${workflowName}'.`;
   }
   const latest = allRuns[0];
-  const suggestion = nextActionForStatus(latest.status, workflowName);
+  const suggestion = nextActionForStatus(
+    latest.status,
+    workflowName,
+    latest.id,
+  );
   return `${base}. The latest run is ${latest.status} (${latest.id}).${suggestion}`;
 }
 
-function nextActionForStatus(
+/**
+ * A sentence, with a leading space, naming the command to run next for a
+ * run in `status`.
+ */
+export function nextActionForStatus(
   status: string,
   workflowName: string,
+  runId: string,
 ): string {
   switch (status) {
     case "running":
@@ -177,7 +219,7 @@ function nextActionForStatus(
     case "succeeded":
       return ` The workflow has already completed — inspect results with 'swamp workflow history ${workflowName}'.`;
     case "failed":
-      return ` Resume the failed run with 'swamp workflow resume ${workflowName} --from <step>'.`;
+      return ` Retry its failed steps with 'swamp workflow resume ${workflowName} --run ${runId}'.`;
     case "suspended":
       return ` Approve or resume the suspended run with 'swamp workflow approve ${workflowName}'.`;
     case "interrupted":

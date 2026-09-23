@@ -84,8 +84,14 @@ days are purged at startup. `swamp run gc` removes older records on demand:
    continuous reconciler and `run.doctor` also reconcile YAML workflow-run
    records from dead remote instances whose heartbeats are gone.
 5. **Suspend**: approval gates set `suspended`, which skips stale detection.
-6. **Reactivate**: on resume, `suspended` → `running` and the heartbeat
-   restarts.
+6. **Reactivate**: on resume, the row passes to the resuming process. A
+   `suspended`, `failed` or `interrupted` row becomes `running` with that
+   process's pid and hostname, and the heartbeat restarts. `interrupted` is
+   accepted because `workflow recover` sets the run record back to suspended
+   while the row stays interrupted. The row keeps its `instance_id`. Because the
+   live pid is recorded, serve's boot reapers leave a running resume alone. The
+   workflow-run record itself still carries the original process's pid and
+   instance id (swamp-club#2420).
 
 ### Coverage
 
@@ -96,7 +102,8 @@ days are purged at startup. `swamp run gc` removes older records on demand:
 - **Workflow runs** register in `WorkflowExecutionService.run()` for the whole
   workflow.
 - Suspend/approve/resume/reject are tracked: suspended → running → completed,
-  or suspended → failed on reject.
+  or suspended → failed on reject. Retrying a failed run is tracked the same
+  way: failed → running → completed or failed.
 
 ### CLI Commands
 

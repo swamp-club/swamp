@@ -695,6 +695,19 @@ export class JobRun implements TriggerEvaluationContext {
 }
 
 /**
+ * A failed step recorded on a run, as returned by
+ * {@link WorkflowRun.failedSteps}.
+ */
+export interface FailedStepRef {
+  jobName: string;
+  stepName: string;
+  /** The workflow step this expanded forEach iteration came from. */
+  forEachTemplate?: string;
+  /** True when the step is a manual approval that was rejected. */
+  approvalRejected: boolean;
+}
+
+/**
  * WorkflowRun is an aggregate root that tracks the execution state of a workflow.
  */
 export class WorkflowRun implements TriggerEvaluationContext {
@@ -1122,6 +1135,31 @@ export class WorkflowRun implements TriggerEvaluationContext {
         job.resetToPending();
       }
     }
+  }
+
+  /**
+   * Lists, in stored order, every step whose status is `failed` and whose
+   * recorded `allowedFailure` is not set. The recorded value already
+   * reflects `allowFailure` and the assertion severity threshold in force
+   * when the run failed.
+   */
+  failedSteps(): FailedStepRef[] {
+    const result: FailedStepRef[] = [];
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status !== "failed" || step.allowedFailure) continue;
+        const ref: FailedStepRef = {
+          jobName: job.jobName,
+          stepName: step.stepName,
+          approvalRejected: step.approvalDecision?.approved === false,
+        };
+        if (step.forEachTemplate !== undefined) {
+          ref.forEachTemplate = step.forEachTemplate;
+        }
+        result.push(ref);
+      }
+    }
+    return result;
   }
 
   /**

@@ -821,6 +821,13 @@ the input at run (e.g. a placeholder) and supply or override its value at
 resume. The run record records the resume input key names (not values) for
 audit.
 
+**Retry a failed run:** `swamp workflow resume <workflow-name> --run <run-id>`
+on a failed run retries its failed steps and their dependents in the same run;
+independent successful steps keep their results. A failed run prints this
+command. Retry refuses a rejected approval, unfinished work, or a failed step no
+longer in the workflow, and names what to do instead. See
+[execution-semantics.md](references/execution-semantics.md#retry-the-failed-steps-of-a-failed-run).
+
 **Resume from a failed step (`--from`):** Re-enter a failed run's DAG at a named
 step. The `--from` step and all its downstream dependents are reset; steps
 before it retain their completed status. Guards on completed steps prevent

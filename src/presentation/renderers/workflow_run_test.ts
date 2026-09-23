@@ -738,3 +738,123 @@ Deno.test("createWorkflowRunRenderer: factory returns correct type per mode", ()
   assertEquals(typeof jsonRenderer.handlers, "function");
   assertEquals(typeof jsonRenderer.workflowFailed, "function");
 });
+
+async function renderFailedRun(
+  runView: WorkflowRunView,
+  commandTarget?: string,
+): Promise<string> {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+    commandTarget,
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  return lines.join("\n");
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: failed run prints the retry command", async () => {
+  const output = await renderFailedRun(makeRunView("failed"));
+  assertStringIncludes(
+    output,
+    "To retry failed steps:  swamp workflow resume test-pipeline --run run-1",
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: retry command keeps the command target", async () => {
+  const output = await renderFailedRun(
+    makeRunView("failed"),
+    " --server wss://swamp.example.com",
+  );
+  assertStringIncludes(
+    output,
+    "swamp workflow resume test-pipeline --run run-1 --server wss://swamp.example.com",
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: failed run without a failed step points to its logs", async () => {
+  const runView = makeRunView("failed");
+  runView.jobs[0].steps[0].status = "pending";
+  const output = await renderFailedRun(runView, " --repo-dir ./infra");
+  assertStringIncludes(
+    output,
+    "To inspect the run:  swamp workflow history logs run-1 --repo-dir ./infra",
+  );
+  assertEquals(output.includes("To retry failed steps"), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: an allowed failure is not offered for retry", async () => {
+  const runView = makeRunView("failed");
+  runView.jobs[0].steps[0].allowedFailure = true;
+  const output = await renderFailedRun(runView);
+  assertEquals(output.includes("To retry failed steps"), false);
+  assertStringIncludes(output, "swamp workflow history logs run-1");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: suspended hints keep the command target", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    commandTarget: " --server ws://build-host:9000",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "deploy", stepCount: 1, dependsOn: [] }],
+    },
+    {
+      kind: "approval_requested",
+      runId: "run-1",
+      jobId: "deploy",
+      stepId: "apply",
+      prompt: "Review the plan",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "deploy",
+      stepId: "apply",
+      prompt: "Review the plan",
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  const target = "--run run-1 --server ws://build-host:9000";
+  assertStringIncludes(
+    output,
+    `swamp workflow approve test-pipeline apply ${target}`,
+  );
+  assertStringIncludes(
+    output,
+    `swamp workflow reject test-pipeline apply ${target}`,
+  );
+  assertStringIncludes(output, `swamp workflow resume test-pipeline ${target}`);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a failed run's JSON output carries no retry hint", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+      commandTarget: " --server ws://build-host:9000",
+    });
+    await consumeStream(
+      toStream(simpleEvents(makeRunView("failed"))),
+      renderer.handlers(),
+    );
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.status, "failed");
+    assertEquals(logs[0].includes("To retry"), false);
+    assertEquals(logs[0].includes("build-host"), false);
+  } finally {
+    console.log = originalLog;
+  }
+});

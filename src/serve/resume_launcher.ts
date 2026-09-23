@@ -62,6 +62,12 @@ export interface DetachedResumeRequest {
   runId?: string;
   /** Resume from a failed step instead of a decided approval gate. */
   from?: string;
+  /**
+   * Accept only a suspended run. Auto-resume sets it so an approval can
+   * never start a retry of a failed run, even if the run fails between the
+   * approval and the launch.
+   */
+  suspendedOnly?: boolean;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;
@@ -91,18 +97,19 @@ export async function startDetachedResume(
   let resolvedRun: WorkflowRun;
   let workflowName: string;
   try {
-    const result = request.from
-      ? await resolveResumableRun(
+    const result = request.suspendedOnly
+      ? await resolveSuspendedRun(
         workflowRepo,
         runRepo,
         request.workflowIdOrName,
         request.runId,
       )
-      : await resolveSuspendedRun(
+      : await resolveResumableRun(
         workflowRepo,
         runRepo,
         request.workflowIdOrName,
         request.runId,
+        { fromStep: request.from },
       );
     resolvedRun = result.run;
     workflowName = result.workflowName;
@@ -193,6 +200,7 @@ export async function startDetachedResume(
             signal: runController.signal,
             inputs: request.inputs ?? {},
             fromStep: request.from,
+            suspendedOnly: request.suspendedOnly,
           })
         ) {
           const mapped = mapWorkflowExecutionEvent(event, runRepo);
@@ -342,6 +350,7 @@ export async function autoResumeAfterApproval(
   const launched = await startDetachedResume(ctx, registry, {
     workflowIdOrName: outcome.workflowName,
     runId: outcome.runId,
+    suspendedOnly: true,
     principalId,
     onTerminal: (terminal) => {
       if (terminal.kind !== "error") return;

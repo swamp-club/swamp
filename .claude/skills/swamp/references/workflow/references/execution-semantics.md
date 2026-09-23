@@ -45,6 +45,30 @@ no inputs. An automatic resume supplies no inputs. If it fails to start, the run
 stays suspended and needs a manual resume. The dashboard lists
 approved-but-suspended runs with a Resume action and the equivalent CLI command.
 
+### Retry the Failed Steps of a Failed Run
+
+`swamp workflow resume <workflow> --run <id>` on a failed run retries every
+failed step, plus everything downstream of it, in the same run. Independent
+steps that succeeded keep their results and do not run again. A failed run
+prints this command when it finishes. `--run` is required: a bare
+`swamp workflow resume <workflow>` still matches only a suspended run.
+
+Before retrying, check job and step states with
+`swamp workflow history get <run-id> --json`. Retry refuses, and names the job
+or step, when:
+
+- a failed step is a rejected approval (use `--from <gate>` to ask again);
+- any step is still pending, running, waiting, or unknown (a pending step left
+  by an earlier retry: use `--from <step>`);
+- a failed step is no longer in the workflow (use `--from` or a new run);
+- a step name appears in more than one job.
+
+Retry can repeat external effects: a method may have changed something and then
+failed. Successful dependents of a failed step, such as cleanup, run again, and
+so does every iteration of a failed `forEach` step. Resume uses the current
+workflow definition, so a changed workflow or `forEach` collection can make
+stored results stale; start a new run in that case.
+
 ### Resume from a Failed Step
 
 `swamp workflow resume <workflow> --from <step>` re-enters a failed run's DAG at
@@ -53,7 +77,8 @@ are reset to pending; steps before it retain their terminal status. Guards on
 completed steps prevent re-execution of irreversible actions. Steps without
 guards always execute on resume. Only works on failed runs — use the
 gate-approval path for suspended runs. If multiple failed runs exist, add
-`--run <run-id>` to disambiguate.
+`--run <run-id>` to disambiguate. Use `--from` instead of a retry to choose the
+re-entry step yourself.
 
 ## Step Evaluation Order
 
