@@ -89,12 +89,12 @@ Then assess:
   doc describes the old behavior → flag the stale doc to the human.
 - If the change **deprecates or removes a feature** documented in the manual →
   flag the doc that needs updating or removal.
-- If the human agrees a documentation gap exists, file an issue in `swamp-club`:
+- If the human agrees a documentation gap exists, file a swamp-club lab issue
+  (the `swamp-club/swamp-club` GitHub repo has issues disabled):
   ```
-  gh issue create --repo swamp-club/swamp-club \
+  swamp issue feature \
     --title "Docs: <describe the documentation gap>" \
     --body "<what changed, which manual page needs updating, suggested content>"
   ```
-  Use the label `documentation` for doc gaps.
 - Include documentation assessment findings when presenting the plan to the
   human.
