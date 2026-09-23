@@ -289,7 +289,8 @@ Deno.test("selectRetryTemplates: refuses a failed step removed from the workflow
     error.message,
     `Step "compile" in job "build" is not in the current workflow`,
   );
-  assertStringIncludes(error.message, "--from");
+  assertStringIncludes(error.message, "Start a new run.");
+  assert(!error.message.includes("--from"), error.message);
 });
 
 Deno.test("selectRetryTemplates: refuses a failed step moved to another job", () => {
@@ -306,6 +307,8 @@ Deno.test("selectRetryTemplates: refuses a failed step moved to another job", ()
   });
   const error = refusal(moved, run);
   assertStringIncludes(error.message, "is not in the current workflow");
+  assertStringIncludes(error.message, "Start a new run.");
+  assert(!error.message.includes("--from"), error.message);
 });
 
 Deno.test("selectRetryTemplates: refuses an older forEach record without forEachTemplate", () => {

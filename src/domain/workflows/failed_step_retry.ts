@@ -110,9 +110,11 @@ export function selectRetryTemplates(
     const template = entryTemplateOf(step);
     const job = workflow.jobs.find((j) => j.name === step.jobName);
     if (!job?.steps.some((s) => s.name === template)) {
+      // No --from hint: --from fails on a renamed step and skips a step
+      // moved to another job, so only a new run is safe to suggest.
       throw new UserError(
         `Step "${step.stepName}" in job "${step.jobName}" is not in the current workflow. ` +
-          `Use --from <step> or start a new run. ${history}`,
+          `Start a new run. ${history}`,
       );
     }
   }

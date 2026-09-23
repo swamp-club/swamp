@@ -301,9 +301,12 @@ job or step and pointing to `swamp workflow history logs <id>`, unless:
    pending, running, waiting, and unknown work, including a job left running
    by a `forEach` expansion error.
 3. At least one failed step exists, and every failed job contains one.
-4. Each entry template is a step of the same job in the current workflow. A
-   renamed or removed step, or an older `forEach` record without
-   `forEachTemplate`, needs `--from` or a new run.
+4. Each entry template is a step of the same job in the current workflow. The
+   refusal suggests only a new run. `--from` cannot stand in: it fails with
+   `Step run not found` on a renamed step, and on a step moved to another job
+   it completes the run without running that step. `--from` does still work
+   from a remaining step after a removal, and from the template for an older
+   `forEach` record without `forEachTemplate`.
 5. Step names are unique across the workflow and across the stored run. The
    reset helper and the `steps.*` expression context key steps by name alone.
 

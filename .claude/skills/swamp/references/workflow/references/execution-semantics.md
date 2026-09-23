@@ -60,7 +60,8 @@ or step, when:
 - a failed step is a rejected approval (use `--from <gate>` to ask again);
 - any step is still pending, running, waiting, or unknown (a pending step left
   by an earlier retry: use `--from <step>`);
-- a failed step is no longer in the workflow (use `--from` or a new run);
+- a failed step was renamed, removed, or moved to another job (start a new run;
+  `--from` fails on a renamed step and skips a moved one);
 - a step name appears in more than one job.
 
 Retry can repeat external effects: a method may have changed something and then
