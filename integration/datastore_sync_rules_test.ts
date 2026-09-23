@@ -219,3 +219,56 @@ Deno.test("serve code must not make bare markDirty() calls (swamp-club#2408, swa
       "(swamp-club#2415).\n\nViolations:\n" + sites.join("\n"),
   );
 });
+
+// A command that takes model locks installs the datastore sync coordinator's
+// SIGINT handler, which exits the process with 130 once it has released the
+// locks. A command that also cancels its work on Ctrl-C must suppress that
+// exit, or the process dies before it records a terminal status: an
+// interrupted `workflow resume` left its run stuck at running
+// (swamp-club#2430). The pinned list keeps the scan honest and puts each new
+// command that matches in front of a reviewer.
+const PINNED_LOCKING_CANCELLABLE_COMMANDS: readonly string[] = [
+  "src/cli/commands/model_method_run.ts",
+  "src/cli/commands/workflow_resume.ts",
+  "src/cli/commands/workflow_run.ts",
+];
+
+Deno.test("commands that take model locks and cancel on Ctrl-C must suppress the sync exit (swamp-club#2430)", async () => {
+  const commands: string[] = [];
+  const missing: string[] = [];
+
+  for await (
+    const entry of walk(join(ROOT, "src", "cli", "commands"), {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const code = (await Deno.readTextFile(entry.path))
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("//"))
+      .join("\n");
+    if (!code.includes("acquireModelLocks(")) continue;
+    if (!code.includes("registerShutdownHandler(")) continue;
+    const rel = normalise(relative(ROOT, entry.path));
+    commands.push(rel);
+    if (!code.includes("suppressSyncExitOnSignal()")) missing.push(rel);
+  }
+
+  assertEquals(
+    missing,
+    [],
+    "These commands take model locks and register a shutdown handler but " +
+      "never call suppressSyncExitOnSignal(). On Ctrl-C the datastore sync " +
+      "coordinator exits the process with 130 before the command can save a " +
+      "terminal run status (swamp-club#2430). Take the suppression directly " +
+      "before the try whose finally disposes it, as workflow_run.ts does.",
+  );
+  assertPinnedSet(
+    commands.sort(),
+    PINNED_LOCKING_CANCELLABLE_COMMANDS,
+    "Commands that take model locks and cancel on Ctrl-C",
+    "A new command takes model locks and registers a shutdown handler.\n" +
+      "Confirm it calls suppressSyncExitOnSignal() and saves a terminal\n" +
+      "status for its run after an abort, then pin it here.",
+  );
+});

@@ -33,6 +33,7 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
+import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type DirectTypeResolver,
@@ -80,6 +81,7 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -197,6 +199,7 @@ export const workflowResumeCommand = withRemoteOptions(
       }
       const shutdown = registerShutdownHandler({
         handler: () => abort.abort(),
+        forceExitOnRepeat: true,
       });
 
       const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
@@ -286,7 +289,7 @@ export const workflowResumeCommand = withRemoteOptions(
     const runRepo = repoContext.workflowRunRepo;
 
     const fromStep = options.from as string | undefined;
-    const { run, workflowName } = await resolveResumableRun(
+    const { run, workflow, workflowName } = await resolveResumableRun(
       workflowRepo,
       runRepo,
       workflowIdOrName,
@@ -409,6 +412,7 @@ export const workflowResumeCommand = withRemoteOptions(
       { isResume: true },
     );
 
+    const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -420,7 +424,7 @@ export const workflowResumeCommand = withRemoteOptions(
       repoContext.markDirty,
       repoContext.unifiedDataRepo.namespace,
       stepLockHook,
-      RunTrackerStore.fromSwampDir(swampPath(repoDir)),
+      runTracker,
       ephemeral.repo,
       ephemeral.catalog,
       resolvePulledExtensionsRoot(repoDir),
@@ -433,9 +437,6 @@ export const workflowResumeCommand = withRemoteOptions(
       const timeoutMs = parseTimeout(options.timeout as string);
       setTimeout(() => abort.abort(), timeoutMs);
     }
-    const shutdownHandle = registerShutdownHandler({
-      handler: () => abort.abort(),
-    });
 
     const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
       workflowName,
@@ -474,8 +475,64 @@ export const workflowResumeCommand = withRemoteOptions(
       );
     };
 
+    // resume() saves the run as running before it yields `started`, so
+    // `started` means this process owns the run. Before it, another resume
+    // may own the run, and the fallback below must not cancel it.
+    let started = false;
+    const baseHandlers = renderer.handlers();
+    const handlers = {
+      ...baseHandlers,
+      started: (e: WorkflowRunEvent & { kind: "started" }) => {
+        started = true;
+        baseHandlers.started(e);
+      },
+    };
+
+    // Keep the process alive on Ctrl-C so resume() can record the run as
+    // cancelled, as `workflow run` does. Without this, the datastore sync
+    // coordinator's SIGINT handler exits 130 first and strands the run at
+    // running (swamp-club#2430). Both are process-global, so they are taken
+    // directly before the try whose finally releases them.
+    const exitSuppress = suppressSyncExitOnSignal();
+    const shutdownHandle = registerShutdownHandler({
+      handler: () => abort.abort(),
+      forceExitOnRepeat: true,
+    });
     try {
-      await consumeStream(resumeGenerator(), renderer.handlers());
+      try {
+        await consumeStream(resumeGenerator(), handlers);
+      } catch (error) {
+        // An error before `started` is a real failure to resume, not the
+        // abort unwinding, so it is reported.
+        if (!abort.signal.aborted || !started) throw error;
+      }
+      if (abort.signal.aborted) {
+        // resume() saves the cancelled status itself. This covers an unwind
+        // that ended before it could, and runs before the push below.
+        if (started) {
+          try {
+            const cancelled = await cancelStrandedRun(
+              runRepo,
+              runTracker,
+              workflow.id,
+              run.id,
+              "aborted",
+            );
+            if (cancelled) {
+              cliCtx.logger
+                .warn`Run ${run.id} was still marked running after it was interrupted; marked it cancelled`;
+            }
+          } catch (cancelErr) {
+            const cancelCommand =
+              `swamp workflow cancel ${workflowName} --run ${run.id}`;
+            cliCtx.logger.warn`Could not mark run ${run.id} as cancelled: ${
+              cancelErr instanceof Error ? cancelErr.message : String(cancelErr)
+            }. Cancel it with ${cancelCommand}`;
+          }
+        }
+        Deno.exitCode = 1;
+        return;
+      }
     } finally {
       if (unlocked.syncService) {
         const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
@@ -491,6 +548,7 @@ export const workflowResumeCommand = withRemoteOptions(
         }
       }
       shutdownHandle.dispose();
+      exitSuppress.dispose();
       ephemeral.dispose();
     }
 
