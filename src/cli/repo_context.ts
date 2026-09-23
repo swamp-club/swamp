@@ -185,7 +185,7 @@ async function resolveCustomProvider(
  * — both trees share the same internal layout, so either root produces a
  * usable cache-relative key.
  */
-function buildMarkDirtyHook(
+export function buildMarkDirtyHook(
   syncService: DatastoreSyncService,
   cacheRoot: string,
   repoDir: string,

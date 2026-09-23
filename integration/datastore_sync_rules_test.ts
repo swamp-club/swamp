@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join, relative, SEPARATOR } from "@std/path";
 import { walk } from "@std/fs/walk";
+import { assertPinnedSet } from "./arch_fitness_helpers.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
 const PERSISTENCE_DIR = join(
@@ -158,5 +159,89 @@ Deno.test("serve startup pullChanged must include auto-definitions subdir", asyn
     "The early startup pullChanged in serve.ts must include " +
       '"auto-definitions" in its subdirs list so auto-definitions are ' +
       "available before the serve accepts connections (swamp-club#2275).",
+  );
+});
+
+// Serve code must rely on the per-path markDirty signals its repositories
+// send. A no-argument markDirty() — on the sync service, or on the repository
+// hook, which forwards an absent path as a bare call — sets bulkInvalidated in
+// the datastore extension, so the next push rebuilds the index from every
+// shard and walks the whole cache for a handful of changed files
+// (swamp-club#2408). Each entry is one top-level declaration in src/serve or
+// the serve command; one that makes more than one call is suffixed with the
+// call count.
+const PINNED_BARE_MARK_DIRTY_SITES: readonly string[] = [
+  // Startup migration: migrateGrantDefinitions moves server-token definitions
+  // from models/ to auto-definitions/ directly on disk, so no repository sends
+  // a per-path signal and a bare call is the only way to mark them.
+  "src/cli/commands/serve.ts: serveCommand",
+  // Pending an audit of whether all their writes carry per-path signals
+  // (swamp-club#2415).
+  "src/serve/handlers/access_handlers.ts: handleAccessReload",
+  "src/serve/handlers/admin_handlers.ts: handleExtensionInstall",
+  "src/serve/handlers/admin_handlers.ts: handleExtensionPull",
+  "src/serve/handlers/admin_handlers.ts: handleExtensionRm",
+  "src/serve/handlers/admin_handlers.ts: handleExtensionUpdate",
+  "src/serve/handlers/admin_handlers.ts: handleVaultMigrate",
+  "src/serve/handlers/vault_handlers.ts: handleVaultAnnotate",
+  "src/serve/handlers/vault_handlers.ts: handleVaultCreate",
+  "src/serve/handlers/vault_handlers.ts: handleVaultDelete",
+  "src/serve/handlers/vault_handlers.ts: handleVaultEdit",
+];
+
+// `.markDirty()` or `.markDirty?.()` with no arguments, on any receiver.
+const BARE_MARK_DIRTY_CALL = /\.markDirty(?:\?\.)?\(\s*\)/g;
+// A declaration at column 0: a function (generators included), or a
+// const, let or class. Serve's command handlers live inside
+// `export const serveCommand = new Command()...`.
+const TOP_LEVEL_DECLARATION =
+  /^(?:export )?(?:async )?(?:function\s*\*?\s*|const |let |class )(\w+)/;
+
+async function* bareMarkDirtyScanFiles(): AsyncGenerator<string> {
+  for await (
+    const entry of walk(join(ROOT, "src", "serve"), {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    yield entry.path;
+  }
+  yield join(ROOT, "src", "cli", "commands", "serve.ts");
+}
+
+Deno.test("serve code must not add bare markDirty() calls (swamp-club#2408)", async () => {
+  const callCounts = new Map<string, number>();
+
+  for await (const path of bareMarkDirtyScanFiles()) {
+    const rel = normalise(relative(ROOT, path));
+    const content = await Deno.readTextFile(path);
+    // Attribute each call to the top-level declaration whose body contains it.
+    let owner = "<module>";
+    for (const line of content.split("\n")) {
+      const declaration = line.match(TOP_LEVEL_DECLARATION);
+      if (declaration) owner = declaration[1];
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+      const calls = line.match(BARE_MARK_DIRTY_CALL)?.length ?? 0;
+      if (calls === 0) continue;
+      const site = `${rel}: ${owner}`;
+      callCounts.set(site, (callCounts.get(site) ?? 0) + calls);
+    }
+  }
+
+  const sites = [...callCounts].map(([site, count]) =>
+    count === 1 ? site : `${site} (${count} calls)`
+  );
+  assertPinnedSet(
+    sites.sort(),
+    PINNED_BARE_MARK_DIRTY_SITES,
+    "Bare markDirty() calls in serve code",
+    "Mutations must rely on the per-path markDirty signals their\n" +
+      "repositories send; a bare call forces a full-cache push. Write through\n" +
+      "a repository wired with the markDirty hook, or pass the changed path.\n" +
+      "This list is frozen debt (swamp-club#2415); it may shrink, never grow.\n" +
+      'A second call in a pinned function shows up as a "(2 calls)" entry\n' +
+      "added and the plain entry removed. Renaming a pinned function shows up\n" +
+      "as one entry added and one removed.",
   );
 });
