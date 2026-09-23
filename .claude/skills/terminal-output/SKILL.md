@@ -97,8 +97,18 @@ LogTape. LogTape is for debug/operational logging only.
 
 ## Color Scheme
 
-Import from `@std/fmt/colors`. Colors auto-respect `NO_COLOR` env var and the
-`--no-color` flag (handled in `src/cli/mod.ts` via `setColorEnabled(false)`).
+Import from `@std/fmt/colors`. Whether colors are emitted at all is decided once
+per invocation by `applyColorPolicy` in `src/cli/context.ts`, called from the
+top of `runCli` **before the Cliffy command is constructed** — early enough to
+reach `--version` and `--help`, which Cliffy answers during parsing and which
+never reach `globalAction` (swamp-club#2414). Colors are off when `--no-color`
+is passed, when `NO_COLOR` is set to any value including empty, or when **stdout
+is not a terminal**, so piped and redirected output carries no escape sequences.
+
+Two things this does _not_ cover: LogTape's pretty sink colors through its own
+`colors` option rather than this flag (see
+[references/logtape.md](references/logtape.md)), and the policy is process-wide,
+so a piped stdout also un-colors diagnostics on stderr.
 
 | Element              | Style             | Example                |
 | -------------------- | ----------------- | ---------------------- |

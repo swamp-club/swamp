@@ -21,17 +21,20 @@ import { assertEquals } from "@std/assert";
 import { isAbsolute, resolve, SEPARATOR } from "@std/path";
 import { join } from "@std/path";
 import {
+  applyColorPolicy,
   createContext,
   findAncestorRepoDir,
   getExtensionsDirFromArgs,
   getOutputModeFromArgs,
   getRepoDirFromArgs,
   type GlobalOptions,
+  resolveColorEnabled,
   resolveExtensionsDir,
   resolveRepoDir,
   resolveTraceparent,
   resolveTracestate,
 } from "./context.ts";
+import { extractCommandInfo } from "./telemetry_integration.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
 import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
@@ -700,4 +703,141 @@ Deno.test("resolveTracestate: returns undefined when neither cli nor env set", (
   } finally {
     if (original !== undefined) Deno.env.set("TRACESTATE", original);
   }
+});
+
+// --- colour policy ------------------------------------------------------------
+//
+// These tests never touch the process-global colour flag. `applyColorPolicy`
+// takes its environment read, its terminal probe and its effect as parameters,
+// so the assertions are about which call was made — which is also the only way
+// to pin the "only ever disables" contract.
+
+/** Records what `applyColorPolicy` did to the colour switch. */
+function colourSpy(): { calls: boolean[]; setEnabled: (v: boolean) => void } {
+  const calls: boolean[] = [];
+  return { calls, setEnabled: (v: boolean) => calls.push(v) };
+}
+
+const onATerminal = () => true;
+const piped = () => false;
+
+Deno.test("resolveColorEnabled: colour stays on for a terminal with no flag or env", () => {
+  assertEquals(resolveColorEnabled(false, undefined, onATerminal), true);
+});
+
+Deno.test("resolveColorEnabled: --no-color disables colour on a terminal", () => {
+  assertEquals(resolveColorEnabled(true, undefined, onATerminal), false);
+});
+
+Deno.test("resolveColorEnabled: NO_COLOR disables colour on a terminal", () => {
+  assertEquals(resolveColorEnabled(false, "1", onATerminal), false);
+});
+
+Deno.test("resolveColorEnabled: NO_COLOR counts as set when empty", () => {
+  // Presence, not truthiness — the informal standard, and what the check in
+  // runCli's global action did before this moved.
+  assertEquals(resolveColorEnabled(false, "", onATerminal), false);
+});
+
+Deno.test("resolveColorEnabled: a non-terminal stdout disables colour on its own", () => {
+  assertEquals(resolveColorEnabled(false, undefined, piped), false);
+});
+
+Deno.test("resolveColorEnabled: flag and env and pipe together still disable colour", () => {
+  assertEquals(resolveColorEnabled(true, "1", piped), false);
+});
+
+Deno.test("resolveColorEnabled: skips the terminal probe once the answer is known", () => {
+  // The hook fast path pays nothing for a question it does not need asked.
+  let probed = 0;
+  const probe = () => {
+    probed++;
+    return true;
+  };
+  resolveColorEnabled(true, undefined, probe);
+  resolveColorEnabled(false, "1", probe);
+  assertEquals(probed, 0);
+
+  resolveColorEnabled(false, undefined, probe);
+  assertEquals(probed, 1);
+});
+
+Deno.test("applyColorPolicy: disables colour when stdout is not a terminal", () => {
+  const spy = colourSpy();
+  assertEquals(
+    applyColorPolicy(false, undefined, piped, spy.setEnabled),
+    false,
+  );
+  assertEquals(spy.calls, [false]);
+});
+
+Deno.test("applyColorPolicy: disables colour for --no-color on a terminal", () => {
+  const spy = colourSpy();
+  assertEquals(
+    applyColorPolicy(true, undefined, onATerminal, spy.setEnabled),
+    false,
+  );
+  assertEquals(spy.calls, [false]);
+});
+
+Deno.test("applyColorPolicy: disables colour for NO_COLOR on a terminal", () => {
+  const spy = colourSpy();
+  assertEquals(
+    applyColorPolicy(false, "1", onATerminal, spy.setEnabled),
+    false,
+  );
+  assertEquals(spy.calls, [false]);
+});
+
+Deno.test("applyColorPolicy: never enables colour, it only ever disables", () => {
+  // @std/fmt has already applied NO_COLOR by the time swamp runs, so calling
+  // the effect with `true` would override a disable swamp did not make.
+  const spy = colourSpy();
+  assertEquals(
+    applyColorPolicy(false, undefined, onATerminal, spy.setEnabled),
+    true,
+  );
+  assertEquals(spy.calls, []);
+});
+
+Deno.test("applyColorPolicy: reads --no-color from the same parse runCli uses", () => {
+  // runCli passes commandInfo.globalOptions, so the flag is honoured wherever
+  // it appears — before the command, after it, and after a subcommand.
+  for (
+    const args of [
+      ["--no-color", "--version"],
+      ["model", "--no-color", "list"],
+      ["model", "list", "--no-color"],
+    ]
+  ) {
+    const spy = colourSpy();
+    const requested = extractCommandInfo(args).globalOptions.includes(
+      "--no-color",
+    );
+    assertEquals(
+      applyColorPolicy(requested, undefined, onATerminal, spy.setEnabled),
+      false,
+      `--no-color not honoured in ${args.join(" ")}`,
+    );
+    assertEquals(spy.calls, [false]);
+  }
+});
+
+Deno.test("applyColorPolicy: an option value written with = is not the flag", () => {
+  // `--predicate=--no-color` carries its value in the same token, so the parse
+  // never sees a global option. The space-separated form is a different matter:
+  // `--predicate --no-color` is indistinguishable from the flag here, and
+  // Cliffy rejects it upstream for the same reason, so it is not defended
+  // against at this layer.
+  const spy = colourSpy();
+  const args = ["data", "query", "--predicate=--no-color"];
+  const requested = extractCommandInfo(args).globalOptions.includes(
+    "--no-color",
+  );
+  assertEquals(requested, false);
+  assertEquals(
+    applyColorPolicy(requested, undefined, onATerminal, spy.setEnabled),
+    true,
+  );
+  assertEquals(spy.calls, []);
 });

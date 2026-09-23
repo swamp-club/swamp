@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, join, resolve } from "@std/path";
 import {
   globalTelemetryDir,
@@ -60,6 +59,7 @@ import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
 import {
+  applyColorPolicy,
   getExtensionsDirFromArgs,
   getRepoDirFromArgs,
   type GlobalOptions,
@@ -1409,6 +1409,21 @@ export async function runCli(args: string[]): Promise<void> {
   const { rewriteDirectTypeArgs } = await import("./arg_rewriter.ts");
   args = rewriteDirectTypeArgs(args);
 
+  // Extract command info once the args are final — nothing reassigns `args`
+  // below this point. It feeds telemetry, hook detection and stdout routing,
+  // and it is also how `--no-color` is found: a real parse that tracks the flag
+  // wherever it appears and skips option values, rather than a bare scan.
+  const commandInfo = extractCommandInfo(args);
+
+  // Decide colour here, before anything can print. Cliffy answers `--version`
+  // and `--help` during parsing and exits without ever reaching
+  // `globalAction`, so a decision made in there — as it once was — could not
+  // reach them, and `swamp --version | cat` carried escape sequences into
+  // whatever captured it (swamp-club#2414).
+  const colorEnabled = applyColorPolicy(
+    commandInfo.globalOptions.includes("--no-color"),
+  );
+
   // Windows: clean up stale .old binary from a previous self-update
   if (Deno.build.os === "windows") {
     const { cleanupStaleBinary } = await import(
@@ -1457,9 +1472,6 @@ export async function runCli(args: string[]): Promise<void> {
   // Pre-parse check for telemetry disable flag
   const telemetryDisabled = isTelemetryDisabled(args) ||
     isTelemetryDisabledByEnv();
-
-  // Extract command info for telemetry (before parsing)
-  const commandInfo = extractCommandInfo(args);
 
   // Hook commands (audit record --from-hook) run as PostToolUse hooks and
   // must be as fast as possible. Skip all non-essential startup and teardown
@@ -1651,6 +1663,14 @@ export async function runCli(args: string[]): Promise<void> {
   const cli = new Command()
     .name("swamp")
     .version(VERSION)
+    // Cliffy's help generator force-enables colour while it renders
+    // (`setColorEnabled(this.options.colors)`, defaulting to true), so unlike
+    // the version option it ignores the policy applied above — `NO_COLOR` only
+    // won because @std/fmt refuses to re-enable when Deno.noColor is set.
+    // Handing it the decision is the one way help honours `--no-color` and a
+    // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
+    // parent.
+    .help({ colors: colorEnabled })
     .description("AI Native Automation CLI")
     .globalType("model_name", new ModelNameType())
     .globalType("model_type", new ModelTypeType())
@@ -1676,11 +1696,26 @@ export async function runCli(args: string[]): Promise<void> {
       const outputMode = getOutputModeFromArgs(args);
       setConsoleGuardJsonMode(outputMode === "json");
 
+      // The colour switch was already flipped at the top of `runCli`. This
+      // value feeds the two things that are not the switch: the `NO_COLOR` that
+      // child processes inherit, and the log sink selection below. Both stay
+      // keyed on the flag and the environment, never on stdout.
+      //
+      // `prettyOutput` deliberately asks about *stdin*, not stdout. For the
+      // value-on-stdout commands the log records go to stderr, which is often a
+      // terminal while stdout is a pipe; deriving this from stdout would drop
+      // the pretty sink for every piped run and unwind swamp-club#2254 (see the
+      // comment in logger.ts beside the pretty sink).
+      //
+      // That leaves one boundary worth naming: LogTape's pretty sink colours
+      // through its own `colors` option rather than the `@std/fmt` flag, so
+      // `swamp ... -v > file` from a terminal still writes coloured *log*
+      // records to the pipe. Renderer output and everything Cliffy prints are
+      // clean; the pretty log sink is out of scope for swamp-club#2414.
       const noColor = options.color === false ||
         Deno.env.get("NO_COLOR") !== undefined;
       if (noColor) {
         Deno.env.set("NO_COLOR", "1");
-        setColorEnabled(false);
       }
       const prettyOutput = !noColor && isStdinTty();
 
