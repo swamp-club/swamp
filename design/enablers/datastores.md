@@ -1507,7 +1507,8 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
 3. Pushes migrated data to the remote (extension datastores; skipped with
    `--skip-migration` or when there is nothing to push).
 4. Hydrates the local cache from the remote (extension datastores only).
-   Always runs, regardless of `--skip-migration`.
+   Runs regardless of `--skip-migration`, but only if no earlier step
+   reported an error.
 5. Persists and cleans up, in an order that depends on the backend:
    - **extension**: removes migrated directories from `.swamp/`, only if no step
      reported an error. It then updates `.swamp.yaml` if there were no errors,

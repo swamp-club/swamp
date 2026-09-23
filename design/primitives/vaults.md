@@ -370,8 +370,9 @@ For an existing vault, run `swamp vault edit my-vault` and add
    enabled.
 3. Entries are appended to one JSONL file per day:
    `.swamp/audit/vault-audit-YYYY-MM-DD.jsonl`.
-4. Audit writes are awaited but wrapped in try/catch, so they never block or
-   fail the vault operation.
+4. Audit writes are awaited, so the vault operation waits for them. They are
+   wrapped in try/catch, so a failed write logs a warning and never fails the
+   operation (`src/domain/vaults/vault_service.ts`).
 
 `VaultService.fromRepository()` always wires a `JsonlVaultAuditRepository`
 (`src/domain/vaults/vault_service.ts`); `auditReads` only controls whether reads

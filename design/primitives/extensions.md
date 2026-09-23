@@ -1715,10 +1715,11 @@ has been fully indexed.
 
      The fingerprint is kept the same way in all three cases. The reconcile log
      fires only when stored and new fingerprints differ, never on a normal
-     cache hit with unchanged source. `findStaleFiles` decides staleness by
-     fingerprint, not RowState: `BundleBuildFailed` rows are skipped when
-     fingerprints match (source unchanged) and retried when they differ
-     (source changed). Warm start and reconcile work on independent axes.
+     cache hit with unchanged source. `findStaleFiles` treats a changed
+     fingerprint as stale, and also retries `BundleBuildFailed` rows whose
+     fingerprint matches, as described under the warm-start path above
+     (`src/domain/extensions/bundle_freshness.ts`). Warm start and reconcile
+     work on independent axes.
 
    - If not populated (first run or DB deleted): bundles every source file
      without importing it into V8 (`load()` with `indexOnly: true`), fills the

@@ -274,7 +274,8 @@ is a convenience form of `data.query()` (mapping in
 [data-query.md](./data-query.md)). Prefer one when it fits:
 `data.latest("m", "n")` reads more clearly than the predicate.
 
-They read from disk on every call, so they are never stale. The
+These accessors read from disk on every call, so they always reflect the
+latest local on-disk state, with no cache of their own to go stale. The
 `model.*.resource` and `model.*.file` patterns are **deprecated** and will be
 removed in a future release.
 

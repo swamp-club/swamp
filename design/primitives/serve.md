@@ -483,8 +483,8 @@ gone. After a crash, the reconciliation loop handles the dead instance once
 
 ## Known limits
 
-- `--hot-reload` is unavailable on Windows because SIGHUP is
-  (`src/cli/commands/serve.ts`).
+- `--hot-reload` is unavailable on Windows because SIGHUP is not supported
+  there (`src/cli/commands/serve.ts`).
 - `run.elsewhere` names the instance that owns the run, but the CLI can only
   retry the same URL. Cross-instance attach depends on the operator's routing
   (`src/cli/remote_run.ts`).
