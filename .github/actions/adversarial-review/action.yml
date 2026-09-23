@@ -14,7 +14,7 @@ inputs:
   model:
     description: Claude model to use
     required: false
-    default: claude-opus-4-6
+    default: claude-opus-5-5
   conventions_file:
     description: >
       Path to a project conventions file (e.g. CLAUDE.md). If it exists, the

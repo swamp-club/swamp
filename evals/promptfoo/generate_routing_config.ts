@@ -46,8 +46,10 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
     apiKeyEnv: "ANTHROPIC_API_KEY",
   },
   "opus": {
-    id: "anthropic:messages:claude-opus-4-6",
+    id: "anthropic:messages:claude-opus-5-5",
     apiKeyEnv: "ANTHROPIC_API_KEY",
+    noToolChoice: true,
+    thinking: { type: "adaptive" },
   },
   "fable": {
     id: "anthropic:messages:claude-fable-5",

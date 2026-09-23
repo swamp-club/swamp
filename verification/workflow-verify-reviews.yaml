@@ -132,7 +132,7 @@ jobs:
               cat verification/review-prompts/code-review.md > "$PROMPT_FILE"
               printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
-                --model claude-opus-4-6 \
+                --model claude-opus-5-5 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               CLAUDE_EXIT=$?
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
@@ -166,7 +166,7 @@ jobs:
               cat verification/review-prompts/adversarial-review.md > "$PROMPT_FILE"
               printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
-                --model claude-opus-4-6 \
+                --model claude-opus-5-5 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               CLAUDE_EXIT=$?
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
@@ -200,7 +200,7 @@ jobs:
               cat verification/review-prompts/ux-review.md > "$PROMPT_FILE"
               printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
-                --model claude-sonnet-4-6 \
+                --model claude-opus-5-5 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               CLAUDE_EXIT=$?
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
@@ -234,7 +234,7 @@ jobs:
               cat verification/review-prompts/ci-security-review.md > "$PROMPT_FILE"
               printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
-                --model claude-opus-4-6 \
+                --model claude-opus-5-5 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               CLAUDE_EXIT=$?
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
