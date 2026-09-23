@@ -140,6 +140,8 @@ async function runWorkflow(
       if (event.kind === "completed") runId = event.run.id;
     },
     syncService,
+    undefined,
+    { syncGate: undefined },
   );
 
   if (!runId) throw new Error("no run id observed");

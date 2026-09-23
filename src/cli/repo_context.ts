@@ -1201,6 +1201,20 @@ export interface ModelLockResult {
   synced: boolean;
 }
 
+/** Runs a datastore sync call; see {@link AcquireModelLocksOptions}. */
+export type SyncCallWrapper = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/** Optional behaviour for {@link acquireModelLocks}. */
+export interface AcquireModelLocksOptions {
+  /**
+   * Wraps the step-start pull and the push inside `flush`, and nothing else —
+   * never the lock waits or the lock release — so a caller never holds what
+   * the wrapper acquires while waiting on a model lock. Serve passes its
+   * shared sync gate here so run syncs exclude its poller pulls.
+   */
+  wrapSync?: SyncCallWrapper;
+}
+
 /**
  * Best-effort delete of a stale global lock whose `info` was just observed.
  *
@@ -1256,9 +1270,11 @@ export async function acquireModelLocks(
    */
   catalogStore?: CatalogStore,
   progressWriter?: LockProgressWriter,
+  options?: AcquireModelLocksOptions,
 ): Promise<ModelLockResult> {
   const write = progressWriter ?? defaultLockWriter;
   const logger = getSwampLogger(["datastore", "lock"]);
+  const wrapSync: SyncCallWrapper = options?.wrapSync ?? ((fn) => fn());
   let synced = false;
 
   // For custom datastores, resolve the provider once and reuse it everywhere
@@ -1438,6 +1454,7 @@ export async function acquireModelLocks(
         customSyncService,
         catalogStore,
         progressWriter,
+        options,
       );
     }
 
@@ -1451,19 +1468,20 @@ export async function acquireModelLocks(
         const ns = isCustomDatastoreConfig(config)
           ? config.namespace
           : undefined;
-        if (caps?.scopedSync) {
-          const context: SyncContext = {
-            models: [{ modelType, modelId }],
-          };
-          await customSyncService.pullChanged({
-            context,
-            ...(ns ? { namespace: ns } : {}),
-          });
-        } else if (ns) {
-          await customSyncService.pullChanged({ namespace: ns });
-        } else {
-          await customSyncService.pullChanged();
-        }
+        const syncService = customSyncService;
+        await wrapSync(() => {
+          if (caps?.scopedSync) {
+            const context: SyncContext = {
+              models: [{ modelType, modelId }],
+            };
+            return syncService.pullChanged({
+              context,
+              ...(ns ? { namespace: ns } : {}),
+            });
+          }
+          if (ns) return syncService.pullChanged({ namespace: ns });
+          return syncService.pullChanged();
+        });
         synced = true;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -1488,37 +1506,43 @@ export async function acquireModelLocks(
         customSyncService && customProvider && isCustomDatastoreConfig(config)
       ) {
         const pushNs = config.namespace;
+        const provider = customProvider;
+        const syncService = customSyncService;
 
         if (
-          caps?.twoPhaseSync && customSyncService.preparePush &&
-          customSyncService.commitPush
+          caps?.twoPhaseSync && syncService.preparePush &&
+          syncService.commitPush
         ) {
           // Two-phase push: file uploads outside global lock, index
           // merge under global lock. Narrows the critical section from
           // "entire sync" to "index read-modify-write" only.
-          await flushTwoPhasePush(
-            customProvider,
-            customSyncService,
-            config,
-            caps,
-            unique,
-            pushNs,
-            catalogStore,
-            logger,
-            progressWriter,
+          await wrapSync(() =>
+            flushTwoPhasePush(
+              provider,
+              syncService,
+              config,
+              caps,
+              unique,
+              pushNs,
+              catalogStore,
+              logger,
+              progressWriter,
+            )
           );
         } else {
           // Single-phase fallback: everything under global lock
-          await flushSinglePhasePush(
-            customProvider,
-            customSyncService,
-            config,
-            caps,
-            unique,
-            pushNs,
-            catalogStore,
-            logger,
-            progressWriter,
+          await wrapSync(() =>
+            flushSinglePhasePush(
+              provider,
+              syncService,
+              config,
+              caps,
+              unique,
+              pushNs,
+              catalogStore,
+              logger,
+              progressWriter,
+            )
           );
         }
       }

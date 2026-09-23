@@ -1680,6 +1680,157 @@ Deno.test("acquireModelLocks - scopedSync passes SyncContext to pull and push", 
   }
 });
 
+/**
+ * Registers a sync-capable test datastore whose locks and sync calls append
+ * to `events`, so a test can check what ran inside a `wrapSync` wrapper.
+ */
+async function registerRecordingDatastore(
+  events: string[],
+  capabilities: { twoPhaseSync: boolean },
+): Promise<{ typeName: string; invalidate: () => void }> {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+  const typeName = `test-wrap-sync-${crypto.randomUUID()}`;
+  const manifest = {} as unknown as PushManifest;
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test wrapSync",
+    description: "Records sync calls relative to the wrapSync wrapper",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: (_path: string, opts?: { lockKey?: string }) => {
+        const kind = opts?.lockKey ? "model" : "global";
+        return {
+          acquire: () => {
+            events.push(`${kind}-lock:acquire`);
+            return Promise.resolve();
+          },
+          release: () => {
+            events.push(`${kind}-lock:release`);
+            return Promise.resolve();
+          },
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        };
+      },
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: () => {
+          events.push("pullChanged");
+          return Promise.resolve(0);
+        },
+        pushChanged: () => {
+          events.push("pushChanged");
+          return Promise.resolve(0);
+        },
+        markDirty: () => Promise.resolve(),
+        capabilities: () => ({ scopedSync: true, ...capabilities }),
+        preparePush: () => {
+          events.push("preparePush");
+          return Promise.resolve(manifest);
+        },
+        commitPush: () => {
+          events.push("commitPush");
+          return Promise.resolve(1);
+        },
+      }),
+    }),
+  });
+  return {
+    typeName,
+    invalidate: () => datastoreTypeRegistry.invalidateType(typeName),
+  };
+}
+
+for (const twoPhaseSync of [false, true]) {
+  const pushCalls = twoPhaseSync ? ["preparePush", "commitPush"] : [
+    "pushChanged",
+  ];
+  Deno.test(
+    `acquireModelLocks - wrapSync wraps the pull and the ${
+      twoPhaseSync ? "two-phase" : "single-phase"
+    } push, never the model lock`,
+    async () => {
+      const events: string[] = [];
+      const { typeName, invalidate } = await registerRecordingDatastore(
+        events,
+        { twoPhaseSync },
+      );
+      const wrapSync = async <T>(fn: () => Promise<T>): Promise<T> => {
+        events.push("wrap:enter");
+        try {
+          return await fn();
+        } finally {
+          events.push("wrap:exit");
+        }
+      };
+
+      try {
+        await withTempDir(async (dir) => {
+          await initializeRepo(dir);
+          await configureExtensionDatastore(dir, typeName);
+          const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+          events.length = 0;
+
+          const lockResult = await acquireModelLocks(
+            datastoreConfig,
+            [{ modelType: "aws-ec2", modelId: "server-1" }],
+            dir,
+            undefined,
+            undefined,
+            undefined,
+            { wrapSync },
+          );
+
+          // The model lock is held before the wrapper is entered, and the
+          // pull runs inside it.
+          assertEquals(events, [
+            "model-lock:acquire",
+            "wrap:enter",
+            "pullChanged",
+            "wrap:exit",
+          ]);
+
+          events.length = 0;
+          await lockResult.flush();
+
+          // Every push call runs inside the wrapper; the model lock is
+          // released only after the wrapper has exited.
+          const enter = events.indexOf("wrap:enter");
+          const exit = events.indexOf("wrap:exit");
+          for (const call of pushCalls) {
+            const at = events.indexOf(call);
+            assertEquals(
+              at > enter && at < exit,
+              true,
+              `${call} inside wrapSync`,
+            );
+          }
+          assertEquals(events.at(-1), "model-lock:release");
+          assertEquals(
+            events.lastIndexOf("wrap:exit") < events.length - 1,
+            true,
+          );
+        });
+      } finally {
+        invalidate();
+      }
+    },
+  );
+}
+
 Deno.test("acquireModelLocks - no capabilities calls pull/push with no args", async () => {
   const { datastoreTypeRegistry } = await import(
     "../domain/datastore/datastore_type_registry.ts"

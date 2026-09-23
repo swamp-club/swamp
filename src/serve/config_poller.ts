@@ -20,11 +20,12 @@
 import { getLogger } from "@logtape/logtape";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import {
-  POLLER_PULL_TIMEOUT_MS,
+  gatedPull,
+  type PollerGateState,
+  type PollerGateTiming,
+  pollerGateTiming,
   type SyncGate,
-  withSyncGate,
 } from "./sync_gate.ts";
-import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 
 const logger = getLogger(["swamp", "serve", "config-poller"]);
 
@@ -48,6 +49,9 @@ export class ConfigPoller {
   readonly #extensionSubdirs: readonly string[];
   readonly #pollIntervalMs: number;
   readonly #namespace?: string;
+  readonly #gateTiming: PollerGateTiming;
+  readonly #gateState: PollerGateState = { consecutiveSkips: 0 };
+  #stopController = new AbortController();
   #timer: ReturnType<typeof setInterval> | null = null;
   #pendingPull: Promise<void> = Promise.resolve();
   #pulling = false;
@@ -61,10 +65,14 @@ export class ConfigPoller {
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_CONFIG_POLL_INTERVAL_MS;
     this.#namespace = options.namespace;
+    this.#gateTiming = pollerGateTiming(this.#pollIntervalMs);
   }
 
   start(): void {
     if (this.#timer) return;
+    if (this.#stopController.signal.aborted) {
+      this.#stopController = new AbortController();
+    }
     this.#timer = setInterval(() => {
       this.#poll();
     }, this.#pollIntervalMs);
@@ -78,6 +86,9 @@ export class ConfigPoller {
       clearInterval(this.#timer);
       this.#timer = null;
     }
+    // Ends a wait for the sync gate at once, so shutdown is never held by a
+    // poller retrying for a busy gate. A pull already running completes.
+    this.#stopController.abort();
     await this.#pendingPull;
   }
 
@@ -93,31 +104,31 @@ export class ConfigPoller {
       let extensionCount = 0;
       let definitionCount = 0;
 
-      await withSyncGate(
+      await gatedPull(
         this.#syncGate,
-        () =>
-          runBoundedSync(
-            "config poller",
-            "pull",
-            POLLER_PULL_TIMEOUT_MS,
-            async (signal) => {
-              if (this.#extensionSubdirs.length > 0) {
-                const extResult = await this.#syncService.pullChanged({
-                  signal,
-                  subdirs: this.#extensionSubdirs,
-                  namespace: this.#namespace,
-                });
-                extensionCount = typeof extResult === "number" ? extResult : 0;
-              }
+        "config poller",
+        async (signal) => {
+          if (this.#extensionSubdirs.length > 0) {
+            const extResult = await this.#syncService.pullChanged({
+              signal,
+              subdirs: this.#extensionSubdirs,
+              namespace: this.#namespace,
+            });
+            extensionCount = typeof extResult === "number" ? extResult : 0;
+          }
 
-              const defResult = await this.#syncService.pullChanged({
-                signal,
-                subdirs: ["config"],
-                namespace: this.#namespace,
-              });
-              definitionCount = typeof defResult === "number" ? defResult : 0;
-            },
-          ),
+          const defResult = await this.#syncService.pullChanged({
+            signal,
+            subdirs: ["config"],
+            namespace: this.#namespace,
+          });
+          definitionCount = typeof defResult === "number" ? defResult : 0;
+        },
+        {
+          state: this.#gateState,
+          signal: this.#stopController.signal,
+          timing: this.#gateTiming,
+        },
       );
 
       const totalCount = extensionCount + definitionCount;

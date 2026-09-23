@@ -29,6 +29,7 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import type { WebhookPayload } from "../domain/expressions/model_resolver.ts";
 import { UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
+import type { SyncGate } from "./sync_gate.ts";
 import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -445,6 +446,12 @@ export interface WebhookServiceDeps {
   endpoints: WebhookEndpoint[];
   /** Shared sync service; see `design/enablers/datastores.md` markDirty contract. */
   syncService?: DatastoreSyncService;
+  /**
+   * Serve's sync gate; webhook runs sync under its shared mode
+   * (swamp-club#2405). Required — `undefined` where no gate exists — so the
+   * wiring cannot be forgotten.
+   */
+  syncGate: SyncGate | undefined;
   runTracker?:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
   /** HA instance identifier — always generated at startup. */
@@ -899,7 +906,7 @@ export class WebhookService {
         },
         this.deps.syncService,
         this.deps.runTracker,
-        { triggerSource: "webhook" },
+        { syncGate: this.deps.syncGate, triggerSource: "webhook" },
       );
 
       // Success requires an explicit "succeeded" status. A run that ends any

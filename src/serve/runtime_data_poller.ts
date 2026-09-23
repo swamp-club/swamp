@@ -19,7 +19,13 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
-import { gatedPull, type SyncGate } from "./sync_gate.ts";
+import {
+  gatedPull,
+  type PollerGateState,
+  type PollerGateTiming,
+  pollerGateTiming,
+  type SyncGate,
+} from "./sync_gate.ts";
 
 const logger = getLogger(["swamp", "serve", "runtime-data-poller"]);
 
@@ -39,6 +45,9 @@ export class RuntimeDataPoller {
   readonly #catalogInvalidate: () => void;
   readonly #pollIntervalMs: number;
   readonly #namespace?: string;
+  readonly #gateTiming: PollerGateTiming;
+  readonly #gateState: PollerGateState = { consecutiveSkips: 0 };
+  #stopController = new AbortController();
   #timer: ReturnType<typeof setInterval> | null = null;
   #pendingPull: Promise<void> = Promise.resolve();
   #pulling = false;
@@ -50,10 +59,14 @@ export class RuntimeDataPoller {
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_RUNTIME_DATA_POLL_INTERVAL_MS;
     this.#namespace = options.namespace;
+    this.#gateTiming = pollerGateTiming(this.#pollIntervalMs);
   }
 
   start(): void {
     if (this.#timer) return;
+    if (this.#stopController.signal.aborted) {
+      this.#stopController = new AbortController();
+    }
     this.#timer = setInterval(() => {
       this.#poll();
     }, this.#pollIntervalMs);
@@ -67,6 +80,9 @@ export class RuntimeDataPoller {
       clearInterval(this.#timer);
       this.#timer = null;
     }
+    // Ends a wait for the sync gate at once, so shutdown is never held by a
+    // poller retrying for a busy gate. A pull already running completes.
+    this.#stopController.abort();
     await this.#pendingPull;
   }
 
@@ -88,6 +104,11 @@ export class RuntimeDataPoller {
             subdirs: ["data"],
             namespace: this.#namespace,
           }),
+        {
+          state: this.#gateState,
+          signal: this.#stopController.signal,
+          timing: this.#gateTiming,
+        },
       );
       const count = typeof result === "number" ? result : 0;
       if (count > 0) {

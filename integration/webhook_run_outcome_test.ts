@@ -126,6 +126,7 @@ async function runWebhook(
       datastoreConfig,
       endpoints: [await parseWebhookFlag(flag)],
       syncService,
+      syncGate: undefined,
     });
 
     const events: WebhookEvent[] = [];

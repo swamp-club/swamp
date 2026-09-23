@@ -147,7 +147,7 @@ async function runWebhook(
     (event) => events.push(event),
     syncService,
     undefined,
-    { triggerSource: "webhook" },
+    { syncGate: undefined, triggerSource: "webhook" },
   );
   return events;
 }

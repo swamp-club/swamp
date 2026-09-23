@@ -147,6 +147,7 @@ Deno.test({
         datastoreConfig,
         endpoints,
         syncService,
+        syncGate: undefined,
         runTracker,
       });
       const events: WebhookEvent[] = [];

@@ -445,18 +445,28 @@ All three run every 30 seconds by default, starting when a
 `DatastoreSyncService` is available. They are independent: a config-only pull
 does not count as a runtime refresh, and vice versa.
 
-Every poller pull runs under serve's **sync gate** (`src/serve/sync_gate.ts`).
-The gate is one in-process permit that a pull and a handler's whole
-mutation-plus-push unit must both hold. So a pull can never land between a local
-delete and the push that deletes the remote object (see the serve handler
-obligation below). Each pull is
-hard-limited by `POLLER_PULL_TIMEOUT_MS`, so the permit comes back even if an
-extension ignores the AbortSignal.
+Every poller pull runs under serve's **sync gate** (`src/serve/sync_gate.ts`),
+in exclusive mode. Handler mutations and every run's syncs hold the same gate.
+So a pull can never land between a local delete and the push that deletes the
+remote object, and it can never prune index entries a run push is committing
+(see the serve handler obligation below). Each pull is hard-limited by
+`POLLER_PULL_TIMEOUT_MS`, so the gate comes back even if an extension ignores
+the AbortSignal.
+
+A poller never makes runs wait for it. It takes the gate only when the gate is
+idle, retrying every second for most of its interval without joining the queue.
+If the gate never frees, it skips the cycle and logs a warning with its count of
+consecutive skips. After `POLLER_ESCALATE_AFTER_SKIPS` (three) skips in a row it
+queues for the gate instead, so a steady stream of run pushes can delay a poller
+but never starve it. A poller never pulls ungated, and `stop()` ends any wait
+for the gate at once.
 
 The RuntimeDataPoller gives **eventual visibility**, not immediate consistency.
 An idle peer sees committed output within one polling interval of it reaching
-the remote. The query catalog is invalidated only after a successful pull that
-reports changes, so quiet cycles keep fast cached reads.
+the remote. Under steady run load it can take about four intervals: three
+skips, then an escalated cycle. The same bound applies to changes reaching the
+AccessDataPoller. The query catalog is invalidated only after a successful pull
+that reports changes, so quiet cycles keep fast cached reads.
 
 ### SyncContext and SyncCapabilities
 
@@ -1014,17 +1024,18 @@ has two costs:
   made every `swamp auth server-login` slower as the datastore grew
   (swamp-club#2408).
 
-The repositories mark a path dirty before they write it. Serve's post-run and
-post-resume pushes are ungated (`UNGATED_PUSH_HANDLERS`), so one can land
+The repositories mark a path dirty before they write it, so a push can land
 between a repository's mark and its write. That push finds the path absent,
-treats it as a delete and clears the mark, and the handler's own push then has
-nothing to upload. A mutation whose writes must reach the remote even when a run
-finishes at the same moment re-marks its paths, by path, after the writes and
-just before `pushChanged()`. The OAuth mint does this for the token's definition
-file and data folder. A push already running when the re-mark lands still clears
-it, because the extension resets the whole dirty set when a push completes.
-swamp-club#2421 tracks the proper fix: repositories that mark after the write,
-and extensions that clear only the marks a push handled.
+treats it as a delete and clears the mark, and the writer's own push then has
+nothing to upload. Serve's gate now keeps run pushes (shared mode) out of every
+handler mutation (exclusive mode), so a run finishing at the same moment can no
+longer do this to a gated handler (swamp-club#2405). Concurrent runs still
+share the gate and can still do it to each other. The OAuth mint also re-marks
+its paths, by path, after the writes and just before `pushChanged()`, for the
+token's definition file and data folder. A push already running when the
+re-mark lands still clears it, because the extension resets the whole dirty set
+when a push completes. swamp-club#2421 tracks the proper fix: repositories that
+mark after the write, and extensions that clear only the marks a push handled.
 
 `integration/datastore_sync_rules_test.ts` enforces this at build time:
 
@@ -1054,36 +1065,71 @@ anything deleted locally (swamp-club#2240).
 file from the cache, then `pushChanged()`. The push picks delete or upload by
 checking the file on disk (rule 2). A poller pull between the steps puts the
 file back, so the push re-uploads it and the delete is silently undone
-(swamp-club#2247). Serve closes this window with the **sync gate**, one
-in-process permit (`src/serve/sync_gate.ts`), held across:
+(swamp-club#2247). Serve closes this window with the **sync gate**
+(`src/serve/sync_gate.ts`), an in-process FIFO read/write lock.
 
-- a whole mutating handler, at its dispatch site in `connection.ts`;
-- the server-token mint in `device_auth_handler.ts`;
-- each poller's `pullChanged`.
+**Runs sync under the gate too.** Serve shares one sync service instance across
+pollers, handlers and runs, and a pull prunes index entries whose objects were
+missing from a listing it took earlier. A run push that commits entries into
+that shared in-memory index while a poller's listing is in flight gets its new
+entries pruned, and the pull CAS-writes the pruned shard. The objects stay in
+the datastore, but the index no longer lists them (swamp-club#2405). So every
+run push holds the gate as well.
+
+The gate has two modes:
+
+- **Exclusive**, held across:
+  - a whole mutating handler, at its dispatch site in `connection.ts`
+    (`withSyncGate`);
+  - the server-token mint in `device_auth_handler.ts`;
+  - each poller's pull (`gatedPull`).
+- **Shared**, held by every run push and step-start pull (`withSharedSyncGate`):
+  each step's model-lock pull and flush push (serve passes `acquireModelLocks` a
+  `wrapSync` hook, normally through `createStepLockHook`), and the post-run and
+  post-resume pushes of `workflow.run`, `workflow.resume`, `model.method.run`,
+  scheduled, webhook and auto-resumed runs. Shared holders exclude pulls and
+  handler mutations but not each other, so fan-out workflows keep their
+  parallel uploads. The `wrapSync` hook covers only the sync calls, never the
+  model-lock wait.
 
 The fitness test in `integration/serve_deps_rules_test.ts` fails the build if a
-serve function pushes without being gated or pinned in `UNGATED_PUSH_HANDLERS`.
+serve function pushes outside the gate: a raw push outside a
+`withSharedSyncGate` span in a function not gated at dispatch, or an
+`acquireModelLocks` call without `wrapSync`. The only exemptions are pinned in
+`UNGATED_PUSH_HANDLERS`: startup hydration and the gate's own plumbing.
+`createStepLockHook` and `executeWorkflowWithLocks` take the gate as a required
+parameter, so the compiler also catches callers outside `src/serve`, such as the
+scheduler in `src/cli/commands/serve.ts`.
 
-Four properties of the gate are easy to misread:
+Six properties of the gate are easy to misread:
 
-- **Not reentrant.** Acquiring it inside a gated handler deadlocks. So the
-  long-running run paths (`model.method.run`, `workflow.run`,
-  `workflow.resume`, and the post-run push in `executeWorkflowWithLocks`) are
-  pinned as ungated: a gated handler that started a run would block itself.
-- **Runs are not gated.** An overlapping poll can still restore data a run's
-  version GC removed. Pushes are not globally serial either; concurrent
-  `pushChanged()` calls remain possible, as extensions have had to tolerate
-  since swamp-club#2235.
+- **Not reentrant.** Acquiring it inside an exclusively gated handler waits on
+  itself until `GATE_WAIT_TIMEOUT_MS`. A second fitness rule forbids a
+  dispatch-gated handler from taking the shared mode or building a step-lock
+  hook. `workflow.approve` launches auto-resume detached and never awaits it.
+- **Lock order: model lock before gate, never the reverse.** A run step holds
+  its model lock while it waits for the gate. That is safe only because no gate
+  holder ever waits on a model lock: no dispatch-gated handler takes one, and
+  libswamp takes no datastore locks. Keep it that way.
+- **Handlers wait for run pushes.** Exclusive handler mutations also wait for
+  run pushes already in flight, so a long upload can delay an admin mutation.
+- **What is still not covered.** An overlapping poll can still restore data a
+  run's version GC removed, because the gate covers the run's push, not the
+  whole step. Pushes are not globally serial either: shared holders run
+  concurrently, as extensions have had to tolerate since swamp-club#2235.
 - **In-process only.** It does not cover HA peers: another instance's dirty
   path can still re-upload what this one deleted. The cross-process
   `DistributedLock` covers the CLI flush path, not serve pushes.
-- **A request cancelled while queued still mutates.** The cancel signal is not
-  passed to the gate acquisition, because a rejected acquisition would leave the
-  client with no response frame. The handler runs, then reports `cancelled` from
-  its own abort check. A mutation waiting longer than `GATE_WAIT_TIMEOUT_MS`
-  proceeds without the gate and logs a warning, so a stuck holder falls back
-  to pre-gate behaviour instead of stalling every mutation and all three
-  pollers.
+- **Waits are bounded, in different ways.** A request cancelled while queued
+  still mutates. The cancel signal is not passed to the gate acquisition,
+  because a rejected acquisition would leave the client with no response frame,
+  so the handler runs and then reports `cancelled` from its own abort check. A
+  handler mutation or run push waiting longer than `GATE_WAIT_TIMEOUT_MS`
+  proceeds without the gate and logs a warning, so a stuck holder falls back to
+  pre-gate behaviour instead of stalling the server. A poller never falls back:
+  it skips the cycle, so the pull side of the race never runs ungated. Runs wait
+  on a poller only during its escalated cycle, and only for as long as the
+  pushes already ahead of it (at most `GATE_WAIT_TIMEOUT_MS`).
 
 **Sync is not a content-integrity tool.** The fingerprint detects index changes,
 not per-file corruption. A damaged cache file (bit rot, a truncated write after
