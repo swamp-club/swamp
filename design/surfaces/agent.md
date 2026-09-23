@@ -5,33 +5,31 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # AI Agent
 
-The primary method for working with swamp is through an AI agent. Each
-repository will have skills dedicated to working with swamp, through the CLI,
-writing files, etc.
+The main way to work with swamp is through an AI agent. Each repository has
+skills for working with swamp: using the CLI, writing files, and so on.
 
 ## Repository Exploration
 
-Agents can explore a swamp repository through the following layers:
+Agents can explore a swamp repository at these layers:
 
 ### Source-of-Truth Directories
 
-The top-level directories contain source-of-truth files tracked in git:
+Top-level directories hold the source-of-truth files, tracked in git:
 
-- **`models/`** — Model definitions organized by normalized type
-- **`workflows/`** — Workflow definitions
-- **`vaults/`** — Vault configurations
+- **`models/`**: model definitions, grouped by normalized type
+- **`workflows/`**: workflow definitions
+- **`vaults/`**: vault configurations
 
-These are the primary directories for exploring and understanding the repository
-structure.
+These are the main places to explore to understand the repository.
 
 ### Runtime Data (Datastore)
 
-Runtime data (versioned model data, workflow runs, method outputs) is stored in
-the datastore. The default datastore uses `.swamp/`, but it can be configured to
-use an external path or S3. See [datastores](../enablers/datastores.md) for details.
+Runtime data (versioned model data, workflow runs, method outputs) lives in the
+datastore. The default datastore uses `.swamp/`; it can also use an external
+path or S3. See [datastores](../enablers/datastores.md).
 
 ### CLI Abstraction
 
-The CLI commands (`swamp model`, `swamp workflow`, etc.) abstract away the
-storage layer entirely. Agents should prefer using CLI commands for operations,
-and use the top-level directories for exploration and understanding context.
+The CLI commands (`swamp model`, `swamp workflow`, etc.) hide the storage layer.
+Agents should prefer CLI commands for operations and read the top-level
+directories for context.
