@@ -160,8 +160,8 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
 
 The RepoIndexService is a domain event handler for aggregate repository
 changes. It is currently a no-op (`NoopRepoIndexService`); the old
-symlink-based logical views are gone. Repositories still emit domain events for
-future event-driven features.
+symlink-based logical views are gone. Repositories still emit domain events,
+which future event-driven features can use.
 
 ### Domain Events
 

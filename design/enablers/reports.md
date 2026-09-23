@@ -190,8 +190,8 @@ nothing for types that are already loaded or not registered.
 The CLI sets two hooks on the registry at startup (`src/cli/mod.ts`):
 
 - `setLoader`: a full eager-load fallback that walks the reports directory and
-  imports every bundle. `ensureLoaded()` triggers it when no catalog is
-  available.
+  imports every bundle. `ensureLoaded()` triggers it; it is the path used when
+  no catalog is available.
 - `setTypeLoader`: a per-type loader that imports one bundle via that type's
   catalog entry. It backs `ensureTypeLoaded` in normal operation.
 
@@ -327,10 +327,10 @@ call.
 ### Filter Options Are Optional
 
 `ReportFilterOptions` carries CLI flags. Callers of the workflow execution
-service with no CLI flags to pass (workflow resume, embedded runs) leave it
-out. No filter means no filtering: the service defaults it to `{}`, so all
-reports, including required ones, run. Report execution must never depend on
-the presentation layer providing an options object.
+service with no CLI flags to pass (workflow resume, embedded runs) leave it out.
+No filter means no filtering: the service defaults it to `{}`, so reports,
+including required ones, always run. Report execution must never depend on the
+presentation layer providing an options object.
 
 Key invariants:
 
@@ -362,9 +362,9 @@ Both artifacts are written with:
 - **Tags**: `{ type: "report", reportName, reportScope }`
 
 **Empty results are not persisted.** If `execute()` returns empty markdown
-(after trimming), nothing is saved and the previous version stays `latest`.
-This stops method-scoped reports that return nothing for some methods from
-hiding real content behind 0-byte versions.
+(after trimming), nothing is saved and the previous version stays `latest`. This
+stops method-scoped reports that return nothing for methods they do not apply to
+from hiding real content behind 0-byte versions.
 
 Data handles are returned in the `ReportExecutionResult` and included in the
 final view.
@@ -392,8 +392,8 @@ The fallback JSON artifact contains:
 }
 ```
 
-Consumers check the `error` field to tell a fallback error artifact from a real
-result.
+Consumers can check the `error` field to tell a fallback error artifact from a
+real result.
 
 A required report that cannot be resolved at all gets the same fallback
 artifact (see "Unresolvable Required Reports" above). Its `message` field holds

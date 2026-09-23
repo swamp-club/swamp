@@ -114,10 +114,11 @@ server sends matching `audit.event` messages until the connection closes or the
 client sends `audit.unsubscribe`.
 
 Filters match `audit.query`: categories, principals, actions, outcomes,
-resourceKind. Each connection can hold 2 subscriptions. They are re-authorized
-every 60 seconds, and a revoked grant ends the stream.
+resourceKind. Each connection can hold at most 2 subscriptions. They are
+re-authorized every 60 seconds, and a revoked grant ends the stream.
 
-There is no replay. Use `audit.query` for missed events.
+There is no durability guarantee and no replay. Use `audit.query` for missed
+events.
 
 ## Auth events
 
@@ -133,7 +134,7 @@ Actions:
 - `auth.login.completed`: OAuth flow completed and a server token minted
   (success)
 - `auth.login.denied`: admission failed or the user denied authorization
-- `auth.login.expired`: the device code expired first
+- `auth.login.expired`: the device code expired before completion
 - `auth.token.used`: a server token passed direct authentication
 
 `DeviceAuthDeps` carries the `AuditEmitter` and `instanceId`. The serve HTTP

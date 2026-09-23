@@ -9,14 +9,15 @@ Serve is a long-running swamp that others run primitives through. `swamp serve`
 is the CLI binary with one listener on one port (`src/cli/commands/serve.ts`,
 the single `Deno.serve` call). Each request (workflow run, method run, data
 query, vault read) reaches the libswamp use case the CLI would call in-process.
-Handlers build `WorkflowRunDeps` / `ModelMethodRunDeps` from a
-`RepositoryContext` (`src/serve/deps.ts`) and call `executeWorkflowWithLocks`
+`src/serve/deps.ts` builds `WorkflowRunDeps` / `ModelMethodRunDeps` from a
+`RepositoryContext`, and the handlers call `executeWorkflowWithLocks`
 (`src/serve/handlers/workflow_handlers.ts`) or `modelMethodRun`
 (`src/serve/handlers/model_handlers.ts`).
 
 Serve is not a scheduler daemon (cron is one trigger of several), a message
 broker (no queue between client and executor) or a cluster (instances never
-connect to each other). Instances coordinate only through small records in the
+connect to each other). When more than one instance runs, they coordinate only
+through small records in the
 datastore's control-plane store (`src/domain/datastore/control_plane_store.ts`).
 
 [remote-execution](../enablers/remote-execution.md) covers workers, leases,
@@ -40,8 +41,8 @@ cron fire is claimed) is a slash-keyed record under the datastore's `_control/`
 prefix (`src/domain/datastore/control_plane_store.ts`). Every instance already
 has credentials for this durable, shared store, so reusing it avoids a second
 network surface, service discovery and leader election. The one atomic
-operation, `putIfAbsent`, is optional on the interface; every consumer still
-works without it.
+operation, `putIfAbsent`, is optional on the interface, and every consumer
+degrades gracefully without it.
 
 **Workers connect out.** Workers open their control socket and data-plane
 connection outbound; serve never connects to a worker
@@ -67,7 +68,7 @@ it the default file is optional.
 | `--cert-file`, `--key-file` / `tls.*` | `SWAMP_SERVE_CERT_FILE`, `_KEY_FILE` | unset | Both set ⇒ TLS; `ws://` becomes `wss://` |
 | `--auth-mode` / `auth.mode` | — | `none` | `none` \| `token` \| `oauth`; `none` logs a deprecation warning |
 | `--admins`, `--allowed-collectives`, `--allowed-users` / `auth.*` | — | unset | See [Identity and access](#identity-and-access) |
-| `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
+| `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
 | `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id auto-registered on first start if omitted |
 | `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field holding group/collective memberships |
 | `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth` |
@@ -154,11 +155,12 @@ Everything below shares the one listener, dispatched in table order
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 Every WebSocket upgrade, even in mode `none`, has its origin checked against the
-bind host and `--trusted-hosts` (`validateWebSocketOrigin`). Rate limits
-(`src/serve/rate_limiter.ts`): 50 upgrades per IP per minute, and 5 failed auth
-attempts per minute per token name (per IP if the token is malformed; cleared on
-success). A connection allows at most `MAX_ACTIVE_REQUESTS` in-flight requests
-and rejects an already-active id with `duplicate_id` (`src/serve/connection.ts`).
+bind host and `--trusted-hosts` (`validateWebSocketOrigin`). Two rate limits
+also apply to every upgrade (`src/serve/rate_limiter.ts`): 50 upgrades per IP
+per minute, and 5 failed auth attempts per minute per token name (per IP if the
+token is malformed; cleared on success). A connection allows at most
+`MAX_ACTIVE_REQUESTS` in-flight requests and rejects an already-active id with
+`duplicate_id` (`src/serve/connection.ts`).
 
 Each WebSocket request is checked against a zod schema in
 `src/serve/connection.ts` before dispatch. zod strips unknown keys, so a
@@ -180,7 +182,8 @@ stay text (`src/serve/handlers/shared.ts`). The dashboard and the CLI's
 single-request client (`requestServerResponse`) opt in.
 
 `workflow.search` and `workflow.run.search` take `offset` and `limit` and return
-`total` beside `data`. Paging follows the per-workflow authorization filter, so
+`total` beside `data`. Paging is applied after the per-workflow authorization
+filter, so
 `total` counts only what the principal may read. `workflow.run.search` defaults
 to limit 500; `workflow.search` has none, because the CLI's interactive picker
 needs the full list.
@@ -423,8 +426,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   from datastore-only state without `kubectl exec`. Without it,
   `swamp serve reload --server` fails and new extensions need a full pod
   restart. The `ConfigPoller` refreshes definitions (models, workflows, vaults)
-  and extension registries as described under
-  [High availability](#high-availability). SIGHUP (`swamp serve reload`) remains
+  every 30 s and reloads extension type registries only when extension files
+  under `config/pulled-extensions/` change (see
+  [High availability](#high-availability)). SIGHUP (`swamp serve reload`) remains
   available for manual reloads. See
   [datastores §Managed Config](../enablers/datastores.md#managed-config-deployment-architecture)
   for the full deployment guide.

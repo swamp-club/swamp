@@ -125,8 +125,8 @@ Detection uses a runtime type guard (`isVaultDeleteProvider()`), as above.
 must do their own cascade.
 
 The built-in providers (`local_encryption`, `mock`) implement this interface.
-Extension providers (e.g. `@swamp/1password`, `@swamp/aws-sm`) opt in the same
-way as for annotations.
+Extension providers (e.g. `@swamp/1password`, `@swamp/aws-sm`) may opt in the
+same way as for annotations.
 
 ### Refresh Hook Value Object
 
@@ -225,9 +225,10 @@ the secret value:
 - `refreshHook`: command, ttl, lastRefreshedAt (if the provider supports
   refresh hooks)
 
-If a provider lacks annotations or refresh hooks, those fields are `null`, and
-the `supportsAnnotations` / `supportsRefreshHooks` booleans tell "not supported"
-from "supported but empty."
+Inspect degrades gracefully. If a provider lacks annotations or refresh hooks,
+those fields are `null`, and the `supportsAnnotations` /
+`supportsRefreshHooks` booleans tell "not supported" from "supported but
+empty."
 
 The secret value is never returned. A deps factory function calls `get()` and
 returns only the byte length, so the secret never enters the operation's
@@ -765,7 +766,7 @@ evaluation time.
 
 ## Vault Migration
 
-`swamp vault migrate` moves a vault to a different backend type in place. The
+`swamp vault migrate` migrates a vault to a different backend type in place. The
 vault name stays the same, so existing vault reference expressions keep
 working.
 
@@ -787,8 +788,8 @@ swamp vault migrate <vault-name> --to-type <target-type> [--config <json>] [--dr
 ### Safety Model
 
 - **Secrets are copied, not moved.** The source backend keeps its secrets until
-  the config file is deleted, so a failed copy leaves the original vault
-  working.
+  the config file is deleted. If anything fails during the copy, the original
+  vault still works fully.
 - **Config swap ordering.** The new config file is written before the old one is
   removed. If the delete fails, an orphaned config file is left, but the vault
   works on the new backend.

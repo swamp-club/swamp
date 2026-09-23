@@ -25,13 +25,15 @@ namespaced paths, locking).
   have a history to reconcile against
   ([remote-execution.md §Data semantics](../enablers/remote-execution.md#data-semantics)).
 - **A catalog beside the files.** Content stays on disk; the catalog holds only
-  metadata rows, so CEL predicates run as SQL instead of walking the tree. It is
-  local-only, not synced, and rebuilds itself from disk
+  metadata rows, so CEL predicates can be pushed down to SQL instead of walking
+  the tree. It is
+  local-only, not synced, and heals itself by backfilling from disk
   (`src/infrastructure/persistence/catalog_store.ts`).
-- **Sensitive fields never land in data.** `sensitive` values are swapped for a
-  vault expression before serialisation, and a redactor scrubs known secrets
-  from the written bytes (`src/domain/models/data_writer.ts`). Data files can be
-  synced, copied and queried freely; vault contents cannot.
+- **Sensitive fields never land in data.** `sensitive` values are moved to a
+  vault before serialisation and replaced with a vault expression. A redactor
+  scrubs any already-known secret from the written bytes
+  (`src/domain/models/data_writer.ts`). Data files can be synced, copied and
+  queried freely; vault contents cannot.
 
 ## The record
 
@@ -153,7 +155,7 @@ derived `type/modelId/method/spec/instance/field.path`. The vault is
 `field.vaultName ?? spec.vaultName ?? default vault ?? first user vault`.
 `modelRequiresVault()` (`data_writer.ts`) tells callers up front whether a
 model has such a spec. With no vault configured, the write fails rather than
-saving the secret. The serialised payload then passes through the
+saving the secret. The whole serialised payload then passes through the
 run's `SecretRedactor`, which also scrubs log output
 (`src/domain/secrets/secret_redactor.ts`). On read, `resolveVaultRefsInData`
 expands the references and registers the values with the redactor
@@ -182,11 +184,11 @@ removes every version.
   vault references resolved) and `context.queryData(predicate, select?)`
   (`model.ts`). `DataAccessService` backs them
   (`src/domain/data/data_access_service.ts`). With a catalog, it scopes the
-  predicate to the caller's namespace unless the name has one. Without one, it
-  walks the filesystem. If the definition's UUID changed, it finds data written
-  under the old UUID: first by `modelName` tag, then, only when the type has a
-  single definition, by that definition. This "orphan recovery" is a read-time
-  convenience, never a delete.
+  predicate to the caller's namespace unless the name has one. Without a
+  catalog, it walks the filesystem, and if the definition's UUID changed it
+  finds data written under the old UUID: first by `modelName` tag, then, only
+  when the type has a single definition, by that definition. This "orphan
+  recovery" is a read-time convenience, never a delete.
 - **CLI**: `swamp data get <model> <name> [--version N] [--no-content]`, or
   `--workflow <name> [--run <id>]` to read what a run produced
   (`src/domain/data/workflow_data_service.ts`). Also `swamp data list` (grouped
@@ -209,7 +211,7 @@ versions:
 | Mechanism                       | Removes                                                                                  | Source                                                                         |
 | ------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Write-time cap (`autoGc: true`) | On each save, versions beyond an **integer** `garbageCollection` cap                     | `unified_data_repository.ts` `pruneExcessVersions`; `.swamp.yaml` `autoGc`     |
-| Post-run GC (`autoGc: true`)    | After each `model method run`: the model's `collectGarbage` plus lifetime expiry         | `src/libswamp/models/run.ts`; `src/libswamp/data/gc.ts` `autoGc`               |
+| Post-run GC (`autoGc: true`)    | After each `model method run`: the model's `collectGarbage` plus lifetime expiry of its names | `src/libswamp/models/run.ts`; `src/libswamp/data/gc.ts` `autoGc`               |
 | `swamp data gc`                 | Phase 1: whole names whose `lifetime` expired. Phase 2: per-name version GC              | `src/domain/data/data_lifecycle_service.ts` `deleteExpiredData`                |
 | `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a model                     | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
 | `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                 | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |
@@ -225,8 +227,8 @@ Expiry rules (`calculateExpiration`, `isExpired`): duration lifetimes expire
 at `createdAt + duration`; `infinite` never; `workflow` and `job` when the
 owning workflow run record is gone; `ephemeral` never reaches the persistent
 store. Lifetime expiry (phase 1, `data_lifecycle_service.ts`) skips tombstones
-(`lifecycle: deleted`), so a deleted resource's final state stays until
-something removes it. Phase 2 `collectGarbage` still prunes older versions under
+(`lifecycle: deleted`), so a deleted resource's final state stays until it is
+explicitly removed. Phase 2 `collectGarbage` still prunes older versions under
 a tombstoned name.
 
 What each removal keeps:
@@ -314,7 +316,7 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   Reads use `GET /data/{type}/{modelId}/{dataName}/{version}`. Writes use
   `POST /data/resource`, `DELETE /data/resource` and the `/data/writers/...`
   routes for file writers (open, per-line append, streamed content, finalize).
-  Every write is checked against the worker's active dispatch and uses the
+  Every write is authorised against the worker's active dispatch and uses the
   same `createResourceWriter` / `createFileWriterFactory` as a local run, on the
   dispatch's own composite repository. So ephemeral data and tags behave the
   same as locally. The worker client caches
@@ -360,8 +362,9 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 - Write-time GC inside `save` enforces only integer version caps
   (`unified_data_repository.ts` `pruneExcessVersions`). Duration-based
   `garbageCollection` waits for the post-run `autoGc` pass or `swamp data gc`.
-- `job` and `workflow` lifetimes have no dependency tracking; they expire when
-  the run record is gone. Such data with no `workflowRunId` never expires
+- `job` and `workflow` lifetimes have no dependency tracking of their own; they
+  expire when the run record is gone. Such data with no `workflowRunId` never
+  expires
   (`data_lifecycle_service.ts` `isExpired`).
 - Deleting a name does not update the `ModelOutput` records that reference it.
 - Ephemeral data does not survive workflow suspension; a resume starts a new

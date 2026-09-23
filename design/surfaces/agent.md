@@ -5,8 +5,8 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # AI Agent
 
-Swamp is mainly used through an AI agent. Each repository has skills for working
-with swamp: using the CLI, writing files, and so on.
+The main way to work with swamp is through an AI agent. Each repository has
+skills for working with swamp: using the CLI, writing files, and so on.
 
 ## Repository Exploration
 
@@ -31,5 +31,5 @@ path or S3. See [datastores](../enablers/datastores.md).
 ### CLI Abstraction
 
 The CLI commands (`swamp model`, `swamp workflow`, etc.) hide the storage layer.
-Agents should use CLI commands for operations and read the top-level
+Agents should prefer CLI commands for operations and read the top-level
 directories for context.

@@ -357,9 +357,9 @@ Models that need it should run locally or use a workflow for orchestration.
 
 Every method execution records `bundleFingerprint` on `ExecutionProvenance`: the
 SHA-256 source fingerprint of the extension bundle that produced the output.
-Only core can provide this piece of execution identity. `definitionHash` and
-`modelVersion` cover the definition content and type version, but neither
-proves which code ran.
+This is the one piece of execution identity that only core can provide.
+`definitionHash` and `modelVersion` cover the definition content and type
+version, but neither proves which code ran.
 
 The field is optional. Old outputs without it still parse, and built-in model
 types, which have no extension bundle, leave it undefined. A lifecycle consumer
@@ -774,6 +774,6 @@ The ModelRepository emits domain events when model data changes:
 - `ModelUpdated`: a model definition or data is modified
 - `ModelDeleted`: a model is deleted
 
-A `NoopRepoIndexService` is instantiated but not wired to the event bus, so no
+A `NoopRepoIndexService` is instantiated but not wired to the event bus. No
 handler currently receives these events. See [repo.md](../surfaces/repo.md) for
 details on domain events.

@@ -30,8 +30,9 @@ swamp-club#562 added two runtime guards:
 2. **Defense-in-depth** in `createResourceWriter()`. A write for a spec with
    sensitive fields and no `vaultService` throws rather than writing plaintext.
 
-`doctor vaults` runs the same check ahead of time over every model definition,
-so users find the problem before a `method run`.
+`doctor vaults` is the validation-time counterpart. It scans every model
+definition ahead of time, so users find the problem before they even attempt a
+`method run`.
 
 ## What it scans
 

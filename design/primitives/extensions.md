@@ -212,7 +212,7 @@ on update_available:
 - Exit 0 otherwise, including when only `not_found` or `failed` are present.
 
 So `swamp extension outdated && deploy` fails only when a newer version clearly
-exists, not on passing registry errors. This exit code is a public contract.
+exists, not on transient registry errors. This exit code is a public contract.
 Widening it to fail on not_found/failed would silently break pipelines that rely
 on it.
 
@@ -263,17 +263,17 @@ The cache file is written with `atomicWriteTextFile`, so concurrent writers
 cannot corrupt it. The repository rewrites the whole map, though, so parallel
 runs can lose each other's changes (last writer wins). Entries are independent
 and advisory, so a lost change recurs on the next stale check. A
-per-extension file or kvstore would remove this trade-off and is a possible
-future improvement.
+per-extension file or kvstore would remove this trade-off and is a future
+improvement.
 
 ### Why no passive on-load warning
 
 The original request (issue #199) asked for a warning on every command that
 resolves an extension bundle. Comparable tools pointed the other way:
 
-- Terraform, OpenTofu and Ansible all leave plugin/provider staleness checks to
-  the user. OpenTofu reconsidered (issue #2032, closed not-planned) over CI
-  breakage concerns.
+- Terraform, OpenTofu and Ansible all chose not to nag passively about
+  plugin/provider staleness, leaving it to the user to opt in. OpenTofu
+  reconsidered (issue #2032, closed not-planned) over CI breakage concerns.
 - Pulumi warns passively about the CLI itself, not plugins, and users have
   complained about noise on every run (issue #5576), the wrong severity (issue
   #10578), and warnings they can't act on when package managers lag (issue
@@ -487,7 +487,8 @@ follow the same zod externalization rules, with no per-kind configuration.
 **Pin versions on all non-local specifiers** (`npm:`, `jsr:`, `https:`) for
 reproducibility. An unpinned specifier resolves to the registry's "latest" at
 push time, so the published bundle changes silently whenever upstream releases.
-Author guidance is in `.claude/skills/swamp/references/extension-publish/references/publishing.md`.
+Author guidance is in
+`.claude/skills/swamp/references/extension-publish/references/publishing.md`.
 
 #### Project-aware bundling
 
@@ -495,9 +496,9 @@ An extension may live inside a project with a `deno.json` or `package.json`.
 `swamp extension push` walks up from the manifest directory to the repo root
 looking for project config.
 
-**Detection priority:** push walks the whole path for `deno.json` first, and
-only then walks again for `package.json`. So `deno.json` always wins, whatever
-its depth.
+**Detection priority:** push walks the whole path for `deno.json` first. Only if
+it finds none does it walk again for `package.json`. So `deno.json` always wins,
+whatever its depth.
 
 **Bare specifier gate:** a `package.json` is used only if the extension source
 has bare specifiers (e.g., `from "zod"` rather than `from "npm:zod@4"`). This
@@ -582,8 +583,8 @@ Each bundle's export is validated against a Zod schema:
 - **Reports**: `export const report` with `name`, `description`, `scope`,
   optional `labels`, and `execute`
 - **Webhooks**: `export const webhook` with `type`, `name`, `description`,
-  optional `configSchema`, and `createHandler`. It returns the handler for
-  `swamp serve` webhook endpoints whose scheme is the type (see
+  optional `configSchema`, and `createHandler`. `createHandler` returns the
+  handler for `swamp serve` webhook endpoints whose scheme is the type (see
   [serve](serve.md))
 
 ### Collective Validation
@@ -679,10 +680,11 @@ discovery applies only without one.
 ### Origin Precedence Enforcement
 
 If a local source and a pulled extension provide the same `(kind, type)`, the
-local source wins. The catalog clears the pulled row's `type_normalized`, so it
-no longer holds the type name, as it does for `ValidationFailed` or
-`EntryPointUnreadable` states. The pulled files stay on disk for reference
-(diffing, version comparison) but are not registered as active types.
+local source wins. The catalog clears the pulled row's `type_normalized`, so the
+row no longer occupies the type namespace. This is the same treatment the
+catalog gives `ValidationFailed` or `EntryPointUnreadable` states. The pulled
+files stay on disk for reference (diffing, version comparison) but are not
+registered as active types.
 
 This supports the push/pull development loop: while you edit a local source that
 is also pulled from the registry, `extension pull` succeeds and the local types
@@ -924,7 +926,7 @@ cannot be stat'd. Only presence is checked, not contents.
 Paths under `.swamp/bundles/`, `.swamp/vault-bundles/`,
 `.swamp/datastore-bundles/` and `.swamp/report-bundles/` are excluded. They are
 regenerable build artifacts, and clearing the bundle cache is routine. It must
-not push an extension with intact source into the truncated branch, which would
+not flip an extension with intact source into the truncated branch, which would
 take over the user-WIP path from issue #121. Only source files in
 `.swamp/pulled-extensions/<name>/` count.
 
@@ -1164,10 +1166,10 @@ Optional fields (`src/infrastructure/persistence/upstream_extensions.ts`):
 Every entry records the archive's SHA-256 at install time (`checksum`). Each
 lockfile-restore flow (`swamp extension install`, phase-two migration re-pull)
 checks the fresh download byte for byte against it. On mismatch the restore
-fails with an error that offers a choice: accept the current registry content
-(`swamp extension pull <name>`) or pin an older version. So the lockfile is an
-integrity manifest as well as a version record, and restores cannot silently
-accept changed registry bytes. Entries from before checksum tracking
+fails loudly with an error that offers a choice: accept the current registry
+content (`swamp extension pull <name>`) or pin an older version. So the lockfile
+is an integrity manifest as well as a version record, and restores cannot
+silently accept changed registry bytes. Entries from before checksum tracking
 (pre-commit `f4dfc083`) skip the check.
 
 `swamp extension pull <name>` is how the user opts in to whatever the registry
@@ -1344,7 +1346,7 @@ are. Each is tracked as one dir path in `entry.files[]`, e.g.
 `.claude/skills/<name>`, `.cursor/skills/<name>`, or
 `.swamp/pulled-extensions/skills/<name>` for the `tool=none` fallback. The
 install flow filters them out before classification, using the skillsDir passed
-through `ExtensionInstallDeps`. They never trigger migration and the
+through `ExtensionInstallDeps`. They never trigger migration on their own and the
 post-migration sweep never touches them. Without the filter, the `tool=none`
 path would look like a gen-2 path and the freshly restored skill dir would be
 deleted. On its own, the path-only `classifyExtensionFile` helper flags only the
@@ -1374,9 +1376,9 @@ user is asked to re-pull with `--force` to fill in the file list first.
 
 `InstallExtensionService`, `RemoveExtensionService` and
 `UpgradeExtensionService` (in `src/libswamp/extensions/`) are the only three
-paths that write the catalog. CLI command files never call the catalog; they
-build the service and call `execute(...)`. This split lets `rm` prune catalog
-rows, and the unified loader builds on it.
+paths that write the catalog. CLI command files never call the catalog directly;
+they build the service and call `execute(...)`. This split lets `rm` prune
+catalog rows, and the unified loader builds on it.
 
 ### Asymmetric ordering
 
@@ -1427,11 +1429,11 @@ to `saveAll` in one transaction:
 saveAll([tombstoneAll(v1), ..., v2])
 ```
 
-I-Repo-1 checks the post-save state, where only the new version holds the
-slot. Otherwise a force-pull of an installed extension, or any version-bump
-pull, would fail with `DuplicateTypeError` against the user's own earlier
-version. Reinstalling the same version skips the tombstone; the diff-save in
-`saveAll` handles the overwrite.
+I-Repo-1 checks the post-save state, where only the new version holds the slot.
+Without this pattern, a force-pull of an installed extension, or any
+version-bump pull, would fail with `DuplicateTypeError` against the user's own
+earlier version. Reinstalling the same version skips the tombstone; the
+diff-save in `saveAll` handles the overwrite.
 
 `UpgradeExtensionService` is a thin facade over
 `InstallExtensionService.execute(...)` so call sites can state upgrade intent.
@@ -1484,17 +1486,18 @@ is one extension, never a multi-extension run.
 
 ### Crash-state recovery
 
-Any other failure inside `repository.saveAll` (SQLite I/O error, OOM, process
-killed mid-commit) leaves the catalog in its pre-save state via SQLite ROLLBACK.
-The filesystem and lockfile are not rolled back; only `DuplicateTypeError`
-triggers FS rollback. A retry succeeds, because the diff-save in `saveAll`
-reconciles the catalog with the disk and lockfile.
+Any failure other than `DuplicateTypeError` inside `repository.saveAll` (SQLite
+I/O error, OOM, process killed mid-commit) leaves the catalog in its pre-save
+state via SQLite ROLLBACK. The filesystem and lockfile are not rolled back; only
+`DuplicateTypeError` triggers FS rollback. A retry succeeds, because the
+diff-save in `saveAll` reconciles the catalog with the disk and lockfile.
 
 For rm, the catalog tombstone is the first change, so a fault in that
 `saveAll` leaves catalog, lockfile and FS in their pre-rm state and a retry is a
 clean re-rm.
 
-Known limit: this behavior has only been reasoned about per process. No automated
+Known limit: these per-extension atomicity guarantees are reasoned about per
+process. No automated
 stress test covers concurrent `swamp` processes changing one repository
 (parallel `pull`/`rm`/`update`).
 
@@ -1541,7 +1544,7 @@ deletion-sweep shim.
 
 - Walks the on-disk source trees for all origin types.
 - Loads current aggregate state via `repository.loadAll()`.
-- Diffs disk against the aggregate and applies RowState transitions with the
+- Diffs disk against the aggregate and emits RowState transitions with the
   existing Extension aggregate methods.
 - Uses each loader's `bundleAndIndexOne` for type extraction, not
   `InstallExtensionService`: the source and lockfile already exist, and
@@ -1707,8 +1710,8 @@ has been fully indexed.
        exists between the source file and the repo root
        (`isExpectedBundleFailure`), so failure is expected, usually from bare
        specifiers. `bundleWithCache` logs at debug and reconcile emits the one
-       warning
-       `Bundle could not be regenerated for <file> — source fingerprint preserved, will retry on next command`.
+       warning `Bundle could not be regenerated for <file> — source fingerprint
+       preserved, will retry on next command`.
 
      The fingerprint is kept the same way in all three cases. The reconcile log
      fires only when stored and new fingerprints differ, never on a normal
@@ -1777,9 +1780,10 @@ Reporting (PVR) is enabled, via
 - **PVR enabled**: open the GitHub advisory form
   (`<repo>/security/advisories/new`). It is structured and can't be prefilled
   from the URL, so the user fills it in.
-- **PVR disabled**: **refuse**. The CLI never falls back to a public issue for
-  a security report, since that would publish the vulnerability. The refusal tells the reporter to contact the
-  publisher privately and the publisher to enable PVR at
+- **PVR disabled**: **refuse**. This is a security guardrail that must not be
+  removed. The CLI never falls back to a public issue for a security report,
+  since that would silently publish the vulnerability. The refusal tells the
+  reporter to contact the publisher privately and the publisher to enable PVR at
   `<repo>/settings/security_analysis`.
 - **PVR check failed or gh unavailable**: open the advisory URL and show a
   fallback issue URL in the output. The user decides after seeing GitHub's
@@ -1795,5 +1799,5 @@ publicly.
 
 When `swamp extension push` runs on a manifest without a `repository` field, the
 CLI warns that users will not be able to file issues via `--extension`. The
-warning never blocks the push; some publishers leave out `repository` on
-purpose.
+warning never blocks the push; some publishers may leave out `repository`
+on purpose.

@@ -19,7 +19,8 @@ changes its contract, recording stops with no error, and users only find out
 when they look. For example, kiro-cli 2.0 renamed its runtime `tool_name` from
 `execute_bash` to `shell`.
 
-`doctor audit` tests each link and gives a fix hint for every failure.
+`doctor audit` tests each link and gives a fix hint for every failure, so drift
+shows up loudly instead of silently.
 
 ## The five checks
 
@@ -69,11 +70,11 @@ An incompatible edit to either fixtures or normalizers breaks CI.
 ## Sentinel session filtering
 
 The `recording-smoke-test` check (`checks/recording_smoke.ts`) writes a real
-audit row via `ctx.spawnSwamp` with a reserved command prefix
-(`echo swamp-doctor-smoke-test <nonce>`). The prefix is `DIAGNOSTIC_COMMAND_PREFIX`
-in `audit_service.ts`, re-exported by `synthetic_payloads.ts` so writer and
-reader share one string. The timeline service hides these rows from the default
-`swamp audit` view; `--include-diagnostic` shows them.
+audit row via `ctx.spawnSwamp` with a reserved command prefix (`echo
+swamp-doctor-smoke-test <nonce>`). The prefix is `DIAGNOSTIC_COMMAND_PREFIX` in
+`audit_service.ts`, re-exported by `synthetic_payloads.ts` so writer and reader
+share one string. The timeline service hides these rows from the default `swamp
+audit` view; `--include-diagnostic` shows them.
 
 Filtering on `sessionId` would not work: the Kiro and Cursor normalizers drop
 the upstream session ID. The command prefix is the only identifier all five

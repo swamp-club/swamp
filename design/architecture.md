@@ -61,12 +61,12 @@ Only the first-party `swamp` collective is trusted by default. →
 [primitives/extensions.md](./primitives/extensions.md).
 
 **Serve lets a team share everything.** `swamp serve` is the same binary
-listening on one port. Each request, whether a workflow run, a data query or a
-vault read, is authenticated (token or OAuth), checked against grants, and then
-runs the same application-layer use case the CLI would run locally. Runs keep
-going if the client disconnects. Several instances coordinate only through a
-shared control-plane store. Steps that need a particular machine are sent to
-enrolled workers. → [primitives/serve.md](./primitives/serve.md), with
+opening one listener on one port. Each request, whether a workflow run, a data
+query or a vault read, is authenticated (token or OAuth), checked against
+grants, and then runs the same application-layer use case the CLI would run
+locally. Runs keep going if the client disconnects. Several instances
+coordinate only through a shared control-plane store. Steps that need a
+particular machine are sent to enrolled workers. → [primitives/serve.md](./primitives/serve.md), with
 [remote-execution](./enablers/remote-execution.md) (workers, leases, runners,
 the data plane).
 
@@ -88,7 +88,7 @@ runtime data:
   holds installed binaries and downloaded source
   (`src/infrastructure/persistence/paths.ts`, `getSwampDataDir`).
 
-Most people reach swamp through an AI agent. `swamp repo init --tool <agent>`
+The main way in is an AI agent. `swamp repo init --tool <agent>`
 installs swamp's skills into the agent's global skill directory and registers
 per-repo hooks so the agent's commands are audited
 (`src/domain/repo/repo_service.ts`) →

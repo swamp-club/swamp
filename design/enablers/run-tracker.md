@@ -76,13 +76,13 @@ days are purged at startup. `swamp run gc` removes older records on demand:
    by `AND status IN ('running', 'suspended')` against TOCTOU races.
 4. **Reap**: find rows with a heartbeat older than 90s. On the same machine,
    check `isProcessDead(pid)` first; across machines, use the TTL alone. Reaped
-   runs become `interrupted`, not `failed`, so checkpoint recovery can resume
-   them. Reaping runs at `swamp serve` boot, `swamp model method run`,
+   runs become `interrupted`, not `failed`, so they are eligible for checkpoint
+   recovery. Reaping runs at `swamp serve` boot, `swamp model method run`,
    `swamp model cancel`, and `swamp run doctor --fix` (local or via the
    `run.doctor` handler), not on every CLI call (`reapStaleRuns` callers in
    `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`). The
    continuous reconciler and `run.doctor` also reconcile YAML workflow-run
-   records from dead remote instances.
+   records from dead remote instances whose heartbeats are gone.
 5. **Suspend**: approval gates set `suspended`, which skips stale detection.
 6. **Reactivate**: on resume, `suspended` → `running` and the heartbeat
    restarts.

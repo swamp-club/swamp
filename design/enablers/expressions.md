@@ -36,7 +36,7 @@ Swamp has three CEL surfaces:
    references to undeclared fields fail at write-time validation. It has no
    I/O receivers (`data.*`, `file.*`, `vault.*`, `env.*`), no extension
    registrations, and no host functions beyond the arithmetic baseline. The
-   seal is permanent, so conditions are deterministic pure functions over
+   seal is permanent: conditions are deterministic pure functions over
    (resource fields, principal context).
 
 All three share the arithmetic overloads from `registerArithmeticOverloads()`
@@ -526,8 +526,8 @@ nested workflow step. It defers for either of two independent reasons:
   inspect.
 
 An unguarded target with no step-output dependency still resolves at run start.
-Deferring it gains nothing for a step that will run, and a mistyped name fails
-early.
+Deferring it gains nothing for a step that will run, so a mistyped name keeps
+failing where the error is cheapest.
 
 Deferral is decided per path, but substitution is keyed on the raw expression
 text, and two steps can carry the same expression. So deferred paths are
@@ -604,14 +604,15 @@ feeding a run are unioned:
 | Evaluated caches          | the set persisted with each evaluated definition and evaluated workflow     |
 
 Evaluated caches carry their own set because `--last-evaluated` runs the
-cached tree without the evaluator. If the source changed since, it cannot vouch
-for an expression still in the cache. On load, the persisted set is unioned
-with the current source's set, never substituted for it.
+cached tree without the evaluator. If the source changed since, the current
+source alone cannot vouch for an expression still in the cache. On load, the
+persisted set is unioned with the current source's set, never substituted for
+it.
 
 Workflow runs do not seed CLI `--input` values. Trigger inputs and CLI
 inputs merge into one map before the evaluator sees them, so a vault reference
 passed to `swamp workflow run --input` is inert (fail-closed). Two more sources
-are also not trusted:
+are deliberately not trusted:
 
 - Step `task.inputs` are not seeded at step-execution time, because the
   workflow evaluator has already substituted data into them. The
@@ -647,11 +648,11 @@ values through the secret bag. Scope metadata is optional: older artifacts keep
 their existing provenance behavior, and missing parent bindings are never
 rebuilt from child inputs.
 
-The parameter carrying the set is required and typed
-`ReadonlySet<string> | "unrestricted"`, so every caller of these passes must
-state whether its input is author-written. `"unrestricted"` is only for callers
-that applied no substitution, such as model validation on definitions
-read straight from the repository.
+The parameter carrying the set is required and typed `ReadonlySet<string> |
+"unrestricted"`, so the compiler forces every caller of these passes to state
+whether its input is author-written. `"unrestricted"` is only for callers that
+applied no substitution, such as model validation on definitions read straight
+from the repository.
 
 The env classifier also treats any bare `env` identifier (dotted,
 bracket-index or passed as a value) as a runtime reference. No form of env
@@ -691,8 +692,8 @@ Quoted arguments are always used verbatim. So are bare tokens without a `.`
 expressions.
 
 If a dynamic argument references a missing input or evaluates to a non-string,
-the lookup fails at runtime with an error. It never uses the expression
-text as a literal key.
+the lookup fails at runtime with a clear error. It does not silently use the
+expression text as a literal key.
 
 **Security note:** In local execution, dynamic vault.get() arguments let
 workflow inputs select any registered vault and key. The authored-expression
@@ -714,8 +715,8 @@ steps, use workflow inputs or an extension method.
 
 When vault secrets appear in the `run` field of a `command/shell` model, the
 shell model passes them as environment variables instead of embedding them
-in the command string. The shell never parses secret content as syntax, so
-shell metacharacter injection is impossible.
+in the command string. This prevents all shell metacharacter injection: the
+shell never parses secret content as syntax.
 
 CEL evaluation replaces vault secrets with unique sentinel tokens. At the shell
 model boundary, each sentinel becomes a double-quoted environment variable
@@ -768,8 +769,8 @@ globalArguments:
 
 ### Use `vault.get()` for Sensitive Values
 
-For API keys, tokens, passwords, and other secrets, use `vault.get()` instead
-of `env`. Vault values are fetched at runtime and are never persisted in
+For API keys, tokens, passwords, and other secrets, always use `vault.get()`
+instead of `env`. Vault values are fetched at runtime and are never persisted in
 model output data.
 
 **Wrong: the secret is stored on disk in the datastore `data/` directory:**

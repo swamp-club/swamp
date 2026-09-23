@@ -17,8 +17,8 @@ proxied back to the orchestrator, which owns all stored state.
 Remote execution **replaces** execution drivers (removed; see
 [No execution drivers](#no-execution-drivers)). There is no `raw` / `docker`
 selection and no driver abstraction. Every method runs in-process in whichever
-executor holds it, and isolation is a deployment property of the worker, not a
-per-step field.
+executor holds it. Isolation and environment are a deployment property of the
+worker, not a per-step field.
 
 ## Why this shape
 
@@ -34,7 +34,8 @@ Three properties drove the design:
 - **The orchestrator holds all state; the worker is pure compute.** Datastore
   reads and writes, vault secrets, definition loads, catalog lookups and all
   extension code come from the orchestrator. A worker has no credentials,
-  repository, datastore config or pre-installed extensions. So the orchestrator
+  repository, datastore config or pre-installed extensions, and can touch
+  nothing it was not handed. So the orchestrator
   is the single point for authorization and audit, and having one durable
   authority gives read-your-own-writes and cross-worker data visibility.
 
@@ -270,7 +271,7 @@ every `--group-refresh-interval` (default 4 h, `0` to disable;
 `src/cli/commands/serve.ts`), so swamp-club membership changes apply within one
 interval.
 
-v1 supports only swamp-club. The OAuth client endpoint paths
+v1 is specific to swamp-club. The OAuth client endpoint paths
 (`/api/auth/device/code`, `/api/auth/device/token`,
 `/api/auth/oauth2/userinfo`, `/api/auth/oauth2/register`) are hardcoded.
 `--oauth-provider` accepts a custom URL, but only swamp-club is tested.
@@ -308,12 +309,12 @@ mounting were removed. So were the `driver:`/`driverConfig:` fields in the
 workflow, job, step and definition schemas, `defaultDriver`/
 `defaultDriverConfig` in `.swamp.yaml`, the `--driver` CLI flags, the serve
 protocol payloads, and `driver` fields on run events. (`ExecutionRequest` never
-carried them.) YAML that still uses those fields fails with an actionable
+carried them.) YAML that still uses those fields fails loudly with an actionable
 message instead of being silently stripped
 (`src/domain/removed_driver_fields.ts`). Two execution paths remain:
 
 - **Execute in-process** on the orchestrator's loopback executor: the
-  single-host case, with no socket and no websockets. This is the old `raw`
+  single-host case, with no socket and no forced websockets. This is the old `raw`
   path, now called "the execution path".
 - **Dispatch to a worker**, which also runs the method in-process, in its own
   swamp process.
@@ -352,9 +353,11 @@ session credential TTL is 15 min, `DEFAULT_SESSION_TTL_MS` in
 `src/domain/remote/session_credential.ts`, refreshed at 2/3 of the TTL.)
 
 A worker advertises **labels** and platform/arch; there is no runtime to
-negotiate. Orchestrator and worker run the same swamp binary version, so the
-capability interfaces match. `protocolVersion` (already on `ExecutionRequest`)
-rejects an incompatible worker at enrollment rather than mid-run. The
+negotiate. Shipping the swamp binary is meant to keep orchestrator and worker in
+version lockstep, so the capability interfaces match. Enrollment enforces only
+`protocolVersion` (already on `ExecutionRequest`), which rejects an
+incompatible worker at enrollment rather than mid-run; `swampVersion` is
+recorded but not compared (`src/serve/worker_gateway.ts`). The
 `sessionCredential` is the short-lived bearer token for the worker's
 data-plane HTTP/2 requests. The pool addresses a worker by its token name (the
 positional `<name>` given to `swamp worker token create`) and its
@@ -569,7 +572,8 @@ token-secrets vault by name.
 
 The inventory must be complete for correctness. Re-walk it against
 `MethodContext` whenever a context member is added; it is pinned behind the
-negotiated `protocolVersion`. Artifact bytes use the HTTP data plane, which
+negotiated `protocolVersion`. Workers still hold no datastore. Artifact bytes
+use the HTTP data plane, which
 also ends at the orchestrator; everything else is control-plane metadata.
 
 Implementation note: the data-repository port has members the verbs
@@ -603,7 +607,8 @@ The remaining context members do not proxy:
   the orchestrator.
 - **Provider code never ships.** Vault and datastore providers run on the
   orchestrator behind `resolveSecret`/`putSecret` and the data verbs; a worker
-  speaks verbs, never providers. Report providers do not ship either (see
+  speaks verbs, never providers. Report providers do not ship either: checks
+  are skipped for remote steps and reports run at the orchestrator (see
   [Checks and reports](#pre-flight-checks-are-skipped-for-remote-steps-reports-run-at-the-orchestrator)).
 - **`followUpActions`** returned by a method are serialized on the dispatch
   result, and the orchestrator performs them. Only
@@ -740,7 +745,7 @@ from the control-channel credential (above). The service refreshes it
 internally: a timer slides the expiry forward every 2/3 TTL, so it stays valid
 for the whole dispatch however long it runs. The string does not change, so the
 runner needs no notice. Credentials are revoked when the dispatch completes.
-The capability bridge sets `dispatchId` on every RPC verb so the
+The capability bridge overrides `dispatchId` in every RPC verb so the
 `CapabilityService` can find the right dispatch for model-type scope isolation.
 
 **Idle semantics**: a worker is "idle" when `activeDispatchIds.length === 0`.
@@ -765,8 +770,9 @@ version identity and travel over the same h2 data plane.
 
 Built-in models ship **no bundle**. The dispatch carries a `builtin:<type>`
 sentinel, and the worker resolves the model from its own binary's registry.
-Enrollment already checked that the versions match, so a sentinel for a type the
-worker does not know is a loud error that the binaries disagree.
+Orchestrator and worker are expected to run the same version (enrollment checks
+only `protocolVersion`), so a sentinel for a type the worker does not know is a
+loud error that the binaries disagree.
 
 Co-located extension assets (files resolved through
 `context.extensionFile(relPath)`) are not inlined into the single-file JS
@@ -789,7 +795,7 @@ precondition is unmet.
 
 Post-run **reports** keep their place in the pipeline: **after the execution
 seam, at the orchestrator**. That is where they have always run for
-out-of-process execution, so report-provider bundles never need to ship. (The
+out-of-process execution, and report-provider bundles never need to ship. (The
 dispatch protocol reserves `reportBundleFingerprints` should that change.)
 Output records, deletion markers and follow-up actions also still run at the
 orchestrator with local repositories. Control-plane bookkeeping runs (worker,
@@ -848,7 +854,7 @@ This sets the **worker cache rule**:
   resolution is a small control-plane RPC that returns a concrete version,
   which the worker then fetches (and caches) over h2.
 
-So "lazy-load" means lazy-load and cache by versioned handle, which removes
+So "lazy-load" means lazy-load and cache by versioned handle, which cuts
 the round-trip cost of hot, immutable reads. The same immutability gives
 worker-state data (above) its lifecycle history.
 
@@ -956,10 +962,10 @@ already removed from the pool are not checked.
 
 Label + platform matching, direct targeting and **worker affinity** cover
 placement and co-location. Data-locality affinity is not pursued. Every
-capability goes to the orchestrator, so compute location and state location
-are decoupled. A step's data lives at the orchestrator whichever worker runs
-it. v1 dispatches per **step**, which is what gives fan-out across workers. Sending a whole workflow to one worker is the single-worker special
-case.
+capability goes to the orchestrator, so compute location and state location are
+decoupled. A step's data lives at the orchestrator whichever worker runs it. v1
+dispatches per **step**, which is what gives fan-out across workers. Sending a
+whole workflow to one worker is the single-worker special case.
 
 #### Worker affinity
 
@@ -1007,8 +1013,8 @@ work.
 
 ### Host launching is a swamp workflow
 
-Launching worker hosts is a swamp workflow, not a custom provider plugin.
-This is why worker state lives in swamp data. There are two pieces:
+Launching worker hosts is a swamp workflow, not a custom provider plugin. This
+is why it matters that worker state lives in swamp data. There are two pieces:
 
 - **Token minting is a built-in model.** Its `mint` method records the
   enrollment-token data and writes the token secret into a vault, returning a
@@ -1036,13 +1042,13 @@ step that already wrote creates duplicate versions and orphaned artifacts. This
 one constraint governs both reconnection and retry.
 
 Liveness is the **control socket**. A failed data-plane HTTP/2 request affects
-only that request: a failed read is retried (reads are idempotent), and a
-failed write is the ambiguous case below. If the control socket drops with a
-step in flight, the orchestrator holds the step lease through a **reconnection
-grace window** (`DEFAULT_GRACE_WINDOW_MS` = 60 s, `src/serve/worker_gateway.ts`)
+only that request: a failed read is retried (reads are idempotent), and a failed
+write is the ambiguous case below. If the control socket drops with a step in
+flight, the orchestrator holds the step lease through a **reconnection grace
+window** (`DEFAULT_GRACE_WINDOW_MS` = 60 s, `src/serve/worker_gateway.ts`)
 before giving up. This stops reconnection and re-dispatch from racing into
-double execution. Token expiry is a separate timer that disconnects the worker when
-its token lifetime ends.
+double execution. Token expiry is a separate timer that disconnects the worker
+when its token lifetime ends.
 
 - **Worker reconnects within the window** (same `{token, machineId}`): it stays
   the same pool member, with a fresh session credential. As built, the
@@ -1072,10 +1078,10 @@ Two mechanisms decide whether a dispatch is write-bearing:
 - **Declared at the step level (`writes: true`):** a step, job or workflow may
   set `writes: true` in the workflow YAML. The dispatch is then marked
   write-bearing **before the method body runs**, so a worker disconnect fails
-  the run instead of re-dispatching, even with no data-plane write. Steps that
-  change external systems (API calls, `kubectl apply`, SSH commands) without
-  calling `writeResource` need this, because the orchestrator cannot observe
-  those side effects. Inheritance is child-wins: step overrides job, job
+  the run immediately instead of re-dispatching, even with no data-plane write.
+  Steps that change external systems (API calls, `kubectl apply`, SSH commands)
+  without calling `writeResource` need this, because the orchestrator cannot
+  observe those side effects. Inheritance is child-wins: step overrides job, job
   overrides workflow.
 
 With both `writes: true` and runtime writes, `recordFirstWrite` is a no-op on
@@ -1107,7 +1113,7 @@ during a session should not end the worker.
 
 ## Security and trust
 
-Proxying everything and shipping code is more secure than provisioning
+Proxying everything and shipping code is a net security gain over provisioning
 credentials and extensions onto workers:
 
 - A worker holds **no datastore or vault credentials, no datastore config and
@@ -1116,7 +1122,8 @@ credentials and extensions onto workers:
   per-dispatch environment snapshot (see
   [The execution environment](#the-execution-environment)), held in memory
   only while its step runs. The orchestrator sees every capability call and
-  checks every data-plane request against the step lease. Per-step secret
+  authorizes every data-plane request against the step lease, so it is the
+  single point for authorization and audit. Per-step secret
   scoping is the orchestrator refusing a `resolveSecret` outside the step's
   allowed set. Secrets are resolved on the orchestrator and sent only for the
   step that needs them, as in the out-of-process resolution pattern of the
@@ -1244,14 +1251,15 @@ Non-goals for v1:
   synchronous by contract.
 - **Orchestrator as the data plane and SPOF.** All data, secrets, definitions,
   catalog lookups and worker bookkeeping go through the orchestrator and its one
-  datastore, so it bounds throughput and availability, not worker count. This
+  datastore, so total throughput and availability are bounded by it, not by
+  worker count. This
   is the accepted cost of credential-free workers and one durable authority.
 - **Two-transport correlation.** Until Deno supports RFC 8441, control (ws) and
   bulk (h2) are two worker-initiated connections sharing one identity via the
   session bearer token: a little new surface, in return for HTTP/2 framing.
-- **Level-bounded dispatch.** Fan-out breadth is bounded by the steps ready in
-  the current topological level and their concurrency caps, not by fleet size.
-  A cross-level ready-step queue is future work.
+- **Level-bounded dispatch.** Fan-out breadth at any moment is bounded by the
+  steps ready in the current topological level and their concurrency caps, not
+  by fleet size. A cross-level ready-step queue is future work.
 - **Whole-environment dispatch.** Every dispatched step gets the full
   orchestrator environment snapshot; per-token or per-label scoping is a later
   refinement.
@@ -1260,9 +1268,9 @@ Non-goals for v1:
   is automatic. Worker and enrollment-token records are pruned by
   `WorkerGcService` (periodic, serve side) and `swamp worker prune` (manual).
   See `src/serve/worker_gc_service.ts` and `src/libswamp/worker/prune.ts`.
-- **No in-flight resume.** A dispatch that loses its control socket restarts
-  from scratch if no write had landed (`src/serve/dispatch_service.ts`);
-  partial progress on the worker is lost.
+- **No in-flight resume.** A dispatch that loses its control socket is
+  re-dispatched from scratch if no write had landed
+  (`src/serve/dispatch_service.ts`); partial progress on the worker is lost.
 - **No certificate pinning.** Worker TLS trust is CA-based (`--ca-cert`).
 - **Report bundles do not ship.** Reports run at the orchestrator only.
 - **`continueCondition` is dropped for remote steps** (see
@@ -1319,9 +1327,10 @@ overrides and refreshes the extension trust list.
 
 The reload path never calls `ExtensionCatalogStore.invalidate()`,
 `ExtensionLoader.buildIndex()`, or `ensureLoaded()`. Only the per-type path
-(`loadSingleType` and its sub-calls) is allowed. Its only writes are the
-re-bundled bundle file and `catalog.updateSourceFingerprint()`, so later
-reloads skip unchanged sources.
+(`loadSingleType` and its sub-calls) is allowed. Its writes are the re-bundled
+bundle file and `catalog.updateSourceFingerprint()`, so later reloads skip
+unchanged sources. If a type does not fully load, it also calls
+`catalog.removeBySourcePath()` (`src/domain/extensions/extension_loader.ts`).
 
 ### Concurrency
 

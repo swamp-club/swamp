@@ -217,8 +217,8 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `source` | string | Provenance source (e.g. `"step-output"`, `""`) |
 | `ns` | string | Namespace slug (`""` in solo mode); alias for `DataRecord.namespace` |
 
-All fields except `attributes` and `content` are metadata stored in the
-catalog. Those two load from disk per row, on demand. They load only when the predicate
+All fields except `attributes` and `content` are metadata stored in the catalog.
+Those two load from disk per row, on demand. They load only when the predicate
 touches them (a metadata term earlier in `&&` skips the read), or when a
 matching row's result or `select` projection needs them. If a body read fails
 for a matching row, the query fails instead of silently skipping the row.
@@ -232,9 +232,9 @@ types, `content` is `""`.
 
 ## Provenance-Based Filtering
 
-Data produced inside a workflow carries provenance fields directly on the
-record (`workflowRunId`, `workflowName`, `stepName`, etc.). They are queryable like
-any other `DataRecord` field; the framework applies no hidden scoping.
+Data produced inside a workflow carries provenance fields directly on the record
+(`workflowRunId`, `workflowName`, `stepName`, etc.). They are queryable like any
+other `DataRecord` field; the framework applies no hidden scoping.
 
 To scope results to one workflow run, write the predicate yourself:
 
@@ -384,7 +384,8 @@ Every mutation in `UnifiedDataRepository` updates the catalog inline:
 
 `UnifiedDataRepository` is an interface (in `repositories.ts`). The concrete
 `FileSystemUnifiedDataRepository` requires a `CatalogStore` constructor
-parameter, so every repository instance keeps the catalog consistent. Build one
+parameter. Every repository instance keeps the catalog consistent through
+write-through. Build one
 from a repo directory with `createCatalogStore()` from `repository_factory.ts`.
 
 ### Population Strategy
@@ -412,7 +413,7 @@ The catalog fills incrementally:
 Full backfill upserts instead of replacing. It commits through
 `bulkUpsert()`, which uses `INSERT OR REPLACE` with no preceding `DELETE`.
 Rows the walk finds are added or updated; rows it cannot see are left alone.
-This matters for `hydrationStrategy: lazy`, where the local cache is
+This is critical for `hydrationStrategy: lazy`, where the local cache is
 incomplete on purpose: data lives in the remote datastore and is fetched on
 demand. Under the old destructive replace, a walk gap meant data loss in the
 catalog. Under additive upsert, a walk gap does nothing to the rows it misses.
@@ -800,8 +801,8 @@ Each execution creates the ephemeral store at the start and disposes it in the
   share it, so downstream steps can read upstream ephemeral data.
 - **Standalone method runs**: `modelMethodRun()` creates and disposes its own
   store.
-- **Workflow resume**: gets a fresh store. Ephemeral data from before
-  suspension is lost. Use `"workflow"` or `"infinite"` lifetime for data that
+- **Workflow resume**: gets a fresh store. Ephemeral data from before suspension
+  is lost by design. Use `"workflow"` or `"infinite"` lifetime for data that
   must survive suspension.
 
 ### Definition-level overrides

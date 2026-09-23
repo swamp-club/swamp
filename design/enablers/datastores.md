@@ -262,7 +262,7 @@ brief S3 failure does not kill a run.
 timeout is recoverable. The datastore type is still written to `.swamp.yaml`,
 and the user resumes with `swamp datastore sync --push --timeout <big>`. Hard
 failures (auth, network, config) still block writing the type. Otherwise a slow
-first push would leave a repo with valid credentials un-migrated.
+first push would leave a repo with valid credentials and config un-migrated.
 
 The `SyncTimeoutError` message lists every fix: `--timeout`, the env var,
 updating the datastore extension, releasing a stuck lock. It says "the latest
@@ -337,7 +337,7 @@ Two things are not namespaced:
 namespace: the definition was deleted, or the model instance moved to another
 namespace and left its old data behind.
 
-`swamp data delete` and `swamp data gc` cannot remove it. The on-disk layout and
+`swamp data delete` and `swamp data gc` both fail on it. The on-disk layout and
 the catalog `DELETE` predicate are keyed by model type
 (`{typeDir}/{modelId}/...` and `type_normalized`), and the type normally comes
 from the definition. So `delete` throws `Model not found`, and `gc` only applies
@@ -445,9 +445,11 @@ All three run every 30 seconds by default, starting when a
 `DatastoreSyncService` is available. They are independent: a config-only pull
 does not count as a runtime refresh, and vice versa.
 
-Every poller pull runs under serve's **sync gate** (`src/serve/sync_gate.ts`),
-so it can never land between a local delete and the push that deletes the
-remote object (see the serve handler obligation below). Each pull is
+Every poller pull runs under serve's **sync gate** (`src/serve/sync_gate.ts`).
+The gate is one in-process permit that a pull and a handler's whole
+mutation-plus-push unit must both hold. So a pull can never land between a local
+delete and the push that deletes the remote object (see the serve handler
+obligation below). Each pull is
 hard-limited by `POLLER_PULL_TIMEOUT_MS`, so the permit comes back even if an
 extension ignores the AbortSignal.
 
@@ -673,8 +675,8 @@ the 60-second lock timeout.
 
 Shard-first splits the index into per-model shard files under `_index/`, and
 `commitPush` reads and writes only the shard(s) it touches. The monolith is no
-longer the source of truth. Lock-hold time depends on the write size (typically
-KB), not the index size (possibly hundreds of MB).
+longer the source of truth during `commitPush`. Lock-hold time depends on the
+write size (typically KB), not the index size (possibly hundreds of MB).
 
 #### Partition scheme
 
@@ -725,8 +727,8 @@ writer must assume the remote shard changed under it:
 2. Read each shard the manifest entries touch, keeping its etag (S3) or
    generation (GCS).
 3. Apply **only this writer's** upserts and removals to the shard as read.
-   Never rewrite a shard from the local view: entries it lacks belong to other
-   writers and must survive.
+   Never rewrite a shard from the local view: entries the local view lacks
+   belong to other writers and must survive.
 4. Write each shard back conditionally (`If-Match` / `ifGenerationMatch`). On a
    lost race, re-read and re-merge instead of overwriting.
 5. Merge `_meta.json` the same way: append new partition keys and set
@@ -765,9 +767,9 @@ Rules:
    (`transformToByteArray`). If you must buffer, scope the reference to the
    download function so it is freed once the write completes.
 
-2. **Bound or flush internal indexes.** An in-memory index (e.g. a
-   `Record<string, IndexEntry>`) should be written to disk after each
-   `pullChanged`, not grown across calls. On a serve singleton it would grow
+2. **Bound or flush internal indexes.** If you keep an in-memory index (e.g. a
+   `Record<string, IndexEntry>`), write it to disk after each `pullChanged`
+   instead of growing it across calls. On a serve singleton it would grow
    without bound along with the datastore.
 
 3. **No file-content hashing in the JS heap.** Compare local files to remote
@@ -876,7 +878,7 @@ sidecar file in the cache directory:
   works. Cache the last value seen on disk.
 - **Local-dirty flag**: set `true` by every code path that writes to the cache
   (e.g. the extension's `pushFile` equivalent). Cleared only after a successful
-  writeback or a verified zero-diff pull. It defaults to `true` if the sidecar
+  writeback or a verified zero-diff pull. It must default to `true` if the sidecar
   is missing or corrupt, so the slow path runs.
 
 On `pullChanged` and `pushChanged`, the fast path makes one metadata request for
@@ -928,8 +930,8 @@ The contract has eight rules:
    record. One signal covers create, update and delete.
 3. **`undefined` `relPath` = bulk.** No `relPath` means core could not tie the
    change to one path (`rename`, `deleteAllByWorkflowId`, `clearAll`).
-   Extensions with a per-path dirty set MUST either clear the set or mark the
-   next `pushChanged` for a full walk.
+   Extensions with a per-path dirty set MUST either invalidate the set (stop
+   trusting it) or mark the next `pushChanged` for a full walk.
 4. **Process restart loses the set.** Extensions holding the set in memory MUST
    do a full walk on the first `pushChanged` after start. Persisting it to a
    sidecar is allowed but optional.
@@ -954,11 +956,12 @@ The contract has eight rules:
    the dirty set, and do a full walk in `pushChanged` whenever it is true.
 
 **Core obligation.** Repositories writing into the cache call the dirty hook at
-the start of every public mutation method. These are `save`, `append`,
-`delete`, `rename`, `allocateVersion`, `finalizeVersion`, `removeLatestMarker`,
+the start of every public mutation method. These are `save`, `append`, `delete`,
+`rename`, `allocateVersion`, `finalizeVersion`, `removeLatestMarker`,
 non-dry-run `collectGarbage`, and the equivalents on the three yaml
-repositories. The call comes before any write, so a crash mid-write leaves the watermark dirty. A
-dirty flag plus a slow walk always recovers; a lost dirty flag does not.
+repositories. The call comes before any write, so a crash mid-write leaves the
+watermark dirty. A dirty flag plus a slow walk always recovers; a lost dirty
+flag does not.
 
 **Per-call granularity emitted by core.**
 
@@ -1016,7 +1019,7 @@ post-resume pushes are ungated (`UNGATED_PUSH_HANDLERS`), so one can land
 between a repository's mark and its write. That push finds the path absent,
 treats it as a delete and clears the mark, and the handler's own push then has
 nothing to upload. A mutation whose writes must reach the remote even when a run
-finishes at the same moment re-marks its paths, one by one, after the writes and
+finishes at the same moment re-marks its paths, by path, after the writes and
 just before `pushChanged()`. The OAuth mint does this for the token's definition
 file and data folder. A push already running when the re-mark lands still clears
 it, because the extension resets the whole dirty set when a push completes.
@@ -1329,7 +1332,7 @@ a fresh timeout.
 `SWAMP_LOCK_TIMEOUT_MS` overrides it (`LOCK_TIMEOUT_ENV_VAR` in
 `datastore_config.ts`). The first positive value wins:
 
-1. Per-invocation override (internal; no CLI flag exposes it yet)
+1. Per-invocation override (internal; no CLI flag currently exposes it)
 2. `SWAMP_LOCK_TIMEOUT_MS` env var (must parse as a positive integer)
 3. `DEFAULT_LOCK_TIMEOUT_MS` (60,000 ms)
 
@@ -1517,11 +1520,11 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
 `setup extension` also takes `--namespace <slug>` and
 `--hydration-strategy full|lazy`, both saved in the datastore block.
 
-`--skip-migration` affects only step 2 (pushing existing `.swamp/` data to the
-remote), not step 4 (hydration). A contributor joining a shared datastore that
-already has data needs hydration even with nothing local to migrate. Without it
-the cache stays empty and reads return nothing until a manual
-`swamp datastore sync --pull`.
+`--skip-migration` controls steps 2 and 3 (moving existing `.swamp/` data and
+pushing it to the remote). It does not skip step 4 (hydration). A contributor
+joining a shared datastore that already has data needs hydration even with
+nothing local to migrate. Without it the cache stays empty and reads return
+nothing until a manual `swamp datastore sync --pull`.
 
 **Hydration invariant.** After `swamp datastore setup extension` succeeds with
 no errors, the local cache holds every entry in the remote

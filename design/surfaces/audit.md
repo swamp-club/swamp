@@ -22,8 +22,8 @@ actions to swamp workflow runs.
 - **JSONL repository**
   (`src/infrastructure/persistence/jsonl_audit_repository.ts`): writes one row
   per hook event to date-partitioned files,
-  `.swamp/audit/commands-YYYY-MM-DD.jsonl`. It never throws, so a hook failure
-  cannot disrupt the user's coding session.
+  `.swamp/audit/commands-YYYY-MM-DD.jsonl`. It never throws, because a hook
+  failure must never disrupt the user's coding session.
 
 - **Path helpers** (`src/domain/audit/audit_path.ts`): the one definition of the
   `commands-YYYY-MM-DD.jsonl` format. The writer and the doctor's smoke-test

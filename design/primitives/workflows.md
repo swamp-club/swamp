@@ -186,9 +186,10 @@ When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
 
 The resume uses the workflow name and run id the approval resolved, not the
 request fields. It counts against the approver's principal for the
-`ActiveRunRegistry` caps, and the run keeps its original `initiatedBy`. So with
+`ActiveRunRegistry` caps, and the run keeps its original `initiatedBy`. With
 auto-resume on, an `approve` grant releases a run that was authorized when it
-started, and the approver cannot supply inputs, which is why it is opt-in.
+started; that is the point of the opt-in. The approver cannot supply inputs on
+this path.
 
 Serve audits the launch as `workflow.auto_resume`, and the approve response
 carries `autoResumed: true`. If the launch is refused or the resume fails,
@@ -573,8 +574,8 @@ jobs:
   `ScheduledExecutionService` (`src/libswamp/workflows/scheduled_execution.ts`).
   Serve wires it to `executeWorkflowWithLocks` (`src/serve/deps.ts`), the same
   path as WebSocket `workflow.run` and webhooks, not the local CLI path.
-- In an HA deployment, the `cronFireDedup` hook makes sure each fire is
-  claimed once across instances. A workflow fires single-flight per instance.
+- In an HA deployment, each fire is claimed once across instances through the
+  `cronFireDedup` hook. A workflow fires single-flight per instance.
 - **Overlap prevention:** if a workflow is still running from the previous
   scheduled trigger, the next trigger is skipped with a warning.
 - **No catch-up:** serve does not fire schedules it missed while it was down.
@@ -712,9 +713,9 @@ The `webhook` namespace exposes:
 
 - `webhook.body`: the request body, parsed as JSON when the payload is valid
   JSON, otherwise the raw string.
-- `webhook.headers`: request headers as a map of lowercased names to values.
-  The active scheme's signature header and sensitive credential headers are
-  removed. Redacted headers (`REDACTED_HEADERS` in `src/serve/webhook.ts`) are:
+- `webhook.headers`: request headers as a map of lowercased names to values. The
+  active scheme's signature header and sensitive credential headers are removed.
+  Redacted headers (`REDACTED_HEADERS` in `src/serve/webhook.ts`) include:
   - authentication: `authorization`, `proxy-authorization`, `cookie`,
     `set-cookie`, `x-api-key`, `x-auth-token`
   - provider signatures: `x-hub-signature`, `x-shopify-hmac-sha256`
@@ -1017,7 +1018,8 @@ The options pass from the CLI through `WorkflowRunInput` →
 ## Workflow Runs
 
 A run executes the jobs and steps in dependency order. The order should be a
-weighted topological sort, so identical inputs always give the same run order.
+weighted topological sort, so that identical inputs should give the same run
+order.
 
 The run's output is written to a workflow run log in the datastore at
 `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml` (default path:
@@ -1194,8 +1196,8 @@ invocations the same way. Per-executor and per-model-type queries read
 - **Failures before workflow validation** (e.g. workflow not found, input
   schema validation) produce no child entry, because no method was resolved.
 - **Cancellation** during a method invocation (AbortSignal, timeout) records
-  the in-flight method as an error child entry. The bridge's finalize path adds
-  a synthetic "workflow run terminated before completion" message.
+  the in-flight method as an error child entry through the bridge's finalize
+  path, with a synthetic "workflow run terminated before completion" message.
 
 The bridge lives in `src/libswamp/workflows/telemetry_bridge.ts`. The domain
 `step_failed` event has optional `modelName` and `methodName` fields, set only

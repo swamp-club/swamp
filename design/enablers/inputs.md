@@ -194,7 +194,8 @@ Nested objects use normal dot notation in the CEL expression.
 
 A `dependsOn` entry names the forEach _template_ step. The template's status
 combines its expanded iterations, so a downstream step waits for all of them
-(`WorkflowRun.registerForEachExpansion` in `src/domain/workflows/workflow_run.ts`).
+(`WorkflowRun.registerForEachExpansion` in
+`src/domain/workflows/workflow_run.ts`).
 
 ## Evaluated Expansion
 

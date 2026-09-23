@@ -71,8 +71,8 @@ by extension-installed skills.
 All built-in tools use `skillReferenceStyle: "name"`. Generated instructions
 files (CLAUDE.md, AGENTS.md, `.cursor/rules/swamp.mdc`,
 `.kiro/steering/swamp-rules.md`) name skills (e.g. "use the `swamp` skill")
-rather than give a project path. Skills are global, so a project path would not
-exist after init.
+rather than give a project path. This is required because skills are global,
+so a project path would not exist after init.
 
 Custom tools may use `"name"` or `"path"`. A `"path"` tool must install skills
 to a project directory or give the agent another way to resolve the paths.
@@ -97,8 +97,8 @@ The `swamp agent setup` wizard (`src/cli/commands/agent_setup.ts`) builds its
 skills-directory choices with `buildSkillsDirChoices()`. The choices are the
 default derived from the tool name, the tool's detected `skillsDir` (if found on
 disk), `<configDir>/skills` (if a config directory was found), and an "Other
-path" free-text option. If only the derived default exists, it is offered inline with
-Enter-to-accept.
+path" free-text option. If only the derived default exists, it is offered inline
+with Enter-to-accept.
 
 ## What `repo init` / `repo upgrade` Write
 
@@ -143,10 +143,11 @@ Global skills are synced in three places:
 2. **`swamp repo init`**: during first-time setup.
 3. **`swamp repo upgrade`**: during the upgrade.
 
-Ordinary CLI startup does not sync, so arbitrary commands never write to `~/`.
+Ordinary CLI startup does not sync, which avoids writing to `~/` on arbitrary
+commands.
 The bundled files are the source of truth and the sync is idempotent;
 concurrent syncs from several repos give the same result. Sync failures
-(permissions, disk full) log a warning and do not block the command.
+(permissions, disk full) log a warning and do not block the update or command.
 
 ### Registries
 

@@ -26,7 +26,7 @@ A principal is the authenticated identity making a request. There are two kinds:
 
 Minting a server token rejects any other kind and names the valid ones. A stored
 token whose principal does not parse (minted before that check, or hand-edited)
-is refused with `401 invalid-principal`.
+is refused at authentication with `401 invalid-principal`.
 
 The principal is resolved once per connection and attached to every request on
 that WebSocket. In `none` auth mode there is no principal and no authorization.
@@ -185,12 +185,13 @@ Patterns support a trailing `*` wildcard:
 
 #### Model resource dual-identity matching
 
-For `model` resources, grants match **both** the instance name and the
-extension type. A grant on `model:@xero/segment/*` matches any instance whose
-type is under `@xero/segment/`, such as `segment-test-audiences` with type
-`@xero/segment/audience`. The name is checked first, then the type from the
-model's definition. This holds on every evaluation path: `decide()`,
-`explain()`, and `filterByAuthorization` for collection operations.
+For `model` resources, grants match **both** the instance name and the extension
+type. A grant on `model:@xero/segment/*` matches any instance whose type is
+under `@xero/segment/`, such as `segment-test-audiences` with type
+`@xero/segment/audience`. The name is checked first. If it does not match, the
+type from the model's definition is checked as a fallback. This holds on every
+evaluation path: `decide()`, `explain()`, and `filterByAuthorization` for
+collection operations.
 
 Implementation: `src/domain/access/resource_selector.ts`,
 `src/domain/access/grant_based_access_decision_service.ts`.
@@ -283,9 +284,9 @@ It loads at serve startup and is rebuilt when grant or group model data changes.
 2. **Auto-rebuild**: the loader subscribes to `ModelCreated`, `ModelUpdated`,
    `DefinitionCreated` and `DefinitionUpdated`. When a grant or group model
    changes, it rebuilds after a 500 ms debounce.
-3. **Remote datastore**: an `AccessDataPoller` pulls `data/swamp/grant` and
-   `data/swamp/group` every 30 s and reloads on any change
-   (`src/serve/access_data_poller.ts`).
+3. **Remote datastore**: with a remote datastore, an `AccessDataPoller` pulls
+   `data/swamp/grant` and `data/swamp/group` every 30 s and reloads on any
+   change (`src/serve/access_data_poller.ts`).
 4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
    logged-in user's collectives every `--group-refresh-interval` and closes
    connections whose admission lapsed
@@ -355,8 +356,8 @@ For method-scoped grants, add `--method` to test one model method:
 swamp access can-i --action run --on model:@acme/my-model --method read --server wss://swamp.acme.internal:9090
 ```
 
-It exits 0 for allow and 1 for deny. With `--method`, the JSON response echoes
-the tested method in a `method` field.
+It returns the matching grant decision and exits 0 for allow and 1 for deny.
+With `--method`, the JSON response echoes the tested method in a `method` field.
 
 **List all permissions**: omit `--action` and `--on` to see every grant that
 applies to the caller across all resource kinds:
