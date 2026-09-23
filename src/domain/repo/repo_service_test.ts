@@ -27,6 +27,7 @@ import {
   RepoService,
 } from "./repo_service.ts";
 import { RepoPath } from "./repo_path.ts";
+import { UserError } from "../errors.ts";
 import {
   type AiTool,
   RepoMarkerRepository,
@@ -883,6 +884,57 @@ Deno.test("RepoService.init stores serverAddress in marker", async () => {
 
     const marker = await service.getMarker(repoPath);
     assertEquals(marker!.serverAddress, "wss://team-serve.internal:4000");
+  });
+});
+
+Deno.test("RepoService.init refuses a credential-bearing serverAddress before touching the filesystem", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoDir = join(tempDir, "repo");
+    const repoPath = RepoPath.create(repoDir);
+
+    const error = await assertRejects(
+      () =>
+        service.init(repoPath, {
+          tools: [],
+          serverAddress:
+            "https://zz9user:zz9password@serve.example.com/base?token=zz9token",
+        }),
+      UserError,
+      "Refusing to store the --server URL 'https://serve.example.com/base'",
+    );
+    assertEquals(error.message.includes("zz9"), false);
+
+    const repoDirExists = await Deno.stat(repoDir).then(
+      () => true,
+      () => false,
+    );
+    assertEquals(repoDirExists, false);
+  });
+});
+
+Deno.test("RepoService.init --force with a credential-bearing serverAddress leaves the existing marker unchanged", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, {
+      tools: [],
+      serverAddress: "wss://team-serve.internal:4000",
+    });
+    const markerPath = join(tempDir, ".swamp.yaml");
+    const before = await Deno.readTextFile(markerPath);
+
+    await assertRejects(
+      () =>
+        service.init(repoPath, {
+          force: true,
+          tools: [],
+          serverAddress: "wss://team-serve.internal:4000/?token=zz9token",
+        }),
+      UserError,
+    );
+
+    assertEquals(await Deno.readTextFile(markerPath), before);
   });
 });
 

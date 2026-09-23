@@ -810,8 +810,17 @@ export function warnServerReloadNeeded(server: string): void {
   const logger = getSwampLogger(["cli", "remote"]);
   logger
     .warn`Extension state changed on the serve instance — run ${
-    "swamp serve reload --server " + server
+    serverReloadCommand(server)
   } to pick up the changes`;
+}
+
+/**
+ * The `swamp serve reload` command to print for a server. The URL loses its
+ * userinfo, query string and fragment, and is left out when it does not
+ * parse.
+ */
+export function serverReloadCommand(server: string): string {
+  return `swamp serve reload${formatCommandTarget({ server })}`;
 }
 
 /** Timeout for the health probe on connection failure (ms). */

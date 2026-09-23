@@ -37,6 +37,7 @@ import {
   resolveServeUrl,
   runModelMethodOverServer,
   runWorkflowOverServer,
+  serverReloadCommand,
   setMarkerServerAddress,
   subscribeServerEvents,
   toWebSocketUrl,
@@ -1738,6 +1739,31 @@ Deno.test("diagnoseTlsMessage: returns undefined for non-TLS errors", () => {
 
 Deno.test("warnServerReloadNeeded: does not throw", () => {
   warnServerReloadNeeded("ws://127.0.0.1:9090");
+});
+
+Deno.test("serverReloadCommand: keeps --server for a clean URL", () => {
+  assertEquals(
+    serverReloadCommand("ws://127.0.0.1:9090"),
+    "swamp serve reload --server ws://127.0.0.1:9090",
+  );
+});
+
+Deno.test("serverReloadCommand: drops userinfo, query string and fragment", () => {
+  const command = serverReloadCommand(
+    "wss://zz9user:zz9password@serve.example.com/base?token=zz9token#zz9frag",
+  );
+  assertEquals(
+    command,
+    "swamp serve reload --server wss://serve.example.com/base",
+  );
+  assertEquals(command.includes("zz9"), false);
+});
+
+Deno.test("serverReloadCommand: leaves out --server for an unparseable value", () => {
+  assertEquals(
+    serverReloadCommand("not a url zz9token"),
+    "swamp serve reload",
+  );
 });
 
 // ── writeRemoteIndicator tests ───────────────────────────────────────

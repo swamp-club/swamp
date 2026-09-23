@@ -42,6 +42,7 @@ import {
   resolveUniqueGlobalSkillsDirs,
 } from "./skill_dirs.ts";
 import { removeSupersededSkills } from "./superseded_skills.ts";
+import { assertStorableServerAddress } from "./server_address.ts";
 import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
@@ -318,6 +319,11 @@ export class RepoService {
     repoPath: RepoPath,
     options: RepoInitOptions = {},
   ): Promise<RepoInitResult> {
+    // Before any filesystem work, so a refused URL leaves nothing behind.
+    if (options.serverAddress) {
+      assertStorableServerAddress(options.serverAddress);
+    }
+
     const tools = normalizeToolsList(options.tools ?? ["claude"]);
     const isAlreadyInit = await this.isInitialized(repoPath);
 

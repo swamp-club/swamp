@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { RepoService } from "../../domain/repo/repo_service.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -304,6 +305,44 @@ Deno.test("repoInit: serverAddress is undefined when not provided", async () => 
   );
 
   assertEquals(capturedOptions?.serverAddress, undefined);
+});
+
+Deno.test("repoInit: a credential-bearing serverAddress yields one error without the secret", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const homeDir = join(tmpDir, "test-home");
+    const service = new RepoService("1.0.0", {
+      homeDir,
+      configDir: join(homeDir, ".config", "swamp"),
+    });
+    const deps: RepoInitDeps = {
+      init: (repoPath, options) => service.init(repoPath, options),
+    };
+
+    const events = await collect<RepoInitEvent>(
+      repoInit(createLibSwampContext(), deps, {
+        path: join(tmpDir, "repo"),
+        force: false,
+        tools: [],
+        version: "1.0.0",
+        serverAddress:
+          "https://zz9user:zz9password@serve.example.com/base?token=zz9token",
+      }),
+    );
+
+    const kinds = events.map((e) => e.kind);
+    assertEquals(kinds, ["initializing", "error"]);
+    const error = events[1];
+    assert(error.kind === "error");
+    assertEquals(error.error.code, "validation_failed");
+    assertStringIncludes(
+      error.error.message,
+      "'https://serve.example.com/base'",
+    );
+    assertEquals(error.error.message.includes("zz9"), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });
 
 Deno.test("repoUpgrade: yields completed on successful upgrade", async () => {
