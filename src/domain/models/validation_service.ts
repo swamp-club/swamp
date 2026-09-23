@@ -32,6 +32,7 @@ import {
   valueContainsExpression,
 } from "../expressions/expression_parser.ts";
 import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
+import { CalVer } from "./calver.ts";
 import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
 import {
   extractEnvReferences,
@@ -311,6 +312,7 @@ export class DefaultModelValidationService implements ModelValidationService {
   ): Promise<ModelValidationOutcome> {
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
+      this.validateTypeVersion(definition),
       this.validateGlobalArguments(definition, modelDef),
       this.validateMethodArguments(definition, modelDef),
     ];
@@ -500,6 +502,39 @@ export class DefaultModelValidationService implements ModelValidationService {
       "Definition schema",
       DefinitionSchema,
       definition.toData(),
+    );
+  }
+
+  /**
+   * Checks that a recorded `typeVersion` parses as CalVer.
+   *
+   * `DefinitionSchema` deliberately types the field as a plain optional string
+   * so a malformed value survives into the definition — `model get` has to be
+   * able to name it, and discarding it would silently throw away something the
+   * author expected to be read. That permissiveness means the schema check
+   * above passes a value like `1.0`, so the format rule lives here instead,
+   * where reporting it costs nothing.
+   *
+   * An absent `typeVersion` passes: it records that nobody stated which version
+   * the arguments were authored for, which is a legitimate state for a
+   * hand-written definition. `DefinitionUpgradeService` declines to migrate it
+   * rather than guessing (swamp-club#2412).
+   */
+  private validateTypeVersion(
+    definition: Definition,
+  ): Promise<ValidationResult> {
+    const recorded = definition.typeVersion;
+    if (recorded === undefined || CalVer.isValid(recorded)) {
+      return Promise.resolve(ValidationResult.pass("Type version"));
+    }
+    return Promise.resolve(
+      ValidationResult.fail(
+        "Type version",
+        `typeVersion "${recorded}" is not a valid CalVer version. Expected ` +
+          `format YYYY.MM.DD.MICRO (e.g. "2026.02.09.1"). Running a method ` +
+          `against this definition will fail until it is corrected to the ` +
+          `version its global arguments were authored for, or removed.`,
+      ),
     );
   }
 

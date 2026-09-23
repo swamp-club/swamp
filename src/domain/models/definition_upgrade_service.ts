@@ -19,7 +19,11 @@
 
 import { CalVer } from "./calver.ts";
 import { Definition } from "../definitions/definition.ts";
+import { UserError } from "../errors.ts";
 import type { ModelDefinition } from "./model.ts";
+
+/** Error code raised when a definition records an unparseable `typeVersion`. */
+export const MALFORMED_TYPE_VERSION_CODE = "malformed_type_version";
 
 /**
  * Result of an upgrade attempt.
@@ -29,7 +33,7 @@ export interface UpgradeResult {
   upgraded: boolean;
   /** The (possibly upgraded) definition */
   definition: Definition;
-  /** The original typeVersion (may be undefined for legacy definitions) */
+  /** The original typeVersion (undefined when the definition records none) */
   fromVersion: string | undefined;
   /** The target version (always the model's current version) */
   toVersion: string;
@@ -41,6 +45,19 @@ export interface UpgradeResult {
  * When a definition's `typeVersion` is behind the model's current `version`,
  * the upgrade chain runs all applicable upgrades in order, transforming
  * attributes at each step.
+ *
+ * A definition that records no `typeVersion` is left alone. Absence is not a
+ * version — it says nobody stated which version the arguments were authored
+ * for, and it cannot distinguish arguments that need the whole chain from
+ * arguments already in the current shape. Running the chain over the latter
+ * transforms them a second time and corrupts them, so the safe reading is to
+ * skip. Callers surface the skip instead: a method run warns when the type
+ * declares an upgrade chain, and the remedy is to record the version the
+ * arguments were actually authored for (swamp-club#2412).
+ *
+ * A `typeVersion` that is present but unparseable is a different failure and
+ * raises `UserError`. Someone stated an intent and got the format wrong;
+ * silently ignoring what they wrote is the same defect as silently corrupting.
  */
 export class DefinitionUpgradeService {
   /**
@@ -55,28 +72,38 @@ export class DefinitionUpgradeService {
     const fromVersion = definition.typeVersion;
     const toVersion = modelDef.version;
 
+    // Refuse a malformed version before anything else, so the definition is
+    // rejected whether or not its type happens to declare an upgrade chain.
+    if (fromVersion !== undefined && !CalVer.isValid(fromVersion)) {
+      throw new UserError(
+        `Definition '${definition.name}' records typeVersion "${fromVersion}", ` +
+          `which is not a valid CalVer version. Expected format ` +
+          `YYYY.MM.DD.MICRO (e.g. "${toVersion}"). Correct it to the version ` +
+          `the definition's global arguments were authored for, or remove it.`,
+        MALFORMED_TYPE_VERSION_CODE,
+      );
+    }
+
     // No upgrades defined — nothing to do
     if (!modelDef.upgrades || modelDef.upgrades.length === 0) {
       return { upgraded: false, definition, fromVersion, toVersion };
     }
 
-    // If typeVersion is defined and >= model version, no upgrade needed
-    if (fromVersion !== undefined) {
-      const fromCv = CalVer.create(fromVersion);
-      const toCv = CalVer.create(toVersion);
-      if (CalVer.compare(fromCv, toCv) >= 0) {
-        return { upgraded: false, definition, fromVersion, toVersion };
-      }
+    // No recorded version — never guess. See the class comment.
+    if (fromVersion === undefined) {
+      return { upgraded: false, definition, fromVersion, toVersion };
+    }
+
+    // If typeVersion is >= model version, no upgrade needed
+    const fromCv = CalVer.create(fromVersion);
+    if (CalVer.compare(fromCv, CalVer.create(toVersion)) >= 0) {
+      return { upgraded: false, definition, fromVersion, toVersion };
     }
 
     // Filter upgrades to those with toVersion > definition.typeVersion
-    const applicableUpgrades = fromVersion === undefined
-      ? modelDef.upgrades // undefined typeVersion → apply all upgrades
-      : modelDef.upgrades.filter((upgrade) => {
-        const upgradeCv = CalVer.create(upgrade.toVersion);
-        const fromCv = CalVer.create(fromVersion);
-        return CalVer.compare(upgradeCv, fromCv) > 0;
-      });
+    const applicableUpgrades = modelDef.upgrades.filter((upgrade) =>
+      CalVer.compare(CalVer.create(upgrade.toVersion), fromCv) > 0
+    );
 
     if (applicableUpgrades.length === 0) {
       return { upgraded: false, definition, fromVersion, toVersion };

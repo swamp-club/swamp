@@ -65,6 +65,9 @@ class LogModelEditRenderer implements Renderer<ModelEditEvent> {
             },
           );
         }
+        for (const warning of data.warnings ?? []) {
+          logger.warn(warning);
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);

@@ -53,9 +53,10 @@ export interface ModelGetData {
   autoCreated?: boolean;
   /**
    * The model type version this definition's global arguments were authored or
-   * migrated for, as recorded in the definition itself. Absent for a legacy
-   * pre-CalVer definition. This previously reported the *registered* model
-   * version, which hid staleness entirely (swamp-club#900).
+   * migrated for, as recorded in the definition itself. Absent when the
+   * definition records none, in which case the upgrade chain does not run
+   * against it (swamp-club#2412). This previously reported the *registered*
+   * model version, which hid staleness entirely (swamp-club#900).
    */
   typeVersion?: string;
   /** The version of the model type currently registered from the bundle. */

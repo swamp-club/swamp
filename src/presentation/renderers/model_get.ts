@@ -193,6 +193,17 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
                 "  so nothing will migrate it. The extension must ship a version upgrade.",
               ),
             );
+          } else if (data.staleness === "invalid") {
+            lines.push(
+              yellow(
+                "  This type version is malformed — expected YYYY.MM.DD.MICRO. Method runs",
+              ),
+            );
+            lines.push(
+              yellow(
+                "  against this instance will fail until it is corrected or removed.",
+              ),
+            );
           }
         }
 

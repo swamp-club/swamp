@@ -152,7 +152,7 @@ Deno.test("ValidationResult.equals returns false for different errors", () => {
 
 // DefaultModelValidationService tests
 
-Deno.test("validateModel with valid definition returns 3 passing results", async () => {
+Deno.test("validateModel with valid definition returns passing results", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
@@ -162,15 +162,17 @@ Deno.test("validateModel with valid definition returns 3 passing results", async
 
   const { results } = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 4);
+  assertEquals(results.length, 5);
   assertEquals(results[0].name, "Definition schema");
   assertEquals(results[0].passed, true);
-  assertEquals(results[1].name, "Global arguments");
+  assertEquals(results[1].name, "Type version");
   assertEquals(results[1].passed, true);
-  assertEquals(results[2].name, "Method arguments");
+  assertEquals(results[2].name, "Global arguments");
   assertEquals(results[2].passed, true);
-  assertEquals(results[3].name, "Check selection");
+  assertEquals(results[3].name, "Method arguments");
   assertEquals(results[3].passed, true);
+  assertEquals(results[4].name, "Check selection");
+  assertEquals(results[4].passed, true);
 });
 
 Deno.test("validateModel with invalid method arguments returns failing result", async () => {
@@ -183,12 +185,12 @@ Deno.test("validateModel with invalid method arguments returns failing result", 
 
   const { results } = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 4);
+  assertEquals(results.length, 5);
   assertEquals(results[0].name, "Definition schema");
   assertEquals(results[0].passed, true);
-  assertEquals(results[2].name, "Method arguments");
-  assertEquals(results[2].passed, false);
-  assertEquals(typeof results[2].error, "string");
+  assertEquals(results[3].name, "Method arguments");
+  assertEquals(results[3].passed, false);
+  assertEquals(typeof results[3].error, "string");
 });
 
 Deno.test("validateModel with empty message passes when schema allows it", async () => {
@@ -201,11 +203,12 @@ Deno.test("validateModel with empty message passes when schema allows it", async
 
   const { results } = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 4);
+  assertEquals(results.length, 5);
   assertEquals(results[0].passed, true);
   assertEquals(results[1].passed, true);
   assertEquals(results[2].passed, true);
   assertEquals(results[3].passed, true);
+  assertEquals(results[4].passed, true);
 });
 
 Deno.test("validateModel runs validations in parallel", async () => {
@@ -225,7 +228,7 @@ Deno.test("validateModel runs validations in parallel", async () => {
   const allResults = await Promise.all(promises);
 
   for (const outcome of allResults) {
-    assertEquals(outcome.results.length, 4);
+    assertEquals(outcome.results.length, 5);
     assertEquals(outcome.results.every((r) => r.passed), true);
   }
 });
@@ -455,8 +458,9 @@ Deno.test("validateModel without definitionRepo skips expression validation", as
   // No definitionRepo provided - expression validation should be skipped
   const { results } = await service.validateModel(definition, testExprModel);
 
-  // Should only have definition schema, global arguments, method arguments, and check selection
-  assertEquals(results.length, 4);
+  // Should only have definition schema, type version, global arguments,
+  // method arguments, and check selection
+  assertEquals(results.length, 5);
   assertEquals(results.every((r) => r.name !== "Expression paths"), true);
 });
 
@@ -2102,4 +2106,62 @@ Deno.test("validateModel still rejects a global argument referencing nothing val
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
+});
+
+Deno.test("validateModel reports a malformed typeVersion as a failed validation", async () => {
+  // The Definition schema types typeVersion as a plain optional string so a
+  // malformed value survives for `model get` to name, which means the schema
+  // check passes it. This item is what turns it into something a user can see
+  // before a run fails (swamp-club#2412).
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    typeVersion: "1.0",
+    globalArguments: { message: "hello" },
+    methods: { write: { arguments: { message: "hello" } } },
+  });
+
+  const { results } = await service.validateModel(definition, testExprModel);
+
+  const schema = results.find((r) => r.name === "Definition schema")!;
+  assertEquals(schema.passed, true, "the envelope itself is still well-formed");
+
+  const typeVersion = results.find((r) => r.name === "Type version")!;
+  assertEquals(typeVersion.passed, false);
+  assertStringIncludes(typeVersion.error!, "1.0");
+  assertStringIncludes(typeVersion.error!, "YYYY.MM.DD.MICRO");
+});
+
+Deno.test("validateModel accepts a definition that records no typeVersion", async () => {
+  // Absence is a legitimate state for a hand-written definition — it records
+  // that nobody stated which version the arguments were authored for. The
+  // upgrade service declines to migrate it rather than guessing, which is not
+  // a validation failure.
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    methods: { write: { arguments: { message: "hello" } } },
+  });
+  assertEquals(definition.typeVersion, undefined);
+
+  const { results } = await service.validateModel(definition, testExprModel);
+
+  const typeVersion = results.find((r) => r.name === "Type version")!;
+  assertEquals(typeVersion.passed, true);
+});
+
+Deno.test("validateModel accepts a valid CalVer typeVersion", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    typeVersion: "2026.02.09.1",
+    globalArguments: { message: "hello" },
+    methods: { write: { arguments: { message: "hello" } } },
+  });
+
+  const { results } = await service.validateModel(definition, testExprModel);
+
+  const typeVersion = results.find((r) => r.name === "Type version")!;
+  assertEquals(typeVersion.passed, true);
 });

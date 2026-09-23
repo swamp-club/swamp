@@ -35,14 +35,17 @@
  * arguments, so the upgrade in step 4 could never run.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
+import { join } from "@std/path";
 import { z } from "zod";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { resolveStaleness } from "../src/domain/definitions/definition_staleness.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { DefinitionUpgradeService } from "../src/domain/models/definition_upgrade_service.ts";
+import { UserError } from "../src/domain/errors.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { resolveEffectiveDefinitionsDir } from "../src/infrastructure/persistence/paths.ts";
 
 const TYPE = ModelType.create("test/staleness-integration");
 const V1 = "2026.01.01.1";
@@ -158,5 +161,170 @@ Deno.test("definition staleness: an ordinary save does not strand an instance ac
     );
 
     modelRegistry.invalidateType(TYPE);
+  });
+});
+
+/**
+ * A hand-authored definition under `models/` carries whatever its author wrote,
+ * and `typeVersion` is the one field they are most likely to leave out — it
+ * records an internal versioning concept, not anything about their
+ * configuration. The upgrade service must not read that omission as "predates
+ * the chain, apply all of it": the arguments below are already in the shape the
+ * current version expects, and running the chain would strip the field the
+ * upgrade adds (swamp-club#2412).
+ *
+ * Written as YAML on disk rather than through `Definition.create` so the test
+ * exercises the same load path a checked-in file takes.
+ */
+const HAND_AUTHORED_TYPE = ModelType.create("test/hand-authored-definition");
+
+Deno.test("definition upgrade: a hand-authored definition with no typeVersion is left as written", async () => {
+  await withTempDir(async (dir) => {
+    modelRegistry.invalidateType(HAND_AUTHORED_TYPE);
+    modelRegistry.register({
+      type: HAND_AUTHORED_TYPE,
+      version: V2,
+      globalArguments: z.object({
+        project: z.string(),
+        fields: z.array(z.string()),
+      }),
+      methods: {},
+      upgrades: [{
+        toVersion: V2,
+        description: "Drop the retired `legacy` field",
+        upgradeAttributes: (args: Record<string, unknown>) => {
+          const next = { ...args };
+          delete next.fields;
+          return next;
+        },
+      }],
+    });
+
+    try {
+      const typeDir = join(
+        resolveEffectiveDefinitionsDir(dir),
+        HAND_AUTHORED_TYPE.toDirectoryPath(),
+      );
+      await Deno.mkdir(typeDir, { recursive: true });
+      // No `typeVersion:` line — exactly what a person writes by hand.
+      await Deno.writeTextFile(
+        join(typeDir, "factory.yaml"),
+        [
+          "id: 3f2a6f5e-9a21-4b3c-8d47-2e1f0c9b7a64",
+          `type: ${HAND_AUTHORED_TYPE.normalized}`,
+          "name: factory",
+          "version: 1",
+          "globalArguments:",
+          "  project: demo",
+          "  fields:",
+          "    - name",
+          "    - path",
+          "",
+        ].join("\n"),
+      );
+
+      const repo = new YamlDefinitionRepository(
+        dir,
+        undefined,
+        undefined,
+        false,
+      );
+      const loaded = await repo.findByName(HAND_AUTHORED_TYPE, "factory");
+      assertEquals(loaded!.typeVersion, undefined);
+      assertEquals(
+        resolveStaleness(loaded!.typeVersion, V2, [V2]).state,
+        "unknown",
+      );
+
+      const result = new DefinitionUpgradeService().upgrade(
+        loaded!,
+        modelRegistry.get(HAND_AUTHORED_TYPE)!,
+      );
+
+      assertEquals(result.upgraded, false, "the chain must not run");
+      assertEquals(
+        result.definition.globalArguments,
+        {
+          project: "demo",
+          fields: ["name", "path"],
+        },
+        "arguments must survive verbatim — the chain would have dropped fields",
+      );
+      assertEquals(
+        result.definition.typeVersion,
+        undefined,
+        "skipping is not migrating, so nothing may stamp the definition",
+      );
+
+      // And the file still records no typeVersion after an ordinary save:
+      // backfilling would claim a version nothing verified the arguments
+      // against.
+      await repo.save(HAND_AUTHORED_TYPE, result.definition);
+      const yaml = await Deno.readTextFile(join(typeDir, "factory.yaml"));
+      assertEquals(yaml.includes("typeVersion"), false);
+    } finally {
+      modelRegistry.invalidateType(HAND_AUTHORED_TYPE);
+    }
+  });
+});
+
+Deno.test("definition upgrade: a hand-authored definition with a malformed typeVersion is refused", async () => {
+  await withTempDir(async (dir) => {
+    modelRegistry.invalidateType(HAND_AUTHORED_TYPE);
+    modelRegistry.register({
+      type: HAND_AUTHORED_TYPE,
+      version: V2,
+      globalArguments: z.object({ project: z.string() }),
+      methods: {},
+    });
+
+    try {
+      const typeDir = join(
+        resolveEffectiveDefinitionsDir(dir),
+        HAND_AUTHORED_TYPE.toDirectoryPath(),
+      );
+      await Deno.mkdir(typeDir, { recursive: true });
+      // Someone meant to record a version and used the wrong format. Reading
+      // that as "records nothing" would throw away what they wrote.
+      await Deno.writeTextFile(
+        join(typeDir, "factory.yaml"),
+        [
+          "id: 3f2a6f5e-9a21-4b3c-8d47-2e1f0c9b7a64",
+          `type: ${HAND_AUTHORED_TYPE.normalized}`,
+          "name: factory",
+          "version: 1",
+          'typeVersion: "1.0"',
+          "globalArguments:",
+          "  project: demo",
+          "",
+        ].join("\n"),
+      );
+
+      const repo = new YamlDefinitionRepository(
+        dir,
+        undefined,
+        undefined,
+        false,
+      );
+      const loaded = await repo.findByName(HAND_AUTHORED_TYPE, "factory");
+      // The value survives loading, so `model get` can name it.
+      assertEquals(loaded!.typeVersion, "1.0");
+      assertEquals(
+        resolveStaleness(loaded!.typeVersion, V2, []).state,
+        "invalid",
+      );
+
+      assertThrows(
+        () =>
+          new DefinitionUpgradeService().upgrade(
+            loaded!,
+            modelRegistry.get(HAND_AUTHORED_TYPE)!,
+          ),
+        UserError,
+        '"1.0"',
+      );
+    } finally {
+      modelRegistry.invalidateType(HAND_AUTHORED_TYPE);
+    }
   });
 });

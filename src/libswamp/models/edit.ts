@@ -27,6 +27,7 @@ import {
 } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { CalVer } from "../../domain/models/calver.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type EditorLaunch,
@@ -47,6 +48,12 @@ export interface ModelEditData {
   name: string;
   type: string;
   editType: "definition";
+  /**
+   * Problems worth reporting that do not make the edit invalid — currently a
+   * `typeVersion` that will not parse as CalVer. Carried on the data rather
+   * than logged so `--json` callers see it too (swamp-club#2412).
+   */
+  warnings?: string[];
 }
 
 export type ModelEditEvent =
@@ -57,6 +64,23 @@ export type ModelEditEvent =
   }
   | { kind: "completed"; data: ModelEditData }
   | { kind: "error"; error: SwampError };
+
+/**
+ * Reports a `typeVersion` that will not parse as CalVer.
+ *
+ * The editor is where a person is most likely to mistype the field and most
+ * able to fix it, so the problem is surfaced as the editor closes rather than
+ * waiting for a method run to fail on it. Absence is not a problem: it records
+ * that nobody stated which version the arguments were authored for, which is a
+ * legitimate state for a hand-written definition (swamp-club#2412).
+ */
+function typeVersionWarning(definition: Definition): string | undefined {
+  const recorded = definition.typeVersion;
+  if (recorded === undefined || CalVer.isValid(recorded)) return undefined;
+  return `typeVersion "${recorded}" is not a valid CalVer version (expected ` +
+    `YYYY.MM.DD.MICRO). Running a method against this definition will fail ` +
+    `until it is corrected or removed.`;
+}
 
 /** Input for the model edit operation. */
 export interface ModelEditInput {
@@ -178,6 +202,7 @@ export async function* modelEdit(
             stdinContent,
           );
 
+          const warning = typeVersionWarning(updated);
           yield {
             kind: "completed",
             data: {
@@ -186,6 +211,7 @@ export async function* modelEdit(
               name: updated.name,
               type: modelType.normalized,
               editType: "definition",
+              ...(warning ? { warnings: [warning] } : {}),
             },
           };
         } catch (error) {
@@ -214,6 +240,23 @@ export async function* modelEdit(
       };
       const result = await launch.open();
 
+      // Only worth re-reading when the launch actually waited for the editor to
+      // close. A non-blocking editor returns before the human has typed
+      // anything, so checking here would report on the pre-edit content.
+      // A re-read that fails is not itself worth reporting: the file may have
+      // been renamed or left mid-edit, and `model edit` already tolerates YAML
+      // it cannot parse.
+      let warnings: string[] | undefined;
+      if (launch.waitsForExit) {
+        try {
+          const reread = await deps.lookupDefinition(modelIdOrName);
+          const warning = reread && typeVersionWarning(reread.definition);
+          if (warning) warnings = [warning];
+        } catch {
+          // Left unreported for the reason above.
+        }
+      }
+
       yield {
         kind: "completed",
         data: {
@@ -223,6 +266,7 @@ export async function* modelEdit(
           name: definition?.name ?? modelIdOrName,
           type: modelType?.normalized ?? "unknown",
           editType: "definition",
+          ...(warnings ? { warnings } : {}),
         },
       };
     })(),

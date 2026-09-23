@@ -70,11 +70,14 @@ Deno.test("isBehind: treats upgradable and stranded as behind", () => {
   assertEquals(isBehind(resolveStaleness(V1, V2, [])), true);
 });
 
-Deno.test("isBehind: does not treat current or unknown as behind", () => {
+Deno.test("isBehind: does not treat current, unknown or invalid as behind", () => {
   assertEquals(isBehind(resolveStaleness(V2, V2)), false);
-  // A legacy definition is not evidence of staleness — warning on it would
-  // fire on every run.
+  // An unstamped definition is not evidence that its arguments are out of
+  // date — treating it as behind would fire on every run.
   assertEquals(isBehind(resolveStaleness(undefined, V2)), false);
+  // Neither is a malformed one: nothing is known about the arguments, and the
+  // signal for it is the failed run, not a staleness report.
+  assertEquals(isBehind(resolveStaleness("1.0", V2)), false);
 });
 
 Deno.test("resolveStaleness: carries both versions through on every state", () => {
@@ -92,12 +95,14 @@ Deno.test("resolveStaleness: carries both versions through on every state", () =
   }
 });
 
-Deno.test("resolveStaleness: treats an unparseable version as unknown rather than throwing", () => {
+Deno.test("resolveStaleness: treats an unparseable version as invalid rather than throwing", () => {
   // Reachable by hand-editing a definition under models/. `model get` must
-  // still describe the definition instead of failing on it.
-  for (const bad of ["1.0.0", "", "not-a-version", "2026.13"]) {
+  // still describe the definition instead of failing on it, and it must say
+  // the version is malformed rather than conflating it with an unstamped
+  // definition (swamp-club#2412).
+  for (const bad of ["1.0.0", "", "not-a-version", "2026.13", "1"]) {
     const result = resolveStaleness(bad, V2, [V2]);
-    assertEquals(result.state, "unknown");
+    assertEquals(result.state, "invalid");
     assertEquals(result.definitionVersion, bad);
     assertEquals(isBehind(result), false);
   }

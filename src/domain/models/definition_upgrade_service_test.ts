@@ -17,8 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
+import { assertEquals, assertThrows } from "@std/assert";
+import {
+  DefinitionUpgradeService,
+  MALFORMED_TYPE_VERSION_CODE,
+} from "./definition_upgrade_service.ts";
+import { UserError } from "../errors.ts";
 import { Definition } from "../definitions/definition.ts";
 import type { ModelDefinition, VersionUpgrade } from "./model.ts";
 import { ModelType } from "./model_type.ts";
@@ -136,15 +140,18 @@ Deno.test("DefinitionUpgradeService - multi-step upgrade chain", () => {
   assertEquals(result.definition.typeVersion, "2026.02.09.1");
 });
 
-Deno.test("DefinitionUpgradeService - undefined typeVersion triggers full upgrade chain", () => {
+Deno.test("DefinitionUpgradeService - absent typeVersion skips the upgrade chain", () => {
   const service = new DefinitionUpgradeService();
   const definition = Definition.create({
     name: "test-def",
     type: "test/upgradeable",
-    globalArguments: { message: "hello" },
+    // Already in the shape the current version expects, which is exactly the
+    // case absence cannot be distinguished from a definition that predates the
+    // chain. Running the chain would rename `content` away and corrupt it
+    // (swamp-club#2412).
+    globalArguments: { content: "hello", priority: "medium" },
   });
 
-  // typeVersion is undefined (legacy pre-CalVer definition)
   assertEquals(definition.typeVersion, undefined);
 
   const modelDef = createModelDef("2026.02.09.1", [
@@ -165,11 +172,54 @@ Deno.test("DefinitionUpgradeService - undefined typeVersion triggers full upgrad
 
   const result = service.upgrade(definition, modelDef);
 
-  assertEquals(result.upgraded, true);
+  assertEquals(result.upgraded, false);
   assertEquals(result.definition.globalArguments.content, "hello");
   assertEquals(result.definition.globalArguments.priority, "medium");
-  assertEquals(result.definition.typeVersion, "2026.02.09.1");
   assertEquals(result.fromVersion, undefined);
+  // Left unstamped: stamping would claim the arguments were verified against
+  // this version when nothing verified them.
+  assertEquals(result.definition.typeVersion, undefined);
+});
+
+Deno.test("DefinitionUpgradeService - malformed typeVersion raises UserError", () => {
+  const service = new DefinitionUpgradeService();
+  const definition = Definition.create({
+    name: "hand-edited",
+    type: "test/upgradeable",
+    typeVersion: "1.0",
+    globalArguments: { message: "hello" },
+  });
+
+  const modelDef = createModelDef("2026.02.09.1", [
+    {
+      toVersion: "2026.02.09.1",
+      description: "Add priority field",
+      upgradeAttributes: (old) => ({ ...old, priority: "medium" }),
+    },
+  ]);
+
+  const error = assertThrows(
+    () => service.upgrade(definition, modelDef),
+    UserError,
+    '"1.0"',
+  );
+  assertEquals((error as UserError).code, MALFORMED_TYPE_VERSION_CODE);
+});
+
+Deno.test("DefinitionUpgradeService - malformed typeVersion raises even without an upgrade chain", () => {
+  const service = new DefinitionUpgradeService();
+  const definition = Definition.create({
+    name: "hand-edited",
+    type: "test/upgradeable",
+    typeVersion: "not-a-version",
+    globalArguments: { message: "hello" },
+  });
+
+  assertThrows(
+    () => service.upgrade(definition, createModelDef("2026.02.09.1")),
+    UserError,
+    "not-a-version",
+  );
 });
 
 Deno.test("DefinitionUpgradeService - partial upgrade (skip already applied)", () => {
@@ -235,12 +285,14 @@ Deno.test("DefinitionUpgradeService - preserves id, name, tags", () => {
   assertEquals(result.definition.type, "test/upgradeable");
 });
 
-Deno.test("DefinitionUpgradeService - legacy numeric typeVersion coerced to undefined", () => {
+Deno.test("DefinitionUpgradeService - numeric typeVersion from disk is malformed, not absent", () => {
   const service = new DefinitionUpgradeService();
-  // Simulate a definition loaded from disk with numeric typeVersion
+  // A definition written by a swamp built between #203 and #230, when
+  // typeVersion was a bare integer. That format is no longer understood, and a
+  // number the schema cannot parse is reported rather than discarded.
   const definition = Definition.fromData({
     id: "550e8400-e29b-41d4-a716-446655440000",
-    name: "legacy-def",
+    name: "numeric-def",
     version: 1,
     type: "test/upgradeable",
     typeVersion: 1 as unknown as string, // numeric typeVersion from disk
@@ -250,8 +302,9 @@ Deno.test("DefinitionUpgradeService - legacy numeric typeVersion coerced to unde
     inputs: undefined,
   });
 
-  // After preprocess, typeVersion should be undefined
-  assertEquals(definition.typeVersion, undefined);
+  // Stringified, not dropped — the value has to survive for `model get` to
+  // name it.
+  assertEquals(definition.typeVersion, "1");
 
   const modelDef = createModelDef("2025.06.01.1", [
     {
@@ -261,11 +314,11 @@ Deno.test("DefinitionUpgradeService - legacy numeric typeVersion coerced to unde
     },
   ]);
 
-  const result = service.upgrade(definition, modelDef);
-
-  assertEquals(result.upgraded, true);
-  assertEquals(result.definition.globalArguments.priority, "low");
-  assertEquals(result.definition.typeVersion, "2025.06.01.1");
+  assertThrows(
+    () => service.upgrade(definition, modelDef),
+    UserError,
+    '"1"',
+  );
 });
 
 Deno.test("DefinitionUpgradeService: vault expression strings pass through unchanged", () => {

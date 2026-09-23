@@ -35,12 +35,12 @@ import {
  * model version, the instance could never be migrated again (swamp-club#900).
  *
  * Removing that stamp means every `Definition.create` call site now owns the
- * field. A site that omits it produces a definition with no typeVersion, which
- * is the recorded signal for a legacy pre-CalVer definition and makes the
- * upgrade service apply the entire chain to already-current arguments
- * (swamp-club#2412). A behavioural test would not catch a regression here,
- * because no first-party model that uses these paths declares an upgrade chain
- * — so the rule is pinned statically instead.
+ * field. A site that omits it produces a definition that records nothing about
+ * which version its arguments were authored for, and the upgrade service
+ * declines to migrate a definition in that state — so an upgrade shipped later
+ * would silently pass it by (swamp-club#2412). A behavioural test would not
+ * catch a regression here, because no first-party model that uses these paths
+ * declares an upgrade chain — so the rule is pinned statically instead.
  */
 
 /**
@@ -110,9 +110,9 @@ Deno.test("architecture: every Definition.create call site sets typeVersion", as
     PINNED_OMISSIONS,
     "Definition.create call sites omitting typeVersion",
     [
-      "A definition created without a typeVersion is indistinguishable from a",
-      "legacy pre-CalVer definition, so DefinitionUpgradeService will apply the",
-      "model's entire upgrade chain to arguments that are already current.",
+      "A definition created without a typeVersion records nothing about which",
+      "version its arguments were authored for, so DefinitionUpgradeService will",
+      "never migrate it and any upgrade shipped later passes it by.",
       "Pass the registered model's version, e.g. `typeVersion: grantModel.version`.",
       "If the definition is genuinely never persisted and never upgraded, add the",
       "file to PINNED_OMISSIONS with a comment in the source explaining why.",
