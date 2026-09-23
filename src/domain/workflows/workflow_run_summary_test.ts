@@ -233,3 +233,55 @@ Deno.test("parseWorkflowRunSummary: does not retain the parsed source buffer (OO
   );
   assert(out.includes("RETENTION_OK"), "child did not complete the loop");
 });
+
+Deno.test("parseWorkflowRunSummary: derives awaitingResume for a legacy approved run", () => {
+  // Written before awaitingResume was persisted: suspended, gate decided.
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "suspended",
+    jobs: [{
+      jobName: "main",
+      steps: [
+        { stepName: "gate", status: "succeeded" },
+        { stepName: "deploy", status: "pending" },
+      ],
+    }],
+  });
+
+  assertEquals(summary.awaitingResume, true);
+});
+
+Deno.test("parseWorkflowRunSummary: a legacy run still waiting at a gate is not awaiting resume", () => {
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "suspended",
+    jobs: [{
+      jobName: "main",
+      steps: [
+        { stepName: "gate", status: "waiting_approval" },
+        { stepName: "deploy", status: "pending" },
+      ],
+    }],
+  });
+
+  assertEquals(summary.awaitingResume, undefined);
+});
+
+Deno.test("parseWorkflowRunSummary: only a suspended run can be awaiting resume", () => {
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "succeeded",
+    jobs: [{
+      jobName: "main",
+      steps: [{ stepName: "gate", status: "succeeded" }],
+    }],
+  });
+
+  assertEquals(summary.awaitingResume, undefined);
+});

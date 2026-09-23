@@ -82,6 +82,33 @@ const WorkflowRunSummarySchema = z.object({
 });
 
 /**
+ * Recovers `awaitingResume` for a run record written before the flag was
+ * persisted. A suspended run with no step still `waiting_approval` has every
+ * gate decided and is waiting for a resume. Only step status strings are read
+ * and only a boolean is kept, so nothing from the heavy subtree is retained.
+ */
+function deriveAwaitingResume(
+  data: unknown,
+  status: string,
+): true | undefined {
+  if (status !== "suspended") return undefined;
+  const jobs = (data as { jobs?: unknown }).jobs;
+  if (!Array.isArray(jobs)) return undefined;
+  for (const job of jobs) {
+    const steps = (job as { steps?: unknown } | null)?.steps;
+    if (!Array.isArray(steps)) continue;
+    for (const step of steps) {
+      if (
+        (step as { status?: unknown } | null)?.status === "waiting_approval"
+      ) {
+        return undefined;
+      }
+    }
+  }
+  return true;
+}
+
+/**
  * Projects raw persisted run data onto a {@link WorkflowRunSummary}.
  *
  * This is the memory-safe read path: it never calls `WorkflowRun.fromData` and
@@ -141,6 +168,6 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
     failedStep: detached.failedStep,
     failureReason: detached.failureReason,
     stepProgress: detached.stepProgress,
-    awaitingResume: v.awaitingResume,
+    awaitingResume: v.awaitingResume ?? deriveAwaitingResume(data, v.status),
   };
 }
