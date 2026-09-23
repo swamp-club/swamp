@@ -91,7 +91,7 @@ relied on the old behaviour are for model types with no upgrade chain.
 
 `resolveStaleness` compares a definition's recorded `typeVersion` with the
 registered model's version and upgrade chain
-(`src/domain/definitions/definition_staleness.ts`). It returns one of four
+(`src/domain/definitions/definition_staleness.ts`). It returns one of five
 states:
 
 | State        | Meaning                                                                         |
@@ -99,12 +99,18 @@ states:
 | `current`    | Written or migrated for this model version.                                     |
 | `upgradable` | Behind, and the upgrade chain covers the gap. The next method run migrates it.  |
 | `stranded`   | Behind, and no upgrade covers the gap. The extension must ship a `VersionUpgrade`. |
-| `unknown`    | No `typeVersion` recorded: a legacy pre-CalVer definition.                      |
+| `unknown`    | No `typeVersion` recorded. Nobody said which version the arguments were written for, so the chain does not run. |
+| `invalid`    | A `typeVersion` is recorded but does not parse as CalVer. Method runs against it fail. |
 
 `model get` reports `typeVersion`, `currentTypeVersion` and `staleness` in both
-output modes. A method run warns once when an instance is `stranded`. There is
-no warning for `unknown`, because it is not evidence of staleness and would fire
-on every run.
+output modes. A method run warns once when an instance is `stranded`, and once
+when it is `unknown` *and* the type declares an upgrade chain. An unstamped
+definition is only worth mentioning when there is a chain it is declining to
+run; without one the warning would fire on every run of every hand-written
+definition. `resolveStaleness` never throws. `model get` is the command you
+reach for to diagnose a broken definition, so it has to survive the file it is
+describing. Refusing to act on an `invalid` version is
+`DefinitionUpgradeService`'s job.
 
 ### Upgrade Rules
 
@@ -171,18 +177,50 @@ the model is now at `"2026.02.09.1"`, running a method will:
    arguments
 4. Execute the method with the merged arguments (global + per-method)
 
-### Backwards Compatibility
+### Absent, Present and Malformed
 
-Definitions on disk with a numeric `typeVersion` (e.g. `typeVersion: 1`) are
-coerced to `undefined` by the `DefinitionSchema` (`z.preprocess` in
-`src/domain/definitions/definition.ts`). `undefined` stands for "pre-CalVer,
-needs upgrade from earliest version". They are upgraded on first method
-execution and saved with the new CalVer `typeVersion`.
+`typeVersion` has three readings, and they are deliberately kept apart
+(swamp-club#2412).
 
-So an absent `typeVersion` marks a legacy definition, and persistence must not
-fill it in. Absence cannot tell a legacy definition from a hand-written one
-whose arguments already have the current shape. Running the full chain on the
-second kind would corrupt it. That open question is tracked in swamp-club#2412.
+**Absent** means nobody said which version the arguments were written for. The
+chain does not run, and nothing stamps the definition. This is the only safe
+reading. Absence cannot tell arguments that predate the chain from arguments
+that already have the current shape, and running the chain over the second kind
+transforms them twice and corrupts them. A run against a type that declares a
+chain warns, so the skip is visible, and the fix is one line of YAML: record the
+version the arguments were written for and the ambiguity is gone.
+
+**Valid CalVer** takes the normal path.
+
+**Anything else** is malformed, and `DefinitionUpgradeService` raises a
+`UserError` instead of running. Someone meant to say something and got the
+format wrong. Ignoring what they wrote is the same defect as corrupting it
+silently. The schema turns a number into its string form rather than discarding
+it, so the value survives for `model get` to name. Rejecting it at the Zod
+boundary would make the definition unloadable by the very command you would use
+to diagnose it.
+
+The CalVer rule therefore appears at three layers with three postures. It is
+written once, as `CalVer.isValid`, so they cannot drift:
+
+| Layer | Posture |
+| ----- | ------- |
+| `DefinitionSchema` | Permissive. The value survives into the definition so it can be reported. |
+| `ModelValidationService` | Reports. A `Type version` item fails in `model validate`, and `model edit` gives the same warning when it writes. |
+| `DefinitionUpgradeService` | Refuses. A method run against a malformed version fails. |
+
+Detection deliberately does not live in `YamlDefinitionRepository.save()`. That
+would guard only the paths where swamp itself wrote the value, which would
+already be well formed, and would miss the git-tracked file someone edited by
+hand, which never passes through `save()` at all. `model edit` checks after a
+blocking editor exits and after a stdin write. A non-blocking editor returns
+before the person has typed anything, so there is nothing to check yet.
+
+There is no pre-CalVer compatibility path. `typeVersion` was a number for three
+days in February 2026, between `#203` and `#230`, and the persistence restamp
+removed in swamp-club#900 stamped any such definition to current CalVer on its
+first ordinary save. Nothing is left to migrate, and a survivor now fails loudly
+with a one-line fix instead of silently receiving a whole upgrade chain.
 
 ## Definitions
 

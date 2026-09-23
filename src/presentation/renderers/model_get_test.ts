@@ -251,6 +251,20 @@ Deno.test("LogModelGetRenderer - says an upgradable instance will migrate", asyn
   assertStringIncludes(output, "next method run will migrate it");
 });
 
+Deno.test("LogModelGetRenderer - names a malformed type version and says runs will fail", async () => {
+  const output = await renderLog({
+    ...staleData,
+    typeVersion: "1.0",
+    staleness: "invalid",
+  });
+  // The bad value itself has to appear — `model get` is the command reached
+  // for to diagnose the definition a run just failed on (swamp-club#2412).
+  assertStringIncludes(output, "1.0");
+  assertStringIncludes(output, "malformed");
+  assertStringIncludes(output, "YYYY.MM.DD.MICRO");
+  assertStringIncludes(output, "fail");
+});
+
 Deno.test("LogModelGetRenderer - stays quiet when the instance is current", async () => {
   const output = await renderLog({
     ...staleData,

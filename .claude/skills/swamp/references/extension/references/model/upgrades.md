@@ -39,6 +39,18 @@ Upgrades are **lazy** — they run at method execution time, not at load time:
 4. The upgraded definition is persisted with the new `typeVersion`
 5. The upgrade only runs once — subsequent method calls skip it
 
+Every step above needs a `typeVersion` to compare against. An instance that
+records none is left exactly as written — no upgrade runs, and nothing is
+stamped. Absence cannot distinguish arguments that predate your chain from
+arguments already in the shape your current version expects, and applying the
+chain to the latter would transform them a second time (swamp-club#2412). A
+method run warns when this happens, and the fix is to add the `typeVersion` line
+recording the version those arguments were authored for.
+
+A `typeVersion` that is present but not valid CalVer — `"1.0"`, `1`, anything
+the format does not accept — fails the run outright. That is deliberate: the
+author meant to say something, and quietly ignoring it is worse than stopping.
+
 `typeVersion` advances **only** when an upgrade actually migrates the arguments,
 or when the definition is first created. Nothing else may touch it — persisting
 a definition for any other reason leaves it alone. This matters: once
@@ -53,13 +65,18 @@ permanently (swamp-club#900).
 - `typeVersion` — the version the instance's arguments were authored or migrated
   for
 - `currentTypeVersion` — the version of the installed model type
-- `staleness` — `current`, `upgradable`, `stranded`, or `unknown`
+- `staleness` — `current`, `upgradable`, `stranded`, `unknown`, or `invalid`
 
 `stranded` means the installed version is ahead and **no upgrade entry covers
 the gap**, so nothing will ever migrate that instance. A method run against it
 also logs a warning. The fix is on the extension side: ship the `upgrades` entry
 that should have accompanied the version bump. This is why the no-op upgrade
 below is not optional.
+
+`unknown` means the instance records no `typeVersion` at all, so your chain will
+not run against it. `invalid` means it records one that is not CalVer, and
+method runs against it fail until it is corrected. Both are fixed in the
+definition, not the extension.
 
 ## Upgrade Entry Structure
 

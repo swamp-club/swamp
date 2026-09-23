@@ -631,10 +631,14 @@ Deno.test("DefinitionSchema rejects removed driverConfig field with actionable e
   );
 });
 
-Deno.test("Legacy numeric typeVersion coerced to undefined", () => {
+Deno.test("Numeric typeVersion is stringified, not discarded", () => {
+  // A number is what swamp wrote between #203 and #230, and it is also what a
+  // hand-edit like `typeVersion: 2026` produces. Neither is a CalVer version,
+  // and neither is the same as recording nothing — dropping it would silently
+  // throw away something the author expected to be read (swamp-club#2412).
   const definition = Definition.fromData({
     id: "550e8400-e29b-41d4-a716-446655440000",
-    name: "legacy-def",
+    name: "numeric-def",
     version: 1,
     type: "swamp/echo",
     typeVersion: 1 as unknown as string,
@@ -644,7 +648,7 @@ Deno.test("Legacy numeric typeVersion coerced to undefined", () => {
     inputs: undefined,
   });
 
-  assertEquals(definition.typeVersion, undefined);
+  assertEquals(definition.typeVersion, "1");
 });
 
 Deno.test("Definition.parse: accepts resources with vaultName override", () => {

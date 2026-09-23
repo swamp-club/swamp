@@ -117,8 +117,11 @@ async function createShellModel(
   runCommand: string,
 ): Promise<void> {
   const modelData = {
+    // No typeVersion: this fixture is hand-written YAML, exactly like a
+    // checked-in definition under models/. It carried `typeVersion: 1` — the
+    // pre-CalVer format — which is now reported as malformed rather than
+    // silently discarded (swamp-club#2412).
     type: "command/shell",
-    typeVersion: 1,
     id: crypto.randomUUID(),
     name,
     version: 1,

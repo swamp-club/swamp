@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { createModelEditRenderer } from "./model_edit.ts";
 import { createVaultEditRenderer } from "./vault_edit.ts";
@@ -52,4 +52,39 @@ Deno.test("edit renderers: json mode omits launch events", () => {
   } finally {
     console.log = originalLog;
   }
+});
+
+const completedWithWarning = {
+  kind: "completed" as const,
+  data: {
+    path: "/repo/models/my-model/definition.yaml",
+    status: "updated" as const,
+    name: "my-model",
+    type: "aws/s3-bucket",
+    editType: "definition" as const,
+    warnings: [
+      'typeVersion "1.0" is not a valid CalVer version (expected YYYY.MM.DD.MICRO).',
+    ],
+  },
+};
+
+Deno.test("model edit renderer: json mode carries warnings to the caller", () => {
+  // Every command must support both output modes, so a warning that only
+  // reached the logger would be invisible to a --json caller
+  // (swamp-club#2412).
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (message: string) => logs.push(message);
+  try {
+    createModelEditRenderer("json").handlers().completed(completedWithWarning);
+  } finally {
+    console.log = originalLog;
+  }
+  const parsed = JSON.parse(logs[0]);
+  assertEquals(parsed.warnings.length, 1);
+  assertStringIncludes(parsed.warnings[0], "1.0");
+});
+
+Deno.test("model edit renderer: log mode reports warnings", () => {
+  createModelEditRenderer("log").handlers().completed(completedWithWarning);
 });

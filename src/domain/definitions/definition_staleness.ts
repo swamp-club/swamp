@@ -29,16 +29,19 @@ import { CalVer } from "../models/calver.ts";
  * - `stranded` — the definition is behind and no upgrade entry covers the gap.
  *   The extension bumped its version without shipping a `VersionUpgrade`, so
  *   nothing will ever migrate this instance (swamp-club#900).
- * - `unknown` — the definition records no usable type version, either because
- *   it records none at all (the signal for a legacy pre-CalVer definition; see
- *   swamp-club#2412 for what the upgrade chain should do with it) or because
- *   the recorded value will not parse as CalVer.
+ * - `unknown` — the definition records no type version at all. Nobody stated
+ *   which version its arguments were authored for, so the upgrade chain does
+ *   not run and nothing is assumed about them (swamp-club#2412).
+ * - `invalid` — a type version is recorded but will not parse as CalVer.
+ *   Someone stated an intent and got it wrong; a method run against this
+ *   definition fails rather than quietly ignoring what they wrote.
  */
 export type StalenessState =
   | "current"
   | "upgradable"
   | "stranded"
-  | "unknown";
+  | "unknown"
+  | "invalid";
 
 /**
  * Value object describing the relationship between a definition and its
@@ -55,8 +58,9 @@ export interface DefinitionStaleness {
 
 /**
  * Whether a staleness result describes a definition that is behind its type.
- * `unknown` is deliberately excluded: a legacy definition is not evidence of
- * staleness, and treating it as such would warn on every run.
+ * `unknown` and `invalid` are deliberately excluded: neither is evidence that
+ * the arguments are out of date, and each has its own signal — `unknown` warns
+ * only when an upgrade chain exists, `invalid` fails the run outright.
  */
 export function isBehind(staleness: DefinitionStaleness): boolean {
   return staleness.state === "upgradable" || staleness.state === "stranded";
@@ -79,13 +83,17 @@ export function resolveStaleness(
   modelVersion: string,
   upgradeToVersions: readonly string[] = [],
 ): DefinitionStaleness {
-  // An unparseable version resolves to `unknown` rather than throwing. The
-  // schema types this field as a plain optional string, and definitions under
-  // models/ are git-committed files people hand-edit, so a malformed value is
-  // reachable. `model get` is the command you reach for to diagnose exactly
-  // that, and it must not fail on the definition it is meant to describe.
-  if (definitionVersion === undefined || !CalVer.isValid(definitionVersion)) {
+  // Absence and malformation are separate failures and get separate states.
+  // Neither throws: the schema types this field as a plain optional string,
+  // definitions under models/ are git-committed files people hand-edit, and
+  // `model get` is the command you reach for to diagnose exactly that, so it
+  // must not fail on the definition it is meant to describe. Refusing to act
+  // on a malformed value is DefinitionUpgradeService's job, not this one's.
+  if (definitionVersion === undefined) {
     return { state: "unknown", definitionVersion, modelVersion };
+  }
+  if (!CalVer.isValid(definitionVersion)) {
+    return { state: "invalid", definitionVersion, modelVersion };
   }
 
   const from = CalVer.create(definitionVersion);

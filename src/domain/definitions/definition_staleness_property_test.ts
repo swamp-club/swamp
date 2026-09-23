@@ -89,6 +89,22 @@ Deno.test("resolveStaleness property: an absent version is always unknown and ne
   );
 });
 
+Deno.test("resolveStaleness property: a non-CalVer version is always invalid and never behind", () => {
+  fc.assert(
+    fc.property(
+      fc.string().filter((s) => !CalVer.isValid(s)),
+      arbCalVer,
+      fc.array(arbCalVer, { maxLength: 5 }),
+      (defVersion, modelVersion, chain) => {
+        const result = resolveStaleness(defVersion, modelVersion, chain);
+        assertEquals(result.state, "invalid");
+        assertEquals(result.definitionVersion, defVersion);
+        assertEquals(isBehind(result), false);
+      },
+    ),
+  );
+});
+
 Deno.test("resolveStaleness property: equal by value for equal inputs", () => {
   fc.assert(
     fc.property(

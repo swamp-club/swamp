@@ -480,21 +480,31 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const upgradeResult = upgradeService.upgrade(definition, modelDef);
       const currentDefinition = upgradeResult.definition;
 
-      // Surface an instance that no upgrade chain will ever migrate. Only
-      // `stranded` warrants a warning: `upgradable` was just migrated above,
-      // `current` is fine, and `unknown` is a legacy pre-CalVer definition that
-      // would warn on every run with nothing actionable to say
-      // (swamp-club#900, swamp-club#2412). One warning per run, derived from
-      // the resolved state rather than a per-argument diff.
+      // Surface a definition whose arguments will not be migrated. Two states
+      // warrant a warning, one per run, derived from the resolved state rather
+      // than a per-argument diff. `upgradable` was just migrated above,
+      // `current` is fine, and `invalid` already threw from the upgrade
+      // service (swamp-club#900, swamp-club#2412).
       if (!upgradeResult.upgraded) {
+        const upgradeToVersions = (modelDef.upgrades ?? []).map(
+          (upgrade) => upgrade.toVersion,
+        );
         const staleness = resolveStaleness(
           definition.typeVersion,
           modelDef.version,
-          (modelDef.upgrades ?? []).map((upgrade) => upgrade.toVersion),
+          upgradeToVersions,
         );
         if (staleness.state === "stranded") {
           context.logger
             .warn`Definition ${definition.name} was created for ${context.modelType.normalized} version ${staleness.definitionVersion}, but the installed version is ${modelDef.version} and no upgrade entry covers the gap. Its global arguments will not be migrated — the extension must ship a version upgrade.`;
+        }
+        // An unstamped definition is only worth mentioning when there is an
+        // upgrade chain it is declining to run. Without one there is nothing
+        // to migrate and the warning would fire on every run of every
+        // hand-written definition.
+        if (staleness.state === "unknown" && upgradeToVersions.length > 0) {
+          context.logger
+            .warn`Definition ${definition.name} records no typeVersion, so the upgrade chain for ${context.modelType.normalized} will not run against it. Its global arguments are used as written. Record the version they were authored for — typeVersion: ${modelDef.version} if they are current — to make that explicit.`;
         }
       }
 

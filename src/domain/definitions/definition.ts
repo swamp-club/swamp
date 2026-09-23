@@ -115,9 +115,13 @@ export const InputsSchemaSchema: z.ZodType<InputsSchema | undefined> = z
 /**
  * Zod schema for the core properties of a Definition.
  *
- * `typeVersion` accepts CalVer strings.  Legacy numeric values (from
- * pre-CalVer definitions stored on disk) are coerced to `undefined` so
- * the upgrade chain treats them as "oldest version, needs full upgrade".
+ * `typeVersion` records the model type version a definition's global arguments
+ * were authored or migrated for, as CalVer.  A number is stringified rather
+ * than rejected or discarded: definitions under `models/` are git-tracked files
+ * people hand-edit, so a malformed value has to survive into the object for
+ * `model get` to name it and for `DefinitionUpgradeService` to refuse it
+ * (swamp-club#2412).  Rejecting here would make the definition unloadable by
+ * the very command you reach for to diagnose it.
  */
 /**
  * Zod schema for per-method arguments stored in a definition.
@@ -202,7 +206,7 @@ const definitionNameStrict = definitionNameBase
 const DefinitionObjectSchema = z.object({
   type: z.string().optional(),
   typeVersion: z.preprocess(
-    (val) => (typeof val === "number" ? undefined : val),
+    (val) => (typeof val === "number" ? String(val) : val),
     z.string().optional(),
   ),
   id: z.string().uuid(),
@@ -221,7 +225,7 @@ const DefinitionObjectSchema = z.object({
 const DefinitionStrictObjectSchema = z.object({
   type: z.string().optional(),
   typeVersion: z.preprocess(
-    (val) => (typeof val === "number" ? undefined : val),
+    (val) => (typeof val === "number" ? String(val) : val),
     z.string().optional(),
   ),
   id: z.string().uuid(),

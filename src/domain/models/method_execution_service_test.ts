@@ -42,6 +42,7 @@ import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { Data } from "../data/data.ts";
 import { UserError } from "../errors.ts";
+import { MALFORMED_TYPE_VERSION_CODE } from "./definition_upgrade_service.ts";
 import { getLogger } from "@logtape/logtape";
 import { createModelOutputId, type ModelOutput } from "./model_output.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -3825,16 +3826,17 @@ Deno.test("executeWorkflow - does not warn when the instance is current", async 
   assertEquals(warnings, []);
 });
 
-Deno.test("executeWorkflow - does not warn for a legacy definition with no typeVersion", async () => {
+Deno.test("executeWorkflow - does not warn for an unstamped definition when the type has no upgrade chain", async () => {
   const service = new DefaultMethodExecutionService();
   const model: ModelDefinition = {
     ...createTestModel({}),
     version: "2026.06.01.1",
   };
-  // No typeVersion recorded: a legacy pre-CalVer definition. Warning here would
-  // fire on every run with nothing actionable to say (swamp-club#2412).
+  // No typeVersion recorded, and no chain that could have migrated it. There
+  // is nothing to say, and saying it would fire on every run of every
+  // hand-written definition (swamp-club#2412).
   const definition = Definition.create({
-    name: "legacy-definition",
+    name: "unstamped-definition",
     globalArguments: { value: "test" },
   });
 
@@ -3847,4 +3849,69 @@ Deno.test("executeWorkflow - does not warn for a legacy definition with no typeV
   await service.executeWorkflow(definition, model, "start", context);
 
   assertEquals(warnings, []);
+});
+
+Deno.test("executeWorkflow - warns once for an unstamped definition when the type has an upgrade chain", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    ...createTestModel({}),
+    version: "2026.06.01.1",
+    upgrades: [
+      {
+        toVersion: "2026.06.01.1",
+        description: "Rename value to content",
+        upgradeAttributes: (old: Record<string, unknown>) => {
+          const { value, ...rest } = old;
+          return { ...rest, content: value };
+        },
+      },
+    ],
+  };
+  // The chain is declined rather than applied: the arguments are already in
+  // the shape the current version expects, and applying it would rename
+  // `value` away (swamp-club#2412). The warning is what makes the skip
+  // visible, and it is actionable — record the version and the ambiguity is
+  // gone.
+  const definition = Definition.create({
+    name: "unstamped-definition",
+    globalArguments: { value: "test" },
+  });
+
+  const warnings: string[] = [];
+  const { context } = createTestContext({
+    modelType: model.type,
+    logger: captureWarnings(warnings),
+  });
+
+  await service.executeWorkflow(definition, model, "start", context);
+
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0], "unstamped-definition");
+  assertStringIncludes(warnings[0], "records no typeVersion");
+  assertStringIncludes(warnings[0], "2026.06.01.1");
+  // The arguments themselves are untouched.
+  assertEquals(definition.globalArguments.value, "test");
+  assertEquals(definition.globalArguments.content, undefined);
+});
+
+Deno.test("executeWorkflow - fails a run whose definition records a malformed typeVersion", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    ...createTestModel({}),
+    version: "2026.06.01.1",
+  };
+  const definition = Definition.create({
+    name: "hand-edited-definition",
+    typeVersion: "1.0",
+    globalArguments: { value: "test" },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+
+  const error = await assertRejects(
+    () => service.executeWorkflow(definition, model, "start", context),
+    UserError,
+    '"1.0"',
+  );
+  assertEquals((error as UserError).code, MALFORMED_TYPE_VERSION_CODE);
 });

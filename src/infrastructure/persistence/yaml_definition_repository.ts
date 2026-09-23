@@ -657,8 +657,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // arguments, which stranded it permanently: DefinitionUpgradeService
     // short-circuits once typeVersion is at or above the model version, so no
     // upgrade chain shipped later could ever run (swamp-club#900). An absent
-    // typeVersion is likewise left absent — it is the recorded signal for a
-    // legacy pre-CalVer definition (swamp-club#2412).
+    // typeVersion is likewise left absent rather than backfilled: backfilling
+    // would claim the arguments were authored for a version nobody verified
+    // them against (swamp-club#2412).
 
     // Fail closed before writing: a global argument marked `{ sensitive: true }`
     // must never be persisted as a literal value — it would sit in cleartext in

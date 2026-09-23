@@ -365,5 +365,5 @@ Deno.test("modelGet: describes a definition whose typeVersion is malformed", asy
   const data = await getData(deps);
   assertEquals(data.typeVersion, "1.0.0");
   assertEquals(data.currentTypeVersion, "2026.06.01.1");
-  assertEquals(data.staleness, "unknown");
+  assertEquals(data.staleness, "invalid");
 });
