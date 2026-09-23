@@ -43,6 +43,7 @@ import {
 } from "./model_resolver.ts";
 import { CyclicDependencyError } from "./errors.ts";
 import { evaluateDefinitionExpressions } from "./definition_expression_pass.ts";
+import { BINDING_MACROS } from "./swamp_namespaces.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -75,18 +76,6 @@ const VAULT_GET_PATTERN = /vault\.get\s*\(/;
  * where the context also carries the process environment.
  */
 const ENV_PATTERN = /(?<![.\w])env\b/;
-
-/**
- * CEL macros whose first argument binds a local variable for the remaining
- * arguments. A variable bound this way shadows the root `env` identifier.
- */
-const BINDING_MACROS = new Set([
-  "map",
-  "filter",
-  "all",
-  "exists",
-  "exists_one",
-]);
 
 /**
  * Walks a parsed CEL tree looking for a reference to the root `env`

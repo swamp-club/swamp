@@ -491,6 +491,21 @@ Deno.test("DefinitionExpressionEvaluator: resolves expressions naming a hyphenat
   assertEquals(result.failedExpressions.size, 0);
 });
 
+Deno.test("DefinitionExpressionEvaluator: leaves another templating system's expressions in place unrecorded", async () => {
+  const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
+  const run = "echo ${{ github.sha }} ${{ matrix.os }} ${{ secrets.TOKEN }}";
+  const result = await evaluator.evaluate(
+    Definition.create({
+      name: "gha-writer",
+      methods: { run: { arguments: { run } } },
+    }),
+    emptyContext(),
+    "unrestricted",
+  );
+  assertEquals(result.definition.getMethodArguments("run"), { run });
+  assertEquals(result.failedExpressions.size, 0);
+});
+
 Deno.test("DefinitionExpressionEvaluator: does not record runtime, invalid-syntax or unauthored expressions as failures", async () => {
   const evaluator = new DefinitionExpressionEvaluator(new ThrowingEvaluator());
   const def = Definition.create({

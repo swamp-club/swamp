@@ -946,6 +946,42 @@ Deno.test("modelMethodRun: fails with the CEL error when the method's own argume
   assertEquals(executed, []);
 });
 
+Deno.test("modelMethodRun: a run that fails the argument check does not replace the saved evaluation", async () => {
+  const definition = Definition.create({
+    name: "consumer",
+    methods: { run: { arguments: { key: `cat ${FAILED_RAW}` } } },
+  });
+  const saved: Definition[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createFailingEvaluationDeps(definition, []),
+    saveEvaluatedDefinition: (_type, def) => {
+      saved.push(def);
+      return Promise.resolve();
+    },
+  };
+  await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("consumer", "run"),
+    ),
+  );
+  assertEquals(saved, []);
+
+  // A passing run still saves, without the --input overrides.
+  await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      { ...createTestInput("consumer", "run"), inputs: { key: "overridden" } },
+    ),
+  );
+  assertEquals(saved.length, 1);
+  assertEquals(saved[0].getMethodArguments("run"), {
+    key: `cat ${FAILED_RAW}`,
+  });
+});
+
 Deno.test("modelMethodRun: a failed expression in another method's arguments does not stop this method", async () => {
   const definition = Definition.create({
     name: "two-methods",

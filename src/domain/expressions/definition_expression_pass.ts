@@ -27,6 +27,7 @@ import { ExpressionError } from "./errors.ts";
 import type { ExpressionLocation } from "./expression.ts";
 import { replaceExpressions } from "./expression_parser.ts";
 import type { ExpressionContext } from "./model_resolver.ts";
+import { referencesOnlySwampNamespaces } from "./swamp_namespaces.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 
 /** Result of one CEL pass over a definition's data. */
@@ -53,8 +54,9 @@ function isGlobalArgumentPath(path: string): boolean {
  * not yet available, is left in place so it cannot break a method that never
  * uses it. Each one is recorded in `failedExpressions` with its reason, for
  * {@link assertMethodArgumentsEvaluated} to raise if the method being run
- * does use it. Text that is not valid CEL (prose documenting the syntax) is
- * left in place without being recorded.
+ * does use it. Text that is not valid CEL (prose documenting the syntax), or
+ * CEL rooted outside swamp's namespaces (`${{ github.sha }}` written for
+ * another templating system), is left in place without being recorded.
  *
  * @param expressions - Expressions to evaluate. Callers exclude runtime
  *   (vault/env/deferred) expressions and apply their own provenance rules.
@@ -92,10 +94,15 @@ export async function evaluateDefinitionExpressions(
           await celEvaluator.evaluateAsync(expr.celExpression, ctx),
         );
       } catch (error) {
-        // Syntax is only consulted once evaluation has failed, so a parser
-        // disagreement can misclassify a failure but never stop an
-        // expression that evaluates from resolving.
-        if (!celEvaluator.validate(expr.celExpression).valid) continue;
+        // Only now is the text classified, so a classification mistake can
+        // never stop an expression that evaluates from resolving. Text that
+        // is not CEL (prose documenting the syntax), or CEL rooted outside
+        // swamp's namespaces (`${{ github.sha }}` for another templating
+        // system), is left in place unrecorded, as it always was.
+        if (
+          !celEvaluator.validate(expr.celExpression).valid ||
+          !referencesOnlySwampNamespaces(expr.celExpression)
+        ) continue;
         // Most often an input referenced directly (not inside a conditional
         // branch) that only another method supplies — see #653.
         failedExpressions.set(

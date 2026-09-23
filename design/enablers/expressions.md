@@ -575,8 +575,15 @@ and recorded with its reason. Before a method runs, after `--input` or step
 method's arguments. If one still holds a recorded failure, the run fails with
 the original CEL message and the argument path, rather than handing the method
 `${{ ... }}` text. Global arguments the method reads directly are guarded
-lazily by the Proxy on `context.globalArgs`. `${{ ... }}` text that is not
-valid CEL is prose and is never recorded.
+lazily by the Proxy on `context.globalArgs`.
+
+Text is classified only after evaluation fails, so a misclassification can
+never stop an expression that evaluates. Two kinds of failure are left in place
+without being recorded. The first is text that is not valid CEL, which is prose.
+The second is CEL with a free root identifier outside swamp's namespaces, such
+as `${{ github.sha }}` in a GitHub Actions file a shell model writes, which
+belongs to another templating system. Both keep passing through to the method
+as literal text.
 
 ## Sensitive Data
 

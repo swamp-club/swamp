@@ -36,7 +36,7 @@ import {
 } from "../../domain/reports/report_context.ts";
 import { buildOutputSpecs } from "../../domain/models/output_spec_builder.ts";
 import type { ReportResultView } from "./model_method_run_view.ts";
-import type { Definition } from "../../domain/definitions/definition.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
@@ -550,6 +550,7 @@ export async function* modelMethodRun(
 
           let deferredExpressions: readonly DeferredExpression[] = [];
           let failedExpressions: FailedExpressions = new Map();
+          let pendingSave: Definition | undefined;
           if (input.lastEvaluated) {
             const lastEval = await deps.loadEvaluatedDefinition(
               modelType,
@@ -580,11 +581,11 @@ export async function* modelMethodRun(
               failedExpressions = evalResult.failedExpressions ??
                 failedExpressions;
             }
-            await deps.saveEvaluatedDefinition(
-              modelType,
-              evaluatedDefinition,
-              authoredExpressions,
-            );
+            // Saved once the argument check below passes, so a run that
+            // fails it never replaces the last good evaluation that
+            // --last-evaluated reuses. Snapshotted now because the --input
+            // overrides below mutate the definition and are not persisted.
+            pendingSave = Definition.fromData(evaluatedDefinition.toData());
           }
 
           // Merge override inputs into method arguments.
@@ -653,6 +654,13 @@ export async function* modelMethodRun(
               }),
             };
             return;
+          }
+          if (pendingSave) {
+            await deps.saveEvaluatedDefinition(
+              modelType,
+              pendingSave,
+              authoredExpressions,
+            );
           }
 
           exprSpan.end();
