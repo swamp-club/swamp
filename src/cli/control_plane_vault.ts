@@ -34,7 +34,7 @@ export async function initializeControlPlaneVaultForCli(
   repoDir: string,
   syncService?: DatastoreSyncService,
   options?: ControlPlaneVaultCliOptions,
-): Promise<ControlPlaneVaultInitResult | null> {
+): Promise<ControlPlaneVaultInitResult> {
   const caps = syncService?.capabilities?.();
   const hasRemote = !!(caps?.controlPlane && syncService?.controlPlaneStore);
 

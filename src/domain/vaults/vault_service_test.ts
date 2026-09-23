@@ -70,6 +70,27 @@ Deno.test("VaultService - missing vault configuration error handling", async (t)
   );
 
   await t.step(
+    "should describe the reserved control-plane vault instead of suggesting vault create",
+    async () => {
+      const vaultService = new VaultService();
+
+      const error = await assertRejects(
+        () => vaultService.get("_token-secrets", "test-key"),
+        Error,
+      );
+
+      assertStringIncludes(
+        error.message,
+        "swamp's reserved control-plane vault",
+      );
+      assertEquals(
+        error.message.includes("swamp vault create <type>"),
+        false,
+      );
+    },
+  );
+
+  await t.step(
     "should provide helpful error when specific vault not found",
     async () => {
       const vaultService = new VaultService();

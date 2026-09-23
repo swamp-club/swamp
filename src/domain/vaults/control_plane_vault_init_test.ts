@@ -17,11 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
+import { UserError } from "../errors.ts";
 import { initializeControlPlaneVault } from "./control_plane_vault_init.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "./control_plane_vault_provider.ts";
+import type { VaultProvider } from "./vault_provider.ts";
+import { VaultService } from "./vault_service.ts";
 
 await initializeLogging({});
 
@@ -95,8 +103,54 @@ Deno.test("initializeControlPlaneVault: provider can round-trip a secret", async
   assertEquals(retrieved, "test-value");
 });
 
-Deno.test("initializeControlPlaneVault: returns null on store failure", async () => {
+Deno.test("initializeControlPlaneVault: throws the store failure for a remote control plane", async () => {
   const store = createFailingStore();
-  const result = await initializeControlPlaneVault(store, false);
-  assertEquals(result, null);
+  const error = await assertRejects(
+    () => initializeControlPlaneVault(store, true),
+    UserError,
+  );
+  assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+  assertStringIncludes(error.message, "remote datastore");
+  assertStringIncludes(error.message, "S3 unreachable");
+});
+
+Deno.test("initializeControlPlaneVault: throws the store failure for a local control plane", async () => {
+  const store = createFailingStore();
+  const error = await assertRejects(
+    () => initializeControlPlaneVault(store, false),
+    UserError,
+  );
+  assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+  assertStringIncludes(error.message, "local control plane");
+  assertStringIncludes(error.message, "S3 unreachable");
+});
+
+Deno.test("initializeControlPlaneVault: a failed init does not replace the registered provider", async () => {
+  const sentinel: VaultProvider = {
+    get: () => Promise.resolve("sentinel-value"),
+    put: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+    getName: () => TOKEN_SECRETS_VAULT_NAME,
+  };
+  VaultService.registerGlobalProvider(
+    TOKEN_SECRETS_VAULT_NAME,
+    "control_plane",
+    sentinel,
+  );
+
+  await assertRejects(
+    () => initializeControlPlaneVault(createFailingStore(), true),
+    UserError,
+  );
+
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const vaultService = await VaultService.fromRepository(tempDir);
+    assertEquals(
+      await vaultService.get(TOKEN_SECRETS_VAULT_NAME, "any-key"),
+      "sentinel-value",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
 });

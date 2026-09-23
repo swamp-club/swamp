@@ -19,6 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
+import { UserError } from "../errors.ts";
 import {
   ControlPlaneVaultProvider,
   TOKEN_SECRETS_VAULT_NAME,
@@ -32,29 +33,40 @@ export interface ControlPlaneVaultInitResult {
   isRemote: boolean;
 }
 
+/**
+ * Initializes the `_token-secrets` control-plane vault and registers it as a
+ * global vault provider.
+ *
+ * Throws a UserError carrying the underlying cause when the provider cannot
+ * initialize. There is deliberately no fallback to a user vault: serve only
+ * reads token secrets from `_token-secrets`, so a secret written anywhere else
+ * produces a token that never authenticates.
+ */
 export async function initializeControlPlaneVault(
   store: ControlPlaneStore,
   isRemote: boolean,
-): Promise<ControlPlaneVaultInitResult | null> {
+): Promise<ControlPlaneVaultInitResult> {
+  const provider = new ControlPlaneVaultProvider(store);
   try {
-    const provider = new ControlPlaneVaultProvider(store);
     await provider.initialize();
-
-    VaultService.registerGlobalProvider(
-      TOKEN_SECRETS_VAULT_NAME,
-      "control_plane",
-      provider,
-    );
-
-    logger.info`Initialized ${TOKEN_SECRETS_VAULT_NAME} vault (${
-      isRemote ? "remote" : "local"
-    } control plane)`;
-
-    return { provider, isRemote };
   } catch (err) {
-    logger.warn`Failed to initialize control-plane vault: ${
-      err instanceof Error ? err.message : String(err)
-    }. Token secrets will be stored in the user vault.`;
-    return null;
+    logger.debug`Control-plane vault initialization error: ${err}`;
+    throw new UserError(
+      `Failed to initialize the ${TOKEN_SECRETS_VAULT_NAME} control-plane vault (${
+        isRemote ? "remote datastore" : "local control plane"
+      }): ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
+
+  VaultService.registerGlobalProvider(
+    TOKEN_SECRETS_VAULT_NAME,
+    "control_plane",
+    provider,
+  );
+
+  logger.info`Initialized ${TOKEN_SECRETS_VAULT_NAME} vault (${
+    isRemote ? "remote" : "local"
+  } control plane)`;
+
+  return { provider, isRemote };
 }
