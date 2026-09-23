@@ -268,6 +268,24 @@ export async function sendInstanceHeartbeat(
   return await resp.json() as HeartbeatResponse;
 }
 
+/**
+ * Error thrown by {@link resolveUsername} when the provider reports that the
+ * username does not exist (HTTP 404). Any other failure — a non-2xx status,
+ * a network error or a timeout — throws a plain `Error`, so callers can tell
+ * "this user does not exist" apart from "the provider could not answer".
+ */
+export class UsernameNotFoundError extends Error {
+  readonly username: string;
+  readonly providerUrl: string;
+
+  constructor(username: string, providerUrl: string) {
+    super(`Username '${username}' not found on ${providerUrl}`);
+    this.username = username;
+    this.providerUrl = providerUrl;
+    this.name = "UsernameNotFoundError";
+  }
+}
+
 export async function resolveUsername(
   providerUrl: string,
   username: string,
@@ -284,7 +302,7 @@ export async function resolveUsername(
     },
   );
   if (resp.status === 404) {
-    throw new Error(`Username '${username}' not found on ${providerUrl}`);
+    throw new UsernameNotFoundError(username, providerUrl);
   }
   if (!resp.ok) {
     throw new Error(

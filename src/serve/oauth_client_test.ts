@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert";
 import {
   DeviceGrantPollError,
@@ -27,6 +27,7 @@ import {
   resolveUsername,
   sendInstanceHeartbeat,
   startDeviceGrant,
+  UsernameNotFoundError,
 } from "./oauth_client.ts";
 
 /** Start a simple mock HTTP server that returns canned responses. */
@@ -563,22 +564,47 @@ Deno.test("resolveUsername: returns sub on success", async () => {
   }
 });
 
-Deno.test("resolveUsername: throws on 404", async () => {
+Deno.test("resolveUsername: throws UsernameNotFoundError on 404", async () => {
   const mock = startMockServer(() =>
     new Response("Not Found", { status: 404 })
   );
   try {
-    await assertRejects(
+    const providerUrl = `http://localhost:${mock.port}`;
+    const err = await assertRejects(
       () =>
         resolveUsername(
-          `http://localhost:${mock.port}`,
+          providerUrl,
           "nonexistent",
           "my-token",
           AbortSignal.timeout(5000),
         ),
-      Error,
+      UsernameNotFoundError,
       "Username 'nonexistent' not found",
     );
+    assertEquals(err.username, "nonexistent");
+    assertEquals(err.providerUrl, providerUrl);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("resolveUsername: a 5xx is not a UsernameNotFoundError", async () => {
+  const mock = startMockServer(() =>
+    new Response("Unavailable", { status: 503 })
+  );
+  try {
+    const err = await assertRejects(
+      () =>
+        resolveUsername(
+          `http://localhost:${mock.port}`,
+          "someuser",
+          "my-token",
+          AbortSignal.timeout(5000),
+        ),
+      Error,
+      "Failed to resolve username 'someuser': 503",
+    );
+    assert(!(err instanceof UsernameNotFoundError));
   } finally {
     await mock.shutdown();
   }
@@ -589,7 +615,7 @@ Deno.test("resolveUsername: throws on other HTTP error", async () => {
     new Response("Forbidden", { status: 403 })
   );
   try {
-    await assertRejects(
+    const err = await assertRejects(
       () =>
         resolveUsername(
           `http://localhost:${mock.port}`,
@@ -600,6 +626,7 @@ Deno.test("resolveUsername: throws on other HTTP error", async () => {
       Error,
       "Failed to resolve username 'someuser': 403",
     );
+    assert(!(err instanceof UsernameNotFoundError));
   } finally {
     await mock.shutdown();
   }

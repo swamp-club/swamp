@@ -198,7 +198,11 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   entry must parse as `user:<id>`, `group:<name>` or `idp-group:<name>`.
 - `oauth`: clients log in through the swamp-club device grant. Requires
   `--admins` and at least one of `--allowed-collectives` / `--allowed-users`
-  (otherwise "any swamp-club user can connect").
+  (otherwise "any swamp-club user can connect"). At startup a username the
+  provider does not know is skipped with an ERROR log rather than stopping
+  serve. `swamp serve check-config` finds such names before a deploy. See
+  "Username resolution" in
+  [remote execution](../enablers/remote-execution.md).
 
 **Operator gate.** In `token` and `oauth` mode the serve process must itself be
 logged in to swamp-club with the `serve:*` scope (`requireAuthenticated` /

@@ -105,6 +105,9 @@ import {
   renderDaemonStatus,
   toServiceMode,
 } from "../../presentation/output/serve_daemon_output.ts";
+import { renderServeCheckConfig } from "../../presentation/output/serve_check_config_output.ts";
+import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { selectCheckConfigToken } from "../serve_check_config_token.ts";
 import { groupCommandAction } from "../group_action.ts";
 import {
   consumeStream,
@@ -1144,6 +1147,140 @@ const reloadCommand = new Command()
     }
 
     logger.info`Sent SIGHUP to serve process ${pid}`;
+  });
+
+const checkConfigCommand = new Command()
+  .name("check-config")
+  .description(
+    "Check a serve config's auth settings without starting the server.\n\n" +
+      "Loads the auth settings the same way 'swamp serve' does (flags, env vars, then the " +
+      "config file), validates them, and in oauth mode looks up every admin and " +
+      "allowed-user name on the OAuth provider. Exits non-zero if a name is unknown " +
+      "or serve would refuse to start. Uses SWAMP_API_KEY or your 'swamp auth login' " +
+      "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
+      "for a custom provider). Nothing is written to the repository or the vault.",
+  )
+  .example("Check the repository's serve config", "swamp serve check-config")
+  .example(
+    "Check a config file before deploying it",
+    "swamp serve check-config --config deploy/serve.yaml",
+  )
+  .example(
+    "Check names passed as flags",
+    "swamp serve check-config --auth-mode oauth --admins alice,bob --allowed-collectives eng",
+  )
+  .option(
+    "--config <path:string>",
+    "Path to serve config file (default: .swamp/serve.yaml)",
+  )
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option(
+    "--auth-mode <mode:string>",
+    "Authentication mode to check, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--admins <principals:string>",
+    "Comma-separated admin usernames, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--allowed-users <list:string>",
+    "Comma-separated allowed-user usernames, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--allowed-collectives <list:string>",
+    "Comma-separated collective slugs, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--oauth-provider <url:string>",
+    "OAuth provider URL, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .action(async function (options: AnyOptions) {
+    const ctx = createContext(options as GlobalOptions, [
+      "serve",
+      "check-config",
+    ]);
+    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
+    const configFile = loadServeConfig(
+      options.config as string | undefined,
+      repoDir,
+    );
+    const merged = mergeServeOptions(
+      configFile,
+      options,
+      parseExplicitFlags(Deno.args),
+    );
+    const authConfig = buildServeAuthConfig({
+      authMode: merged.authMode,
+      admins: merged.admins,
+      allowedCollectives: merged.allowedCollectives,
+      allowedUsers: merged.allowedUsers,
+      oauthProvider: merged.oauthProvider,
+      oauthClientId: merged.oauthClientId,
+      groupsField: merged.groupsField,
+      restrictedModelTypes: merged.restrictedModelTypes,
+      restrictedCommands: merged.restrictedCommands,
+      approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
+    });
+
+    if (authConfig.mode !== "oauth") {
+      renderServeCheckConfig({
+        passed: true,
+        authMode: authConfig.mode,
+        entries: [],
+        allowedCollectives: [],
+        wouldStart: true,
+      }, ctx.outputMode);
+      return;
+    }
+
+    const providerUrl = authConfig.oauthProvider;
+    // AuthRepository.load() returns SWAMP_API_KEY (issued by SWAMP_CLUB_URL
+    // or the default server) when set, otherwise the stored login.
+    const creds = await new AuthRepository().load();
+    const token = selectCheckConfigToken(
+      providerUrl,
+      creds
+        ? {
+          serverUrl: creds.serverUrl,
+          apiKey: creds.apiKey,
+          source: Deno.env.get("SWAMP_API_KEY") ? "env" : "login",
+        }
+        : null,
+    );
+    const { resolveUsername } = await import("../../serve/oauth_client.ts");
+    const { checkAccessLists } = await import(
+      "../../serve/oauth_access_list_resolution.ts"
+    );
+    const check = await checkAccessLists(
+      authConfig,
+      (username) =>
+        resolveUsername(
+          providerUrl,
+          username,
+          token,
+          AbortSignal.timeout(10_000),
+        ),
+      providerUrl,
+    );
+    const notFound = check.entries.filter((e) => e.status === "not-found");
+    const passed = check.wouldStart && notFound.length === 0;
+
+    renderServeCheckConfig({
+      passed,
+      authMode: authConfig.mode,
+      oauthProvider: providerUrl,
+      entries: check.entries,
+      allowedCollectives: authConfig.allowedCollectives,
+      wouldStart: check.wouldStart,
+      ...(check.refusal !== undefined ? { refusal: check.refusal } : {}),
+    }, ctx.outputMode);
+
+    // The rendered result already says what failed; like `access can-i`,
+    // report failure through the exit code rather than a second error.
+    if (!passed) Deno.exitCode = 1;
   });
 
 const daemonCommand = new Command()
@@ -2285,45 +2422,38 @@ export const serveCommand = new Command()
         { clientId: credentials.clientId },
       );
 
+      const {
+        assertAccessListsUsable,
+        chooseResolutionMode,
+        listUncachedNames,
+        resolveAccessLists,
+      } = await import("../../serve/oauth_access_list_resolution.ts");
       const cachedMap = credentials.resolvedAdmins ?? {};
-      const allCached = authConfig.admins.every((a) => {
-        const u = a.startsWith("user:") ? a.slice(5) : a;
-        return !!cachedMap[u];
-      }) && authConfig.allowedUsers.every((e) => {
-        const u = e.startsWith("user:") ? e.slice(5) : e;
-        return !!cachedMap[`allowed:${u}`];
-      });
+      const resolutionMode = chooseResolutionMode(
+        authConfig.admins,
+        authConfig.allowedUsers,
+        cachedMap,
+      );
 
       let accessToken = credentials.accessToken;
 
-      if (!allCached && !accessToken) {
-        const missingAdmins = authConfig.admins
-          .map((a) => a.startsWith("user:") ? a.slice(5) : a)
-          .filter((u) => !cachedMap[u]);
-        const missingAllowed = authConfig.allowedUsers
-          .map((e) => e.startsWith("user:") ? e.slice(5) : e)
-          .filter((u) => !cachedMap[`allowed:${u}`]);
+      if (resolutionMode === "full" && !accessToken) {
+        const missingNames = listUncachedNames(
+          authConfig.admins,
+          authConfig.allowedUsers,
+          cachedMap,
+        ).join(", ");
 
         if (clubApiKey) {
           logger.info(
             "Using SWAMP_API_KEY to resolve admin/allowed-user usernames: {admins}",
-            {
-              admins: [
-                ...missingAdmins,
-                ...missingAllowed.map((u) => `allowed:${u}`),
-              ].join(", "),
-            },
+            { admins: missingNames },
           );
           accessToken = clubApiKey;
         } else {
           logger.info(
             "OAuth user config changed — device grant required to resolve: {admins}",
-            {
-              admins: [
-                ...missingAdmins,
-                ...missingAllowed.map((u) => `allowed:${u}`),
-              ].join(", "),
-            },
+            { admins: missingNames },
           );
 
           const { startDeviceGrant, pollForToken, DeviceGrantPollError } =
@@ -2390,101 +2520,111 @@ export const serveCommand = new Command()
         }
       }
 
-      const resolvedMap: Record<string, string> = {};
-      if (allCached) {
-        for (let i = 0; i < authConfig.admins.length; i++) {
-          const admin = authConfig.admins[i];
-          const username = admin.startsWith("user:") ? admin.slice(5) : admin;
-          const sub = cachedMap[username];
-          authConfig.admins[i] = `user:${sub}`;
-          resolvedMap[username] = sub;
-          logger.info(
-            "Using cached admin resolution: {username} → user:{sub}",
-            { username, sub },
-          );
-        }
-        for (let i = 0; i < authConfig.allowedUsers.length; i++) {
-          const entry = authConfig.allowedUsers[i];
-          const username = entry.startsWith("user:") ? entry.slice(5) : entry;
-          const sub = cachedMap[`allowed:${username}`];
-          authConfig.allowedUsers[i] = sub;
-          resolvedMap[`allowed:${username}`] = sub;
-          logger.info(
-            "Using cached allowed-user resolution: {username} → {sub}",
-            { username, sub },
-          );
-        }
-      } else {
-        const { resolveUsername } = await import(
-          "../../serve/oauth_client.ts"
-        );
-        const { storeResolvedAdmins } = await import(
-          "../../serve/oauth_registration.ts"
-        );
-        for (let i = 0; i < authConfig.admins.length; i++) {
-          const admin = authConfig.admins[i];
-          const username = admin.startsWith("user:") ? admin.slice(5) : admin;
-          try {
-            const sub = await resolveUsername(
+      const { resolveUsername } = await import(
+        "../../serve/oauth_client.ts"
+      );
+      const { storeResolvedAdmins } = await import(
+        "../../serve/oauth_registration.ts"
+      );
+      const resolution = await resolveAccessLists({
+        admins: authConfig.admins,
+        allowedUsers: authConfig.allowedUsers,
+        cache: cachedMap,
+        mode: resolutionMode,
+        resolve: resolutionMode === "cached"
+          ? null
+          : (username) =>
+            resolveUsername(
               authConfig.oauthProvider,
               username,
               accessToken!,
               AbortSignal.timeout(10_000),
-            );
-            authConfig.admins[i] = `user:${sub}`;
-            resolvedMap[username] = sub;
-            logger.info("Resolved admin {username} to user:{sub}", {
-              username,
-              sub,
-            });
-          } catch (err) {
-            throw new UserError(
-              `Failed to resolve admin '${admin}': ${
-                err instanceof Error ? err.message : String(err)
-              }. Ensure the username exists on ${authConfig.oauthProvider}.`,
-            );
-          }
+            ),
+        providerUrl: authConfig.oauthProvider,
+        now: () => new Date().toISOString(),
+      });
+
+      for (const resolvedEntry of resolution.resolved) {
+        const { kind, entry, username, sub, fromCache, notFoundNow } =
+          resolvedEntry;
+        if (notFoundNow !== undefined) {
+          const list = kind === "admin"
+            ? "--admins / auth.admins"
+            : "--allowed-users / auth.allowed-users";
+          logger
+            .warn`Keeping ${entry} from ${list} as ${sub}: the provider now reports it not found (${notFoundNow}), but it resolved before. If the account was deleted or renamed, remove the name.`;
         }
-        for (let i = 0; i < authConfig.allowedUsers.length; i++) {
-          const entry = authConfig.allowedUsers[i];
-          const username = entry.startsWith("user:") ? entry.slice(5) : entry;
-          try {
-            const sub = await resolveUsername(
-              authConfig.oauthProvider,
-              username,
-              accessToken!,
-              AbortSignal.timeout(10_000),
-            );
-            authConfig.allowedUsers[i] = sub;
-            resolvedMap[`allowed:${username}`] = sub;
-            logger.info("Resolved allowed-user {username} to {sub}", {
-              username,
-              sub,
-            });
-          } catch (err) {
-            throw new UserError(
-              `Failed to resolve allowed-user '${entry}': ${
-                err instanceof Error ? err.message : String(err)
-              }. Ensure the username exists on ${authConfig.oauthProvider}.`,
-            );
-          }
+        if (kind === "admin") {
+          logger.info(
+            fromCache
+              ? "Using cached admin resolution: {username} → user:{sub}"
+              : "Resolved admin {username} to user:{sub}",
+            { username, sub },
+          );
+        } else {
+          logger.info(
+            fromCache
+              ? "Using cached allowed-user resolution: {username} → {sub}"
+              : "Resolved allowed-user {username} to {sub}",
+            { username, sub },
+          );
         }
+      }
+      for (const u of resolution.unresolved) {
+        // A fresh 404 carries a reason; a recorded one does not.
+        if (u.kind === "admin") {
+          if (u.reason !== undefined) {
+            logger
+              .error`Skipping admin ${u.entry}: ${u.reason}. Fix the name in --admins / auth.admins, or remove it.`;
+          } else {
+            logger
+              .error`Skipping admin ${u.entry}: not found on ${authConfig.oauthProvider} since ${u.notFoundSince}. It stays skipped until removed from --admins / auth.admins. If the account exists now (swamp serve check-config), remove the name, restart, then add it back.`;
+          }
+        } else if (u.reason !== undefined) {
+          logger
+            .error`Skipping allowed-user ${u.entry}: ${u.reason}. Fix the name in --allowed-users / auth.allowed-users, or remove it.`;
+        } else {
+          logger
+            .error`Skipping allowed-user ${u.entry}: not found on ${authConfig.oauthProvider} since ${u.notFoundSince}. It stays skipped until removed from --allowed-users / auth.allowed-users. If the account exists now (swamp serve check-config), remove the name, restart, then add it back.`;
+        }
+      }
+
+      // Refuse to start before persisting or applying anything, so a
+      // refused start can never leave behind an unusable cache.
+      assertAccessListsUsable(
+        {
+          admins: authConfig.admins,
+          allowedUsers: authConfig.allowedUsers,
+          allowedCollectives: authConfig.allowedCollectives,
+        },
+        resolution,
+        authConfig.oauthProvider,
+      );
+
+      // Written in either mode: dropping a removed name's record is what
+      // lets it be looked up fresh if it is added back.
+      if (resolution.cacheChanged) {
         await storeResolvedAdmins(
           {
             putVaultSecret: (_v, k, val) =>
               oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
           },
           TOKEN_SECRETS_VAULT_NAME,
-          resolvedMap,
+          resolution.cache,
         );
       }
 
-      for (const [key, sub] of Object.entries(resolvedMap)) {
-        const username = key.startsWith("allowed:")
-          ? key.slice("allowed:".length)
-          : key;
-        resolvedUserNames[sub] = username;
-      }
+      authConfig.admins.splice(
+        0,
+        authConfig.admins.length,
+        ...resolution.admins,
+      );
+      authConfig.allowedUsers.splice(
+        0,
+        authConfig.allowedUsers.length,
+        ...resolution.allowedUsers,
+      );
+      Object.assign(resolvedUserNames, resolution.usernamesBySub);
     }
 
     const autoDefRepo = new YamlDefinitionRepository(
@@ -5407,4 +5547,5 @@ export const serveCommand = new Command()
     repoContext.catalogStore.close();
   })
   .command("reload", reloadCommand)
+  .command("check-config", checkConfigCommand)
   .command("daemon", daemonCommand);
