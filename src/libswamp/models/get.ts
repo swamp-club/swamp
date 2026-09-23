@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Definition } from "../../domain/definitions/definition.ts";
+import {
+  resolveStaleness,
+  type StalenessState,
+} from "../../domain/definitions/definition_staleness.ts";
+export type { StalenessState };
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -46,7 +51,17 @@ export interface ModelGetData {
   tags: Record<string, string>;
   globalArguments: Record<string, unknown>;
   autoCreated?: boolean;
+  /**
+   * The model type version this definition's global arguments were authored or
+   * migrated for, as recorded in the definition itself. Absent for a legacy
+   * pre-CalVer definition. This previously reported the *registered* model
+   * version, which hid staleness entirely (swamp-club#900).
+   */
   typeVersion?: string;
+  /** The version of the model type currently registered from the bundle. */
+  currentTypeVersion?: string;
+  /** How `typeVersion` relates to `currentTypeVersion`. */
+  staleness?: StalenessState;
   globalArgumentsSchema?: object;
   methods?: MethodDescribeData[];
   configuredMethods?: Record<
@@ -159,7 +174,15 @@ export async function* modelGet(
         tags: definition.tags,
         globalArguments,
         autoCreated: autoCreated || undefined,
-        typeVersion: modelDef?.version,
+        typeVersion: definition.typeVersion,
+        currentTypeVersion: modelDef?.version,
+        staleness: modelDef
+          ? resolveStaleness(
+            definition.typeVersion,
+            modelDef.version,
+            (modelDef.upgrades ?? []).map((u) => u.toVersion),
+          ).state
+          : undefined,
         globalArgumentsSchema: modelDef?.globalArguments
           ? zodToJsonSchema(modelDef.globalArguments)
           : undefined,

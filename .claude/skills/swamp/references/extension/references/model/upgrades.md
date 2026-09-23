@@ -39,6 +39,28 @@ Upgrades are **lazy** — they run at method execution time, not at load time:
 4. The upgraded definition is persisted with the new `typeVersion`
 5. The upgrade only runs once — subsequent method calls skip it
 
+`typeVersion` advances **only** when an upgrade actually migrates the arguments,
+or when the definition is first created. Nothing else may touch it — persisting
+a definition for any other reason leaves it alone. This matters: once
+`typeVersion` reaches the model's version the upgrade service stops considering
+that instance, so advancing it without migrating would strand the instance
+permanently (swamp-club#900).
+
+## Spotting a Stranded Instance
+
+`swamp model get <instance>` reports three fields:
+
+- `typeVersion` — the version the instance's arguments were authored or migrated
+  for
+- `currentTypeVersion` — the version of the installed model type
+- `staleness` — `current`, `upgradable`, `stranded`, or `unknown`
+
+`stranded` means the installed version is ahead and **no upgrade entry covers
+the gap**, so nothing will ever migrate that instance. A method run against it
+also logs a warning. The fix is on the extension side: ship the `upgrades` entry
+that should have accompanied the version bump. This is why the no-op upgrade
+below is not optional.
+
 ## Upgrade Entry Structure
 
 ```typescript

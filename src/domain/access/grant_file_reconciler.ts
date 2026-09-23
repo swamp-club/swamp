@@ -333,6 +333,11 @@ export function createFileGrantStore(
         def = Definition.create({
           type: GRANT_MODEL_TYPE.normalized,
           name: instanceName,
+          // Stamped at creation because the persistence layer no longer does
+          // it. An absent typeVersion means "legacy pre-CalVer definition" and
+          // would make DefinitionUpgradeService apply the whole upgrade chain
+          // to already-current arguments (swamp-club#900).
+          typeVersion: grantModel.version,
         });
         await writeRepo.save(GRANT_MODEL_TYPE, def);
       }

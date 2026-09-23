@@ -213,6 +213,7 @@ export {
   type ModelGetData,
   type ModelGetDeps,
   type ModelGetEvent,
+  type StalenessState,
 } from "./models/get.ts";
 export {
   modelSearch,

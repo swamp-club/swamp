@@ -65,6 +65,46 @@ Upgrades are **lazy** — they run at method execution time in
 not at load time. The upgraded definition is persisted so the upgrade only runs
 once.
 
+### Who May Advance `typeVersion`
+
+`typeVersion` records the model type version a definition's global arguments
+were **authored or migrated for**. Only two things may set it:
+
+1. **Creation** — `model create`, direct type execution, and the internal
+   grant and server-token definition writers all stamp the registered model's
+   version at creation time.
+2. **`DefinitionUpgradeService`** — when it actually migrates the arguments.
+
+Persistence must never stamp it. `YamlDefinitionRepository.save()` used to
+overwrite `typeVersion` with the registered model's version on every write,
+which marked a stale instance as current without migrating its arguments.
+Because the upgrade service short-circuits once `typeVersion` is at or above
+the model version, that instance could then never be migrated by any upgrade
+chain shipped later — it was stranded permanently (swamp-club#900). An
+architecture fitness test
+(`integration/definition_type_version_rules_test.ts`) pins the rule that every
+`Definition.create` call site supplies the field, because the creation paths
+that relied on the old stamp are for model types with no upgrade chain, so a
+behavioural test would not catch a regression.
+
+### Staleness
+
+`resolveStaleness` (`src/domain/definitions/definition_staleness.ts`) compares a
+definition's recorded `typeVersion` against the registered model's version and
+upgrade chain, yielding one of four states:
+
+| State        | Meaning                                                            |
+| ------------ | ------------------------------------------------------------------ |
+| `current`    | Authored or migrated for this model version.                       |
+| `upgradable` | Behind, and the upgrade chain covers the gap — the next method run migrates it. |
+| `stranded`   | Behind, and no upgrade entry covers the gap. Nothing will migrate it; the extension must ship a `VersionUpgrade`. |
+| `unknown`    | No `typeVersion` recorded — a legacy pre-CalVer definition.        |
+
+`model get` reports `typeVersion`, `currentTypeVersion` and `staleness` in both
+output modes, and a method run emits one warning when an instance is
+`stranded`. `unknown` is deliberately never warned on: it is not evidence of
+staleness and would fire on every run.
+
 ### Upgrade Rules
 
 - Upgrades must be ordered chronologically by `toVersion`
@@ -137,6 +177,13 @@ are automatically coerced to `undefined` by the `DefinitionSchema`
 (`z.preprocess` in `src/domain/definitions/definition.ts`), meaning
 "pre-CalVer, needs upgrade from earliest version". They will be upgraded on
 first method execution and persisted with the new CalVer `typeVersion`.
+
+An absent `typeVersion` is therefore load-bearing: it is the recorded signal
+for a legacy definition, which is why persistence must not backfill it. Note
+that absence cannot distinguish a genuinely legacy definition from a
+hand-authored one whose arguments are already current-shaped; applying the full
+chain to the latter would corrupt them. That open question is tracked in
+swamp-club#2412.
 
 ## Definitions
 

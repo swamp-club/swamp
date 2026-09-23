@@ -170,6 +170,10 @@ export async function runDispatchRunner(
       ? { ...execution.methodArgs, probeMarker: dispatch.probeMarker }
       : execution.methodArgs;
 
+    // No typeVersion: this reconstructs a definition from the remote execution
+    // envelope purely to run one method, and is never persisted. The upgrade
+    // chain does not run here either — only executeWorkflow upgrades, and it
+    // does so before dispatching, so the arguments below are already migrated.
     const definition = Definition.create({
       type: execution.modelType,
       id: execution.definitionMeta.id,

@@ -372,6 +372,9 @@ async function mintServerTokenImpl(
     def = Definition.create({
       type: SERVER_TOKEN_MODEL_TYPE.normalized,
       name: tokenName,
+      // Creation owns typeVersion now that the repository no longer stamps it
+      // (swamp-club#900).
+      typeVersion: serverTokenModel.version,
     });
     const autoDefRepo = new YamlDefinitionRepository(
       repoDir,

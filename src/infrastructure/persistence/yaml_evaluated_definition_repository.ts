@@ -38,7 +38,6 @@ import {
   isFilenameSafeDefinitionName,
 } from "../../domain/definitions/definition.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
 
 interface EvaluatedDefinitionCache {
   definition: Definition;
@@ -359,9 +358,10 @@ export class YamlEvaluatedDefinitionRepository {
     };
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;
-    await modelRegistry.ensureTypeLoaded(type);
-    const modelDef = modelRegistry.get(type);
-    data.typeVersion = modelDef?.version ?? data.typeVersion;
+    // typeVersion is copied verbatim from the source definition by toData().
+    // Evaluated definitions are derived data replayed under --last-evaluated,
+    // so restamping here would reintroduce the staleness masking fixed in the
+    // source repository (swamp-club#900).
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
