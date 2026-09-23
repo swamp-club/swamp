@@ -406,6 +406,7 @@ async function createSyncRepo(dir: string, managedConfig: boolean) {
     datastoreConfig,
   );
   if (managedConfig) {
+    // Keyed by this run's temp dir, so it cannot leak into another test.
     registerManagedConfig(
       repoDir,
       true,
@@ -437,10 +438,7 @@ async function createSyncRepo(dir: string, managedConfig: boolean) {
       approveRequiresExplicitGrant: false,
     },
   } as ConnectionContext;
-  const cleanup = () => {
-    repoContext.catalogStore.close();
-    registerManagedConfig(repoDir, false);
-  };
+  const cleanup = () => repoContext.catalogStore.close();
   return { repoDir, datastoreResolver, ctx, events, cleanup };
 }
 

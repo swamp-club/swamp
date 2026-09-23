@@ -171,7 +171,7 @@ Deno.test("serve startup pullChanged must include auto-definitions subdir", asyn
 // repository.
 
 // `.markDirty()` or `.markDirty?.()` with no arguments, on any receiver.
-const BARE_MARK_DIRTY_CALL = /\.markDirty(?:\?\.)?\(\s*\)/g;
+const BARE_MARK_DIRTY_CALL = /\.markDirty(?:\?\.)?\(\s*\)/;
 // A declaration at column 0: a function (generators included), or a
 // const, let or class. Serve's command handlers live inside
 // `export const serveCommand = new Command()...`.
@@ -204,7 +204,6 @@ Deno.test("serve code must not make bare markDirty() calls (swamp-club#2408, swa
       const trimmed = line.trimStart();
       if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
       if (BARE_MARK_DIRTY_CALL.test(line)) sites.push(`${rel}: ${owner}`);
-      BARE_MARK_DIRTY_CALL.lastIndex = 0;
     }
   }
 

@@ -204,35 +204,31 @@ function resolveManagedPathsFromContext(
 }
 
 /**
- * Pushes an extension handler's change to the remote datastore. Under
- * managedConfig the only file these handlers write into the datastore cache
+ * Marks what an extension handler changed in the datastore cache, and says
+ * whether there is anything to push. Under managedConfig the only such file
  * is the config-tier lockfile: extension sources still go to the repo-local
  * pulled-extensions root (swamp-club#2429), so they are not marked here.
- * Without managedConfig nothing they write is in the cache, so there is
- * nothing to push.
+ * Without managedConfig nothing these handlers write is in the cache.
  */
-async function pushExtensionLockfile(
+async function markExtensionLockfile(
   ctx: ConnectionContext,
   marker:
     | import("../../infrastructure/persistence/repo_marker_repository.ts").RepoMarkerData
     | null,
   logger: ReturnType<typeof getSwampLogger>,
-): Promise<void> {
-  if (!ctx.syncService || !marker?.datastore?.managedConfig) return;
+): Promise<boolean> {
+  if (!ctx.syncService || !marker?.datastore?.managedConfig) return false;
   const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
-  const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-    ? ctx.datastoreConfig.namespace
-    : undefined;
   try {
     // Per path, not bare: a bare markDirty() turns the push into a walk of
     // the whole cache (swamp-club#2415).
     await ctx.repoContext.markDirty?.(lockfilePath);
-    await ctx.syncService.pushChanged({ namespace });
-  } catch (pushError) {
-    logger.warn("Failed to push changes to remote datastore: {error}", {
-      error: pushError instanceof Error ? pushError.message : String(pushError),
+  } catch (error) {
+    logger.warn("Failed to mark the extension lockfile dirty: {error}", {
+      error: error instanceof Error ? error.message : String(error),
     });
   }
+  return true;
 }
 
 export async function handleWorkerList(
@@ -716,7 +712,9 @@ export async function handleExtensionInstall(
       payload: { data: result ?? {} },
     });
 
-    await pushExtensionLockfile(ctx, marker, logger);
+    if (await markExtensionLockfile(ctx, marker, logger)) {
+      await pushChangedToRemote(ctx);
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "extension_install_failed", message);
@@ -825,7 +823,9 @@ export async function handleExtensionPull(
       payload: { data: result ?? {} },
     });
 
-    await pushExtensionLockfile(ctx, marker, logger);
+    if (await markExtensionLockfile(ctx, marker, logger)) {
+      await pushChangedToRemote(ctx);
+    }
   } catch (error) {
     const raw = error instanceof Error
       ? error
@@ -891,7 +891,9 @@ export async function handleExtensionRm(
       payload: { data: result ?? {} },
     });
 
-    await pushExtensionLockfile(ctx, marker, logger);
+    if (await markExtensionLockfile(ctx, marker, logger)) {
+      await pushChangedToRemote(ctx);
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "extension_rm_failed", message);
@@ -1065,8 +1067,10 @@ export async function handleExtensionUpdate(
       payload: { data: result ?? {} },
     });
 
-    if (!payload?.checkOnly) {
-      await pushExtensionLockfile(ctx, marker, logger);
+    if (
+      !payload?.checkOnly && await markExtensionLockfile(ctx, marker, logger)
+    ) {
+      await pushChangedToRemote(ctx);
     }
   } catch (error) {
     const raw = error instanceof Error

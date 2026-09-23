@@ -852,7 +852,7 @@ export async function handleVaultEdit(
     });
 
     // No datastore push: vault.edit only opens the repo-local vaults/ file,
-    // which is outside the datastore cache (swamp-club#2415, #2426).
+    // which is outside the datastore cache (swamp-club#2415, swamp-club#2426).
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_edit_failed", message);

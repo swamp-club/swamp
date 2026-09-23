@@ -260,25 +260,23 @@ Deno.test("handleVaultCreate: marks the new config file by path under managedCon
     const repoDir = join(dir, "repo");
     const cacheRoot = join(dir, "cache");
     await Deno.mkdir(repoDir, { recursive: true });
+    // Keyed by this run's temp dir, so it cannot leak into another test.
     registerManagedConfig(repoDir, true, join(cacheRoot, "config"));
-    try {
-      const { events, response } = await runVaultCreate(repoDir, cacheRoot);
 
-      assertEquals(response.type, "vault.create");
-      assertEquals(events.length, 2);
-      const [mark, push] = events;
-      assertEquals(push, { kind: "push" });
-      assert(
-        mark.kind === "mark" &&
-          mark.relPath?.startsWith("config/vaults/local_encryption/") &&
-          mark.relPath.endsWith(".yaml"),
-        `expected a per-path mark for the vault config, got ${
-          JSON.stringify(mark)
-        }`,
-      );
-    } finally {
-      registerManagedConfig(repoDir, false);
-    }
+    const { events, response } = await runVaultCreate(repoDir, cacheRoot);
+
+    assertEquals(response.type, "vault.create");
+    assertEquals(events.length, 2);
+    const [mark, push] = events;
+    assertEquals(push, { kind: "push" });
+    assert(
+      mark.kind === "mark" &&
+        mark.relPath?.startsWith("config/vaults/local_encryption/") &&
+        mark.relPath.endsWith(".yaml"),
+      `expected a per-path mark for the vault config, got ${
+        JSON.stringify(mark)
+      }`,
+    );
   });
 });
 

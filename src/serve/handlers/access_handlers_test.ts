@@ -296,9 +296,10 @@ Deno.test("handleAccessReload: pushes reconciled grants to remote datastore befo
 
   await handleAccessReload(socket, ctx, "req-reload", null);
 
-  // No grant changed, so nothing is marked. A bare markDirty() would set
+  // The handler itself sends no bare markDirty(), which would set
   // bulkInvalidated and turn the push into a walk of the whole cache
-  // (swamp-club#2415).
+  // (swamp-club#2415). Per-path marks come from the repositories, which this
+  // mock context does not wire; the real-repo test below covers them.
   assertEquals(markDirtyCalls, []);
   assertGreater(pushCalls.length, 0);
   assertGreater(pullCalls.length, 0);

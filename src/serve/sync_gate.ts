@@ -197,9 +197,6 @@ export const UNGATED_PUSH_HANDLERS: ReadonlySet<string> = new Set([
   // The gate's own plumbing: this helper contains the pushChanged call every
   // gated handler routes through.
   "pushChangedToRemote",
-  // The same for the extension handlers (install, pull, rm, update), which
-  // are gated at their dispatch sites and push through this helper.
-  "pushExtensionLockfile",
 ]);
 
 type GateMode = "exclusive" | "shared";
