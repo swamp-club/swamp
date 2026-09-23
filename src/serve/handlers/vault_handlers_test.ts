@@ -200,3 +200,70 @@ Deno.test("handleVaultAnnotate: works without syncService (local-only mode)", as
     assertEquals(response.payload.data.vaultName, TEST_VAULT_NAME);
   });
 });
+
+Deno.test("handleVaultAnnotate: persists labels with their values", async () => {
+  await withTempDir(async (dir) => {
+    await setupVault(dir);
+
+    const ctx = createAnnotateCtx(dir);
+    const socket = createMockSocket();
+
+    await handleVaultAnnotate(
+      socket,
+      ctx,
+      "req-annotate-labels",
+      {
+        vaultName: TEST_VAULT_NAME,
+        key: "test-key",
+        labels: { team: "infra", env: "prod" },
+      },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "vault.annotate");
+
+    const svc = await VaultService.fromRepository(dir);
+    const annotation = await svc.getAnnotation(TEST_VAULT_NAME, "test-key");
+    assertEquals(annotation?.labels, { team: "infra", env: "prod" });
+  });
+});
+
+Deno.test("handleVaultAnnotate: removeLabels removes only the named labels", async () => {
+  await withTempDir(async (dir) => {
+    await setupVault(dir);
+
+    const ctx = createAnnotateCtx(dir);
+
+    await handleVaultAnnotate(
+      createMockSocket(),
+      ctx,
+      "req-annotate-add",
+      {
+        vaultName: TEST_VAULT_NAME,
+        key: "test-key",
+        labels: { team: "infra", env: "prod" },
+      },
+      new AbortController(),
+      null,
+    );
+
+    const socket = createMockSocket();
+    await handleVaultAnnotate(
+      socket,
+      ctx,
+      "req-annotate-remove",
+      { vaultName: TEST_VAULT_NAME, key: "test-key", removeLabels: ["team"] },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "vault.annotate");
+
+    const svc = await VaultService.fromRepository(dir);
+    const annotation = await svc.getAnnotation(TEST_VAULT_NAME, "test-key");
+    assertEquals(annotation?.labels, { env: "prod" });
+  });
+});

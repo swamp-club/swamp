@@ -1751,6 +1751,47 @@ Deno.test("validateServerRequest rejects vault.put without value", () => {
   assertEquals(typeof validateServerRequest(input), "string");
 });
 
+Deno.test("validateServerRequest accepts vault.annotate labels as a key-value map", () => {
+  const input = {
+    type: "vault.annotate",
+    id: "req-va-1",
+    payload: {
+      vaultName: "default",
+      key: "API_KEY",
+      labels: { team: "infra", env: "prod" },
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+  assertEquals(
+    (result as { payload: { labels: Record<string, string> } }).payload
+      .labels,
+    { team: "infra", env: "prod" },
+  );
+});
+
+Deno.test("validateServerRequest rejects vault.annotate labels as an array", () => {
+  const input = {
+    type: "vault.annotate",
+    id: "req-va-2",
+    payload: { vaultName: "default", key: "API_KEY", labels: ["team=infra"] },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+  assertStringIncludes(result as string, "payload.labels");
+});
+
+Deno.test("validateServerRequest rejects vault.annotate label with an empty key", () => {
+  const input = {
+    type: "vault.annotate",
+    id: "req-va-3",
+    payload: { vaultName: "default", key: "API_KEY", labels: { "": "infra" } },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+  assertStringIncludes(result as string, "payload.labels");
+});
+
 Deno.test("validateServerRequest accepts audit.timeline", () => {
   const input = {
     type: "audit.timeline",

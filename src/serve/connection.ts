@@ -840,7 +840,7 @@ const VaultAnnotateRequestSchema = z.object({
     key: z.string(),
     url: z.string().optional(),
     notes: z.string().optional(),
-    labels: z.array(z.string()).optional(),
+    labels: z.record(z.string().min(1), z.string()).optional(),
     removeLabels: z.array(z.string()).optional(),
     clear: z.boolean().optional(),
   }),

@@ -312,7 +312,7 @@ export interface VaultAnnotatePayload {
   key: string;
   url?: string;
   notes?: string;
-  labels?: string[];
+  labels?: Record<string, string>;
   removeLabels?: string[];
   clear?: boolean;
 }
