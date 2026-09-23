@@ -102,6 +102,8 @@ Deno.test("cancelStrandedRun: cancels a running run, saves it, and completes its
 Deno.test("cancelStrandedRun: leaves a run that is not running untouched", async () => {
   const wf = createWorkflow();
 
+  const pendingRun = WorkflowRun.create(wf);
+
   const cancelledRun = runningRun(wf);
   cancelledRun.cancel("earlier");
 
@@ -122,6 +124,7 @@ Deno.test("cancelStrandedRun: leaves a run that is not running untouched", async
   interruptedRun.interrupt("server_crash");
 
   const cases: [WorkflowRun, string][] = [
+    [pendingRun, "pending"],
     [cancelledRun, "cancelled"],
     [failedRun, "failed"],
     [succeededRun, "succeeded"],

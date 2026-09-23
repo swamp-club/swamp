@@ -475,6 +475,19 @@ export const workflowResumeCommand = withRemoteOptions(
       );
     };
 
+    // resume() saves the run as running before it yields `started`, so
+    // `started` means this process owns the run. Before it, another resume
+    // may own the run, and the fallback below must not cancel it.
+    let started = false;
+    const baseHandlers = renderer.handlers();
+    const handlers = {
+      ...baseHandlers,
+      started: (e: WorkflowRunEvent & { kind: "started" }) => {
+        started = true;
+        baseHandlers.started(e);
+      },
+    };
+
     // Keep the process alive on Ctrl-C so resume() can record the run as
     // cancelled, as `workflow run` does. Without this, the datastore sync
     // coordinator's SIGINT handler exits 130 first and strands the run at
@@ -487,29 +500,35 @@ export const workflowResumeCommand = withRemoteOptions(
     });
     try {
       try {
-        await consumeStream(resumeGenerator(), renderer.handlers());
+        await consumeStream(resumeGenerator(), handlers);
       } catch (error) {
-        if (!abort.signal.aborted) throw error;
+        // An error before `started` is a real failure to resume, not the
+        // abort unwinding, so it is reported.
+        if (!abort.signal.aborted || !started) throw error;
       }
       if (abort.signal.aborted) {
         // resume() saves the cancelled status itself. This covers an unwind
         // that ended before it could, and runs before the push below.
-        try {
-          const cancelled = await cancelStrandedRun(
-            runRepo,
-            runTracker,
-            workflow.id,
-            run.id,
-            "aborted",
-          );
-          if (cancelled) {
-            cliCtx.logger
-              .warn`Run ${run.id} was left running after the abort; marked it cancelled`;
+        if (started) {
+          try {
+            const cancelled = await cancelStrandedRun(
+              runRepo,
+              runTracker,
+              workflow.id,
+              run.id,
+              "aborted",
+            );
+            if (cancelled) {
+              cliCtx.logger
+                .warn`Run ${run.id} was still marked running after it was interrupted; marked it cancelled`;
+            }
+          } catch (cancelErr) {
+            const cancelCommand =
+              `swamp workflow cancel ${workflowName} --run ${run.id}`;
+            cliCtx.logger.warn`Could not mark run ${run.id} as cancelled: ${
+              cancelErr instanceof Error ? cancelErr.message : String(cancelErr)
+            }. Cancel it with ${cancelCommand}`;
           }
-        } catch (cancelErr) {
-          cliCtx.logger.warn`Could not mark run ${run.id} as cancelled: ${
-            cancelErr instanceof Error ? cancelErr.message : String(cancelErr)
-          }`;
         }
         Deno.exitCode = 1;
         return;
