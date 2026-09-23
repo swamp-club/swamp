@@ -83,7 +83,7 @@ export function createEphemeralStore(
 ): EphemeralStore {
   if (options?.isResume) {
     logger.info(
-      "Ephemeral data from before suspension is not available in resumed runs — use 'workflow' or 'infinite' lifetime to persist across gates.",
+      "Ephemeral data from before this resume is not available in resumed runs — use 'workflow' or 'infinite' lifetime to keep data across a resume.",
     );
   }
   const maxBytes = resolveMaxBytes(options?.maxBytes);

@@ -361,7 +361,7 @@ Deno.test("resolveResumableRun: bare resume with only a failed run names the ret
   );
   assertStringIncludes(
     error.message,
-    `swamp workflow resume test-wf --run ${run.id}`,
+    `Add --run ${run.id} to retry its failed steps.`,
   );
 });
 
@@ -378,4 +378,16 @@ Deno.test("resolveSuspendedRun: ignores failed runs, as approve and reject need"
     Error,
     "is not suspended",
   );
+});
+
+Deno.test("resolveResumableRun: the failed-run hint fits serve's 200-character error limit", async () => {
+  const wf = createWorkflow("retry-failed-steps");
+  const run = createFailedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  const error = await assertRejects(
+    () => resolveResumableRun(workflowRepo, runRepo, "retry-failed-steps"),
+    Error,
+  );
+  assertEquals(error.message.length <= 200, true, error.message);
 });
