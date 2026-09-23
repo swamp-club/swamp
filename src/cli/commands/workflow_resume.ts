@@ -32,10 +32,7 @@ import {
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import {
-  resolveResumableRun,
-  resolveSuspendedRun,
-} from "../../domain/workflows/suspended_run_resolver.ts";
+import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type DirectTypeResolver,
@@ -76,6 +73,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import {
+  formatCommandTarget,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   resumeWorkflowOverServer,
@@ -90,7 +88,7 @@ export const workflowResumeCommand = withRemoteOptions(
   new Command()
     .name("resume")
     .description(
-      "Resume a suspended workflow run after approval, or re-enter a failed run at a specific step with --from",
+      "Resume a suspended workflow run after approval, or retry the failed steps of a failed run named with --run (--from picks the step to retry from)",
     )
     .example(
       "Resume by workflow name",
@@ -101,6 +99,10 @@ export const workflowResumeCommand = withRemoteOptions(
       "swamp workflow resume deploy-with-gate --input authKey=tskey-abc123",
     )
     .example(
+      "Retry the failed steps of a failed run",
+      "swamp workflow resume plate-assay --run abc123",
+    )
+    .example(
       "Resume a failed run from a specific step",
       "swamp workflow resume plate-assay --from read-plate",
     )
@@ -109,10 +111,13 @@ export const workflowResumeCommand = withRemoteOptions(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
-    .option("--run <run_id:string>", "Target a specific run ID")
+    .option(
+      "--run <run_id:string>",
+      "Target a specific run ID (required to retry the failed steps of a failed run)",
+    )
     .option(
       "--from <step:string>",
-      "Re-enter the DAG at this step (failed runs only). Steps before this point are skipped; guards prevent re-execution of completed steps.",
+      "Select the retry step in a failed run. Without --from, resume --run retries all failed steps.",
     )
     .option(
       "--input <value:string>",
@@ -198,6 +203,9 @@ export const workflowResumeCommand = withRemoteOptions(
         workflowName: workflowIdOrName,
         isAuthenticated: isAuthenticated(),
         quiet: cliCtx.verbosity === "quiet",
+        commandTarget: formatCommandTarget({
+          server: options.server as string | undefined,
+        }),
       });
       try {
         await consumeStream(
@@ -278,21 +286,15 @@ export const workflowResumeCommand = withRemoteOptions(
     const runRepo = repoContext.workflowRunRepo;
 
     const fromStep = options.from as string | undefined;
-    const { run, workflowName } = fromStep
-      ? await resolveResumableRun(
-        workflowRepo,
-        runRepo,
-        workflowIdOrName,
-        options.run,
-      )
-      : await resolveSuspendedRun(
-        workflowRepo,
-        runRepo,
-        workflowIdOrName,
-        options.run,
-      );
+    const { run, workflowName } = await resolveResumableRun(
+      workflowRepo,
+      runRepo,
+      workflowIdOrName,
+      options.run,
+      { fromStep },
+    );
 
-    if (!fromStep) {
+    if (run.status === "suspended") {
       const waiting = run.findWaitingApprovalStep();
       if (waiting) {
         throw new UserError(
@@ -439,6 +441,9 @@ export const workflowResumeCommand = withRemoteOptions(
       workflowName,
       isAuthenticated: isAuthenticated(),
       quiet: cliCtx.verbosity === "quiet",
+      commandTarget: formatCommandTarget({
+        repoDir: options.repoDir as string | undefined,
+      }),
     });
 
     const traceparent = resolveTraceparent(

@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { type PendingRunEntry, RunTrackerStore } from "./run_tracker_store.ts";
 import { isSensitiveHeader } from "../../serve/webhook.ts";
@@ -821,6 +822,109 @@ Deno.test("scrubPendingRunHeaders: handles null payload gracefully", () => {
 
     const scrubbed = store.scrubPendingRunHeaders(isSensitiveHeader);
     assertEquals(scrubbed, 0);
+  } finally {
+    store.close();
+  }
+});
+
+function makeWorkflowRow(
+  id: string,
+  pid: number,
+  instanceId?: string,
+): ActiveRun {
+  return ActiveRun.fromData({
+    id,
+    runKind: "workflow",
+    modelType: null,
+    methodName: null,
+    workflowName: "wf",
+    pid,
+    hostname: "original-host",
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+    status: "running",
+    instanceId,
+  });
+}
+
+function completedAtOf(dbPath: string, id: string): string | null {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const row = db.prepare(
+      "SELECT completed_at FROM active_runs WHERE id = ?",
+    ).get(id) as { completed_at: string | null };
+    return row.completed_at;
+  } finally {
+    db.close();
+  }
+}
+
+for (const status of ["suspended", "failed", "interrupted"] as const) {
+  Deno.test(`RunTrackerStore: reactivate hands a ${status} row to the resuming process`, () => {
+    const dbPath = makeTempDbPath();
+    const store = new RunTrackerStore(dbPath);
+    try {
+      store.register(makeWorkflowRow("run-1", 2147483647, "instance-a"));
+      store.complete("run-1", status);
+      const before = store.findById("run-1")!.heartbeatAt;
+
+      store.reactivate("run-1", 4242, "resuming-host");
+
+      const found = store.findById("run-1")!;
+      assertEquals(found.status, "running");
+      assertEquals(found.pid, 4242);
+      assertEquals(found.hostname, "resuming-host");
+      assertEquals(found.instanceId, "instance-a");
+      assertEquals(found.heartbeatAt.getTime() > before.getTime(), true);
+      assertEquals(completedAtOf(dbPath, "run-1"), null);
+    } finally {
+      store.close();
+    }
+  });
+}
+
+for (const status of ["running", "completed", "cancelled"] as const) {
+  Deno.test(`RunTrackerStore: reactivate leaves a ${status} row unchanged`, () => {
+    const store = new RunTrackerStore(makeTempDbPath());
+    try {
+      store.register(makeWorkflowRow("run-1", 1234));
+      if (status !== "running") store.complete("run-1", status);
+      const before = store.findById("run-1")!.toData();
+
+      store.reactivate("run-1", 4242, "resuming-host");
+
+      assertEquals(store.findById("run-1")!.toData(), before);
+    } finally {
+      store.close();
+    }
+  });
+}
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns skips a row reactivated by a live process", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.register(makeWorkflowRow("run-1", 2147483647));
+    store.complete("run-1", "failed");
+
+    store.reactivate("run-1", Deno.ppid, hostname());
+
+    assertEquals(store.reapDeadProcessRuns(), []);
+    assertEquals(store.findById("run-1")?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: complete after reactivate records the final status", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.register(makeWorkflowRow("run-1", 1234));
+    store.complete("run-1", "failed");
+    store.reactivate("run-1", Deno.pid, hostname());
+
+    store.complete("run-1", "completed");
+
+    assertEquals(store.findById("run-1")?.status, "completed");
   } finally {
     store.close();
   }

@@ -69,6 +69,7 @@ swamp workflow validate <name>                 # validate DAG before running
 swamp workflow run <name>                      # execute a workflow
 swamp workflow run <name> --input key=value    # execute with inputs
 swamp workflow resume <name>                   # resume a suspended workflow
+swamp workflow resume <name> --run <id>        # retry a failed run's failed steps
 swamp workflow resume <name> --from <step>     # re-enter failed run at step
 swamp workflow history search --json           # search run history
 

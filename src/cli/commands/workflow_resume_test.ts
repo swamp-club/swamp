@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
@@ -119,7 +119,34 @@ Deno.test("workflowResumeCommand has --from option", async () => {
   assertEquals(fromOpt !== undefined, true);
   assertEquals(
     fromOpt!.description,
-    "Re-enter the DAG at this step (failed runs only). Steps before this point are skipped; guards prevent re-execution of completed steps.",
+    "Select the retry step in a failed run. Without --from, resume --run retries all failed steps.",
+  );
+});
+
+Deno.test("workflowResumeCommand: help describes retrying a failed run by id", async () => {
+  const { workflowResumeCommand } = await import("./workflow_resume.ts");
+  // swamp-uat matches the start of this description.
+  assertStringIncludes(
+    workflowResumeCommand.getDescription(),
+    "Resume a suspended workflow run",
+  );
+  assertStringIncludes(
+    workflowResumeCommand.getDescription(),
+    "retry the failed steps of a failed run named with --run",
+  );
+  const runOpt = workflowResumeCommand.getOptions().find((o) =>
+    o.name === "run"
+  );
+  assertEquals(
+    runOpt?.description,
+    "Target a specific run ID (required to retry the failed steps of a failed run)",
+  );
+  const examples = workflowResumeCommand.getExamples().map((e) =>
+    e.description
+  );
+  assertEquals(
+    examples.includes("swamp workflow resume plate-assay --run abc123"),
+    true,
   );
 });
 
@@ -140,5 +167,60 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     assertEquals(await runWorkflowResumeAgainst({ status: "succeeded" }), 0);
+  },
+});
+
+Deno.test({
+  name:
+    "workflowResumeCommand: a failed remote resume prints a retry command for the same server",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const run = {
+      id: "run-9",
+      workflowId: "wf-1",
+      workflowName: "deploy-with-gate",
+      status: "failed",
+      jobs: [{
+        name: "deploy",
+        status: "failed",
+        steps: [{ name: "apply", status: "failed", error: "boom" }],
+      }],
+    };
+    const server = runEventServer([
+      {
+        kind: "started",
+        runId: "run-9",
+        workflowName: "deploy-with-gate",
+        jobs: [{ id: "deploy", stepCount: 1, dependsOn: [] }],
+      },
+      { kind: "completed", run },
+    ]);
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(" "));
+    const previousExitCode = Deno.exitCode;
+    try {
+      const { workflowResumeCommand } = await import("./workflow_resume.ts");
+      const root = new Command().command("resume", workflowResumeCommand);
+      await root.parse([
+        "resume",
+        "deploy-with-gate",
+        "--run",
+        "run-9",
+        "--server",
+        server.url,
+        "--token",
+        "test.token",
+      ]);
+    } finally {
+      console.log = originalLog;
+      Deno.exitCode = previousExitCode;
+      await server.shutdown();
+    }
+    assertStringIncludes(
+      lines.join("\n"),
+      `swamp workflow resume deploy-with-gate --run run-9 --server ${server.url}`,
+    );
   },
 });

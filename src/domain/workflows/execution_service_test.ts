@@ -27,6 +27,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
+import { hostname } from "node:os";
 import {
   computeStepsToReset,
   DefaultStepExecutor,
@@ -7197,7 +7198,12 @@ class RecordingRunTracker implements RunTrackerRepository {
     this.completions.push({ runId, status });
   }
 
-  reactivate(_runId: string): void {}
+  readonly reactivations: { runId: string; pid: number; hostname: string }[] =
+    [];
+
+  reactivate(runId: string, pid: number, hostname: string): void {
+    this.reactivations.push({ runId, pid, hostname });
+  }
 
   findById(_runId: string): ActiveRun | null {
     return null;
@@ -7871,5 +7877,457 @@ Deno.test("steps namespace: steps.* in task.inputs and a workflow target resolve
     assertEquals(executor.executedSteps.includes("j/consume"), true);
     assertEquals(executor.executedSteps.includes("child-b/announce"), true);
     assertEquals(executor.executedSteps.includes("child-a/announce"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retry: resume a failed run without --from (swamp-club#2409)
+// ---------------------------------------------------------------------------
+
+/** Counts calls per `job/step` and fails the steps named in `failing`. */
+class CountingStepExecutor implements StepExecutor {
+  readonly calls = new Map<string, number>();
+  readonly failing = new Set<string>();
+
+  execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    const key = `${ctx.jobName}/${ctx.stepName}`;
+    const attempt = (this.calls.get(key) ?? 0) + 1;
+    this.calls.set(key, attempt);
+    if (this.failing.has(ctx.stepName)) {
+      return Promise.reject(new Error(`${ctx.stepName} failed`));
+    }
+    return Promise.resolve({ step: ctx.stepName, attempt });
+  }
+
+  count(key: string): number {
+    return this.calls.get(key) ?? 0;
+  }
+}
+
+/** Counts saves, and can fail every save after the first `allowSaves`. */
+class SpyWorkflowRunRepository extends InMemoryWorkflowRunRepository {
+  saves = 0;
+  allowSaves = Infinity;
+
+  override save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    this.saves++;
+    if (this.saves > this.allowSaves) {
+      return Promise.reject(new Error("datastore unavailable"));
+    }
+    return super.save(workflowId, run);
+  }
+}
+
+function modelStep(
+  name: string,
+  opts: {
+    dependsOn?: { step: string; condition: TriggerCondition }[];
+    inputs?: Record<string, unknown>;
+    guard?: string;
+  } = {},
+): Step {
+  return Step.create({
+    name,
+    task: StepTask.model("test-model", "run", opts.inputs),
+    dependsOn: opts.dependsOn,
+    guard: opts.guard,
+  });
+}
+
+/**
+ * build: compile → test, plus a cleanup that runs once compile completes;
+ * deploy depends on build; docs is independent.
+ */
+function createRetryWorkflow(): Workflow {
+  return Workflow.create({
+    name: "retry-wf",
+    jobs: [
+      Job.create({
+        name: "build",
+        steps: [
+          modelStep("compile"),
+          modelStep("test", {
+            dependsOn: [{
+              step: "compile",
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+          modelStep("cleanup", {
+            dependsOn: [{
+              step: "compile",
+              condition: TriggerCondition.completed(),
+            }],
+          }),
+        ],
+      }),
+      Job.create({
+        name: "deploy",
+        dependsOn: [{ job: "build", condition: TriggerCondition.succeeded() }],
+        steps: [modelStep("push")],
+      }),
+      Job.create({ name: "docs", steps: [modelStep("publish")] }),
+    ],
+  });
+}
+
+async function setupRetry(
+  tempDir: string,
+  workflow: Workflow,
+  tracker?: RunTrackerRepository,
+) {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new SpyWorkflowRunRepository();
+  const executor = new CountingStepExecutor();
+  await workflowRepo.save(workflow);
+  const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    undefined,
+    catalogStore,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    tracker,
+  );
+  return { runRepo, executor, service };
+}
+
+async function drainResume(
+  service: WorkflowExecutionService,
+  workflowName: string,
+  runId: string,
+  options?: Parameters<WorkflowExecutionService["resume"]>[2],
+): Promise<WorkflowRun | undefined> {
+  let completed: WorkflowRun | undefined;
+  for await (const event of service.resume(workflowName, runId, options)) {
+    if (event.kind === "completed") completed = event.run;
+  }
+  return completed;
+}
+
+Deno.test("resume: retries the failed steps of a failed run without fromStep", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compile");
+
+    const failed = await service.execute(workflow.name);
+    assertEquals(failed.status, "failed");
+    const build = failed.getJob("build")!;
+    assertEquals(build.getStep("test")!.status, "skipped");
+    assertEquals(build.getStep("cleanup")!.status, "succeeded");
+    assertEquals(failed.getJob("deploy")!.status, "skipped");
+    assertEquals(failed.getJob("docs")!.status, "succeeded");
+    const startedAt = failed.startedAt!.toISOString();
+    const publishOutput = failed.getJob("docs")!.getStep("publish")!.toData();
+
+    executor.failing.clear();
+    const retried = await drainResume(service, workflow.name, failed.id);
+
+    assertEquals(retried?.id, failed.id);
+    assertEquals(retried?.status, "succeeded");
+    assertEquals(retried?.startedAt?.toISOString(), startedAt);
+    assertEquals(executor.count("build/compile"), 2);
+    assertEquals(executor.count("build/test"), 1);
+    // A successful cleanup that depends on the failed step runs again.
+    assertEquals(executor.count("build/cleanup"), 2);
+    assertEquals(executor.count("deploy/push"), 1);
+    // Independent successful work is not repeated and keeps its result.
+    assertEquals(executor.count("docs/publish"), 1);
+    const stored = await runRepo.findById(workflow.id, failed.id);
+    assertEquals(stored?.status, "succeeded");
+    assertEquals(
+      stored?.getJob("docs")?.getStep("publish")?.toData(),
+      publishOutput,
+    );
+  });
+});
+
+Deno.test("resume: retries parallel failures in several jobs in one resume", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "parallel-wf",
+      jobs: [
+        Job.create({ name: "a", steps: [modelStep("step-a")] }),
+        Job.create({ name: "b", steps: [modelStep("step-b")] }),
+        Job.create({ name: "c", steps: [modelStep("step-c")] }),
+      ],
+    });
+    const { executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("step-a");
+    executor.failing.add("step-b");
+
+    const failed = await service.execute(workflow.name);
+    assertEquals(failed.status, "failed");
+
+    executor.failing.clear();
+    const retried = await drainResume(service, workflow.name, failed.id);
+
+    assertEquals(retried?.status, "succeeded");
+    assertEquals(executor.count("a/step-a"), 2);
+    assertEquals(executor.count("b/step-b"), 2);
+    assertEquals(executor.count("c/step-c"), 1);
+  });
+});
+
+Deno.test("resume: retry re-runs every iteration of a failed forEach template", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "each-wf",
+      jobs: [
+        Job.create({
+          name: "plates",
+          steps: [
+            Step.create({
+              name: "read-${{ self.plate }}",
+              task: StepTask.model("test-model", "run"),
+              forEach: { item: "plate", in: "${{ inputs.plates }}" },
+            }),
+          ],
+        }),
+      ],
+    });
+    const { executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("read-b");
+
+    const failed = await service.execute(workflow.name, {
+      inputs: { plates: ["a", "b", "c"] },
+    });
+    assertEquals(failed.status, "failed");
+
+    executor.failing.clear();
+    const retried = await drainResume(service, workflow.name, failed.id);
+
+    assertEquals(retried?.status, "succeeded");
+    assertEquals(executor.count("plates/read-a"), 2);
+    assertEquals(executor.count("plates/read-b"), 2);
+    assertEquals(executor.count("plates/read-c"), 2);
+  });
+});
+
+Deno.test("resume: a guard still decides whether a reset step runs on retry", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "guard-retry-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("compile"),
+            modelStep("announce", {
+              dependsOn: [{
+                step: "compile",
+                condition: TriggerCondition.completed(),
+              }],
+              guard: "${{ inputs.quiet == true }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    const { executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compile");
+
+    const failed = await service.execute(workflow.name, {
+      inputs: { quiet: false },
+    });
+    assertEquals(failed.status, "failed");
+    assertEquals(
+      failed.getJob("main")!.getStep("announce")!.status,
+      "succeeded",
+    );
+
+    executor.failing.clear();
+    const retried = await drainResume(service, workflow.name, failed.id, {
+      inputs: { quiet: true },
+    });
+
+    assertEquals(retried?.status, "succeeded");
+    assertEquals(executor.count("main/announce"), 1);
+    const announce = retried!.getJob("main")!.getStep("announce")!;
+    assertEquals(announce.status, "skipped");
+    // The guard skip does not restore the earlier attempt's output.
+    assertEquals(announce.output, undefined);
+  });
+});
+
+Deno.test("resume: refuses an ineligible failed run without saving or running anything", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    // An earlier retry that threw mid-execution leaves pending reset steps.
+    failed.getJob("build")!.getStep("test")!.resetToPending();
+    const before = JSON.stringify(failed.toData());
+    const saves = runRepo.saves;
+    const calls = [...executor.calls.values()].reduce((a, b) => a + b, 0);
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, failed.id),
+      Error,
+      `Step "test" in job "build" is pending`,
+    );
+
+    assertEquals(runRepo.saves, saves);
+    assertEquals(JSON.stringify(failed.toData()), before);
+    assertEquals(
+      [...executor.calls.values()].reduce((a, b) => a + b, 0),
+      calls,
+    );
+  });
+});
+
+Deno.test("resume: suspendedOnly refuses a failed run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    const saves = runRepo.saves;
+
+    const error = await assertRejects(
+      () =>
+        drainResume(service, workflow.name, failed.id, { suspendedOnly: true }),
+      Error,
+      `Run ${failed.id} is not suspended (status: failed)`,
+    );
+    assertStringIncludes(
+      error.message,
+      `Retry it with 'swamp workflow resume retry-wf --run ${failed.id}'.`,
+    );
+    assertEquals(runRepo.saves, saves);
+    assertEquals(failed.status, "failed");
+  });
+});
+
+Deno.test("resume: refuses a succeeded run and names the next action", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const { service } = await setupRetry(tempDir, workflow);
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "succeeded");
+
+    const error = await assertRejects(
+      () => drainResume(service, workflow.name, run.id),
+      Error,
+      "is not suspended or failed (status: succeeded)",
+    );
+    assertStringIncludes(error.message, "swamp workflow history retry-wf");
+  });
+});
+
+Deno.test("resume: hands the tracker row to the resuming process", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createRetryWorkflow();
+    const { executor, service } = await setupRetry(
+      tempDir,
+      workflow,
+      tracker,
+    );
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+
+    executor.failing.clear();
+    await drainResume(service, workflow.name, failed.id);
+
+    assertEquals(tracker.reactivations, [
+      { runId: failed.id, pid: Deno.pid, hostname: hostname() },
+    ]);
+    assertEquals(tracker.completions, [
+      { runId: failed.id, status: "failed" },
+      { runId: failed.id, status: "completed" },
+    ]);
+  });
+});
+
+/** One step whose input reads `inputs.n`, so a string `n` fails evaluation. */
+function createArithmeticWorkflow(withGate: boolean): Workflow {
+  const steps = [
+    modelStep("compute", { inputs: { value: "${{ inputs.n + 1 }}" } }),
+  ];
+  if (withGate) {
+    steps.unshift(
+      Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+    );
+  }
+  return Workflow.create({
+    name: withGate ? "gated-arith-wf" : "arith-wf",
+    jobs: [Job.create({ name: "main", steps })],
+  });
+}
+
+Deno.test("resume: restores a failed run when evaluation fails before execution", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(false);
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compute");
+    const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
+    assertEquals(failed.status, "failed");
+    const before = failed.toData();
+
+    executor.failing.clear();
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, failed.id, { inputs: { n: "x" } }),
+      Error,
+      "no such overload",
+    );
+
+    const stored = await runRepo.findById(workflow.id, failed.id);
+    assertEquals(stored?.status, "failed");
+    assertEquals(stored?.toData(), before);
+    assertEquals(executor.count("main/compute"), 1);
+  });
+});
+
+Deno.test("resume: restores a suspended run when evaluation fails before execution", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(true);
+    const { runRepo, service } = await setupRetry(tempDir, workflow);
+    const suspended = await service.execute(workflow.name, {
+      inputs: { n: 1 },
+    });
+    assertEquals(suspended.status, "suspended");
+    suspended.getJob("main")!.getStep("gate")!.succeed();
+    await runRepo.save(workflow.id, suspended);
+    const before = suspended.toData();
+
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, suspended.id, {
+          inputs: { n: "x" },
+        }),
+      Error,
+      "no such overload",
+    );
+
+    const stored = await runRepo.findById(workflow.id, suspended.id);
+    assertEquals(stored?.status, "suspended");
+    assertEquals(stored?.toData(), before);
+  });
+});
+
+Deno.test("resume: a failing restore still rethrows the original error", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(false);
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compute");
+    const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
+    // Allow resume's early save, then fail the restore.
+    runRepo.allowSaves = runRepo.saves + 1;
+
+    // The evaluation error, not the restore's datastore error.
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, failed.id, { inputs: { n: "x" } }),
+      Error,
+      "no such overload",
+    );
   });
 });

@@ -26,7 +26,14 @@ export interface RunTrackerRepository {
 
   complete(runId: string, status: ActiveRunStatus, reason?: string): void;
 
-  reactivate(runId: string): void;
+  /**
+   * Hands a run's row to the process resuming it: a suspended, failed, or
+   * interrupted row becomes running with the resuming pid and hostname and a
+   * fresh heartbeat. Running, succeeded, and cancelled rows are left alone.
+   * Interrupted is accepted because `workflow recover` sets the run record
+   * back to suspended while its row stays interrupted.
+   */
+  reactivate(runId: string, pid: number, hostname: string): void;
 
   findById(runId: string): ActiveRun | null;
 

@@ -1715,3 +1715,65 @@ Deno.test("WorkflowRun: isAwaitingResume is false for a run that is not suspende
   assertEquals(run.isAwaitingResume(), false);
   assertEquals(run.toData().awaitingResume, undefined);
 });
+
+// ── failedSteps ─────────────────────────────────────────────────────
+
+Deno.test("WorkflowRun.failedSteps: lists failed steps in stored order with their job", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.getJob("job1")!.getStep("step1")!.succeed();
+  run.getJob("job1")!.getStep("step2")!.fail("boom");
+  run.getJob("job2")!.getStep("step3")!.fail("bang");
+
+  assertEquals(run.failedSteps(), [
+    { jobName: "job1", stepName: "step2", approvalRejected: false },
+    { jobName: "job2", stepName: "step3", approvalRejected: false },
+  ]);
+});
+
+Deno.test("WorkflowRun.failedSteps: excludes recorded allowed failures", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  const step = run.getJob("job1")!.getStep("step1")!;
+  step.fail("tolerated");
+  step.markAllowedFailure();
+
+  assertEquals(run.failedSteps(), []);
+});
+
+Deno.test("WorkflowRun.failedSteps: carries the forEach template of an expanded step", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  const job = run.getJob("job1")!;
+  job.replaceExpandedSteps("step1", ["step1-a", "step1-b"]);
+  job.getStep("step1-a")!.succeed();
+  job.getStep("step1-b")!.fail("boom");
+
+  assertEquals(run.failedSteps(), [
+    {
+      jobName: "job1",
+      stepName: "step1-b",
+      forEachTemplate: "step1",
+      approvalRejected: false,
+    },
+  ]);
+});
+
+Deno.test("WorkflowRun.failedSteps: flags a rejected approval", () => {
+  const run = WorkflowRun.create(createGatedWorkflow());
+  const step = run.getJob("main")!.getStep("gate-a")!;
+  step.recordApprovalDecision({
+    approved: false,
+    decidedAt: new Date().toISOString(),
+  });
+  step.fail("Approval rejected");
+
+  assertEquals(run.failedSteps(), [
+    { jobName: "main", stepName: "gate-a", approvalRejected: true },
+  ]);
+});
+
+Deno.test("WorkflowRun.failedSteps: does not mutate the run", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.getJob("job1")!.getStep("step2")!.fail("boom");
+  const before = run.toData();
+  run.failedSteps();
+  assertEquals(run.toData(), before);
+});

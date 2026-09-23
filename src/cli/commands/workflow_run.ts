@@ -87,6 +87,7 @@ import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_
 import { isAuthenticated, resolveCliInitiatedBy } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
+  formatCommandTarget,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   runWorkflowOverServer,
@@ -261,7 +262,12 @@ export const workflowRunCommand = new Command()
           "--fail-on is not yet supported with --server.",
         );
       }
-      await runWorkflowViaServer(ctx, { ...options, server }, workflowIdOrName);
+      await runWorkflowViaServer(
+        ctx,
+        { ...options, server },
+        workflowIdOrName,
+        formatCommandTarget({ server: options.server as string | undefined }),
+      );
       return;
     }
 
@@ -509,6 +515,9 @@ export const workflowRunCommand = new Command()
             isAuthenticated: isAuthenticated(),
             quiet: ctx.verbosity === "quiet",
             failOnSeverity,
+            commandTarget: formatCommandTarget({
+              repoDir: options.repoDir as string | undefined,
+            }),
           });
         const eventStream = workflowRun(libCtx, deps, {
           workflowIdOrName,
@@ -618,6 +627,7 @@ async function runWorkflowViaServer(
   ctx: ReturnType<typeof createContext>,
   options: AnyOptions,
   workflowIdOrName: string,
+  commandTarget: string,
 ): Promise<void> {
   const stdinContent = options.stdin ? await readStdin() : null;
   let stdinItems: Record<string, unknown>[] | null = null;
@@ -672,6 +682,7 @@ async function runWorkflowViaServer(
           workflowName: workflowIdOrName,
           isAuthenticated: isAuthenticated(),
           quiet: ctx.verbosity === "quiet",
+          commandTarget,
         });
       await consumeStream(
         runWorkflowOverServer({

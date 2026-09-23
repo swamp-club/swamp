@@ -44,6 +44,7 @@ skill.
 | Approve step       | `swamp workflow approve <workflow> <step> [--run <id>]`                  |
 | Reject step        | `swamp workflow reject <workflow> <step> [--run <id>]`                   |
 | Resume workflow    | `swamp workflow resume <workflow> [--run <id>] [--input k=v]`            |
+| Retry failed steps | `swamp workflow resume <wf> --run <id>` (run is failed)                  |
 | Resume from step   | `swamp workflow resume <wf> --from <step>`                               |
 | List approvals     | `swamp workflow approvals`                                               |
 | Active runs        | `swamp run history --active`                                             |

@@ -40,6 +40,7 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { handleWorkflowApprove } from "../src/serve/handlers/workflow_handlers.ts";
+import { autoResumeAfterApproval } from "../src/serve/resume_launcher.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { MergedServeOptions } from "../src/serve/serve_config.ts";
@@ -271,6 +272,89 @@ Deno.test({
       assertEquals(await runStatus(ctx, workflow, runId), {
         status: "suspended",
         deploy: "pending",
+      });
+    });
+  },
+});
+
+Deno.test({
+  name: "auto-resume: never retries a failed run, even one eligible for retry",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      // A failed shell step with nothing else unfinished: a manual resume
+      // with --run would retry it, so only suspendedOnly stops auto-resume.
+      const workflow = Workflow.create({
+        name: "auto-resume-failed-run",
+        autoResume: true,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "deploy",
+                task: StepTask.directExecution(
+                  "command/shell",
+                  "auto-resume-failed-run-shell",
+                  "execute",
+                  { run: "exit 1" },
+                ),
+              }),
+            ],
+          }),
+        ],
+      });
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+      const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
+        await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+
+      let runId: string | undefined;
+      await executeWorkflowWithLocks(
+        resolved,
+        repoContext,
+        datastoreConfig,
+        { workflowIdOrName: workflow.name, inputs: {} },
+        new AbortController().signal,
+        (event: WorkflowRunEvent) => {
+          if (event.kind === "started") runId = event.runId;
+        },
+        syncService,
+      );
+      if (!runId) throw new Error("no run id observed");
+
+      const registry = new ActiveRunRegistry();
+      const audit: string[] = [];
+      const ctx = {
+        repoDir: resolved,
+        repoContext,
+        datastoreConfig,
+        authConfig: modeNone,
+        activeRunRegistry: registry,
+        serveOptions: { autoResume: false } as MergedServeOptions,
+        auditEmitter: {
+          emit: (event: { action: string }) => audit.push(event.action),
+        },
+      } as unknown as ConnectionContext;
+      assertEquals((await runStatus(ctx, workflow, runId)).status, "failed");
+
+      const launched = await autoResumeAfterApproval(
+        ctx,
+        {
+          workflowName: workflow.name,
+          runId,
+          decidedBy: "user:approver",
+          allGatesDecided: true,
+        },
+        "user:approver",
+      );
+
+      assertEquals(launched, false);
+      assertEquals(registry.get(runId), undefined);
+      assertEquals(audit, ["workflow.auto_resume_failed"]);
+      assertEquals(await runStatus(ctx, workflow, runId), {
+        status: "failed",
+        deploy: "failed",
       });
     });
   },
