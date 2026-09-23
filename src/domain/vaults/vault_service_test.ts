@@ -33,6 +33,7 @@ import type {
   VaultAuditQueryOptions,
   VaultAuditRepository,
 } from "./vault_audit_repository.ts";
+import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
 
 Deno.test("VaultService - missing vault configuration error handling", async (t) => {
   await t.step(
@@ -626,6 +627,77 @@ Deno.test("VaultService - fromRepository wires audit repository even without aud
     );
   } finally {
     await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
+async function writeMockVaultConfig(
+  vaultsDir: string,
+  name: string,
+  config: Record<string, string>,
+): Promise<void> {
+  const id = crypto.randomUUID();
+  const typeDir = join(vaultsDir, "mock");
+  await ensureDir(typeDir);
+  await Deno.writeTextFile(
+    join(typeDir, `${id}.yaml`),
+    stringifyYaml({
+      id,
+      name,
+      type: "mock",
+      config,
+      createdAt: new Date(2026, 0, 1).toISOString(),
+    }),
+  );
+}
+
+Deno.test("VaultService.fromRepository: loads vaults from the managed config tier when no vaultsDir is passed", async () => {
+  const repoDir = await Deno.makeTempDir();
+  const configBase = await Deno.makeTempDir();
+  try {
+    // The vault exists only in the config tier; the repo has no vaults/.
+    await writeMockVaultConfig(join(configBase, "vaults"), "managed", {
+      "probe-key": "managed-value",
+    });
+    registerManagedConfig(repoDir, true, configBase);
+
+    const vaultService = await VaultService.fromRepository(repoDir);
+
+    assertEquals(
+      await vaultService.get("managed", "probe-key"),
+      "managed-value",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    await Deno.remove(configBase, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("VaultService.fromRepository: an explicit vaultsDir takes precedence over the managed config tier", async () => {
+  const repoDir = await Deno.makeTempDir();
+  const configBase = await Deno.makeTempDir();
+  const explicitDir = await Deno.makeTempDir();
+  try {
+    await writeMockVaultConfig(join(configBase, "vaults"), "managed", {
+      "probe-key": "managed-value",
+    });
+    await writeMockVaultConfig(explicitDir, "explicit", {
+      "probe-key": "explicit-value",
+    });
+    registerManagedConfig(repoDir, true, configBase);
+
+    const vaultService = await VaultService.fromRepository(repoDir, {
+      vaultsDir: explicitDir,
+    });
+
+    assertEquals(
+      await vaultService.get("explicit", "probe-key"),
+      "explicit-value",
+    );
+    assertEquals(vaultService.getVaultNames().includes("managed"), false);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    await Deno.remove(configBase, { recursive: true }).catch(() => {});
+    await Deno.remove(explicitDir, { recursive: true }).catch(() => {});
   }
 });
 

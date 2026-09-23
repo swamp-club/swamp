@@ -15,7 +15,11 @@ retrieval and storage during workflow execution.
 The vault system is built around a named vault architecture where:
 
 - **Named Vaults**: Each vault instance has a user-defined name configured in
-  `vaults/{vault-type}/{id}.yaml`
+  `vaults/{vault-type}/{id}.yaml`. Under `managedConfig: true` these configs
+  live in the datastore's `config/vaults/` tier instead;
+  `VaultService.fromRepository()` resolves that location through the managed
+  config registry whenever the caller passes no explicit `vaultsDir`, so
+  `vault.get()` expressions, serve and CLI commands all read the same configs
 - **Vault Types**: The underlying storage system (`local_encryption` built in;
   `@swamp/aws-sm`, `@swamp/azure-kv`, `@swamp/1password` as extensions) is
   specified per vault

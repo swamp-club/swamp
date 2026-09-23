@@ -40,7 +40,10 @@ import {
  * YAML-based repository for vault configurations.
  *
  * Stores vault configs as YAML files in the directory structure:
- * {repoDir}/vaults/{vault-type}/{id}.yaml
+ * {vaultsDir}/{vault-type}/{id}.yaml
+ *
+ * vaultsDir defaults to the effective vaults dir: {repoDir}/vaults, or the
+ * datastore config tier's vaults/ when managedConfig is active.
  */
 export class YamlVaultConfigRepository {
   private readonly eventBus: EventBus | null;
