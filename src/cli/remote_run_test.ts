@@ -1311,6 +1311,76 @@ Deno.test({
 
 Deno.test({
   name:
+    "remote run: a revoked session (4003) after the run started reports why instead of reconnecting",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply, socket) => {
+      if (request.type === "run.attach") {
+        // Answered so that a client wrongly reattaching finishes the run
+        // (and fails assertRejects) rather than waiting forever.
+        reply({
+          type: "run.attached",
+          id: request.id,
+          payload: {
+            runId: "run-revoked",
+            kind: "workflow-run",
+            startedAt: "2026-08-01T00:00:00Z",
+          },
+        });
+        reply({
+          type: "event",
+          id: request.id,
+          event: { kind: "completed", status: "succeeded", seq: 2 },
+        });
+        reply({ type: "done", id: request.id });
+        return;
+      }
+      reply({
+        type: "event",
+        id: request.id,
+        event: {
+          kind: "started",
+          runId: "run-revoked",
+          workflowName: "wf",
+          seq: 1,
+        },
+      });
+      setTimeout(
+        () => socket.close(4003, "Session revoked: token revoked"),
+        20,
+      );
+    });
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(
+        error.message,
+        "(code 4003: Session revoked: token revoked)",
+      );
+      assertStringIncludes(error.message, "swamp run history");
+      assertEquals(
+        server.received.some((r) =>
+          (r as { type: string }).type === "run.attach"
+        ),
+        false,
+        "a revoked credential must not be used to reattach",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "remote run: reconnects and sends run.attach after socket drop with known runId",
   sanitizeOps: false,
   sanitizeResources: false,

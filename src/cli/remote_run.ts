@@ -991,6 +991,12 @@ function createSocket(
 }
 
 /**
+ * Close code serve uses when it revokes a session's credential (token revoked,
+ * rotated or deleted, or the principal deprovisioned).
+ */
+const SESSION_REVOKED_CLOSE_CODE = 4003;
+
+/**
  * Formats why the server closed the socket, e.g. ` (code 4003: Session
  * revoked: token revoked)`, so the user learns a token was revoked or expired.
  * Empty for a normal close with no reason.
@@ -1093,6 +1099,7 @@ async function* singleConnectionStream(
   let wake: (() => void) | null = null;
   let socketClosed = false;
   let closeDetail = "";
+  let closeCode: number | undefined;
   let connectError: string | null = null;
   const notify = () => {
     wake?.();
@@ -1119,6 +1126,7 @@ async function* singleConnectionStream(
   socket.onclose = (event) => {
     socketClosed = true;
     closeDetail = describeServerClose(event);
+    closeCode = event.code;
     notify();
   };
   socket.onerror = (event) => {
@@ -1146,16 +1154,7 @@ async function* singleConnectionStream(
       let message = connectError ??
         `Connection to ${baseUrl} closed before it opened`;
       if (closeEvent && !connectError) {
-        const parts: string[] = [];
-        if (closeEvent.code !== 1000 && closeEvent.code !== 1005) {
-          parts.push(`code ${closeEvent.code}`);
-        }
-        if (closeEvent.reason) {
-          parts.push(closeEvent.reason);
-        }
-        if (parts.length > 0) {
-          message += ` (${parts.join(": ")})`;
-        }
+        message += describeServerClose(closeEvent);
       }
       reject(new UserError(message));
     };
@@ -1253,6 +1252,14 @@ async function* singleConnectionStream(
         continue;
       }
       if (socketClosed) {
+        // 4003: the server revoked this session's credential. Reconnecting
+        // with the same credential cannot succeed, so report why instead.
+        if (state.runId && closeCode === SESSION_REVOKED_CLOSE_CODE) {
+          throw new UserError(
+            `The server ended this session${closeDetail}. ` +
+              "Check the run's final status with: swamp run history",
+          );
+        }
         if (state.runId) {
           return { kind: "disconnected" as const };
         }

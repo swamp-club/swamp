@@ -139,10 +139,10 @@ Actions:
 - `auth.session.terminated`: the server closed a WebSocket session because the
   token it was opened with lost its authority. `detail` is the cause:
   `revoked`, `rotated`, `expired`, `deleted` or `invalid` (the record no longer
-  parses). `initiatedBy` is the admin who
-  revoked or rotated the token, or `system` when the periodic revalidation
-  found it. `sourceIp` is the closed session's address. One event is written
-  per closed session, before its socket closes
+  parses). `initiatedBy` is the admin who revoked or rotated the token, or
+  `system` when the periodic revalidation found it. `sourceIp` is the closed
+  session's address. One event is written per closed session, before its
+  socket closes
 
 `DeviceAuthDeps` carries the `AuditEmitter` and `instanceId`. The serve HTTP
 handler resolves `sourceIp` (honouring `trustProxy` / `X-Forwarded-For`) and

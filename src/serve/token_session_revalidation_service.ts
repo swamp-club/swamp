@@ -89,7 +89,9 @@ export function tokenSessionVerdict(
       reason: TOKEN_ROTATED_REASON,
     };
   }
-  if (token.state === "expired" || Date.parse(token.expiresAt) <= nowMs) {
+  // Written as "not in the future" so an unparseable expiresAt (NaN) fails
+  // closed rather than keeping the session.
+  if (token.state === "expired" || !(Date.parse(token.expiresAt) > nowMs)) {
     return {
       keep: false,
       cause: "expired",

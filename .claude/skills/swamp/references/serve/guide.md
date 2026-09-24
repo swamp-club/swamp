@@ -232,10 +232,13 @@ swamp access token rotate <name>                       # revoke + mint replaceme
 
 Revoking, rotating or expiring a token also ends WebSocket sessions already open
 with it, as does a token record being deleted or becoming unreadable. This is
-immediate on the instance that ran the revoke or rotate. Otherwise it happens
-within about 30s of that instance seeing the change: an HA peer first pulls it
-from the datastore (`--datastore-poll-interval`, default 30s), and a revoke run
-from the CLI is seen directly. The socket closes with code `4003` and a reason
+immediate on the instance that ran the revoke or rotate over its WebSocket.
+Otherwise a periodic re-check ends them within about 30s of the instance seeing
+the change. A revoke run from the CLI straight against the repo, with no serve
+instance involved, is seen at once. An HA peer first pulls the change from the
+datastore (`--datastore-poll-interval`, default 30s), so allow up to about a
+minute there. A CLI run that loses its session this way stops and prints the
+reason rather than reconnecting. The socket closes with code `4003` and a reason
 naming the cause, or `4002` on expiry. Rotation keeps sessions opened with the
 new credential. With audit enabled, each closed session records an
 `auth.session.terminated` event whose `detail` is the cause: `revoked`,

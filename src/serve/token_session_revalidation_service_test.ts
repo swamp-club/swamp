@@ -99,6 +99,17 @@ Deno.test("tokenSessionVerdict: a passed expiresAt closes with 4002", () => {
   assertEquals(verdict.code, 4002);
 });
 
+Deno.test("tokenSessionVerdict: an unparseable expiresAt fails closed", () => {
+  const verdict = tokenSessionVerdict(
+    token({ expiresAt: "not-a-date" }),
+    MINT_1,
+    NOW,
+  );
+  assertEquals(verdict.keep, false);
+  if (verdict.keep) return;
+  assertEquals(verdict.cause, "expired");
+});
+
 Deno.test("tokenSessionVerdict: an expired state closes with 4002 before expiresAt", () => {
   const verdict = tokenSessionVerdict(token({ state: "expired" }), MINT_1, NOW);
   assertEquals(verdict.keep, false);

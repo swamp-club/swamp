@@ -231,12 +231,19 @@ records an `auth.session.terminated` audit event per session (see
 [serve-audit.md](serve-audit.md)) and unbinds each session as it closes, so a
 peer that never completes the close handshake is not closed and audited again.
 
-Every server-initiated close (these, the 8-hour cap, and deprovisioning) goes
-through `closeSession`. It aborts the session's in-flight requests and ends its
+Every server-initiated session close (these, the 8-hour cap, and
+deprovisioning) goes through `closeSession`; the worker gateway's own close of a
+worker control socket is separate. It aborts the session's in-flight requests and ends its
 subscriptions before sending the close frame, and `onmessage` serves nothing
 once the socket is no longer open. The close event only fires when the peer
 answers the close frame, so without this a peer that ignores it would keep the
 session's work running. The 8-hour session cap still applies.
+
+On the client, a run whose socket closes with 4003 stops and reports the
+server's reason (`src/cli/remote_run.ts`) instead of reconnecting: the
+credential was revoked, so reattaching with it cannot succeed. Other drops
+after the run ID is known, including the 4002 session cap, still reconnect and
+send `run.attach`.
 
 One known edge in HA: a client that reconnects with a rotated credential to a
 peer that has not yet pulled the new record is bound to the old `createdAt`,
