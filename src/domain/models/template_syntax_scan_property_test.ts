@@ -20,6 +20,7 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { scanTemplateSyntax } from "./template_syntax_scan.ts";
+import { parsesAsCel } from "../expressions/swamp_namespaces.ts";
 
 /**
  * Strings built from template-like fragments, so matches, near-matches and
@@ -122,19 +123,21 @@ Deno.test("scanTemplateSyntax: reports only broken expressions at or below a dec
   );
 });
 
-Deno.test("scanTemplateSyntax: text with no ${{ has no unclosed expression", () => {
+Deno.test("scanTemplateSyntax: an unclosed expression is never one that parses", () => {
   fc.assert(
     fc.property(arbTemplateText, (value) => {
-      fc.pre(!value.includes("${{"));
       const scan = scanTemplateSyntax({ v: value }, {
         declaredInputs: new Set(),
       });
-      assertEquals(
-        scan.malformed.filter((f) => f.form === "unclosed-expression"),
-        [],
-      );
+      for (const finding of scan.malformed) {
+        if (finding.form !== "unclosed-expression") continue;
+        assert(finding.text.startsWith("${{"), finding.text);
+        if (finding.text.endsWith("}}")) {
+          assert(!parsesAsCel(finding.text.slice(3, -2)), finding.text);
+        }
+      }
     }),
-    { numRuns: 300 },
+    { numRuns: 500 },
   );
 });
 
@@ -146,6 +149,8 @@ const arbSoundExpression = fc.constantFrom(
   "${{ {'a': {'b': 1} } }}",
   "${{ model.web-1a.resource.state.main.attributes.id }}",
   '${{ "${HOME}" }}',
+  '${{ "$" + "{{" }}',
+  "${{ data.latest('m', 'rec').?attributes.?fmt.orValue('{{') }}",
 );
 
 /** Foreign text with no `$`, so it can never open or extend an expression. */

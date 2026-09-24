@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type ASTNode, parse as parseCel } from "cel-js";
+import { type ASTNode, Environment, parse as parseCel } from "cel-js";
 import { transformHyphenatedModelRefs } from "./expression_parser.ts";
 
 /**
@@ -53,20 +53,25 @@ const SWAMP_ROOT_NAMESPACES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether text parses as CEL the way evaluation parses it: hyphenated model
- * refs (`model.web-1a`) are rewritten first, so text that evaluates always
- * parses here.
+ * The grammar evaluation parses. The top-level cel-js `parse` leaves optional
+ * syntax (`.?`, `[?`) off, but the evaluator's environment enables it.
+ */
+const EVALUATION_GRAMMAR = new Environment({
+  unlistedVariablesAreDyn: true,
+  enableOptionalTypes: true,
+});
+
+/**
+ * Whether text parses as CEL the way evaluation parses it: with optional
+ * syntax enabled, and hyphenated model refs (`model.web-1a`) rewritten first.
+ * Text that evaluates always parses here.
  */
 export function parsesAsCel(celExpression: string): boolean {
-  return parseSwampCel(celExpression) !== undefined;
-}
-
-/** Parses CEL as evaluation does, or returns undefined when it is not CEL. */
-function parseSwampCel(celExpression: string): ASTNode | undefined {
   try {
-    return parseCel(transformHyphenatedModelRefs(celExpression)).ast;
+    EVALUATION_GRAMMAR.parse(transformHyphenatedModelRefs(celExpression));
+    return true;
   } catch {
-    return undefined;
+    return false;
   }
 }
 
@@ -98,8 +103,12 @@ export function isSwampExpression(
   celExpression: string,
   scope: SwampScope,
 ): boolean {
-  const ast = parseSwampCel(celExpression);
-  if (ast === undefined) return false;
+  let ast: ASTNode;
+  try {
+    ast = parseCel(transformHyphenatedModelRefs(celExpression)).ast;
+  } catch {
+    return false;
+  }
   const refs: References = {
     roots: new Set(),
     inputs: new Set(),

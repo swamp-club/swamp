@@ -118,7 +118,7 @@ const MAX_CLOSING_ATTEMPTS = 16;
  * or a lone `}` typed for `}}` after valid CEL), is judged by whether it
  * parses when it ends at a later `}}` instead:
  *
- * - If it does, a string inside it was cut short. A `{{ ... }}` there is
+ * - If it does, a string inside it was cut short, and the braces there are
  *   malformed (`inside-expression`), as in `${{ "{{host.name}}" }}`.
  * - If it does not, the expression is `unclosed-expression`, as in
  *   `${{ self.name } && docker ps --format '{{.Names}}'`. So is a `${{` with
@@ -203,11 +203,13 @@ function scanString(
   const diagnoses = spans.map((_, k) => diagnoseSpan(value, spans, k));
   const spanAt = (index: number) =>
     spans.findIndex(([start, end]) => index >= start && index < end);
+  const reported = new Set<number>();
   for (const { form, pattern } of PATTERNS) {
     for (const match of value.matchAll(pattern)) {
       const span = spanAt(match.index);
       if (span !== -1) {
         if (form === "bare-double-brace" && diagnoses[span] === "cut-short") {
+          reported.add(span);
           result.malformed.push({
             path,
             text: match[0],
@@ -225,22 +227,41 @@ function scanString(
       }
     }
   }
+  const lastClose = value.lastIndexOf("}}");
+  let coveredUntil = 0;
   for (const opener of value.matchAll(EXPRESSION_OPENER)) {
+    if (opener.index < coveredUntil) continue;
     const span = spanAt(opener.index);
-    let text: string | undefined;
     if (span === -1) {
-      // An expression needs a `}}` after its `${{` to be a span at all.
-      if (!value.includes("}}", opener.index + 3)) {
-        const lineEnd = value.indexOf("\n", opener.index);
-        text = value.slice(opener.index, lineEnd === -1 ? undefined : lineEnd);
-      }
-    } else if (
-      spans[span][0] === opener.index && diagnoses[span] === "unclosed"
-    ) {
-      text = value.slice(spans[span][0], spans[span][1]);
+      // Outside every span, a `${{` has no `}}` after it, or is `${{}}`.
+      if (lastClose >= opener.index + 3) continue;
+      const lineEnd = value.indexOf("\n", opener.index);
+      coveredUntil = lineEnd === -1 ? value.length : lineEnd;
+      result.malformed.push({
+        path,
+        text: value.slice(opener.index, coveredUntil),
+        form: "unclosed-expression",
+      });
+      continue;
     }
-    if (text !== undefined) {
-      result.malformed.push({ path, text, form: "unclosed-expression" });
+    const [start, end] = spans[span];
+    if (start !== opener.index) continue;
+    if (diagnoses[span] === "unclosed") {
+      result.malformed.push({
+        path,
+        text: value.slice(start, end),
+        form: "unclosed-expression",
+      });
+    } else if (diagnoses[span] === "cut-short" && !reported.has(span)) {
+      // Braces that match no `{{ ... }}`, such as a nested `${{ ... }}`,
+      // are reported from their first `{{`.
+      const brace = value.indexOf("{{", start + 3);
+      const from = value[brace - 1] === "$" ? brace - 1 : brace;
+      result.malformed.push({
+        path,
+        text: value.slice(from, end),
+        form: "inside-expression",
+      });
     }
   }
 }

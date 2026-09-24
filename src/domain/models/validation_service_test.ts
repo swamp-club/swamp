@@ -750,7 +750,7 @@ Deno.test("validateModel reports an unclosed expression, not the {{...}} it runs
     assertEquals(expressionPaths?.passed, false);
     const error = expressionPaths?.error ?? "";
     assertStringIncludes(error, "Unclosed ${{...}} expression");
-    assertStringIncludes(error, "missing a closing brace");
+    assertStringIncludes(error, "missing or out of place");
     assertEquals(error.includes("cuts it short"), false, error);
     assertEquals(warnings, []);
   }

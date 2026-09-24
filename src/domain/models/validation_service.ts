@@ -89,7 +89,7 @@ const MALFORMED_EXPRESSION_MESSAGES: Record<
   "unclosed-expression": {
     issue: "Unclosed ${{...}} expression",
     suggestion:
-      "An expression ends at the first }} after its ${{. This one is not valid CEL up to there, or has no }} at all, so it is probably missing a closing brace. Close it with }} where it should end.",
+      'An expression ends at the first }} after its ${{. This one is not valid CEL up to there, or has no }} at all, so a brace is probably missing or out of place. Close it with }} where it should end. If the ${{ is another service\'s text, build it with CEL string concatenation, e.g. ${{ "$" + "{{" }}.',
   },
 };
 

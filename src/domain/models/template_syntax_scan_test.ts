@@ -168,6 +168,18 @@ Deno.test("scanTemplateSyntax: every shape of an unclosed expression is reported
   assertEquals(unclosed("echo ${{ self.name }\nls -la\n"), [
     "${{ self.name }",
   ]);
+  // A lone } after optional syntax.
+  assertEquals(unclosed("echo ${{ self.?name } && ls }}"), [
+    "${{ self.?name } && ls }}",
+  ]);
+});
+
+Deno.test("scanTemplateSyntax: reports a run of unclosed expressions on one line once", () => {
+  assertEquals(unclosed("echo ${{ a } ${{ b }"), ["${{ a } ${{ b }"]);
+  assertEquals(unclosed("echo ${{ a }\necho ${{ b }"), [
+    "${{ a }",
+    "${{ b }",
+  ]);
 });
 
 Deno.test("scanTemplateSyntax: each unclosed expression in a value is reported", () => {
@@ -180,9 +192,17 @@ Deno.test("scanTemplateSyntax: each unclosed expression in a value is reported",
 });
 
 Deno.test("scanTemplateSyntax: braces inside an expression that parses are fine", () => {
-  assertEquals(classify("echo ${{ '{{' }}"), "none");
-  assertEquals(classify("${{ {'a': {'b': 1} } }}"), "none");
-  assertEquals(classify("${{ '{' + '{host.name}' + '}' }}"), "none");
+  for (
+    const value of [
+      "echo ${{ '{{' }}",
+      "${{ {'a': {'b': 1} } }}",
+      "${{ '{' + '{host.name}' + '}' }}",
+      '${{ "$" + "{{" }}',
+      "${{ data.latest('m', 'rec').?attributes.?fmt.orValue('{{') }}",
+    ]
+  ) {
+    assertEquals(classify(value), "none", value);
+  }
 });
 
 Deno.test("scanTemplateSyntax: a string cut short by }} stays inside-expression", () => {
@@ -197,8 +217,32 @@ Deno.test("scanTemplateSyntax: a string cut short by }} stays inside-expression"
   }]);
 });
 
-Deno.test("scanTemplateSyntax: a string holding a nested ${{ that recovers is not reported", () => {
-  assertEquals(classify('x ${{ "${{ y }}" }}'), "none");
+Deno.test("scanTemplateSyntax: a string cut short with optional syntax stays inside-expression", () => {
+  const scan = scanTemplateSyntax(
+    { v: "${{ data.latest('m', 'r').?attributes.?x.orValue('{{a}}') }}" },
+    noInputs,
+  );
+  assertEquals(scan.malformed, [{
+    path: "v",
+    text: "{{a}}",
+    form: "inside-expression",
+  }]);
+});
+
+Deno.test("scanTemplateSyntax: a cut-short string is reported even when its braces match no {{...}}", () => {
+  for (
+    const [value, text] of [
+      ['x ${{ "${{ github.sha }}" }}', "${{ github.sha }}"],
+      ['${{ "{{}}" }}', "{{}}"],
+    ]
+  ) {
+    const scan = scanTemplateSyntax({ v: value }, noInputs);
+    assertEquals(scan.malformed, [{
+      path: "v",
+      text,
+      form: "inside-expression",
+    }], value);
+  }
 });
 
 Deno.test("scanTemplateSyntax: closed text that is not CEL passes through", () => {
@@ -208,12 +252,17 @@ Deno.test("scanTemplateSyntax: closed text that is not CEL passes through", () =
       "${{ each step in parameters.steps }}:",
       "write ${{ ... }} for an expression",
       "${{ fromJSON('{}') }}",
-      "${{ {'a': {'b': 1}} }}",
       "${{}}",
     ]
   ) {
     assertEquals(classify(value), "none", value);
   }
+});
+
+Deno.test("scanTemplateSyntax: a map literal cut short by its own }} is not reported yet (swamp-club#2492)", () => {
+  // Known gap: the span shows no sign of running on, so it passes through as
+  // text swamp cannot attribute. A quote- and brace-aware scanner fixes it.
+  assertEquals(classify("${{ {'a': {'b': 1}} }}"), "none");
 });
 
 Deno.test("scanTemplateSyntax: unclosed expressions are reported in a declared field", () => {
