@@ -33,8 +33,11 @@ type AnyOptions = any;
 
 export const authLogoutCommand = new Command()
   .name("logout")
-  .description("Remove stored authentication credentials")
-  .example("Remove stored credentials", "swamp auth logout")
+  .description(
+    "Revoke the stored API key on the server, then remove the stored\n" +
+      "credentials. If the key cannot be revoked, the credentials are kept.",
+  )
+  .example("Revoke the stored key and log out", "swamp auth logout")
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["auth", "logout"]);
     cliCtx.logger.debug("Executing auth logout command");

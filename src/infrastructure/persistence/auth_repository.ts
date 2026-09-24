@@ -29,6 +29,12 @@ import {
 
 const AUTH_FILE = "auth.json";
 
+/** Server URL compared without trailing slashes, with the legacy domain mapped to the current one. */
+function canonicalServerUrl(url: string): string {
+  const trimmed = url.replace(/\/+$/, "");
+  return trimmed === LEGACY_SWAMP_CLUB_URL ? DEFAULT_SWAMP_CLUB_URL : trimmed;
+}
+
 /**
  * Optional overrides for `AuthRepository`. Used by tests to bypass the
  * shared `Deno.env` global, which races across files when
@@ -152,6 +158,11 @@ export class AuthRepository {
   /**
    * Cache identity fields (username, collectives, fingerprint) without
    * overwriting an existing apiKey/apiKeyId from a login session.
+   *
+   * Returns false, writing nothing, when the file holds a login key issued by
+   * a different server: re-pointing its serverUrl would send that key to the
+   * other server on its next use (including the revoke on logout). Callers
+   * then hold the identity in memory instead.
    */
   async saveIdentityCache(
     serverUrl: string,
@@ -159,7 +170,7 @@ export class AuthRepository {
     collectives: string[],
     fingerprint: string,
     scopes?: string[],
-  ): Promise<void> {
+  ): Promise<boolean> {
     let existing: AuthCredentials | undefined;
     try {
       const content = await Deno.readTextFile(this.getAuthPath());
@@ -168,16 +179,11 @@ export class AuthRepository {
       // No existing file
     }
 
-    // A login key belongs to the server that issued it. Re-pointing its
-    // serverUrl at another server would send the key there on its next use
-    // (including the revoke on logout), so leave that file untouched.
-    const existingServerUrl = existing?.serverUrl === LEGACY_SWAMP_CLUB_URL
-      ? DEFAULT_SWAMP_CLUB_URL
-      : existing?.serverUrl;
     if (
-      existing?.apiKey && existingServerUrl && existingServerUrl !== serverUrl
+      existing?.apiKey && existing.serverUrl &&
+      canonicalServerUrl(existing.serverUrl) !== canonicalServerUrl(serverUrl)
     ) {
-      return;
+      return false;
     }
 
     const merged: AuthCredentials = {
@@ -190,6 +196,7 @@ export class AuthRepository {
       apiKeyFingerprint: fingerprint,
     };
     await this.save(merged);
+    return true;
   }
 
   private getScopeCachePath(): string {

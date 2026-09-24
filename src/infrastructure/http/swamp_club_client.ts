@@ -56,13 +56,19 @@ export interface RevokeCollectiveTokenResponse {
 }
 
 /**
- * Outcome of a personal API key revoking itself. `already_invalid` means the
- * server no longer accepts the key (revoked, expired, or never existed), so
- * there is nothing left to revoke.
+ * The server's answer to a personal API key revoking itself:
+ * - `revoked`: the key was deleted.
+ * - `already_invalid` (401): the server no longer accepts the key (revoked,
+ *   expired, or never existed), so there is nothing left to revoke.
+ * - `not_personal_key` (403): the credential is not a personal API key, so it
+ *   cannot revoke itself.
+ * - `unsupported` (404): the server has no self-revoke endpoint.
  */
 export type RevokePresentingApiKeyResult =
   | { kind: "revoked"; id: string }
-  | { kind: "already_invalid" };
+  | { kind: "already_invalid" }
+  | { kind: "not_personal_key" }
+  | { kind: "unsupported" };
 
 /** Longest server response body echoed into an error message. */
 const MAX_ERROR_BODY_CHARS = 200;
@@ -920,8 +926,9 @@ export class SwampClubClient {
   /**
    * Revoke the personal API key that authenticates the request. The server
    * derives the key id from the credential itself, so a key can only revoke
-   * itself. Throws UserError for every outcome other than revoked or
-   * already invalid, so callers never mistake a failure for a revocation.
+   * itself. A 2xx counts as revoked only when its body confirms it; every
+   * answer that is not one of the result kinds throws UserError, so callers
+   * never mistake a failure for a revocation.
    */
   async revokePresentingApiKey(
     apiKey: string,
@@ -938,28 +945,47 @@ export class SwampClubClient {
       signal,
     );
 
-    if (res.ok) {
-      const data = await res.json().catch(() => ({}));
-      return {
-        kind: "revoked",
-        id: typeof data.id === "string" ? data.id : "",
-      };
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (error) {
+      // Only the caller's own abort stays an AbortError (the fetch wrapper's rule).
+      if (
+        signal?.aborted && error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `Lost the connection to ${this.serverUrl} while reading its response: ${message}`,
+      );
     }
 
-    const text = await res.text();
-    if (res.status === 401) {
-      return { kind: "already_invalid" };
-    }
-    if (res.status === 403) {
+    if (res.ok) {
+      let data: unknown;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = null;
+      }
+      const fields = typeof data === "object" && data !== null
+        ? data as Record<string, unknown>
+        : {};
+      if (fields.revoked === true) {
+        return {
+          kind: "revoked",
+          id: typeof fields.id === "string" ? fields.id : "",
+        };
+      }
       throw new UserError(
-        `${this.serverUrl} refused to revoke the stored credential: it is not a personal API key.`,
+        `${this.serverUrl} answered HTTP ${res.status} without confirming the API key was revoked.`,
       );
     }
-    if (res.status === 404) {
-      throw new UserError(
-        `${this.serverUrl} does not support revoking API keys from the CLI.`,
-      );
-    }
+    if (res.status === 401) return { kind: "already_invalid" };
+    if (res.status === 403) return { kind: "not_personal_key" };
+    if (res.status === 404) return { kind: "unsupported" };
+
     const body = text.length > MAX_ERROR_BODY_CHARS
       ? `${text.slice(0, MAX_ERROR_BODY_CHARS)}…`
       : text;

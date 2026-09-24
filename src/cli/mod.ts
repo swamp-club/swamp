@@ -1574,6 +1574,9 @@ export async function runCli(args: string[]): Promise<void> {
   // cache round-trip issues with --unstable-bundle module duplication.
   // Must run before the authCollectives read so the first invocation gets
   // cached collectives for extension trust.
+  // Collectives from whoami that could not be cached: auth.json holds a login
+  // key for another server, which the cache write must not re-point.
+  let uncachedEnvKeyCollectives: string[] | undefined;
   if (!hookMode && Deno.env.get("SWAMP_API_KEY")) {
     try {
       const authRepo = new AuthRepository();
@@ -1607,13 +1610,14 @@ export async function runCli(args: string[]): Promise<void> {
           const response = await client.whoami(creds.apiKey, signal);
           if (response.authenticated && response.username) {
             const collectives = getCollectives(response) ?? [];
-            await authRepo.saveIdentityCache(
+            const cached = await authRepo.saveIdentityCache(
               creds.serverUrl,
               response.username,
               collectives,
               apiKeyFingerprint(creds.apiKey),
               response.scopes,
             );
+            if (!cached) uncachedEnvKeyCollectives = collectives;
           }
         }
       }
@@ -1631,7 +1635,7 @@ export async function runCli(args: string[]): Promise<void> {
     try {
       const authRepo = new AuthRepository();
       const creds = await authRepo.load();
-      authCollectives = creds?.collectives;
+      authCollectives = creds?.collectives ?? uncachedEnvKeyCollectives;
       if (!Deno.env.get("SWAMP_API_KEY")) {
         if (creds?.apiKey) setCollectiveToken(creds.apiKey);
         setAuthScopes(creds?.scopes);

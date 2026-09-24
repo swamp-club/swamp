@@ -68,7 +68,7 @@ Deno.test("LogAuthLogoutRenderer - reports a revoked key", async () => {
   });
   assertEquals(logs, [
     "Logged out alice from https://club.example.com",
-    "Revoked the API key on https://club.example.com.",
+    "Revoked the stored API key on https://club.example.com.",
   ]);
 });
 

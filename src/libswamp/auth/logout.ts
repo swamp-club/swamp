@@ -30,7 +30,8 @@ import type { LibSwampContext } from "../context.ts";
 import { cancelled, type SwampError } from "../errors.ts";
 
 /**
- * What happened to the stored API key on the server:
+ * What happened to the stored API key on the server, for a logout that
+ * completed:
  * - `revoked`: the server revoked it.
  * - `already_invalid`: the server no longer accepted it, so nothing was left
  *   to revoke.
@@ -132,35 +133,58 @@ export async function* authLogout(
   let keyRevocation: AuthLogoutKeyRevocation = "no_key";
   let keyId: string | undefined;
   if (credentials.apiKey) {
+    const path = deps.credentialsPath();
+    const server = credentials.serverUrl;
+    const keepCredentials = (reason: string, advice: string) => ({
+      kind: "error" as const,
+      error: {
+        code: "revoke_failed",
+        message: `Could not revoke the API key: ${
+          /[.!?…]$/.test(reason) ? reason : `${reason}.`
+        } Your credentials were kept at ${path}. ${advice}`,
+      },
+    });
+
+    let result: RevokePresentingApiKeyResult;
     try {
-      const result = await deps.revokeApiKey(
-        credentials.serverUrl,
-        credentials.apiKey,
-        ctx.signal,
-      );
-      keyRevocation = result.kind;
-      if (result.kind === "revoked" && result.id) keyId = result.id;
+      result = await deps.revokeApiKey(server, credentials.apiKey, ctx.signal);
     } catch (error: unknown) {
       if (error instanceof DOMException && error.name === "AbortError") {
         yield { kind: "error", error: cancelled(error) };
         return;
       }
       if (error instanceof UserError) {
-        const reason = /[.!?…]$/.test(error.message)
-          ? error.message
-          : `${error.message}.`;
-        yield {
-          kind: "error",
-          error: {
-            code: "revoke_failed",
-            message: `Could not revoke the API key: ${reason} ` +
-              `Your credentials were kept at ${deps.credentialsPath()}. ` +
-              `Run 'swamp auth logout' again once this is resolved.`,
-          },
-        };
+        yield keepCredentials(
+          error.message,
+          "Run 'swamp auth logout' again once this is resolved.",
+        );
         return;
       }
       throw error;
+    }
+
+    switch (result.kind) {
+      case "revoked":
+        keyRevocation = "revoked";
+        if (result.id) keyId = result.id;
+        break;
+      case "already_invalid":
+        keyRevocation = "already_invalid";
+        break;
+      case "unsupported":
+        // Retrying cannot help: the server has no self-revoke endpoint.
+        yield keepCredentials(
+          `${server} does not support revoking API keys from the CLI.`,
+          `Revoke the key in the web UI under Access Tokens on ${server}, then delete ${path} to log out.`,
+        );
+        return;
+      case "not_personal_key":
+        // Retrying cannot help: only a personal API key can revoke itself.
+        yield keepCredentials(
+          `${server} refused to revoke the stored credential: it is not a personal API key.`,
+          `Revoke it in the web UI on ${server}, then delete ${path} to log out.`,
+        );
+        return;
     }
   }
 

@@ -112,8 +112,7 @@ Deno.test("authLogout: deletes credentials when the key is already invalid", asy
 for (
   const reason of [
     "Could not connect to https://api.example.com: connection refused",
-    "https://api.example.com does not support revoking API keys from the CLI.",
-    "https://api.example.com refused to revoke the stored credential: it is not a personal API key.",
+    "https://api.example.com answered HTTP 200 without confirming the API key was revoked.",
     "Failed to revoke API key on https://api.example.com (HTTP 500): boom",
     "Rate limit exceeded.",
   ]
@@ -141,7 +140,47 @@ for (
       error.message,
       "/home/test/.config/swamp/auth.json",
     );
-    assertStringIncludes(error.message, "swamp auth logout");
+    assertStringIncludes(
+      error.message,
+      "Run 'swamp auth logout' again once this is resolved.",
+    );
+  });
+}
+
+// A retry cannot fix these, so the advice is the manual route instead.
+for (
+  const [kind, reason] of [
+    ["unsupported", "does not support revoking API keys from the CLI."],
+    ["not_personal_key", "it is not a personal API key."],
+  ] as const
+) {
+  Deno.test(`authLogout: keeps credentials and gives manual advice when the server answers ${kind}`, async () => {
+    let deleteCalled = false;
+    const deps = makeDeps({
+      revokeApiKey: () => Promise.resolve({ kind }),
+      deleteCredentials: () => {
+        deleteCalled = true;
+        return Promise.resolve();
+      },
+    });
+
+    const error = errorOf(
+      await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+    );
+
+    assertEquals(deleteCalled, false);
+    assertEquals(error.code, "revoke_failed");
+    assertStringIncludes(error.message, reason);
+    assertStringIncludes(error.message, "in the web UI");
+    assertStringIncludes(
+      error.message,
+      "Your credentials were kept at /home/test/.config/swamp/auth.json.",
+    );
+    assertStringIncludes(
+      error.message,
+      "then delete /home/test/.config/swamp/auth.json to log out.",
+    );
+    assertEquals(error.message.includes("again once"), false);
   });
 }
 

@@ -1091,7 +1091,7 @@ Deno.test("SwampClubClient - revokePresentingApiKey maps 401 to already_invalid"
   }
 });
 
-Deno.test("SwampClubClient - revokePresentingApiKey throws on 403 for a non-personal credential", async () => {
+Deno.test("SwampClubClient - revokePresentingApiKey maps 403 to not_personal_key", async () => {
   const mock = startMockServer(() =>
     Response.json({ error: "Only a personal API key can revoke itself" }, {
       status: 403,
@@ -1100,35 +1100,54 @@ Deno.test("SwampClubClient - revokePresentingApiKey throws on 403 for a non-pers
 
   try {
     const client = new SwampClubClient(`http://localhost:${mock.port}`);
-    const err = await assertRejects(
-      () => client.revokePresentingApiKey("swamp_org_key"),
-      UserError,
-    );
-    assertStringIncludes(err.message, "not a personal API key");
+    const result = await client.revokePresentingApiKey("swamp_org_key");
+    assertEquals(result, { kind: "not_personal_key" });
   } finally {
     await mock.shutdown();
   }
 });
 
-Deno.test("SwampClubClient - revokePresentingApiKey throws on 404 when the server lacks the endpoint", async () => {
+Deno.test("SwampClubClient - revokePresentingApiKey maps 404 to unsupported", async () => {
   const mock = startMockServer(() =>
     new Response("Not Found", { status: 404 })
   );
 
   try {
     const client = new SwampClubClient(`http://localhost:${mock.port}`);
-    const err = await assertRejects(
-      () => client.revokePresentingApiKey("swamp_test_key"),
-      UserError,
-    );
-    assertStringIncludes(
-      err.message,
-      "does not support revoking API keys from the CLI",
-    );
+    const result = await client.revokePresentingApiKey("swamp_test_key");
+    assertEquals(result, { kind: "unsupported" });
   } finally {
     await mock.shutdown();
   }
 });
+
+// A 2xx that does not confirm the revoke (an SPA index.html fallback, a
+// captive portal, a proxy page) must never read as revoked: logout would
+// delete credentials whose key is still valid.
+for (
+  const [label, body] of [
+    ["an HTML page", "<!doctype html><html>app shell</html>"],
+    ["a JSON null", "null"],
+    ["JSON without revoked", '{"id":"key-123"}'],
+    ["revoked false", '{"revoked":false,"id":"key-123"}'],
+    ["an empty body", ""],
+  ]
+) {
+  Deno.test(`SwampClubClient - revokePresentingApiKey throws on a 200 with ${label}`, async () => {
+    const mock = startMockServer(() => new Response(body, { status: 200 }));
+
+    try {
+      const client = new SwampClubClient(`http://localhost:${mock.port}`);
+      const err = await assertRejects(
+        () => client.revokePresentingApiKey("swamp_test_key"),
+        UserError,
+      );
+      assertStringIncludes(err.message, "without confirming");
+    } finally {
+      await mock.shutdown();
+    }
+  });
+}
 
 Deno.test("SwampClubClient - revokePresentingApiKey throws on 500 and truncates the body", async () => {
   const longBody = "x".repeat(5000);
