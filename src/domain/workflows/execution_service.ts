@@ -33,7 +33,7 @@ import { deepMerge } from "../inputs/input_merge.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { JobRun, WorkflowRun, type WorkflowRunData } from "./workflow_run.ts";
-import { selectRetryTemplates } from "./failed_step_retry.ts";
+import { planFailedRunResume, type ResumeReset } from "./resume_reset.ts";
 import { nextActionForStatus } from "./suspended_run_resolver.ts";
 import {
   type GraphNode,
@@ -2586,7 +2586,7 @@ export class WorkflowExecutionService {
    * - A suspended run continues once every approval gate is decided.
    * - A failed run with `fromStep` re-enters at that step and its dependents.
    * - A failed run without `fromStep` retries: every failed step's entry
-   *   template and its dependents are reset (see {@link selectRetryTemplates}).
+   *   template and its dependents are reset (see {@link planFailedRunResume}).
    *
    * Terminal steps outside the reset set are skipped and their outputs are
    * restored into `steps.*`. A refusal changes nothing; a failure after the
@@ -2631,27 +2631,20 @@ export class WorkflowExecutionService {
 
     // Every check runs before the first mutation, so a refusal persists
     // nothing and invokes no method.
-    let stepsToReset: Set<string> | undefined;
+    let reset: ResumeReset | undefined;
     if (fromStep) {
       if (existingRun.status !== "failed") {
         throw new UserError(
           `--from requires a failed run, but run ${runId} has status "${existingRun.status}"`,
         );
       }
-      stepsToReset = computeStepsToReset(workflow, existingRun, fromStep);
+      reset = planFailedRunResume(workflow, existingRun, fromStep);
     } else if (
       existingRun.status === "failed" && !options?.suspendedOnly
     ) {
       // Retry: reset the entry template of every failed step, and each
       // template's dependents, through the same path as --from.
-      stepsToReset = new Set();
-      for (const template of selectRetryTemplates(workflow, existingRun)) {
-        for (
-          const name of computeStepsToReset(workflow, existingRun, template)
-        ) {
-          stepsToReset.add(name);
-        }
-      }
+      reset = planFailedRunResume(workflow, existingRun);
     } else if (existingRun.status !== "suspended") {
       const accepted = options?.suspendedOnly
         ? "is not suspended"
@@ -2675,8 +2668,8 @@ export class WorkflowExecutionService {
     // rather than left running with nothing driving it.
     const snapshot = existingRun.toData();
 
-    if (stepsToReset) {
-      existingRun.resetForResumeFrom(stepsToReset);
+    if (reset) {
+      existingRun.resetForResumeFrom(reset.steps, reset.tracked);
       existingRun.resumeFromFailed();
     } else {
       existingRun.resumeFromSuspended();
@@ -3232,6 +3225,23 @@ export class WorkflowExecutionService {
 
         if (run.status === "suspended") {
           break;
+        }
+      }
+
+      // A step a failed-run resume reset that this walk never reached was
+      // stranded by a workflow change (for example, an iteration dropped from
+      // a smaller forEach collection). Fail it rather than report the job
+      // succeeded with the step still pending. Structural: no model fields.
+      if (run.status !== "suspended" && !options.signal?.aborted) {
+        for (const stranded of jobRun.failStrandedResetSteps()) {
+          jobFailed = true;
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: stranded.stepName,
+            error: stranded.error ?? "",
+            forEachTemplate: stranded.forEachTemplate,
+          };
         }
       }
 
@@ -4856,141 +4866,4 @@ function resolveEffectiveConcurrency(
   const g = global && global > 0 ? global : undefined;
   if (l && g) return Math.min(l, g);
   return l ?? g;
-}
-
-/**
- * Computes the set of persisted step names (including forEach-expanded names)
- * to reset when re-entering a failed run at `fromStep`. The result includes
- * the fromStep itself and all its transitive downstream dependents across all
- * jobs. Used by a `--from` resume, and once per entry template by a retry
- * (a resume of a failed run without `--from`).
- */
-export function computeStepsToReset(
-  workflow: Workflow,
-  run: WorkflowRun,
-  fromStep: string,
-): Set<string> {
-  // Validate that fromStep is a template step name in the workflow definition.
-  let foundInJob: string | undefined;
-  for (const job of workflow.jobs) {
-    for (const step of job.steps) {
-      if (step.name === fromStep) {
-        foundInJob = job.name;
-        break;
-      }
-    }
-    if (foundInJob) break;
-  }
-  if (!foundInJob) {
-    const allStepNames = workflow.jobs
-      .flatMap((j) => j.steps.map((s) => s.name));
-    throw new UserError(
-      `Step "${fromStep}" not found in workflow "${workflow.name}". ` +
-        `Available steps: ${allStepNames.join(", ")}`,
-    );
-  }
-
-  // Build a combined dependency graph across all jobs and steps.
-  // Job-level dependencies create edges from every step in the upstream job
-  // to the dependent job's steps.
-  const downstreamOf = new Map<string, Set<string>>();
-  const allTemplateNames = new Set<string>();
-
-  for (const job of workflow.jobs) {
-    for (const step of job.steps) {
-      allTemplateNames.add(step.name);
-      if (!downstreamOf.has(step.name)) {
-        downstreamOf.set(step.name, new Set());
-      }
-      // Step-level dependencies (within a job)
-      for (const dep of step.getDependencyNames()) {
-        if (!downstreamOf.has(dep)) {
-          downstreamOf.set(dep, new Set());
-        }
-        downstreamOf.get(dep)!.add(step.name);
-      }
-    }
-    // Job-level dependencies: if job B depends on job A, then all steps in
-    // job A are upstream of all steps in job B (for the purpose of --from
-    // reset propagation).
-    for (const depJobName of job.getDependencyNames()) {
-      const depJob = workflow.jobs.find((j) => j.name === depJobName);
-      if (!depJob) continue;
-      for (const depStep of depJob.steps) {
-        for (const step of job.steps) {
-          if (!downstreamOf.has(depStep.name)) {
-            downstreamOf.set(depStep.name, new Set());
-          }
-          downstreamOf.get(depStep.name)!.add(step.name);
-        }
-      }
-    }
-  }
-
-  // BFS from fromStep to collect all transitive downstream template names.
-  const templateNamesToReset = new Set<string>();
-  const queue = [fromStep];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (templateNamesToReset.has(current)) continue;
-    templateNamesToReset.add(current);
-    for (const downstream of downstreamOf.get(current) ?? []) {
-      if (!templateNamesToReset.has(downstream)) {
-        queue.push(downstream);
-      }
-    }
-  }
-
-  // Map template names to persisted step names. For forEach steps, the
-  // template entry was replaced by expanded entries during the original run.
-  // We match by checking if a persisted step name equals the template name
-  // (non-forEach) or starts with the template name followed by a separator
-  // (forEach-expanded). We also check against the workflow definition to
-  // only apply prefix matching for steps that have forEach configured.
-  const forEachTemplates = new Set<string>();
-  for (const job of workflow.jobs) {
-    for (const step of job.steps) {
-      if (step.forEach) {
-        forEachTemplates.add(step.name);
-      }
-    }
-  }
-
-  const stepsToReset = new Set<string>();
-  for (const jobRun of run.jobs) {
-    for (const stepRun of jobRun.steps) {
-      const name = stepRun.stepName;
-      if (templateNamesToReset.has(name)) {
-        stepsToReset.add(name);
-      } else if (
-        stepRun.forEachTemplate &&
-        templateNamesToReset.has(stepRun.forEachTemplate)
-      ) {
-        stepsToReset.add(name);
-      } else if (!allTemplateNames.has(name)) {
-        // Backward-compat fallback for runs persisted before forEachTemplate
-        // was recorded: prefix-match against forEach templates. Only applies
-        // to steps that are NOT themselves template names (prevents a forEach
-        // template "read" from matching a non-forEach step "read-plate").
-        for (const tmpl of templateNamesToReset) {
-          if (
-            forEachTemplates.has(tmpl) &&
-            name.startsWith(tmpl + "-")
-          ) {
-            stepsToReset.add(name);
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  if (stepsToReset.size === 0) {
-    throw new UserError(
-      `--from "${fromStep}" matched zero persisted steps in the run. ` +
-        `The step may not have been reached during execution.`,
-    );
-  }
-
-  return stepsToReset;
 }

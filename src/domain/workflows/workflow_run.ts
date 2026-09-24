@@ -92,6 +92,25 @@ export const StepSkipReasonSchema = z.discriminatedUnion("kind", [
 export type StepSkipReasonData = z.infer<typeof StepSkipReasonSchema>;
 
 /**
+ * Why a step failed, when the failure is structural rather than the step's
+ * own outcome. `workflow_changed`: a failed-run resume reset the step, then
+ * its job finished without running it, because the workflow or a forEach
+ * collection changed since the run. A retry would fail the same way.
+ */
+export const StepFailureKindSchema = z.enum(["workflow_changed"]);
+
+/**
+ * Type representing a structural step failure.
+ */
+export type StepFailureKind = z.infer<typeof StepFailureKindSchema>;
+
+/**
+ * The error a stranded step fails with. See {@link JobRun.failStrandedResetSteps}.
+ */
+export const STRANDED_STEP_ERROR =
+  "Not run: the workflow or a forEach collection changed since the run. Start a new run.";
+
+/**
  * Zod schema for step run.
  */
 export const StepRunSchema = z.object({
@@ -116,6 +135,8 @@ export const StepRunSchema = z.object({
   assertResult: AssertResultSchema.optional(),
   forEachTemplate: z.string().optional(),
   skipReason: StepSkipReasonSchema.optional(),
+  resetByResume: z.boolean().optional(),
+  failureKind: StepFailureKindSchema.optional(),
 });
 
 /**
@@ -231,6 +252,8 @@ export class StepRun {
     private _assertResult: AssertResultData | undefined = undefined,
     private _forEachTemplate: string | undefined = undefined,
     private _skipReason: StepSkipReasonData | undefined = undefined,
+    private _resetByResume: boolean = false,
+    private _failureKind: StepFailureKind | undefined = undefined,
   ) {}
 
   /**
@@ -275,6 +298,8 @@ export class StepRun {
       validated.assertResult,
       validated.forEachTemplate,
       validated.skipReason,
+      validated.resetByResume ?? false,
+      validated.failureKind,
     );
   }
 
@@ -336,6 +361,21 @@ export class StepRun {
   }
 
   /**
+   * True while a failed-run resume has reset this step and it has not left
+   * pending since. Persisted, so a resume that suspends again keeps it.
+   */
+  get resetByResume(): boolean {
+    return this._resetByResume;
+  }
+
+  /**
+   * Why the step failed, when the failure is structural. Undefined otherwise.
+   */
+  get failureKind(): StepFailureKind | undefined {
+    return this._failureKind;
+  }
+
+  /**
    * Records an approval or rejection decision on this step.
    */
   recordApprovalDecision(decision: ApprovalDecisionData): void {
@@ -372,6 +412,33 @@ export class StepRun {
     this._approvalPrompt = undefined;
     this._assertResult = undefined;
     this._skipReason = undefined;
+    this._resetByResume = false;
+    this._failureKind = undefined;
+  }
+
+  /**
+   * Marks a pending step as reset by a failed-run resume. Cleared when the
+   * step leaves pending.
+   */
+  markResetByResume(): void {
+    this._resetByResume = true;
+  }
+
+  /**
+   * Clears a reset marker left by an earlier resume.
+   */
+  clearResetMarker(): void {
+    this._resetByResume = false;
+  }
+
+  /**
+   * Fails a step whose job finished without running it after a failed-run
+   * resume reset it. The failure is structural, so it is never allowed.
+   */
+  failStranded(): void {
+    this.fail(STRANDED_STEP_ERROR);
+    this._allowedFailure = false;
+    this._failureKind = "workflow_changed";
   }
 
   /**
@@ -380,6 +447,7 @@ export class StepRun {
   start(): void {
     this._status = "running";
     this._startedAt = new Date();
+    this._resetByResume = false;
   }
 
   /**
@@ -387,6 +455,7 @@ export class StepRun {
    */
   waitForApproval(prompt?: string): void {
     this._status = "waiting_approval";
+    this._resetByResume = false;
     if (prompt !== undefined) {
       this._approvalPrompt = prompt;
     }
@@ -398,6 +467,7 @@ export class StepRun {
   succeed(output?: unknown): void {
     this._status = "succeeded";
     this._completedAt = new Date();
+    this._resetByResume = false;
     if (output !== undefined) {
       this._output = output;
     }
@@ -410,6 +480,7 @@ export class StepRun {
     this._status = "failed";
     this._completedAt = new Date();
     this._error = error;
+    this._resetByResume = false;
   }
 
   /**
@@ -419,6 +490,7 @@ export class StepRun {
   markUnknown(error?: string): void {
     this._status = "unknown";
     this._completedAt = new Date();
+    this._resetByResume = false;
     if (error !== undefined) {
       this._error = error;
     }
@@ -434,6 +506,7 @@ export class StepRun {
   skip(reason?: StepSkipReasonData): void {
     this._status = "skipped";
     this._completedAt = new Date();
+    this._resetByResume = false;
     if (reason !== undefined) {
       this._skipReason = { ...reason };
     }
@@ -471,6 +544,12 @@ export class StepRun {
     }
     if (this._skipReason) {
       data.skipReason = { ...this._skipReason };
+    }
+    if (this._resetByResume) {
+      data.resetByResume = true;
+    }
+    if (this._failureKind) {
+      data.failureKind = this._failureKind;
     }
     return data;
   }
@@ -682,6 +761,22 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Fails every step a failed-run resume reset that the job finished without
+   * running (a stranded step), and returns them. Called when the job's walk
+   * ends, unless the run suspended or was cancelled. A tracked reset step
+   * that the current workflow no longer produces, such as an iteration
+   * dropped from a smaller forEach collection, would otherwise stay pending
+   * in a job reported succeeded.
+   */
+  failStrandedResetSteps(): StepRun[] {
+    const stranded = this._steps.filter((step) => step.resetByResume);
+    for (const step of stranded) {
+      step.failStranded();
+    }
+    return stranded;
+  }
+
+  /**
    * Converts to plain data for persistence.
    */
   toData(): JobRunData {
@@ -706,6 +801,16 @@ export interface FailedStepRef {
   forEachTemplate?: string;
   /** True when the step is a manual approval that was rejected. */
   approvalRejected: boolean;
+  /** Set when the failure is structural. See {@link StepFailureKind}. */
+  failureKind?: StepFailureKind;
+}
+
+/**
+ * One stored step record: step names are unique only within a job.
+ */
+export interface StepRunRef {
+  readonly jobName: string;
+  readonly stepName: string;
 }
 
 /**
@@ -1128,17 +1233,25 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Resets steps for a --from resume. The `fromStep` is a template step name
-   * from the workflow YAML. `stepsToReset` is the set of persisted step names
-   * (including forEach-expanded names) that should be reset to pending — the
-   * fromStep itself plus all its transitive downstream dependents.
-   * The caller (execution service) computes this set using the workflow
-   * definition and the step dependency graph.
+   * Resets steps for a failed-run resume (--from or retry). `stepsToReset`
+   * is the set of persisted step names (including forEach-expanded names)
+   * that should be reset to pending — the entry step plus all its transitive
+   * downstream dependents. The caller (see `planFailedRunResume`) computes
+   * this set using the workflow definition and the step dependency graph.
+   *
+   * Each `tracked` record is marked as reset by this resume, after any
+   * marker an earlier resume left is cleared. A job that finishes with a
+   * marked step still pending fails it (see
+   * {@link JobRun.failStrandedResetSteps}).
    */
-  resetForResumeFrom(stepsToReset: ReadonlySet<string>): void {
+  resetForResumeFrom(
+    stepsToReset: ReadonlySet<string>,
+    tracked: readonly StepRunRef[] = [],
+  ): void {
     for (const job of this._jobs) {
       let jobNeedsReset = false;
       for (const step of job.steps) {
+        step.clearResetMarker();
         if (stepsToReset.has(step.stepName)) {
           step.resetToPending();
           jobNeedsReset = true;
@@ -1147,6 +1260,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
       if (jobNeedsReset) {
         job.resetToPending();
       }
+    }
+    for (const ref of tracked) {
+      this.getJob(ref.jobName)?.getStep(ref.stepName)?.markResetByResume();
     }
   }
 
@@ -1168,6 +1284,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
         };
         if (step.forEachTemplate !== undefined) {
           ref.forEachTemplate = step.forEachTemplate;
+        }
+        if (step.failureKind !== undefined) {
+          ref.failureKind = step.failureKind;
         }
         result.push(ref);
       }

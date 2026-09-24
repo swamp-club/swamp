@@ -108,6 +108,12 @@ export interface StepRunView {
   outputs?: Record<string, unknown>;
   /** Why the step was skipped. Only set when `status` is `skipped`. */
   skipReason?: StepSkipReasonView;
+  /**
+   * Set when the failure is structural. `workflow_changed`: a failed-run
+   * resume reset the step and its job finished without running it; start a
+   * new run.
+   */
+  failureKind?: "workflow_changed";
 }
 
 export interface JobRunView {

@@ -19,7 +19,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { computeStepsToReset } from "./execution_service.ts";
+import { computeStepsToReset } from "./resume_reset.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";

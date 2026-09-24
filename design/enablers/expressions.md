@@ -630,13 +630,40 @@ with the syntax corrected, swamp would claim it as its own expression.**
   `${var.region}`, and `{{ inputs.parameters.x }}` (an undeclared input) are
   not. They produce the `Template syntax passed through` warning, which never
   fails validation or a step.
-- Text that CEL cannot parse is not swamp's.
-- A `{{ ... }}` that starts inside a `${{ ... }}` expression, as in
-  `${{ "{{host.name}}" }}`, always fails. An expression ends at the first
-  `}}`, so the text cuts it short and it can never evaluate. This holds even in
-  a declared field (below), because it is a broken swamp expression, not
-  another service's text. A `${ ... }` inside an expression is ordinary CEL
-  string content and is not reported.
+- `{{ ... }}` or `${ ... }` text whose inside CEL cannot parse is not swamp's.
+  A `${{` that is unclosed (below) is still reported.
+
+An expression ends at the first `}}` after its `${{`. When that text parses as
+CEL, the expression is sound even with braces in it: `${{ '{{' }}` evaluates to
+`{{`. Validation parses with the grammar evaluation uses, including optional
+syntax such as `.?name.orValue('')` (`parsesAsCel`,
+`src/domain/expressions/swamp_namespaces.ts`). When it does not parse,
+validation looks for a sign that the expression ran past its intended end: a
+`{{` after its opening, or a lone `}` after valid CEL, typed for `}}`. With
+such a sign, it tries ending the expression at each later `}}` before the next
+expression, up to 16 of them:
+
+- If one of those ends parses, a string inside the expression was cut short.
+  The braces that start in it, as in `${{ "{{host.name}}" }}` or
+  `${{ "${{ github.sha }}" }}`, fail with their own message: build the braces
+  with CEL string concatenation.
+- If none parses, the expression is unclosed, as in
+  `${{ self.name } && docker ps --format '{{.Names}}'`, which runs on to the Go
+  template's `}}`. So is one that swallows a later expression
+  (`${{ self.name } && echo ${{ self.version }}`), one that runs on to a JSON
+  `}}`, and a `${{` with no `}}` after it at all. The error names the missing
+  brace, and the expression's references are not checked, so the mistake gives
+  one error. The last shape also catches a JavaScript template literal that
+  interpolates an object (`${{a: 1}.a}`), which is rare in a definition;
+  another service's `${{` is written as `${{ "$" + "{{" }}`.
+
+Both failures hold even in a declared field (below), because they are broken
+swamp expressions, not another service's text. Text with no sign, such as prose
+`${{ ... }}` or an Azure Pipelines `${{ if ... }}`, still passes through
+unreported. So does a CEL map literal cut short by its own `}}`, as in
+`${{ {'a': {'b': 1}} }}`, until the scanner understands quoted strings and
+braces (swamp-club#2492). A `${ ... }` inside an expression is ordinary CEL
+string content and is not reported.
 
 Validation treats every swamp root as bound. The runtime binds `run`, `steps`,
 `workflow` and `webhook` only inside a workflow. One definition can run both
@@ -694,10 +721,7 @@ first name is one of the repo's models (`${{ my-vpc.VpcId }}` is a missing
 
 Related gaps are tracked separately. A `literal("...")` function for
 strings that mix swamp and vendor syntax needs an expression scanner that
-understands quoted strings (swamp-club#2492). An unclosed `${{` runs on to a
-later `}}`, so a foreign `{{ ... }}` after it is reported as cutting the
-expression short, instead of the missing brace being reported
-(swamp-club#2497).
+understands quoted strings (swamp-club#2492).
 
 ## Sensitive Data
 

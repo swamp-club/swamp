@@ -68,7 +68,9 @@ or step, when:
 - any step is still pending, running, waiting, or unknown (a pending step left
   by an earlier retry: use `--from <step>`);
 - a failed step was renamed, removed, or moved to another job (start a new run;
-  `--from` fails on a renamed step and skips a moved one);
+  `--from` refuses a renamed or moved step too);
+- a failed step did not run because the workflow or a `forEach` collection
+  changed (its `failureKind` is `workflow_changed`; start a new run);
 - a step name appears in more than one job.
 
 Retry can repeat external effects: a method may have changed something and then
@@ -87,6 +89,15 @@ guards always execute on resume. Only works on failed runs — use the
 gate-approval path for suspended runs. If multiple failed runs exist, add
 `--run <run-id>` to disambiguate. Use `--from` instead of a retry to choose the
 re-entry step yourself.
+
+A `--from` or retry resume is refused, with the run left unchanged, when the
+workflow changed shape since the run: a step was renamed, moved to another job,
+or added to a job the resume re-runs, or a job was renamed or added. Removing a
+step still works. An iteration dropped from a smaller or renamed `forEach`
+collection — including one changed by an `--input` override on the resume —
+fails as `Not run: ...` (`failureKind: workflow_changed`); start a new run. A
+suspended resume against an edited workflow is not checked yet
+(swamp-club#2498).
 
 ## Step Evaluation Order
 

@@ -22,6 +22,7 @@ import {
   JobRun,
   StepRun,
   StepSkipReasonSchema,
+  STRANDED_STEP_ERROR,
   WorkflowRun,
 } from "./workflow_run.ts";
 import { Workflow } from "./workflow.ts";
@@ -1802,4 +1803,125 @@ Deno.test("WorkflowRun.failedSteps: does not mutate the run", () => {
   const before = run.toData();
   run.failedSteps();
   assertEquals(run.toData(), before);
+});
+
+// ---------------------------------------------------------------------------
+// Reset marker and stranded steps (swamp-club#2433)
+// ---------------------------------------------------------------------------
+
+/** Jobs a and b both hold a step named x; a also holds y. All failed. */
+function createSharedNameRun(): WorkflowRun {
+  const run = WorkflowRun.create(
+    Workflow.create({
+      name: "shared",
+      jobs: [
+        Job.create({
+          name: "a",
+          steps: [
+            Step.create({ name: "x", task: StepTask.model("m", "run") }),
+            Step.create({ name: "y", task: StepTask.model("m", "run") }),
+          ],
+        }),
+        Job.create({
+          name: "b",
+          steps: [Step.create({ name: "x", task: StepTask.model("m", "run") })],
+        }),
+      ],
+    }),
+  );
+  run.start();
+  for (const job of run.jobs) {
+    for (const step of job.steps) step.fail("boom");
+    job.fail();
+  }
+  run.complete();
+  return run;
+}
+
+Deno.test("WorkflowRun.resetForResumeFrom: marks only the tracked records, by job", () => {
+  const run = createSharedNameRun();
+  run.resetForResumeFrom(new Set(["x"]), [{ jobName: "a", stepName: "x" }]);
+  assertEquals(run.getJob("a")!.getStep("x")!.status, "pending");
+  assertEquals(run.getJob("b")!.getStep("x")!.status, "pending");
+  assertEquals(run.getJob("a")!.getStep("x")!.resetByResume, true);
+  assertEquals(run.getJob("b")!.getStep("x")!.resetByResume, false);
+});
+
+Deno.test("WorkflowRun.resetForResumeFrom: clears markers an earlier resume left", () => {
+  const run = createSharedNameRun();
+  run.resetForResumeFrom(new Set(["x"]), [{ jobName: "b", stepName: "x" }]);
+  run.resetForResumeFrom(new Set(["y"]), [{ jobName: "a", stepName: "y" }]);
+  assertEquals(run.getJob("b")!.getStep("x")!.resetByResume, false);
+  assertEquals(run.getJob("a")!.getStep("y")!.resetByResume, true);
+});
+
+Deno.test("StepRun: every transition out of pending clears the reset marker", () => {
+  const transitions: [string, (step: StepRun) => void][] = [
+    ["start", (s) => s.start()],
+    ["waitForApproval", (s) => s.waitForApproval("ok?")],
+    ["succeed", (s) => s.succeed()],
+    ["fail", (s) => s.fail("boom")],
+    ["markUnknown", (s) => s.markUnknown()],
+    ["skip", (s) => s.skip({ kind: "dependency" })],
+    ["resetToPending", (s) => s.resetToPending()],
+  ];
+  for (const [name, transition] of transitions) {
+    const step = StepRun.pending("x");
+    step.markResetByResume();
+    transition(step);
+    assertEquals(step.resetByResume, false, name);
+  }
+});
+
+Deno.test("JobRun.failStrandedResetSteps: fails marked steps as workflow_changed, never allowed", () => {
+  const run = createSharedNameRun();
+  run.resetForResumeFrom(new Set(["x", "y"]), [
+    { jobName: "a", stepName: "x" },
+    { jobName: "a", stepName: "y" },
+  ]);
+  const job = run.getJob("a")!;
+  job.getStep("y")!.succeed();
+  job.getStep("x")!.markAllowedFailure();
+
+  const stranded = job.failStrandedResetSteps();
+
+  assertEquals(stranded.map((s) => s.stepName), ["x"]);
+  const x = job.getStep("x")!;
+  assertEquals(x.status, "failed");
+  assertEquals(x.error, STRANDED_STEP_ERROR);
+  assertEquals(x.failureKind, "workflow_changed");
+  assertEquals(x.allowedFailure, false);
+  assertEquals(x.resetByResume, false);
+  assertEquals(job.getStep("y")!.failureKind, undefined);
+  assertEquals(
+    run.failedSteps().find((s) => s.jobName === "a")?.failureKind,
+    "workflow_changed",
+  );
+});
+
+Deno.test("StepRun.resetToPending: clears a structural failure kind", () => {
+  const step = StepRun.pending("x");
+  step.markResetByResume();
+  step.failStranded();
+  step.resetToPending();
+  assertEquals(step.failureKind, undefined);
+  assertEquals(step.error, undefined);
+});
+
+Deno.test("StepRun: the reset marker and failure kind survive persistence", () => {
+  const marked = StepRun.pending("x");
+  marked.markResetByResume();
+  assertEquals(StepRun.fromData(marked.toData()).resetByResume, true);
+
+  const stranded = StepRun.pending("y", "tmpl");
+  stranded.markResetByResume();
+  stranded.failStranded();
+  const restored = StepRun.fromData(stranded.toData());
+  assertEquals(restored.failureKind, "workflow_changed");
+  assertEquals(restored.resetByResume, false);
+  assertEquals(restored.forEachTemplate, "tmpl");
+
+  const plain = StepRun.pending("z").toData();
+  assertEquals("resetByResume" in plain, false);
+  assertEquals("failureKind" in plain, false);
 });
