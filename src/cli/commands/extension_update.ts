@@ -145,10 +145,9 @@ export const extensionUpdateCommand = withRemoteOptions(
   let fallbackLockfile = false;
   if (options.check) {
     // Read-only: no guard, but say when the answer comes from the in-repo
-    // fallback rather than the datastore's lockfile (swamp-club#2483).
-    await ensureManagedConfigBase(repoDir, marker, undefined, {
-      autoResolve: false,
-    });
+    // fallback rather than the datastore's lockfile, because the datastore
+    // extension could not be installed (swamp-club#2483).
+    await ensureManagedConfigBase(repoDir, marker);
     lockfilePath = resolveManagedConfigPaths(repoDir, marker).lockfilePath;
     fallbackLockfile = isExtensionBackedDatastore(marker) &&
       !isManagedConfigBaseResolved(repoDir);

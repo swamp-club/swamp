@@ -30,7 +30,7 @@
 // service handles that ordering as the first steps of its async
 // generator.
 //
-// Note: the managed config resolution below (installed-only) may warm
+// Note: the managed config resolution below may warm
 // `datastoreTypeRegistry`'s `ensureLoaded()` BEFORE the service runs. The
 // service then calls `resetLoadedFlag()` and `ensureLoaded()` again. The
 // double-run is intentional — the second run is what the user sees in the
@@ -225,10 +225,10 @@ export const doctorExtensionsCommand = withRemoteOptions(
   // Resolve lockfile path early so the rescan repository's
   // empty-version fallback has lockfile entries available. (Hoisted
   // from the post-rescan section per ADV-2 resolution; the same
-  // values are reused below for orphan detection.)
-  await ensureManagedConfigBase(repoDir, marker, undefined, {
-    autoResolve: false,
-  });
+  // values are reused below for orphan detection.) A missing datastore
+  // extension is auto-installed, as for other commands; the rescan and
+  // repairs are skipped only when that fails.
+  await ensureManagedConfigBase(repoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
   const extensionBacked = isExtensionBackedDatastore(marker);
   const rescanSkipped = rescanSkippedFor(repoDir, marker, repair);

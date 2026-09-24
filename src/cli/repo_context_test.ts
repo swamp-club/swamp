@@ -56,6 +56,14 @@ import {
   resolvePulledExtensionsRoot,
 } from "../infrastructure/persistence/paths.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
+import {
+  getAutoResolver,
+  setAutoResolver,
+} from "../domain/extensions/auto_resolver_context.ts";
+import {
+  type AutoResolveOutputPort,
+  ExtensionAutoResolver,
+} from "../domain/extensions/extension_auto_resolver.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
   type CustomDatastoreConfig,
@@ -2866,11 +2874,13 @@ Deno.test("assertManagedConfigWritable: throws a typed error for an unresolved e
     throw new Error(`expected ManagedConfigUnresolvedError, got ${caught}`);
   }
   assertEquals(caught.code, "managed_config_unresolved");
+  assertStringIncludes(caught.message, `\`swamp extension pull ${type}\``);
+  assertStringIncludes(caught.message, "--force");
   assertStringIncludes(caught.message, "swamp datastore sync --pull");
-  assertStringIncludes(caught.message, `swamp extension pull ${type} --force`);
   assertStringIncludes(
     caught.message,
-    "its datastore extension is not installed",
+    "its datastore extension is not installed and could not be installed " +
+      "automatically",
   );
   assertEquals(caught.message.includes("Available types"), false);
 });
@@ -2887,11 +2897,7 @@ Deno.test("assertManagedConfigWritable: drops the legacy s3 pull hint from the r
   } catch (error) {
     message = error instanceof Error ? error.message : String(error);
   }
-  assertStringIncludes(message, "swamp datastore sync --pull");
-  assertStringIncludes(
-    message,
-    "swamp extension pull @swamp/s3-datastore --force",
-  );
+  assertStringIncludes(message, "`swamp extension pull @swamp/s3-datastore`");
   assertEquals(message.includes("Install it with"), false);
 });
 
@@ -3010,6 +3016,62 @@ Deno.test("resolveManagedLockfileForWrite: refuses other targets while unresolve
       }),
     ManagedConfigUnresolvedError,
   );
+});
+
+/**
+ * Installs an auto-resolver for `collective` that records every registry
+ * lookup and finds nothing, runs `fn`, then restores the previous resolver.
+ */
+async function withRecordingAutoResolver(
+  collective: string,
+  fn: (lookups: string[]) => Promise<void>,
+): Promise<void> {
+  const lookups: string[] = [];
+  const previous = getAutoResolver();
+  setAutoResolver(
+    new ExtensionAutoResolver({
+      allowedCollectives: [collective],
+      extensionLookup: {
+        getExtension: (name) => {
+          lookups.push(name);
+          return Promise.resolve(null);
+        },
+        searchExtensions: () => Promise.resolve({ extensions: [] }),
+      },
+      extensionInstaller: {
+        inspectInstallation: () => Promise.resolve({ state: "missing" }),
+        install: () => Promise.resolve(null),
+        hotLoadModels: () => Promise.resolve(0),
+        hotLoadVaults: () => Promise.resolve(),
+        hotLoadDatastores: () => Promise.resolve(),
+        hotLoadWebhooks: () => Promise.resolve(),
+        failedLocalSourceMatchesType: () => false,
+      },
+      // A no-op for every output event.
+      output: new Proxy({}, { get: () => () => {} }) as AutoResolveOutputPort,
+    }),
+  );
+  try {
+    await fn(lookups);
+  } finally {
+    setAutoResolver(previous);
+  }
+}
+
+Deno.test("resolveManagedLockfileForWrite: tries to auto-install a missing datastore extension before refusing", async () => {
+  const repo = resolve(`/repo-autoresolve-${crypto.randomUUID()}`);
+  const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+  const marker = managedMarker(`@${collective}/ds`);
+  await withRecordingAutoResolver(collective, async (lookups) => {
+    await assertRejects(
+      () =>
+        resolveManagedLockfileForWrite(repo, marker, {
+          readDatastoreEnv: unsetDatastoreEnv,
+        }),
+      ManagedConfigUnresolvedError,
+    );
+    assertEquals(lookups.length > 0, true);
+  });
 });
 
 Deno.test("resolveManagedLockfileForWrite: returns the models-dir lockfile for unmanaged repos", async () => {

@@ -444,10 +444,10 @@ export class ManagedConfigUnresolvedError extends UserError {
     super(
       `Cannot resolve the ${datastoreType} datastore for managedConfig` +
         `${detail}, so extension changes cannot be recorded in the ` +
-        `datastore's lockfile. Run \`swamp datastore sync --pull\` to ` +
-        `install the datastore extension and fetch the config tier, then ` +
-        `retry. If the extension is installed but fails to load, reinstall ` +
-        `it with \`swamp extension pull ${datastoreExtension} --force\`.`,
+        `datastore's lockfile. Install the datastore extension with ` +
+        `\`swamp extension pull ${datastoreExtension}\` (add \`--force\` ` +
+        `if it is installed but fails to load), then run ` +
+        `\`swamp datastore sync --pull\` and retry.`,
       "managed_config_unresolved",
     );
     this.name = "ManagedConfigUnresolvedError";
@@ -493,13 +493,15 @@ export interface ManagedLockfileWrite {
  * the guard against writing to a guessed managed config base
  * (swamp-club#2483).
  *
- * The base is resolved with installed extensions only, so the command never
- * auto-installs the datastore extension first. When the base is resolved (or
- * the repo does not need it), the resolved lockfile is returned. When it is
- * unresolved on an extension-backed datastore, the write is allowed only if
- * every target is the datastore extension itself (the #445 recovery path):
- * it then records into the in-repo lockfile without publishing. Otherwise
- * {@link ManagedConfigUnresolvedError} is thrown.
+ * The base is resolved as other commands resolve it, auto-installing a
+ * missing datastore extension, so a fresh checkout's writes work as before.
+ * When the base is resolved (or the repo does not need it), the resolved
+ * lockfile is returned. When it is still unresolved on an extension-backed
+ * datastore (the extension could not be installed or does not load), the
+ * write is allowed only if every target is the datastore extension itself
+ * (the #445 recovery path): it then records into the in-repo lockfile
+ * without publishing. Otherwise {@link ManagedConfigUnresolvedError} is
+ * thrown.
  *
  * @param options.exemptTargets Extension names the command writes; pass
  *   them only for commands that may repair the datastore extension
@@ -516,9 +518,7 @@ export async function resolveManagedLockfileForWrite(
     readDatastoreEnv?: DatastoreEnvReader;
   },
 ): Promise<ManagedLockfileWrite> {
-  await ensureManagedConfigBase(repoDir, marker, undefined, {
-    autoResolve: false,
-  });
+  await ensureManagedConfigBase(repoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
   if (
     !isExtensionBackedDatastore(marker, options?.readDatastoreEnv) ||
@@ -554,8 +554,8 @@ export async function resolveManagedLockfileForWrite(
  * datastore extension surfaces from resolution as "Unknown datastore type"
  * (or, for the legacy `s3` type, "requires the ... extension. Install it
  * with: swamp extension pull ..."); both are reported as "its datastore
- * extension is not installed", so the error's own remedy (sync --pull) is
- * the only one.
+ * extension is not installed and could not be installed automatically", so
+ * the error's own remedy (pull the extension) is the only one.
  */
 function describeResolutionFailure(
   message: string | undefined,
@@ -565,7 +565,8 @@ function describeResolutionFailure(
     message.includes("Unknown datastore type") ||
     message.includes("Install it with:")
   ) {
-    return "its datastore extension is not installed";
+    return "its datastore extension is not installed and could not be " +
+      "installed automatically";
   }
   return message.trim().replace(/[.\s]+$/, "");
 }

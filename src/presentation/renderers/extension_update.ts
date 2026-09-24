@@ -28,9 +28,10 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
 const FALLBACK_LOCKFILE_WARNING =
-  "The datastore could not be resolved, so this check reads the in-repo " +
-  "lockfile, not the datastore's. Run `swamp datastore sync --pull` first " +
-  "for an accurate check.";
+  "The datastore could not be resolved (its extension could not be " +
+  "installed or does not load), so this check reads the in-repo lockfile, " +
+  "not the datastore's. Install it with `swamp extension pull <datastore " +
+  "extension>`, then run `swamp datastore sync --pull` for an accurate check.";
 
 class LogExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
   handlers(): EventHandlers<ExtensionUpdateEvent> {
