@@ -604,7 +604,12 @@ export class DefaultModelValidationService implements ModelValidationService {
 
     // Strip fields that contain expressions - they will be validated after evaluation.
     // Only validate the static (non-expression) fields against the schema.
-    const staticArgs = stripExpressionFields(definition.globalArguments);
+    // Another templating system's ${{ ... }} text is a value, not an
+    // expression, and the run schema-checks it, so it stays in.
+    const staticArgs = stripExpressionFields(
+      definition.globalArguments,
+      containsSwampExpression,
+    );
 
     // If any fields were stripped (contain expressions), skip schema validation entirely.
     // Expression paths are validated separately, and full schema validation will happen

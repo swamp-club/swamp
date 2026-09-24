@@ -51,12 +51,27 @@ const arbReference = fc
   )
   .map(([root, members]) => [root, ...members].join("."));
 
+/** `inputs` read whole or with a computed key, which names no single input. */
+const arbOpaqueInputs = fc.constantFrom(
+  "inputs",
+  "size(inputs)",
+  "inputs[env.STAGE]",
+  "inputs['a' + self.name]",
+);
+
 /** One to three references joined with operators, plus literals. */
 const arbExpression = fc
-  .array(fc.oneof(arbReference, fc.constantFrom("'x'", "1", "true")), {
-    minLength: 1,
-    maxLength: 3,
-  })
+  .array(
+    fc.oneof(
+      arbReference,
+      arbOpaqueInputs,
+      fc.constantFrom("'x'", "1", "true"),
+    ),
+    {
+      minLength: 1,
+      maxLength: 3,
+    },
+  )
   .chain((terms) =>
     fc.constantFrom(" + ", " == ", " && ").map((op) => terms.join(op))
   );
@@ -86,6 +101,14 @@ Deno.test("isForeignExpression: never true for what an evaluation claims", () =>
   fc.assert(
     fc.property(arbExpression, arbScope, (cel, scope) => {
       if (isSwampExpression(cel, scope)) assert(!isForeignExpression(cel), cel);
+    }),
+  );
+});
+
+Deno.test("isForeignExpression: never true for inputs read whole or with a computed key", () => {
+  fc.assert(
+    fc.property(arbOpaqueInputs, (cel) => {
+      assert(!isForeignExpression(cel), cel);
     }),
   );
 });

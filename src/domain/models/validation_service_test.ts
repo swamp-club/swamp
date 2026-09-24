@@ -69,9 +69,6 @@ const testExprModel: ModelDefinition = defineModel({
 });
 
 /**
- * Creates a mock definition repository for testing expression path validation.
- */
-/**
  * A model named my-vpc, so `${{ my-vpc.VpcId }}` reads as a model reference
  * missing its `model.` prefix rather than another templating system's text.
  */
@@ -80,6 +77,9 @@ const myVpc = Definition.create({
   globalArguments: { message: "hello" },
 });
 
+/**
+ * Creates a mock definition repository for testing expression path validation.
+ */
 function createMockDefinitionRepo(
   models: { name: string; type: string; definition: Definition }[],
 ): DefinitionRepository {
@@ -806,6 +806,39 @@ Deno.test("validateModel still fails ${{ }} text that does not parse", async () 
     globalArguments: { message: "${{ not valid cel !!! }}" },
   });
   assertEquals(expressionPaths?.passed, false);
+});
+
+Deno.test("validateModel schema-checks global arguments holding foreign ${{ }} text, as the run does", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "deploy ${{ github.sha }}", count: "many" },
+  });
+  const { results } = await service.validateModel(definition, testExprModel);
+  const globalArgs = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalArgs?.passed, false);
+  assertStringIncludes(globalArgs?.error ?? "", "count");
+});
+
+Deno.test("validateModel does not pass swamp inputs read whole or with a computed key as foreign", async () => {
+  // Validated as it was before foreign ${{ }} text was recognised: the env
+  // reference is accepted, and size(inputs) names nothing validate checks.
+  const computed = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "${{ inputs[env.STAGE] }}" },
+  });
+  assertEquals(computed.expressionPaths?.passed, true);
+  assertEquals(
+    computed.warnings.some((w) => w.name === FOREIGN_TEMPLATE_WARNING_NAME),
+    false,
+  );
+
+  const whole = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "${{ size(inputs) }}" },
+  });
+  assertEquals(whole.expressionPaths?.passed, false);
+  assertEquals(whole.warnings, []);
 });
 
 Deno.test("validateModel still validates ${{ }} expressions inside a declared field", async () => {

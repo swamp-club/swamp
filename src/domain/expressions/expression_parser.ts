@@ -136,14 +136,17 @@ export function valueContainsExpression(value: unknown): boolean {
  * but skip expression-containing fields (which will be validated after evaluation).
  *
  * @param data - The data structure to process
+ * @param holdsExpression - Decides which values to strip; defaults to any
+ *   value containing `${{ ... }}` text
  * @returns A new object with expression-containing fields removed
  */
 export function stripExpressionFields<T extends Record<string, unknown>>(
   data: T,
+  holdsExpression: (value: unknown) => boolean = valueContainsExpression,
 ): Partial<T> {
   const result = Object.create(null) as Partial<T>;
   for (const [key, value] of Object.entries(data)) {
-    if (!valueContainsExpression(value)) {
+    if (!holdsExpression(value)) {
       Object.defineProperty(result, key, {
         value: value as T[keyof T],
         writable: true,

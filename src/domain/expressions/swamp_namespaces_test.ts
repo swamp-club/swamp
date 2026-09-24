@@ -126,7 +126,18 @@ Deno.test("isForeignExpression: true for text no swamp evaluation could own", ()
 
 Deno.test("isForeignExpression: false for text in a swamp namespace", () => {
   // GitHub Actions contexts that share a swamp namespace name stay claimed.
-  for (const cel of ["inputs.version", "steps.build.outputs.sha", "env.HOME"]) {
+  for (
+    const cel of [
+      "inputs.version",
+      "steps.build.outputs.sha",
+      "env.HOME",
+      // inputs read whole or with a computed key.
+      "inputs[env.STAGE]",
+      'inputs["region-" + env.STAGE]',
+      "size(inputs)",
+      "inputs",
+    ]
+  ) {
     assertEquals(isForeignExpression(cel), false, cel);
   }
 });

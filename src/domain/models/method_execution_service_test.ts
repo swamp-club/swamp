@@ -2106,6 +2106,8 @@ Deno.test("execute - Proxy still throws for text it cannot tell apart from swamp
     version: "${{ inputs.version }}",
     // A swamp expression cut short at the }} inside its string literal.
     label: '${{ "a}}" + inputs.x }}',
+    // A swamp input read with a computed key.
+    region: "${{ inputs[env.STAGE] }}",
   };
   for (const [field, value] of Object.entries(cases)) {
     const service = new DefaultMethodExecutionService();

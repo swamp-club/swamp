@@ -131,8 +131,8 @@ function parses(celExpression: string): boolean {
  * definition that declares no `version` is not.
  *
  * Returns false when the expression cannot be parsed, or reads `inputs` in a
- * way that names no single input, so anything swamp cannot attribute keeps
- * that literal pass-through.
+ * way that names no single input (unless the scope declares `"any"` input), so
+ * anything swamp cannot attribute keeps that literal pass-through.
  */
 export function isSwampExpression(
   celExpression: string,
@@ -153,8 +153,10 @@ export function isSwampExpression(
   for (const root of refs.roots) {
     if (!SWAMP_ROOT_NAMESPACES.has(root)) return false;
     if (root === "inputs") {
-      if (refs.opaqueInputs) return false;
+      // Every input counts as declared, so `inputs` read whole or with a
+      // computed key is swamp's too.
       if (scope.declaredInputs === "any") continue;
+      if (refs.opaqueInputs) return false;
       for (const name of refs.inputs) {
         if (!scope.declaredInputs.has(name)) return false;
       }
