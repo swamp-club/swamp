@@ -114,6 +114,7 @@ function makeStubInstallResult(
     extendsTypes: [],
     pruned: [],
     shadowedTypes: [],
+    createdPaths: files,
   };
 }
 

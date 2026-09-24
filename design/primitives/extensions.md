@@ -1234,9 +1234,17 @@ and cursor to `.cursor/skills/`. At the global (user-level) tier, cursor also
 uses `.agents/skills/` (`SKILL_DIRS` / `GLOBAL_SKILL_DIRS` in
 `src/domain/repo/skill_dirs.ts`).
 
-Every skill directory root is tracked in the lockfile's `files[]` array. So
+Every skill copy is tracked in the lockfile's `files[]` array. So
 `extension rm` deletes every copy, and re-pulling after a tool change prunes the
-old tool's stale skill paths.
+old tool's stale skill paths. A skill is tracked as its directory root when the
+extension owns the dir: the install created it, or the prior entry already
+listed the root. A skill merged into a dir that existed and that the extension
+does not own is tracked file by file, so rm and the orphan prune delete only
+what the extension wrote. The orphan prune does not treat a change between the
+two forms as an orphan, and it keeps any path another lockfile entry claims.
+Path comparisons for ownership ignore separator style and letter case, because
+Windows-written lockfiles use backslashes and macOS and Windows filesystems are
+case-insensitive (`src/domain/extensions/extension_path_claims.ts`).
 
 The `resolveUniqueLocalSkillsDirs(repoDir, tools)` helper follows the
 `resolveUniqueGlobalSkillsDirs(tools)` pattern used for user-level skill
@@ -1279,8 +1287,18 @@ extension.
 
 If files exist at the destination and `--force` is not set, the user is asked to
 confirm the overwrite. Since each extension has its own subtree, ConflictError
-now fires only when an extension is reinstalled over itself; different
-extensions cannot collide.
+fires for those files only when an extension is reinstalled over itself.
+
+Skills are the exception: they land in shared tool dirs, so a skill dir of the
+same name may already belong to the user or to another extension. A skill dir
+that exists and that the extension's prior lockfile entry does not list (as the
+root or as files under it) is a ConflictError for the top-level extension.
+`ConflictError.skillDirs` names those dirs, and the pull prompt and `--json`
+output (`skillDirs`) list them apart from overwritten files, since the install
+writes into them rather than replacing them. With
+`--force`, and for dependencies, the install merges into the dir and logs a
+warning naming it. The auto-resolver retries conflicts on pulled skill dirs with
+force, as it does for stale bundle output.
 
 macOS resource fork files (`._*`) cannot get into archives. The Deno-native
 archiver in `src/infrastructure/archive/tar_archive.ts` walks an explicit file
@@ -1366,7 +1384,10 @@ slots atomically in one SQLite transaction. After that it removes the lockfile
 entry, deletes the tracked files, and prunes empty parent directories. A file
 that cannot be deleted, for example because of a permission error or a file
 locked on Windows, does not stop the rm. It is listed in `failedFiles` for the
-user to remove by hand, since nothing tracks it any more.
+user to remove by hand, since nothing tracks it any more. A tracked path that
+another installed extension also claims (a shared skill dir that extension
+lists, or lists files under) is kept and reported in `retainedFiles`. Tracked
+paths are checked with `lstat`, so a symlink is unlinked rather than followed.
 
 If other installed extensions depend on the target (found by scanning their
 `manifest.yaml` files on disk), a warning is shown first.
@@ -1451,9 +1472,11 @@ The atomic-tombstone logic lives in the install service's phase 8.
 
 A cross-extension `DuplicateTypeError` (two different extensions claiming
 the same `(kind, typeNormalized)`) triggers a filesystem rollback before the
-error propagates. Extracted files are deleted and the lockfile entry is restored
-to its pre-install state, since SQLite ROLLBACK does not undo filesystem
-changes. The error then propagates as a `DuplicateTypeUserError` (a `UserError`
+error propagates. The paths the install created (`InstallResult.createdPaths`)
+are deleted and the lockfile entry is restored to its pre-install state, since
+SQLite ROLLBACK does not undo filesystem changes. A skill dir that existed
+before the install is never deleted: only the files the install newly wrote in
+it are removed, and files it overwrote keep their new content. The error then propagates as a `DuplicateTypeUserError` (a `UserError`
 subclass). The top-level CLI handler prints a clean one-line message in log mode
 and a structured `duplicateType` object in `--json` mode:
 

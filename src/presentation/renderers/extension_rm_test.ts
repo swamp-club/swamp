@@ -109,3 +109,37 @@ Deno.test("createExtensionRmRenderer: json mode includes failedFiles", () => {
   assertEquals(parsed.removed.failedFiles, WITH_FAILURES.failedFiles);
   assertEquals(parsed.removed.filesDeleted, 1);
 });
+
+const WITH_RETAINED: ExtensionRmData = {
+  ...REMOVED,
+  retainedFiles: [
+    { path: ".claude/skills/foo", claimedBy: ["@test/other"] },
+  ],
+};
+
+Deno.test("createExtensionRmRenderer: log mode lists paths kept for other extensions", () => {
+  const handlers = createExtensionRmRenderer("log").handlers();
+  const out = captureConsole(() => {
+    handlers.completed({ kind: "completed", data: WITH_RETAINED });
+  });
+  assertStringIncludes(out, "Kept 1 path(s) shared with other extensions");
+  assertStringIncludes(out, ".claude/skills/foo");
+  assertStringIncludes(out, "@test/other");
+});
+
+Deno.test("createExtensionRmRenderer: log mode tolerates a server that omits retainedFiles", () => {
+  const handlers = createExtensionRmRenderer("log").handlers();
+  const out = captureConsole(() => {
+    handlers.completed({ kind: "completed", data: REMOVED });
+  });
+  assert(!out.includes("Kept"));
+});
+
+Deno.test("createExtensionRmRenderer: json mode includes retainedFiles", () => {
+  const handlers = createExtensionRmRenderer("json").handlers();
+  const out = captureConsole(() => {
+    handlers.completed({ kind: "completed", data: WITH_RETAINED });
+  });
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.removed.retainedFiles, WITH_RETAINED.retainedFiles);
+});

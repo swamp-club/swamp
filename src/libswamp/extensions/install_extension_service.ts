@@ -357,10 +357,11 @@ export class InstallExtensionService {
   }
 
   /**
-   * Filesystem rollback on `DuplicateTypeError`. Deletes the just-
-   * installed files for the top-level extension AND any freshly-
-   * installed deps, then restores the lockfile to its pre-install
-   * state.
+   * Filesystem rollback on `DuplicateTypeError`. Deletes the paths the
+   * failed install created (`createdPaths`) for the top-level extension
+   * AND any freshly-installed deps, then restores the lockfile to its
+   * pre-install state. A skill dir that existed before the install
+   * keeps its prior files.
    *
    * Best-effort: any individual delete that fails (file already gone,
    * permission denied) is logged and swallowed so the caller still
@@ -375,10 +376,15 @@ export class InstallExtensionService {
   ): Promise<void> {
     const installedResults = flattenInstallResults(result);
     for (const r of installedResults) {
-      for (const file of r.extractedFiles) {
+      // createdPaths, not extractedFiles: a skill dir that existed before
+      // the install (the user's, or another extension's) is merged into,
+      // and deleting it would remove files this install never wrote.
+      for (const file of r.createdPaths) {
         const absolutePath = join(ctx.repoDir, file);
         try {
-          await Deno.remove(absolutePath, { recursive: true });
+          // lstat so a symlink is unlinked, never followed into its target.
+          const stat = await Deno.lstat(absolutePath);
+          await Deno.remove(absolutePath, { recursive: stat.isDirectory });
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) {
             if (ctx.logger) {

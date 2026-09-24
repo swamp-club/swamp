@@ -46,6 +46,11 @@ import {
   listTarGzEntries,
 } from "../../infrastructure/archive/tar_archive.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import {
+  canonicalClaimPath,
+  claimsPath,
+  findClaimants,
+} from "../../domain/extensions/extension_path_claims.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
 import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
 import type { Logger } from "@logtape/logtape";
@@ -131,6 +136,14 @@ export interface InstallResult {
    * empty when no local source shadows the pulled extension's types.
    */
   shadowedTypes?: ShadowedTypeInfo[];
+  /**
+   * Repo-relative paths this install created, which a rollback may
+   * delete. Equals `extractedFiles` except for skills: a skill dir that
+   * already existed before extraction is never listed, only the files
+   * this install newly wrote inside it. Files it overwrote there are
+   * not listed either.
+   */
+  createdPaths: string[];
 }
 
 /**
@@ -208,14 +221,36 @@ export interface InstallContext {
 
 /** Thrown when file conflicts are detected and force is false. */
 export class ConflictError extends UserError {
+  /** Every conflicting path, skill dirs included. */
   conflicts: string[];
-  constructor(conflicts: string[]) {
-    super(
-      `The following files already exist and would be overwritten:\n${
-        conflicts.map((c) => `  ${c}`).join("\n")
-      }\nUse --force to overwrite.`,
-    );
+  /**
+   * The subset of `conflicts` that are existing skill dirs. The install
+   * writes its files into them rather than replacing them: same-named
+   * files are overwritten, other files are kept.
+   */
+  skillDirs: string[];
+  constructor(conflicts: string[], skillDirs: string[] = []) {
+    const skillSet = new Set(skillDirs);
+    const files = conflicts.filter((c) => !skillSet.has(c));
+    const lines: string[] = [];
+    if (files.length > 0) {
+      lines.push(
+        "The following files already exist and would be overwritten:",
+        ...files.map((c) => `  ${c}`),
+      );
+    }
+    if (skillDirs.length > 0) {
+      lines.push(
+        "The following skill directories already exist; the extension's " +
+          "files would be written into them (same-named files overwritten, " +
+          "other files kept):",
+        ...skillDirs.map((c) => `  ${c}`),
+      );
+    }
+    lines.push("Use --force to overwrite.");
+    super(lines.join("\n"));
     this.conflicts = conflicts;
+    this.skillDirs = skillDirs;
   }
 }
 
@@ -442,6 +477,30 @@ async function listFiles(dir: string): Promise<string[]> {
 }
 
 /**
+ * Lists files and symlinks under a directory without descending into
+ * symlinked directories. Used to snapshot a skill dir before merging
+ * into it: `copyFile` writes through a symlink at the destination, so a
+ * user's symlink must count as pre-existing or rollback would unlink it.
+ */
+async function listFilesAndLinks(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (isMacOsResourceFork(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory) {
+        out.push(...await listFilesAndLinks(path));
+      } else {
+        out.push(path);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return out;
+}
+
+/**
  * Recursively validates that no symlink under `path` resolves to a target
  * outside `resolvedTmpDir`. Throws a UserError if a symlink escapes.
  */
@@ -620,6 +679,62 @@ export async function detectConflicts(
 }
 
 /**
+ * Checks whether anything exists at `path` without following a
+ * symlink, so a dangling or directory symlink still counts as present.
+ */
+async function pathExistsNoFollow(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+/**
+ * Detects skill directories the archive would merge into that the
+ * extension does not own. Skills land in shared tool dirs
+ * (`.claude/skills/<name>`, ...), the one place the extension-first
+ * layout does not isolate extensions, so a same-named dir may belong to
+ * the user or to another extension. A dir is owned when the prior
+ * lockfile entry (`oldFiles`) lists it or a path under it.
+ *
+ * Returns repo-relative skill roots.
+ */
+export async function detectSkillConflicts(
+  extractDir: string,
+  skillsDirs: ReadonlyArray<string>,
+  oldFiles: ReadonlyArray<string>,
+  repoDir: string,
+): Promise<string[]> {
+  const skillNames: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(join(extractDir, "skills"))) {
+      if (entry.isDirectory) skillNames.push(entry.name);
+    }
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw error;
+  }
+
+  const conflicts: string[] = [];
+  for (const skillsDir of skillsDirs) {
+    const absoluteSkillsDir = resolve(repoDir, skillsDir);
+    for (const name of skillNames) {
+      const destSkillDir = join(absoluteSkillsDir, name);
+      const rel = relative(repoDir, destSkillDir);
+      if (
+        await pathExistsNoFollow(destSkillDir) && !claimsPath(oldFiles, rel)
+      ) {
+        conflicts.push(rel);
+      }
+    }
+  }
+  return conflicts;
+}
+
+/**
  * Validates that all source files referenced by imports are present.
  * Returns paths of missing files (relative to the base directory).
  */
@@ -682,8 +797,16 @@ async function collectTsFiles(dir: string): Promise<string[]> {
  * function; the caller hands the result to `pruneOrphanFiles` to
  * remove them from disk.
  *
- * Both lists are repo-relative paths. Uses a Set for O(N) lookup
- * instead of O(N²) `.includes()`.
+ * Both lists are repo-relative paths. Exact matches go through a Set;
+ * only paths absent from it are checked for the containment cases
+ * below.
+ *
+ * A skill can be recorded as its root (`.claude/skills/foo`) or, when
+ * it was merged into a dir the extension does not own, as the files it
+ * wrote there. An old path is not an orphan when it lies under a path
+ * the new version records (files → root), or when a new path lies
+ * under it (root → files): pruning it would recursively delete what
+ * this install just wrote.
  *
  * Exported for direct unit testing — production callers go through
  * `installExtension`.
@@ -693,7 +816,17 @@ export function computeOrphanDiff(
   extractedFiles: ReadonlyArray<string>,
 ): string[] {
   const newFilesSet = new Set(extractedFiles);
-  return oldFiles.filter((f) => !newFilesSet.has(f));
+  const newCanonical = extractedFiles.map(canonicalClaimPath);
+  return oldFiles.filter((f) => {
+    if (newFilesSet.has(f)) return false;
+    // Strict containment only: an exact match that differs just in case
+    // is a rename, and on a case-sensitive filesystem the old file is a
+    // real orphan.
+    const old = canonicalClaimPath(f);
+    return !newCanonical.some((n) =>
+      old.startsWith(n + "/") || n.startsWith(old + "/")
+    );
+  });
 }
 
 /**
@@ -955,9 +1088,23 @@ export async function installExtension(
       absoluteWebhooksDir,
       webhookBundlesDir,
     );
+    // Skill dirs are shared across extensions and with the user. Only
+    // the top-level extension raises them as conflicts: a dependency
+    // installs after its parent's lockfile entry is written, so failing
+    // there would leave the operation half done. Dependencies merge
+    // with the overwrite warning below instead.
+    const skillConflicts = ctx.depth === 0
+      ? await detectSkillConflicts(
+        extractDir,
+        ctx.skillsDirs,
+        oldFiles,
+        repoDir,
+      )
+      : [];
+    conflicts.push(...skillConflicts);
 
     if (conflicts.length > 0 && !ctx.force) {
-      throw new ConflictError(conflicts);
+      throw new ConflictError(conflicts, skillConflicts);
     }
 
     const extractedFiles: string[] = [];
@@ -1074,11 +1221,18 @@ export async function installExtension(
     }
 
     // Extract skills to every enrolled tool's skill directory.
-    // Track only the skill directory root (not individual files) so that
-    // extension rm can delete the entire directory in one shot.
+    // The lockfile tracks a skill as its root when this extension owns
+    // the dir (created it now, or its prior entry recorded the root), so
+    // extension rm can delete it in one shot. A skill merged into a dir
+    // that already existed and is not owned is tracked file by file, so
+    // rm and orphan prune never delete the user's or another
+    // extension's files. `skillCreatedPaths` is what a rollback may
+    // undo: a created root whole, or only the new files in a merged one.
     let hasSkills = false;
     let hasSkillScripts = false;
     const skillFiles: string[] = [];
+    const skillRecordedPaths: string[] = [];
+    const skillCreatedPaths: string[] = [];
     const skillsSrc = join(extractDir, "skills");
     try {
       const skillEntries: Deno.DirEntry[] = [];
@@ -1094,15 +1248,42 @@ export async function installExtension(
             if (!entry.isDirectory) continue;
             const srcSkillDir = join(skillsSrc, entry.name);
             const destSkillDir = join(absoluteSkillsDir, entry.name);
+            const skillDirRelative = relative(repoDir, destSkillDir);
+            const preExisted = await pathExistsNoFollow(destSkillDir);
+            const filesBefore = preExisted
+              ? new Set(
+                (await listFilesAndLinks(destSkillDir)).map((f) =>
+                  relative(repoDir, f)
+                ),
+              )
+              : new Set<string>();
             await Deno.mkdir(destSkillDir, { recursive: true });
             const extracted = await copyDir(
               srcSkillDir,
               destSkillDir,
               repoDir,
             );
-            const skillDirRelative = relative(repoDir, destSkillDir);
-            extractedFiles.push(skillDirRelative);
+            const canonicalRoot = canonicalClaimPath(skillDirRelative);
+            const ownsRoot = oldFiles.some((f) =>
+              canonicalClaimPath(f) === canonicalRoot
+            );
+            const recorded = !preExisted || ownsRoot
+              ? [skillDirRelative]
+              : extracted;
+            extractedFiles.push(...recorded);
+            skillRecordedPaths.push(...recorded);
+            skillCreatedPaths.push(
+              ...(preExisted
+                ? extracted.filter((f) => !filesBefore.has(f))
+                : [skillDirRelative]),
+            );
             skillFiles.push(...extracted);
+            if (
+              logger && preExisted && !claimsPath(oldFiles, skillDirRelative)
+            ) {
+              logger
+                .warn`Skill directory ${skillDirRelative} already existed; ${ref.name} wrote its files into it and may have overwritten some`;
+            }
 
             // Check for scripts/ directory (once per skill, not per tool)
             if (!hasSkillScripts) {
@@ -1182,7 +1363,12 @@ export async function installExtension(
     // leaves the lockfile pointing at the OLD version — the next install
     // retries the diff. The inverse ordering (write then prune) would
     // orphan paths the lockfile can't see if the prune never runs.
-    const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles);
+    // A path another lockfile entry also claims (a shared skill dir) is
+    // kept: pruning it recursively would delete that extension's files.
+    const otherEntries = ctx.lockfileRepository.getAllEntries();
+    const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles).filter(
+      (f) => findClaimants(f, ref.name, otherEntries).length === 0,
+    );
     const pruned = orphanDiff.length > 0
       ? await pruneOrphanFiles(orphanDiff, repoDir)
       : [];
@@ -1258,6 +1444,7 @@ export async function installExtension(
     }
 
     const extendsTypes = await scanForExtensionGrafts(absoluteModelsDir);
+    const skillRecorded = new Set(skillRecordedPaths);
 
     return {
       name: ref.name,
@@ -1279,6 +1466,10 @@ export async function installExtension(
       extendsTypes,
       pruned,
       shadowedTypes: [],
+      createdPaths: [
+        ...extractedFiles.filter((f) => !skillRecorded.has(f)),
+        ...skillCreatedPaths,
+      ],
     };
   } finally {
     try {

@@ -29,7 +29,12 @@ import { UserError } from "../../domain/errors.ts";
 
 /** Extended renderer interface with conflict rendering support. */
 export interface ExtensionPullRenderer extends Renderer<ExtensionPullEvent> {
-  renderConflicts(conflicts: string[]): void;
+  /**
+   * Lists conflicting paths. `skillDirs` is the subset of `conflicts`
+   * that are existing skill dirs, which are written into rather than
+   * replaced.
+   */
+  renderConflicts(conflicts: string[], skillDirs?: string[]): void;
 }
 
 function renderInstallResultLog(result: InstallResult): void {
@@ -264,11 +269,22 @@ class LogExtensionPullRenderer implements ExtensionPullRenderer {
     };
   }
 
-  renderConflicts(conflicts: string[]): void {
-    this.#logger
-      .warn`The following files already exist and will be overwritten:`;
-    for (const c of conflicts) {
-      this.#logger.warn`  ${c}`;
+  renderConflicts(conflicts: string[], skillDirs: string[] = []): void {
+    const skillSet = new Set(skillDirs);
+    const files = conflicts.filter((c) => !skillSet.has(c));
+    if (files.length > 0) {
+      this.#logger
+        .warn`The following files already exist and will be overwritten:`;
+      for (const c of files) {
+        this.#logger.warn`  ${c}`;
+      }
+    }
+    if (skillDirs.length > 0) {
+      this.#logger
+        .warn`The following skill directories already exist. The extension's files will be written into them: same-named files are overwritten, other files are kept.`;
+      for (const c of skillDirs) {
+        this.#logger.warn`  ${c}`;
+      }
     }
   }
 }
@@ -310,8 +326,12 @@ class JsonExtensionPullRenderer implements ExtensionPullRenderer {
     };
   }
 
-  renderConflicts(conflicts: string[]): void {
-    console.log(JSON.stringify({ conflicts }, null, 2));
+  renderConflicts(conflicts: string[], skillDirs: string[] = []): void {
+    console.log(JSON.stringify(
+      skillDirs.length > 0 ? { conflicts, skillDirs } : { conflicts },
+      null,
+      2,
+    ));
   }
 }
 

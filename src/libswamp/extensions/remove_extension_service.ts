@@ -23,6 +23,7 @@ import {
   PathTraversalError,
 } from "../../infrastructure/persistence/safe_path.ts";
 import { tombstoneAll } from "../../domain/extensions/extension.ts";
+import { findClaimants } from "../../domain/extensions/extension_path_claims.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import {
@@ -43,6 +44,15 @@ export interface FailedFile {
   reason: string;
 }
 
+/**
+ * A tracked path `extension rm` kept because other installed extensions
+ * still claim it: a shared skill dir they list, or list files under.
+ */
+export interface RetainedFile {
+  path: string;
+  claimedBy: string[];
+}
+
 /** Result of `RemoveExtensionService.execute()`. */
 export interface RemoveExtensionResult {
   name: string;
@@ -56,6 +66,13 @@ export interface RemoveExtensionResult {
    * remove them by hand.
    */
   failedFiles: FailedFile[];
+  /**
+   * Tracked paths left on disk because another installed extension
+   * claims them. For a kept skill dir, the files this extension wrote
+   * there stay too and are no longer tracked by any entry; remove them
+   * by hand if they are unwanted.
+   */
+  retainedFiles: RetainedFile[];
 }
 
 /** Removes a filesystem path. Defaults to `Deno.remove`. */
@@ -128,7 +145,8 @@ export class RemoveExtensionService {
    * `name` is not installed, or if any tracked path resolves outside
    * the repo (nothing is changed in that case). Returns counts of
    * files deleted, skipped (already-missing), and parent directories
-   * pruned, plus the files that could not be deleted.
+   * pruned, plus the files that could not be deleted and the paths
+   * kept because another installed extension claims them.
    *
    * Ordering: path validation → catalog tombstone-save → lockfile
    * remove → filesystem delete → empty-dir prune.
@@ -146,6 +164,11 @@ export class RemoveExtensionService {
 
     const version = lockfileEntry?.version ?? extensions[0]?.version ?? "";
     const trackedFiles = lockfileEntry?.files ?? [];
+    // Read the other entries' claims before this entry is removed. A
+    // skill dir lives in a shared tool dir, so another extension may
+    // have merged its files into it; deleting it recursively would take
+    // those files too.
+    const otherEntries = this.lockfileRepository.getAllEntries();
 
     // 1b. Validate every tracked path before changing anything. A path
     //     outside the repo (e.g. a pre-.swamp lockfile written with
@@ -207,11 +230,19 @@ export class RemoveExtensionService {
     let filesDeleted = 0;
     let filesSkipped = 0;
     const failedFiles: FailedFile[] = [];
+    const retainedFiles: RetainedFile[] = [];
     const parentDirs: string[] = [];
     for (const filePath of trackedFiles) {
+      const claimedBy = findClaimants(filePath, name, otherEntries);
+      if (claimedBy.length > 0) {
+        retainedFiles.push({ path: filePath, claimedBy });
+        continue;
+      }
       const absolutePath = join(this.repoDir, filePath);
       try {
-        const stat = await Deno.stat(absolutePath);
+        // lstat so a symlinked path is unlinked, never treated as the
+        // directory it points to.
+        const stat = await Deno.lstat(absolutePath);
         await this.removePath(absolutePath, { recursive: stat.isDirectory });
         filesDeleted++;
         parentDirs.push(dirname(absolutePath));
@@ -276,6 +307,7 @@ export class RemoveExtensionService {
       filesSkipped,
       dirsRemoved,
       failedFiles,
+      retainedFiles,
     };
   }
 }

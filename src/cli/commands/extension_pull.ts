@@ -170,14 +170,16 @@ export async function pullExtension(
     );
   } catch (error) {
     if (error instanceof ConflictError) {
-      renderer.renderConflicts(error.conflicts);
+      renderer.renderConflicts(error.conflicts, error.skillDirs);
       if (outputMode === "json") {
         throw new UserError(
           "Files already exist. Use --force to overwrite.",
         );
       }
       const confirmed = await promptConfirmation(
-        "Overwrite existing files?",
+        error.skillDirs.length > 0
+          ? "Write into the existing paths, overwriting same-named files?"
+          : "Overwrite existing files?",
       );
       if (!confirmed) {
         renderExtensionPullCancelled(outputMode);

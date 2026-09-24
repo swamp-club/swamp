@@ -26,6 +26,7 @@ import {
   type ExtensionRmDeps,
   type ExtensionRmEvent,
   extensionRmPreview,
+  findDependents,
 } from "./rm.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -386,5 +387,38 @@ Deno.test("extensionRmPreview: resolves dependents via the tracked per-extension
     } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
+  }
+});
+
+Deno.test("findDependents: reads the extension's own manifest, not a skill file of that name", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_rm_deps_" });
+  try {
+    const target = "@test/base";
+    const dependent = "@test/dependent";
+    const manifestRel = `.swamp/pulled-extensions/${dependent}/manifest.yaml`;
+    const skillManifestRel = ".claude/skills/foo/manifest.yaml";
+    await Deno.mkdir(dirname(join(repoDir, manifestRel)), { recursive: true });
+    await Deno.mkdir(dirname(join(repoDir, skillManifestRel)), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(repoDir, manifestRel),
+      `manifestVersion: 1\nname: "${dependent}"\nversion: "2026.01.01.1"\nskills:\n  - foo\ndependencies:\n  - "${target}"\n`,
+    );
+    await Deno.writeTextFile(
+      join(repoDir, skillManifestRel),
+      "not: a manifest\n",
+    );
+    const upstream: UpstreamExtensionsMap = {
+      [dependent]: {
+        version: "1.0.0",
+        pulledAt: "2026-01-01T00:00:00Z",
+        // Sorted as the lockfile stores them: .claude/ before .swamp/.
+        files: [skillManifestRel, manifestRel],
+      },
+    };
+    assertEquals(await findDependents(repoDir, upstream, target), [dependent]);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });

@@ -81,6 +81,17 @@ export function isBundleArtifactPath(relPath: string): boolean {
   return BUNDLE_ARTIFACT_PREFIXES.some((prefix) => relPath.startsWith(prefix));
 }
 
+const PULLED_SKILLS_PREFIX = `.swamp/${SWAMP_SUBDIRS.pulledSkills}/`;
+
+/**
+ * True for a skill dir under the pulled skills dir. Skills land in a
+ * dir shared across extensions, so another extension shipping the same
+ * skill name raises a ConflictError on it.
+ */
+export function isPulledSkillPath(relPath: string): boolean {
+  return relPath.startsWith(PULLED_SKILLS_PREFIX);
+}
+
 interface InstallerAdapterConfig {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
   downloadArchive: (
@@ -245,13 +256,25 @@ export function createAutoResolveInstallerAdapter(
         return { version: result.version };
       } catch (error) {
         if (error instanceof ConflictError) {
-          const allBundles = error.conflicts.length > 0 &&
-            error.conflicts.every((p) =>
-              isBundleArtifactPath(p.replaceAll("\\", "/"))
-            );
-          if (allBundles) {
-            logger
-              .warn`Auto-install of ${extensionName}: overwriting stale bundle cache (${error.conflicts.length} file(s))`;
+          // Stale bundle output is regenerable, and a shared skill dir is
+          // merged into with a warning (swamp-club#2494). Any other
+          // conflict means real files are in the way.
+          const conflicts = error.conflicts.map((p) => p.replaceAll("\\", "/"));
+          const bundleConflicts = conflicts.filter(isBundleArtifactPath);
+          const skillConflicts = conflicts.filter(isPulledSkillPath);
+          const allRetryable = conflicts.length > 0 &&
+            bundleConflicts.length + skillConflicts.length === conflicts.length;
+          if (allRetryable) {
+            if (bundleConflicts.length > 0) {
+              logger
+                .warn`Auto-install of ${extensionName}: overwriting stale bundle cache (${bundleConflicts.length} file(s))`;
+            }
+            if (skillConflicts.length > 0) {
+              logger
+                .warn`Auto-install of ${extensionName}: writing into existing skill dir(s) ${
+                skillConflicts.join(", ")
+              }`;
+            }
             const retryResult = await runInstall(true);
             if (!retryResult) return null;
             return { version: retryResult.version };
