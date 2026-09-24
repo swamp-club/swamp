@@ -367,9 +367,40 @@ export function updateCollectivesForPrincipal(
 export function closeConnectionsForPrincipal(principalId: string): void {
   const sockets = principalSockets.get(principalId);
   if (!sockets) return;
-  for (const socket of sockets) {
-    socket.close(4003, "Session revoked");
+  for (const socket of [...sockets]) {
+    closeSession(socket, 4003, "Session revoked");
   }
+}
+
+const connectionTeardowns = new WeakMap<WebSocket, () => void>();
+
+/** Registers the function that stops a connection's in-flight work. */
+export function setConnectionTeardown(
+  socket: WebSocket,
+  teardown: () => void,
+): void {
+  connectionTeardowns.set(socket, teardown);
+}
+
+/**
+ * Ends a session from the server side. The session's work (in-flight
+ * requests, subscriptions) stops now: the close event only fires once the
+ * peer completes the close handshake, and a peer that ignores the close frame
+ * could otherwise keep it running indefinitely.
+ */
+export function closeSession(
+  socket: WebSocket,
+  code: number,
+  reason: string,
+): void {
+  try {
+    connectionTeardowns.get(socket)?.();
+  } catch (error) {
+    sessionLogger.warn("Session teardown failed before close: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  socket.close(code, reason);
 }
 
 /**
@@ -487,7 +518,7 @@ export function terminateTokenSessions(
     // listed, closed and audited again on every revalidation pass.
     sockets.delete(socket);
     connectionTokens.delete(socket);
-    socket.close(options.code, options.reason);
+    closeSession(socket, options.code, options.reason);
   }
   if (sockets.size === 0) tokenSockets.delete(name);
   if (targets.length > 0) {

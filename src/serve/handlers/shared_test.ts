@@ -26,6 +26,8 @@ import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_l
 import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeAnyOrReject,
+  closeConnectionsForPrincipal,
+  closeSession,
   COMPRESSION_THRESHOLD_BYTES,
   type ConnectionContext,
   emitSystemAuditEvent,
@@ -38,6 +40,7 @@ import {
   setConnectionCollectives,
   setConnectionCompression,
   setConnectionSourceIp,
+  setConnectionTeardown,
   setConnectionToken,
   terminateTokenSessions,
   type TerminateTokenSessionsOptions,
@@ -609,6 +612,51 @@ Deno.test("terminateTokenSessions: a peer that never completes the close is term
   assertEquals(closes, [4003]);
   assertEquals(events.length, 1);
   removeConnection(socket);
+});
+
+Deno.test("terminateTokenSessions: stops the session's work before closing it", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const order: string[] = [];
+  const s = bindToken(name, MINT_1);
+  setConnectionTeardown(s.socket, () => order.push("teardown"));
+  const close = s.socket.close.bind(s.socket);
+  s.socket.close = (code?: number, reason?: string) => {
+    order.push("close");
+    close(code, reason);
+  };
+
+  terminate(name);
+
+  assertEquals(order, ["teardown", "close"]);
+});
+
+Deno.test("closeConnectionsForPrincipal: stops each session's work before closing it", () => {
+  const principalId = `user:${crypto.randomUUID()}`;
+  const order: string[] = [];
+  const s = makeClosableSocket();
+  setConnectionCollectives(s.socket, [], [], principalId);
+  setConnectionTeardown(s.socket, () => order.push("teardown"));
+  const close = s.socket.close.bind(s.socket);
+  s.socket.close = (code?: number, reason?: string) => {
+    order.push("close");
+    close(code, reason);
+  };
+
+  closeConnectionsForPrincipal(principalId);
+
+  assertEquals(order, ["teardown", "close"]);
+  assertEquals(s.closes, [{ code: 4003, reason: "Session revoked" }]);
+});
+
+Deno.test("closeSession: a failing teardown still closes the socket", () => {
+  const s = makeClosableSocket();
+  setConnectionTeardown(s.socket, () => {
+    throw new Error("boom");
+  });
+
+  closeSession(s.socket, 4003, "Session revoked");
+
+  assertEquals(s.closes, [{ code: 4003, reason: "Session revoked" }]);
 });
 
 Deno.test("terminateTokenSessions: an unknown token closes nothing", () => {

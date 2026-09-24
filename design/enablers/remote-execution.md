@@ -223,7 +223,12 @@ sessions (4003), as it would be rejected at upgrade; a read that fails for any
 other reason, such as I/O, keeps the session until the next pass. Revoke and
 rotate close sessions even when the request was cancelled after the change was
 saved. Sessions are unbound as they close, so a peer that never completes the
-close handshake is not closed and audited again. One known edge in HA: a client
+close handshake is not closed and audited again. Every server-initiated close
+(these, the 8-hour cap, and deprovisioning) goes through `closeSession`, which
+aborts the session's in-flight requests and ends its subscriptions before
+sending the close frame, and `onmessage` serves nothing once the socket is no
+longer open. The close event only fires when the peer answers the close frame,
+so without this a peer that ignores it would keep the session's work running. One known edge in HA: a client
 that reconnects with a rotated credential to a peer that has not yet pulled the
 new record is bound to the old `createdAt`, and that peer closes it once when
 the record arrives; reconnecting succeeds. `terminateTokenSessions` is the one path that closes them,
