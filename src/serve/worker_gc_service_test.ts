@@ -38,6 +38,7 @@ const EMPTY_REAP: BookkeepingReapResult = {
   leasesDeleted: 0,
   dispatchesDeleted: 0,
   failed: 0,
+  unreadable: 0,
   batches: 0,
   pushFailures: 0,
 };

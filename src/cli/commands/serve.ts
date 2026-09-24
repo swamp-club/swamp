@@ -87,7 +87,10 @@ import {
   workerGcListPredicate,
   WorkerGcService,
 } from "../../serve/worker_gc_service.ts";
-import { reapEndedBookkeepingRecords } from "../../serve/bookkeeping_gc.ts";
+import {
+  createBookkeepingRecordQuery,
+  reapEndedBookkeepingRecords,
+} from "../../serve/bookkeeping_gc.ts";
 import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
 import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
@@ -5587,10 +5590,9 @@ export const serveCommand = new Command()
         reapBookkeeping: (gracePeriodMs, isStopping) =>
           reapEndedBookkeepingRecords(
             {
-              query: async (predicate) =>
-                await repoContext.dataQueryService.query(predicate, {
-                  loadAttributes: true,
-                }) as DataRecord[],
+              query: createBookkeepingRecordQuery(
+                repoContext.dataQueryService,
+              ),
               repo: repoContext.unifiedDataRepo,
               syncService,
               syncNamespace: gcSyncNamespace,

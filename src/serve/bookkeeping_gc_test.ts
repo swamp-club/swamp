@@ -74,7 +74,11 @@ function dispatchRecord(
 
 interface Harness {
   deps: BookkeepingGcDeps;
-  /** Ordered log of `delete:<name>` and `push` events. */
+  /**
+   * Ordered log of `delete:<name>` and `push` events. A delete or push made
+   * while the sync gate is not held exclusively is logged with an
+   * `UNGATED ` prefix, so any assertion on the log also pins the gating.
+   */
   events: string[];
   predicates: string[];
 }
@@ -87,38 +91,66 @@ function harness(opts: {
   failDelete?: Set<string>;
   failPush?: boolean;
   missingOnDisk?: Set<string>;
+  /** Records whose body read throws. */
+  unreadableBody?: Set<string>;
+  /** Records whose body is not JSON. */
+  corruptBody?: Set<string>;
 }): Harness {
   const events: string[] = [];
   const predicates: string[] = [];
+  const gate = createSyncGate();
+  const gated = (event: string) =>
+    events.push(gate.exclusiveHeld ? event : `UNGATED ${event}`);
+  const bodies = new Map<string, unknown>();
+  for (const r of [...(opts.leases ?? []), ...(opts.dispatches ?? [])]) {
+    bodies.set(r.name, r.attributes);
+  }
   const deps: BookkeepingGcDeps = {
+    // References only, as serve wires it: bodies come from getContent.
     query: (predicate) => {
       predicates.push(predicate);
-      if (predicate.includes("swamp/step-lease")) {
-        return Promise.resolve(opts.leases ?? []);
-      }
-      return Promise.resolve(opts.dispatches ?? []);
+      const records = predicate.includes("swamp/step-lease")
+        ? opts.leases ?? []
+        : opts.dispatches ?? [];
+      return Promise.resolve(
+        records.map((r) => ({ modelId: r.modelId, name: r.name })),
+      );
     },
     repo: {
       namespace: "team-a" as Namespace,
+      getContent: (_type: ModelType | string, _id: string, name: string) => {
+        if (opts.unreadableBody?.has(name)) {
+          return Promise.reject(new Error(`EIO reading ${name}`));
+        }
+        if (opts.corruptBody?.has(name)) {
+          return Promise.resolve(new TextEncoder().encode("{not json"));
+        }
+        const body = bodies.get(name);
+        return Promise.resolve(
+          body === undefined
+            ? null
+            : new TextEncoder().encode(JSON.stringify(body)),
+        );
+      },
       listVersions: (_type: ModelType, _id: string, name: string) =>
         Promise.resolve(opts.missingOnDisk?.has(name) ? [] : [1, 2]),
       delete: (_type: ModelType, _id: string, name: string) => {
         if (opts.failDelete?.has(name)) {
           return Promise.reject(new Error(`cannot delete ${name}`));
         }
-        events.push(`delete:${name}`);
+        gated(`delete:${name}`);
         return Promise.resolve();
       },
     },
     syncService: opts.sync === false ? undefined : {
       pushChanged: () => {
-        events.push("push");
+        gated("push");
         return opts.failPush
           ? Promise.reject(new Error("push down"))
           : Promise.resolve();
       },
     },
-    syncGate: createSyncGate(),
+    syncGate: gate,
     batchSize: opts.batchSize,
     now: () => NOW,
   };
@@ -170,6 +202,7 @@ Deno.test("reapEndedBookkeepingRecords: deletes only ended records past grace", 
     leasesDeleted: 2,
     dispatchesDeleted: 1,
     failed: 0,
+    unreadable: 0,
     batches: 1,
     pushFailures: 0,
   });
@@ -285,4 +318,22 @@ Deno.test("reapEndedBookkeepingRecords: stops between batches once stopping", as
   );
   assertEquals(h.events, ["delete:lease-a", "push"]);
   assertEquals(result.batches, 1);
+});
+
+Deno.test("reapEndedBookkeepingRecords: an unreadable or corrupt record is skipped, the rest are still reaped", async () => {
+  const h = harness({
+    leases: [
+      leaseRecord("eio", "completed", OLD),
+      leaseRecord("garbled", "completed", OLD),
+      leaseRecord("ok", "completed", OLD),
+    ],
+    dispatches: [dispatchRecord("sent", "dispatched", OLD)],
+    unreadableBody: new Set(["lease-eio"]),
+    corruptBody: new Set(["lease-garbled"]),
+  });
+  const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
+  assertEquals(h.events, ["delete:lease-ok", "delete:pending-sent", "push"]);
+  assertEquals(result.unreadable, 2);
+  assertEquals(result.leasesDeleted, 1);
+  assertEquals(result.dispatchesDeleted, 1);
 });

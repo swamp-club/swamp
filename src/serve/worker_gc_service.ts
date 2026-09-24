@@ -21,10 +21,8 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { WorkerPruneResult } from "../libswamp/worker/prune.ts";
-import {
-  type BookkeepingReapResult,
-  ownNamespaceTerm,
-} from "./bookkeeping_gc.ts";
+import type { BookkeepingReapResult } from "./bookkeeping_gc.ts";
+import { ownNamespaceTerm } from "./namespace_predicate.ts";
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 
 const logger = getSwampLogger(["serve", "worker-gc"]);
@@ -180,15 +178,17 @@ export class WorkerGcService {
         );
         if (
           bookkeeping.leasesDeleted > 0 || bookkeeping.dispatchesDeleted > 0 ||
-          bookkeeping.failed > 0 || bookkeeping.pushFailures > 0
+          bookkeeping.failed > 0 || bookkeeping.unreadable > 0 ||
+          bookkeeping.pushFailures > 0
         ) {
           logger.info(
-            "Worker GC: reaped {leases} lease(s), {dispatches} pending dispatch(es) in {batches} batch(es), {failed} failed, {pushFailures} push failure(s)",
+            "Worker GC: reaped {leases} lease(s), {dispatches} pending dispatch(es) in {batches} batch(es), {failed} failed, {unreadable} unreadable, {pushFailures} push failure(s)",
             {
               leases: bookkeeping.leasesDeleted,
               dispatches: bookkeeping.dispatchesDeleted,
               batches: bookkeeping.batches,
               failed: bookkeeping.failed,
+              unreadable: bookkeeping.unreadable,
               pushFailures: bookkeeping.pushFailures,
             },
           );

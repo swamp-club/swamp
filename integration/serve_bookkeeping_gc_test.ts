@@ -22,7 +22,7 @@
 // serve uses and to a real sync gate. Records are written through the real
 // step-lease and pending-dispatch model methods (swamp-club#2262).
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { buildMarkDirtyHook } from "../src/cli/repo_context.ts";
@@ -56,7 +56,10 @@ import {
   modelMethodRun,
   workerQueueList,
 } from "../src/libswamp/mod.ts";
-import { reapEndedBookkeepingRecords } from "../src/serve/bookkeeping_gc.ts";
+import {
+  createBookkeepingRecordQuery,
+  reapEndedBookkeepingRecords,
+} from "../src/serve/bookkeeping_gc.ts";
 import {
   createSyncGate,
   gatedPull,
@@ -191,12 +194,14 @@ async function dataNames(
   modelType: ModelType,
   instanceName: string,
 ): Promise<string[]> {
-  const records = await ctx.dataQueryService.query(
+  // Projected, so no record body is read (one test leaves a body unreadable).
+  const names = await ctx.dataQueryService.query(
     `modelType == ${JSON.stringify(modelType.normalized)} && modelName == ${
       JSON.stringify(instanceName)
     }`,
-  ) as DataRecord[];
-  return records.map((r) => r.name).sort();
+    { select: "name" },
+  ) as string[];
+  return names.sort();
 }
 
 /** Saves a record directly, stamped with the context's namespace. */
@@ -213,7 +218,7 @@ async function saveRecord(
     contentType: "application/json",
     lifetime: "infinite",
     garbageCollection: 10,
-    tags: { type: "resource", specName: "lease", modelName },
+    tags: { type: "resource", modelName },
     ownerDefinition: { ownerType: "model-method", ownerRef: modelId },
   });
   await ctx.unifiedDataRepo.save(
@@ -224,11 +229,17 @@ async function saveRecord(
   );
 }
 
+/** Catalog query with bodies loaded, as `workerQueueList` is wired. */
 function queryDeps(ctx: RepositoryContext) {
   return async (predicate: string) =>
     await ctx.dataQueryService.query(predicate, {
       loadAttributes: true,
     }) as DataRecord[];
+}
+
+/** The reaper's body-free catalog listing, wired exactly as serve wires it. */
+function reaperQuery(ctx: RepositoryContext) {
+  return createBookkeepingRecordQuery(ctx.dataQueryService);
 }
 
 Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from disk and catalog, keeps live and recent ones", async () => {
@@ -270,7 +281,7 @@ Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from di
       events.length = 0;
       const result = await reapEndedBookkeepingRecords(
         {
-          query: queryDeps(ctx),
+          query: reaperQuery(ctx),
           repo: ctx.unifiedDataRepo,
           syncService: service,
           syncGate: createSyncGate(),
@@ -283,6 +294,7 @@ Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from di
         leasesDeleted: 2,
         dispatchesDeleted: 1,
         failed: 0,
+        unreadable: 0,
         batches: 1,
         pushFailures: 0,
       });
@@ -355,6 +367,7 @@ Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from di
 Deno.test("reapEndedBookkeepingRecords: a pull queued mid-sweep never lands between a delete and its push", async () => {
   await withTempDir(async (dir) => {
     const gate = createSyncGate();
+    let reaping = false;
     let pullPromise: Promise<number | void> | undefined;
     // Queue the pull exactly once, on the first delete, while the reaper
     // holds the gate for batch one. The escalated path queues FIFO, so the
@@ -368,7 +381,6 @@ Deno.test("reapEndedBookkeepingRecords: a pull queued mid-sweep never lands betw
         { state: { consecutiveSkips: POLLER_ESCALATE_AFTER_SKIPS } },
       );
     });
-    let reaping = false;
     const ctx = createRepositoryContext({
       repoDir: dir,
       enableIndexing: false,
@@ -386,7 +398,7 @@ Deno.test("reapEndedBookkeepingRecords: a pull queued mid-sweep never lands betw
       reaping = true;
       const result = await reapEndedBookkeepingRecords(
         {
-          query: queryDeps(ctx),
+          query: reaperQuery(ctx),
           repo: ctx.unifiedDataRepo,
           syncService: service,
           syncGate: gate,
@@ -499,7 +511,7 @@ Deno.test("reapEndedBookkeepingRecords and workerGcListPredicate: ignore another
 
       const result = await reapEndedBookkeepingRecords(
         {
-          query: queryDeps(ctx),
+          query: reaperQuery(ctx),
           repo: ctx.unifiedDataRepo,
           syncService: service,
           syncGate: createSyncGate(),
@@ -516,6 +528,68 @@ Deno.test("reapEndedBookkeepingRecords and workerGcListPredicate: ignore another
       ) as DataRecord[];
       assertEquals(workers.map((w) => w.modelName), ["worker-w2"]);
       assertEquals(foreignFetches, 0);
+    } finally {
+      ctx.catalogStore.close();
+    }
+  });
+});
+
+Deno.test("reapEndedBookkeepingRecords: an unreadable record body on disk does not stop the reap", async () => {
+  await withTempDir(async (dir) => {
+    const { service } = createRecordingSyncService();
+    const ctx = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+      namespace: "team-a",
+      markDirty: buildMarkDirtyHook(service, swampPath(dir), dir),
+    });
+    try {
+      const reapNow = Date.now() + 2 * GRACE_MS;
+      for (const id of ["broken", "healthy"]) {
+        await lease(dir, ctx, "acquire", acquireInputs(id));
+        await lease(dir, ctx, "complete", { leaseId: id });
+      }
+      const broken = (await ctx.dataQueryService.query(
+        `name == "lease-broken"`,
+      ) as DataRecord[])[0];
+      // A body that cannot be read at all (not merely invalid JSON, which the
+      // query tolerates): replace the raw file with a directory, so reading it
+      // fails with a non-NotFound I/O error on every platform.
+      const rawPath = join(
+        swampPath(dir),
+        "data",
+        STEP_LEASE_MODEL_TYPE.normalized,
+        broken.modelId,
+        "lease-broken",
+        String(broken.version),
+        "raw",
+      );
+      await Deno.remove(rawPath);
+      await Deno.mkdir(rawPath);
+
+      // An attribute-loading query fails outright on the unreadable body,
+      // which is why the reaper lists metadata only and reads bodies one by
+      // one.
+      await assertRejects(() =>
+        queryDeps(ctx)(`modelType == "swamp/step-lease"`)
+      );
+
+      const result = await reapEndedBookkeepingRecords(
+        {
+          query: reaperQuery(ctx),
+          repo: ctx.unifiedDataRepo,
+          syncService: service,
+          syncGate: createSyncGate(),
+          now: () => reapNow,
+        },
+        GRACE_MS,
+      );
+      assertEquals(result.unreadable, 1);
+      assertEquals(result.leasesDeleted, 1);
+      assertEquals(
+        await dataNames(ctx, STEP_LEASE_MODEL_TYPE, STEP_LEASE_INSTANCE_NAME),
+        ["lease-broken"],
+      );
     } finally {
       ctx.catalogStore.close();
     }
