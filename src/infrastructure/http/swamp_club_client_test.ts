@@ -1044,3 +1044,210 @@ Deno.test("SwampClubClient - fetchRecruitLink falls back to raw text when the er
     await mock.shutdown();
   }
 });
+
+Deno.test("SwampClubClient - revokePresentingApiKey sends DELETE /api/v1/me/api-key with only the key", async () => {
+  let seen: {
+    method: string;
+    path: string;
+    apiKey: string | null;
+    body: string;
+  } | null = null;
+  const mock = startMockServer(async (req) => {
+    seen = {
+      method: req.method,
+      path: new URL(req.url).pathname,
+      apiKey: req.headers.get("x-api-key"),
+      body: await req.text(),
+    };
+    return Response.json({ revoked: true, id: "key-123" });
+  });
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.revokePresentingApiKey("swamp_test_key");
+    assertEquals(result, { kind: "revoked", id: "key-123" });
+    assertEquals(seen, {
+      method: "DELETE",
+      path: "/api/v1/me/api-key",
+      apiKey: "swamp_test_key",
+      body: "",
+    });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokePresentingApiKey maps 401 to already_invalid", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Unauthorized" }, { status: 401 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.revokePresentingApiKey("swamp_test_key");
+    assertEquals(result, { kind: "already_invalid" });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+// A 401 from a proxy or gateway (its own auth challenge, or x-api-key
+// stripped) says nothing about the key, so it must not read as invalid.
+for (
+  const [label, body] of [
+    ["a plain-text body", "Unauthorized"],
+    ["an HTML page", "<html>Proxy authentication required</html>"],
+    ["an empty body", ""],
+    ["JSON without an error field", '{"message":"denied"}'],
+    ["a gateway's JSON error", '{"error":"invalid_token"}'],
+  ]
+) {
+  Deno.test(`SwampClubClient - revokePresentingApiKey throws on a 401 with ${label}`, async () => {
+    const mock = startMockServer(() => new Response(body, { status: 401 }));
+
+    try {
+      const client = new SwampClubClient(`http://localhost:${mock.port}`);
+      const err = await assertRejects(
+        () => client.revokePresentingApiKey("swamp_test_key"),
+        UserError,
+      );
+      assertStringIncludes(err.message, "without a swamp-club error body");
+    } finally {
+      await mock.shutdown();
+    }
+  });
+}
+
+Deno.test("SwampClubClient - revokePresentingApiKey maps 403 to not_personal_key", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Only a personal API key can revoke itself" }, {
+      status: 403,
+    })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.revokePresentingApiKey("swamp_org_key");
+    assertEquals(result, { kind: "not_personal_key" });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokePresentingApiKey maps 404 to unsupported", async () => {
+  const mock = startMockServer(() =>
+    new Response("Not Found", { status: 404 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.revokePresentingApiKey("swamp_test_key");
+    assertEquals(result, { kind: "unsupported" });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+// A 2xx that does not confirm the revoke (an SPA index.html fallback, a
+// captive portal, a proxy page) must never read as revoked: logout would
+// delete credentials whose key is still valid.
+for (
+  const [label, body] of [
+    ["an HTML page", "<!doctype html><html>app shell</html>"],
+    ["a JSON null", "null"],
+    ["JSON without revoked", '{"id":"key-123"}'],
+    ["revoked false", '{"revoked":false,"id":"key-123"}'],
+    ["an empty body", ""],
+  ]
+) {
+  Deno.test(`SwampClubClient - revokePresentingApiKey throws on a 200 with ${label}`, async () => {
+    const mock = startMockServer(() => new Response(body, { status: 200 }));
+
+    try {
+      const client = new SwampClubClient(`http://localhost:${mock.port}`);
+      const err = await assertRejects(
+        () => client.revokePresentingApiKey("swamp_test_key"),
+        UserError,
+      );
+      assertStringIncludes(err.message, "without confirming");
+    } finally {
+      await mock.shutdown();
+    }
+  });
+}
+
+Deno.test("SwampClubClient - revokePresentingApiKey treats a 403 without swamp-club's body as a plain HTTP error", async () => {
+  const mock = startMockServer(() =>
+    new Response("<html>Forbidden by proxy</html>", { status: 403 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokePresentingApiKey("swamp_test_key"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "answered HTTP 403");
+    assertEquals(err.message.includes("personal API key"), false);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokePresentingApiKey ends the message cleanly on an empty error body", async () => {
+  const mock = startMockServer(() => new Response("  \n", { status: 502 }));
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokePresentingApiKey("swamp_test_key"),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      `http://localhost:${mock.port} answered HTTP 502.`,
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokePresentingApiKey collapses a multi-line error body onto one line", async () => {
+  const mock = startMockServer(() =>
+    new Response("<html>\n  <body>\n    Bad gateway\n  </body>\n</html>", {
+      status: 502,
+    })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokePresentingApiKey("swamp_test_key"),
+      UserError,
+    );
+    assertStringIncludes(
+      err.message,
+      "answered HTTP 502: <html> <body> Bad gateway </body> </html>",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokePresentingApiKey throws on 500 and truncates the body", async () => {
+  const longBody = "x".repeat(5000);
+  const mock = startMockServer(() => new Response(longBody, { status: 500 }));
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokePresentingApiKey("swamp_test_key"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "HTTP 500");
+    assertEquals(err.message.includes(longBody), false);
+    assertStringIncludes(err.message, "x".repeat(200) + "…");
+  } finally {
+    await mock.shutdown();
+  }
+});

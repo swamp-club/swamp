@@ -17,9 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
+import { UserError } from "../../domain/errors.ts";
+import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import {
   authLogout,
   type AuthLogoutDeps,
@@ -33,74 +36,271 @@ function makeDeps(overrides: Partial<AuthLogoutDeps> = {}): AuthLogoutDeps {
       Promise.resolve({
         username: "testuser",
         serverUrl: "https://api.example.com",
+        apiKey: "swamp_test_key",
       }),
+    revokeApiKey: () => Promise.resolve({ kind: "revoked", id: "key-1" }),
     deleteCredentials: () => Promise.resolve(),
+    credentialsPath: () => "/home/test/.config/swamp/auth.json",
     ...overrides,
   };
 }
 
-Deno.test("authLogout: yields completed with loggedOut true when authenticated", async () => {
+function completedData(events: AuthLogoutEvent[]) {
+  assertEquals(events.length, 1);
+  const event = events[0];
+  assertEquals(event.kind, "completed");
+  return (event as Extract<AuthLogoutEvent, { kind: "completed" }>).data;
+}
+
+function errorOf(events: AuthLogoutEvent[]) {
+  assertEquals(events.length, 1);
+  const event = events[0];
+  assertEquals(event.kind, "error");
+  return (event as Extract<AuthLogoutEvent, { kind: "error" }>).error;
+}
+
+Deno.test("authLogout: revokes the key on the stored server, then deletes credentials", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    revokeApiKey: (serverUrl, apiKey) => {
+      calls.push(`revoke ${serverUrl} ${apiKey}`);
+      return Promise.resolve({ kind: "revoked", id: "key-1" });
+    },
+    deleteCredentials: () => {
+      calls.push("delete");
+      return Promise.resolve();
+    },
+  });
+
+  const data = completedData(
+    await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+  );
+
+  assertEquals(calls, [
+    "revoke https://api.example.com swamp_test_key",
+    "delete",
+  ]);
+  assertEquals(data, {
+    loggedOut: true,
+    username: "testuser",
+    serverUrl: "https://api.example.com",
+    keyRevocation: "revoked",
+    keyId: "key-1",
+  });
+});
+
+Deno.test("authLogout: deletes credentials when the key is already invalid", async () => {
   let deleteCalled = false;
   const deps = makeDeps({
+    revokeApiKey: () => Promise.resolve({ kind: "already_invalid" }),
     deleteCredentials: () => {
       deleteCalled = true;
       return Promise.resolve();
     },
   });
 
-  const events = await collect<AuthLogoutEvent>(
-    authLogout(createLibSwampContext(), deps),
+  const data = completedData(
+    await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
   );
 
-  assertEquals(events.length, 1);
-  const completed = events[0] as Extract<
-    AuthLogoutEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.loggedOut, true);
-  assertEquals(completed.data.username, "testuser");
-  assertEquals(completed.data.serverUrl, "https://api.example.com");
   assertEquals(deleteCalled, true);
+  assertEquals(data.loggedOut, true);
+  assertEquals(data.keyRevocation, "already_invalid");
+  assertEquals(data.keyId, undefined);
+});
+
+for (
+  const reason of [
+    "Could not connect to https://api.example.com: connection refused",
+    "https://api.example.com answered HTTP 200 without confirming the API key was revoked.",
+    "https://api.example.com answered HTTP 500: boom",
+    "Rate limit exceeded.",
+  ]
+) {
+  Deno.test(`authLogout: keeps credentials when revoking fails (${reason})`, async () => {
+    let deleteCalled = false;
+    const deps = makeDeps({
+      revokeApiKey: () => Promise.reject(new UserError(reason)),
+      deleteCredentials: () => {
+        deleteCalled = true;
+        return Promise.resolve();
+      },
+    });
+
+    const error = errorOf(
+      await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+    );
+
+    assertEquals(deleteCalled, false);
+    assertEquals(error.code, "revoke_failed");
+    assertStringIncludes(error.message, reason);
+    // the reason always ends a sentence before the kept-credentials note
+    assertEquals(/[.!?…] Your credentials were kept/.test(error.message), true);
+    assertStringIncludes(
+      error.message,
+      "/home/test/.config/swamp/auth.json",
+    );
+    assertStringIncludes(
+      error.message,
+      "Run 'swamp auth logout' again once this is resolved.",
+    );
+  });
+}
+
+// A retry cannot fix these, so the advice is the manual route instead.
+for (
+  const [kind, reason] of [
+    ["unsupported", "does not support revoking API keys from the CLI."],
+    ["not_personal_key", "it is not a personal API key."],
+  ] as const
+) {
+  Deno.test(`authLogout: keeps credentials and gives manual advice when the server answers ${kind}`, async () => {
+    let deleteCalled = false;
+    const deps = makeDeps({
+      revokeApiKey: () => Promise.resolve({ kind }),
+      deleteCredentials: () => {
+        deleteCalled = true;
+        return Promise.resolve();
+      },
+    });
+
+    const error = errorOf(
+      await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+    );
+
+    assertEquals(deleteCalled, false);
+    assertEquals(error.code, "revoke_failed");
+    assertStringIncludes(error.message, reason);
+    assertStringIncludes(error.message, "in the web UI");
+    assertStringIncludes(
+      error.message,
+      "Your credentials were kept at /home/test/.config/swamp/auth.json.",
+    );
+    assertStringIncludes(
+      error.message,
+      "then delete /home/test/.config/swamp/auth.json to log out.",
+    );
+    assertEquals(error.message.includes("again once"), false);
+  });
+}
+
+Deno.test("authLogout: keeps credentials and yields cancelled when aborted", async () => {
+  let deleteCalled = false;
+  const deps = makeDeps({
+    revokeApiKey: () =>
+      Promise.reject(new DOMException("aborted", "AbortError")),
+    deleteCredentials: () => {
+      deleteCalled = true;
+      return Promise.resolve();
+    },
+  });
+
+  const error = errorOf(
+    await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+  );
+
+  assertEquals(deleteCalled, false);
+  assertEquals(error.code, "cancelled");
+});
+
+Deno.test("authLogout: deletes credentials without a revoke when no key is stored", async () => {
+  let revokeCalled = false;
+  let deleteCalled = false;
+  const deps = makeDeps({
+    loadCredentials: () =>
+      Promise.resolve({
+        username: "testuser",
+        serverUrl: "https://api.example.com",
+        apiKey: "",
+      }),
+    revokeApiKey: () => {
+      revokeCalled = true;
+      return Promise.resolve({ kind: "revoked", id: "key-1" });
+    },
+    deleteCredentials: () => {
+      deleteCalled = true;
+      return Promise.resolve();
+    },
+  });
+
+  const data = completedData(
+    await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
+  );
+
+  assertEquals(revokeCalled, false);
+  assertEquals(deleteCalled, true);
+  assertEquals(data.keyRevocation, "no_key");
 });
 
 Deno.test("authLogout: yields completed with loggedOut false when not authenticated", async () => {
+  let revokeCalled = false;
   const deps = makeDeps({
     loadCredentials: () => Promise.resolve(null),
+    revokeApiKey: () => {
+      revokeCalled = true;
+      return Promise.resolve({ kind: "revoked", id: "key-1" });
+    },
   });
 
-  const events = await collect<AuthLogoutEvent>(
-    authLogout(createLibSwampContext(), deps),
+  const data = completedData(
+    await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps)),
   );
 
-  assertEquals(events.length, 1);
-  const completed = events[0] as Extract<
-    AuthLogoutEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.loggedOut, false);
-  assertEquals(completed.data.reason, "not authenticated");
+  assertEquals(revokeCalled, false);
+  assertEquals(data.loggedOut, false);
+  assertEquals(data.reason, "not authenticated");
 });
 
-Deno.test("createAuthLogoutDeps: loadCredentials returns env-var creds when SWAMP_API_KEY is set", async () => {
+Deno.test("createAuthLogoutDeps: loads the stored login key even when SWAMP_API_KEY and SWAMP_CLUB_URL are set", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     // Inject overrides instead of mutating Deno.env — `deno test --parallel`
     // runs logout_test and whoami_test in different files concurrently and
     // both touch SWAMP_API_KEY / XDG_CONFIG_HOME. Going through the deps
     // options keeps this test hermetic.
+    const configDir = join(tmpDir, "swamp");
+    await new AuthRepository({ configDir, getApiKey: () => undefined }).save({
+      serverUrl: "https://swamp-club.com",
+      apiKey: "swamp_login_key",
+      apiKeyId: "key-1",
+      username: "testuser",
+    });
+
     const deps = createAuthLogoutDeps({
       repo: {
-        configDir: `${tmpDir}/swamp`,
+        configDir,
         getApiKey: () => "swamp_test_env_key",
+        getServerUrl: () => "https://other.example.com",
       },
     });
     const creds = await deps.loadCredentials();
-    // With SWAMP_API_KEY set, loadCredentials returns env-var creds
-    // (username is empty since env var doesn't provide it)
-    assertEquals(creds !== null, true);
-    assertEquals(creds!.username, "");
+
+    assertEquals(creds, {
+      username: "testuser",
+      serverUrl: "https://swamp-club.com",
+      apiKey: "swamp_login_key",
+    });
+    assertEquals(deps.credentialsPath(), join(configDir, "auth.json"));
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("createAuthLogoutDeps: an auth.json without serverUrl revokes against the default server", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    await new AuthRepository({ configDir, getApiKey: () => undefined }).save({
+      serverUrl: "",
+      apiKey: "swamp_login_key",
+      apiKeyId: "key-1",
+      username: "testuser",
+    });
+
+    const creds = await createAuthLogoutDeps({ repo: { configDir } })
+      .loadCredentials();
+
+    assertEquals(creds?.serverUrl, "https://swamp-club.com");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

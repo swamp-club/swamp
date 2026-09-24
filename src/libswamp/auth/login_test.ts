@@ -497,3 +497,31 @@ Deno.test("authLogin: slow_down increases polling interval", async () => {
   ]);
   assertEquals(pollCount, 2);
 });
+
+// swamp-club gives login keys a 90-day expiry by matching this exact name
+// shape (LOGIN_KEY_NAME in its lib/auth-body-hook.ts). A key named any other
+// way silently never expires, so the format is pinned here.
+const SERVER_LOGIN_KEY_NAME = /^cli-.{0,14}-\d{13}$/;
+
+for (
+  const hostname of ["h", "exactly14chars", "a-much-longer-hostname.local"]
+) {
+  Deno.test(`authLogin: key name matches the server's login-key rule (${hostname})`, async () => {
+    let keyName = "";
+    const deps = makeDeps({
+      getHostname: () => hostname,
+      createApiKey: (_serverUrl, _sessionToken, name) => {
+        keyName = name;
+        return Promise.resolve({ id: "key-id-1", key: "swamp_testapikey" });
+      },
+    });
+
+    await collect<AuthLoginEvent>(
+      authLogin(createLibSwampContext(), deps, makeInput()),
+    );
+
+    assertEquals(SERVER_LOGIN_KEY_NAME.test(keyName), true, keyName);
+    // BetterAuth's maximumNameLength
+    assertEquals(keyName.length <= 32, true, keyName);
+  });
+}

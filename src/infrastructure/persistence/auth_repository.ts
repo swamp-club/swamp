@@ -29,6 +29,12 @@ import {
 
 const AUTH_FILE = "auth.json";
 
+/** Server URL compared without trailing slashes, with the legacy domain mapped to the current one. */
+function canonicalServerUrl(url: string): string {
+  const trimmed = url.replace(/\/+$/, "");
+  return trimmed === LEGACY_SWAMP_CLUB_URL ? DEFAULT_SWAMP_CLUB_URL : trimmed;
+}
+
 /**
  * Optional overrides for `AuthRepository`. Used by tests to bypass the
  * shared `Deno.env` global, which races across files when
@@ -72,7 +78,8 @@ export class AuthRepository {
       (() => Deno.env.get("SWAMP_CLUB_URL"));
   }
 
-  private getAuthPath(): string {
+  /** Path of the stored credentials file. */
+  getAuthPath(): string {
     return join(this.getConfigDir(), AUTH_FILE);
   }
 
@@ -106,6 +113,14 @@ export class AuthRepository {
         }
       } catch {
         // No cached identity — will be populated on first whoami
+      }
+      if (!username) {
+        const cached = await this.loadEnvIdentityCache(serverUrl, fingerprint);
+        if (cached) {
+          username = cached.username ?? "";
+          collectives = cached.collectives;
+          scopes = cached.scopes;
+        }
       }
 
       return {
@@ -151,6 +166,11 @@ export class AuthRepository {
   /**
    * Cache identity fields (username, collectives, fingerprint) without
    * overwriting an existing apiKey/apiKeyId from a login session.
+   *
+   * When auth.json holds a login key issued by a different server, the
+   * identity goes to a separate cache file instead: re-pointing the login
+   * file's serverUrl would send that key to the other server on its next use
+   * (including the revoke on logout).
    */
   async saveIdentityCache(
     serverUrl: string,
@@ -167,16 +187,58 @@ export class AuthRepository {
       // No existing file
     }
 
-    const merged: AuthCredentials = {
+    const identity = {
       serverUrl,
-      apiKey: existing?.apiKey ?? "",
-      apiKeyId: existing?.apiKeyId ?? "",
       username,
       collectives,
       ...(scopes ? { scopes } : {}),
       apiKeyFingerprint: fingerprint,
     };
+
+    if (
+      existing?.apiKey &&
+      canonicalServerUrl(existing.serverUrl || DEFAULT_SWAMP_CLUB_URL) !==
+        canonicalServerUrl(serverUrl)
+    ) {
+      await Deno.mkdir(this.getConfigDir(), { recursive: true });
+      await atomicWriteTextFile(
+        this.getEnvIdentityCachePath(),
+        JSON.stringify(identity, null, 2) + "\n",
+        { mode: 0o600 },
+      );
+      return;
+    }
+
+    const merged: AuthCredentials = {
+      ...identity,
+      apiKey: existing?.apiKey ?? "",
+      apiKeyId: existing?.apiKeyId ?? "",
+    };
     await this.save(merged);
+  }
+
+  private getEnvIdentityCachePath(): string {
+    return join(this.getConfigDir(), "env_identity_cache.json");
+  }
+
+  /** Identity cached for an env key whose server differs from the login's. */
+  private async loadEnvIdentityCache(
+    serverUrl: string,
+    fingerprint: string,
+  ): Promise<AuthCredentials | undefined> {
+    try {
+      const content = await Deno.readTextFile(this.getEnvIdentityCachePath());
+      const cached = JSON.parse(content) as AuthCredentials;
+      if (
+        cached.apiKeyFingerprint === fingerprint && cached.serverUrl &&
+        canonicalServerUrl(cached.serverUrl) === canonicalServerUrl(serverUrl)
+      ) {
+        return cached;
+      }
+    } catch {
+      // No cache file
+    }
+    return undefined;
   }
 
   private getScopeCachePath(): string {
@@ -222,9 +284,15 @@ export class AuthRepository {
     return undefined;
   }
 
-  /** Delete stored auth credentials and scope cache. */
+  /** Delete stored auth credentials and the scope and identity caches. */
   async delete(): Promise<void> {
-    for (const path of [this.getAuthPath(), this.getScopeCachePath()]) {
+    for (
+      const path of [
+        this.getAuthPath(),
+        this.getScopeCachePath(),
+        this.getEnvIdentityCachePath(),
+      ]
+    ) {
       try {
         await Deno.remove(path);
       } catch (error) {

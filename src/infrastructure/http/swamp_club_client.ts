@@ -55,6 +55,24 @@ export interface RevokeCollectiveTokenResponse {
   token: CollectiveTokenMetadata;
 }
 
+/**
+ * The server's answer to a personal API key revoking itself:
+ * - `revoked`: the key was deleted.
+ * - `already_invalid` (401): the server no longer accepts the key (revoked,
+ *   expired, or never existed), so there is nothing left to revoke.
+ * - `not_personal_key` (403): the credential is not a personal API key, so it
+ *   cannot revoke itself.
+ * - `unsupported` (404): the server has no self-revoke endpoint.
+ */
+export type RevokePresentingApiKeyResult =
+  | { kind: "revoked"; id: string }
+  | { kind: "already_invalid" }
+  | { kind: "not_personal_key" }
+  | { kind: "unsupported" };
+
+/** Longest server response body echoed into an error message. */
+const MAX_ERROR_BODY_CHARS = 200;
+
 /** Response from BetterAuth sign-in endpoint. */
 export interface SignInResponse {
   token: string;
@@ -903,6 +921,94 @@ export class SwampClubClient {
     }
 
     return await res.json();
+  }
+
+  /**
+   * Revoke the personal API key that authenticates the request. The server
+   * derives the key id from the credential itself, so a key can only revoke
+   * itself. A 2xx counts as revoked only when its body confirms it; every
+   * answer that is not one of the result kinds throws UserError, so callers
+   * never mistake a failure for a revocation.
+   */
+  async revokePresentingApiKey(
+    apiKey: string,
+    signal?: AbortSignal,
+  ): Promise<RevokePresentingApiKeyResult> {
+    const res = await this.fetch(
+      "/api/v1/me/api-key",
+      {
+        method: "DELETE",
+        headers: {
+          "x-api-key": apiKey,
+        },
+      },
+      signal,
+    );
+
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (error) {
+      // Only the caller's own abort stays an AbortError (the fetch wrapper's rule).
+      if (
+        signal?.aborted && error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `Lost the connection to ${this.serverUrl} while reading its response: ${message}`,
+      );
+    }
+
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+    const fields = typeof data === "object" && data !== null
+      ? data as Record<string, unknown>
+      : {};
+
+    if (res.ok) {
+      if (fields.revoked === true) {
+        return {
+          kind: "revoked",
+          id: typeof fields.id === "string" ? fields.id : "",
+        };
+      }
+      throw new UserError(
+        `${this.serverUrl} answered HTTP ${res.status} without confirming the API key was revoked.`,
+      );
+    }
+    // 401 and 403 count only with the exact bodies swamp-club's route sends: a
+    // proxy or gateway can answer them on its own (or strip x-api-key) while
+    // the key is still valid, e.g. with {"error":"invalid_token"}.
+    if (res.status === 401) {
+      if (fields.error === "Unauthorized") return { kind: "already_invalid" };
+      throw new UserError(
+        `${this.serverUrl} answered HTTP 401 without a swamp-club error body, so it is unclear whether the API key is still valid.`,
+      );
+    }
+    if (
+      res.status === 403 &&
+      fields.error === "Only a personal API key can revoke itself"
+    ) {
+      return { kind: "not_personal_key" };
+    }
+    if (res.status === 404) return { kind: "unsupported" };
+
+    const flat = text.replace(/\s+/g, " ").trim();
+    const body = flat.length > MAX_ERROR_BODY_CHARS
+      ? `${flat.slice(0, MAX_ERROR_BODY_CHARS)}…`
+      : flat;
+    throw new UserError(
+      body
+        ? `${this.serverUrl} answered HTTP ${res.status}: ${body}`
+        : `${this.serverUrl} answered HTTP ${res.status}.`,
+    );
   }
 
   private async fetch(
