@@ -38,6 +38,9 @@ import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
 import { SecretRedactor } from "../../../secrets/mod.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
+import { Definition } from "../../../definitions/definition.ts";
+import { extractForeignTemplateFields } from "../../foreign_template_fields.ts";
+import { DefaultModelValidationService } from "../../validation_service.ts";
 
 /**
  * Skip on Windows. The matching `windowsOnlyTest` below covers the
@@ -340,6 +343,38 @@ Deno.test("shellModel has correct version", () => {
 
 Deno.test("shellModel.type equals SHELL_MODEL_TYPE", () => {
   assertEquals(shellModel.type.equals(SHELL_MODEL_TYPE), true);
+});
+
+// Foreign template text in run
+
+Deno.test("ShellInputAttributesSchema: run is declared foreign template text", () => {
+  assertEquals(extractForeignTemplateFields(ShellInputAttributesSchema), [
+    "run",
+  ]);
+});
+
+Deno.test("shellModel: validate accepts shell parameter expansion in run with no warning", async () => {
+  const definition = Definition.create({
+    name: "sh-env",
+    methods: { execute: { arguments: { run: 'echo "home is ${HOME}"' } } },
+  });
+  const { results, warnings } = await new DefaultModelValidationService()
+    .validateModel(definition, shellModel, createMockDefinitionRepo());
+  const expressionPaths = results.find((r) => r.name === "Expression paths");
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings, []);
+});
+
+Deno.test("shellModel: validate still checks ${{ }} expressions in run", async () => {
+  const definition = Definition.create({
+    name: "sh-env",
+    methods: { execute: { arguments: { run: "echo ${{my-vpc.VpcId}}" } } },
+  });
+  const { results } = await new DefaultModelValidationService()
+    .validateModel(definition, shellModel, createMockDefinitionRepo());
+  const expressionPaths = results.find((r) => r.name === "Expression paths");
+  assertEquals(expressionPaths?.passed, false);
+  assertStringIncludes(expressionPaths?.error ?? "", "my-vpc.VpcId");
 });
 
 // Input schema validation tests

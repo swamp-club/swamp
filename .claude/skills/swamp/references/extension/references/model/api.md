@@ -657,6 +657,28 @@ prefer `readModelData` for by-name reads.
 Type only the fields your method body actually uses — don't declare the full
 interface. See [typing.md](typing.md) for the complete typing guide.
 
+### Arguments Holding Another Service's Template Syntax
+
+`swamp model validate` (and every workflow step) checks `{{ ... }}` and
+`${ ... }` text. Text on a swamp root (`self`, `env`, `inputs`, `model`, `data`,
+...) is treated as a dropped `$` and fails, even when it belongs to a vendor
+(Datadog `{{env.name}}`, Terraform `${data.x.id}`). Other text warns. If a
+global or method argument carries a vendor's template language, mark the field
+so neither happens:
+
+```typescript
+const GlobalArgsSchema = z.object({
+  message: z.string().meta({ foreignTemplate: true }).describe("Alert body"),
+  query: z.string(), // still checked
+});
+```
+
+- Only the check is silenced: `${{ ... }}` in the field is still validated and
+  evaluated, and the method receives the vendor text unchanged.
+- Put `.meta()` on the field itself (wrapping it in `.optional()`, `.nullable()`
+  or `.default()` is fine), not before a `.transform()`.
+- Older swamp versions ignore the metadata, so no version gate is needed.
+
 ---
 
 ## CheckDefinition API

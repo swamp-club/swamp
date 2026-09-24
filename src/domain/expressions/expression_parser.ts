@@ -102,6 +102,18 @@ export function containsExpression(value: string): boolean {
 }
 
 /**
+ * Returns the `[start, end)` offsets of each `${{ ... }}` expression in a
+ * string, exactly as {@link extractExpressions} sees them: each expression
+ * ends at the first `}}`, even one inside a CEL string literal.
+ */
+export function expressionSpans(value: string): Array<[number, number]> {
+  return [...value.matchAll(EXPRESSION_PATTERN)].map((match) => [
+    match.index,
+    match.index + match[0].length,
+  ]);
+}
+
+/**
  * Checks if a value is or contains an expression.
  * Works recursively for arrays and objects.
  */

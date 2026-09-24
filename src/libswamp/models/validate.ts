@@ -25,6 +25,7 @@ import {
   type CheckValidationContext,
   DefaultModelValidationService,
   type EnvVarUsageDetail,
+  type ForeignTemplateDetail,
 } from "../../domain/models/validation_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -55,6 +56,8 @@ export interface ValidationWarningData {
   name: string;
   message: string;
   envVars?: EnvVarUsageDetail[];
+  /** Another service's template syntax, passed to the method unchanged. */
+  templates?: ForeignTemplateDetail[];
 }
 
 /** Validation result for a single model. */
@@ -97,6 +100,7 @@ interface ValidationWarningResult {
   name: string;
   message: string;
   envVars?: EnvVarUsageDetail[];
+  templates?: ForeignTemplateDetail[];
 }
 
 /** Dependencies for the model validate operation. */
@@ -193,6 +197,7 @@ export function createModelValidateDeps(
           name: w.name,
           message: w.message,
           envVars: w.details,
+          templates: w.templates,
         })),
       };
     },
@@ -218,6 +223,7 @@ function toValidationWarningData(
     name: w.name,
     message: w.message,
     envVars: w.envVars,
+    templates: w.templates,
   }));
 }
 

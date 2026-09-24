@@ -3551,6 +3551,59 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name:
+    "DefaultStepExecutor: another service's template syntax reaches the method unchanged (swamp-club#2424)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const received = await runDefinitionStep(
+      {
+        name: "dd-monitor",
+        globalArguments: { target: "bitbison crashed on {{host.name}}" },
+        methods: {
+          execute: {
+            arguments: {
+              value: "{{#is_alert}}crashed on {{host.name}}{{/is_alert}}",
+            },
+          },
+        },
+      },
+      "execute",
+      undefined,
+      {},
+    );
+    assertEquals(received, [{
+      value: "{{#is_alert}}crashed on {{host.name}}{{/is_alert}}",
+    }]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a dropped $ on a swamp expression still fails the step",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const error = await assertRejects(() =>
+      runDefinitionStep(
+        {
+          name: "dd-monitor",
+          methods: { execute: { arguments: { value: "{{self.name}}" } } },
+        },
+        "execute",
+        undefined,
+        {},
+      )
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      'Model validation failed for "dd-monitor"',
+    );
+    assertStringIncludes((error as Error).message, "{{self.name}}");
+  },
+});
+
 // --- forEach.in async helper resolution (Issue #88) ---
 
 Deno.test({
