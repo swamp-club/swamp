@@ -206,6 +206,7 @@ export async function createWorkflowRunDeps(
         resolvePulledExtensionsRoot(dir),
         repoContext.hydrateFile,
         undefined,
+        resolver,
       );
     },
     catalogStore: repoContext.catalogStore,

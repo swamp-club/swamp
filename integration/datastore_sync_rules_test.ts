@@ -273,3 +273,120 @@ Deno.test("commands that take model locks and cancel on Ctrl-C must suppress the
       "status for its run after an abort, then pin it here.",
   );
 });
+
+/**
+ * Top-level argument lists of every `new <className>(...)` in `code`, with
+ * `//` and block-comment lines removed first.
+ */
+function constructorArgs(code: string, className: string): string[][] {
+  const source = code
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+    .join("\n");
+  const marker = `new ${className}(`;
+  const calls: string[][] = [];
+  let from = source.indexOf(marker);
+  while (from !== -1) {
+    const args: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (let i = from + marker.length; i < source.length; i++) {
+      const ch = source[i];
+      if (depth === 0 && ch === ")") break;
+      if (depth === 0 && ch === ",") {
+        args.push(current.trim());
+        current = "";
+        continue;
+      }
+      if ("([{".includes(ch)) depth++;
+      if (")]}".includes(ch)) depth--;
+      current += ch;
+    }
+    if (current.trim() !== "") args.push(current.trim());
+    calls.push(args);
+    from = source.indexOf(marker, from + marker.length);
+  }
+  return calls;
+}
+
+// Outputs, evaluated definitions and evaluated workflows are datastore-tier.
+// A repository built with only repoDir (or an undefined base dir) writes to
+// the repo-local .swamp/ instead, where readers built by the repository
+// factory never look and sync never pushes (swamp-club#2381). Resolve the
+// base dir through the DatastorePathResolver, as repository_factory.ts does.
+const DATASTORE_TIER_REPOS = [
+  "YamlOutputRepository",
+  "YamlEvaluatedDefinitionRepository",
+  "YamlEvaluatedWorkflowRepository",
+];
+
+Deno.test("datastore-tier repos must be built with a resolved base dir (swamp-club#2381)", async () => {
+  const violations: string[] = [];
+  for await (
+    const entry of walk(SRC_DIR, { exts: [".ts"], skip: [/_test\.ts$/] })
+  ) {
+    const code = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+    for (const className of DATASTORE_TIER_REPOS) {
+      for (const args of constructorArgs(code, className)) {
+        if (args.length < 2 || args[1] === "undefined") {
+          violations.push(`${rel}: new ${className}(${args.join(", ")})`);
+        }
+      }
+    }
+  }
+
+  assertEquals(
+    violations,
+    [],
+    "These constructions default a datastore-tier repository to the " +
+      "repo-local .swamp/. Pass the base dir from " +
+      "datastoreResolver.resolvePath(SWAMP_SUBDIRS.<subdir>) " +
+      "(swamp-club#2381).\n\nViolations:\n" + violations.join("\n"),
+  );
+});
+
+// A YamlDefinitionRepository built with only a repo dir reads
+// auto-definitions from the repo-local .swamp/, but auto-definitions are
+// datastore-tier. Workflow execution was fixed in swamp-club#2381; the files
+// below are the remaining sites (swamp-club#2382). The list may only shrink.
+const PINNED_REPO_LOCAL_AUTO_DEFINITION_READERS: readonly string[] = [
+  "src/cli/completion_types.ts",
+  "src/libswamp/data/rename.ts",
+  "src/libswamp/data/versions.ts",
+  "src/libswamp/models/doctor_secrets.ts",
+  "src/libswamp/models/doctor_vaults.ts",
+  "src/libswamp/models/edit.ts",
+  "src/libswamp/models/evaluate.ts",
+  "src/libswamp/models/get.ts",
+  "src/libswamp/models/method_describe.ts",
+  "src/libswamp/models/method_history_logs.ts",
+  "src/libswamp/models/output_data.ts",
+  "src/libswamp/models/output_get.ts",
+  "src/libswamp/models/validate.ts",
+  "src/libswamp/reports/search.ts",
+  "src/libswamp/workflows/evaluate.ts",
+];
+
+Deno.test("repo-local auto-definition readers are pinned (swamp-club#2381, swamp-club#2382)", async () => {
+  const files = new Set<string>();
+  for await (
+    const entry of walk(SRC_DIR, { exts: [".ts"], skip: [/_test\.ts$/] })
+  ) {
+    const code = await Deno.readTextFile(entry.path);
+    const calls = constructorArgs(code, "YamlDefinitionRepository");
+    if (calls.some((args) => args.length === 1)) {
+      files.add(normalise(relative(ROOT, entry.path)));
+    }
+  }
+
+  assertPinnedSet(
+    [...files].sort(),
+    PINNED_REPO_LOCAL_AUTO_DEFINITION_READERS,
+    "Files building a YamlDefinitionRepository from the repo dir alone",
+    "A new YamlDefinitionRepository reads auto-definitions from the\n" +
+      "repo-local .swamp/. Pass datastoreResolver.resolvePath(\n" +
+      "SWAMP_SUBDIRS.autoDefinitions) as the fourth argument, as\n" +
+      "repository_factory.ts does, or inject the repository context's repo.",
+  );
+});

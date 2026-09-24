@@ -44,6 +44,7 @@ import type { WorkflowApprovalsResponse } from "../../serve/protocol.ts";
 import type { WorkflowRunId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -160,7 +161,7 @@ export const workflowApprovalsCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig } =
+  const { repoDir, repoContext, datastoreConfig, datastoreResolver } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -168,7 +169,10 @@ export const workflowApprovalsCommand = withRemoteOptions(
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const runRepo = repoContext.workflowRunRepo;
-  const evaluatedRepo = new YamlEvaluatedWorkflowRepository(repoDir);
+  const evaluatedRepo = new YamlEvaluatedWorkflowRepository(
+    repoDir,
+    datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+  );
   const deps = createWorkflowApprovalsDeps(
     repoContext.workflowRepo,
     runRepo,

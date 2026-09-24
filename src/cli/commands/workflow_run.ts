@@ -452,6 +452,7 @@ export const workflowRunCommand = new Command()
             resolvePulledExtensionsRoot(dir),
             repoContext.hydrateFile,
             unlocked.vaultsDir,
+            unlocked.datastoreResolver,
           );
         },
         catalogStore: repoContext.catalogStore,

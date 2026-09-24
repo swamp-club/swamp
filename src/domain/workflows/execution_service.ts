@@ -54,6 +54,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
+import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
@@ -411,6 +412,12 @@ export interface StepExecutionContext {
   initiatedBy?: string;
   /** Resolved base directory for data storage (S3 cache path) */
   dataBaseDir?: string;
+  /**
+   * Resolves the datastore-tier subdirs (outputs, evaluated definitions,
+   * auto-definitions) the step's repositories read and write. Unset keeps
+   * them under the repo-local `.swamp/`.
+   */
+  datastoreResolver?: DatastorePathResolver;
   /** Catalog store for write-through indexing */
   catalogStore: CatalogStore;
   /**
@@ -594,6 +601,7 @@ export class DefaultStepExecutor implements StepExecutor {
     repoDir: string,
     opts: {
       dataBaseDir?: string;
+      datastoreResolver?: DatastorePathResolver;
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
       hydrateFile?: HydrateFileHook;
@@ -617,6 +625,7 @@ export class DefaultStepExecutor implements StepExecutor {
     if (this.injectedDeps) return this.injectedDeps;
     const deps = await DefaultStepExecutor.buildDeps(ctx.repoDir, {
       dataBaseDir: ctx.dataBaseDir,
+      datastoreResolver: ctx.datastoreResolver,
       catalogStore: ctx.catalogStore,
       markDirty: this.markDirty,
       hydrateFile: this.hydrateFile,
@@ -638,6 +647,7 @@ export class DefaultStepExecutor implements StepExecutor {
     repoDir: string,
     opts: {
       dataBaseDir?: string;
+      datastoreResolver?: DatastorePathResolver;
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
       hydrateFile?: HydrateFileHook;
@@ -647,7 +657,17 @@ export class DefaultStepExecutor implements StepExecutor {
       ephemeralCatalog?: CatalogStore;
     },
   ): Promise<StepExecutorDeps> {
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    // Datastore-tier subdirs resolve through the datastore path resolver,
+    // as the repository factory does; without one they stay repo-local.
+    const dsPath = (subdir: string): string | undefined =>
+      opts.datastoreResolver?.resolvePath(subdir);
+    const definitionRepo = new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      undefined,
+      dsPath(SWAMP_SUBDIRS.autoDefinitions),
+      opts.markDirty,
+    );
     const fsDataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       opts.dataBaseDir,
@@ -675,10 +695,14 @@ export class DefaultStepExecutor implements StepExecutor {
       definitionRepo,
       unifiedDataRepo,
       dataQueryService,
-      outputRepo: new YamlOutputRepository(repoDir, undefined, opts.markDirty),
+      outputRepo: new YamlOutputRepository(
+        repoDir,
+        dsPath(SWAMP_SUBDIRS.outputs),
+        opts.markDirty,
+      ),
       evaluatedDefRepo: new YamlEvaluatedDefinitionRepository(
         repoDir,
-        undefined,
+        dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
         opts.markDirty,
       ),
       methodExecutionService: new DefaultMethodExecutionService(),
@@ -1871,6 +1895,7 @@ export class WorkflowExecutionService {
   private readonly executor: StepExecutor;
   private readonly definitionRepo: YamlDefinitionRepository;
   private readonly evaluatedDefRepo: YamlEvaluatedDefinitionRepository;
+  private readonly evaluatedWorkflowRepo: YamlEvaluatedWorkflowRepository;
   private readonly modelResolver: ModelResolver;
   private readonly dataRepo: UnifiedDataRepository;
   private readonly dataBaseDir?: string;
@@ -1899,6 +1924,7 @@ export class WorkflowExecutionService {
     private readonly pulledExtensionsRoot?: string,
     private readonly hydrateFile?: HydrateFileHook,
     private readonly vaultsDir?: string,
+    private readonly datastoreResolver?: DatastorePathResolver,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -1910,10 +1936,25 @@ export class WorkflowExecutionService {
       );
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
-    this.definitionRepo = new YamlDefinitionRepository(repoDir);
-    this.evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(
+    // Datastore-tier subdirs resolve through the datastore path resolver,
+    // as the repository factory does; without one they stay repo-local.
+    const dsPath = (subdir: string): string | undefined =>
+      datastoreResolver?.resolvePath(subdir);
+    this.definitionRepo = new YamlDefinitionRepository(
       repoDir,
       undefined,
+      undefined,
+      dsPath(SWAMP_SUBDIRS.autoDefinitions),
+      markDirty,
+    );
+    this.evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(
+      repoDir,
+      dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
+      markDirty,
+    );
+    this.evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+      repoDir,
+      dsPath(SWAMP_SUBDIRS.workflowsEvaluated),
       markDirty,
     );
     const fsDataRepo = new FileSystemUnifiedDataRepository(
@@ -2032,10 +2073,7 @@ export class WorkflowExecutionService {
 
         if (options?.lastEvaluated) {
           // Load previously evaluated workflow from cache
-          const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-            this.repoDir,
-          );
-          const lastEvaluated = await evaluatedWorkflowRepo
+          const lastEvaluated = await this.evaluatedWorkflowRepo
             .findByNameWithProvenance(workflow.name);
           if (!lastEvaluated) {
             throw new UserError(
@@ -2090,10 +2128,7 @@ export class WorkflowExecutionService {
             expressionContext,
             authoredExpressions,
           );
-          const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-            this.repoDir,
-          );
-          await evaluatedWorkflowRepo.save(
+          await this.evaluatedWorkflowRepo.save(
             workflow,
             authoredExpressions,
             deferredExpressions,
@@ -2162,8 +2197,7 @@ export class WorkflowExecutionService {
 
         // Capture the evaluated workflow fingerprint for recovery
         if (evaluatedWorkflowFingerprint) {
-          const evalRepo = new YamlEvaluatedWorkflowRepository(this.repoDir);
-          await evalRepo.saveForRun(run.id, workflow);
+          await this.evaluatedWorkflowRepo.saveForRun(run.id, workflow);
           run.captureRunPlan(
             evaluatedWorkflowFingerprint,
             run.id,
@@ -3706,6 +3740,7 @@ export class WorkflowExecutionService {
           skipAllChecks: options.skipAllChecks,
           initiatedBy: options.initiatedBy,
           dataBaseDir: this.dataBaseDir,
+          datastoreResolver: this.datastoreResolver,
           catalogStore: this.catalogStore,
           namespace: this.namespace,
           vaultsDir: this.vaultsDir,
@@ -4080,6 +4115,7 @@ export class WorkflowExecutionService {
       this.pulledExtensionsRoot,
       this.hydrateFile,
       this.vaultsDir,
+      this.datastoreResolver,
     );
 
     let childRun: WorkflowRun | undefined;
@@ -4190,6 +4226,7 @@ export class WorkflowExecutionService {
           expressionContext: stepExprContext,
           catalogStore: this.catalogStore,
           dataBaseDir: this.dataBaseDir,
+          datastoreResolver: this.datastoreResolver,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
           authoredExpressions: options.authoredExpressions,
