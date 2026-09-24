@@ -47,20 +47,23 @@ resuming again.
 
 Resume uses the current workflow file. If it was edited during the approval
 window in a way the resume would walk into (a step added or moved into a job the
-resume re-runs, a pending step moved to another job, or a job renamed or added),
-resume refuses before anything changes and the run stays suspended; clear it
-with `swamp workflow cancel <wf> --run <id>` (the refusal prints it) and start a
-new run. Removing a step or job, and narrowing a `forEach` through `--input`,
-still work. Approve and reject are not checked. Names written with an expression
-are not checked, so a step added with one still fails with `Step run not found`.
+resume re-runs, a pending step moved to another job, a pending job removed, or a
+job renamed or added), resume refuses before anything changes and the run stays
+suspended. The refusal starts with the way out:
+`swamp workflow cancel <wf> --run <id>`, then start a new run. A run started by
+`swamp serve` cannot be cancelled while suspended, so for one of those the
+refusal says to revert the change and resume. Removing a step, and narrowing a
+`forEach` through `--input`, still work. Approve and reject are not checked.
+Names written with an expression are not checked, so a step added with one still
+fails with `Step run not found`.
 
 Under `swamp serve`, a workflow with `autoResume: true` resumes without that
 second invocation. Serve launches the resume once an approval made through serve
 decides the last gate. `--auto-resume` does the same for workflows that declare
 no inputs. An automatic resume supplies no inputs. If it fails to start, the run
-stays suspended and needs a manual resume, or a cancel when the workflow changed
-shape. The dashboard lists approved-but-suspended runs with a Resume action and
-the equivalent CLI command.
+stays suspended and needs a manual resume, or, when the workflow changed shape,
+a cancel or a revert of the change. The dashboard lists approved-but-suspended
+runs with a Resume action and the equivalent CLI command.
 
 ### Retry the Failed Steps of a Failed Run
 

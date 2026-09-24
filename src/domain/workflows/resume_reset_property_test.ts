@@ -398,8 +398,15 @@ Deno.test("checkSuspendedRunResume: always refuses an unfinished step moved to a
       );
       fc.pre(candidates.length > 0);
       const victim = candidates[pick % candidates.length];
+      const step = c.jobs[victim.job].steps.find((s) =>
+        s.name === victim.name
+      )!;
+      // A job that has started may hold no record of a forEach step it
+      // already had, so the check lets a forEach step moved there through.
       const others = c.jobs.map((_, i) => i).filter((i) =>
-        i !== victim.job && !c.jobs[i].steps.some((s) => s.name === victim.name)
+        i !== victim.job &&
+        !c.jobs[i].steps.some((s) => s.name === victim.name) &&
+        (!step.forEach || i > c.gateJob)
       );
       fc.pre(others.length > 0);
       const to = others[target % others.length];
@@ -409,14 +416,11 @@ Deno.test("checkSuspendedRunResume: always refuses an unfinished step moved to a
           i !== victim.job || s.name !== victim.name
         ),
       }));
-      const step = c.jobs[victim.job].steps.find((s) =>
-        s.name === victim.name
-      )!;
       moved[to].steps.push({ ...step, dependsOn: undefined });
       assertThrows(
         () => checkSuspendedRunResume(buildWorkflow(moved), run),
         UserError,
-        "To cancel: 'swamp workflow cancel property-wf",
+        "To cancel it: 'swamp workflow cancel property-wf",
       );
     }),
   );

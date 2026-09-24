@@ -169,9 +169,9 @@ steps:
    on an approved run sends the same `workflow.resume` request, with no new
    inputs (like a CLI resume without `--input`). If the workflow was edited
    while the run was suspended, in a way the resume would walk into, resume
-   refuses before anything changes and names the `workflow cancel` command
-   (see the [structure check](#resume-from-failed-step---from) for suspended
-   runs). Approve and reject are not checked, so a gate can still be decided.
+   refuses before anything changes and says how to clear the run (see the
+   [structure check](#resume-from-failed-step---from) for suspended runs).
+   Approve and reject are not checked, so a gate can still be decided.
 
 **Auto-resume.** Approve and resume are separate so that resume can take
 inputs. Most gated workflows need none, so serve can continue the run itself.
@@ -201,8 +201,8 @@ serve logs and audits `workflow.auto_resume_failed`, and the run stays
 `suspended`, awaiting resume. The same happens if two sibling gates are
 approved concurrently and neither approval sees the other. A launch refused
 because the workflow changed shape since the run is refused before it is
-registered or charged, and a manual resume is refused the same way, so that
-run has to be cancelled.
+registered or charged, and a manual resume is refused the same way: that run
+has to be cancelled, or, when serve started it, the change reverted.
 
 Auto-resume needs the approval to go through serve (the dashboard, or
 `swamp workflow approve --server`). A local `swamp workflow approve` on the
@@ -372,8 +372,8 @@ started) is not reported; the run is recorded as cancelled instead.
   added step, or a renamed or added job. It does not detect a changed step body
   or prove that stored results are still valid. If an input change affects
   earlier work, use `--from` or start a new run. A suspended resume refuses the
-  same kinds of change, and a moved pending step, and leaves the run suspended
-  for `workflow cancel`.
+  same kinds of change, a moved pending step and a removed pending job, and
+  leaves the run suspended.
 - **`forEach` collections must stay stable.** Item identity is not kept across
   collection changes. An iteration that a failed-run resume reset and the new
   collection drops fails as a stranded step. Use a new run for a changed
@@ -476,23 +476,41 @@ suspended run refuses when (a) or (b) above holds, or when:
   job (for an iteration, its `forEachTemplate` as a `forEach` step), and another
   job of the current workflow has that step with no record of it: the step
   moved, and its record would stay `pending` while the run reported success. A
-  `forEach` step that is now a plain step is refused too.
+  `forEach` step that is now a plain step is refused too;
+- (d) an unfinished job is no longer in the workflow. Resume never walks it, so
+  the run would end `failed` with no failed step.
 
 Step names are unique only within a job, so a step cannot move into a job that
 already has one of that name: a record whose step another job already had was
-removed, not moved. The refusal names the command that clears the run, which
-stays suspended: `To cancel: 'swamp workflow cancel <wf> --run <id>'.` It runs
-in `resolveResumableRun` (the CLI, serve's `workflow.resume` and auto-resume,
-before the run is registered or charged) and again in `resume()`. It is
-`checkSuspendedRunResume` in `src/domain/workflows/resume_reset.ts`. `approve`
-and `reject` resolve through `resolveSuspendedRun`, which does not check.
+removed, not moved. A `forEach` step can leave no record of itself (an empty
+expansion removes its template record, and `--last-evaluated` or older runs
+store iterations without `forEachTemplate`), so once the other job has started,
+or it holds records named like iterations, the step counts as already there.
 
-The suspended check leaves alone: a removed step or job, whose unfinished
-records stay `pending` while the run completes, as before; iterations whose
-template is still a `forEach` step of their job, whatever the collection now
-evaluates to, so narrowing it through `--input` keeps working; records with no
-`forEachTemplate`, from `--last-evaluated` or older runs; a step added to a
-finished job, which resume never walks; and job and step names written with an
+The refusal leaves the run suspended. It starts with the way out, so serve's
+200-character error limit cuts the job and step detail rather than the command:
+
+```
+The workflow changed shape since the run started. To cancel it: 'swamp workflow cancel <wf> --run <id>'. Step "lint" in job "main" is not in the run.
+```
+
+A run started by `swamp serve` (it records an
+`instanceId`) cannot be cancelled while suspended: a local cancel refuses a
+serve-owned run, serve's cancel finds only runs it is driving, and supersede
+skips serve-owned runs. For such a run the refusal says to revert the change to
+resume it instead. The check runs in `resolveResumableRun` (the CLI, serve's
+`workflow.resume` and auto-resume, before the run is registered or charged) and
+again in `resume()`. It is `checkSuspendedRunResume` in
+`src/domain/workflows/resume_reset.ts`. `approve` and `reject` resolve through
+`resolveSuspendedRun`, which does not check.
+
+The suspended check leaves alone: a removed step, whose unfinished records stay
+`pending` while the run completes, as before; a removed finished job;
+iterations whose template is still a `forEach` step of their job, whatever the
+collection now evaluates to, so narrowing it through `--input` keeps working;
+records with no `forEachTemplate`, from `--last-evaluated` or older runs; a
+step added to a finished job, which resume never walks; a `forEach` step moved
+into a job that has started; and job and step names written with an
 expression. So a step added with an expression in its name, or to a job named
 with one, still crashes mid-run with `Step run not found`, as it does for a
 failed run. Unlike the failed-run check, it lets through a step removed from
@@ -1343,7 +1361,8 @@ handled the same way. Runs started with `--last-evaluated` record no run plan,
 and recovery skips the check for them. For such a run, the resume that
 `workflow recover` prints still runs the suspended-run
 [structure check](#resume-from-failed-step---from). If the workflow changed
-shape, that resume refuses and the run, now `suspended`, has to be cancelled.
+shape, that resume refuses and the run, now `suspended`, has to be cancelled,
+or the change reverted when serve started it.
 Recover itself does not run the check: an interrupted run cannot be cancelled,
 and `recover --assess-only` would disagree with it.
 

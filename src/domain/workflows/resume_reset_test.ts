@@ -701,6 +701,10 @@ function suspendedRun(wf: Workflow): WorkflowRun {
   return run;
 }
 
+/**
+ * Asserts that the check refuses `run` without changing it, and that serve's
+ * 200-character error limit keeps the whole way out.
+ */
 function suspendedRefusal(wf: Workflow, run: WorkflowRun): string {
   const before = JSON.stringify(run.toData());
   try {
@@ -708,14 +712,13 @@ function suspendedRefusal(wf: Workflow, run: WorkflowRun): string {
   } catch (error) {
     assert(error instanceof UserError, `expected UserError, got ${error}`);
     assertEquals(JSON.stringify(run.toData()), before, "run was mutated");
-    assert(
-      error.message.length <= MAX_CLIENT_ERROR_LENGTH,
-      `message is ${error.message.length} characters: ${error.message}`,
-    );
     assert(!ABSOLUTE_PATH.test(error.message), error.message);
+    const wayOut = run.instanceId !== undefined
+      ? "Revert the change to resume it: a suspended run started by swamp serve cannot be cancelled yet."
+      : `To cancel it: 'swamp workflow cancel ${wf.name} --run ${run.id}'.`;
     assertStringIncludes(
-      error.message,
-      `To cancel: 'swamp workflow cancel ${wf.name} --run ${run.id}'.`,
+      error.message.slice(0, MAX_CLIENT_ERROR_LENGTH),
+      `The workflow changed shape since the run started. ${wayOut}`,
     );
     return error.message;
   }
@@ -985,7 +988,7 @@ Deno.test("checkSuspendedRunResume: an added step named like one kept in another
   );
 });
 
-Deno.test("checkSuspendedRunResume: accepts a removed unfinished job", () => {
+Deno.test("checkSuspendedRunResume: refuses a removed unfinished job, which would end the run failed", () => {
   const removed = workflow([
     {
       name: "main",
@@ -997,7 +1000,131 @@ Deno.test("checkSuspendedRunResume: accepts a removed unfinished job", () => {
       ],
     },
   ]);
-  checkSuspendedRunResume(removed, suspendedRun(gatedBefore()));
+  assertStringIncludes(
+    suspendedRefusal(removed, suspendedRun(gatedBefore())),
+    `Job "post" is in the run but not in the workflow.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: accepts a removed finished job, which resume does not walk", () => {
+  const before = workflow([
+    { name: "pre", steps: [plain("check")] },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+  const run = suspendedRun(before);
+  run.getJob("pre")!.getStep("check")!.succeed();
+  run.getJob("pre")!.succeed();
+  const removed = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+  checkSuspendedRunResume(removed, run);
+});
+
+Deno.test("checkSuspendedRunResume: tells a run started by swamp serve to revert the change", () => {
+  // swamp serve cannot cancel a suspended run it started, and a local cancel
+  // refuses one, so the cancel command would not work for it.
+  const wf = gatedBefore();
+  const run = WorkflowRun.create(wf);
+  run.start(1234, crypto.randomUUID());
+  const main = run.getJob("main")!;
+  main.start();
+  main.getStep("prep")!.succeed();
+  main.getStep("gate")!.succeed();
+  run.suspend();
+  const added = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+        plain("lint", ["gate"]),
+      ],
+    },
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+  const message = suspendedRefusal(added, run);
+  assert(!message.includes("swamp workflow cancel"), message);
+});
+
+/**
+ * main: prep → gate → notify (pending); post: a forEach step also named
+ * notify, whose stored records cannot show that post had it.
+ */
+function forEachNamedLikeRemoval(
+  post: { status: "pending" | "running"; steps: string[] },
+): { run: WorkflowRun; removed: Workflow } {
+  const before = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("notify", ["gate"]),
+      ],
+    },
+    { name: "post", steps: [each("notify")], dependsOn: ["main"] },
+  ]);
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: before.id,
+    workflowName: before.name,
+    status: "suspended",
+    jobs: [
+      {
+        jobName: "main",
+        status: "running",
+        steps: [
+          { stepName: "prep", status: "succeeded" },
+          { stepName: "gate", status: "succeeded" },
+          { stepName: "notify", status: "pending" },
+        ],
+      },
+      {
+        jobName: "post",
+        status: post.status,
+        steps: post.steps.map((stepName) => ({ stepName, status: "pending" })),
+      },
+    ],
+  });
+  const removed = workflow([
+    { name: "main", steps: [plain("prep"), plain("gate", ["prep"])] },
+    { name: "post", steps: [each("notify")], dependsOn: ["main"] },
+  ]);
+  return { run, removed };
+}
+
+Deno.test("checkSuspendedRunResume: accepts a removal when another job's forEach step of that name stored iterations without a template", () => {
+  // --last-evaluated and older runs store iterations with no forEachTemplate.
+  const { run, removed } = forEachNamedLikeRemoval({
+    status: "pending",
+    steps: ["notify-a", "notify-b"],
+  });
+  checkSuspendedRunResume(removed, run);
+});
+
+Deno.test("checkSuspendedRunResume: accepts a removal when another job's forEach step of that name expanded to nothing", () => {
+  // An empty expansion removes the template record once the job starts.
+  const { run, removed } = forEachNamedLikeRemoval({
+    status: "running",
+    steps: [],
+  });
+  checkSuspendedRunResume(removed, run);
 });
 
 Deno.test("checkSuspendedRunResume: accepts a step added to a finished job, which resume does not walk", () => {
@@ -1119,16 +1246,14 @@ Deno.test("checkSuspendedRunResume: accepts a run that suspended again at a gate
   checkSuspendedRunResume(wf, run);
 });
 
-Deno.test("checkSuspendedRunResume: refusals stay within the serve limit for long names", () => {
-  // Names serve refusals must fit: 16 characters each, including the
-  // workflow name in the cancel command, and a UUID run id.
-  const long = (prefix: string) =>
-    `${prefix}-${"a".repeat(15 - prefix.length)}`;
-  const [name, main, post, notify] = [
-    long("workflow"),
-    long("main"),
-    long("post"),
-    long("notify"),
+Deno.test("checkSuspendedRunResume: serve's error limit keeps the way out for realistic names", () => {
+  // Serve cuts errors at 200 characters, so the way out comes first. These
+  // names make the whole message longer than that.
+  const name = "deploy-production-infrastructure";
+  const [main, post, notify] = [
+    "deploy-production",
+    "post-deploy",
+    "notify-slack-channel",
   ];
   const before = workflow([
     {
@@ -1150,8 +1275,10 @@ Deno.test("checkSuspendedRunResume: refusals stay within the serve limit for lon
       dependsOn: [main],
     },
   ], name);
+  const message = suspendedRefusal(moved, run);
+  assert(message.length > MAX_CLIENT_ERROR_LENGTH, message);
   assertStringIncludes(
-    suspendedRefusal(moved, run),
+    message,
     `Step "${notify}" is in job "${main}" in the run, job "${post}" in the workflow.`,
   );
 });

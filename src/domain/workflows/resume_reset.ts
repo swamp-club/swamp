@@ -33,6 +33,7 @@
 
 import { UserError } from "../errors.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
+import type { Job } from "./job.ts";
 import type { Workflow } from "./workflow.ts";
 import type { JobRun, StepRunRef, WorkflowRun } from "./workflow_run.ts";
 
@@ -300,11 +301,31 @@ function missingStep(
   return undefined;
 }
 
-/** Whether a stored job has a record of `name`, or iterations of it. */
-function recordsStep(jobRun: JobRun | undefined, name: string): boolean {
-  return jobRun?.steps.some((s) =>
-    s.stepName === name || s.forEachTemplate === name
-  ) ?? false;
+/**
+ * Whether a stored job already had the step `name` of `job`: a record of that
+ * name, or iterations of it. A forEach step can leave neither (an empty
+ * expansion removes its template record, and `--last-evaluated` or older runs
+ * store iterations without `forEachTemplate`), so once the job has started,
+ * or it holds records named like iterations, that cannot be ruled out and the
+ * step counts as recorded.
+ */
+function recordsStep(
+  jobRun: JobRun | undefined,
+  job: Job,
+  name: string,
+): boolean {
+  if (!jobRun) return false;
+  if (
+    jobRun.steps.some((s) => s.stepName === name || s.forEachTemplate === name)
+  ) {
+    return true;
+  }
+  if (job.getStep(name)?.forEach === undefined) return false;
+  return jobRun.status !== "pending" ||
+    jobRun.steps.some((s) =>
+      s.forEachTemplate === undefined && s.stepName.startsWith(`${name}-`) &&
+      !job.getStep(s.stepName)
+    );
 }
 
 /**
@@ -339,12 +360,40 @@ function movedUnfinishedStep(
       // evaluated and cannot be compared.
       const now = workflow.jobs.find((j) =>
         !evaluated(j.name) && j.getStep(name) &&
-        !recordsStep(run.getJob(j.name), name)
+        !recordsStep(run.getJob(j.name), j, name)
       );
       if (now) return moved(name, jobRun.jobName, now.name);
     }
   }
   return undefined;
+}
+
+/**
+ * Rule (d) for a suspended run: resume never walks an unfinished job the
+ * workflow no longer has, so the run would end failed with no failed step.
+ */
+function removedUnfinishedJob(
+  workflow: Workflow,
+  run: WorkflowRun,
+): string | undefined {
+  if (workflow.jobs.some((j) => evaluated(j.name))) return undefined;
+  const job = run.jobs.find((j) =>
+    !FINISHED_STATUSES.has(j.status) && !workflow.getJob(j.jobName)
+  );
+  return job
+    ? `Job "${job.jobName}" is in the run but not in the workflow.`
+    : undefined;
+}
+
+/**
+ * How to clear a suspended run a resume refused. `swamp serve` cancels only
+ * runs it is driving, and a local cancel refuses a run serve started, so for
+ * such a run the way out is to revert the edit and resume.
+ */
+function suspendedWayOut(workflow: Workflow, run: WorkflowRun): string {
+  return run.instanceId !== undefined
+    ? "Revert the change to resume it: a suspended run started by swamp serve cannot be cancelled yet."
+    : `To cancel it: 'swamp workflow cancel ${workflow.name} --run ${run.id}'.`;
 }
 
 /**
@@ -448,9 +497,10 @@ export function planFailedRunResume(
 
 /**
  * Checks, before anything changes, that a suspended run can be resumed
- * against the current workflow. Throws a UserError that names the job or
- * step and the command that cancels the run, which stays suspended. Mutates
- * nothing.
+ * against the current workflow. Throws a UserError that says how to clear
+ * the run, which stays suspended, then names the job or step. The way out
+ * comes first so serve's 200-character error limit cuts the detail, not the
+ * command. Mutates nothing.
  *
  * A suspended run has no reset set: resume re-enters every unfinished job.
  * The structure check refuses when:
@@ -459,13 +509,15 @@ export function planFailedRunResume(
  *   own job (for an iteration, its `forEachTemplate` as a forEach step), and
  *   another job has the step with no record of it (a moved step), or its
  *   forEach step is no longer a forEach step;
+ * - (d) an unfinished job is no longer in the workflow;
  * - (b) a re-entered job has a step, other than a forEach template, with no
  *   record in that stored job.
  *
  * It leaves alone: an unfinished record whose step no other job has, or one
  * another job already had (a removed step, which stays pending while the run
- * completes); iterations whose template is still a forEach step of their
- * job, whatever the collection now evaluates to; records with no
+ * completes); a forEach step whose stored records cannot show whether another
+ * job already had it; iterations whose template is still a forEach step of
+ * their job, whatever the collection now evaluates to; records with no
  * `forEachTemplate`, from `--last-evaluated` or older runs, which match no
  * step by name; job and step names written with an expression; and finished
  * jobs, which resume does not walk. Unlike {@link planFailedRunResume}, it
@@ -478,6 +530,7 @@ export function checkSuspendedRunResume(
 ): void {
   const problem = missingJob(workflow, run) ??
     movedUnfinishedStep(workflow, run) ??
+    removedUnfinishedJob(workflow, run) ??
     missingStep(
       workflow,
       run,
@@ -485,7 +538,9 @@ export function checkSuspendedRunResume(
     );
   if (problem !== undefined) {
     throw new UserError(
-      `${problem} To cancel: 'swamp workflow cancel ${workflow.name} --run ${run.id}'.`,
+      `The workflow changed shape since the run started. ${
+        suspendedWayOut(workflow, run)
+      } ${problem}`,
     );
   }
 }

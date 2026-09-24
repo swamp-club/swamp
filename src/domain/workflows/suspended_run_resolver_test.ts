@@ -483,8 +483,9 @@ for (
           options,
         ),
       Error,
-      `Step "t" in job "j" is not in the run. ` +
-        `To cancel: 'swamp workflow cancel test-wf --run ${run.id}'.`,
+      `The workflow changed shape since the run started. ` +
+        `To cancel it: 'swamp workflow cancel test-wf --run ${run.id}'. ` +
+        `Step "t" in job "j" is not in the run.`,
     );
     assertEquals(JSON.stringify(run.toData()), before);
   });

@@ -484,13 +484,31 @@ function makeEditedWorkflow(opts: { autoResume?: boolean } = {}): Workflow {
   });
 }
 
-for (const suspendedOnly of [false, true]) {
+/**
+ * The approved run of {@link makeApprovedRun}, started by a serve instance
+ * as runs from the dashboard, `--server` and webhooks are.
+ */
+function makeServeOwnedApprovedRun(workflow: Workflow): WorkflowRun {
+  return WorkflowRun.fromData({
+    ...makeApprovedRun(workflow).toData(),
+    instanceId: crypto.randomUUID(),
+  });
+}
+
+for (
+  const [label, suspendedOnly, serveOwned] of [
+    ["a", false, false],
+    ["an auto-resume of a", true, false],
+    ["a serve-owned", false, true],
+    ["an auto-resume of a serve-owned", true, true],
+  ] as const
+) {
   Deno.test(
-    `startDetachedResume: refuses ${
-      suspendedOnly ? "an auto-resume of a" : "a"
-    } suspended run whose workflow changed shape, without registering it`,
+    `startDetachedResume: refuses ${label} suspended run whose workflow changed shape, without registering it`,
     async () => {
-      const run = makeApprovedRun(makeWorkflow());
+      const run = serveOwned
+        ? makeServeOwnedApprovedRun(makeWorkflow())
+        : makeApprovedRun(makeWorkflow());
       const before = JSON.stringify(run.toData());
       const { ctx, registry } = makeHarness(makeEditedWorkflow(), run);
 
@@ -504,10 +522,13 @@ for (const suspendedOnly of [false, true]) {
       assertEquals(result.ok, false);
       if (!result.ok) {
         assertEquals(result.code, "workflow_resume_failed");
+        const wayOut = serveOwned
+          ? "Revert the change to resume it: a suspended run started by swamp serve cannot be cancelled yet."
+          : `To cancel it: 'swamp workflow cancel gated --run ${run.id}'.`;
         assertEquals(
           result.message,
-          `Step "verify" in job "main" is not in the run. ` +
-            `To cancel: 'swamp workflow cancel gated --run ${run.id}'.`,
+          `The workflow changed shape since the run started. ${wayOut} ` +
+            `Step "verify" in job "main" is not in the run.`,
         );
       }
       assertEquals(registry.registered.length, 0);
@@ -517,7 +538,7 @@ for (const suspendedOnly of [false, true]) {
 }
 
 Deno.test("autoResumeAfterApproval: audits a launch refused because the workflow changed shape", async () => {
-  const run = makeApprovedRun(makeWorkflow({ autoResume: true }));
+  const run = makeServeOwnedApprovedRun(makeWorkflow({ autoResume: true }));
   const { ctx, registry, audit } = makeHarness(
     makeEditedWorkflow({ autoResume: true }),
     run,

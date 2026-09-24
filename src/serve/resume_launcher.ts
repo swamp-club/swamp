@@ -352,7 +352,7 @@ export async function autoResumeAfterApproval(
     onTerminal: (terminal) => {
       if (terminal.kind !== "error") return;
       logger.warn(
-        "Auto-resume of run {runId} failed ({code}): {message}",
+        "Auto-resume of run {runId} failed ({code}): {message}; the resume did not complete",
         {
           runId: outcome.runId,
           code: terminal.code,
@@ -369,7 +369,7 @@ export async function autoResumeAfterApproval(
 
   if (!launched.ok) {
     logger.warn(
-      "Auto-resume of run {runId} was not started ({code}): {message}",
+      "Auto-resume of run {runId} was not started ({code}): {message}; the run was not resumed",
       {
         runId: outcome.runId,
         code: launched.code,

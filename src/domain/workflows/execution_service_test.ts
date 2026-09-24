@@ -9777,13 +9777,13 @@ async function assertSuspendedResumeRefused(
   );
   assertStringIncludes(
     error.message,
-    `To cancel: 'swamp workflow cancel changed-wf --run ${run.id}'.`,
+    `To cancel it: 'swamp workflow cancel changed-wf --run ${run.id}'.`,
   );
 
   assertEquals(runRepo.saves, saves);
-  const after_ = (await runRepo.findById(before.id, run.id))!;
-  assertEquals(JSON.stringify(after_.toData()), stored);
-  assertEquals(after_.status, "suspended");
+  const reloaded = (await runRepo.findById(before.id, run.id))!;
+  assertEquals(JSON.stringify(reloaded.toData()), stored);
+  assertEquals(reloaded.status, "suspended");
   assertEquals(
     [...executor.calls.values()].reduce((a, b) => a + b, 0),
     calls,
@@ -9827,6 +9827,17 @@ Deno.test("resume: refuses a suspended run with an added job, instead of reporti
         { name: "extra", steps: [modelStep("audit")], dependsOn: ["main"] },
       ],
       `Job "extra" is not in the run.`,
+    );
+  });
+});
+
+Deno.test("resume: refuses a suspended run with a pending job removed, instead of ending it failed", async () => {
+  await withTempDir(async (tempDir) => {
+    const [main] = gatedJobs();
+    await assertSuspendedResumeRefused(
+      tempDir,
+      [main],
+      `Job "post" is in the run but not in the workflow.`,
     );
   });
 });
