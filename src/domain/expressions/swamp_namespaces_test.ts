@@ -20,9 +20,12 @@
 import { assertEquals } from "@std/assert";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
+  containsSwampExpression,
+  isForeignExpression,
   isSwampExpression,
   parsesAsCel,
   type SwampScope,
+  WIDEST_SWAMP_SCOPE,
 } from "./swamp_namespaces.ts";
 
 // A CLI run: no steps/run/webhook bound; the definition declares two inputs.
@@ -95,6 +98,81 @@ Deno.test("isSwampExpression: macro-bound variables are not roots", () => {
 
 Deno.test("isSwampExpression: false when the expression does not parse", () => {
   assertEquals(isSwampExpression("not valid cel !!!", cliScope), false);
+});
+
+Deno.test("isSwampExpression: the widest scope claims every swamp namespace and input", () => {
+  for (
+    const cel of [
+      "inputs.version",
+      "steps.build.outputs.sha",
+      "workflow.name",
+      "vault.get('v', 'k')",
+    ]
+  ) {
+    assertEquals(isSwampExpression(cel, WIDEST_SWAMP_SCOPE), true, cel);
+  }
+});
+
+Deno.test("isForeignExpression: true for text no swamp evaluation could own", () => {
+  for (
+    const cel of [
+      "github.sha",
+      "secrets.TOKEN",
+      "matrix.os",
+      "github.event.model.foo.resource.x",
+    ]
+  ) {
+    assertEquals(isForeignExpression(cel), true, cel);
+  }
+});
+
+Deno.test("isForeignExpression: false for text in a swamp namespace", () => {
+  // GitHub Actions contexts that share a swamp namespace name stay claimed.
+  for (
+    const cel of [
+      "inputs.version",
+      "steps.build.outputs.sha",
+      "env.HOME",
+      // inputs read whole or with a computed key.
+      "inputs[env.STAGE]",
+      'inputs["region-" + env.STAGE]',
+      "size(inputs)",
+      "inputs",
+    ]
+  ) {
+    assertEquals(isForeignExpression(cel), false, cel);
+  }
+});
+
+Deno.test("isForeignExpression: false for text that does not parse", () => {
+  assertEquals(isForeignExpression("not valid cel !!!"), false);
+  // What extractExpressions leaves of ${{ "a}}" + inputs.x }}.
+  assertEquals(isForeignExpression('"a'), false);
+  // Optional syntax parses for evaluation (parsesAsCel) but not for
+  // isSwampExpression, so it cannot be attributed and stays claimed.
+  assertEquals(parsesAsCel("github.?sha"), true);
+  assertEquals(isForeignExpression("github.?sha"), false);
+  assertEquals(isForeignExpression("inputs.?version"), false);
+});
+
+Deno.test("containsSwampExpression: false when every expression is foreign", () => {
+  assertEquals(containsSwampExpression("deploy ${{ github.sha }}"), false);
+  assertEquals(
+    containsSwampExpression({ a: ["${{ matrix.os }}", "{{host.name}}"] }),
+    false,
+  );
+  assertEquals(containsSwampExpression("plain text"), false);
+});
+
+Deno.test("containsSwampExpression: true when any nested expression is not foreign", () => {
+  assertEquals(
+    containsSwampExpression({
+      a: ["${{ github.sha }}", "${{ inputs.region }}"],
+    }),
+    true,
+  );
+  assertEquals(containsSwampExpression('${{ vault.get("v", "k") }}'), true);
+  assertEquals(containsSwampExpression('${{ "a}}" + inputs.x }}'), true);
 });
 
 Deno.test("parsesAsCel: parses text as evaluation does", () => {

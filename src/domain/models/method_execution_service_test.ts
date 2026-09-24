@@ -2030,7 +2030,7 @@ Deno.test("executeWorkflow - read blocked when all declared resource data is del
 
 // ---------- Unresolved Expression Tests ----------
 
-Deno.test("execute - Proxy throws for any unresolved expression in globalArgs", async () => {
+Deno.test("execute - Proxy throws for an unresolved swamp expression in globalArgs", async () => {
   const service = new DefaultMethodExecutionService();
 
   const model: ModelDefinition = {
@@ -2065,6 +2065,79 @@ Deno.test("execute - Proxy throws for any unresolved expression in globalArgs", 
     Error,
     "Unresolved expression in globalArguments.ssh_keys",
   );
+});
+
+Deno.test("execute - another templating system's ${{ }} text in globalArgs reaches the method as written (swamp-club#2491)", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let fromGlobalArgs: unknown;
+  let fromArgs: unknown;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/foreign-template-text"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({ message: z.string() }),
+        execute: (args: Record<string, unknown>, context) => {
+          fromArgs = args.message;
+          fromGlobalArgs = context.globalArgs.message;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "deploy ${{ github.sha }}" },
+    methods: { run: { arguments: {} } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await service.execute(definition, model.methods.run, context);
+  assertEquals(fromGlobalArgs, "deploy ${{ github.sha }}");
+  assertEquals(fromArgs, "deploy ${{ github.sha }}");
+});
+
+Deno.test("execute - Proxy still throws for text it cannot tell apart from swamp's", async () => {
+  const cases = {
+    // GitHub Actions text in a namespace swamp also owns.
+    version: "${{ inputs.version }}",
+    // A swamp expression cut short at the }} inside its string literal.
+    label: '${{ "a}}" + inputs.x }}',
+    // A swamp input read with a computed key.
+    region: "${{ inputs[env.STAGE] }}",
+  };
+  for (const [field, value] of Object.entries(cases)) {
+    const service = new DefaultMethodExecutionService();
+    const model: ModelDefinition = {
+      type: ModelType.create("test/ambiguous-template-text"),
+      version: "1",
+      methods: {
+        run: {
+          description: "Test method",
+          arguments: z.object({}),
+          execute: (_args: Record<string, unknown>, context) => {
+            const _val = context.globalArgs[field];
+            return Promise.resolve({});
+          },
+        },
+      },
+    };
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: { [field]: value },
+      methods: { run: { arguments: {} } },
+    });
+
+    const { context } = createTestContext({ modelType: model.type });
+    await assertRejects(
+      () => service.execute(definition, model.methods.run, context),
+      Error,
+      `Unresolved expression in globalArguments.${field}`,
+    );
+  }
 });
 
 Deno.test("execute - Proxy allows access to resolved globalArgs fields", async () => {
@@ -3038,6 +3111,37 @@ Deno.test("executeWorkflow - detects nested unresolved expressions in globalArgs
   );
   assertEquals(result !== undefined, true);
   assertEquals(receivedName, "my-server");
+});
+
+Deno.test("executeWorkflow - validates globalArgs holding another templating system's ${{ }} text (swamp-club#2491)", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/foreign-template-validation"),
+    version: "1",
+    globalArguments: z.object({ message: z.string(), count: z.number() }),
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  // The foreign text no longer counts as unresolved, so the whole set is
+  // schema-checked and the bad count is caught.
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "deploy ${{ github.sha }}", count: "many" },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "run", context),
+    Error,
+    "Global arguments validation failed",
+  );
 });
 
 Deno.test("executeWorkflow: check receives unresolvedMethodArgs with method arguments", async () => {

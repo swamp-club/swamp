@@ -336,10 +336,12 @@ that may differ between machines or environments.
 
 **"Template syntax passed through" does not need a stop.** It lists `{{ ... }}`
 or `${ ... }` text that is not a swamp expression (Datadog `{{host.name}}`,
-shell `${HOME}`), which the method receives unchanged. Mention it to the user.
-Only if a listed value was meant as a swamp expression, rewrite it as
-`${{ ... }}`. A `{{ ... }}` on a swamp root (`self`, `model`, `env`, `inputs`,
-...) fails `Expression paths` instead; the error names the remedies.
+shell `${HOME}`), and `${{ ... }}` text that references nothing swamp provides
+(GitHub Actions `${{ github.sha }}`), which the method receives unchanged.
+Mention it to the user. Only if a listed value was meant as a swamp expression,
+rewrite it as `${{ ... }}`. A `{{ ... }}` on a swamp root (`self`, `model`,
+`env`, `inputs`, ...) fails `Expression paths` instead; the error names the
+remedies.
 
 ## Expression Language
 

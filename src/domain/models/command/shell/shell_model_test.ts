@@ -368,13 +368,16 @@ Deno.test("shellModel: validate accepts shell parameter expansion in run with no
 Deno.test("shellModel: validate still checks ${{ }} expressions in run", async () => {
   const definition = Definition.create({
     name: "sh-env",
-    methods: { execute: { arguments: { run: "echo ${{my-vpc.VpcId}}" } } },
+    // In swamp's own data namespace, so not another templating system's text.
+    methods: {
+      execute: { arguments: { run: "echo ${{ data.nope('my-model') }}" } },
+    },
   });
   const { results } = await new DefaultModelValidationService()
     .validateModel(definition, shellModel, createMockDefinitionRepo());
   const expressionPaths = results.find((r) => r.name === "Expression paths");
   assertEquals(expressionPaths?.passed, false);
-  assertStringIncludes(expressionPaths?.error ?? "", "my-vpc.VpcId");
+  assertStringIncludes(expressionPaths?.error ?? "", "data.nope");
 });
 
 // Input schema validation tests
