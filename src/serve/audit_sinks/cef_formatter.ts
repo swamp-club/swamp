@@ -43,6 +43,7 @@ const ACTION_LABELS: Record<string, string> = {
   "vault.delete-secret": "Vault secret delete",
   "auth.login": "User login",
   "auth.logout": "User logout",
+  "auth.session.terminated": "Session terminated",
   "access.grant.create": "Access grant created",
   "access.grant.delete": "Access grant deleted",
   "instance.start": "Instance started",

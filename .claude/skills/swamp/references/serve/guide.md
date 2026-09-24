@@ -172,7 +172,7 @@ the userinfo endpoint returns a 401. The server:
 
 1. **Revokes the server token** — no new connections can authenticate with it
 2. **Closes all active WebSocket connections** for that user (close code `4003`,
-   reason `"Session revoked"`)
+   reason `"Session revoked: access removed"`)
 
 This happens on the next refresh cycle. Transient errors (network timeouts,
 server errors) do not trigger revocation — existing groups are preserved until
@@ -229,6 +229,23 @@ swamp access token list
 swamp access token revoke <name>
 swamp access token rotate <name>                       # revoke + mint replacement
 ```
+
+Revoking, rotating or expiring a token also ends WebSocket sessions already open
+with it, as does a token record being deleted or becoming unreadable. This is
+immediate on the instance that ran the revoke or rotate over its WebSocket.
+Otherwise a periodic re-check ends them within about 30s of the instance seeing
+the change. A revoke run from the CLI straight against the repo, with no serve
+instance involved, is seen at once. An HA peer first pulls the change from the
+datastore (`--datastore-poll-interval`, default 30s), so allow up to about a
+minute there. The socket closes with code `4003` and a reason naming the cause,
+or `4002` on expiry. A CLI run cut off with `4003` stops and prints the reason
+rather than reconnecting. On `4002` it tries one reconnect, since the same code
+ends a session at the 8-hour cap, where reconnecting works; if the token has
+expired that reconnect is refused and the CLI reports the expiry reason.
+Rotation keeps sessions opened with the new credential. With audit enabled, each
+closed session records an `auth.session.terminated` event whose `detail` is the
+cause: `revoked`, `rotated`, `expired`, `deleted` or `invalid` (filter with
+`swamp audit log --action auth.session.terminated`).
 
 ### Wiring a token into an external secret store
 

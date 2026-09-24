@@ -17,12 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   authenticateServerToken,
   classifyRedeemError,
   extractWebSocketToken,
+  readServerTokenRecord,
   type ServerTokenAuthDeps,
+  ServerTokenNotFoundError,
   splitServerToken,
 } from "./token_auth.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -301,7 +303,70 @@ Deno.test("authenticateServerToken: reads and validates a token without a model 
     principalId: "user:test-user",
     collectives: ["engineering"],
     groups: ["developers"],
+    tokenName: "test-token",
+    tokenCreatedAt: "2026-01-01T00:00:00.000Z",
   });
+});
+
+Deno.test("authenticateServerToken: reports the createdAt of the mint that authenticated", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve(
+          activeToken({ createdAt: "2026-05-05T05:05:05.000Z" }),
+        ),
+    }),
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.tokenName, "test-token");
+  assertEquals(result.tokenCreatedAt, "2026-05-05T05:05:05.000Z");
+});
+
+// ── readServerTokenRecord ───────────────────────────────────────────────
+
+function fakeTokenRepoContext(
+  definition: { id: string } | null,
+  content: Uint8Array | null,
+): RepositoryContext {
+  return {
+    definitionRepo: { findByName: () => Promise.resolve(definition) },
+    unifiedDataRepo: { getContent: () => Promise.resolve(content) },
+  } as unknown as RepositoryContext;
+}
+
+Deno.test("readServerTokenRecord: parses the stored token record", async () => {
+  const token = activeToken();
+  const record = await readServerTokenRecord(
+    fakeTokenRepoContext(
+      { id: "def-1" },
+      new TextEncoder().encode(JSON.stringify(token)),
+    ),
+    "test-token",
+  );
+  assertEquals(record, token);
+});
+
+Deno.test("readServerTokenRecord: a missing definition does not exist", async () => {
+  await assertRejects(
+    () => readServerTokenRecord(fakeTokenRepoContext(null, null), "gone"),
+    ServerTokenNotFoundError,
+    "does not exist",
+  );
+});
+
+Deno.test("readServerTokenRecord: a missing record does not exist", async () => {
+  await assertRejects(
+    () =>
+      readServerTokenRecord(
+        fakeTokenRepoContext({ id: "def-1" }, null),
+        "gone",
+      ),
+    ServerTokenNotFoundError,
+    "does not exist",
+  );
 });
 
 Deno.test("authenticateServerToken: applies the shared lifecycle validation", async () => {

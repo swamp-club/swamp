@@ -75,11 +75,16 @@ import {
   getConnectionCollectives,
   getConnectionGroups,
   pushChangedToRemote,
+  resolveDisplayPrincipal,
   sanitizeErrorForClient,
   send,
   sendError,
+  terminateTokenSessions,
+  TOKEN_REVOKED_REASON,
+  TOKEN_ROTATED_REASON,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { readServerTokenRecord } from "../token_auth.ts";
 
 import {
   consumeStream,
@@ -99,6 +104,8 @@ import {
   SERVER_TOKEN_MODEL_TYPE,
   ServerTokenSchema,
 } from "../../domain/models/access/server_token_model.ts";
+
+const rotateLogger = getSwampLogger(["serve", "access", "rotate"]);
 
 export async function handleAccessGrantList(
   socket: WebSocket,
@@ -920,13 +927,24 @@ export async function handleAccessTokenRevoke(
 
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
+    } else {
+      send(socket, {
+        type: "access.token.revoke",
+        id: requestId,
+        payload: { data: result ?? {} },
+      });
     }
 
-    send(socket, {
-      type: "access.token.revoke",
-      id: requestId,
-      payload: { data: result ?? {} },
+    // The revoke is persisted even if the request was cancelled, so every
+    // session opened with any mint of the name ends. Runs after the reply so a
+    // caller revoking their own token still gets it.
+    terminateTokenSessions(payload.name, {
+      code: 4003,
+      reason: TOKEN_REVOKED_REASON,
+      cause: "revoked",
+      initiatedBy: initiatorOf(principal, ctx),
+      requestId,
+      audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -978,20 +996,62 @@ export async function handleAccessTokenRotate(
 
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
+    } else {
+      send(socket, {
+        type: "access.token.rotate",
+        id: requestId,
+        payload: { data: result ?? {} },
+      });
     }
 
-    send(socket, {
-      type: "access.token.rotate",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
+    // The rotation is persisted even if the request was cancelled.
+    await terminateRotatedSessions(payload.name, ctx, requestId, principal);
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_token_rotate_failed", message);
   } finally {
     await pushChangedToRemote(ctx);
   }
+}
+
+function initiatorOf(
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): string {
+  return principal ? resolveDisplayPrincipal(principal, ctx) : "system";
+}
+
+/**
+ * Ends the sessions opened with a token's old credential after a rotate.
+ * Sessions opened with the replacement (a client may already have reconnected)
+ * are kept by excluding the new mint's createdAt. If the new record cannot be
+ * read, every session of the name closes: the old credential is certainly
+ * dead, and a holder of the new one can reconnect. Never throws.
+ */
+async function terminateRotatedSessions(
+  name: string,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+): Promise<void> {
+  let newMint: string | undefined;
+  try {
+    newMint = (await readServerTokenRecord(ctx.repoContext, name)).createdAt;
+  } catch (error) {
+    rotateLogger.warn(
+      "Could not read rotated token {name}; closing all of its sessions: {error}",
+      { name, error: error instanceof Error ? error.message : String(error) },
+    );
+  }
+  terminateTokenSessions(name, {
+    exceptCreatedAt: newMint,
+    code: 4003,
+    reason: TOKEN_ROTATED_REASON,
+    cause: "rotated",
+    initiatedBy: initiatorOf(principal, ctx),
+    requestId,
+    audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
+  });
 }
 
 export async function handleAccessTokenMint(

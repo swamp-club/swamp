@@ -42,13 +42,20 @@ import {
 import {
   closeConnectionsForPrincipal,
   emitSystemAuditEvent,
+  listTokenSessions,
   removeConnection,
   resolveConnectionCompression,
   setConnectionCollectives,
   setConnectionCompression,
   setConnectionSourceIp,
+  setConnectionToken,
+  terminateTokenSessions,
   updateCollectivesForPrincipal,
 } from "../../serve/handlers/shared.ts";
+import {
+  DEFAULT_TOKEN_SESSION_REVALIDATION_MS,
+  TokenSessionRevalidationService,
+} from "../../serve/token_session_revalidation_service.ts";
 import {
   createDeviceAuthDeps,
   handleDeviceAuth,
@@ -63,6 +70,7 @@ import {
 import {
   authenticateServerToken,
   extractWebSocketToken,
+  readServerTokenRecord,
 } from "../../serve/token_auth.ts";
 import {
   checkIpBurst,
@@ -4089,6 +4097,30 @@ export const serveCommand = new Command()
       collectiveRefreshService.start();
     }
 
+    // Token and OAuth modes both authenticate sessions with server tokens.
+    // Re-check them so a revoke, rotation or expiry — here, on a peer, or
+    // from the CLI — ends sessions already open with the token.
+    let tokenSessionRevalidationService:
+      | TokenSessionRevalidationService
+      | null = null;
+    if (authConfig.mode !== "none") {
+      tokenSessionRevalidationService = new TokenSessionRevalidationService({
+        intervalMs: DEFAULT_TOKEN_SESSION_REVALIDATION_MS,
+        listTokenSessions,
+        readToken: (name) => readServerTokenRecord(repoContext, name),
+        terminateSessions: (name, options) =>
+          terminateTokenSessions(name, {
+            ...options,
+            initiatedBy: "system",
+            audit: {
+              emitter: connectionCtx.auditEmitter,
+              instanceId: connectionCtx.instanceId,
+            },
+          }),
+      });
+      tokenSessionRevalidationService.start();
+    }
+
     let clubHeartbeatService: ClubHeartbeatService | null = null;
     if (
       authConfig.mode === "oauth" && authConfig.oauthClientId &&
@@ -4505,6 +4537,11 @@ export const serveCommand = new Command()
               result.groups,
               result.principalId,
             );
+            setConnectionToken(socket, {
+              name: result.tokenName,
+              createdAt: result.tokenCreatedAt,
+              principalId: result.principalId,
+            });
             setConnectionSourceIp(socket, remoteAddr);
             setConnectionCompression(
               socket,
@@ -5180,6 +5217,9 @@ export const serveCommand = new Command()
       workerGateway.dispose();
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
+      }
+      if (tokenSessionRevalidationService) {
+        await tokenSessionRevalidationService.dispose();
       }
       if (clubHeartbeatService) {
         clubHeartbeatService.stop();

@@ -65,6 +65,18 @@ Deno.test("formatCefLine: maps auth category to severity 6", () => {
   assert(severity === "6", `Expected severity 6, got ${severity}`);
 });
 
+Deno.test("formatCefLine: labels a terminated session", () => {
+  const line = formatCefLine(
+    makeEvent({ category: "auth", action: "auth.session.terminated" }),
+  );
+  const parts = line.split("|");
+  const name = parts[5];
+  assert(
+    name === "Session terminated",
+    `Expected "Session terminated", got ${name}`,
+  );
+});
+
 Deno.test("formatCefLine: maps system category to severity 3", () => {
   const line = formatCefLine(
     makeEvent({ category: "system", action: "instance.start" }),

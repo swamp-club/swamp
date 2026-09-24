@@ -163,6 +163,7 @@ import {
 } from "./handlers/admin_handlers.ts";
 import {
   authorizeOrReject,
+  closeSession,
   type ConnectionContext,
   getConnectionSourceIp,
   isRestrictedCommand,
@@ -170,6 +171,7 @@ import {
   MAX_QUERY_RESULTS,
   send,
   sendError,
+  setConnectionTeardown,
   subscribeUntilDetach,
 } from "./handlers/shared.ts";
 import { findActiveRunByRunId } from "./active_run_tracker.ts";
@@ -1488,14 +1490,29 @@ export function handleConnection(
 
   const sessionTimeout = principal
     ? setTimeout(() => {
-      socket.close(
+      closeSession(
+        socket,
         4002,
         "Session expired after 8 hours — reconnect to re-authenticate",
       );
     }, MAX_SESSION_MS)
     : null;
 
+  const teardown = createConnectionTeardown({
+    ctx,
+    activeRequests,
+    activeSubscriptions,
+    subscriptionTimers,
+    sessionTimeout,
+    workerAttachment,
+  });
+  // A server-initiated close stops the session's work at once, instead of
+  // when the peer completes the close handshake (which it may never do).
+  setConnectionTeardown(socket, teardown);
+
   socket.onmessage = (event) => {
+    // Once the server has closed the session, nothing more is served on it.
+    if (socket.readyState !== WebSocket.OPEN) return;
     if (
       workerAttachment && typeof event.data === "string" &&
       workerAttachment.feed(event.data)
@@ -1513,29 +1530,54 @@ export function handleConnection(
     );
   };
 
-  socket.onclose = () => {
-    if (sessionTimeout) clearTimeout(sessionTimeout);
-    workerAttachment?.closed();
-    for (const controller of activeRequests.values()) {
-      controller.abort();
-    }
-    activeRequests.clear();
-    if (ctx.auditWebSocketSink) {
-      for (const subId of activeSubscriptions) {
-        ctx.auditWebSocketSink.unsubscribe(subId);
-      }
-    }
-    for (const timer of subscriptionTimers.values()) {
-      clearInterval(timer);
-    }
-    activeSubscriptions.clear();
-    subscriptionTimers.clear();
-  };
+  socket.onclose = teardown;
 
   socket.onerror = (event) => {
     logger.warn("WebSocket error: {error}", {
       error: event instanceof ErrorEvent ? event.message : "unknown",
     });
+  };
+}
+
+export interface ConnectionTeardownState {
+  readonly ctx: Pick<ConnectionContext, "auditWebSocketSink">;
+  readonly activeRequests: Map<string, AbortController>;
+  readonly activeSubscriptions: Set<string>;
+  readonly subscriptionTimers: Map<string, ReturnType<typeof setInterval>>;
+  readonly sessionTimeout: ReturnType<typeof setTimeout> | null;
+  readonly workerAttachment?: { closed(): void };
+}
+
+/**
+ * Builds the idempotent teardown of a connection's work: aborts in-flight
+ * requests, ends audit subscriptions and their re-auth timers, clears the
+ * session cap and detaches a worker. It runs on a server-initiated close and
+ * again on the close event; only the first call does anything.
+ * Exported for unit testing.
+ */
+export function createConnectionTeardown(
+  state: ConnectionTeardownState,
+): () => void {
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    if (state.sessionTimeout) clearTimeout(state.sessionTimeout);
+    state.workerAttachment?.closed();
+    for (const controller of state.activeRequests.values()) {
+      controller.abort();
+    }
+    state.activeRequests.clear();
+    if (state.ctx.auditWebSocketSink) {
+      for (const subId of state.activeSubscriptions) {
+        state.ctx.auditWebSocketSink.unsubscribe(subId);
+      }
+    }
+    for (const timer of state.subscriptionTimers.values()) {
+      clearInterval(timer);
+    }
+    state.activeSubscriptions.clear();
+    state.subscriptionTimers.clear();
   };
 }
 

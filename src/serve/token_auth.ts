@@ -51,36 +51,55 @@ export interface TokenAuthAuditContext {
   readonly ingress?: string;
 }
 
+/**
+ * The token has no definition or no record. A distinct type, so a caller can
+ * tell a deleted token from a datastore failure whose message happens to say
+ * "does not exist".
+ */
+export class ServerTokenNotFoundError extends Error {
+  constructor(name: string) {
+    super(`Server token '${name}' does not exist — mint it first`);
+    this.name = "ServerTokenNotFoundError";
+  }
+}
+
+/**
+ * Reads a server token's lifecycle record from the repository. Both
+ * authentication at upgrade and the revalidation of open sessions read through
+ * here, so the two paths always agree on what a token's state is. A token whose
+ * definition or record is gone throws {@link ServerTokenNotFoundError}.
+ */
+export async function readServerTokenRecord(
+  repoContext: RepositoryContext,
+  name: string,
+): Promise<ServerToken> {
+  const definition = await repoContext.definitionRepo.findByName(
+    SERVER_TOKEN_MODEL_TYPE,
+    name,
+  );
+  if (definition === null) {
+    throw new ServerTokenNotFoundError(name);
+  }
+  const content = await repoContext.unifiedDataRepo.getContent(
+    SERVER_TOKEN_MODEL_TYPE,
+    definition.id,
+    TOKEN_DATA_NAME,
+  );
+  if (content === null) {
+    throw new ServerTokenNotFoundError(name);
+  }
+  return ServerTokenSchema.parse(
+    JSON.parse(new TextDecoder().decode(content)),
+  );
+}
+
 export async function createServerTokenAuthDeps(
   repoDir: string,
   repoContext: RepositoryContext,
 ): Promise<ServerTokenAuthDeps> {
   const vaultService = await VaultService.fromRepository(repoDir);
   return {
-    readToken: async (name) => {
-      const definition = await repoContext.definitionRepo.findByName(
-        SERVER_TOKEN_MODEL_TYPE,
-        name,
-      );
-      if (definition === null) {
-        throw new Error(
-          `Server token '${name}' does not exist — mint it first`,
-        );
-      }
-      const content = await repoContext.unifiedDataRepo.getContent(
-        SERVER_TOKEN_MODEL_TYPE,
-        definition.id,
-        TOKEN_DATA_NAME,
-      );
-      if (content === null) {
-        throw new Error(
-          `Server token '${name}' does not exist — mint it first`,
-        );
-      }
-      return ServerTokenSchema.parse(
-        JSON.parse(new TextDecoder().decode(content)),
-      );
-    },
+    readToken: (name) => readServerTokenRecord(repoContext, name),
     readSecret: (vaultName, secretKey) =>
       vaultService.get(
         vaultName,
@@ -167,6 +186,13 @@ export type ServerTokenAuthResult =
     principalId: string;
     collectives: readonly string[];
     groups: readonly string[];
+    /** Name of the token that authenticated. */
+    tokenName: string;
+    /**
+     * The token record's `createdAt`. Rotation rewrites it, so it identifies
+     * which mint of the name a session was opened with.
+     */
+    tokenCreatedAt: string;
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
@@ -255,6 +281,8 @@ export async function authenticateServerToken(
       principalId: token.principalId,
       collectives: token.collectives,
       groups: token.groups,
+      tokenName: split.name,
+      tokenCreatedAt: token.createdAt,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

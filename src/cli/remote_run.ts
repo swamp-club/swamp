@@ -444,14 +444,7 @@ export function requestServerResponse<T>(
       if (!settled) {
         settled = true;
         cleanup();
-        const parts: string[] = [];
-        if (event.code !== 1000 && event.code !== 1005) {
-          parts.push(`code ${event.code}`);
-        }
-        if (event.reason) {
-          parts.push(event.reason);
-        }
-        const detail = parts.length > 0 ? ` (${parts.join(": ")})` : "";
+        const detail = describeServerClose(event);
         reject(
           new UserError(
             connectErrorDetail
@@ -1010,6 +1003,28 @@ function createSocket(
 }
 
 /**
+ * Close code serve uses when it revokes a session's credential (token revoked,
+ * rotated or deleted, or the principal deprovisioned).
+ */
+const SESSION_REVOKED_CLOSE_CODE = 4003;
+
+/**
+ * Formats why the server closed the socket, e.g. ` (code 4003: Session
+ * revoked: token revoked)`, so the user learns a token was revoked or expired.
+ * Empty for a normal close with no reason.
+ */
+function describeServerClose(event: CloseEvent): string {
+  const parts: string[] = [];
+  if (event.code !== 1000 && event.code !== 1005) {
+    parts.push(`code ${event.code}`);
+  }
+  if (event.reason) {
+    parts.push(event.reason);
+  }
+  return parts.length > 0 ? ` (${parts.join(": ")})` : "";
+}
+
+/**
  * Matches known TLS error patterns in the WebSocket error message and
  * returns user-friendly guidance. Returns `undefined` when the message
  * does not look like a TLS error.
@@ -1061,7 +1076,7 @@ interface OutboundRequest {
 
 type StreamOutcome =
   | { kind: "done" }
-  | { kind: "disconnected" }
+  | { kind: "disconnected"; closeDetail?: string }
   | { kind: "elsewhere"; instanceId: string }
   | { kind: "interrupted"; instanceId: string; reason: string };
 
@@ -1095,6 +1110,8 @@ async function* singleConnectionStream(
   const queue: ServerMessage[] = [];
   let wake: (() => void) | null = null;
   let socketClosed = false;
+  let closeDetail = "";
+  let closeCode: number | undefined;
   let connectError: string | null = null;
   const notify = () => {
     wake?.();
@@ -1118,8 +1135,10 @@ async function* singleConnectionStream(
       // Not a protocol frame — ignore.
     }
   };
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     socketClosed = true;
+    closeDetail = describeServerClose(event);
+    closeCode = event.code;
     notify();
   };
   socket.onerror = (event) => {
@@ -1147,16 +1166,7 @@ async function* singleConnectionStream(
       let message = connectError ??
         `Connection to ${baseUrl} closed before it opened`;
       if (closeEvent && !connectError) {
-        const parts: string[] = [];
-        if (closeEvent.code !== 1000 && closeEvent.code !== 1005) {
-          parts.push(`code ${closeEvent.code}`);
-        }
-        if (closeEvent.reason) {
-          parts.push(closeEvent.reason);
-        }
-        if (parts.length > 0) {
-          message += ` (${parts.join(": ")})`;
-        }
+        message += describeServerClose(closeEvent);
       }
       reject(new UserError(message));
     };
@@ -1254,11 +1264,19 @@ async function* singleConnectionStream(
         continue;
       }
       if (socketClosed) {
+        // 4003: the server revoked this session's credential. Reconnecting
+        // with the same credential cannot succeed, so report why instead.
+        if (state.runId && closeCode === SESSION_REVOKED_CLOSE_CODE) {
+          throw new UserError(
+            `The server ended this session${closeDetail}. ` +
+              "Check the run's final status with: swamp run history",
+          );
+        }
         if (state.runId) {
-          return { kind: "disconnected" as const };
+          return { kind: "disconnected" as const, closeDetail };
         }
         throw new UserError(
-          "Connection to the server closed before the run completed",
+          `Connection to the server closed before the run completed${closeDetail}`,
         );
       }
       if (cancelSent && Date.now() > cancelDeadline) {
@@ -1302,6 +1320,9 @@ async function* streamServerRun(
     payload: { runId: string; afterSeq: number };
   } = request;
   const logger = getReconnectLogger();
+  // Why the server closed the last connection (e.g. ` (code 4002: Session
+  // expired: token expired, …)`), so a reconnect that fails can say why.
+  let lastCloseDetail = "";
 
   while (true) {
     let outcome: StreamOutcome;
@@ -1318,6 +1339,16 @@ async function* streamServerRun(
         yield result.value;
       }
     } catch (err) {
+      if (err instanceof UserError && lastCloseDetail && !receivedEvents) {
+        // A reconnect after the server closed the session failed — most often
+        // because the token expired. Say why the session ended, not just why
+        // the reconnect was refused.
+        throw new UserError(
+          `The server ended this session${lastCloseDetail} and reconnecting ` +
+            `failed: ${err.message}. ` +
+            "Check the run's final status with: swamp run history",
+        );
+      }
       if (
         !state.runId || err instanceof DOMException ||
         err instanceof UserError || !(err instanceof Error)
@@ -1337,6 +1368,7 @@ async function* streamServerRun(
     if (receivedEvents) {
       reconnectRetries = 0;
       elsewhereRetries = 0;
+      lastCloseDetail = "";
     }
 
     if (outcome.kind === "done") {
@@ -1372,10 +1404,11 @@ async function* streamServerRun(
     }
 
     // disconnected — attempt reconnection
+    if (outcome.closeDetail) lastCloseDetail = outcome.closeDetail;
     reconnectRetries++;
     if (reconnectRetries > MAX_RECONNECT_RETRIES) {
       throw new UserError(
-        "Connection lost and could not reconnect after " +
+        `Connection lost${lastCloseDetail} and could not reconnect after ` +
           `${MAX_RECONNECT_RETRIES} retries. ` +
           "Check the run's final status with: swamp run history",
       );

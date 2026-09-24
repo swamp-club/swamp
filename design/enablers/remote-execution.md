@@ -207,6 +207,51 @@ model run, or update `lastUsedAt`. It accepts the token via
 `?token=` query parameter, in that priority order; the CLI uses the
 `Authorization` header. Unauthenticated connections get HTTP 401.
 
+A token's authority ends for sessions that are already open, not just for new
+connections. Each session is bound to the token name and the record's
+`createdAt` (rotation rewrites it) it was opened with (`setConnectionToken` in
+`src/serve/handlers/shared.ts`). Sessions end in two ways:
+
+- **Immediately.** The `access.token.revoke` and `access.token.rotate` handlers
+  close the token's sessions on their own instance once they reply, even when
+  the request was cancelled after the change was saved. Rotate keeps sessions
+  already opened with the new credential.
+- **On revalidation.** `TokenSessionRevalidationService`
+  (`src/serve/token_session_revalidation_service.ts`) re-reads the record of
+  every open session's token every 30s. It closes sessions whose token is
+  revoked, rotated or deleted (4003, `ServerTokenNotFoundError` for deleted),
+  expired (4002), or whose record exists but no longer parses (4003), as the
+  upgrade would reject it. Any other read failure, such as I/O, keeps the
+  session until the next pass. This covers revokes made from the CLI and on
+  HA peers, whose record arrives through the runtime data poller, so a peer
+  ends the session within the poll interval plus 30s.
+
+`terminateTokenSessions` is the one path that ends a token's sessions. It
+records an `auth.session.terminated` audit event per session (see
+[serve-audit.md](serve-audit.md)) and unbinds each session as it closes, so a
+peer that never completes the close handshake is not closed and audited again.
+
+Every server-initiated session close (these, the 8-hour cap, and
+deprovisioning) goes through `closeSession`; the worker gateway's own close of a
+worker control socket is separate. It aborts the session's in-flight requests and ends its
+subscriptions before sending the close frame, and `onmessage` serves nothing
+once the socket is no longer open. The close event only fires when the peer
+answers the close frame, so without this a peer that ignores it would keep the
+session's work running. The 8-hour session cap still applies.
+
+On the client, a run whose socket closes with 4003 stops and reports the
+server's reason (`src/cli/remote_run.ts`) instead of reconnecting: the
+credential was revoked, so reattaching with it cannot succeed. Other drops
+after the run ID is known, including 4002, still reconnect and send
+`run.attach`: 4002 covers both the 8-hour cap, where reconnecting works, and
+token expiry, where the upgrade refuses it. The client keeps the last close
+reason and, when a reconnect is refused, reports it alongside the refusal, so
+an expired token reads as expired rather than as a bare authentication error.
+
+One known edge in HA: a client that reconnects with a rotated credential to a
+peer that has not yet pulled the new record is bound to the old `createdAt`,
+and that peer closes it once when the record arrives; reconnecting succeeds.
+
 The client looks for the token in this order:
 
 1. the `--token` flag;

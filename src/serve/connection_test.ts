@@ -19,13 +19,16 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  createConnectionTeardown,
   exceptionTypeForClient,
   extractRequestId,
+  handleConnection,
   handleMessage,
   lockTimeoutErrorForClient,
   sanitizeErrorForClient,
   validateServerRequest,
 } from "./connection.ts";
+import { closeSession } from "./handlers/shared.ts";
 import type { ConnectionContext } from "./connection.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
@@ -4130,4 +4133,88 @@ Deno.test("handleMessage: workflow.approve leaves a run that has not opted in su
   assertEquals(data.autoResumed, false);
   assertEquals(registry.get(run.id), undefined);
   assertEquals(run.status, "suspended");
+});
+
+// ── server-initiated close stops the session's work (swamp-club#2469) ──
+
+Deno.test("createConnectionTeardown: aborts in-flight work, ends subscriptions, runs once", () => {
+  const request = new AbortController();
+  const unsubscribed: string[] = [];
+  let workerClosed = 0;
+  const timer = setInterval(() => {}, 60_000);
+  const teardown = createConnectionTeardown({
+    ctx: {
+      auditWebSocketSink: {
+        unsubscribe: (id: string) => unsubscribed.push(id),
+      } as unknown as ConnectionContext["auditWebSocketSink"],
+    },
+    activeRequests: new Map([["req-1", request]]),
+    activeSubscriptions: new Set(["sub-1"]),
+    subscriptionTimers: new Map([["sub-1", timer]]),
+    sessionTimeout: null,
+    workerAttachment: { closed: () => workerClosed++ },
+  });
+
+  teardown();
+  teardown();
+
+  assertEquals(request.signal.aborted, true);
+  assertEquals(unsubscribed, ["sub-1"]);
+  assertEquals(workerClosed, 1);
+});
+
+interface LiveSocket {
+  socket: WebSocket;
+  log: string[];
+}
+
+/** A socket handleConnection can wire, recording close and worker events. */
+function connectForTeardown(): LiveSocket & { fed: string[] } {
+  const log: string[] = [];
+  const fed: string[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send() {},
+    close() {
+      log.push("close");
+      (socket as { readyState: number }).readyState = WebSocket.CLOSING;
+    },
+  } as unknown as WebSocket;
+  const ctx = {
+    workerGateway: {
+      attachTransport: () => ({
+        feed: (raw: string) => {
+          fed.push(raw);
+          return true;
+        },
+        closed: () => log.push("worker-closed"),
+      }),
+    },
+  } as unknown as ConnectionContext;
+  handleConnection(socket, ctx, { kind: "user", id: "alice" });
+  return { socket, log, fed };
+}
+
+Deno.test("closeSession: tears the session's work down before the close handshake", () => {
+  const { socket, log } = connectForTeardown();
+
+  closeSession(socket, 4003, "Session revoked: token revoked");
+
+  // Work stopped first; the close event has not fired and may never.
+  assertEquals(log, ["worker-closed", "close"]);
+
+  // The close event later runs the same teardown, which does nothing twice.
+  socket.onclose?.(new CloseEvent("close"));
+  assertEquals(log, ["worker-closed", "close"]);
+});
+
+Deno.test("handleConnection: frames arriving on a closing session are not served", () => {
+  const { socket, fed } = connectForTeardown();
+  socket.onmessage?.(makeEvent("before"));
+
+  closeSession(socket, 4003, "Session revoked: token revoked");
+  socket.onmessage?.(makeEvent("after"));
+
+  assertEquals(fed, ["before"]);
+  socket.onclose?.(new CloseEvent("close"));
 });
