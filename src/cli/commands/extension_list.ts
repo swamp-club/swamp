@@ -148,26 +148,40 @@ export const extensionListCommand = withRemoteOptions(
     outputMode: cliCtx.outputMode,
   });
 
-  // Warn (don't block) if any extensions are still in a legacy layout.
-  // list reads the lockfile, which tolerates mixed-generation state.
   const repoPath = RepoPath.create(repoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
-  await ensureManagedConfigBase(repoDir, marker);
+  // Records the resolved base for the lockfile path below; startup has
+  // usually done this already. Installed-only, since the datastore
+  // resolution in requireInitializedRepoReadOnly has already had its
+  // chance to auto-install.
+  await ensureManagedConfigBase(repoDir, marker, undefined, {
+    autoResolve: false,
+  });
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
   const tool = resolvePrimaryTool(marker);
   const skillsDirRelative = relative(
     repoDir,
     resolveSkillsDir(repoDir, tool),
   );
-  await warnLegacyExtensionLayout(
-    lockfilePath,
-    (msg) => cliCtx.logger.warn(msg),
-    skillsDirRelative,
-  );
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = await createExtensionListDeps(repoDir);
+  // Read the lockfile first: createExtensionListDeps retries a read that
+  // catches a sync pull mid-rewrite.
+  const deps = await createExtensionListDeps(lockfilePath);
+
+  // Warn (don't block) if any extensions are still in a legacy layout.
+  // list reads the lockfile, which tolerates mixed-generation state. The
+  // warning is advisory, so a torn read here only skips it.
+  try {
+    await warnLegacyExtensionLayout(
+      lockfilePath,
+      (msg) => cliCtx.logger.warn(msg),
+      skillsDirRelative,
+    );
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+  }
 
   // Pull the bare list from the libswamp generator (pure local read).
   const completed = await result(extensionList(ctx, deps));

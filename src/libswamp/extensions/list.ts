@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve } from "@std/path";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
-import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -55,20 +50,39 @@ export interface ExtensionListDeps {
   lockfileRepository: LockfileRepository;
 }
 
-/** Wires real infrastructure into ExtensionListDeps. */
+/** Retry delay for a lockfile caught mid-rewrite. */
+const LOCKFILE_RETRY_DELAY_MS = 75;
+
+const waitBeforeRetryDefault = () =>
+  new Promise<void>((r) => setTimeout(r, LOCKFILE_RETRY_DELAY_MS));
+
+/**
+ * Wires real infrastructure into ExtensionListDeps.
+ *
+ * @param lockfilePath The resolved extension lockfile: the managed config
+ *   base's under managedConfig, `<modelsDir>/upstream_extensions.json`
+ *   otherwise (swamp-club#2508).
+ */
 export async function createExtensionListDeps(
-  repoDir: string,
+  lockfilePath: string,
+  options?: {
+    /** Test seam: waits before re-reading a lockfile that failed to parse. */
+    waitBeforeRetry?: () => Promise<void>;
+  },
 ): Promise<ExtensionListDeps> {
-  const repoPath = RepoPath.create(repoDir);
-  const markerRepo = new RepoMarkerRepository();
-  const marker = await markerRepo.read(repoPath);
-  const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
-  const modelsDir = envModelsDir ?? marker?.modelsDir ?? "extensions/models";
-  const absoluteModelsDir = resolve(repoDir, modelsDir);
-  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-  return {
-    lockfileRepository: await LockfileRepository.create(lockfilePath),
-  };
+  try {
+    return {
+      lockfileRepository: await LockfileRepository.create(lockfilePath),
+    };
+  } catch (error) {
+    // The managed lockfile is a datastore cache file that a sync pull can
+    // rewrite non-atomically; one short retry rides that out.
+    if (!(error instanceof SyntaxError)) throw error;
+    await (options?.waitBeforeRetry ?? waitBeforeRetryDefault)();
+    return {
+      lockfileRepository: await LockfileRepository.create(lockfilePath),
+    };
+  }
 }
 
 /** Yields the list of installed upstream extensions. */
