@@ -235,7 +235,9 @@ with it — immediately on the instance that ran the revoke or rotate, and withi
 about 30s otherwise (on HA peers, or when the revoke is run from the CLI). The
 socket closes with code `4003` and a reason naming the cause, or `4002` on
 expiry. Rotation keeps sessions opened with the new credential. With audit
-enabled, each closed session records an `auth.session.terminated` event.
+enabled, each closed session records an `auth.session.terminated` event whose
+`detail` is the cause: `revoked`, `rotated`, `expired`, `deleted` or `invalid`
+(filter with `swamp audit log --action auth.session.terminated`).
 
 ### Wiring a token into an external secret store
 

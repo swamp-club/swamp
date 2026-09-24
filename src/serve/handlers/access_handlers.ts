@@ -85,8 +85,6 @@ import {
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
 
-const rotateLogger = getSwampLogger(["serve", "access", "rotate"]);
-
 import {
   consumeStream,
   createLibSwampContext,
@@ -105,6 +103,8 @@ import {
   SERVER_TOKEN_MODEL_TYPE,
   ServerTokenSchema,
 } from "../../domain/models/access/server_token_model.ts";
+
+const rotateLogger = getSwampLogger(["serve", "access", "rotate"]);
 
 export async function handleAccessGrantList(
   socket: WebSocket,

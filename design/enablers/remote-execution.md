@@ -222,7 +222,11 @@ poll interval plus 30s. A record that exists but no longer parses closes its
 sessions (4003), as it would be rejected at upgrade; a read that fails for any
 other reason, such as I/O, keeps the session until the next pass. Revoke and
 rotate close sessions even when the request was cancelled after the change was
-saved. `terminateTokenSessions` is the one path that closes them,
+saved. Sessions are unbound as they close, so a peer that never completes the
+close handshake is not closed and audited again. One known edge in HA: a client
+that reconnects with a rotated credential to a peer that has not yet pulled the
+new record is bound to the old `createdAt`, and that peer closes it once when
+the record arrives; reconnecting succeeds. `terminateTokenSessions` is the one path that closes them,
 and it records an `auth.session.terminated` audit event per session (see
 [serve-audit.md](serve-audit.md)). The 8-hour session cap still applies.
 

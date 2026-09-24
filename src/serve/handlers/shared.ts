@@ -400,8 +400,9 @@ export const TOKEN_ROTATED_REASON =
 export const TOKEN_GONE_REASON = "Session revoked: token no longer exists";
 export const TOKEN_INVALID_REASON =
   "Session revoked: token record is unreadable";
+// Unlike the 8-hour session cap, reconnecting with the same token will fail.
 export const TOKEN_EXPIRED_REASON =
-  "Session expired — reconnect to re-authenticate";
+  "Session expired: token expired, re-authenticate with a new token";
 
 export interface TokenSessionAuditContext {
   readonly emitter?: Pick<AuditEmitter, "emit">;
@@ -481,8 +482,14 @@ export function terminateTokenSessions(
   });
   for (const socket of targets) {
     emitSessionTerminated(socket, name, options);
+    // Unbind before closing: the close event (and removeConnection) waits for
+    // the peer's close handshake, and a peer that never answers must not be
+    // listed, closed and audited again on every revalidation pass.
+    sockets.delete(socket);
+    connectionTokens.delete(socket);
     socket.close(options.code, options.reason);
   }
+  if (sockets.size === 0) tokenSockets.delete(name);
   if (targets.length > 0) {
     sessionLogger.info(
       "Closed {count} session(s) for token {name} ({cause})",

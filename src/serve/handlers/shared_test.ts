@@ -582,6 +582,35 @@ Deno.test("terminateTokenSessions: onlyCreatedAt closes just that mint", () => {
   terminate(name);
 });
 
+Deno.test("terminateTokenSessions: a peer that never completes the close is terminated once", () => {
+  // A real socket only fires "close" (and so removeConnection) once the peer
+  // answers the close frame. Until then it must not be listed again.
+  const name = `tok-${crypto.randomUUID()}`;
+  const events: AuditEvent[] = [];
+  const closes: number[] = [];
+  const socket = {
+    readyState: 1,
+    OPEN: 1,
+    send: () => {},
+    close: (code?: number) => closes.push(code ?? 0),
+  } as unknown as WebSocket;
+  setConnectionCollectives(socket, [], [], "user:alice");
+  setConnectionToken(socket, {
+    name,
+    createdAt: MINT_1,
+    principalId: "user:alice",
+  });
+  const audit = { emitter: { emit: (e: AuditEvent) => events.push(e) } };
+
+  assertEquals(terminate(name, { audit }), 1);
+  assertEquals(sessionsFor(name), []);
+  assertEquals(terminate(name, { audit }), 0);
+
+  assertEquals(closes, [4003]);
+  assertEquals(events.length, 1);
+  removeConnection(socket);
+});
+
 Deno.test("terminateTokenSessions: an unknown token closes nothing", () => {
   assertEquals(terminate(`tok-${crypto.randomUUID()}`), 0);
 });

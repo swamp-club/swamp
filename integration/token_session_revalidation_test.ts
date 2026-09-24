@@ -299,11 +299,8 @@ Deno.test("revoke handler: a revoke that completes after cancellation still ends
     const name = `cancelled-${crypto.randomUUID()}`;
     const mint = await repo.mint(name, "user:alice");
     const session = openSession(name, mint, "user:alice");
-    const caller = openSession(
-      `admin-${crypto.randomUUID()}`,
-      mint,
-      "user:admin",
-    );
+    const callerToken = `admin-${crypto.randomUUID()}`;
+    const caller = openSession(callerToken, mint, "user:admin");
     const controller = new AbortController();
     controller.abort();
 
@@ -323,6 +320,12 @@ Deno.test("revoke handler: a revoke that completes after cancellation still ends
     );
     assertEquals(JSON.parse(caller.sent[0]).error.code, "cancelled");
     assertEquals(session.closes.map((c) => c.code), [4003]);
+    terminateTokenSessions(callerToken, {
+      code: 1000,
+      reason: "test cleanup",
+      cause: "revoked",
+      initiatedBy: "system",
+    });
   });
 });
 
