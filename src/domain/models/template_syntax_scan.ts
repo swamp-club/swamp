@@ -33,7 +33,7 @@ export type TemplateSyntaxForm =
   | "bare-double-brace"
   /** `${ ... }` with a single brace */
   | "single-brace"
-  /** `{{ ... }}` inside a `${{ ... }}` string, which cuts the expression short */
+  /** `{{ ... }}` in a `${{ ... }}` string, which cuts the expression short */
   | "inside-expression"
   /** `${{` whose expression is missing its closing `}}` */
   | "unclosed-expression";
@@ -115,8 +115,8 @@ const MAX_CLOSING_ATTEMPTS = 16;
  * An expression ends at the first `}}`. One that parses as CEL is sound,
  * even with `{{` in it, as in `${{ '{{' }}`. One that does not parse, and
  * shows a sign of running past its intended end (a `{{` after its opening,
- * or a lone `}` typed for `}}` after valid CEL), is judged by whether it
- * parses when it ends at a later `}}` instead:
+ * even in `${{{`, or a lone `}` typed for `}}` after valid CEL), is judged by
+ * whether it parses when it ends at a later `}}` instead:
  *
  * - If it does, a string inside it was cut short, and the braces there are
  *   malformed (`inside-expression`), as in `${{ "{{host.name}}" }}`.
@@ -255,8 +255,12 @@ function scanString(
     } else if (diagnoses[span] === "cut-short" && !reported.has(span)) {
       // Braces that match no `{{ ... }}`, such as a nested `${{ ... }}`,
       // are reported from their first `{{`.
-      const brace = value.indexOf("{{", start + 3);
-      const from = value[brace - 1] === "$" ? brace - 1 : brace;
+      const brace = value.indexOf("{{", start + 2);
+      const from = brace === -1
+        ? start
+        : value[brace - 1] === "$"
+        ? brace - 1
+        : brace;
       result.malformed.push({
         path,
         text: value.slice(from, end),
@@ -281,7 +285,9 @@ function diagnoseSpan(
 ): "cut-short" | "unclosed" | undefined {
   const [start, end] = spans[k];
   const inner = value.slice(start + 3, end - 2);
-  const runsOn = inner.includes("{{") || hasLoneClosingBrace(inner);
+  // A `{{` from the opening's second brace on counts, so `${{{` does too.
+  const runsOn = value.slice(start + 2, end - 2).includes("{{") ||
+    hasLoneClosingBrace(inner);
   if (!runsOn || parsesAsCel(inner)) return undefined;
   const limit = k + 1 < spans.length ? spans[k + 1][0] : value.length;
   let close = value.indexOf("}}", end);

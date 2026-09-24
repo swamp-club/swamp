@@ -172,6 +172,9 @@ Deno.test("scanTemplateSyntax: every shape of an unclosed expression is reported
   assertEquals(unclosed("echo ${{ self.?name } && ls }}"), [
     "${{ self.?name } && ls }}",
   ]);
+  // An extra opening brace.
+  assertEquals(unclosed("echo ${{{ self.name }}}"), ["${{{ self.name }}"]);
+  assertEquals(unclosed("${{{'a': 1}}}"), ["${{{'a': 1}}"]);
 });
 
 Deno.test("scanTemplateSyntax: reports a run of unclosed expressions on one line once", () => {
@@ -263,6 +266,20 @@ Deno.test("scanTemplateSyntax: a map literal cut short by its own }} is not repo
   // Known gap: the span shows no sign of running on, so it passes through as
   // text swamp cannot attribute. A quote- and brace-aware scanner fixes it.
   assertEquals(classify("${{ {'a': {'b': 1}} }}"), "none");
+  // Only the first } is checked for a lone brace, so one inside a string
+  // hides a later typo.
+  assertEquals(classify("${{ 'a}b' + self.name } && ls }}"), "none");
+});
+
+Deno.test("scanTemplateSyntax: a cut-short expression with no {{ is reported by its own text", () => {
+  // A CEL comment hides the lone }, and a later }} recovers the string.
+  const value = "${{ a // }\n + 'x}}' }}";
+  const scan = scanTemplateSyntax({ v: value }, noInputs);
+  assertEquals(scan.malformed, [{
+    path: "v",
+    text: "${{ a // }\n + 'x}}",
+    form: "inside-expression",
+  }]);
 });
 
 Deno.test("scanTemplateSyntax: unclosed expressions are reported in a declared field", () => {
