@@ -29,8 +29,11 @@ import {
   dataAccessorAlternation,
   extractExpressions,
   stripExpressionFields,
-  valueContainsExpression,
 } from "../expressions/expression_parser.ts";
+import {
+  containsSwampExpression,
+  isForeignExpression,
+} from "../expressions/swamp_namespaces.ts";
 import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
 import { foreignTemplatePathPredicate } from "./foreign_template_fields.ts";
 import {
@@ -127,13 +130,14 @@ export class ValidationWarning {
 
   /**
    * Creates a warning about another service's template syntax, which is
-   * passed to the method unchanged.
+   * passed to the method unchanged: `{{...}}` and `${...}` text, and
+   * `${{ ... }}` text that references nothing swamp provides.
    */
   static foreignTemplateSyntax(
     templates: ForeignTemplateDetail[],
   ): ValidationWarning {
     const message =
-      "This text is not a swamp expression and is passed to the method unchanged. If you meant a swamp expression, write ${{ ... }}. If it is another service's template syntax, the model type can declare the field with .meta({ foreignTemplate: true }) to silence this warning.";
+      "This text is not a swamp expression and is passed to the method unchanged. If you meant a swamp expression, write ${{ ... }} and reference one of swamp's namespaces (model, self, inputs, env, vault, data). If it is another service's template syntax, the model type can declare the field with .meta({ foreignTemplate: true }) to silence this warning.";
     return new ValidationWarning(
       FOREIGN_TEMPLATE_WARNING_NAME,
       message,
@@ -319,7 +323,10 @@ export class DefaultModelValidationService implements ModelValidationService {
     // wrong fail Expression paths; another service's syntax only warns.
     const templateScan = this.scanTemplateSyntax(definition, modelDef);
 
-    // Add expression path validation if definitionRepo is provided
+    // Add expression path validation if definitionRepo is provided. It also
+    // collects ${{ ... }} text written for another templating system, which
+    // joins the template-syntax warning rather than failing.
+    const foreignExpressions: ForeignTemplateDetail[] = [];
     if (definitionRepo) {
       validations.push(
         this.validateExpressionPaths(
@@ -327,6 +334,7 @@ export class DefaultModelValidationService implements ModelValidationService {
           modelDef,
           definitionRepo,
           templateScan.malformed,
+          foreignExpressions,
         ),
       );
     }
@@ -351,7 +359,10 @@ export class DefaultModelValidationService implements ModelValidationService {
     // Detect env var usage and generate warnings
     const warnings = [
       ...this.detectEnvVarUsage(definition),
-      ...this.foreignTemplateWarnings(templateScan.foreign),
+      ...this.foreignTemplateWarnings([
+        ...templateScan.foreign.map(({ path, text }) => ({ path, text })),
+        ...foreignExpressions,
+      ]),
     ];
 
     return { results, warnings };
@@ -383,16 +394,12 @@ export class DefaultModelValidationService implements ModelValidationService {
    * Returns a warning listing another service's template syntax, if any.
    */
   private foreignTemplateWarnings(
-    foreign: TemplateSyntaxFinding[],
+    foreign: ForeignTemplateDetail[],
   ): ValidationWarning[] {
     if (foreign.length === 0) {
       return [];
     }
-    return [
-      ValidationWarning.foreignTemplateSyntax(
-        foreign.map(({ path, text }) => ({ path, text })),
-      ),
-    ];
+    return [ValidationWarning.foreignTemplateSyntax(foreign)];
   }
 
   /**
@@ -461,7 +468,7 @@ export class DefaultModelValidationService implements ModelValidationService {
           : {};
         const filteredGlobalArgs: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(resolvedGlobalArgs)) {
-          if (valueContainsExpression(value)) {
+          if (containsSwampExpression(value)) {
             continue;
           }
           filteredGlobalArgs[key] = value;
@@ -712,6 +719,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     modelDef: ModelDefinition,
     definitionRepo: DefinitionRepository,
     malformed: TemplateSyntaxFinding[],
+    foreign: ForeignTemplateDetail[],
   ): Promise<ValidationResult> {
     const errors: ExpressionPathError[] = malformed.map((m) => {
       const { issue, suggestion } = MALFORMED_EXPRESSION_MESSAGES[m.form];
@@ -727,8 +735,25 @@ export class DefaultModelValidationService implements ModelValidationService {
       globalArguments: definition.globalArguments,
       methods: definition.methodData,
     };
+    const isDeclaredForeign = foreignTemplatePathPredicate(modelDef);
     for (const exprLocation of extractExpressions(allExpressionData)) {
       const { celExpression, raw, path } = exprLocation;
+
+      // Another templating system's text (${{ github.sha }}) is passed to the
+      // method unchanged, so it is never an error. Classified before the
+      // reference checks, whose substring extractors would otherwise read
+      // github.event.model.foo as a reference to a model named foo. It is
+      // judged with the same scope as the run-time guard on global
+      // arguments, so validate never passes text that the run then rejects.
+      // A root that names one of this repo's models is a missing "model."
+      // prefix, and still fails below.
+      if (
+        isForeignExpression(celExpression) &&
+        !await this.namesModel(celExpression, definitionRepo)
+      ) {
+        if (!isDeclaredForeign(path)) foreign.push({ path, text: raw });
+        continue;
+      }
 
       // Validate model references
       const pathRefs = extractPathReferences(celExpression);
@@ -770,6 +795,19 @@ export class DefaultModelValidationService implements ModelValidationService {
 
     const errorMessage = this.formatExpressionPathErrors(errors);
     return ValidationResult.fail("Expression paths", errorMessage);
+  }
+
+  /**
+   * Whether CEL text starts with the name of a model in this repo, the shape
+   * of a model reference missing its `model.` prefix.
+   */
+  private async namesModel(
+    celExpression: string,
+    definitionRepo: DefinitionRepository,
+  ): Promise<boolean> {
+    const root = celExpression.match(/^([a-zA-Z][a-zA-Z0-9_-]*)/)?.[1];
+    return root !== undefined &&
+      await definitionRepo.findByNameGlobal(root) !== null;
   }
 
   /**

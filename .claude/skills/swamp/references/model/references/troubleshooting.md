@@ -173,7 +173,10 @@ swamp model validate my-model --json
 
 **Cause**: A `globalArguments` field contains a CEL expression that couldn't be
 resolved (e.g., the referenced model has no resource data), and the method tried
-to use that field.
+to use that field. Another templating system's text such as `${{ github.sha }}`
+is passed through and does not cause this. Text whose first name is a swamp
+namespace (`${{ inputs.version }}`, `${{ steps.x }}`, `${{ env.X }}`) is treated
+as swamp's, so a vendor's text of that shape does.
 
 **Solutions**:
 

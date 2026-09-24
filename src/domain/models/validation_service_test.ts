@@ -71,6 +71,15 @@ const testExprModel: ModelDefinition = defineModel({
 /**
  * Creates a mock definition repository for testing expression path validation.
  */
+/**
+ * A model named my-vpc, so `${{ my-vpc.VpcId }}` reads as a model reference
+ * missing its `model.` prefix rather than another templating system's text.
+ */
+const myVpc = Definition.create({
+  name: "my-vpc",
+  globalArguments: { message: "hello" },
+});
+
 function createMockDefinitionRepo(
   models: { name: string; type: string; definition: Definition }[],
 ): DefinitionRepository {
@@ -515,10 +524,16 @@ const foreignTemplateModel: ModelDefinition = {
 async function validateWith(
   modelDef: ModelDefinition,
   props: Parameters<typeof Definition.create>[0],
+  repoModels: Definition[] = [],
 ) {
   const definition = Definition.create(props);
   const mockRepo = createMockDefinitionRepo([
     { name: props.name, type: modelDef.type.normalized, definition },
+    ...repoModels.map((d) => ({
+      name: d.name,
+      type: modelDef.type.normalized,
+      definition: d,
+    })),
   ]);
   const { results, warnings } = await new DefaultModelValidationService()
     .validateModel(definition, modelDef, mockRepo);
@@ -739,6 +754,60 @@ Deno.test("validateModel fails {{...}} inside a ${{ }} string, even in a declare
   }
 });
 
+Deno.test("validateModel passes another templating system's ${{ }} text with the template warning (swamp-club#2491)", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: {
+      message: "deploy ${{ github.sha }}",
+      nested: { ref: "${{ github.event.model.foo.resource.x }}" },
+      self: "${{ github.self.x }}",
+    },
+  });
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings.map((w) => w.name), [FOREIGN_TEMPLATE_WARNING_NAME]);
+  assertEquals(warnings[0].templates, [
+    { path: "globalArguments.message", text: "${{ github.sha }}" },
+    {
+      path: "globalArguments.nested.ref",
+      text: "${{ github.event.model.foo.resource.x }}",
+    },
+    { path: "globalArguments.self", text: "${{ github.self.x }}" },
+  ]);
+});
+
+Deno.test("validateModel lists ${{ }} and {{ }} foreign text in one warning", async () => {
+  const { warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "{{host.name}} at ${{ github.sha }}" },
+  });
+  assertEquals(warnings.length, 1);
+  assertEquals(
+    warnings[0].templates?.map((t) => t.text).sort(),
+    ["${{ github.sha }}", "{{host.name}}"],
+  );
+});
+
+Deno.test("validateModel does not warn on foreign ${{ }} text in a declared field", async () => {
+  const { expressionPaths, warnings } = await validateWith(
+    foreignTemplateModel,
+    {
+      name: "test-definition",
+      globalArguments: { message: "deploy ${{ github.sha }}" },
+    },
+  );
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings, []);
+});
+
+Deno.test("validateModel still fails ${{ }} text that does not parse", async () => {
+  // Not foreign: the run-time guard claims it, so validate must not pass it.
+  const { expressionPaths } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "${{ not valid cel !!! }}" },
+  });
+  assertEquals(expressionPaths?.passed, false);
+});
+
 Deno.test("validateModel still validates ${{ }} expressions inside a declared field", async () => {
   const { expressionPaths, warnings } = await validateWith(
     foreignTemplateModel,
@@ -746,6 +815,7 @@ Deno.test("validateModel still validates ${{ }} expressions inside a declared fi
       name: "test-definition",
       globalArguments: { message: "${{my-vpc.VpcId}} on {{host.name}}" },
     },
+    [myVpc],
   );
   assertEquals(expressionPaths?.passed, false);
   assertStringIncludes(expressionPaths?.error ?? "", "my-vpc.VpcId");
@@ -765,6 +835,7 @@ Deno.test("validateModel detects incomplete model reference like my-vpc.VpcId", 
 
   const mockRepo = createMockDefinitionRepo([
     { name: "test-definition", type: "test/expr-validation", definition },
+    { name: "my-vpc", type: "test/expr-validation", definition: myVpc },
   ]);
 
   const { results } = await service.validateModel(
@@ -791,6 +862,7 @@ Deno.test("validateModel detects simple identifier expression", async () => {
 
   const mockRepo = createMockDefinitionRepo([
     { name: "test-definition", type: "test/expr-validation", definition },
+    { name: "my-vpc", type: "test/expr-validation", definition: myVpc },
   ]);
 
   const { results } = await service.validateModel(
@@ -2277,9 +2349,10 @@ Deno.test("validateModel accepts every data namespace accessor in a global argum
 });
 
 Deno.test("validateModel still rejects a global argument referencing nothing valid", async () => {
+  // In swamp's own data namespace, so not another templating system's text.
   const definition = Definition.create({
     name: "test-definition",
-    globalArguments: { message: "${{ my-vpc.VpcId }}" },
+    globalArguments: { message: "${{ data.nope('my-model') }}" },
   });
   const mockRepo = createMockDefinitionRepo([
     { name: "test-definition", type: "test/expr-validation", definition },

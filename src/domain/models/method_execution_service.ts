@@ -42,10 +42,8 @@ import {
   getObjectShape,
   isRecordSchema,
 } from "./zod_type_coercion.ts";
-import {
-  extractExpressions,
-  valueContainsExpression,
-} from "../expressions/expression_parser.ts";
+import { extractExpressions } from "../expressions/expression_parser.ts";
+import { containsSwampExpression } from "../expressions/swamp_namespaces.ts";
 import {
   containsEnvExpression,
   containsVaultExpression,
@@ -204,10 +202,12 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // Exclude global args with unresolved ${{ ... }} expressions (recursively,
     // including nested objects/arrays) — those are guarded by a Proxy on
     // context.globalArgs and should not be injected into per-method arguments
-    // where they could pass schema validation as plain strings.
+    // where they could pass schema validation as plain strings. Another
+    // templating system's ${{ ... }} text (${{ github.sha }}) is not swamp's
+    // and is merged as the value it is — see containsSwampExpression.
     const filteredGlobalArgs: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(resolvedGlobalArgs)) {
-      if (valueContainsExpression(value)) {
+      if (containsSwampExpression(value)) {
         continue;
       }
       filteredGlobalArgs[key] = value;
@@ -216,7 +216,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // vault sentinel tokens are preserved for unresolvedMethodArgs below.
     const filteredRawGlobalArgs: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(definition.globalArguments)) {
-      if (valueContainsExpression(value)) {
+      if (containsSwampExpression(value)) {
         continue;
       }
       filteredRawGlobalArgs[key] = value;
@@ -238,13 +238,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
     // Populate context with global args and definition metadata.
     // Wrap globalArgs in a Proxy that throws a clear error when the method
-    // accesses a field with an unresolved ${{ ... }} expression.
+    // accesses a field with an unresolved swamp ${{ ... }} expression.
     // This allows methods that don't need certain fields to succeed while
     // failing fast with a helpful message if they do.
     const globalArgsProxy = new Proxy(resolvedGlobalArgs, {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
-        if (typeof prop === "string" && valueContainsExpression(value)) {
+        if (typeof prop === "string" && containsSwampExpression(value)) {
           const exprs = extractExpressions(value);
           const hasVault = exprs.some((e) =>
             containsVaultExpression(e.celExpression)
@@ -556,13 +556,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         const rawGlobalArgs = currentDefinition.globalArguments;
 
         // Identify globalArg fields with unresolved expressions (inputs,
-        // model resource/file refs, or any other ${{ ... }} that wasn't evaluated).
-        // Uses valueContainsExpression for recursive detection of expressions
-        // inside nested objects and arrays.
+        // model resource/file refs, or any other swamp ${{ ... }} that wasn't
+        // evaluated). Uses containsSwampExpression for recursive detection of
+        // expressions inside nested objects and arrays.
         let hasUnresolved = false;
         const resolvedGlobalArgs: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(rawGlobalArgs)) {
-          if (valueContainsExpression(value)) {
+          if (containsSwampExpression(value)) {
             hasUnresolved = true;
           } else {
             resolvedGlobalArgs[key] = value;
@@ -643,7 +643,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           currentDefinition.globalArguments,
         )
       ) {
-        if (valueContainsExpression(value)) {
+        if (containsSwampExpression(value)) {
           continue;
         }
         filteredRawGlobalArgs[key] = value;

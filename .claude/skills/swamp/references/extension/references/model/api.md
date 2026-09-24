@@ -674,7 +674,9 @@ const GlobalArgsSchema = z.object({
 ```
 
 - Only the check is silenced: `${{ ... }}` in the field is still validated and
-  evaluated, and the method receives the vendor text unchanged.
+  evaluated, and the method receives the vendor text unchanged. A vendor's own
+  `${{ ... }}` (GitHub Actions `${{ github.sha }}`) is not warned about in a
+  declared field.
 - Put `.meta()` on the field itself (wrapping it in `.optional()`, `.nullable()`
   or `.default()` is fine), not before a `.transform()`.
 - Older swamp versions ignore the metadata, so no version gate is needed.

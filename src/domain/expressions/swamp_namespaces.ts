@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { type ASTNode, parse as parseCel } from "cel-js";
-import { transformHyphenatedModelRefs } from "./expression_parser.ts";
+import {
+  extractExpressions,
+  transformHyphenatedModelRefs,
+} from "./expression_parser.ts";
 
 /**
  * CEL macros whose first argument binds a local variable for the remaining
@@ -56,8 +59,63 @@ const SWAMP_ROOT_NAMESPACES: ReadonlySet<string> = new Set([
 export interface SwampScope {
   /** Whether this evaluation binds the root identifier. */
   isBound(root: string): boolean;
-  /** Input names the definition declares in its `inputs` schema. */
-  declaredInputs: ReadonlySet<string>;
+  /**
+   * Input names the definition declares in its `inputs` schema, or `"any"`
+   * to attribute every `inputs.X` to swamp.
+   */
+  declaredInputs: ReadonlySet<string> | "any";
+}
+
+/**
+ * The scope to judge `${{ ... }}` text by where no single evaluation is in
+ * view: the guard on a method's global arguments, which may run on a remote
+ * worker that never saw the definition's `inputs`, and `model validate`, which
+ * must agree with that guard. Every namespace counts as bound and every input
+ * as declared.
+ *
+ * {@link isSwampExpression} can only gain `true` answers as its scope widens,
+ * so anything a definition pass attributes to swamp is swamp's here too.
+ */
+export const WIDEST_SWAMP_SCOPE: SwampScope = {
+  isBound: () => true,
+  declaredInputs: "any",
+};
+
+/**
+ * Whether `${{ ... }}` text is another templating system's, such as GitHub
+ * Actions `${{ github.sha }}`: it parses as CEL, and no swamp evaluation could
+ * own it (see {@link WIDEST_SWAMP_SCOPE}).
+ *
+ * Text that does not parse is never foreign. That covers prose, and a swamp
+ * expression that `extractExpressions` cut short at a `}}` inside one of its
+ * string literals, which must stay guarded rather than reach a method as
+ * literal text.
+ */
+export function isForeignExpression(celExpression: string): boolean {
+  return parses(celExpression) &&
+    !isSwampExpression(celExpression, WIDEST_SWAMP_SCOPE);
+}
+
+/**
+ * Whether a value (a string, or an object or array holding strings) carries
+ * `${{ ... }}` text that is not foreign (see {@link isForeignExpression}).
+ * After definition evaluation such text is an expression that did not
+ * resolve; a value whose only `${{ ... }}` text is another templating
+ * system's holds none.
+ */
+export function containsSwampExpression(value: unknown): boolean {
+  return extractExpressions(value).some((expr) =>
+    !isForeignExpression(expr.celExpression)
+  );
+}
+
+function parses(celExpression: string): boolean {
+  try {
+    parseCel(transformHyphenatedModelRefs(celExpression));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -96,6 +154,7 @@ export function isSwampExpression(
     if (!SWAMP_ROOT_NAMESPACES.has(root)) return false;
     if (root === "inputs") {
       if (refs.opaqueInputs) return false;
+      if (scope.declaredInputs === "any") continue;
       for (const name of refs.inputs) {
         if (!scope.declaredInputs.has(name)) return false;
       }

@@ -590,6 +590,22 @@ not swamp's in a definition that declares no `version` input, but a declared
 input with no value is. Both kinds keep passing through to the method as
 literal text.
 
+The guard on global arguments has no single evaluation in view: it runs after
+the pass, possibly on a remote worker that never saw the definition's `inputs`.
+The Proxy on `context.globalArgs`, the schema check and argument merge that skip
+unresolved global arguments, and the pre-flight argument filter all use
+`containsSwampExpression` (`src/domain/expressions/swamp_namespaces.ts`). It
+judges each `${{ ... }}` with `isForeignExpression`: the text parses, and is not
+swamp's under `WIDEST_SWAMP_SCOPE`, where every namespace counts as bound and
+every input as declared. Widening a scope can only turn "not swamp's" into
+"swamp's", so everything a definition pass records as a failure stays guarded.
+Text that does not parse is never foreign; that covers a swamp expression cut
+short at a `}}` inside one of its strings. Only text no swamp evaluation could
+own, such as `${{ github.sha }}`, reaches the method as a value. Text in a swamp
+namespace, such as GitHub's `${{ inputs.version }}` or
+`${{ steps.build.outputs.sha }}`, stays guarded in a global argument because
+swamp cannot tell it from its own.
+
 ## Other Services' Template Syntax
 
 Many services have template languages of their own. Datadog, Grafana,
@@ -664,9 +680,18 @@ The metadata is found the way `sensitive` is. It is read from the field itself
 and through `optional`, `nullable` and `default` wrappers, but not through
 `.transform()`.
 
-Related gaps are tracked separately. A foreign `${{ ... }}`, such as GitHub
-Actions `${{ github.sha }}`, fails validation and throws when a method reads it
-from a global argument (swamp-club#2491). A `literal("...")` function for
+**Foreign `${{ ... }}` text.** `${{ ... }}` written for another templating
+system, such as GitHub Actions `${{ github.sha }}`, is judged the way the
+runtime guard on global arguments judges it (`isForeignExpression`, above), so
+validation never passes text that the run then refuses. It is classified before
+the model, self and env reference checks, whose extractors would otherwise read
+`github.event.model.foo` as a model reference. Foreign text joins the
+`Template syntax passed through` warning, and a declared field silences it
+there too. Two cases still fail: text whose first name is one of the repo's
+models (`${{ my-vpc.VpcId }}` is a missing `model.` prefix), and text that CEL
+cannot parse.
+
+Related gaps are tracked separately. A `literal("...")` function for
 strings that mix swamp and vendor syntax needs an expression scanner that
 understands quoted strings (swamp-club#2492). An unclosed `${{` runs on to a
 later `}}`, so a foreign `{{ ... }}` after it is reported as cutting the
