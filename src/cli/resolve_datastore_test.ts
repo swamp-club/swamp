@@ -31,6 +31,14 @@ import {
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
+import {
+  getAutoResolver,
+  setAutoResolver,
+} from "../domain/extensions/auto_resolver_context.ts";
+import {
+  type AutoResolveOutputPort,
+  ExtensionAutoResolver,
+} from "../domain/extensions/extension_auto_resolver.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { z } from "zod";
 import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
@@ -906,4 +914,117 @@ Deno.test("resolveDatastoreConfig: repoId expression does not mutate marker", as
     if (orig !== undefined) Deno.env.set("SWAMP_TEST_REPO_ID_NOMUT", orig);
     else Deno.env.delete("SWAMP_TEST_REPO_ID_NOMUT");
   }
+});
+
+/** No-op auto-resolve output port. */
+const silentOutput: AutoResolveOutputPort = {
+  searching: () => {},
+  installing: () => {},
+  installed: () => {},
+  notFound: () => {},
+  networkError: () => {},
+  alreadyInstalledButFailed: () => {},
+  alreadyInstalledTruncated: () => {},
+  legacyInstallation: () => {},
+  collectiveNotTrusted: () => {},
+  localSourceFailed: () => {},
+  noStableVersion: () => {},
+};
+
+/**
+ * Installs an auto-resolver for `collective` that records every registry
+ * lookup and finds nothing, runs `fn`, then restores the previous resolver.
+ */
+async function withRecordingAutoResolver(
+  collective: string,
+  fn: (lookups: string[]) => Promise<void>,
+): Promise<void> {
+  const lookups: string[] = [];
+  const previous = getAutoResolver();
+  setAutoResolver(
+    new ExtensionAutoResolver({
+      allowedCollectives: [collective],
+      extensionLookup: {
+        getExtension: (name) => {
+          lookups.push(name);
+          return Promise.resolve(null);
+        },
+        searchExtensions: () => Promise.resolve({ extensions: [] }),
+      },
+      extensionInstaller: {
+        inspectInstallation: () => Promise.resolve({ state: "missing" }),
+        install: () => Promise.resolve(null),
+        hotLoadModels: () => Promise.resolve(0),
+        hotLoadVaults: () => Promise.resolve(),
+        hotLoadDatastores: () => Promise.resolve(),
+        hotLoadWebhooks: () => Promise.resolve(),
+        failedLocalSourceMatchesType: () => false,
+      },
+      output: silentOutput,
+    }),
+  );
+  try {
+    await fn(lookups);
+  } finally {
+    setAutoResolver(previous);
+  }
+}
+
+Deno.test("resolveDatastoreConfig: autoResolve false never consults the auto-resolver", async () => {
+  const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+  const type = `@${collective}/missing-datastore`;
+  const marker: RepoMarkerData = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    repoId: "test-repo",
+    datastore: { type },
+  };
+  await withRecordingAutoResolver(collective, async (lookups) => {
+    await assertRejects(
+      () =>
+        resolveDatastoreConfig(marker, undefined, "/repo", {
+          autoResolve: false,
+        }),
+      Error,
+      "Unknown datastore type",
+    );
+    assertEquals(lookups, []);
+  });
+});
+
+Deno.test("resolveDatastoreConfig: auto-resolves a missing datastore type by default", async () => {
+  const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+  const type = `@${collective}/missing-datastore`;
+  const marker: RepoMarkerData = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    repoId: "test-repo",
+    datastore: { type },
+  };
+  await withRecordingAutoResolver(collective, async (lookups) => {
+    await assertRejects(
+      () => resolveDatastoreConfig(marker, undefined, "/repo"),
+      Error,
+      "Unknown datastore type",
+    );
+    assertEquals(lookups.length > 0, true);
+  });
+});
+
+Deno.test("parseDatastoreEnvVar: autoResolve false never consults the auto-resolver", async () => {
+  const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+  await withRecordingAutoResolver(collective, async (lookups) => {
+    await assertRejects(
+      () =>
+        parseDatastoreEnvVar(
+          `@${collective}/missing-datastore:{}`,
+          "test-repo",
+          "/repo",
+          { autoResolve: false },
+        ),
+      Error,
+      "Unknown datastore type",
+    );
+    assertEquals(lookups, []);
+  });
 });

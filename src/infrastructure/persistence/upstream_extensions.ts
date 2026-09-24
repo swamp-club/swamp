@@ -46,20 +46,46 @@ export interface UpstreamExtensionEntry {
 export type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
 
 /**
- * Reads upstream_extensions.json and returns the parsed map.
+ * Reads upstream_extensions.json and returns the parsed map. A missing file
+ * reads as an empty map.
+ *
+ * Content that is not valid JSON, or is valid JSON but not an object (such
+ * as `null` or an array), throws a `SyntaxError` naming the file, so callers
+ * treat both as the same corrupt lockfile.
  *
  * @param lockfilePath Full path to the upstream_extensions.json file.
  */
 export async function readUpstreamExtensions(
   lockfilePath: string,
 ): Promise<UpstreamExtensionsMap> {
+  let content: string;
   try {
-    const content = await Deno.readTextFile(lockfilePath);
-    return JSON.parse(content) as UpstreamExtensionsMap;
+    content = await Deno.readTextFile(lockfilePath);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
       return {};
     }
     throw error;
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new SyntaxError(
+      `Cannot parse lockfile ${lockfilePath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    const found = parsed === null
+      ? "null"
+      : Array.isArray(parsed)
+      ? "an array"
+      : typeof parsed;
+    throw new SyntaxError(
+      `Lockfile ${lockfilePath} must contain a JSON object, found ${found}`,
+    );
+  }
+  return parsed as UpstreamExtensionsMap;
 }

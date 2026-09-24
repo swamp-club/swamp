@@ -63,6 +63,7 @@ import { summarizeSyncError } from "../infrastructure/persistence/sync_error_dia
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import {
   getManagedConfigBase,
+  isManagedConfigBaseResolved,
   registerManagedConfig,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
@@ -255,6 +256,15 @@ export interface RequireRepoOptions {
   pull?: boolean;
 }
 
+/** Options for {@link ensureManagedConfigBase}. */
+export interface EnsureManagedConfigBaseOptions {
+  /**
+   * When false, resolve with installed datastore extensions only: a missing
+   * datastore extension is never auto-installed. Defaults to true.
+   */
+  autoResolve?: boolean;
+}
+
 /**
  * Pre-populates the module-level managed config registry by resolving the
  * datastore config. Call this before {@link resolveManagedConfigPaths} in
@@ -268,43 +278,55 @@ export interface RequireRepoOptions {
  * already pass `configBasePath` to resolveManagedConfigPaths and do NOT need
  * this call.
  *
+ * When the datastore cannot be resolved (its extension is not installed or
+ * does not load), nothing is registered here: resolveManagedConfigPaths then
+ * records the in-repo `.swamp/config` fallback as unresolved. The datastore
+ * type registry's loaded flag is reset so a later attempt rescans for the
+ * extension. Transient `lock_timeout` errors are rethrown rather than
+ * reported as unresolved.
+ *
  * @param resolverOverride Test seam — inject a mock resolver to avoid loading
  *   real datastore extensions in tests.
+ * @returns Whether the base was resolved (always false for repos without
+ *   managedConfig).
  */
 export async function ensureManagedConfigBase(
   repoDir: string,
   marker: RepoMarkerData | null,
   resolverOverride?: DatastorePathResolver,
-): Promise<void> {
-  if (marker?.datastore?.managedConfig !== true) return;
+  options?: EnsureManagedConfigBaseOptions,
+): Promise<boolean> {
+  if (marker?.datastore?.managedConfig !== true) return false;
 
   try {
     if (resolverOverride) {
       const configBase = resolverOverride.resolvePath("config");
-      registerManagedConfig(repoDir, true, configBase);
-      return;
+      registerManagedConfig(repoDir, true, configBase, true);
+      return true;
     }
     const datastoreConfig = await resolveDatastoreConfig(
       marker,
       undefined,
       repoDir,
+      { autoResolve: options?.autoResolve },
     );
     const resolver = new DefaultDatastorePathResolver(
       repoDir,
       datastoreConfig,
     );
     const configBase = resolver.resolvePath("config");
-    registerManagedConfig(repoDir, true, configBase);
+    registerManagedConfig(repoDir, true, configBase, true);
+    return true;
   } catch (error) {
+    if (error instanceof UserError && error.code === "lock_timeout") {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : String(error);
     const logger = getSwampLogger(["cli", "managed-config"]);
-    logger.debug`Failed to resolve datastore for managedConfig base: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-    // Datastore extension not loadable — resolveManagedConfigPaths
-    // will use the default .swamp/config/ base path. This can happen
-    // when pulling the datastore extension itself, but managedConfig
-    // is only true after config migrate which requires a working
-    // datastore, so this is an edge case.
+    logger
+      .debug`Failed to resolve datastore for managedConfig base: ${message}`;
+    datastoreTypeRegistry.resetLoadedFlag();
+    return false;
   }
 }
 
@@ -319,6 +341,8 @@ export async function ensureManagedConfigBase(
  * the module-level registry (populated by {@link ensureManagedConfigBase})
  * supplies the correct base for custom datastores (S3, GCS) whose config
  * tier lives at the cache path rather than repo-local `.swamp/config/`.
+ * Without a registered base the in-repo `.swamp/config` fallback is used and
+ * recorded as unresolved; it never replaces a resolved base.
  */
 export function resolveManagedConfigPaths(
   repoDir: string,
@@ -327,6 +351,8 @@ export function resolveManagedConfigPaths(
 ): { pulledExtensionsRoot: string; lockfilePath: string; active: boolean } {
   const managedConfig = marker?.datastore?.managedConfig === true;
   let effectiveBase = configBasePath ?? swampPath(repoDir, "config");
+  const resolved = configBasePath !== undefined ||
+    isManagedConfigBaseResolved(repoDir);
 
   let active = false;
   if (managedConfig) {
@@ -339,7 +365,7 @@ export function resolveManagedConfigPaths(
     }
   }
 
-  registerManagedConfig(repoDir, active, effectiveBase);
+  registerManagedConfig(repoDir, active, effectiveBase, resolved);
   if (active) {
     return {
       pulledExtensionsRoot: join(effectiveBase, "pulled-extensions"),
