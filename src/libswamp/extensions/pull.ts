@@ -50,7 +50,6 @@ import {
   canonicalClaimPath,
   claimsPath,
   findClaimants,
-  pathCovers,
 } from "../../domain/extensions/extension_path_claims.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
 import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
@@ -771,10 +770,17 @@ export function computeOrphanDiff(
   extractedFiles: ReadonlyArray<string>,
 ): string[] {
   const newFilesSet = new Set(extractedFiles);
-  return oldFiles.filter((f) =>
-    !newFilesSet.has(f) &&
-    !extractedFiles.some((n) => pathCovers(n, f) || pathCovers(f, n))
-  );
+  const newCanonical = extractedFiles.map(canonicalClaimPath);
+  return oldFiles.filter((f) => {
+    if (newFilesSet.has(f)) return false;
+    // Strict containment only: an exact match that differs just in case
+    // is a rename, and on a case-sensitive filesystem the old file is a
+    // real orphan.
+    const old = canonicalClaimPath(f);
+    return !newCanonical.some((n) =>
+      old.startsWith(n + "/") || n.startsWith(old + "/")
+    );
+  });
 }
 
 /**

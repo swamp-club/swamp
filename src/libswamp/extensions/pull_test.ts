@@ -198,6 +198,15 @@ Deno.test(
 );
 
 Deno.test(
+  "computeOrphanDiff: a case-only rename leaves the old path an orphan",
+  () => {
+    const oldFiles = [".swamp/pulled-extensions/@x/y/models/MyModel.ts"];
+    const extractedFiles = [".swamp/pulled-extensions/@x/y/models/myModel.ts"];
+    assertEquals(computeOrphanDiff(oldFiles, extractedFiles), oldFiles);
+  },
+);
+
+Deno.test(
   "computeOrphanDiff: a dropped skill root is still an orphan",
   () => {
     const oldFiles = [".claude/skills/foo", ".claude/skills/bar"];

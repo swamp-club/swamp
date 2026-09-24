@@ -139,8 +139,8 @@ export function classifyExtensionFile(file: string): ExtensionLayoutGeneration {
  * Skills are tracked in `entry.files[]` as a single directory path, or
  * as the individual files when the skill was merged into a dir the
  * extension does not own (both set by `installExtension` in `pull.ts`),
- * so this check compares against the directory boundary. The skillsDir is repo-and-tool-specific
- * (`.claude/skills`, `.cursor/skills`, `.swamp/pulled-extensions/skills`
+ * so this check compares against the directory boundary. The skillsDir
+ * is repo-and-tool-specific (`.claude/skills`, `.cursor/skills`, `.swamp/pulled-extensions/skills`
  * for `tool=none`, etc.) and must be repo-relative — `entry.files[]`
  * paths are repo-relative; the caller passes it in.
  *
