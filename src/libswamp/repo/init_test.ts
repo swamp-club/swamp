@@ -429,3 +429,51 @@ Deno.test("repoUpgrade: completes with warning when extension install fails", as
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("repoUpgrade: reports a skipped install pass and passes the resolved lockfile", async () => {
+  let receivedLockfilePath: string | null | undefined = "unset";
+  const deps = makeUpgradeDeps({
+    upgrade: (_repoPath, options) => {
+      receivedLockfilePath = options.lockfilePath;
+      return makeUpgradeDeps().upgrade(_repoPath, options);
+    },
+  });
+
+  const events = await collect<RepoUpgradeEvent>(
+    repoUpgrade(createLibSwampContext(), deps, {
+      path: "/repo",
+      version: "1.0.0",
+      extensionInstallSkippedReason: "Cannot resolve the s3 datastore",
+      lockfilePath: null,
+    }),
+  );
+
+  const completed = events.at(-1) as Extract<
+    RepoUpgradeEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.installSkipped, true);
+  assertEquals(
+    completed.data.installSkippedReason,
+    "Cannot resolve the s3 datastore",
+  );
+  assertEquals(receivedLockfilePath, null);
+  assertEquals(completed.data.untrustedCollectivesSkipped, true);
+});
+
+Deno.test("repoUpgrade: installSkipped is false when the install pass is not skipped", async () => {
+  const events = await collect<RepoUpgradeEvent>(
+    repoUpgrade(createLibSwampContext(), makeUpgradeDeps(), {
+      path: "/repo",
+      version: "1.0.0",
+    }),
+  );
+  const completed = events.at(-1) as Extract<
+    RepoUpgradeEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.installSkipped, false);
+  assertEquals("installSkippedReason" in completed.data, false);
+  assertEquals("untrustedCollectivesSkipped" in completed.data, false);
+});

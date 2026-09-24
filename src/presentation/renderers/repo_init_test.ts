@@ -305,6 +305,7 @@ Deno.test(
           localSkillCopies: [],
           changedFiles: [],
           untrustedCollectives: [],
+          installSkipped: false,
           tool: null,
         },
       },
@@ -344,6 +345,7 @@ Deno.test(
           localSkillCopies: [],
           changedFiles: [],
           untrustedCollectives: [],
+          installSkipped: false,
           tool: null,
         },
       },
@@ -383,6 +385,7 @@ Deno.test(
           ],
           changedFiles: [],
           untrustedCollectives: [],
+          installSkipped: false,
           tool: null,
         },
       },
@@ -424,6 +427,7 @@ Deno.test(
           localSkillCopies: [],
           changedFiles: [],
           untrustedCollectives: ["acme", "dougschaefer"],
+          installSkipped: false,
           tool: null,
         },
       },
@@ -472,6 +476,7 @@ Deno.test(
           localSkillCopies: [],
           changedFiles: [],
           untrustedCollectives: [],
+          installSkipped: false,
           tool: null,
         },
       },
@@ -505,6 +510,7 @@ Deno.test(
           localSkillCopies: [],
           changedFiles: [],
           untrustedCollectives: ["acme"],
+          installSkipped: false,
           tool: null,
         },
       },
@@ -512,5 +518,45 @@ Deno.test(
 
     const parsed = JSON.parse(output);
     assertEquals(parsed.untrustedCollectives, ["acme"]);
+  },
+);
+
+Deno.test(
+  "LogRepoUpgradeRenderer: reports a skipped extension install pass",
+  () => {
+    const output = captureUpgradeLogOutput([
+      { kind: "upgrading" },
+      {
+        kind: "completed",
+        data: {
+          path: "/tmp/x",
+          previousVersion: "0.1.0",
+          newVersion: "0.1.1",
+          upgradedAt: "2026-04-24T00:00:00Z",
+          skillsUpdated: [],
+          instructionsUpdated: false,
+          settingsUpdated: false,
+          gitignoreAction: "unchanged",
+          previousTools: [],
+          tools: [],
+          addedTools: [],
+          removedTools: [],
+          extensionsToReinstall: [],
+          localSkillCopies: [],
+          changedFiles: [],
+          untrustedCollectives: [],
+          untrustedCollectivesSkipped: true,
+          installSkipped: true,
+          installSkippedReason: "Cannot resolve the s3 datastore",
+          tool: null,
+        },
+      },
+    ]);
+
+    assertStringIncludes(
+      output,
+      "Skipped the extension install pass and the untrusted-collectives " +
+        "check: Cannot resolve the s3 datastore",
+    );
   },
 );

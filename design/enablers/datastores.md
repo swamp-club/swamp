@@ -1792,7 +1792,7 @@ remote with `pushManagedConfigChanges` (`src/cli/managed_config_sync.ts`):
 | Model definition create/edit | `config/models/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
-| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2429) | `pushManagedConfigChangesDeferred` | `ctx.syncService.pushChanged` after marking the lockfile |
+| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2429) | `pushManagedConfigChangesDeferred`, skipped when the datastore-extension exemption records into the in-repo lockfile | `ctx.syncService.pushChanged` after marking the lockfile |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 
 Auto-definitions are a normal datastore subdirectory
@@ -1835,6 +1835,22 @@ swamp-club#2483):
    missing-source-files check run only once the base is resolved; if startup
    had to skip them, they run once, best-effort, when a loader first finds it
    resolved. A missing lockfile is normal and silent; an unreadable one warns.
+5. **Writes refuse a guessed base.** Extension write commands (`pull`,
+   `update`, `rm`, `install`, search's install, `doctor extensions --repair`)
+   resolve installed-only and go through `resolveManagedLockfileForWrite`,
+   which throws `ManagedConfigUnresolvedError` (code
+   `managed_config_unresolved`) when the base is unresolved. Its remedy is
+   `swamp datastore sync --pull`, which installs the datastore extension and
+   hydrates the config tier. The one exception is `extension pull`,
+   `extension update` or search's install naming the datastore extension
+   itself (#445): while the base is unresolved it records into the in-repo
+   lockfile and skips the publish, and the next command resolves from the
+   on-disk scan. `repo upgrade` skips its install pass and the
+   untrusted-collectives check, and reports `installSkipped` and
+   `untrustedCollectivesSkipped`; `doctor extensions` skips its rescan and
+   repairs but still reports, with the reason in `rescanSkipped`; `extension
+   update --check` reads the in-repo fallback and marks its result
+   `lockfileSource: "fallback"`.
 
 Until swamp-club#2495, the auto-resolver records installs in the in-repo
 `.swamp/config/upstream_extensions.json` rather than the datastore's lockfile,
@@ -1872,8 +1888,13 @@ Recommended init container sequence for a stateless pod:
    are missing from the repo's pulled root. It records into the config-tier
    lockfile and pushes the lockfile; sources are not pushed.
 
-Step 5 must run on every pod so pulled extension sources are complete: each
-pod restores its own sources.
+The order matters. Steps 2 and 3 auto-install the datastore extension; step 5,
+like every extension write command, resolves the datastore with installed
+extensions only and fails with `managed_config_unresolved` if it is missing.
+When the datastore extension's collective is not trusted (so it cannot
+auto-install), pull it explicitly first with
+`swamp extension pull <datastore extension>`. Step 5 must run on every pod so
+pulled extension sources are complete: each pod restores its own sources.
 
 ### Recovery from missing-extensions state
 

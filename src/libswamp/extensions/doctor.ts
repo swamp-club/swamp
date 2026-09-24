@@ -76,6 +76,18 @@ export interface DoctorWarning {
   message: string;
 }
 
+/**
+ * Why the catalog rescan — and repairs, when requested — did not run.
+ * Set when the managed config base is unresolved: a rescan against the
+ * in-repo guess would tombstone every team extension's rows, and repairs
+ * would write where the datastore never sees them (swamp-club#2483).
+ */
+export interface DoctorRescanSkipped {
+  reason: string;
+  /** True when `--repair` was requested and did not run. */
+  repairSkipped: boolean;
+}
+
 /** Final report shape — used by the renderer's JSON mode. */
 export interface DoctorExtensionsReport {
   overallStatus: DoctorOverallStatus;
@@ -102,6 +114,11 @@ export interface DoctorExtensionsReport {
    * Contains the list of operations (dry-run or applied).
    */
   repairReport?: RepairReport;
+  /**
+   * Present only when the catalog rescan was skipped. Absent means the
+   * rescan ran, and so did repairs if `--repair` was requested.
+   */
+  rescanSkipped?: DoctorRescanSkipped;
   /**
    * State transitions from the most recent reconcile pass. Always
    * present (empty array when no transitions occurred). Each entry
@@ -200,6 +217,11 @@ export interface DoctorExtensionsDeps {
    * stale warnings from the CLI bootstrap leaking into doctor output.
    */
   resetWarnings?: () => void;
+  /**
+   * Set by the CLI when it skipped the catalog rescan (and repairs).
+   * Passed through to the report so JSON callers see the skip too.
+   */
+  rescanSkipped?: DoctorRescanSkipped;
 }
 
 function overallStatus(
@@ -412,6 +434,7 @@ export async function* doctorExtensions(
       orphanFiles,
       aggregateState,
       repairReport,
+      rescanSkipped: deps.rescanSkipped,
       recentTransitions,
       loaderErrors: loaderErrors.size > 0 ? loaderErrors : undefined,
       warnings,

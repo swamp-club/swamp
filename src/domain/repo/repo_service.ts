@@ -246,6 +246,14 @@ export interface RepoInitOptions {
 export interface RepoUpgradeOptions {
   tools?: string[];
   includeGitignore?: boolean;
+  /**
+   * The resolved extension lockfile to scan for untrusted collectives. The
+   * caller resolves it (under managedConfig it lives at the datastore's
+   * config base; swamp-club#2483). `null` means it could not be resolved,
+   * and the check is skipped. When omitted, `<modelsDir>/upstream_extensions.json`
+   * is read.
+   */
+  lockfilePath?: string | null;
 }
 
 /**
@@ -581,6 +589,7 @@ export class RepoService {
     const untrustedCollectives = await this.detectUntrustedCollectives(
       repoPath,
       updatedMarker,
+      options.lockfilePath,
     );
 
     return {
@@ -910,11 +919,12 @@ export class RepoService {
   private async detectUntrustedCollectives(
     repoPath: RepoPath,
     marker: RepoMarkerData,
+    resolvedLockfilePath?: string | null,
   ): Promise<string[]> {
-    const modelsDir = marker.modelsDir ?? "models";
-    const lockfilePath = join(
+    if (resolvedLockfilePath === null) return [];
+    const lockfilePath = resolvedLockfilePath ?? join(
       repoPath.value,
-      modelsDir,
+      marker.modelsDir ?? "extensions/models",
       "upstream_extensions.json",
     );
     let entries: Record<string, unknown>;

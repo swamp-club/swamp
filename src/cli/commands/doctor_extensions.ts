@@ -30,12 +30,12 @@
 // service handles that ordering as the first steps of its async
 // generator.
 //
-// Note: `resolveDatastoreForRepo()` warms `datastoreTypeRegistry`'s
-// `ensureLoaded()` BEFORE the service runs. The service then calls
-// `resetLoadedFlag()` and `ensureLoaded()` again. The double-run is
-// intentional — the second run is what the user sees in the report
-// — and it is consistent with how registries that the CLI bootstrap
-// already warmed get re-loaded.
+// Note: the managed config resolution below (installed-only) may warm
+// `datastoreTypeRegistry`'s `ensureLoaded()` BEFORE the service runs. The
+// service then calls `resetLoadedFlag()` and `ensureLoaded()` again. The
+// double-run is intentional — the second run is what the user sees in the
+// report — and it is consistent with how registries that the CLI
+// bootstrap already warmed get re-loaded.
 
 import { Command } from "@cliffy/command";
 import { bold, dim } from "@std/fmt/colors";
@@ -52,6 +52,7 @@ import {
   doctorExtensions,
   type DoctorExtensionsReport,
   type DoctorRegistryDeps,
+  type DoctorRescanSkipped,
   ReconcileFromDiskService,
   type ReconcileTransition,
   repairExtensions,
@@ -75,7 +76,6 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { resolveDatastoreForRepo } from "../repo_context.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -84,19 +84,46 @@ import {
 } from "../remote_run.ts";
 import type { DoctorExtensionsResponse } from "../../serve/protocol.ts";
 import {
+  assertManagedConfigWritable,
   ensureManagedConfigBase,
+  ManagedConfigUnresolvedError,
+  requireRepoMarker,
   resolveManagedConfigPaths,
 } from "../repo_context.ts";
-import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
+import {
+  type DatastoreEnvReader,
+  isExtensionBackedDatastore,
+} from "../../infrastructure/persistence/managed_config_lockfile.ts";
+import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { transitionalInstalledNames } from "../../infrastructure/persistence/installed_entries.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Why the catalog rescan and repairs must be skipped, or undefined when they
+ * can run. With the managed config base unresolved, the only lockfile is the
+ * in-repo guess: a rescan against it would tombstone every team extension's
+ * rows, and repairs would write where the datastore never sees them. The
+ * command then reports diagnostics only (swamp-club#2483).
+ */
+export function rescanSkippedFor(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  repair: boolean,
+  readDatastoreEnv?: DatastoreEnvReader,
+): DoctorRescanSkipped | undefined {
+  try {
+    assertManagedConfigWritable(repoDir, marker, readDatastoreEnv);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof ManagedConfigUnresolvedError)) throw error;
+    return { reason: error.message, repairSkipped: repair };
+  }
+}
 
 /**
  * `swamp doctor extensions` — re-runs the extension loaders across
@@ -188,19 +215,23 @@ export const doctorExtensionsCommand = withRemoteOptions(
   const needsPrompt = repair && !dryRun && !skipConfirm &&
     cliCtx.outputMode === "log";
 
-  const repoDir = resolveRepoDir(options.repoDir);
-  // Same gate as `doctor audit` — fails loudly outside a swamp repo.
-  await resolveDatastoreForRepo(repoDir);
+  // Fails loudly outside a swamp repo. This does not resolve the
+  // datastore: diagnostics must still run when the managed config base
+  // cannot be resolved (swamp-club#2483).
+  const { repoDir, marker } = await requireRepoMarker(
+    resolveRepoDir(options.repoDir),
+  );
 
   // Resolve lockfile path early so the rescan repository's
   // empty-version fallback has lockfile entries available. (Hoisted
   // from the post-rescan section per ADV-2 resolution; the same
   // values are reused below for orphan detection.)
-  const repoPath = RepoPath.create(repoDir);
-  const markerRepo = new RepoMarkerRepository();
-  const marker = await markerRepo.read(repoPath);
-  await ensureManagedConfigBase(repoDir, marker);
+  await ensureManagedConfigBase(repoDir, marker, undefined, {
+    autoResolve: false,
+  });
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
+  const extensionBacked = isExtensionBackedDatastore(marker);
+  const rescanSkipped = rescanSkippedFor(repoDir, marker, repair);
 
   // A single shared catalog connection for all doctor phases
   // (reconcile, aggregate state, repair, re-pull). Previous code
@@ -212,56 +243,58 @@ export const doctorExtensionsCommand = withRemoteOptions(
   try {
     const localManifestIdentity = readLocalManifestIdentity(repoDir);
     let reconcileTransitions: readonly ReconcileTransition[] = [];
-    try {
-      const reconcileLockfileRepo = await LockfileRepository.create(
-        lockfilePath,
-      );
-      const rescanRepo = new ExtensionRepository({
-        catalog: sharedCatalog,
-        lockfileRepository: reconcileLockfileRepo,
-        repoRoot: repoDir,
-        localManifestIdentity,
-      });
-      rescanRepo.invalidateAll();
-      const denoRuntime = new EmbeddedDenoRuntime();
-      // Same treatment of on-disk datastore extensions and the transitional
-      // in-repo auto-resolve lockfile as the startup reconcile
-      // (swamp-club#2483).
-      const reconciler = new ReconcileFromDiskService({
-        denoRuntime,
-        repository: rescanRepo,
-        lockfileRepository: reconcileLockfileRepo,
-        repoDir,
-        localManifestIdentity,
-        scanOnDiskDatastores: isExtensionBackedDatastore(marker),
-        additionalInstalledNames: await transitionalInstalledNames(
-          repoDir,
-          marker,
+    if (!rescanSkipped) {
+      try {
+        const reconcileLockfileRepo = await LockfileRepository.create(
           lockfilePath,
-        ),
-      });
-      const result = await reconciler.execute();
-      reconcileTransitions = result.transitions;
-    } catch (reconcileError) {
-      // Best-effort — the loader will bootstrap a fresh catalog for
-      // most failures. DuplicateTypeError from same-origin conflicts
-      // should still surface so the user sees it.
-      const { DuplicateTypeError } = await import(
-        "../../infrastructure/persistence/duplicate_type_error.ts"
-      );
-      if (reconcileError instanceof DuplicateTypeError) {
-        const { UserError } = await import("../../domain/errors.ts");
-        const e = reconcileError;
-        throw new UserError(
-          `Type "${e.typeNormalized}" (kind=${e.kind}) is claimed by two ` +
-            `installed extensions:\n` +
-            `  • ${e.firstSource.extensionName}@${e.firstSource.extensionVersion}` +
-            `  at ${e.firstSource.canonicalPath}\n` +
-            `  • ${e.secondSource.extensionName}@${e.secondSource.extensionVersion}` +
-            `  at ${e.secondSource.canonicalPath}\n` +
-            `Remove one with \`swamp extension rm <name>\` to resolve ` +
-            `the conflict, then run \`swamp doctor extensions\` again.`,
         );
+        const rescanRepo = new ExtensionRepository({
+          catalog: sharedCatalog,
+          lockfileRepository: reconcileLockfileRepo,
+          repoRoot: repoDir,
+          localManifestIdentity,
+        });
+        rescanRepo.invalidateAll();
+        const denoRuntime = new EmbeddedDenoRuntime();
+        // Same treatment of on-disk datastore extensions and the transitional
+        // in-repo auto-resolve lockfile as the startup reconcile
+        // (swamp-club#2483).
+        const reconciler = new ReconcileFromDiskService({
+          denoRuntime,
+          repository: rescanRepo,
+          lockfileRepository: reconcileLockfileRepo,
+          repoDir,
+          localManifestIdentity,
+          scanOnDiskDatastores: extensionBacked,
+          additionalInstalledNames: await transitionalInstalledNames(
+            repoDir,
+            marker,
+            lockfilePath,
+          ),
+        });
+        const result = await reconciler.execute();
+        reconcileTransitions = result.transitions;
+      } catch (reconcileError) {
+        // Best-effort — the loader will bootstrap a fresh catalog for
+        // most failures. DuplicateTypeError from same-origin conflicts
+        // should still surface so the user sees it.
+        const { DuplicateTypeError } = await import(
+          "../../infrastructure/persistence/duplicate_type_error.ts"
+        );
+        if (reconcileError instanceof DuplicateTypeError) {
+          const { UserError } = await import("../../domain/errors.ts");
+          const e = reconcileError;
+          throw new UserError(
+            `Type "${e.typeNormalized}" (kind=${e.kind}) is claimed by two ` +
+              `installed extensions:\n` +
+              `  • ${e.firstSource.extensionName}@${e.firstSource.extensionVersion}` +
+              `  at ${e.firstSource.canonicalPath}\n` +
+              `  • ${e.secondSource.extensionName}@${e.secondSource.extensionVersion}` +
+              `  at ${e.secondSource.canonicalPath}\n` +
+              `Remove one with \`swamp extension rm <name>\` to resolve ` +
+              `the conflict, then run \`swamp doctor extensions\` again.`,
+          );
+        }
       }
     }
 
@@ -328,6 +361,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
         repoDir,
         skillsDirs: repoRelativeSkillsDirs,
         abortSignal: controller.signal,
+        rescanSkipped,
         buildAggregateState: async () => {
           const aggLockfileRepo = await LockfileRepository.create(
             lockfilePath,
@@ -350,7 +384,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
             message: w.error,
           })),
         resetWarnings: resetExtensionLoadWarnings,
-        runRepair: repair
+        runRepair: repair && !rescanSkipped
           ? async (aggregateReport) => {
             // In interactive mode without --force, preview first and prompt.
             if (needsPrompt) {

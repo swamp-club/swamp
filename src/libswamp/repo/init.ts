@@ -219,6 +219,20 @@ export interface RepoUpgradeData {
   changedFiles: string[];
   /** Collectives referenced in the lockfile that are not trusted (swamp-club#1217). */
   untrustedCollectives: string[];
+  /**
+   * Present only when the untrusted-collectives check did not run because
+   * the extension lockfile could not be resolved, so an empty
+   * `untrustedCollectives` means "not checked" rather than "none found".
+   */
+  untrustedCollectivesSkipped?: true;
+  /**
+   * True when the extension install pass did not run because its
+   * dependencies could not be built (for example the managed config base is
+   * unresolved; swamp-club#2483).
+   */
+  installSkipped: boolean;
+  /** Why the install pass was skipped, when it was. */
+  installSkippedReason?: string;
   /** @deprecated Read `tools` instead. `null` when not single-tool. */
   tool: string | null;
 }
@@ -258,13 +272,27 @@ export interface RepoUpgradeInput {
    * repo marker and registry client.
    */
   extensionInstallDeps?: ExtensionInstallDeps;
+  /**
+   * Set when the caller could not build `extensionInstallDeps` and the
+   * install pass is skipped for that reason; reported in the result.
+   */
+  extensionInstallSkippedReason?: string;
+  /**
+   * The resolved extension lockfile, for the untrusted-collectives check.
+   * `null` when it could not be resolved (the check is skipped).
+   */
+  lockfilePath?: string | null;
 }
 
 /** Dependencies for the repo upgrade operation. */
 export interface RepoUpgradeDeps {
   upgrade: (
     repoPath: RepoPath,
-    options: { tools?: string[]; includeGitignore?: boolean },
+    options: {
+      tools?: string[];
+      includeGitignore?: boolean;
+      lockfilePath?: string | null;
+    },
   ) => Promise<RepoUpgradeResult>;
 }
 
@@ -309,6 +337,7 @@ export async function* repoUpgrade(
         result = await deps.upgrade(repoPath, {
           tools: resolveToolsInput(input.tools, input.tool),
           includeGitignore: input.includeGitignore,
+          lockfilePath: input.lockfilePath,
         });
       } catch (error) {
         yield {
@@ -368,6 +397,13 @@ export async function* repoUpgrade(
         localSkillCopies: result.localSkillCopies,
         changedFiles: result.changedFiles,
         untrustedCollectives: result.untrustedCollectives,
+        ...(input.lockfilePath === null
+          ? { untrustedCollectivesSkipped: true as const }
+          : {}),
+        installSkipped: input.extensionInstallSkippedReason !== undefined,
+        ...(input.extensionInstallSkippedReason !== undefined
+          ? { installSkippedReason: input.extensionInstallSkippedReason }
+          : {}),
         tool: legacyToolField(result.tools),
       };
 

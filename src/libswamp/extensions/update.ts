@@ -55,7 +55,13 @@ export type ExtensionUpdateEvent =
     name: string;
     types: ShadowedTypeInfo[];
   }
-  | { kind: "completed"; data: ExtensionUpdateResult; mode: "check" | "update" }
+  | {
+    kind: "completed";
+    data: ExtensionUpdateResult;
+    mode: "check" | "update";
+    /** Mirrors {@link ExtensionUpdateInput.fallbackLockfile}. */
+    fallbackLockfile?: boolean;
+  }
   | { kind: "error"; error: SwampError };
 
 /** Input for the extension update operation. */
@@ -64,6 +70,13 @@ export interface ExtensionUpdateInput {
   extensionName?: string;
   /** When true, only check for updates without pulling. */
   checkOnly: boolean;
+  /**
+   * True when the lockfile is the in-repo fallback because the datastore
+   * could not be resolved, so the results may not match the datastore's
+   * lockfile (swamp-club#2483). Carried on the completed event so both
+   * output modes can say so.
+   */
+  fallbackLockfile?: boolean;
 }
 
 /** Dependencies for the extension update operation. */
@@ -171,6 +184,7 @@ export async function* extensionUpdate(
           kind: "completed",
           data: buildUpdateResult([]),
           mode: input.checkOnly ? "check" : "update",
+          fallbackLockfile: input.fallbackLockfile,
         };
         return;
       }
@@ -233,6 +247,7 @@ export async function* extensionUpdate(
           kind: "completed",
           data: buildUpdateResult(statuses),
           mode: "check",
+          fallbackLockfile: input.fallbackLockfile,
         };
         return;
       }

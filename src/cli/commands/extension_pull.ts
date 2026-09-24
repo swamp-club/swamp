@@ -32,10 +32,10 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
-  ensureManagedConfigBase,
   requireRepoMarker,
-  resolveManagedConfigPaths,
+  resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
+import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
 import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
@@ -279,10 +279,18 @@ export const extensionPullCommand = withRemoteOptions(
 
   // 3. Validate name format
   validateExtensionName(ref.name);
-  await ensureManagedConfigBase(repoDir, marker);
-  const { lockfilePath } = resolveManagedConfigPaths(
+  const serverUrl = resolveServerUrl();
+  const identity = await loadIdentity();
+  // Refuses to record into a guessed managed config base, except for the
+  // repo's own datastore extension (#445), which then lands in the in-repo
+  // lockfile until the base resolves (swamp-club#2483).
+  const { lockfilePath, publish } = await resolveManagedLockfileForWrite(
     repoDir,
     marker,
+    {
+      exemptTargets: [ref.name],
+      extensionLookup: createExtensionRegistryLookup(serverUrl, identity),
+    },
   );
 
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
@@ -303,8 +311,6 @@ export const extensionPullCommand = withRemoteOptions(
     swampPath(repoDir, "_extension_catalog.db"),
   );
   try {
-    const serverUrl = resolveServerUrl();
-    const identity = await loadIdentity();
     const deps = await createExtensionPullDeps(
       serverUrl,
       lockfilePath,
@@ -340,5 +346,7 @@ export const extensionPullCommand = withRemoteOptions(
     catalog.close();
   }
 
-  await pushManagedConfigChangesDeferred(repoDir, marker);
+  if (publish) {
+    await pushManagedConfigChangesDeferred(repoDir, marker);
+  }
 });
