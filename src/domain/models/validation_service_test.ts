@@ -739,6 +739,49 @@ Deno.test("validateModel fails {{...}} inside a ${{ }} string, even in a declare
   }
 });
 
+Deno.test("validateModel reports an unclosed expression, not the {{...}} it runs into, even in a declared field", async () => {
+  for (const modelDef of [testExprModel, foreignTemplateModel]) {
+    const { expressionPaths, warnings } = await validateWith(modelDef, {
+      name: "test-definition",
+      globalArguments: {
+        message: "echo ${{ self.name } && docker ps --format '{{.Names}}'",
+      },
+    });
+    assertEquals(expressionPaths?.passed, false);
+    const error = expressionPaths?.error ?? "";
+    assertStringIncludes(error, "Unclosed ${{...}} expression");
+    assertStringIncludes(error, "missing a closing brace");
+    assertEquals(error.includes("cuts it short"), false, error);
+    assertEquals(warnings, []);
+  }
+});
+
+Deno.test("validateModel gives an unclosed expression one error", async () => {
+  const { expressionPaths } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: {
+      message: "echo ${{ foo } && docker ps --format '{{.Names}}'",
+    },
+  });
+  assertEquals(expressionPaths?.passed, false);
+  const error = expressionPaths?.error ?? "";
+  assertStringIncludes(error, "Unclosed ${{...}} expression");
+  assertEquals(
+    error.includes("does not contain valid model, self, or env references"),
+    false,
+    error,
+  );
+});
+
+Deno.test("validateModel passes braces inside an expression that parses", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "echo ${{ '{{' }}" },
+  });
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings, []);
+});
+
 Deno.test("validateModel still validates ${{ }} expressions inside a declared field", async () => {
   const { expressionPaths, warnings } = await validateWith(
     foreignTemplateModel,

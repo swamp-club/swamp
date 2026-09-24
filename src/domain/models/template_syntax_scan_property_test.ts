@@ -102,7 +102,9 @@ Deno.test("scanTemplateSyntax: reports only broken expressions at or below a dec
             ),
         });
         const reportable = [
-          ...scan.malformed.filter((f) => f.form !== "inside-expression"),
+          ...scan.malformed.filter((f) =>
+            f.form !== "inside-expression" && f.form !== "unclosed-expression"
+          ),
           ...scan.foreign,
         ];
         for (const finding of reportable) {
@@ -114,6 +116,56 @@ Deno.test("scanTemplateSyntax: reports only broken expressions at or below a dec
             `reported declared path ${finding.path}`,
           );
         }
+      },
+    ),
+    { numRuns: 300 },
+  );
+});
+
+Deno.test("scanTemplateSyntax: text with no ${{ has no unclosed expression", () => {
+  fc.assert(
+    fc.property(arbTemplateText, (value) => {
+      fc.pre(!value.includes("${{"));
+      const scan = scanTemplateSyntax({ v: value }, {
+        declaredInputs: new Set(),
+      });
+      assertEquals(
+        scan.malformed.filter((f) => f.form === "unclosed-expression"),
+        [],
+      );
+    }),
+    { numRuns: 300 },
+  );
+});
+
+/** Expressions that parse, some holding braces inside a CEL string. */
+const arbSoundExpression = fc.constantFrom(
+  "${{ self.name }}",
+  "${{ '{{' }}",
+  "${{ '{' + '{host.name}' + '}' }}",
+  "${{ {'a': {'b': 1} } }}",
+  "${{ model.web-1a.resource.state.main.attributes.id }}",
+  '${{ "${HOME}" }}',
+);
+
+/** Foreign text with no `$`, so it can never open or extend an expression. */
+const arbForeignText = fc.array(
+  fc.constantFrom("{{", "}}", "{", "}", " ", "'", '"', "host.name", "\n"),
+  { maxLength: 8 },
+).map((parts) => parts.join(""));
+
+Deno.test("scanTemplateSyntax: expressions that parse are never reported as broken", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.tuple(arbForeignText, arbSoundExpression), { maxLength: 4 }),
+      arbForeignText,
+      (pairs, tail) => {
+        const value = pairs.map(([text, expr]) => text + expr).join("") + tail;
+        const scan = scanTemplateSyntax({ v: value }, {
+          declaredInputs: new Set(),
+          isDeclaredForeign: () => true,
+        });
+        assertEquals(scan.malformed, [], value);
       },
     ),
     { numRuns: 300 },

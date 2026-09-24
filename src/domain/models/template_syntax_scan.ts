@@ -20,6 +20,7 @@
 import { expressionSpans } from "../expressions/expression_parser.ts";
 import {
   isSwampExpression,
+  parsesAsCel,
   type SwampScope,
 } from "../expressions/swamp_namespaces.ts";
 
@@ -32,8 +33,10 @@ export type TemplateSyntaxForm =
   | "bare-double-brace"
   /** `${ ... }` with a single brace */
   | "single-brace"
-  /** `{{ ... }}` inside a `${{ ... }}` expression, which cuts it short */
-  | "inside-expression";
+  /** `{{ ... }}` inside a `${{ ... }}` string, which cuts the expression short */
+  | "inside-expression"
+  /** `${{` whose expression is missing its closing `}}` */
+  | "unclosed-expression";
 
 /**
  * One match of template-like text in a definition.
@@ -71,8 +74,9 @@ export interface TemplateSyntaxScanOptions {
   declaredInputs: ReadonlySet<string>;
   /**
    * Whether a path lies inside a field the model type declares as foreign
-   * template text. Such fields report only `inside-expression` findings,
-   * which are broken swamp expressions rather than foreign text.
+   * template text. Such fields report only `inside-expression` and
+   * `unclosed-expression` findings, which are broken swamp expressions rather
+   * than foreign text.
    */
   isDeclaredForeign?: (path: string) => boolean;
 }
@@ -90,6 +94,15 @@ const PATTERNS: ReadonlyArray<{ form: TemplateSyntaxForm; pattern: RegExp }> = [
   },
 ];
 
+/** Where a `${{` opens a swamp expression. */
+const EXPRESSION_OPENER = /\$\{\{/g;
+
+/**
+ * How many later `}}` an expression that does not parse is tried against
+ * before it counts as unclosed. Bounds the parses one expression costs.
+ */
+const MAX_CLOSING_ATTEMPTS = 16;
+
 /**
  * Scans definition data for template-like text and classifies each match.
  *
@@ -99,11 +112,22 @@ const PATTERNS: ReadonlyArray<{ form: TemplateSyntaxForm; pattern: RegExp }> = [
  * syntax. Every match in every string is reported, and the two forms are
  * matched independently, so one value can yield both kinds of finding.
  *
- * A `{{ ... }}` that starts inside a `${{ ... }}` expression is always
- * malformed (`inside-expression`), even in a declared field: an expression
- * ends at the first `}}`, so the text cuts it short and it cannot evaluate.
- * A `${ ... }` inside an expression is ordinary CEL string content, as in
- * `${{ "${HOME}" }}`, and is not reported.
+ * An expression ends at the first `}}`. One that parses as CEL is sound,
+ * even with `{{` in it, as in `${{ '{{' }}`. One that does not parse, and
+ * shows a sign of running past its intended end (a `{{` after its opening,
+ * or a lone `}` typed for `}}` after valid CEL), is judged by whether it
+ * parses when it ends at a later `}}` instead:
+ *
+ * - If it does, a string inside it was cut short. A `{{ ... }}` there is
+ *   malformed (`inside-expression`), as in `${{ "{{host.name}}" }}`.
+ * - If it does not, the expression is `unclosed-expression`, as in
+ *   `${{ self.name } && docker ps --format '{{.Names}}'`. So is a `${{` with
+ *   no `}}` after it.
+ *
+ * Both forms are reported even in a declared field, because they are broken
+ * swamp expressions rather than another service's text. A `${ ... }` inside
+ * an expression is ordinary CEL string content, as in `${{ "${HOME}" }}`, and
+ * is not reported.
  *
  * Every swamp root counts as bound. A runtime pass binds `run`, `steps`,
  * `workflow` and `webhook` only inside a workflow, but one definition can run
@@ -176,12 +200,14 @@ function scanString(
   result: TemplateSyntaxScan,
 ): void {
   const spans = expressionSpans(value);
-  const insideExpression = (index: number) =>
-    spans.some(([start, end]) => index >= start && index < end);
+  const diagnoses = spans.map((_, k) => diagnoseSpan(value, spans, k));
+  const spanAt = (index: number) =>
+    spans.findIndex(([start, end]) => index >= start && index < end);
   for (const { form, pattern } of PATTERNS) {
     for (const match of value.matchAll(pattern)) {
-      if (insideExpression(match.index)) {
-        if (form === "bare-double-brace") {
+      const span = spanAt(match.index);
+      if (span !== -1) {
+        if (form === "bare-double-brace" && diagnoses[span] === "cut-short") {
           result.malformed.push({
             path,
             text: match[0],
@@ -199,4 +225,63 @@ function scanString(
       }
     }
   }
+  for (const opener of value.matchAll(EXPRESSION_OPENER)) {
+    const span = spanAt(opener.index);
+    let text: string | undefined;
+    if (span === -1) {
+      // An expression needs a `}}` after its `${{` to be a span at all.
+      if (!value.includes("}}", opener.index + 3)) {
+        const lineEnd = value.indexOf("\n", opener.index);
+        text = value.slice(opener.index, lineEnd === -1 ? undefined : lineEnd);
+      }
+    } else if (
+      spans[span][0] === opener.index && diagnoses[span] === "unclosed"
+    ) {
+      text = value.slice(spans[span][0], spans[span][1]);
+    }
+    if (text !== undefined) {
+      result.malformed.push({ path, text, form: "unclosed-expression" });
+    }
+  }
+}
+
+/**
+ * Judges an expression span that does not parse as CEL but shows a sign of
+ * running past its intended end. Returns undefined for a span that parses,
+ * or that shows no such sign (text swamp cannot attribute, such as prose).
+ *
+ * The later `}}` tried are those before the next expression starts, at most
+ * {@link MAX_CLOSING_ATTEMPTS}, so the parses stay linear in the value.
+ */
+function diagnoseSpan(
+  value: string,
+  spans: Array<[number, number]>,
+  k: number,
+): "cut-short" | "unclosed" | undefined {
+  const [start, end] = spans[k];
+  const inner = value.slice(start + 3, end - 2);
+  const runsOn = inner.includes("{{") || hasLoneClosingBrace(inner);
+  if (!runsOn || parsesAsCel(inner)) return undefined;
+  const limit = k + 1 < spans.length ? spans[k + 1][0] : value.length;
+  let close = value.indexOf("}}", end);
+  for (
+    let attempt = 0;
+    attempt < MAX_CLOSING_ATTEMPTS && close !== -1 && close < limit;
+    attempt++
+  ) {
+    if (parsesAsCel(value.slice(start + 3, close))) return "cut-short";
+    close = value.indexOf("}}", close + 1);
+  }
+  return "unclosed";
+}
+
+/**
+ * Whether the text before the first `}` is valid CEL, as when `}` was typed
+ * for `}}` in `${{ self.name } && ls }}`. A `}` inside a string or a map
+ * literal leaves an unterminated string or brace before it, so it never
+ * counts.
+ */
+function hasLoneClosingBrace(inner: string): boolean {
+  const brace = inner.indexOf("}");
+  return brace !== -1 && parsesAsCel(inner.slice(0, brace));
 }

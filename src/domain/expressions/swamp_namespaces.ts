@@ -52,6 +52,24 @@ const SWAMP_ROOT_NAMESPACES: ReadonlySet<string> = new Set([
   "webhook",
 ]);
 
+/**
+ * Whether text parses as CEL the way evaluation parses it: hyphenated model
+ * refs (`model.web-1a`) are rewritten first, so text that evaluates always
+ * parses here.
+ */
+export function parsesAsCel(celExpression: string): boolean {
+  return parseSwampCel(celExpression) !== undefined;
+}
+
+/** Parses CEL as evaluation does, or returns undefined when it is not CEL. */
+function parseSwampCel(celExpression: string): ASTNode | undefined {
+  try {
+    return parseCel(transformHyphenatedModelRefs(celExpression)).ast;
+  } catch {
+    return undefined;
+  }
+}
+
 /** What a swamp evaluation provides, to judge whether an expression is swamp's. */
 export interface SwampScope {
   /** Whether this evaluation binds the root identifier. */
@@ -80,12 +98,8 @@ export function isSwampExpression(
   celExpression: string,
   scope: SwampScope,
 ): boolean {
-  let ast: ASTNode;
-  try {
-    ast = parseCel(transformHyphenatedModelRefs(celExpression)).ast;
-  } catch {
-    return false;
-  }
+  const ast = parseSwampCel(celExpression);
+  if (ast === undefined) return false;
   const refs: References = {
     roots: new Set(),
     inputs: new Set(),

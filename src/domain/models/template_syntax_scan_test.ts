@@ -119,6 +119,130 @@ Deno.test("scanTemplateSyntax: double braces inside an expression are malformed,
   assertEquals(declared, { malformed: expected, foreign: [] });
 });
 
+function unclosed(value: string): string[] {
+  const scan = scanTemplateSyntax({ v: value }, noInputs);
+  assertEquals(
+    scan.malformed.filter((f) => f.form === "inside-expression"),
+    [],
+    value,
+  );
+  return scan.malformed
+    .filter((f) => f.form === "unclosed-expression")
+    .map((f) => f.text);
+}
+
+Deno.test("scanTemplateSyntax: an unclosed expression is reported instead of the {{...}} it runs into", () => {
+  const value = "echo ${{ self.name } && docker ps --format '{{.Names}}'";
+  const scan = scanTemplateSyntax(
+    { methods: { execute: { arguments: { run: value } } } },
+    noInputs,
+  );
+  assertEquals(scan, {
+    malformed: [{
+      path: "methods.execute.arguments.run",
+      text: "${{ self.name } && docker ps --format '{{.Names}}",
+      form: "unclosed-expression",
+    }],
+    foreign: [],
+  });
+});
+
+Deno.test("scanTemplateSyntax: every shape of an unclosed expression is reported", () => {
+  // Swallows a later expression.
+  assertEquals(unclosed("echo ${{ self.name } && echo ${{ self.version }}"), [
+    "${{ self.name } && echo ${{ self.version }}",
+  ]);
+  // Runs on to a }} that closes JSON, after a lone } typed for }}.
+  assertEquals(unclosed('curl ${{ self.name } -d \'{"a": {"b": 1}}\''), [
+    '${{ self.name } -d \'{"a": {"b": 1}}',
+  ]);
+  // Both braces missing.
+  assertEquals(
+    unclosed("echo ${{ self.name && docker ps --format '{{.Names}}'"),
+    ["${{ self.name && docker ps --format '{{.Names}}"],
+  );
+  // No }} after it at all: reported to the end of its line.
+  assertEquals(unclosed("echo ${{ self.name } && ls"), [
+    "${{ self.name } && ls",
+  ]);
+  assertEquals(unclosed("echo ${{ self.name }\nls -la\n"), [
+    "${{ self.name }",
+  ]);
+});
+
+Deno.test("scanTemplateSyntax: each unclosed expression in a value is reported", () => {
+  assertEquals(
+    unclosed(
+      "${{ self.name } && echo '{{a}}' ; echo ${{ self.version }} ${{ env.X",
+    ),
+    ["${{ self.name } && echo '{{a}}", "${{ env.X"],
+  );
+});
+
+Deno.test("scanTemplateSyntax: braces inside an expression that parses are fine", () => {
+  assertEquals(classify("echo ${{ '{{' }}"), "none");
+  assertEquals(classify("${{ {'a': {'b': 1} } }}"), "none");
+  assertEquals(classify("${{ '{' + '{host.name}' + '}' }}"), "none");
+});
+
+Deno.test("scanTemplateSyntax: a string cut short by }} stays inside-expression", () => {
+  const scan = scanTemplateSyntax(
+    { v: 'x ${{ "{{a}} and {{b}}" }} ${{ self.name }}' },
+    noInputs,
+  );
+  assertEquals(scan.malformed, [{
+    path: "v",
+    text: "{{a}}",
+    form: "inside-expression",
+  }]);
+});
+
+Deno.test("scanTemplateSyntax: a string holding a nested ${{ that recovers is not reported", () => {
+  assertEquals(classify('x ${{ "${{ y }}" }}'), "none");
+});
+
+Deno.test("scanTemplateSyntax: closed text that is not CEL passes through", () => {
+  for (
+    const value of [
+      "${{ if eq(parameters.env, 'prod') }}:",
+      "${{ each step in parameters.steps }}:",
+      "write ${{ ... }} for an expression",
+      "${{ fromJSON('{}') }}",
+      "${{ {'a': {'b': 1}} }}",
+      "${{}}",
+    ]
+  ) {
+    assertEquals(classify(value), "none", value);
+  }
+});
+
+Deno.test("scanTemplateSyntax: unclosed expressions are reported in a declared field", () => {
+  const scan = scanTemplateSyntax(
+    { globalArguments: { run: "echo ${{ self.name } && ls" } },
+    {
+      declaredInputs: new Set(),
+      isDeclaredForeign: (path) => path === "globalArguments.run",
+    },
+  );
+  assertEquals(scan.malformed, [{
+    path: "globalArguments.run",
+    text: "${{ self.name } && ls",
+    form: "unclosed-expression",
+  }]);
+});
+
+Deno.test("scanTemplateSyntax: bounds the closing }} tried for each expression", () => {
+  // Past the cap, a string that would recover later counts as unclosed.
+  const closers = " }}".repeat(40);
+  assertEquals(unclosed("${{ '{{a}}" + closers + "' }}"), [
+    "${{ '{{a}}",
+  ]);
+  // Many unclosed expressions, each followed by many closers, are each
+  // reported once.
+  const value = "${{ x } {{a}} ".repeat(200) + "}} ".repeat(200);
+  assertEquals(unclosed(value).length, 200);
+});
+
 Deno.test("scanTemplateSyntax: single-brace text inside an expression is CEL string content", () => {
   assertEquals(classify('${{ "${HOME}" }}'), "none");
   assertEquals(classify('${{ "echo ${HOME}" }} and ${HOME}'), "foreign");
