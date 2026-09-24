@@ -162,9 +162,9 @@ export interface DoctorExtensionsDeps {
   repoDir: string;
   /**
    * Tool-aware skills directories (e.g. `[".claude/skills", ".kiro/skills"]`).
-   * Repo-relative. Skill paths are tracked as directory paths only, so the
-   * orphan walk skips them — extractTopLevelRoot needs these to recognise
-   * skill paths.
+   * Repo-relative. Skill paths are tracked as a dir root or, when merged
+   * into a shared dir, file by file; the orphan walk skips both —
+   * extractTopLevelRoot needs these to recognise skill paths.
    */
   skillsDirs: string[];
   abortSignal: AbortSignal;

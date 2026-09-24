@@ -31,6 +31,7 @@ import { notFound } from "../errors.ts";
 import {
   type FailedFile,
   RemoveExtensionService,
+  type RetainedFile,
 } from "./remove_extension_service.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -56,6 +57,12 @@ export interface ExtensionRmData {
    * does not send it.
    */
   failedFiles?: FailedFile[];
+  /**
+   * Tracked paths kept because another installed extension claims them
+   * (a shared skill dir). Optional because a thin client may talk to an
+   * older server that does not send it.
+   */
+  retainedFiles?: RetainedFile[];
 }
 
 export type ExtensionRmEvent =
@@ -107,7 +114,13 @@ export async function findDependents(
     if (extName === targetName) continue;
     if (!entry.files) continue;
 
-    const manifestFile = entry.files.find((f) => f.endsWith("manifest.yaml"));
+    // Match the extension's own manifest by its per-extension path. A
+    // skill merged file by file can ship its own manifest.yaml, and
+    // .claude/... paths sort before .swamp/... ones.
+    const manifestSuffix = `/${extName}/manifest.yaml`;
+    const manifestFile = entry.files.find((f) =>
+      f.replaceAll("\\", "/").endsWith(manifestSuffix)
+    );
     if (!manifestFile) continue;
 
     try {
@@ -203,7 +216,7 @@ export async function* extensionRm(
 
       const result = await service.execute(input.extensionName);
       ctx.logger
-        .debug`Removed ${input.extensionName} (v${result.version}); ${result.filesDeleted} file(s) deleted, ${result.filesSkipped} skipped, ${result.failedFiles.length} failed, ${result.dirsRemoved} dir(s) pruned`;
+        .debug`Removed ${input.extensionName} (v${result.version}); ${result.filesDeleted} file(s) deleted, ${result.filesSkipped} skipped, ${result.failedFiles.length} failed, ${result.retainedFiles.length} retained, ${result.dirsRemoved} dir(s) pruned`;
       yield {
         kind: "completed",
         data: {
@@ -213,6 +226,7 @@ export async function* extensionRm(
           filesSkipped: result.filesSkipped,
           dirsRemoved: result.dirsRemoved,
           failedFiles: result.failedFiles,
+          retainedFiles: result.retainedFiles,
         },
       };
     })(),

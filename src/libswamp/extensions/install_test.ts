@@ -598,6 +598,9 @@ function makeInstallWithPruned(
       extendsTypes: [],
       pruned: prunedPaths,
       shadowedTypes: [],
+      createdPaths: [
+        `.swamp/pulled-extensions/${ref.name}/models/main.ts`,
+      ],
     };
   };
 }

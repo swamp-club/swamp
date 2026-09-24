@@ -264,6 +264,7 @@ function buildInstallResult(
     extendsTypes: [],
     pruned,
     shadowedTypes,
+    createdPaths: [`.swamp/pulled-extensions/${name}/models/main.ts`],
   };
 }
 

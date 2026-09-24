@@ -123,6 +123,7 @@ function makeStubInstallResult(
     extendsTypes: [],
     pruned: [],
     shadowedTypes: [],
+    createdPaths: files,
   };
 }
 
@@ -1255,6 +1256,178 @@ Deno.test(
         await assertRejects(() => Deno.stat(freePath), Deno.errors.NotFound);
         assertEquals(repository.loadByName(extName).length, 0);
         assertEquals(lockfileRepository.getEntry(extName), null);
+      },
+    );
+  },
+);
+
+// ===== Shared skill dirs (swamp-club#2494) =====
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test(
+  "RemoveExtensionService.execute: rm of a merged skill deletes only its files",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/merged-${crypto.randomUUID()}`;
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(skillDir);
+        await Deno.writeTextFile(join(skillDir, "notes.md"), "mine");
+        await Deno.writeTextFile(join(skillDir, "SKILL.md"), "ext");
+        await lockfileRepository.writeEntry(extName, "1.0.0", [
+          relative(repoDir, join(skillDir, "SKILL.md")),
+        ]);
+
+        const result = await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(extName);
+
+        assertEquals(result.filesDeleted, 1);
+        assertEquals(result.retainedFiles, []);
+        assertEquals(await exists(join(skillDir, "SKILL.md")), false);
+        assertEquals(
+          await Deno.readTextFile(join(skillDir, "notes.md")),
+          "mine",
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: a skill dir another extension claims is retained and reported",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const owner = `@test/owner-${id}`;
+        const other = `@test/other-${id}`;
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(skillDir);
+        await Deno.writeTextFile(join(skillDir, "SKILL.md"), "owner");
+        await Deno.writeTextFile(join(skillDir, "other.md"), "other");
+        const root = relative(repoDir, skillDir);
+        await lockfileRepository.writeEntry(owner, "1.0.0", [root]);
+        await lockfileRepository.writeEntry(other, "1.0.0", [
+          relative(repoDir, join(skillDir, "other.md")),
+        ]);
+
+        const result = await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(owner);
+
+        assertEquals(result.retainedFiles, [{
+          path: root,
+          claimedBy: [other],
+        }]);
+        assertEquals(result.filesDeleted, 0);
+        assertEquals(
+          await Deno.readTextFile(join(skillDir, "other.md")),
+          "other",
+        );
+        assertEquals(lockfileRepository.getEntry(owner), null);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: a claim differing only in case and separators still retains the dir",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const owner = `@test/owner-${id}`;
+        const other = `@test/other-${id}`;
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(skillDir);
+        await Deno.writeTextFile(join(skillDir, "other.md"), "other");
+        await lockfileRepository.writeEntry(owner, "1.0.0", [
+          relative(repoDir, skillDir),
+        ]);
+        await lockfileRepository.writeEntry(other, "1.0.0", [
+          ".claude\\Skills\\FOO\\other.md",
+        ]);
+
+        const result = await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(owner);
+
+        assertEquals(result.retainedFiles.length, 1);
+        assertEquals(
+          await Deno.readTextFile(join(skillDir, "other.md")),
+          "other",
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: an unclaimed skill dir is deleted recursively",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/solo-${crypto.randomUUID()}`;
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(join(skillDir, "scripts"));
+        await Deno.writeTextFile(join(skillDir, "scripts", "run.sh"), "x");
+        await lockfileRepository.writeEntry(extName, "1.0.0", [
+          relative(repoDir, skillDir),
+        ]);
+
+        const result = await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(extName);
+
+        assertEquals(result.filesDeleted, 1);
+        assertEquals(await exists(skillDir), false);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: a symlinked tracked dir is unlinked, its target left intact",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/link-${crypto.randomUUID()}`;
+        const target = join(repoDir, "user-data");
+        await ensureDir(target);
+        await Deno.writeTextFile(join(target, "keep.md"), "keep");
+        await ensureDir(join(repoDir, ".claude", "skills"));
+        const link = join(repoDir, ".claude", "skills", "foo");
+        await Deno.symlink(target, link, { type: "dir" });
+        await lockfileRepository.writeEntry(extName, "1.0.0", [
+          relative(repoDir, link),
+        ]);
+
+        await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(extName);
+
+        assertEquals(await exists(link), false);
+        assertEquals(await Deno.readTextFile(join(target, "keep.md")), "keep");
       },
     );
   },

@@ -23,7 +23,9 @@ import { join } from "@std/path";
 import {
   createAutoResolveInstallerAdapter,
   isBundleArtifactPath,
+  isPulledSkillPath,
 } from "./auto_resolver_adapters.ts";
+import { createTarGz } from "../infrastructure/archive/tar_archive.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
@@ -849,5 +851,71 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk attempts attach wh
     catalog.close();
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// swamp-club#2494: skills land in a dir shared across extensions, so a
+// same-named skill from another extension raises a ConflictError on its
+// dir. Auto-install retries those with force, as it does stale bundles.
+
+Deno.test("isPulledSkillPath: recognises pulled skill dirs only", () => {
+  assertEquals(isPulledSkillPath(".swamp/pulled-extensions/skills/foo"), true);
+  assertEquals(
+    isPulledSkillPath(".swamp/pulled-extensions/@fake/ext/models/foo.ts"),
+    false,
+  );
+  assertEquals(isPulledSkillPath(".claude/skills/foo"), false);
+});
+
+Deno.test("auto_resolver_adapters: install retries past a skill dir another extension owns", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const name = `@t/skill-${crypto.randomUUID().slice(0, 8)}`;
+    const version = "2026.01.01.1";
+    const lockfilePath = await seedLockfile(repoDir, {
+      "@t/other": [".swamp/pulled-extensions/skills/foo/other.md"],
+    });
+    const skillDir = join(
+      repoDir,
+      ".swamp",
+      "pulled-extensions",
+      "skills",
+      "foo",
+    );
+    await ensureDir(skillDir);
+    await Deno.writeTextFile(join(skillDir, "other.md"), "other");
+
+    const archiveDir = await Deno.makeTempDir({ prefix: "swamp_test_arc_" });
+    let archive: Uint8Array;
+    try {
+      const extDir = join(archiveDir, "extension");
+      await ensureDir(join(extDir, "skills", "foo"));
+      await Deno.writeTextFile(
+        join(extDir, "manifest.yaml"),
+        `manifestVersion: 1\nname: "${name}"\nversion: "${version}"\nskills:\n  - foo\n`,
+      );
+      await Deno.writeTextFile(join(extDir, "skills", "foo", "SKILL.md"), "x");
+      await createTarGz(extDir, join(archiveDir, "a.tar.gz"));
+      archive = await Deno.readFile(join(archiveDir, "a.tar.gz"));
+    } finally {
+      await Deno.remove(archiveDir, { recursive: true }).catch(() => {});
+    }
+
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: () =>
+        Promise.resolve({ name, description: "", latestVersion: version }),
+      downloadArchive: () => Promise.resolve(archive),
+      getChecksum: () => Promise.resolve(null),
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+    });
+    const result = await adapter.install(name);
+
+    assertEquals(result?.version, version);
+    assertEquals(await Deno.readTextFile(join(skillDir, "SKILL.md")), "x");
+    assertEquals(await Deno.readTextFile(join(skillDir, "other.md")), "other");
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });

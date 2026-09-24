@@ -1001,6 +1001,7 @@ export {
   type FailedFile,
   type RemoveExtensionResult,
   RemoveExtensionService,
+  type RetainedFile,
 } from "./extensions/remove_extension_service.ts";
 export { UpgradeExtensionService } from "./extensions/upgrade_extension_service.ts";
 

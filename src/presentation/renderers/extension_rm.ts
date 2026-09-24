@@ -53,6 +53,19 @@ class LogExtensionRmRenderer implements ExtensionRmRenderer {
             count: e.data.dirsRemoved,
           });
         }
+        const retainedFiles = e.data.retainedFiles ?? [];
+        if (retainedFiles.length > 0) {
+          this.#logger.info(
+            "Kept {count} path(s) shared with other extensions:",
+            { count: retainedFiles.length },
+          );
+          for (const retained of retainedFiles) {
+            this.#logger.info("  {path} (used by {claimedBy})", {
+              path: retained.path,
+              claimedBy: retained.claimedBy.join(", "),
+            });
+          }
+        }
         const failedFiles = e.data.failedFiles ?? [];
         if (failedFiles.length > 0) {
           this.#logger.warn(

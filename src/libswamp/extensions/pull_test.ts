@@ -19,9 +19,12 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
-import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { join, relative } from "@std/path";
+import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import {
   computeOrphanDiff,
+  ConflictError,
   extensionPull,
   type ExtensionPullDeps,
   type ExtensionPullEvent,
@@ -176,6 +179,35 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "computeOrphanDiff: skill recorded per file, now as its root, is not an orphan",
+  () => {
+    const oldFiles = [".claude/skills/foo/SKILL.md"];
+    const extractedFiles = [".claude/skills/foo"];
+    assertEquals(computeOrphanDiff(oldFiles, extractedFiles), []);
+  },
+);
+
+Deno.test(
+  "computeOrphanDiff: skill recorded as its root, now per file, is not an orphan",
+  () => {
+    const oldFiles = [".claude/skills/foo"];
+    const extractedFiles = [".claude/skills/foo/SKILL.md"];
+    assertEquals(computeOrphanDiff(oldFiles, extractedFiles), []);
+  },
+);
+
+Deno.test(
+  "computeOrphanDiff: a dropped skill root is still an orphan",
+  () => {
+    const oldFiles = [".claude/skills/foo", ".claude/skills/bar"];
+    const extractedFiles = [".claude/skills/bar"];
+    assertEquals(computeOrphanDiff(oldFiles, extractedFiles), [
+      ".claude/skills/foo",
+    ]);
+  },
+);
+
 // ===== Pin 2 (W2) =====
 //
 // `extensionPull` is one of the 5 KEEP callsites — its
@@ -214,6 +246,7 @@ function makeStubInstallResult(
     extendsTypes: [],
     pruned,
     shadowedTypes: [],
+    createdPaths: [`.swamp/pulled-extensions/${ref.name}/models/main.ts`],
   };
 }
 
@@ -536,5 +569,423 @@ Deno.test(
     } finally {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
     }
+  },
+);
+
+// ===== Skill ownership (swamp-club#2494) =====
+//
+// Skills land in shared tool dirs, so a same-named dir may belong to the
+// user or another extension. These tests drive installExtension against
+// real archives to pin what it records, what it may roll back, and when
+// it raises a conflict.
+
+const SKILL_VERSION = "2026.01.01.1";
+
+interface SkillArchiveSpec {
+  name: string;
+  skills: Record<string, Record<string, string>>;
+  dependencies?: string[];
+}
+
+/** Builds an extension archive that ships only skills. */
+async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_skill_archive_" });
+  try {
+    const extDir = join(tmp, "extension");
+    const lines = [
+      "manifestVersion: 1",
+      `name: "${spec.name}"`,
+      `version: "${SKILL_VERSION}"`,
+      "skills:",
+      ...Object.keys(spec.skills).map((s) => `  - ${s}`),
+    ];
+    if (spec.dependencies && spec.dependencies.length > 0) {
+      lines.push("dependencies:");
+      lines.push(...spec.dependencies.map((d) => `  - "${d}"`));
+    }
+    await ensureDir(extDir);
+    await Deno.writeTextFile(join(extDir, "manifest.yaml"), lines.join("\n"));
+    for (const [skill, files] of Object.entries(spec.skills)) {
+      for (const [file, content] of Object.entries(files)) {
+        await ensureDir(join(extDir, "skills", skill));
+        await Deno.writeTextFile(join(extDir, "skills", skill, file), content);
+      }
+    }
+    const archivePath = join(tmp, "extension.tar.gz");
+    await createTarGz(extDir, archivePath);
+    return await Deno.readFile(archivePath);
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+}
+
+async function withSkillRepo(
+  fn: (repoDir: string, lockfile: LockfileRepository) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_pull_skills_" });
+  try {
+    const lockfile = await LockfileRepository.create(
+      join(repoDir, "upstream_extensions.json"),
+    );
+    await fn(repoDir, lockfile);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+}
+
+function skillInstallContext(
+  repoDir: string,
+  lockfile: LockfileRepository,
+  archives: Record<string, Uint8Array>,
+  opts: { force?: boolean; skillsDirs?: string[] } = {},
+): InstallContext {
+  return {
+    getExtension: (name) =>
+      Promise.resolve(
+        archives[name]
+          ? { name, description: "", latestVersion: SKILL_VERSION }
+          : null,
+      ),
+    downloadArchive: (name) => Promise.resolve(archives[name]),
+    getChecksum: () => Promise.resolve(null),
+    lockfileRepository: lockfile,
+    skillsDirs: opts.skillsDirs ?? [join(repoDir, ".claude", "skills")],
+    repoDir,
+    alreadyPulled: new Set(),
+    depth: 0,
+    force: opts.force ?? false,
+  };
+}
+
+function uniqueExtName(): string {
+  return `@t/skill-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test(
+  "installExtension: a fresh skill dir is recorded and created as its root",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      const result = await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      const root = relative(repoDir, join(repoDir, ".claude", "skills", "foo"));
+      assertEquals(result?.extractedFiles.includes(root), true);
+      assertEquals(result?.createdPaths.includes(root), true);
+      assertEquals(lockfile.getEntry(name)?.files?.includes(root), true);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an existing skill dir the extension does not own raises ConflictError",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const userSkill = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(userSkill);
+      await Deno.writeTextFile(join(userSkill, "notes.md"), "mine");
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      const error = await assertRejects(
+        () =>
+          installExtension(
+            { name, version: null },
+            skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          ),
+        ConflictError,
+      );
+      assertEquals(error.conflicts, [relative(repoDir, userSkill)]);
+      assertEquals(
+        await Deno.readTextFile(join(userSkill, "notes.md")),
+        "mine",
+      );
+      assertEquals(await exists(join(userSkill, "SKILL.md")), false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: merging into a user's skill dir under force records files, not the root",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const userSkill = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(userSkill);
+      await Deno.writeTextFile(join(userSkill, "notes.md"), "mine");
+      await Deno.writeTextFile(join(userSkill, "README.md"), "user readme");
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext", "README.md": "ext readme" } },
+      });
+      const result = await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+          force: true,
+        }),
+      );
+      const root = relative(repoDir, userSkill);
+      const skillMd = relative(repoDir, join(userSkill, "SKILL.md"));
+      const readme = relative(repoDir, join(userSkill, "README.md"));
+      const files = lockfile.getEntry(name)?.files ?? [];
+      assertEquals(files.includes(root), false);
+      assertEquals(files.includes(skillMd), true);
+      assertEquals(files.includes(readme), true);
+      // Only the file that did not exist before may be rolled back.
+      assertEquals(result?.createdPaths.includes(skillMd), true);
+      assertEquals(result?.createdPaths.includes(readme), false);
+      assertEquals(result?.createdPaths.includes(root), false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: re-installing the extension's own skill raises no conflict",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      const result = await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      const root = relative(repoDir, join(repoDir, ".claude", "skills", "foo"));
+      // Still owned as the root, but nothing new to roll back.
+      assertEquals(lockfile.getEntry(name)?.files?.includes(root), true);
+      assertEquals(result?.createdPaths.includes(root), false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: ownership recorded per file with backslashes still counts",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const skillDir = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "old");
+      await lockfile.writeEntry(name, "2025.01.01.1", [
+        ".claude\\skills\\foo\\SKILL.md",
+      ]);
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "new" } },
+      });
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      assertEquals(await Deno.readTextFile(join(skillDir, "SKILL.md")), "new");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: two tool dirs record the fresh one as a root and the merged one per file",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const claudeSkill = join(repoDir, ".claude", "skills", "foo");
+      const kiroSkill = join(repoDir, ".kiro", "skills", "foo");
+      await ensureDir(claudeSkill);
+      await Deno.writeTextFile(join(claudeSkill, "notes.md"), "mine");
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+          force: true,
+          skillsDirs: [
+            join(repoDir, ".claude", "skills"),
+            join(repoDir, ".kiro", "skills"),
+          ],
+        }),
+      );
+      const files = lockfile.getEntry(name)?.files ?? [];
+      assertEquals(files.includes(relative(repoDir, kiroSkill)), true);
+      assertEquals(files.includes(relative(repoDir, claudeSkill)), false);
+      assertEquals(
+        files.includes(relative(repoDir, join(claudeSkill, "SKILL.md"))),
+        true,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a dependency shipping its parent's skill merges without a conflict",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const dep = uniqueExtName();
+      const archives = {
+        [parent]: await buildSkillArchive({
+          name: parent,
+          skills: { foo: { "SKILL.md": "parent" } },
+          dependencies: [dep],
+        }),
+        [dep]: await buildSkillArchive({
+          name: dep,
+          skills: { foo: { "dep.md": "dep" } },
+        }),
+      };
+      const result = await installExtension(
+        { name: parent, version: null },
+        skillInstallContext(repoDir, lockfile, archives),
+      );
+      const skillDir = join(repoDir, ".claude", "skills", "foo");
+      assertEquals(
+        lockfile.getEntry(parent)?.files?.includes(relative(repoDir, skillDir)),
+        true,
+      );
+      assertEquals(
+        lockfile.getEntry(dep)?.files?.includes(
+          relative(repoDir, join(skillDir, "dep.md")),
+        ),
+        true,
+      );
+      assertEquals(result?.dependencyResults.length, 1);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a symlinked skill dir counts as existing and is not followed",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const target = join(repoDir, "elsewhere");
+      await ensureDir(target);
+      await Deno.writeTextFile(join(target, "notes.md"), "mine");
+      await ensureDir(join(repoDir, ".claude", "skills"));
+      const link = join(repoDir, ".claude", "skills", "foo");
+      await Deno.symlink(target, link, { type: "dir" });
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      const error = await assertRejects(
+        () =>
+          installExtension(
+            { name, version: null },
+            skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          ),
+        ConflictError,
+      );
+      assertEquals(error.conflicts, [relative(repoDir, link)]);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: orphan prune keeps a skill dir another extension claims",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const owner = uniqueExtName();
+      const other = uniqueExtName();
+      const skillDir = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "owner");
+      await Deno.writeTextFile(join(skillDir, "other.md"), "other");
+      const root = relative(repoDir, skillDir);
+      await lockfile.writeEntry(owner, "2025.01.01.1", [root]);
+      await lockfile.writeEntry(other, "2025.01.01.1", [
+        relative(repoDir, join(skillDir, "other.md")),
+      ]);
+      // The new owner version drops skill foo and ships bar instead.
+      const archive = await buildSkillArchive({
+        name: owner,
+        skills: { bar: { "SKILL.md": "bar" } },
+      });
+      const result = await installExtension(
+        { name: owner, version: null },
+        skillInstallContext(repoDir, lockfile, { [owner]: archive }),
+      );
+      assertEquals(result?.pruned, []);
+      assertEquals(
+        await Deno.readTextFile(join(skillDir, "other.md")),
+        "other",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: orphan prune still removes an unclaimed dropped skill dir",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const skillDir = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "old");
+      const root = relative(repoDir, skillDir);
+      await lockfile.writeEntry(name, "2025.01.01.1", [root]);
+      const archive = await buildSkillArchive({
+        name,
+        skills: { bar: { "SKILL.md": "bar" } },
+      });
+      const result = await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      assertEquals(result?.pruned, [root]);
+      assertEquals(await exists(skillDir), false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: switching a skill from per-file to root keeps the files just written",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const skillDir = join(repoDir, ".claude", "skills", "foo");
+      // Prior install merged into a user dir that has since been
+      // deleted, so this install creates the root afresh.
+      await lockfile.writeEntry(name, "2025.01.01.1", [
+        relative(repoDir, join(skillDir, "SKILL.md")),
+      ]);
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "new" } },
+      });
+      const result = await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      assertEquals(result?.pruned, []);
+      assertEquals(await Deno.readTextFile(join(skillDir, "SKILL.md")), "new");
+      assertEquals(
+        lockfile.getEntry(name)?.files?.includes(relative(repoDir, skillDir)),
+        true,
+      );
+    });
   },
 );

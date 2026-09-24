@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { join, relative } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { InstallExtensionService } from "./install_extension_service.ts";
 import type { ExtensionRef, InstallContext, InstallResult } from "./pull.ts";
@@ -108,6 +108,7 @@ function makeStubInstallResult(
   extName: string,
   version: string,
   files: string[],
+  createdPaths: string[] = files,
 ): InstallResult {
   return {
     name: extName,
@@ -129,6 +130,7 @@ function makeStubInstallResult(
     extendsTypes: [],
     pruned: [],
     shadowedTypes: [],
+    createdPaths,
   };
 }
 
@@ -636,5 +638,134 @@ Deno.test(
         );
       },
     );
+  },
+);
+
+// ===== Rollback deletes only created paths (swamp-club#2494) =====
+
+/**
+ * Installs extA claiming `typeId`, then runs a second install of extB
+ * that claims the same type, so phase 8 raises DuplicateTypeError and
+ * rolls extB back using the given stub result.
+ */
+async function runCollidingInstall(
+  args: {
+    repoDir: string;
+    repository: ExtensionRepository;
+    lockfileRepository: LockfileRepository;
+  },
+  extraExtracted: string[],
+  extraCreated: string[],
+): Promise<void> {
+  const { repoDir, repository, lockfileRepository } = args;
+  const id = crypto.randomUUID().slice(0, 8);
+  const typeId = `@test/rb-type-${id}`;
+  const extA = `@test/rb-a-${id}`;
+  const extB = `@test/rb-b-${id}`;
+  const aFile = `.swamp/pulled-extensions/${extA}/models/model.ts`;
+  const bFile = `.swamp/pulled-extensions/${extB}/models/model.ts`;
+  await stageModel(repoDir, extA, "model.ts", MINIMAL_MODEL_CODE(typeId));
+  await new InstallExtensionService({
+    denoRuntime: testDenoRuntime,
+    repository,
+    installExtensionFn: () =>
+      Promise.resolve(makeStubInstallResult(extA, "1.0.0", [aFile])),
+  }).execute(
+    { name: extA, version: "1.0.0" } as ExtensionRef,
+    makeInstallContext(repoDir, lockfileRepository),
+  );
+
+  await stageModel(repoDir, extB, "model.ts", MINIMAL_MODEL_CODE(typeId));
+  await assertRejects(
+    () =>
+      new InstallExtensionService({
+        denoRuntime: testDenoRuntime,
+        repository,
+        installExtensionFn: () =>
+          Promise.resolve(
+            makeStubInstallResult(
+              extB,
+              "1.0.0",
+              [bFile, ...extraExtracted],
+              [bFile, ...extraCreated],
+            ),
+          ),
+      }).execute(
+        { name: extB, version: "1.0.0" } as ExtensionRef,
+        makeInstallContext(repoDir, lockfileRepository),
+      ),
+    DuplicateTypeUserError,
+  );
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test(
+  "InstallExtensionService.execute: rollback keeps a pre-existing skill dir and the user's files in it",
+  async () => {
+    await withFixtureRepo(async (args) => {
+      const skillDir = join(args.repoDir, ".claude", "skills", "foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "my-notes.md"), "mine");
+      // The failed install wrote SKILL.md into a dir that already
+      // existed. extractedFiles names the root (as an owned skill is
+      // recorded); only SKILL.md was created, so only it may go.
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "from B");
+      const root = relative(args.repoDir, skillDir);
+      const skillMd = relative(args.repoDir, join(skillDir, "SKILL.md"));
+
+      await runCollidingInstall(args, [root], [skillMd]);
+
+      assertEquals(
+        await Deno.readTextFile(join(skillDir, "my-notes.md")),
+        "mine",
+      );
+      assertEquals(await pathExists(join(skillDir, "SKILL.md")), false);
+    });
+  },
+);
+
+Deno.test(
+  "InstallExtensionService.execute: rollback removes a skill dir the failed install created",
+  async () => {
+    await withFixtureRepo(async (args) => {
+      const skillDir = join(args.repoDir, ".claude", "skills", "fresh");
+      await ensureDir(join(skillDir, "scripts"));
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "from B");
+      await Deno.writeTextFile(join(skillDir, "scripts", "run.sh"), "x");
+      const root = relative(args.repoDir, skillDir);
+
+      await runCollidingInstall(args, [root], [root]);
+
+      assertEquals(await pathExists(skillDir), false);
+    });
+  },
+);
+
+Deno.test(
+  "InstallExtensionService.execute: rollback unlinks a created symlink without touching its target",
+  async () => {
+    await withFixtureRepo(async (args) => {
+      const target = join(args.repoDir, "user-data");
+      await ensureDir(target);
+      await Deno.writeTextFile(join(target, "keep.md"), "keep");
+      await ensureDir(join(args.repoDir, ".claude", "skills"));
+      const link = join(args.repoDir, ".claude", "skills", "linked");
+      await Deno.symlink(target, link, { type: "dir" });
+      const rel = relative(args.repoDir, link);
+
+      await runCollidingInstall(args, [rel], [rel]);
+
+      assertEquals(await pathExists(link), false);
+      assertEquals(await Deno.readTextFile(join(target, "keep.md")), "keep");
+    });
   },
 );

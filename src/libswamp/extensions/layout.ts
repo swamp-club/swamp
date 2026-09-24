@@ -136,9 +136,10 @@ export function classifyExtensionFile(file: string): ExtensionLayoutGeneration {
  * Returns true when a tracked file path is a skill directory entry —
  * either the skillsDir root itself or a path under it.
  *
- * Skills are tracked in `entry.files[]` as a single directory path (set
- * by `installExtension` in `pull.ts`), so this check compares against
- * the directory boundary. The skillsDir is repo-and-tool-specific
+ * Skills are tracked in `entry.files[]` as a single directory path, or
+ * as the individual files when the skill was merged into a dir the
+ * extension does not own (both set by `installExtension` in `pull.ts`),
+ * so this check compares against the directory boundary. The skillsDir is repo-and-tool-specific
  * (`.claude/skills`, `.cursor/skills`, `.swamp/pulled-extensions/skills`
  * for `tool=none`, etc.) and must be repo-relative — `entry.files[]`
  * paths are repo-relative; the caller passes it in.
@@ -221,9 +222,9 @@ export function extractTopLevelRoot(
     return null;
   }
 
-  // Skills are tracked as directory paths (the dir root, not its
-  // contents). We can't detect orphan files within a skill dir
-  // because the inner files aren't in entry.files[].
+  // Skills are tracked as their dir root, or file by file when merged
+  // into a dir another owner shares. Skill dirs are out of scope for the
+  // orphan walk: a shared dir holds files no single entry lists.
   if (isSkillDirEntry(filePath, skillsDir)) {
     return null;
   }
