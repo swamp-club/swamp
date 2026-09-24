@@ -80,6 +80,7 @@ Deno.test("authTokenCreate: yields creating -> completed on success", async () =
       kind: "completed",
       data: {
         key: testTokenResponse.key,
+        fingerprint: "00bd270b8576bc29",
         id: "tok-1",
         name: "cli-testhost-1700000000",
         collective: "myorg",

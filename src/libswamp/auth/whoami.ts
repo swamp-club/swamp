@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
-  apiKeyFingerprint,
   type AuthCredentials,
+  keyFingerprint,
 } from "../../domain/auth/auth_credentials.ts";
 import type {
   WhoamiResponse,
@@ -79,6 +79,11 @@ export interface WhoamiIdentity {
   collectiveToken?: boolean;
   collectiveSlug?: string;
   scopes?: string[];
+  /**
+   * {@link keyFingerprint} of the credential in use — the value swamp-club
+   * shows beside each key, so it names the row to revoke.
+   */
+  fingerprint?: string;
 }
 
 export type AuthWhoamiEvent =
@@ -118,14 +123,14 @@ export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
     (() => Deno.env.get("SWAMP_API_KEY"));
   return {
     loadCredentials: () => repo.load(),
-    saveCredentials: (credentials) => {
+    saveCredentials: async (credentials) => {
       const envKey = getApiKey();
       if (envKey) {
         return repo.saveIdentityCache(
           credentials.serverUrl,
           credentials.username,
           credentials.collectives ?? [],
-          apiKeyFingerprint(envKey),
+          await keyFingerprint(envKey),
         );
       }
       return repo.save(credentials);
@@ -209,6 +214,7 @@ export async function* whoami(
 
     const collectives = getCollectives(response);
     const entitlements = toEntitlements(response);
+    const fingerprint = await keyFingerprint(credentials.apiKey);
 
     if (!response.collectiveToken) {
       // Refresh cached collectives in auth.json so they stay current.
@@ -237,6 +243,7 @@ export async function* whoami(
             scopes: response.scopes,
           }
           : {}),
+        fingerprint,
       },
     };
   } catch (error: unknown) {

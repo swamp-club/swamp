@@ -32,6 +32,8 @@ export interface CollectiveTokenMetadata {
   id: string;
   name: string;
   keyPrefix: string;
+  /** Sent by servers with lab #1700; absent from older ones. */
+  fingerprint?: string;
   enabled: boolean;
   expiresAt: string | null;
   createdAt: string;

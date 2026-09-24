@@ -20,10 +20,12 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type {
+  AuthTokenCreateData,
   AuthTokenListData,
   AuthTokenRevokeData,
 } from "../../libswamp/mod.ts";
 import {
+  renderAuthTokenCreate,
   renderAuthTokenList,
   renderAuthTokenRevoke,
 } from "./auth_token_output.ts";
@@ -115,4 +117,68 @@ Deno.test("renderAuthTokenRevoke: json mode outputs structured data", () => {
   assertEquals(parsed.name, "ci-deploy");
   assertEquals(parsed.collective, "myorg");
   assertEquals("key" in parsed, false);
+});
+
+Deno.test("renderAuthTokenList: no FINGERPRINT column when the server sends none", () => {
+  const output = captureLogs(() => renderAuthTokenList(listData, "log"));
+  assertEquals(
+    output.split("\n")[0].trim().split(/\s{2,}/),
+    ["NAME", "ID", "PREFIX", "SCOPES", "CREATED", "LAST USED"],
+  );
+
+  const parsed = JSON.parse(
+    captureLogs(() => renderAuthTokenList(listData, "json")),
+  );
+  assertEquals("fingerprint" in parsed[0], false);
+});
+
+Deno.test("renderAuthTokenList: FINGERPRINT replaces PREFIX when the server sends one", () => {
+  const withFingerprint: AuthTokenListData = {
+    ...listData,
+    tokens: [
+      { ...listData.tokens[0], fingerprint: "7cba95208c56e033" },
+      listData.tokens[1],
+    ],
+  };
+  const output = captureLogs(() => renderAuthTokenList(withFingerprint, "log"));
+  const [header, first, second] = output.split("\n").map((l) => l.trim());
+  assertEquals(header.split(/\s{2,}/), [
+    "NAME",
+    "ID",
+    "FINGERPRINT",
+    "SCOPES",
+    "CREATED",
+    "LAST USED",
+  ]);
+  assertEquals(first.split(/\s{2,}/)[2], "7cba95208c56e033");
+  assertEquals(second.split(/\s{2,}/)[2], "-");
+  assertEquals(output.includes("swamp_org_"), false);
+
+  const parsed = JSON.parse(
+    captureLogs(() => renderAuthTokenList(withFingerprint, "json")),
+  );
+  assertEquals(parsed[0].fingerprint, "7cba95208c56e033");
+  assertEquals(parsed[0].keyPrefix, "swamp_org_ab");
+});
+
+const createData: AuthTokenCreateData = {
+  key: "swamp_org_abcdef1234567890",
+  fingerprint: "00bd270b8576bc29",
+  id: "tok-1",
+  name: "ci-deploy",
+  collective: "myorg",
+  scopes: ["extensions:push"],
+};
+
+Deno.test("renderAuthTokenCreate: log mode shows the fingerprint beside the secret", () => {
+  const output = captureLogs(() => renderAuthTokenCreate(createData, "log"));
+  assertStringIncludes(output, "Fingerprint: 00bd270b8576bc29");
+  assertStringIncludes(output, "swamp_org_abcdef1234567890");
+});
+
+Deno.test("renderAuthTokenCreate: json mode includes the fingerprint", () => {
+  const parsed = JSON.parse(
+    captureLogs(() => renderAuthTokenCreate(createData, "json")),
+  );
+  assertEquals(parsed.fingerprint, "00bd270b8576bc29");
 });

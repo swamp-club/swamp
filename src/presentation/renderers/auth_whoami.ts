@@ -112,6 +112,10 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
           );
         }
 
+        if (e.identity.fingerprint) {
+          writeOutput(`Fingerprint: ${e.identity.fingerprint}`);
+        }
+
         if (this.options.effectiveServeUrl) {
           writeOutput(`Serve: ${this.options.effectiveServeUrl}`);
         }
@@ -168,6 +172,9 @@ class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
                 email: e.identity.email,
                 name: e.identity.name,
               }),
+            ...(e.identity.fingerprint
+              ? { fingerprint: e.identity.fingerprint }
+              : {}),
             ...(e.identity.collectives
               ? { collectives: e.identity.collectives }
               : {}),

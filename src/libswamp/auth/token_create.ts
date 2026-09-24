@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
-import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
+import {
+  DEFAULT_SWAMP_CLUB_URL,
+  keyFingerprint,
+} from "../../domain/auth/auth_credentials.ts";
 import type { CreateCollectiveTokenResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
@@ -36,6 +39,8 @@ import {
 
 export interface AuthTokenCreateData {
   key: string;
+  /** {@link keyFingerprint} of `key`, as swamp-club lists the token. */
+  fingerprint: string;
   id: string;
   name: string;
   collective: string;
@@ -147,6 +152,7 @@ export async function* authTokenCreate(
       kind: "completed",
       data: {
         key: response.key,
+        fingerprint: await keyFingerprint(response.key),
         id: response.token.id,
         name: response.token.name,
         collective: input.collective,

@@ -88,6 +88,7 @@ Deno.test("whoami yields loading_credentials -> contacting_server -> completed o
         email: "adam@example.com",
         name: "Adam",
         collectives: ["si"],
+        fingerprint: "e9cff35b7e42e328",
       },
     },
   ]);
@@ -252,7 +253,7 @@ Deno.test("createAuthDeps: saveCredentials caches identity when SWAMP_API_KEY is
     const saved = JSON.parse(raw) as AuthCredentials;
     assertEquals(saved.username, "adam");
     assertEquals(saved.collectives, ["myorg"]);
-    assertEquals(saved.apiKeyFingerprint, "swamp_test_e");
+    assertEquals(saved.apiKeyFingerprint, "e439cb8a5820ad98");
     // apiKey/apiKeyId should be empty — not the env var key
     assertEquals(saved.apiKey, "");
     assertEquals(saved.apiKeyId, "");
@@ -293,6 +294,7 @@ Deno.test("whoami: collective token response includes collectiveToken, collectiv
   ]);
   assertEquals(completed.identity.collectives, ["myorg"]);
   assertEquals(completed.identity.username, "");
+  assertEquals(completed.identity.fingerprint, "e9cff35b7e42e328");
 });
 
 Deno.test("whoami: collective token skips saveCredentials", async () => {
@@ -472,4 +474,33 @@ Deno.test("whoami caches only slugs, never entitlement", async () => {
   assertEquals(saved!.collectives, ["acme", "keeb"]);
   assertEquals("plan" in saved!, false);
   assertEquals("collectiveEntitlements" in saved!, false);
+});
+
+Deno.test("whoami: SWAMP_API_KEY takes precedence over a login, reporting the env key's fingerprint", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = `${tmpDir}/swamp`;
+    await createAuthDeps({
+      repo: { configDir, getApiKey: () => undefined },
+    }).saveCredentials(testCredentials);
+
+    const deps: AuthDeps = {
+      ...createAuthDeps({
+        repo: { configDir, getApiKey: () => "swamp_test_env_key" },
+      }),
+      fetchWhoami: () => Promise.resolve(testWhoamiResponse),
+    };
+    const events = await collect<AuthWhoamiEvent>(
+      whoami(createLibSwampContext(), deps),
+    );
+
+    const completed = events[events.length - 1] as Extract<
+      AuthWhoamiEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.identity.fingerprint, "e439cb8a5820ad98");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });

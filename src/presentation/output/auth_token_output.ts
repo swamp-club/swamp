@@ -39,6 +39,7 @@ export function renderAuthTokenCreate(
     `${bold(cyan("Token:"))} ${bold(data.name)}`,
     `${bold(cyan("Collective:"))} ${data.collective}`,
     `${bold(cyan("Scopes:"))} ${data.scopes.join(", ")}`,
+    `${bold(cyan("Fingerprint:"))} ${data.fingerprint}`,
     "",
     `  ${bold(data.key)}`,
     "",
@@ -71,11 +72,23 @@ export function renderAuthTokenList(
     return;
   }
 
-  const headers = ["NAME", "ID", "PREFIX", "SCOPES", "CREATED", "LAST USED"];
+  // A fingerprint identifies a key from its secret; the prefix, shared by
+  // every collective token bar two characters, cannot. Servers that report
+  // fingerprints get that column in the prefix's place; the rest keep the
+  // table exactly as it was. --json keeps both.
+  const showFingerprint = data.tokens.some((token) => token.fingerprint);
+  const headers = [
+    "NAME",
+    "ID",
+    showFingerprint ? "FINGERPRINT" : "PREFIX",
+    "SCOPES",
+    "CREATED",
+    "LAST USED",
+  ];
   const rows = data.tokens.map((token) => [
     token.name,
     token.id,
-    token.keyPrefix,
+    showFingerprint ? token.fingerprint ?? "-" : token.keyPrefix,
     token.scopes.join(", "),
     token.createdAt,
     token.lastUsedAt ?? dim("-"),
