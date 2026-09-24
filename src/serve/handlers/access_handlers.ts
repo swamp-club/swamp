@@ -79,6 +79,8 @@ import {
   send,
   sendError,
   terminateTokenSessions,
+  TOKEN_REVOKED_REASON,
+  TOKEN_ROTATED_REASON,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
@@ -924,20 +926,20 @@ export async function handleAccessTokenRevoke(
 
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
+    } else {
+      send(socket, {
+        type: "access.token.revoke",
+        id: requestId,
+        payload: { data: result ?? {} },
+      });
     }
 
-    send(socket, {
-      type: "access.token.revoke",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
-    // Every mint of the name is revoked, so every session opened with it ends.
-    // Runs after the reply so a caller revoking their own token still gets it.
+    // The revoke is persisted even if the request was cancelled, so every
+    // session opened with any mint of the name ends. Runs after the reply so a
+    // caller revoking their own token still gets it.
     terminateTokenSessions(payload.name, {
       code: 4003,
-      reason: "Session revoked",
+      reason: TOKEN_REVOKED_REASON,
       cause: "revoked",
       initiatedBy: initiatorOf(principal, ctx),
       requestId,
@@ -993,15 +995,15 @@ export async function handleAccessTokenRotate(
 
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
+    } else {
+      send(socket, {
+        type: "access.token.rotate",
+        id: requestId,
+        payload: { data: result ?? {} },
+      });
     }
 
-    send(socket, {
-      type: "access.token.rotate",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
+    // The rotation is persisted even if the request was cancelled.
     await terminateRotatedSessions(payload.name, ctx, requestId, principal);
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -1043,7 +1045,7 @@ async function terminateRotatedSessions(
   terminateTokenSessions(name, {
     exceptCreatedAt: newMint,
     code: 4003,
-    reason: "Session revoked: token rotated, reconnect with the new credential",
+    reason: TOKEN_ROTATED_REASON,
     cause: "rotated",
     initiatedBy: initiatorOf(principal, ctx),
     requestId,

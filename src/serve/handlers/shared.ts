@@ -388,7 +388,20 @@ export type TokenSessionTerminationCause =
   | "revoked"
   | "rotated"
   | "expired"
-  | "deleted";
+  | "deleted"
+  | "invalid";
+
+// Close reasons for token-driven terminations (all well under the 123-byte
+// close-frame limit). Each names its cause, so a client can tell a revoked
+// token apart from a principal losing access ("Session revoked").
+export const TOKEN_REVOKED_REASON = "Session revoked: token revoked";
+export const TOKEN_ROTATED_REASON =
+  "Session revoked: token rotated, reconnect with the new credential";
+export const TOKEN_GONE_REASON = "Session revoked: token no longer exists";
+export const TOKEN_INVALID_REASON =
+  "Session revoked: token record is unreadable";
+export const TOKEN_EXPIRED_REASON =
+  "Session expired — reconnect to re-authenticate";
 
 export interface TokenSessionAuditContext {
   readonly emitter?: Pick<AuditEmitter, "emit">;

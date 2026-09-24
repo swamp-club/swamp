@@ -264,8 +264,14 @@ Deno.test("revoke handler: ends the revoked token's sessions, after replying, an
 
     assertEquals(JSON.parse(caller.sent[0]).type, "access.token.revoke");
     assertEquals(log, [`send:${victim}`, `close:${victim}`]);
-    assertEquals(caller.closes, [{ code: 4003, reason: "Session revoked" }]);
-    assertEquals(second.closes, [{ code: 4003, reason: "Session revoked" }]);
+    assertEquals(caller.closes, [{
+      code: 4003,
+      reason: "Session revoked: token revoked",
+    }]);
+    assertEquals(second.closes, [{
+      code: 4003,
+      reason: "Session revoked: token revoked",
+    }]);
     assertEquals(survivor.closes, []);
 
     const events = terminated(sink);
@@ -285,6 +291,38 @@ Deno.test("revoke handler: ends the revoked token's sessions, after replying, an
       cause: "revoked",
       initiatedBy: "system",
     });
+  });
+});
+
+Deno.test("revoke handler: a revoke that completes after cancellation still ends the sessions", async () => {
+  await withRepo(async (repo) => {
+    const name = `cancelled-${crypto.randomUUID()}`;
+    const mint = await repo.mint(name, "user:alice");
+    const session = openSession(name, mint, "user:alice");
+    const caller = openSession(
+      `admin-${crypto.randomUUID()}`,
+      mint,
+      "user:admin",
+    );
+    const controller = new AbortController();
+    controller.abort();
+
+    await handleAccessTokenRevoke(
+      caller.socket,
+      repo.ctx(new AuditEmitter({ sinks: [] })),
+      "req-cancelled",
+      { name },
+      controller,
+      ADMIN,
+    );
+
+    // The revoke itself is not cancellable once running, so it persisted.
+    assertEquals(
+      (await readServerTokenRecord(repo.repoContext, name)).state,
+      "revoked",
+    );
+    assertEquals(JSON.parse(caller.sent[0]).error.code, "cancelled");
+    assertEquals(session.closes.map((c) => c.code), [4003]);
   });
 });
 

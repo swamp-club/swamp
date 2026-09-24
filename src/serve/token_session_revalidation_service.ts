@@ -24,10 +24,18 @@
  * runtime data poller brings the record in), or from the CLI.
  */
 
+import { z } from "zod";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
 import { classifyRedeemError } from "./token_auth.ts";
-import type { TokenSessionTerminationCause } from "./handlers/shared.ts";
+import {
+  TOKEN_EXPIRED_REASON,
+  TOKEN_GONE_REASON,
+  TOKEN_INVALID_REASON,
+  TOKEN_REVOKED_REASON,
+  TOKEN_ROTATED_REASON,
+  type TokenSessionTerminationCause,
+} from "./handlers/shared.ts";
 
 const logger = getSwampLogger(["serve", "token-session-revalidation"]);
 
@@ -62,7 +70,7 @@ export function tokenSessionVerdict(
       keep: false,
       cause: "deleted",
       code: REVOKED_CLOSE_CODE,
-      reason: "Session revoked",
+      reason: TOKEN_GONE_REASON,
     };
   }
   if (token.state === "revoked") {
@@ -70,7 +78,7 @@ export function tokenSessionVerdict(
       keep: false,
       cause: "revoked",
       code: REVOKED_CLOSE_CODE,
-      reason: "Session revoked",
+      reason: TOKEN_REVOKED_REASON,
     };
   }
   if (token.createdAt !== sessionCreatedAt) {
@@ -78,8 +86,7 @@ export function tokenSessionVerdict(
       keep: false,
       cause: "rotated",
       code: REVOKED_CLOSE_CODE,
-      reason:
-        "Session revoked: token rotated, reconnect with the new credential",
+      reason: TOKEN_ROTATED_REASON,
     };
   }
   if (token.state === "expired" || Date.parse(token.expiresAt) <= nowMs) {
@@ -87,10 +94,19 @@ export function tokenSessionVerdict(
       keep: false,
       cause: "expired",
       code: EXPIRED_CLOSE_CODE,
-      reason: "Session expired — reconnect to re-authenticate",
+      reason: TOKEN_EXPIRED_REASON,
     };
   }
   return { keep: true };
+}
+
+/**
+ * A record that is present but will not parse is rejected at upgrade, so its
+ * open sessions must not outlive it either. Only other failures (I/O, a
+ * datastore hiccup) are treated as transient.
+ */
+function isUnreadableRecord(err: unknown): boolean {
+  return err instanceof SyntaxError || err instanceof z.ZodError;
 }
 
 export interface TokenSessionCloseOptions {
@@ -182,6 +198,20 @@ export class TokenSessionRevalidationService {
         const message = err instanceof Error ? err.message : String(err);
         if (classifyRedeemError(message) === "no-definition") {
           token = null;
+        } else if (isUnreadableRecord(err)) {
+          logger.warn(
+            "Token {name} has an unreadable record; closing its sessions: {error}",
+            { name, error: message },
+          );
+          for (const createdAt of mints) {
+            closed += this.#deps.terminateSessions(name, {
+              onlyCreatedAt: createdAt,
+              code: REVOKED_CLOSE_CODE,
+              reason: TOKEN_INVALID_REASON,
+              cause: "invalid",
+            });
+          }
+          continue;
         } else {
           // A transient read failure must not drop every session; the next
           // pass retries, and the 8-hour session cap still bounds the worst

@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { z } from "zod";
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
 import {
   type TokenSessionCloseOptions,
@@ -207,6 +208,25 @@ Deno.test("runOnce: a transient read failure keeps the sessions for the next pas
   assertEquals(h.closes, []);
 });
 
+Deno.test("runOnce: a record that will not parse closes its sessions as invalid", async () => {
+  for (
+    const unreadable of [
+      new SyntaxError("Unexpected end of JSON input"),
+      new z.ZodError([]),
+    ]
+  ) {
+    const h = harness(
+      [{ name: "tok", createdAt: MINT_1 }],
+      () => Promise.reject(unreadable),
+    );
+    const service = new TokenSessionRevalidationService(h.deps);
+
+    assertEquals(await service.runOnce(), 1);
+    assertEquals(h.closes[0].options.cause, "invalid");
+    assertEquals(h.closes[0].options.code, 4003);
+  }
+});
+
 Deno.test("runOnce: one failing token does not stop the others being checked", async () => {
   const h = harness(
     [
@@ -259,7 +279,7 @@ Deno.test("runOnce: closes a session bound after a revoke's immediate close ran"
   assertEquals(h.closes[0].options.cause, "revoked");
 });
 
-Deno.test("start: revalidates on its timer until disposed", async () => {
+Deno.test("start: runs revalidation passes on its timer", async () => {
   const h = harness(
     [{ name: "tok", createdAt: MINT_1 }],
     () => Promise.resolve(token({ state: "revoked" })),
@@ -271,8 +291,7 @@ Deno.test("start: revalidates on its timer until disposed", async () => {
   await waitFor(() => h.closes.length >= 1, "a timed revalidation pass");
   await service.dispose();
 
-  const after = h.closes.length;
-  assertEquals(after >= 1, true);
+  assertEquals(h.closes[0].options.cause, "revoked");
 });
 
 Deno.test("dispose: waits for a pass already running", async () => {

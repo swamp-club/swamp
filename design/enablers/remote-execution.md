@@ -218,8 +218,11 @@ re-reads the record of every open session's token every 30s and closes sessions
 whose token is revoked (4003), rotated (4003), deleted (4003) or expired (4002).
 That pass covers revokes made from the CLI or on an HA peer, whose record
 arrives through the runtime data poller, so a peer ends the session within the
-poll interval plus 30s. A read that fails for any other reason keeps the session
-until the next pass. `terminateTokenSessions` is the one path that closes them,
+poll interval plus 30s. A record that exists but no longer parses closes its
+sessions (4003), as it would be rejected at upgrade; a read that fails for any
+other reason, such as I/O, keeps the session until the next pass. Revoke and
+rotate close sessions even when the request was cancelled after the change was
+saved. `terminateTokenSessions` is the one path that closes them,
 and it records an `auth.session.terminated` audit event per session (see
 [serve-audit.md](serve-audit.md)). The 8-hour session cap still applies.
 
