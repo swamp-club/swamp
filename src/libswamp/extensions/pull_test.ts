@@ -722,6 +722,8 @@ Deno.test(
         ConflictError,
       );
       assertEquals(error.conflicts, [relative(repoDir, userSkill)]);
+      assertEquals(error.skillDirs, [relative(repoDir, userSkill)]);
+      assertStringIncludes(error.message, "other files kept");
       assertEquals(
         await Deno.readTextFile(join(userSkill, "notes.md")),
         "mine",
@@ -993,6 +995,41 @@ Deno.test(
       assertEquals(await Deno.readTextFile(join(skillDir, "SKILL.md")), "new");
       assertEquals(
         lockfile.getEntry(name)?.files?.includes(relative(repoDir, skillDir)),
+        true,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a user's symlink inside a merged skill dir is not listed as created",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const userSkill = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(userSkill);
+      const target = join(repoDir, "shared-skill.md");
+      await Deno.writeTextFile(target, "mine");
+      await Deno.symlink(target, join(userSkill, "SKILL.md"), {
+        type: "file",
+      });
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext", "extra.md": "new" } },
+      });
+      const result = await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+          force: true,
+        }),
+      );
+      const created = result?.createdPaths ?? [];
+      assertEquals(
+        created.includes(relative(repoDir, join(userSkill, "SKILL.md"))),
+        false,
+      );
+      assertEquals(
+        created.includes(relative(repoDir, join(userSkill, "extra.md"))),
         true,
       );
     });

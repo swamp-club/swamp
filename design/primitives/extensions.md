@@ -1292,7 +1292,10 @@ fires for those files only when an extension is reinstalled over itself.
 Skills are the exception: they land in shared tool dirs, so a skill dir of the
 same name may already belong to the user or to another extension. A skill dir
 that exists and that the extension's prior lockfile entry does not list (as the
-root or as files under it) is a ConflictError for the top-level extension. With
+root or as files under it) is a ConflictError for the top-level extension.
+`ConflictError.skillDirs` names those dirs, and the pull prompt and `--json`
+output (`skillDirs`) list them apart from overwritten files, since the install
+writes into them rather than replacing them. With
 `--force`, and for dependencies, the install merges into the dir and logs a
 warning naming it. The auto-resolver retries conflicts on pulled skill dirs with
 force, as it does for stale bundle output.

@@ -221,14 +221,36 @@ export interface InstallContext {
 
 /** Thrown when file conflicts are detected and force is false. */
 export class ConflictError extends UserError {
+  /** Every conflicting path, skill dirs included. */
   conflicts: string[];
-  constructor(conflicts: string[]) {
-    super(
-      `The following files already exist and would be overwritten:\n${
-        conflicts.map((c) => `  ${c}`).join("\n")
-      }\nUse --force to overwrite.`,
-    );
+  /**
+   * The subset of `conflicts` that are existing skill dirs. The install
+   * writes its files into them rather than replacing them: same-named
+   * files are overwritten, other files are kept.
+   */
+  skillDirs: string[];
+  constructor(conflicts: string[], skillDirs: string[] = []) {
+    const skillSet = new Set(skillDirs);
+    const files = conflicts.filter((c) => !skillSet.has(c));
+    const lines: string[] = [];
+    if (files.length > 0) {
+      lines.push(
+        "The following files already exist and would be overwritten:",
+        ...files.map((c) => `  ${c}`),
+      );
+    }
+    if (skillDirs.length > 0) {
+      lines.push(
+        "The following skill directories already exist; the extension's " +
+          "files would be written into them (same-named files overwritten, " +
+          "other files kept):",
+        ...skillDirs.map((c) => `  ${c}`),
+      );
+    }
+    lines.push("Use --force to overwrite.");
+    super(lines.join("\n"));
     this.conflicts = conflicts;
+    this.skillDirs = skillDirs;
   }
 }
 
@@ -452,6 +474,30 @@ async function listFiles(dir: string): Promise<string[]> {
     }
   }
   return files;
+}
+
+/**
+ * Lists files and symlinks under a directory without descending into
+ * symlinked directories. Used to snapshot a skill dir before merging
+ * into it: `copyFile` writes through a symlink at the destination, so a
+ * user's symlink must count as pre-existing or rollback would unlink it.
+ */
+async function listFilesAndLinks(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (isMacOsResourceFork(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory) {
+        out.push(...await listFilesAndLinks(path));
+      } else {
+        out.push(path);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return out;
 }
 
 /**
@@ -1047,19 +1093,18 @@ export async function installExtension(
     // installs after its parent's lockfile entry is written, so failing
     // there would leave the operation half done. Dependencies merge
     // with the overwrite warning below instead.
-    if (ctx.depth === 0) {
-      conflicts.push(
-        ...await detectSkillConflicts(
-          extractDir,
-          ctx.skillsDirs,
-          oldFiles,
-          repoDir,
-        ),
-      );
-    }
+    const skillConflicts = ctx.depth === 0
+      ? await detectSkillConflicts(
+        extractDir,
+        ctx.skillsDirs,
+        oldFiles,
+        repoDir,
+      )
+      : [];
+    conflicts.push(...skillConflicts);
 
     if (conflicts.length > 0 && !ctx.force) {
-      throw new ConflictError(conflicts);
+      throw new ConflictError(conflicts, skillConflicts);
     }
 
     const extractedFiles: string[] = [];
@@ -1207,7 +1252,7 @@ export async function installExtension(
             const preExisted = await pathExistsNoFollow(destSkillDir);
             const filesBefore = preExisted
               ? new Set(
-                (await listFiles(destSkillDir)).map((f) =>
+                (await listFilesAndLinks(destSkillDir)).map((f) =>
                   relative(repoDir, f)
                 ),
               )

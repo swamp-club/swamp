@@ -68,7 +68,9 @@ export interface RemoveExtensionResult {
   failedFiles: FailedFile[];
   /**
    * Tracked paths left on disk because another installed extension
-   * claims them. Nothing needs removing by hand.
+   * claims them. For a kept skill dir, the files this extension wrote
+   * there stay too and are no longer tracked by any entry; remove them
+   * by hand if they are unwanted.
    */
   retainedFiles: RetainedFile[];
 }
