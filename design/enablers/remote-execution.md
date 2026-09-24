@@ -213,7 +213,9 @@ The client looks for the token in this order:
 2. the `--token-file` flag (read from that path);
 3. the `SWAMP_SERVER_TOKEN_FILE` env var (read from a file);
 4. the `SWAMP_SERVER_TOKEN` env var, scoped by `SWAMP_SERVER_URL` (both must be
-   set; both accept `ws(s)://` or `http(s)://` URLs);
+   set; both accept `ws(s)://` or `http(s)://` URLs). A `SWAMP_SERVER_URL` that
+   is not a valid `ws(s)://` or `http(s)://` URL matches no server: the CLI
+   warns and does not send the token;
 5. stored credentials in `~/.config/swamp/servers.json` (managed by
    `swamp auth server-login`).
 

@@ -30,6 +30,23 @@ import { getSwampConfigDir } from "./paths.ts";
 const SERVERS_FILE = "servers.json";
 
 /**
+ * Normalizes SWAMP_SERVER_URL for comparison with the lookup key. An
+ * unparseable value or unsupported scheme matches no server: it warns
+ * without echoing the value, which can carry a credential, and returns
+ * `undefined`.
+ */
+function normalizeEnvServerUrl(envUrl: string): string | undefined {
+  try {
+    return normalizeServerUrl(envUrl);
+  } catch {
+    const logger = getSwampLogger(["auth", "credential"]);
+    logger
+      .warn`SWAMP_SERVER_TOKEN is set but SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL — token not sent. Fix SWAMP_SERVER_URL or use --token instead.`;
+    return undefined;
+  }
+}
+
+/**
  * Optional overrides for `FileServerCredentialRepository`. Used by tests to
  * bypass the shared `Deno.env` global, which races across files when
  * `deno test --parallel` runs multiple test files concurrently.
@@ -107,7 +124,7 @@ export class FileServerCredentialRepository
     if (envToken) {
       const envUrl = this.getServerUrl();
       if (envUrl) {
-        if (normalizeServerUrl(envUrl) === key) {
+        if (normalizeEnvServerUrl(envUrl) === key) {
           return {
             serverUrl: key,
             tokenName: "",
