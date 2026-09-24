@@ -57,7 +57,7 @@ import {
  * syntax rather than a swamp expression with its syntax slightly wrong.
  */
 const FOREIGN_TEMPLATE_REMEDY =
-  "If this is another service's template syntax, the model type can declare the field with .meta({ foreignTemplate: true }), or the value can build the braces with CEL string concatenation";
+  'If this is another service\'s template syntax, build the braces with CEL string concatenation, e.g. ${{ "{" + "{name}" + "}" }}, or have the model type declare the field with .meta({ foreignTemplate: true }).';
 
 /**
  * Error text for template-like text that swamp would claim as its own
@@ -78,7 +78,7 @@ const MALFORMED_EXPRESSION_MESSAGES: Record<
   "inside-expression": {
     issue: "Template text {{...}} inside a ${{...}} expression cuts it short",
     suggestion:
-      'An expression ends at the first }}, so a string inside it cannot hold {{...}} yet (swamp-club#2492). Build the braces with CEL string concatenation instead, e.g. ${{ "{" + "{name}" + "}" }}',
+      'An expression ends at the first }}, so a string inside it cannot hold {{...}}. Build the braces with CEL string concatenation instead, e.g. ${{ "{" + "{name}" + "}" }}.',
   },
 };
 

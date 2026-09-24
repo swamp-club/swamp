@@ -541,6 +541,7 @@ Deno.test("validateModel reports a dropped $ on a swamp expression with both rem
   assertStringIncludes(error, 'Add "$" prefix');
   assertStringIncludes(error, ".meta({ foreignTemplate: true })");
   assertStringIncludes(error, "CEL string concatenation");
+  assertStringIncludes(error, '${{ "{" + "{name}" + "}" }}');
   assertEquals(warnings, []);
 });
 
@@ -717,7 +718,7 @@ Deno.test("validateModel fails {{...}} inside a ${{ }} string, even in a declare
     assertEquals(expressionPaths?.passed, false);
     const error = expressionPaths?.error ?? "";
     assertStringIncludes(error, "cuts it short");
-    assertStringIncludes(error, "swamp-club#2492");
+    assertStringIncludes(error, "ends at the first }}");
     assertStringIncludes(error, "CEL string concatenation");
     assertEquals(warnings, []);
   }

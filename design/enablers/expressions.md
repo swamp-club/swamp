@@ -635,11 +635,18 @@ them classifies as swamp's and fails:
 - Jinja templates that read `env` or `data`
 - Terraform interpolation such as `${data.aws_ami.ubuntu.id}` or
   `${self.private_ip}`
+- Text with no free root at all, which `isSwampExpression` counts as swamp's:
+  literals such as `{{ true }}`, and calls such as Jinja's `{{ now() }}` or
+  Ansible's `{{ lookup('env', 'HOME') }}`
 
-The error names the ways out. The model type can declare the field as foreign
-template text (below). Or the value can build the braces with CEL string
+The error names the ways out. The value can build the braces with CEL string
 concatenation, which passes validation and evaluates to the literal text:
-`${{ "{" + "{env.name}" + "}" }}`.
+`${{ "{" + "{env.name}" + "}" }}`. Or the model type can declare the field as
+foreign template text (below). Concatenation does not survive a workflow step
+that runs a model type directly with inline `globalArgs`: the workflow
+evaluator substitutes those values before the step validates the definition it
+builds from them, so the braces come back (swamp-club#2496). Declare the field,
+or use a named definition, there.
 
 **Declaring a field.** A model type marks a global or method argument that
 holds another service's template syntax with `.meta({ foreignTemplate: true })`
@@ -656,11 +663,14 @@ The metadata is found the way `sensitive` is. It is read from the field itself
 and through `optional`, `nullable` and `default` wrappers, but not through
 `.transform()`.
 
-Two related gaps are tracked separately. A foreign `${{ ... }}`, such as GitHub
+Related gaps are tracked separately. A foreign `${{ ... }}`, such as GitHub
 Actions `${{ github.sha }}`, fails validation and throws when a method reads it
 from a global argument (swamp-club#2491). A `literal("...")` function for
 strings that mix swamp and vendor syntax needs an expression scanner that
-understands quoted strings (swamp-club#2492).
+understands quoted strings (swamp-club#2492). An unclosed `${{` runs on to a
+later `}}`, so a foreign `{{ ... }}` after it is reported as cutting the
+expression short, instead of the missing brace being reported
+(swamp-club#2497).
 
 ## Sensitive Data
 
