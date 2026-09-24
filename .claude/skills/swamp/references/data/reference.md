@@ -53,9 +53,21 @@ swamp data get my-model execution-log --no-content --json
 ```
 
 **Output shape:** Returns `id`, `name`, `modelId`, `version`, `contentType`,
-`lifetime`, `tags`, `ownerDefinition`, `size`, `checksum`, and `content`. See
+`lifetime`, `tags`, `ownerDefinition`, `size`, `checksum`, `content`, and
+`contentEncoding`. See
 [references/output-shapes.md](references/output-shapes.md#get-data) for the full
 output shape.
+
+**Binary content:** When the stored bytes are valid UTF-8, `contentEncoding` is
+`"utf-8"` and `content` is the text (a leading byte-order mark is dropped).
+Otherwise (an image, an archive) `contentEncoding` is `"base64"` and `content`
+is the base64-encoded bytes, so no byte is lost. Without `--json`, binary data
+prints a one-line notice instead of the bytes. To save a base64 artifact as a
+file:
+
+```bash
+swamp data get my-model logo --json | jq -r .content | base64 -d > logo.png
+```
 
 ## Workflow-Scoped Data Access
 

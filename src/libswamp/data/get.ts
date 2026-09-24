@@ -21,6 +21,10 @@ import type { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
+import {
+  type ContentEncoding,
+  encodeContent,
+} from "../../domain/data/content_encoding.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -72,6 +76,11 @@ export interface DataGetData {
   checksum?: string;
   contentPath: string;
   content?: string;
+  /**
+   * How `content` is encoded. Set whenever `content` is: `utf-8` when the
+   * stored bytes are valid UTF-8, `base64` otherwise (e.g. an image).
+   */
+  contentEncoding?: ContentEncoding;
 }
 
 export interface DataGetInput {
@@ -399,7 +408,9 @@ async function* workflowScopedGet(
       item.data.version,
     );
     if (rawContent) {
-      output.content = new TextDecoder().decode(rawContent);
+      const { content, contentEncoding } = encodeContent(rawContent);
+      output.content = content;
+      output.contentEncoding = contentEncoding;
     }
   }
 
@@ -485,7 +496,9 @@ async function* modelScopedGet(
       data.version,
     );
     if (rawContent) {
-      output.content = new TextDecoder().decode(rawContent);
+      const { content, contentEncoding } = encodeContent(rawContent);
+      output.content = content;
+      output.contentEncoding = contentEncoding;
     }
   }
 

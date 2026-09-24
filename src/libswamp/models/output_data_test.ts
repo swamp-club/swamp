@@ -205,3 +205,113 @@ Deno.test("modelOutputData yields error when no data artifacts", async () => {
 
   assertEquals(events[1].kind, "error");
 });
+
+// The 8-byte PNG signature: 0x89 is not valid UTF-8.
+const PNG_SIGNATURE = new Uint8Array([
+  0x89,
+  0x50,
+  0x4e,
+  0x47,
+  0x0d,
+  0x0a,
+  0x1a,
+  0x0a,
+]);
+
+function depsWithContent(
+  contentType: string,
+  bytes: Uint8Array,
+): ModelOutputDataDeps {
+  return makeDeps({
+    findDataByName: () =>
+      Promise.resolve({
+        id: "data-1",
+        name: "output",
+        version: 1,
+        contentType,
+      }),
+    getContent: () => Promise.resolve(bytes),
+  });
+}
+
+async function runOutputData(deps: ModelOutputDataDeps, field?: string) {
+  return await collect<ModelOutputDataEvent>(
+    modelOutputData(createLibSwampContext(), deps, {
+      outputIdArg: "out-123",
+      field,
+    }),
+  );
+}
+
+function completedOf(events: ModelOutputDataEvent[]) {
+  const completed = events.at(-1) as Extract<
+    ModelOutputDataEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  return completed.data;
+}
+
+Deno.test("modelOutputData: binary content is base64 and lossless", async () => {
+  const data = completedOf(
+    await runOutputData(depsWithContent("image/png", PNG_SIGNATURE)),
+  );
+  assertEquals(data.contentEncoding, "base64");
+  assertEquals(Uint8Array.fromBase64(data.data as string), PNG_SIGNATURE);
+});
+
+Deno.test("modelOutputData: UTF-8 text content is utf-8 text", async () => {
+  const text = "héllo wörld ✓\n";
+  const data = completedOf(
+    await runOutputData(
+      depsWithContent("text/plain", new TextEncoder().encode(text)),
+    ),
+  );
+  assertEquals(data.contentEncoding, "utf-8");
+  assertEquals(data.data, text);
+});
+
+Deno.test("modelOutputData: parsed JSON has no contentEncoding", async () => {
+  const data = completedOf(await runOutputData(makeDeps()));
+  assertEquals(data.data, { key: "value" });
+  assertEquals("contentEncoding" in data, false);
+});
+
+Deno.test("modelOutputData: JSON that fails to parse is returned as utf-8 text", async () => {
+  const data = completedOf(
+    await runOutputData(
+      depsWithContent(
+        "application/json",
+        new TextEncoder().encode("{not json"),
+      ),
+    ),
+  );
+  assertEquals(data.contentEncoding, "utf-8");
+  assertEquals(data.data, "{not json");
+});
+
+Deno.test("modelOutputData: application/json with invalid UTF-8 is base64, not parsed", async () => {
+  // {"a":"<0xff>"} parses after a lenient decode, with U+FFFD in the string.
+  const bytes = new Uint8Array([
+    ...new TextEncoder().encode('{"a":"'),
+    0xff,
+    ...new TextEncoder().encode('"}'),
+  ]);
+  const data = completedOf(
+    await runOutputData(depsWithContent("application/json", bytes)),
+  );
+  assertEquals(data.contentEncoding, "base64");
+  assertEquals(Uint8Array.fromBase64(data.data as string), bytes);
+});
+
+Deno.test("modelOutputData: --field on binary content fails as not a JSON object", async () => {
+  const events = await runOutputData(
+    depsWithContent("image/png", PNG_SIGNATURE),
+    "key",
+  );
+  const last = events.at(-1)!;
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.message.includes("not a JSON object"), true);
+  }
+});

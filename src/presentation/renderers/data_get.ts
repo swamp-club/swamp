@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { dim } from "@std/fmt/colors";
 import type {
   DataGetData,
   DataGetEvent,
@@ -66,7 +67,14 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
 
         if (data.content !== undefined) {
           writeOutput("");
-          if (data.contentType === "application/json") {
+          if (data.contentEncoding === "base64") {
+            const size = formatSize(data.size);
+            writeOutput(
+              dim(
+                `(binary data, ${size} — use --json to get it base64-encoded)`,
+              ),
+            );
+          } else if (data.contentType === "application/json") {
             try {
               const parsed = JSON.parse(data.content);
               writeOutput(JSON.stringify(parsed, null, 2));
@@ -93,7 +101,8 @@ class JsonDataGetRenderer implements Renderer<DataGetEvent> {
         const jsonOutput: Record<string, unknown> = { ...e.data };
         // Parse JSON content inline for structured output
         if (
-          e.data.content && e.data.contentType === "application/json"
+          e.data.content && e.data.contentType === "application/json" &&
+          e.data.contentEncoding !== "base64"
         ) {
           try {
             jsonOutput.content = JSON.parse(e.data.content);

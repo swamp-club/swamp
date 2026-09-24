@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { consumeStream } from "../../libswamp/mod.ts";
 import type { DataGetEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -110,4 +111,94 @@ Deno.test("createDataGetRenderer - factory returns correct type per mode", () =>
   const jsonRenderer = createDataGetRenderer("json");
   assertEquals(typeof logRenderer.handlers, "function");
   assertEquals(typeof jsonRenderer.handlers, "function");
+});
+
+async function captureRender(
+  mode: "log" | "json",
+  data: DataGetEvent & { kind: "completed" },
+): Promise<string> {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createDataGetRenderer(mode);
+    await consumeStream(toStream([data]), renderer.handlers());
+  } finally {
+    console.log = originalLog;
+  }
+  return stripAnsiCode(logs.join("\n"));
+}
+
+const binaryData = {
+  ...testData,
+  contentType: "image/png",
+  size: 67,
+  content: "iVBORw0KGgoAAAAN",
+  contentEncoding: "base64" as const,
+};
+
+Deno.test("LogDataGetRenderer - binary content prints a notice, not the content", async () => {
+  const output = await captureRender("log", {
+    kind: "completed",
+    data: binaryData,
+  });
+  assertStringIncludes(
+    output,
+    "(binary data, 67B — use --json to get it base64-encoded)",
+  );
+  assertEquals(output.includes(binaryData.content), false);
+});
+
+Deno.test("LogDataGetRenderer - utf-8 text content is printed as is", async () => {
+  const output = await captureRender("log", {
+    kind: "completed",
+    data: {
+      ...testData,
+      contentType: "text/plain",
+      content: "héllo wörld",
+      contentEncoding: "utf-8",
+    },
+  });
+  assertStringIncludes(output, "héllo wörld");
+});
+
+Deno.test("LogDataGetRenderer - content without contentEncoding (older server) prints as text", async () => {
+  const output = await captureRender("log", {
+    kind: "completed",
+    data: { ...testData, contentType: "text/plain", content: "plain text" },
+  });
+  assertStringIncludes(output, "plain text");
+  assertEquals(output.includes("binary data"), false);
+});
+
+Deno.test("JsonDataGetRenderer - binary content passes through as base64", async () => {
+  const output = await captureRender("json", {
+    kind: "completed",
+    data: binaryData,
+  });
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.content, binaryData.content);
+  assertEquals(parsed.contentEncoding, "base64");
+  assertEquals(parsed.size, 67);
+});
+
+Deno.test("JsonDataGetRenderer - utf-8 application/json content is parsed inline", async () => {
+  const output = await captureRender("json", {
+    kind: "completed",
+    data: { ...testData, content: '{"a":1}', contentEncoding: "utf-8" },
+  });
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.content, { a: 1 });
+  assertEquals(parsed.contentEncoding, "utf-8");
+});
+
+Deno.test("JsonDataGetRenderer - base64 application/json content is not parsed", async () => {
+  // "eyJhIjoxfQ==" is base64 for {"a":1}; it must stay an encoded string.
+  const output = await captureRender("json", {
+    kind: "completed",
+    data: { ...testData, content: "eyJhIjoxfQ==", contentEncoding: "base64" },
+  });
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.content, "eyJhIjoxfQ==");
+  assertEquals(parsed.contentEncoding, "base64");
 });

@@ -233,3 +233,68 @@ Deno.test(
     }
   },
 );
+
+// The 8-byte PNG signature: 0x89 is not valid UTF-8.
+const PNG_SIGNATURE = new Uint8Array([
+  0x89,
+  0x50,
+  0x4e,
+  0x47,
+  0x0d,
+  0x0a,
+  0x1a,
+  0x0a,
+]);
+
+async function completedData(
+  deps: DataGetDeps,
+  scope: "model" | "workflow",
+  includeContent = true,
+) {
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      ...(scope === "model"
+        ? { modelIdOrName: "my-model" }
+        : { workflowName: "wf" }),
+      dataName: "output",
+      includeContent,
+      repoDir: ".",
+    }),
+  );
+  const completed = events.at(-1) as Extract<
+    DataGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  return completed.data;
+}
+
+for (const scope of ["model", "workflow"] as const) {
+  Deno.test(`dataGet: ${scope}-scoped binary content is base64 and lossless`, async () => {
+    const deps = makeDeps({
+      getContent: () => Promise.resolve(PNG_SIGNATURE),
+    });
+    const data = await completedData(deps, scope);
+    assertEquals(data.contentEncoding, "base64");
+    assertEquals(Uint8Array.fromBase64(data.content!), PNG_SIGNATURE);
+  });
+
+  Deno.test(`dataGet: ${scope}-scoped UTF-8 content is utf-8 text`, async () => {
+    const text = "héllo wörld ✓\n";
+    const deps = makeDeps({
+      getContent: () => Promise.resolve(new TextEncoder().encode(text)),
+    });
+    const data = await completedData(deps, scope);
+    assertEquals(data.contentEncoding, "utf-8");
+    assertEquals(data.content, text);
+  });
+
+  Deno.test(`dataGet: ${scope}-scoped without content omits content and contentEncoding`, async () => {
+    const deps = makeDeps({
+      getContent: () => Promise.resolve(PNG_SIGNATURE),
+    });
+    const data = await completedData(deps, scope, false);
+    assertEquals("content" in data, false);
+    assertEquals("contentEncoding" in data, false);
+  });
+}

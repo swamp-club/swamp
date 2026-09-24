@@ -90,3 +90,9 @@ swamp model output data d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
   }
 }
 ```
+
+`data` is parsed inline for `application/json` artifacts. For any other
+artifact, `data` is the content as a string, and `contentEncoding` says how to
+read it: `"utf-8"` for text, `"base64"` when the bytes are not valid UTF-8 (an
+image, an archive). Without `--json`, binary data prints a one-line notice
+instead of the bytes.

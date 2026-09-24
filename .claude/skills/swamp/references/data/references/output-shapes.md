@@ -69,9 +69,15 @@ JSON output shapes for `swamp data` commands when using `--json`.
   "size": 1024,
   "checksum": "sha256:...",
   "contentPath": ".swamp/data/my-type/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/execution-log/5/raw",
-  "content": "..."
+  "content": "...",
+  "contentEncoding": "utf-8"
 }
 ```
+
+`contentEncoding` is `"utf-8"` when the stored bytes are valid UTF-8 (`content`
+is the text, without any leading byte-order mark) and `"base64"` otherwise, e.g.
+an image (`content` is the base64-encoded bytes). Both fields are absent with
+`--no-content`.
 
 ## Versions
 

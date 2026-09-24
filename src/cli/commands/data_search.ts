@@ -48,6 +48,7 @@ import {
 import type { DataSearchResponse } from "../../serve/protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { encodeContent } from "../../domain/data/content_encoding.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
@@ -163,7 +164,9 @@ async function displayDataDetail(
     data.version,
   );
   if (rawContent) {
-    output.content = new TextDecoder().decode(rawContent);
+    const { content, contentEncoding } = encodeContent(rawContent);
+    output.content = content;
+    output.contentEncoding = contentEncoding;
   }
 
   renderDataGet(output, outputMode);

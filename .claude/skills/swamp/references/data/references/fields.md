@@ -26,6 +26,10 @@
 | `attributes` | map    | Parsed JSON content. Only loaded when referenced. Empty `{}` for non-JSON types.                                                       |
 | `content`    | string | Raw text content. Only loaded when referenced. Empty `""` for binary types. Available for text/\*, application/json, application/yaml. |
 
+These fields describe the record that CEL and `swamp data query` see. To read a
+binary artifact's bytes, use `swamp data get <model> <name> --json`: its
+`content` is base64 when `contentEncoding` is `"base64"`.
+
 ## CEL Operators
 
 ```cel
