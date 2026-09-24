@@ -641,12 +641,13 @@ them classifies as swamp's and fails:
 
 The error names the ways out. The value can build the braces with CEL string
 concatenation, which passes validation and evaluates to the literal text:
-`${{ "{" + "{env.name}" + "}" }}`. Or the model type can declare the field as
-foreign template text (below). Concatenation does not survive a workflow step
-that runs a model type directly with inline `globalArgs`: the workflow
-evaluator substitutes those values before the step validates the definition it
-builds from them, so the braces come back (swamp-club#2496). Declare the field,
-or use a named definition, there.
+`${{ "{" + "{env.name}" + "}" }}` for `{{ ... }}`, or
+`${{ "$" + "{data.aws_ami.ubuntu.id}" }}` for `${ ... }`. Or the model type
+can declare the field as foreign template text (below). Concatenation does not
+survive a workflow step that runs a model type directly with inline
+`globalArgs`: the workflow evaluator substitutes those values before the step
+validates the definition it builds from them, so the braces come back
+(swamp-club#2496). Declare the field, or use a named definition, there.
 
 **Declaring a field.** A model type marks a global or method argument that
 holds another service's template syntax with `.meta({ foreignTemplate: true })`

@@ -671,10 +671,25 @@ Deno.test("validateModel warns on shell ${VAR} and fails on a single-brace swamp
     globalArguments: { message: "${data.aws_ami.ubuntu.id}" },
   });
   assertEquals(terraform.expressionPaths?.passed, false);
-  assertStringIncludes(terraform.expressionPaths?.error ?? "", "double braces");
-  assertStringIncludes(
-    terraform.expressionPaths?.error ?? "",
-    ".meta({ foreignTemplate: true })",
+  const error = terraform.expressionPaths?.error ?? "";
+  assertStringIncludes(error, "double braces");
+  assertStringIncludes(error, ".meta({ foreignTemplate: true })");
+  assertStringIncludes(error, '${{ "$" + "{name}" }}');
+  assertEquals(error.includes('"{" + "{name}" + "}"'), false);
+});
+
+Deno.test("validateModel accepts the concatenation examples its errors suggest", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: {
+      message: 'crashed in ${{ "{" + "{env.name}" + "}" }}',
+      nested: { ami: '${{ "$" + "{data.aws_ami.ubuntu.id}" }}' },
+    },
+  });
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(
+    warnings.filter((w) => w.name === FOREIGN_TEMPLATE_WARNING_NAME),
+    [],
   );
 });
 
