@@ -27,7 +27,7 @@
 import { z } from "zod";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
-import { classifyRedeemError } from "./token_auth.ts";
+import { ServerTokenNotFoundError } from "./token_auth.ts";
 import {
   TOKEN_EXPIRED_REASON,
   TOKEN_GONE_REASON,
@@ -196,7 +196,7 @@ export class TokenSessionRevalidationService {
         token = await this.#deps.readToken(name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (classifyRedeemError(message) === "no-definition") {
+        if (err instanceof ServerTokenNotFoundError) {
           token = null;
         } else if (isUnreadableRecord(err)) {
           logger.warn(

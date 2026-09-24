@@ -24,6 +24,7 @@ import {
   extractWebSocketToken,
   readServerTokenRecord,
   type ServerTokenAuthDeps,
+  ServerTokenNotFoundError,
   splitServerToken,
 } from "./token_auth.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -351,7 +352,7 @@ Deno.test("readServerTokenRecord: parses the stored token record", async () => {
 Deno.test("readServerTokenRecord: a missing definition does not exist", async () => {
   await assertRejects(
     () => readServerTokenRecord(fakeTokenRepoContext(null, null), "gone"),
-    Error,
+    ServerTokenNotFoundError,
     "does not exist",
   );
 });
@@ -363,7 +364,7 @@ Deno.test("readServerTokenRecord: a missing record does not exist", async () => 
         fakeTokenRepoContext({ id: "def-1" }, null),
         "gone",
       ),
-    Error,
+    ServerTokenNotFoundError,
     "does not exist",
   );
 });

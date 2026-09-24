@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
+import { ServerTokenNotFoundError } from "./token_auth.ts";
 import {
   type TokenSessionCloseOptions,
   type TokenSessionRevalidationDeps,
@@ -184,10 +185,7 @@ Deno.test("runOnce: after a rotation closes only the old mint's sessions", async
 Deno.test("runOnce: a token that no longer exists closes as deleted", async () => {
   const h = harness(
     [{ name: "gone", createdAt: MINT_1 }],
-    () =>
-      Promise.reject(
-        new Error("Server token 'gone' does not exist — mint it first"),
-      ),
+    () => Promise.reject(new ServerTokenNotFoundError("gone")),
   );
   const service = new TokenSessionRevalidationService(h.deps);
 
@@ -195,6 +193,17 @@ Deno.test("runOnce: a token that no longer exists closes as deleted", async () =
 
   assertEquals(h.closes.length, 1);
   assertEquals(h.closes[0].options.cause, "deleted");
+});
+
+Deno.test("runOnce: a datastore error that mentions 'does not exist' is transient, not a deletion", async () => {
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_1 }],
+    () => Promise.reject(new Error("The specified bucket does not exist")),
+  );
+  const service = new TokenSessionRevalidationService(h.deps);
+
+  assertEquals(await service.runOnce(), 0);
+  assertEquals(h.closes, []);
 });
 
 Deno.test("runOnce: a transient read failure keeps the sessions for the next pass", async () => {

@@ -52,10 +52,22 @@ export interface TokenAuthAuditContext {
 }
 
 /**
+ * The token has no definition or no record. A distinct type, so a caller can
+ * tell a deleted token from a datastore failure whose message happens to say
+ * "does not exist".
+ */
+export class ServerTokenNotFoundError extends Error {
+  constructor(name: string) {
+    super(`Server token '${name}' does not exist — mint it first`);
+    this.name = "ServerTokenNotFoundError";
+  }
+}
+
+/**
  * Reads a server token's lifecycle record from the repository. Both
  * authentication at upgrade and the revalidation of open sessions read through
  * here, so the two paths always agree on what a token's state is. A token whose
- * definition or record is gone throws a "does not exist" error.
+ * definition or record is gone throws {@link ServerTokenNotFoundError}.
  */
 export async function readServerTokenRecord(
   repoContext: RepositoryContext,
@@ -66,9 +78,7 @@ export async function readServerTokenRecord(
     name,
   );
   if (definition === null) {
-    throw new Error(
-      `Server token '${name}' does not exist — mint it first`,
-    );
+    throw new ServerTokenNotFoundError(name);
   }
   const content = await repoContext.unifiedDataRepo.getContent(
     SERVER_TOKEN_MODEL_TYPE,
@@ -76,9 +86,7 @@ export async function readServerTokenRecord(
     TOKEN_DATA_NAME,
   );
   if (content === null) {
-    throw new Error(
-      `Server token '${name}' does not exist — mint it first`,
-    );
+    throw new ServerTokenNotFoundError(name);
   }
   return ServerTokenSchema.parse(
     JSON.parse(new TextDecoder().decode(content)),

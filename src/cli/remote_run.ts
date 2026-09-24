@@ -432,14 +432,7 @@ export function requestServerResponse<T>(
       if (!settled) {
         settled = true;
         cleanup();
-        const parts: string[] = [];
-        if (event.code !== 1000 && event.code !== 1005) {
-          parts.push(`code ${event.code}`);
-        }
-        if (event.reason) {
-          parts.push(event.reason);
-        }
-        const detail = parts.length > 0 ? ` (${parts.join(": ")})` : "";
+        const detail = describeServerClose(event);
         reject(
           new UserError(
             connectErrorDetail
@@ -998,6 +991,22 @@ function createSocket(
 }
 
 /**
+ * Formats why the server closed the socket, e.g. ` (code 4003: Session
+ * revoked: token revoked)`, so the user learns a token was revoked or expired.
+ * Empty for a normal close with no reason.
+ */
+function describeServerClose(event: CloseEvent): string {
+  const parts: string[] = [];
+  if (event.code !== 1000 && event.code !== 1005) {
+    parts.push(`code ${event.code}`);
+  }
+  if (event.reason) {
+    parts.push(event.reason);
+  }
+  return parts.length > 0 ? ` (${parts.join(": ")})` : "";
+}
+
+/**
  * Matches known TLS error patterns in the WebSocket error message and
  * returns user-friendly guidance. Returns `undefined` when the message
  * does not look like a TLS error.
@@ -1083,6 +1092,7 @@ async function* singleConnectionStream(
   const queue: ServerMessage[] = [];
   let wake: (() => void) | null = null;
   let socketClosed = false;
+  let closeDetail = "";
   let connectError: string | null = null;
   const notify = () => {
     wake?.();
@@ -1106,8 +1116,9 @@ async function* singleConnectionStream(
       // Not a protocol frame — ignore.
     }
   };
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     socketClosed = true;
+    closeDetail = describeServerClose(event);
     notify();
   };
   socket.onerror = (event) => {
@@ -1246,7 +1257,7 @@ async function* singleConnectionStream(
           return { kind: "disconnected" as const };
         }
         throw new UserError(
-          "Connection to the server closed before the run completed",
+          `Connection to the server closed before the run completed${closeDetail}`,
         );
       }
       if (cancelSent && Date.now() > cancelDeadline) {

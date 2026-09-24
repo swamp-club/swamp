@@ -1496,6 +1496,36 @@ Deno.test({
 
 Deno.test({
   name:
+    "remote run: a server close before the runId is known reports its code and reason",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply, socket) => {
+      socket.close(4003, "Session revoked: token revoked");
+    });
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "closed before the run completed");
+      assertStringIncludes(
+        error.message,
+        "(code 4003: Session revoked: token revoked)",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "remote run: does not attempt reconnect when socket drops before runId is known",
   sanitizeOps: false,
   sanitizeResources: false,
