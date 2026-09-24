@@ -479,7 +479,11 @@ export async function handleExtensionList(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createExtensionListDeps(ctx.repoDir);
+    const marker = await new RepoMarkerRepository().read(
+      RepoPath.create(ctx.repoDir),
+    );
+    const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
+    const deps = await createExtensionListDeps(lockfilePath);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

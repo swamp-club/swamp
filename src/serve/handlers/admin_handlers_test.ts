@@ -42,6 +42,7 @@ import type { ControlPlaneStore } from "../../domain/datastore/control_plane_sto
 import type { MergedServeOptions } from "../serve_config.ts";
 import {
   collectClusterInstances,
+  handleExtensionList,
   handleExtensionRm,
   handleVaultMigrate,
   redactServeOptions,
@@ -591,4 +592,50 @@ Deno.test("handleVaultMigrate: marks the new and the old config path before the 
   } finally {
     vaultTypeRegistry.invalidateType(targetType);
   }
+});
+
+Deno.test("handleExtensionList: reads the managed lockfile, not the models dir (swamp-club#2483)", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, datastoreResolver, ctx, cleanup } = await createSyncRepo(
+      dir,
+      true,
+    );
+    try {
+      const entry = {
+        version: "1.0.0",
+        pulledAt: "2026-01-01T00:00:00Z",
+        files: [],
+      };
+      const configDir = datastoreResolver.resolvePath("config");
+      await ensureDir(configDir);
+      await Deno.writeTextFile(
+        join(configDir, "upstream_extensions.json"),
+        JSON.stringify({ "@test/team": entry }),
+      );
+      // A pre-migrate models-dir lockfile must be ignored.
+      await ensureDir(join(repoDir, "extensions", "models"));
+      await Deno.writeTextFile(
+        join(repoDir, "extensions", "models", "upstream_extensions.json"),
+        JSON.stringify({ "@test/stale": entry }),
+      );
+      const socket = createMockSocket();
+
+      await handleExtensionList(
+        socket,
+        ctx,
+        "req-list",
+        new AbortController(),
+        null,
+      );
+
+      const message = JSON.parse(socket.sent[0]);
+      assertEquals(message.type, "extension.list");
+      const names = message.payload.data.extensions.map((
+        e: { name: string },
+      ) => e.name);
+      assertEquals(names, ["@test/team"]);
+    } finally {
+      cleanup();
+    }
+  });
 });
