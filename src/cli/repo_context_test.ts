@@ -48,6 +48,8 @@ import {
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
+import { isManagedConfigBaseResolved } from "../infrastructure/persistence/paths.ts";
+import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
   type CustomDatastoreConfig,
@@ -2845,6 +2847,81 @@ Deno.test("ensureManagedConfigBase: explicit configBasePath still takes preceden
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+// ── managed config base resolution (swamp-club#2483) ─────────────────────────
+
+function managedMarker(type: string): RepoMarkerData {
+  return {
+    swampVersion: "1.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+    datastore: { type, managedConfig: true },
+  };
+}
+
+Deno.test("ensureManagedConfigBase: an unloadable datastore leaves the fallback unresolved", async () => {
+  const repo = resolve(`/repo-unresolved-${crypto.randomUUID()}`);
+  const marker = managedMarker(`@t${crypto.randomUUID().slice(0, 8)}/ds`);
+  assertEquals(
+    await ensureManagedConfigBase(repo, marker, undefined, {
+      autoResolve: false,
+    }),
+    false,
+  );
+  const { lockfilePath, active } = resolveManagedConfigPaths(repo, marker);
+  assertEquals(active, true);
+  assertEquals(isManagedConfigBaseResolved(repo), false);
+  assertPathEquals(
+    lockfilePath,
+    join(repo, ".swamp", "config", "upstream_extensions.json"),
+  );
+});
+
+Deno.test("ensureManagedConfigBase: rethrows a transient lock_timeout", async () => {
+  const repo = resolve(`/repo-lock-${crypto.randomUUID()}`);
+  const marker = managedMarker(`@t${crypto.randomUUID().slice(0, 8)}/ds`);
+  datastoreTypeRegistry.setLoader(() =>
+    Promise.reject(new UserError("index busy", "lock_timeout"))
+  );
+  try {
+    await assertRejects(
+      () =>
+        ensureManagedConfigBase(repo, marker, undefined, {
+          autoResolve: false,
+        }),
+      UserError,
+      "index busy",
+    );
+  } finally {
+    datastoreTypeRegistry.clearLoadersForTesting();
+  }
+});
+
+Deno.test("ensureManagedConfigBase: a failed attempt resets the datastore loader so a retry rescans", async () => {
+  const repo = resolve(`/repo-retry-${crypto.randomUUID()}`);
+  const marker = managedMarker(`@t${crypto.randomUUID().slice(0, 8)}/ds`);
+  let loads = 0;
+  datastoreTypeRegistry.setLoader(() => {
+    loads++;
+    return Promise.resolve();
+  });
+  try {
+    assertEquals(
+      await ensureManagedConfigBase(repo, marker, undefined, {
+        autoResolve: false,
+      }),
+      false,
+    );
+    assertEquals(
+      await ensureManagedConfigBase(repo, marker, undefined, {
+        autoResolve: false,
+      }),
+      false,
+    );
+    assertEquals(loads, 2);
+  } finally {
+    datastoreTypeRegistry.clearLoadersForTesting();
   }
 });
 

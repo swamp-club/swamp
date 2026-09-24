@@ -46,6 +46,7 @@ import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_regist
 import { UserError } from "../domain/errors.ts";
 import { resolveDatastoreType } from "../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
+import { RENAMED_DATASTORE_TYPES } from "../domain/datastore/renamed_datastore_types.ts";
 import {
   type DatastoreExpressionContext,
   resolveDatastoreExpressions,
@@ -112,13 +113,20 @@ export function datastoreBasePath(config: DatastoreConfig): string {
   return isCustomDatastoreConfig(config) ? config.datastorePath : config.path;
 }
 
-/**
- * Maps old built-in datastore type names to their extension replacements.
- * Applied when loading datastore configs from .swamp.yaml or env vars.
- */
-export const RENAMED_DATASTORE_TYPES: Record<string, string> = {
-  "s3": "@swamp/s3-datastore",
-};
+export { RENAMED_DATASTORE_TYPES };
+
+/** Options for resolving a datastore config. */
+export interface ResolveDatastoreOptions {
+  /**
+   * When false, never auto-resolve a missing datastore extension: only
+   * already-installed extensions are used. Defaults to true.
+   */
+  autoResolve?: boolean;
+}
+
+function autoResolverFor(options?: ResolveDatastoreOptions) {
+  return options?.autoResolve === false ? null : getAutoResolver();
+}
 
 /**
  * Parses the SWAMP_DATASTORE env var format into a DatastoreConfig.
@@ -126,12 +134,14 @@ export const RENAMED_DATASTORE_TYPES: Record<string, string> = {
  * @param envValue - The env var value (e.g., "filesystem:/path" or "s3:bucket/prefix")
  * @param repoId - The repo ID for S3 cache path
  * @param repoDir - The repository root directory (for custom datastore path resolution)
+ * @param options - Resolution options (e.g. installed-only)
  * @returns Parsed DatastoreConfig
  */
 export async function parseDatastoreEnvVar(
   envValue: string,
   repoId?: string,
   repoDir?: string,
+  options?: ResolveDatastoreOptions,
 ): Promise<DatastoreConfig> {
   const colonIdx = envValue.indexOf(":");
   if (colonIdx === -1) {
@@ -168,7 +178,7 @@ export async function parseDatastoreEnvVar(
 
       // Ensure lazy-loaded extensions are loaded before auto-resolve
       await datastoreTypeRegistry.ensureLoaded();
-      await resolveDatastoreType(renamedTo, getAutoResolver());
+      await resolveDatastoreType(renamedTo, autoResolverFor(options));
 
       await datastoreTypeRegistry.ensureTypeLoaded(renamedTo);
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
@@ -219,7 +229,7 @@ export async function parseDatastoreEnvVar(
 
   // Auto-resolve extension types (only fires if type is genuinely missing)
   if (type.startsWith("@")) {
-    await resolveDatastoreType(type, getAutoResolver());
+    await resolveDatastoreType(type, autoResolverFor(options));
   }
 
   // Custom datastore type: value is JSON config
@@ -293,12 +303,14 @@ export async function parseDatastoreEnvVar(
  * @param marker - The repo marker data (may be null)
  * @param cliArg - Optional CLI --datastore argument
  * @param repoDir - The repository root directory
+ * @param options - Resolution options (e.g. installed-only)
  * @returns Resolved DatastoreConfig
  */
 export async function resolveDatastoreConfig(
   marker: RepoMarkerData | null,
   cliArg?: string,
   repoDir?: string,
+  options?: ResolveDatastoreOptions,
 ): Promise<DatastoreConfig> {
   let repoId = marker?.repoId;
 
@@ -319,12 +331,12 @@ export async function resolveDatastoreConfig(
   // 1. Environment variable takes highest priority
   const envDatastore = Deno.env.get("SWAMP_DATASTORE");
   if (envDatastore) {
-    return await parseDatastoreEnvVar(envDatastore, repoId, repoDir);
+    return await parseDatastoreEnvVar(envDatastore, repoId, repoDir, options);
   }
 
   // 2. CLI argument
   if (cliArg) {
-    return await parseDatastoreEnvVar(cliArg, repoId, repoDir);
+    return await parseDatastoreEnvVar(cliArg, repoId, repoDir, options);
   }
 
   // 3. .swamp.yaml datastore config
@@ -342,7 +354,7 @@ export async function resolveDatastoreConfig(
 
       // Ensure lazy-loaded extensions are loaded before auto-resolve
       await datastoreTypeRegistry.ensureLoaded();
-      await resolveDatastoreType(renamedTo, getAutoResolver());
+      await resolveDatastoreType(renamedTo, autoResolverFor(options));
 
       await datastoreTypeRegistry.ensureTypeLoaded(renamedTo);
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
@@ -432,7 +444,7 @@ export async function resolveDatastoreConfig(
 
     // Auto-resolve extension types (only fires if type is genuinely missing)
     if (dsType.startsWith("@")) {
-      await resolveDatastoreType(dsType, getAutoResolver());
+      await resolveDatastoreType(dsType, autoResolverFor(options));
     }
 
     // Custom datastore type from YAML config

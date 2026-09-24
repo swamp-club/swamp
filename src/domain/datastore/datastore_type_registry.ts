@@ -117,6 +117,18 @@ export class DatastoreTypeRegistry {
   }
 
   /**
+   * Test-only: removes the configured loaders and clears the loaded state,
+   * so a test that installs loaders leaves the process-global registry as
+   * it found it. Does not clear already-registered types.
+   */
+  clearLoadersForTesting(): void {
+    this.extensionLoader = null;
+    this.typeLoader = null;
+    this.extensionsLoaded = false;
+    this.extensionLoadPromise = null;
+  }
+
+  /**
    * Surgically removes a single type from the registry so it can be
    * re-registered with updated metadata after a bundle upgrade.
    */

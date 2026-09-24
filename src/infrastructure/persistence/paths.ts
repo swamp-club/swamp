@@ -118,19 +118,43 @@ export function swampPath(repoDir: string, ...segments: string[]): string {
 }
 
 /**
- * Module-level managed config state. Set once at CLI/serve startup after
- * reading the marker file. Stores the resolved config base path from the
- * datastore resolver — for custom datastores this is the cache path
- * (.swamp/config/), for filesystem datastores this is the datastore path
- * (<path>/config/). Repo constructors check this to resolve their
- * default baseDir when managedConfig is active.
+ * A registered managed config base. `resolved` records whether the base
+ * came from the datastore resolver, or is the in-repo `.swamp/config`
+ * fallback registered because the datastore could not be resolved (for
+ * example, its extension is not installed yet).
  */
-const managedConfigRegistry = new Map<string, string | false>();
+interface ManagedConfigRegistration {
+  base: string;
+  resolved: boolean;
+}
 
+/**
+ * Module-level managed config state, keyed by the resolved repo dir. Stores
+ * the config base path: for custom datastores this is the cache path
+ * (`<cache>/<ns>/config`), for filesystem datastores the datastore path
+ * (`<path>/config`). Repo constructors check this to resolve their default
+ * baseDir when managedConfig is active.
+ *
+ * The last resolved registration wins, and a fallback registration never
+ * overwrites a resolved one, so the base cannot move from a resolved path
+ * back to a guess within a process (swamp-club#2483).
+ */
+const managedConfigRegistry = new Map<
+  string,
+  ManagedConfigRegistration | false
+>();
+
+/**
+ * Registers the managed config state for a repo.
+ *
+ * @param resolved Whether `configBasePath` came from the datastore resolver.
+ *   Pass `false` for the in-repo fallback. Defaults to `true`.
+ */
 export function registerManagedConfig(
   repoDir: string,
   active: boolean,
   configBasePath?: string,
+  resolved = true,
 ): void {
   if (active && !configBasePath) {
     throw new Error(
@@ -138,24 +162,39 @@ export function registerManagedConfig(
     );
   }
   const key = resolve(repoDir);
+  const existing = managedConfigRegistry.get(key);
   if (active && configBasePath) {
-    managedConfigRegistry.set(key, configBasePath);
-  } else {
-    const existing = managedConfigRegistry.get(key);
-    if (existing === undefined) {
-      managedConfigRegistry.set(key, false);
-    }
+    if (!resolved && existing && existing.resolved) return;
+    managedConfigRegistry.set(key, { base: configBasePath, resolved });
+  } else if (existing === undefined) {
+    managedConfigRegistry.set(key, false);
   }
 }
 
 export function isManagedConfig(repoDir: string): boolean {
-  const val = managedConfigRegistry.get(resolve(repoDir));
-  return typeof val === "string";
+  return Boolean(managedConfigRegistry.get(resolve(repoDir)));
 }
 
 export function getManagedConfigBase(repoDir: string): string | undefined {
   const val = managedConfigRegistry.get(resolve(repoDir));
-  return typeof val === "string" ? val : undefined;
+  return val ? val.base : undefined;
+}
+
+/**
+ * True when the registered managed config base came from the datastore
+ * resolver rather than the in-repo fallback.
+ */
+export function isManagedConfigBaseResolved(repoDir: string): boolean {
+  const val = managedConfigRegistry.get(resolve(repoDir));
+  return val ? val.resolved : false;
+}
+
+/**
+ * Test-only: clears the managed config registry so tests stay independent
+ * under `deno test --repeats`.
+ */
+export function resetManagedConfigRegistry(): void {
+  managedConfigRegistry.clear();
 }
 
 export function resolveEffectiveDefinitionsDir(repoDir: string): string {

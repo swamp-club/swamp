@@ -20,14 +20,17 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   bundleNamespace,
+  getManagedConfigBase,
   getSwampConfigDir,
   getSwampDataDir,
   globalTelemetryDir,
   homeDirectory,
   homeDirectoryIsSet,
   isManagedConfig,
+  isManagedConfigBaseResolved,
   managedConfigLockfilePath,
   registerManagedConfig,
+  resetManagedConfigRegistry,
   resolvePulledExtensionsRoot,
   SWAMP_DATA_DIR,
   SWAMP_MARKER_FILE,
@@ -429,6 +432,54 @@ Deno.test("isManagedConfig: returns true when registered as active", () => {
     "/repo/active-test-1/.swamp/config",
   );
   assertEquals(isManagedConfig("/repo/active-test-1"), true);
+});
+
+// --- managed config provenance (swamp-club#2483) ---
+
+Deno.test("registerManagedConfig: defaults to a resolved base", () => {
+  const repo = `/repo/provenance-${crypto.randomUUID()}`;
+  registerManagedConfig(repo, true, "/cache/ns/config");
+  assertEquals(isManagedConfigBaseResolved(repo), true);
+  assertEquals(getManagedConfigBase(repo), "/cache/ns/config");
+});
+
+Deno.test("registerManagedConfig: a fallback registration is recorded as unresolved", () => {
+  const repo = `/repo/provenance-${crypto.randomUUID()}`;
+  registerManagedConfig(repo, true, `${repo}/.swamp/config`, false);
+  assertEquals(isManagedConfig(repo), true);
+  assertEquals(isManagedConfigBaseResolved(repo), false);
+  assertEquals(getManagedConfigBase(repo), `${repo}/.swamp/config`);
+});
+
+Deno.test("registerManagedConfig: a fallback never overwrites a resolved base", () => {
+  const repo = `/repo/provenance-${crypto.randomUUID()}`;
+  registerManagedConfig(repo, true, "/cache/ns/config", true);
+  registerManagedConfig(repo, true, `${repo}/.swamp/config`, false);
+  assertEquals(getManagedConfigBase(repo), "/cache/ns/config");
+  assertEquals(isManagedConfigBaseResolved(repo), true);
+});
+
+Deno.test("registerManagedConfig: a resolved base replaces a fallback", () => {
+  const repo = `/repo/provenance-${crypto.randomUUID()}`;
+  registerManagedConfig(repo, true, `${repo}/.swamp/config`, false);
+  registerManagedConfig(repo, true, "/cache/ns/config", true);
+  assertEquals(getManagedConfigBase(repo), "/cache/ns/config");
+  assertEquals(isManagedConfigBaseResolved(repo), true);
+});
+
+Deno.test("isManagedConfigBaseResolved: false for unregistered and inactive repos", () => {
+  const unregistered = `/repo/provenance-${crypto.randomUUID()}`;
+  assertEquals(isManagedConfigBaseResolved(unregistered), false);
+  const inactive = `/repo/provenance-${crypto.randomUUID()}`;
+  registerManagedConfig(inactive, false);
+  assertEquals(isManagedConfigBaseResolved(inactive), false);
+});
+
+Deno.test("resetManagedConfigRegistry: clears registrations", () => {
+  const repo = `/repo/reset-${crypto.randomUUID()}`;
+  registerManagedConfig(repo, true, "/cache/ns/config");
+  resetManagedConfigRegistry();
+  assertEquals(isManagedConfig(repo), false);
 });
 
 // --- resolvePulledExtensionsRoot / managedConfigLockfilePath ---
