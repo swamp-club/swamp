@@ -25,7 +25,7 @@ import type {
 } from "./repositories.ts";
 import { createWorkflowId, createWorkflowRunId } from "./workflow_id.ts";
 import { UserError } from "../errors.ts";
-import { selectRetryTemplates } from "./failed_step_retry.ts";
+import { planFailedRunResume } from "./resume_reset.ts";
 
 export interface SuspendedRunInfo {
   workflowName: string;
@@ -108,8 +108,9 @@ export interface ResolveResumableRunOptions {
  *   so approve followed by a bare resume never becomes ambiguous because of
  *   old failed runs.
  *
- * A failed run resolved without --from is checked for retry eligibility
- * here, so callers fail before starting anything; resume() checks again.
+ * A failed run is planned here — retry eligibility without --from, and the
+ * structure check either way — so callers fail before starting anything;
+ * resume() checks again.
  */
 export async function resolveResumableRun(
   workflowRepo: WorkflowRepository,
@@ -146,8 +147,9 @@ export async function resolveResumableRun(
           `--from requires a failed run, but run ${runId} has status "${run.status}"`,
         );
       }
+      planFailedRunResume(workflow, run, options.fromStep);
     } else if (run.status === "failed") {
-      selectRetryTemplates(workflow, run);
+      planFailedRunResume(workflow, run);
     } else if (run.status !== "suspended") {
       throw new UserError(
         `Run ${runId} is not suspended or failed (status: ${run.status}).` +
@@ -178,6 +180,7 @@ export async function resolveResumableRun(
     );
   }
 
+  planFailedRunResume(workflow, failedRuns[0], options.fromStep);
   return {
     workflowName: workflow.name,
     workflowId: workflow.id,

@@ -411,3 +411,51 @@ Deno.test("resolveSuspendedRun: approve and reject on a failed run name the resu
     `Retry it with 'swamp workflow resume test-wf --run ${run.id}'.`,
   );
 });
+
+/** The test-wf workflow with a step t added to job j since the run. */
+function createEditedWorkflow(): Workflow {
+  return Workflow.create({
+    name: "test-wf",
+    jobs: [
+      Job.create({
+        name: "j",
+        steps: [
+          Step.create({ name: "s", task: StepTask.model("m", "run") }),
+          Step.create({ name: "t", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+}
+
+for (
+  const [label, runId, options] of [
+    ["--from with --run", true, FROM],
+    ["--from of the single failed run", false, FROM],
+    ["a retry", true, {}],
+  ] as const
+) {
+  Deno.test(`resolveResumableRun: ${label} refuses a workflow whose structure changed`, async () => {
+    const run = createFailedRun(createWorkflow("test-wf"));
+    const before = JSON.stringify(run.toData());
+    const { workflowRepo, runRepo } = stubRepos(createEditedWorkflow(), [run]);
+
+    const error = await assertRejects(
+      () =>
+        resolveResumableRun(
+          workflowRepo,
+          runRepo,
+          "test-wf",
+          runId ? run.id : undefined,
+          options,
+        ),
+      Error,
+      `Step "t" in job "j" is not in the run. Start a new run.`,
+    );
+    assertStringIncludes(
+      error.message,
+      `swamp workflow history logs ${run.id}`,
+    );
+    assertEquals(JSON.stringify(run.toData()), before);
+  });
+}

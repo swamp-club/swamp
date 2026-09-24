@@ -298,29 +298,35 @@ the job or step and points to `swamp workflow history logs <id>`
 
 1. No failed step is a rejected approval. Retry never re-opens a gate.
    `--from <gate>` does, and the gate then asks for a new decision.
-2. Every job and step is `succeeded`, `failed` or `skipped`. This excludes
+2. No failed step is a [stranded step](#resume-from-failed-step---from)
+   (`failureKind: workflow_changed`). A retry would re-expand the same changed
+   workflow and fail it again, so the refusal says to start a new run.
+3. Every job and step is `succeeded`, `failed` or `skipped`. This excludes
    pending, running, waiting and unknown work. It also excludes a job left
    running by a `forEach` expansion error.
-3. At least one failed step exists, and every failed job contains one.
-4. Each entry template is a step of the same job in the current workflow. The
-   refusal suggests only a new run, because `--from` cannot stand in. On a
-   renamed step, `--from` fails with `Step run not found`. On a step moved to
-   another job, it completes the run without running that step. `--from` does
-   still work from a remaining step after a removal. It also works from the
-   template for an older `forEach` record without `forEachTemplate`.
-5. Step names are unique across the workflow and across the stored run. The
+4. At least one failed step exists, and every failed job contains one.
+5. Each entry template is a step of the same job in the current workflow. The
+   refusal suggests only a new run, because `--from` refuses a renamed or moved
+   step too (the [structure check](#resume-from-failed-step---from)). `--from`
+   does still work from a remaining step after a removal. It also works from
+   the template for an older `forEach` record without `forEachTemplate`.
+6. Step names are unique across the workflow and across the stored run. The
    reset helper and the `steps.*` expression context key steps by name alone.
 
-The resolver runs these checks before anything starts. Serve therefore refuses
-before it registers the run or charges the principal's cap. `resume()` runs the
-checks again before its first change, so a refusal saves nothing and runs no
-method.
+A retry also passes the structure check. The resolver runs these checks before
+anything starts. Serve therefore refuses before it registers the run or charges
+the principal's cap. `resume()` runs the checks again before its first change,
+so a refusal saves nothing and runs no method. Both call `planFailedRunResume`
+in `src/domain/workflows/resume_reset.ts`.
 
 **Reset:** a retry takes the same path as `--from`. It calls
 `resetForResumeFrom()` with the reset set, then `resumeFromFailed()`, then the
 existing resume executor. The run keeps its id and `startedAt`. `--input`
 overrides merge over the stored inputs as for any resume. An override does not
-reset steps that used the old value. Reset clears each selected step's outputs,
+reset steps that used the old value. An override that shrinks a `forEach`
+collection, or renames its iterations through the step name, strands the
+iterations it drops: they fail with `workflow_changed`, so start a new run with
+the new inputs. Reset clears each selected step's outputs,
 error, approval decision and assertion result. Only jobs that contain a reset
 step return to `pending`. Steps outside the set keep their state and outputs.
 Guards still decide whether a reset step runs. A guard that skips a reset step
@@ -353,11 +359,17 @@ started) is not reported; the run is recorded as cancelled instead.
 - **Retry can repeat external effects.** A method can change an external system
   and then fail. Resume does not guarantee exactly-once execution.
 - **Definitions and inputs must stay compatible.** Resume uses the current
-  workflow and model definitions. It does not detect definition changes or
-  prove that stored results are still valid. If an input change affects earlier
-  work, use `--from` or start a new run.
+  workflow and model definitions. A failed-run resume refuses a structural
+  change it would walk into (the
+  [structure check](#resume-from-failed-step---from)): a renamed, moved or
+  added step, or a renamed or added job. It does not detect a changed step body
+  or prove that stored results are still valid. If an input change affects
+  earlier work, use `--from` or start a new run. A suspended resume is not
+  checked yet (swamp-club#2498).
 - **`forEach` collections must stay stable.** Item identity is not kept across
-  collection changes. Use a new run for a changed collection.
+  collection changes. An iteration that a failed-run resume reset and the new
+  collection drops fails as a stranded step. Use a new run for a changed
+  collection.
 - **Stored references do not guarantee data.** Ephemeral data is gone after a
   restart, and retention can remove artifacts. Resume does not rebuild missing
   outputs or pin `data.latest()` to its old value.
@@ -417,6 +429,59 @@ downstream jobs containing transitive dependents are reset. Upstream jobs
 **Trigger conditions:** Trigger conditions on reset steps are still evaluated.
 If the `--from` step's upstream dependency also failed, the condition sees that
 `failed` status. Resume from the earlier step instead.
+
+**Structure check:** resume walks every job of the current workflow whose stored
+record is unfinished after the reset (a **re-entered job**), and looks up each
+step's record in that same stored job. Before its first change, a failed-run
+resume (`--from` or retry) refuses with `Start a new run.` when:
+
+- (a) a job of the current workflow has no stored record (a renamed or added
+  job). Resume would otherwise reset the run and crash on `Job run not found`;
+- (b) a re-entered job has a step, other than a `forEach` template, with no
+  record in that stored job (an added, renamed or moved-in step), which would
+  crash on `Step run not found`. This is conservative: it also checks a job
+  whose trigger condition would skip it;
+- (c) a record the reset selected no longer belongs to its own job for the
+  reason it was selected. A record selected by name must be a step of its own
+  job. A record selected by `forEachTemplate` must be an iteration of one of
+  that job's `forEach` steps. Otherwise the current workflow walks that step in
+  another job, and the reset record would stay `pending` while the run reported
+  success.
+
+The check leaves alone records selected only by the legacy `forEach` prefix
+match, which can over-select (for example `deploy-canary-x` when `deploy` is
+reset); unfinished records the reset did not select, such as the concrete
+iteration names of a `--last-evaluated` run; `forEach` templates with no records
+(an empty expansion removes the template record, so a new step cannot be told
+apart from one that expanded to nothing); job and step names written with an
+expression such as `deploy-${{ inputs.env }}`, which the run stores evaluated
+and the check reads unevaluated, so they cannot be compared; and terminal
+records and jobs the workflow no longer has, so removing a step or job keeps
+working. The check is `planFailedRunResume` in
+`src/domain/workflows/resume_reset.ts`.
+
+**Stranded steps:** a record the reset selected by name or `forEachTemplate` is
+a **tracked reset step**. `resetForResumeFrom()` marks it `resetByResume` on the
+stored step, after clearing markers an earlier resume left. The marker is
+cleared when the step leaves `pending`, and it persists, so it survives a resume
+that suspends again at a reset gate. When a job's walk ends, unless the run
+suspended or was cancelled, a marked step still `pending` is a **stranded
+step**: the current workflow no longer produces it, typically because a
+`forEach` collection shrank or its iteration names changed. It fails with
+`failureKind: workflow_changed` and the error
+`Not run: the workflow or a forEach collection changed since the run. Start a new run.`
+The failure is never an allowed failure, and its `step_failed` event carries no
+model fields. Stranding is detected when the job's walk ends, so a step in the
+same job that depends on the `forEach` step still runs; later jobs do not,
+because the job fails. The run's JSON carries `failureKind` on the step. Retry
+refuses the run, and the CLI prints `To start a new run: swamp workflow run
+<wf>` instead of the retry command, with a `Run inputs:` line pointing to
+`swamp workflow history get <id> --json` when the run had inputs. When the error
+printed above it is a different step's real failure, a line first says that a
+step did not run because the workflow changed. The resolver's status refusals still suggest a retry,
+which then refuses with this reason. Workflow reports and the verification
+summary count a stranded step as an ordinary failure; `failureKind` is not
+carried into report details.
 
 ### Assert (`assert`)
 

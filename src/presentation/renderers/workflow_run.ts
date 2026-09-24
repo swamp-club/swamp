@@ -626,9 +626,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           writeBlankLine();
           writeOutput(this.pipe.line("system", STATUS_COLORS.error(stepError)));
           writeBlankLine();
-          writeOutput(
-            this.pipe.line("system", this.nextActionForFailedRun(e.run)),
-          );
+          for (const line of this.nextActionForFailedRun(e.run)) {
+            writeOutput(this.pipe.line("system", line));
+          }
         } else if (this._failed) {
           const duration = e.run.duration
             ? ` ${dim(`in ${formatDuration(e.run.duration)}`)}`
@@ -724,19 +724,52 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
 
   /**
    * The command to run after a failed run: retry its failed steps, or, when
-   * no failed step is recorded, read its logs.
+   * no failed step is recorded, read its logs. A step stranded by a workflow
+   * change would fail a retry again, so that run points to a new run.
    */
-  private nextActionForFailedRun(run: WorkflowRunView): string {
-    const hasFailedStep = run.jobs.some((job) =>
-      job.steps.some((step) => step.status === "failed" && !step.allowedFailure)
+  private nextActionForFailedRun(run: WorkflowRunView): string[] {
+    const failedSteps = run.jobs.flatMap((job) =>
+      job.steps.filter((step) =>
+        step.status === "failed" && !step.allowedFailure
+      )
     );
-    return hasFailedStep
-      ? `${
-        yellow("To retry failed steps:")
-      }  swamp workflow resume ${this.workflowName} --run ${run.id}${this.commandTarget}`
-      : `${
-        yellow("To inspect the run:")
-      }  swamp workflow history logs ${run.id}${this.commandTarget}`;
+    if (failedSteps.some((step) => step.failureKind === "workflow_changed")) {
+      const lines: string[] = [];
+      // The error printed above is the first failed step's; say why a new
+      // run is needed when that was a real failure.
+      const first = failedSteps.find((step) => step.error);
+      if (first?.failureKind !== "workflow_changed") {
+        lines.push(
+          dim(
+            "A step did not run because the workflow or a forEach collection changed since the run.",
+          ),
+        );
+      }
+      lines.push(
+        `${
+          yellow("To start a new run:")
+        }  swamp workflow run ${this.workflowName}${this.commandTarget}`,
+      );
+      // A new run does not reuse the stored inputs the way a retry does, and
+      // only the JSON history shows them.
+      if (run.inputs && Object.keys(run.inputs).length > 0) {
+        lines.push(
+          `${
+            dim("Run inputs:")
+          }          swamp workflow history get ${run.id} --json${this.commandTarget}`,
+        );
+      }
+      return lines;
+    }
+    return [
+      failedSteps.length > 0
+        ? `${
+          yellow("To retry failed steps:")
+        }  swamp workflow resume ${this.workflowName} --run ${run.id}${this.commandTarget}`
+        : `${
+          yellow("To inspect the run:")
+        }  swamp workflow history logs ${run.id}${this.commandTarget}`,
+    ];
   }
 
   private renderDataArtifacts(run: WorkflowRunView): void {

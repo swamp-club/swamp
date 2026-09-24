@@ -30,7 +30,6 @@ import { dirname, join, relative } from "@std/path";
 import { walk } from "@std/fs/walk";
 import { hostname } from "node:os";
 import {
-  computeStepsToReset,
   DefaultStepExecutor,
   type StepExecutionContext,
   type StepExecutor,
@@ -38,6 +37,8 @@ import {
   trackerStatusForRun,
   WorkflowExecutionService,
 } from "./execution_service.ts";
+import { computeStepsToReset } from "./resume_reset.ts";
+import { UserError } from "../errors.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -62,7 +63,8 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
-import { WorkflowRun } from "./workflow_run.ts";
+import { STRANDED_STEP_ERROR, WorkflowRun } from "./workflow_run.ts";
+import type { WorkflowExecutionEvent } from "./execution_events.ts";
 import { assessRecoveryForRun } from "./recovery_assessment.ts";
 import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
@@ -8218,7 +8220,7 @@ async function setupRetry(
     undefined,
     tracker,
   );
-  return { runRepo, executor, service };
+  return { workflowRepo, runRepo, executor, service };
 }
 
 async function drainResume(
@@ -8971,5 +8973,720 @@ Deno.test("DefaultStepExecutor: keeps outputs and evaluated definitions repo-loc
         .length,
       1,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resume against a changed workflow (swamp-club#2433)
+// ---------------------------------------------------------------------------
+
+type ResumeOptions = Parameters<WorkflowExecutionService["resume"]>[2];
+
+interface JobShape {
+  name: string;
+  steps: Step[];
+  dependsOn?: string[];
+  condition?: TriggerCondition;
+}
+
+/** A workflow named "changed-wf" with the given id, or a fresh one. */
+function shapedWorkflow(jobs: JobShape[], id?: WorkflowId): Workflow {
+  return Workflow.create({
+    id,
+    name: "changed-wf",
+    jobs: jobs.map((j) =>
+      Job.create({
+        name: j.name,
+        steps: j.steps,
+        dependsOn: (j.dependsOn ?? []).map((job) => ({
+          job,
+          condition: j.condition ?? TriggerCondition.succeeded(),
+        })),
+      })
+    ),
+  });
+}
+
+function eachStep(
+  name: string,
+  collection: string,
+  opts: { dependsOn?: string[]; allowFailure?: boolean } = {},
+): Step {
+  return Step.create({
+    name,
+    task: StepTask.model("test-model", "run"),
+    forEach: { item: "env", in: collection },
+    allowFailure: opts.allowFailure,
+    dependsOn: (opts.dependsOn ?? []).map((dep) => ({
+      step: dep,
+      condition: TriggerCondition.succeeded(),
+    })),
+  });
+}
+
+function dependentStep(name: string, dependsOn: string[]): Step {
+  return modelStep(name, {
+    dependsOn: dependsOn.map((step) => ({
+      step,
+      condition: TriggerCondition.succeeded(),
+    })),
+  });
+}
+
+/**
+ * Fails a run of `before` at `failing`, saves `after` in its place, and
+ * asserts that resuming refuses with `message` without saving the run or
+ * calling a step.
+ */
+async function assertResumeRefused(
+  tempDir: string,
+  before: Workflow,
+  failing: string[],
+  after: JobShape[],
+  options: ResumeOptions,
+  message: string,
+): Promise<void> {
+  const { workflowRepo, runRepo, executor, service } = await setupRetry(
+    tempDir,
+    before,
+  );
+  for (const step of failing) executor.failing.add(step);
+  const failed = await service.execute(before.name);
+  assertEquals(failed.status, "failed");
+  await workflowRepo.save(shapedWorkflow(after, before.id));
+  const stored = JSON.stringify(
+    (await runRepo.findById(before.id, failed.id))!.toData(),
+  );
+  const saves = runRepo.saves;
+  const calls = [...executor.calls.values()].reduce((a, b) => a + b, 0);
+
+  const error = await assertRejects(
+    () => drainResume(service, before.name, failed.id, options),
+    UserError,
+    message,
+  );
+  assertStringIncludes(error.message, "Start a new run.");
+
+  assertEquals(runRepo.saves, saves);
+  assertEquals(
+    JSON.stringify((await runRepo.findById(before.id, failed.id))!.toData()),
+    stored,
+  );
+  assertEquals(
+    [...executor.calls.values()].reduce((a, b) => a + b, 0),
+    calls,
+  );
+}
+
+/** build: compile → test; release (depends on build): publish. */
+function buildRelease(): Workflow {
+  return shapedWorkflow([
+    {
+      name: "build",
+      steps: [modelStep("compile"), dependentStep("test", ["compile"])],
+    },
+    { name: "release", steps: [modelStep("publish")], dependsOn: ["build"] },
+  ]);
+}
+
+Deno.test("resume: --from refuses a step moved to a job nothing re-enters, instead of a false success", async () => {
+  await withTempDir(async (tempDir) => {
+    await assertResumeRefused(
+      tempDir,
+      buildRelease(),
+      ["test"],
+      [
+        { name: "build", steps: [modelStep("compile")] },
+        {
+          name: "release",
+          steps: [modelStep("publish"), modelStep("test")],
+          dependsOn: ["build"],
+        },
+      ],
+      {
+        fromStep: "test",
+      },
+      `Step "test" is in job "build" in the run, job "release" in the workflow.`,
+    );
+  });
+});
+
+Deno.test("resume: --from refuses a step moved next to a dependent, instead of crashing mid-run", async () => {
+  await withTempDir(async (tempDir) => {
+    await assertResumeRefused(
+      tempDir,
+      buildRelease(),
+      ["test"],
+      [
+        { name: "build", steps: [modelStep("compile")] },
+        {
+          name: "release",
+          steps: [modelStep("test"), dependentStep("publish", ["test"])],
+          dependsOn: ["build"],
+        },
+      ],
+      {
+        fromStep: "test",
+      },
+      `Step "test" is in job "build" in the run, job "release" in the workflow.`,
+    );
+  });
+});
+
+/** main: a → b → c. */
+function chain(): Workflow {
+  return shapedWorkflow([{
+    name: "main",
+    steps: [
+      modelStep("a"),
+      dependentStep("b", ["a"]),
+      dependentStep("c", ["b"]),
+    ],
+  }]);
+}
+
+Deno.test("resume: --from refuses a renamed step", async () => {
+  await withTempDir(async (tempDir) => {
+    await assertResumeRefused(
+      tempDir,
+      chain(),
+      ["b"],
+      [{
+        name: "main",
+        steps: [
+          modelStep("a"),
+          dependentStep("b2", ["a"]),
+          dependentStep("c", ["b2"]),
+        ],
+      }],
+      { fromStep: "b2" },
+      `Step "b2" in job "main" is not in the run.`,
+    );
+  });
+});
+
+Deno.test("resume: a retry refuses a step added to a job it re-enters", async () => {
+  await withTempDir(async (tempDir) => {
+    await assertResumeRefused(
+      tempDir,
+      chain(),
+      ["b"],
+      [{
+        name: "main",
+        steps: [
+          modelStep("a"),
+          dependentStep("b", ["a"]),
+          dependentStep("c", ["b"]),
+          modelStep("lint"),
+        ],
+      }],
+      undefined,
+      `Step "lint" in job "main" is not in the run.`,
+    );
+  });
+});
+
+Deno.test("resume: a retry refuses a renamed dependent of the failed step", async () => {
+  await withTempDir(async (tempDir) => {
+    await assertResumeRefused(
+      tempDir,
+      chain(),
+      ["b"],
+      [{
+        name: "main",
+        steps: [
+          modelStep("a"),
+          dependentStep("b", ["a"]),
+          dependentStep("c2", ["b"]),
+        ],
+      }],
+      undefined,
+      `Step "c2" in job "main" is not in the run.`,
+    );
+  });
+});
+
+Deno.test("resume: --from refuses a renamed job instead of resetting the whole run", async () => {
+  await withTempDir(async (tempDir) => {
+    await assertResumeRefused(
+      tempDir,
+      buildRelease(),
+      ["compile"],
+      [
+        {
+          name: "build2",
+          steps: [modelStep("compile"), dependentStep("test", ["compile"])],
+        },
+        {
+          name: "release",
+          steps: [modelStep("publish")],
+          dependsOn: ["build2"],
+        },
+      ],
+      { fromStep: "compile" },
+      `Job "build2" is not in the run.`,
+    );
+  });
+});
+
+Deno.test("resume: --from refuses a step name removed from one job but kept in another", async () => {
+  await withTempDir(async (tempDir) => {
+    const before = shapedWorkflow([
+      { name: "a", steps: [modelStep("x"), modelStep("y")] },
+      { name: "b", steps: [modelStep("x")] },
+    ]);
+    await assertResumeRefused(tempDir, before, ["x"], [
+      { name: "a", steps: [modelStep("y")] },
+      { name: "b", steps: [modelStep("x")] },
+    ], {
+      fromStep: "x",
+    }, `Step "x" is in job "a" in the run, job "b" in the workflow.`);
+  });
+});
+
+Deno.test("resume: --from conservatively refuses an added step in a re-entered job its condition would skip", async () => {
+  await withTempDir(async (tempDir) => {
+    const before = shapedWorkflow([
+      { name: "main", steps: [modelStep("b")] },
+      {
+        name: "on-failure",
+        steps: [modelStep("alert")],
+        dependsOn: ["main"],
+        condition: TriggerCondition.failed(),
+      },
+    ]);
+    await assertResumeRefused(
+      tempDir,
+      before,
+      ["b"],
+      [
+        { name: "main", steps: [modelStep("b")] },
+        {
+          name: "on-failure",
+          steps: [modelStep("alert"), modelStep("page")],
+          dependsOn: ["main"],
+          condition: TriggerCondition.failed(),
+        },
+      ],
+      { fromStep: "b" },
+      `Step "page" in job "on-failure" is not in the run.`,
+    );
+  });
+});
+
+Deno.test("resume: --from refuses a plain step moved away from a forEach step it shares a prefix with", async () => {
+  await withTempDir(async (tempDir) => {
+    const collection = '${{ ["a"] }}';
+    const before = shapedWorkflow([
+      {
+        name: "build",
+        steps: [
+          eachStep("test-${{ self.env }}", collection),
+          modelStep(
+            "test-unit",
+          ),
+        ],
+      },
+      { name: "release", steps: [modelStep("publish")], dependsOn: ["build"] },
+    ]);
+    await assertResumeRefused(
+      tempDir,
+      before,
+      ["test-unit"],
+      [
+        {
+          name: "build",
+          steps: [eachStep("test-${{ self.env }}", collection)],
+        },
+        {
+          name: "release",
+          steps: [modelStep("publish"), modelStep("test-unit")],
+          dependsOn: ["build"],
+        },
+      ],
+      {
+        fromStep: "test-unit",
+      },
+      `Step "test-unit" is in job "build" in the run, job "release" in the workflow.`,
+    );
+  });
+});
+
+/**
+ * Fails a run of `before` at `failing`, saves `after` in its place, then
+ * resumes it with nothing failing.
+ */
+async function resumeChanged(
+  tempDir: string,
+  before: Workflow,
+  failing: string[],
+  after: JobShape[] | undefined,
+  options: ResumeOptions,
+  runInputs?: Record<string, unknown>,
+) {
+  const harness = await setupRetry(tempDir, before);
+  for (const step of failing) harness.executor.failing.add(step);
+  const failed = await harness.service.execute(before.name, {
+    inputs: runInputs,
+  });
+  assertEquals(failed.status, "failed");
+  if (after) {
+    await harness.workflowRepo.save(shapedWorkflow(after, before.id));
+  }
+  harness.executor.failing.clear();
+  const events: WorkflowExecutionEvent[] = [];
+  let resumed: WorkflowRun | undefined;
+  for await (
+    const event of harness.service.resume(before.name, failed.id, options)
+  ) {
+    events.push(event);
+    if (event.kind === "completed") resumed = event.run;
+  }
+  return { ...harness, failed, resumed: resumed!, events };
+}
+
+Deno.test("resume: --from still works after removing a step upstream of it", async () => {
+  await withTempDir(async (tempDir) => {
+    const { resumed, executor } = await resumeChanged(tempDir, chain(), [
+      "b",
+    ], [{
+      name: "main",
+      steps: [modelStep("b"), dependentStep("c", ["b"])],
+    }], { fromStep: "b" });
+    assertEquals(resumed.status, "succeeded");
+    assertEquals(executor.count("main/b"), 2);
+    assertEquals(executor.count("main/c"), 1);
+  });
+});
+
+Deno.test("resume: --from still works after removing a step downstream of it", async () => {
+  await withTempDir(async (tempDir) => {
+    const { resumed, executor } = await resumeChanged(tempDir, chain(), [
+      "b",
+    ], [{
+      name: "main",
+      steps: [modelStep("a"), dependentStep("b", ["a"])],
+    }], { fromStep: "b" });
+    assertEquals(resumed.status, "succeeded");
+    assertEquals(executor.count("main/b"), 2);
+  });
+});
+
+Deno.test("resume: --from still works after changing a step's body", async () => {
+  await withTempDir(async (tempDir) => {
+    const { resumed } = await resumeChanged(tempDir, chain(), ["b"], [{
+      name: "main",
+      steps: [
+        modelStep("a"),
+        modelStep("b", {
+          inputs: { fixed: true },
+          dependsOn: [{ step: "a", condition: TriggerCondition.succeeded() }],
+        }),
+        dependentStep("c", ["b"]),
+      ],
+    }], { fromStep: "b" });
+    assertEquals(resumed.status, "succeeded");
+  });
+});
+
+Deno.test("resume: --from and retry leave an unchanged forEach and gate run unrefused", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = shapedWorkflow([{
+      name: "main",
+      steps: [
+        Step.create({ name: "gate", task: StepTask.manualApproval("Go?") }),
+        eachStep("deploy-${{ self.env }}", "${{ inputs.envs }}", {
+          dependsOn: ["gate"],
+        }),
+      ],
+    }]);
+    const { runRepo, executor, service } = await setupRetry(
+      tempDir,
+      workflow,
+    );
+    executor.failing.add("deploy-b");
+    const suspended = await service.execute(workflow.name, {
+      inputs: { envs: ["a", "b"] },
+    });
+    assertEquals(suspended.status, "suspended");
+    const gate = suspended.getJob("main")!.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    await runRepo.save(workflow.id, suspended);
+    const failed = await drainResume(service, workflow.name, suspended.id);
+    assertEquals(failed?.status, "failed");
+
+    const retried = await drainResume(service, workflow.name, failed!.id);
+    assertEquals(retried?.status, "failed");
+    executor.failing.clear();
+    const fromTemplate = await drainResume(service, workflow.name, failed!.id, {
+      fromStep: "deploy-${{ self.env }}",
+    });
+    assertEquals(fromTemplate?.status, "succeeded");
+    assertEquals(executor.count("main/deploy-b"), 3);
+  });
+});
+
+Deno.test("resume: --from still works on a run started from an evaluated forEach workflow", async () => {
+  await withTempDir(async (tempDir) => {
+    const template = "deploy-${{ self.env }}";
+    const source = shapedWorkflow([{
+      name: "main",
+      steps: [
+        modelStep("prep"),
+        eachStep(template, "${{ inputs.envs }}", { dependsOn: ["prep"] }),
+      ],
+    }]);
+    // What 'workflow evaluate' saves: concrete iterations, no forEach.
+    const evaluated = shapedWorkflow([{
+      name: "main",
+      steps: [modelStep("prep"), dependentStep("deploy-prod", ["prep"])],
+    }], source.id);
+    const { runRepo, executor, service } = await setupRetry(tempDir, source);
+    const { YamlEvaluatedWorkflowRepository } = await import(
+      "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
+    );
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(evaluated);
+    executor.failing.add("prep");
+    const failed = await service.execute(source.name, {
+      lastEvaluated: true,
+      inputs: { envs: ["prod"] },
+    });
+    assertEquals(failed.status, "failed");
+    const records = failed.getJob("main")!.steps;
+    assertEquals(
+      records.find((s) => s.stepName === "deploy-prod")
+        ?.forEachTemplate,
+      undefined,
+    );
+
+    executor.failing.clear();
+    const resumed = await drainResume(service, source.name, failed.id, {
+      fromStep: "prep",
+    });
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.count("main/prep"), 2);
+    assertExists(await runRepo.findById(source.id, failed.id));
+  });
+});
+
+/** main: deploy iterations over a literal collection; deploy-b fails first. */
+function deployOver(collection: string): JobShape[] {
+  return [{
+    name: "main",
+    steps: [eachStep("deploy-${{ self.env }}", collection)],
+  }];
+}
+
+function assertStranded(run: WorkflowRun, stepName: string): void {
+  const step = run.getJob("main")!.getStep(stepName)!;
+  assertEquals(step.status, "failed");
+  assertEquals(step.failureKind, "workflow_changed");
+  assertEquals(step.error, STRANDED_STEP_ERROR);
+  assertEquals(step.allowedFailure, false);
+}
+
+Deno.test("resume: --from over a smaller forEach collection fails the dropped iteration", async () => {
+  await withTempDir(async (tempDir) => {
+    const { resumed, events, executor } = await resumeChanged(
+      tempDir,
+      shapedWorkflow(deployOver('${{ ["a", "b"] }}')),
+      ["deploy-b"],
+      deployOver('${{ ["a"] }}'),
+      { fromStep: "deploy-${{ self.env }}" },
+    );
+    assertEquals(resumed.status, "failed");
+    assertEquals(resumed.getJob("main")!.status, "failed");
+    assertEquals(executor.count("main/deploy-b"), 1);
+    assertStranded(resumed, "deploy-b");
+    assertEquals(
+      resumed.getJob("main")!.getStep("deploy-a")!.status,
+      "succeeded",
+    );
+    assertEquals(resumed.toData().failedStep, "deploy-b");
+    assertEquals(resumed.toData().failureReason, STRANDED_STEP_ERROR);
+    const stranded = events.find((e) =>
+      e.kind === "step_failed" && e.stepId === "deploy-b"
+    );
+    assert(stranded?.kind === "step_failed");
+    assertEquals(stranded.forEachTemplate, "deploy-${{ self.env }}");
+    assertEquals(stranded.modelName, undefined);
+    assertEquals(stranded.methodName, undefined);
+  });
+});
+
+Deno.test("resume: a stranded iteration fails even when its forEach step allows failure", async () => {
+  await withTempDir(async (tempDir) => {
+    const shape = (collection: string): JobShape[] => [{
+      name: "main",
+      steps: [
+        eachStep("deploy-${{ self.env }}", collection, { allowFailure: true }),
+        modelStep("check", {
+          dependsOn: [{
+            step: "deploy-${{ self.env }}",
+            condition: TriggerCondition.completed(),
+          }],
+        }),
+      ],
+    }];
+    const { resumed } = await resumeChanged(
+      tempDir,
+      shapedWorkflow(shape('${{ ["a", "b"] }}')),
+      ["deploy-b", "check"],
+      shape('${{ ["a"] }}'),
+      { fromStep: "deploy-${{ self.env }}" },
+    );
+    assertStranded(resumed, "deploy-b");
+    assertEquals(resumed.status, "failed");
+  });
+});
+
+Deno.test("resume: a retry with an --input that narrows a forEach collection fails the dropped iteration", async () => {
+  await withTempDir(async (tempDir) => {
+    const { resumed, executor } = await resumeChanged(
+      tempDir,
+      shapedWorkflow(deployOver("${{ inputs.envs }}")),
+      ["deploy-b"],
+      undefined,
+      { inputs: { envs: ["a"] } },
+      { envs: ["a", "b"] },
+    );
+    assertEquals(resumed.status, "failed");
+    assertEquals(executor.count("main/deploy-a"), 2);
+    assertStranded(resumed, "deploy-b");
+  });
+});
+
+Deno.test("resume: a retry with an --input that renames iterations fails the old ones", async () => {
+  await withTempDir(async (tempDir) => {
+    const { resumed, executor } = await resumeChanged(
+      tempDir,
+      shapedWorkflow(deployOver("${{ inputs.envs }}")),
+      ["deploy-b"],
+      undefined,
+      { inputs: { envs: ["x", "y"] } },
+      { envs: ["a", "b"] },
+    );
+    assertEquals(resumed.status, "failed");
+    assertEquals(executor.count("main/deploy-x"), 1);
+    assertEquals(executor.count("main/deploy-y"), 1);
+    assertStranded(resumed, "deploy-a");
+    assertStranded(resumed, "deploy-b");
+  });
+});
+
+Deno.test("resume: a retry of a run with a stranded step is refused, and --from clears the failure kind", async () => {
+  await withTempDir(async (tempDir) => {
+    const { resumed, service, workflowRepo } = await resumeChanged(
+      tempDir,
+      shapedWorkflow(deployOver('${{ ["a", "b"] }}')),
+      ["deploy-b"],
+      deployOver('${{ ["a"] }}'),
+      { fromStep: "deploy-${{ self.env }}" },
+    );
+    await assertRejects(
+      () => drainResume(service, "changed-wf", resumed.id),
+      UserError,
+      `Step "deploy-\${{ self.env }}" in job "main" did not run: the workflow or a forEach collection changed. Start a new run.`,
+    );
+
+    // Restoring the collection and re-entering at the template runs it.
+    const restored = shapedWorkflow(
+      deployOver('${{ ["a", "b"] }}'),
+      resumed.workflowId as WorkflowId,
+    );
+    await workflowRepo.save(restored);
+    const again = await drainResume(service, "changed-wf", resumed.id, {
+      fromStep: "deploy-${{ self.env }}",
+    });
+    assertEquals(again?.status, "succeeded");
+    const deployB = again!.getJob("main")!.getStep("deploy-b")!;
+    assertEquals(deployB.status, "succeeded");
+    assertEquals(deployB.failureKind, undefined);
+  });
+});
+
+Deno.test("resume: a --from that suspends again still fails an iteration its reset stranded", async () => {
+  await withTempDir(async (tempDir) => {
+    const shape = (collection: string): JobShape[] => [{
+      name: "main",
+      steps: [
+        Step.create({ name: "gate", task: StepTask.manualApproval("Go?") }),
+        eachStep("deploy-${{ self.env }}", collection, {
+          dependsOn: ["gate"],
+        }),
+      ],
+    }];
+    const before = shapedWorkflow(shape('${{ ["a", "b"] }}'));
+    const { workflowRepo, runRepo, service } = await setupRetry(
+      tempDir,
+      before,
+    );
+    const suspended = await service.execute(before.name);
+    assertEquals(suspended.status, "suspended");
+    // Reject the gate, as 'workflow reject' does.
+    const gate = suspended.getJob("main")!.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: false,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.fail("Approval rejected");
+    suspended.getJob("main")!.fail();
+    suspended.complete();
+    await runRepo.save(before.id, suspended);
+
+    await workflowRepo.save(
+      shapedWorkflow(shape('${{ ["a"] }}'), before.id),
+    );
+    const asksAgain = await drainResume(service, before.name, suspended.id, {
+      fromStep: "gate",
+    });
+    assertEquals(asksAgain, undefined);
+    const waiting = (await runRepo.findById(before.id, suspended.id))!;
+    assertEquals(waiting.status, "suspended");
+    const regate = waiting.getJob("main")!.getStep("gate")!;
+    regate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    regate.succeed();
+    await runRepo.save(before.id, waiting);
+
+    const resumed = await drainResume(service, before.name, suspended.id);
+    assertEquals(resumed?.status, "failed");
+    assertStranded(resumed!, "deploy-b");
+    assertEquals(
+      resumed!.getJob("main")!.getStep("deploy-a")!.status,
+      "succeeded",
+    );
+  });
+});
+
+Deno.test("resume: --from still works in a job whose name is written with an input expression", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = shapedWorkflow([{
+      name: "deploy-${{ inputs.env }}",
+      steps: [modelStep("a"), dependentStep("b", ["a"])],
+    }]);
+    const { executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("b");
+    const failed = await service.execute(workflow.name, {
+      inputs: { env: "prod" },
+    });
+    assertEquals(failed.status, "failed");
+    assertEquals(failed.jobs.map((j) => j.jobName), ["deploy-prod"]);
+
+    executor.failing.clear();
+    const resumed = await drainResume(service, workflow.name, failed.id, {
+      fromStep: "b",
+    });
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.count("deploy-prod/b"), 2);
   });
 });
