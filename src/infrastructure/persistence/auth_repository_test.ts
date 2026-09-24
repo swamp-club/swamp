@@ -352,6 +352,57 @@ Deno.test("AuthRepository - saveIdentityCache preserves existing login apiKey/ap
   }
 });
 
+Deno.test("AuthRepository - saveIdentityCache leaves a login key for another server untouched", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const repo = new AuthRepository({
+      configDir,
+      getApiKey: () => undefined,
+    });
+
+    await repo.save(TEST_CREDENTIALS);
+    await repo.saveIdentityCache(
+      "https://other.example.com",
+      "envuser",
+      ["envorg"],
+      "swamp_env_ke",
+    );
+
+    const loaded = await repo.load();
+    assertEquals(loaded, TEST_CREDENTIALS);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - saveIdentityCache treats the legacy URL as the same server", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const repo = new AuthRepository({
+      configDir,
+      getApiKey: () => undefined,
+    });
+
+    await repo.save({ ...TEST_CREDENTIALS, serverUrl: "https://swamp.club" });
+    await repo.saveIdentityCache(
+      "https://swamp-club.com",
+      "envuser",
+      ["envorg"],
+      "swamp_env_ke",
+    );
+
+    const loaded = await repo.load();
+    assertExists(loaded);
+    assertEquals(loaded.apiKey, TEST_CREDENTIALS.apiKey);
+    assertEquals(loaded.serverUrl, "https://swamp-club.com");
+    assertEquals(loaded.username, "envuser");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("AuthRepository - saveIdentityCache creates file when none exists", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

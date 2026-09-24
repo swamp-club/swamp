@@ -1348,6 +1348,7 @@ export {
   type AuthLogoutData,
   type AuthLogoutDeps,
   type AuthLogoutEvent,
+  type AuthLogoutKeyRevocation,
   createAuthLogoutDeps,
 } from "./auth/logout.ts";
 

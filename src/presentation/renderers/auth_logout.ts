@@ -29,8 +29,15 @@ class LogAuthLogoutRenderer implements Renderer<AuthLogoutEvent> {
         const data = e.data;
         if (data.loggedOut === false) {
           console.log("Not currently authenticated.");
-        } else {
-          console.log(`Logged out ${data.username} from ${data.serverUrl}`);
+          return;
+        }
+        console.log(`Logged out ${data.username} from ${data.serverUrl}`);
+        if (data.keyRevocation === "revoked") {
+          console.log(`Revoked the API key on ${data.serverUrl}.`);
+        } else if (data.keyRevocation === "already_invalid") {
+          console.log(
+            `The stored API key was already invalid on ${data.serverUrl}.`,
+          );
         }
       },
       error: (e) => {

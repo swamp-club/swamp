@@ -55,6 +55,18 @@ export interface RevokeCollectiveTokenResponse {
   token: CollectiveTokenMetadata;
 }
 
+/**
+ * Outcome of a personal API key revoking itself. `already_invalid` means the
+ * server no longer accepts the key (revoked, expired, or never existed), so
+ * there is nothing left to revoke.
+ */
+export type RevokePresentingApiKeyResult =
+  | { kind: "revoked"; id: string }
+  | { kind: "already_invalid" };
+
+/** Longest server response body echoed into an error message. */
+const MAX_ERROR_BODY_CHARS = 200;
+
 /** Response from BetterAuth sign-in endpoint. */
 export interface SignInResponse {
   token: string;
@@ -903,6 +915,57 @@ export class SwampClubClient {
     }
 
     return await res.json();
+  }
+
+  /**
+   * Revoke the personal API key that authenticates the request. The server
+   * derives the key id from the credential itself, so a key can only revoke
+   * itself. Throws UserError for every outcome other than revoked or
+   * already invalid, so callers never mistake a failure for a revocation.
+   */
+  async revokePresentingApiKey(
+    apiKey: string,
+    signal?: AbortSignal,
+  ): Promise<RevokePresentingApiKeyResult> {
+    const res = await this.fetch(
+      "/api/v1/me/api-key",
+      {
+        method: "DELETE",
+        headers: {
+          "x-api-key": apiKey,
+        },
+      },
+      signal,
+    );
+
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return {
+        kind: "revoked",
+        id: typeof data.id === "string" ? data.id : "",
+      };
+    }
+
+    const text = await res.text();
+    if (res.status === 401) {
+      return { kind: "already_invalid" };
+    }
+    if (res.status === 403) {
+      throw new UserError(
+        `${this.serverUrl} refused to revoke the stored credential: it is not a personal API key.`,
+      );
+    }
+    if (res.status === 404) {
+      throw new UserError(
+        `${this.serverUrl} does not support revoking API keys from the CLI.`,
+      );
+    }
+    const body = text.length > MAX_ERROR_BODY_CHARS
+      ? `${text.slice(0, MAX_ERROR_BODY_CHARS)}…`
+      : text;
+    throw new UserError(
+      `Failed to revoke API key on ${this.serverUrl} (HTTP ${res.status}): ${body}`,
+    );
   }
 
   private async fetch(

@@ -476,6 +476,8 @@ export async function* authLogin(
 
       yield { kind: "securing_session" };
 
+      // swamp-club expires login keys by matching this name shape
+      // (LOGIN_KEY_NAME in lib/auth-body-hook.ts); keep the two in step.
       const host = deps.getHostname().slice(0, 14);
       const keyName = `cli-${host}-${Date.now()}`;
       ctx.logger.debug`Creating API key: ${keyName}`;

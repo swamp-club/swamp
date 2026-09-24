@@ -72,7 +72,8 @@ export class AuthRepository {
       (() => Deno.env.get("SWAMP_CLUB_URL"));
   }
 
-  private getAuthPath(): string {
+  /** Path of the stored credentials file. */
+  getAuthPath(): string {
     return join(this.getConfigDir(), AUTH_FILE);
   }
 
@@ -165,6 +166,18 @@ export class AuthRepository {
       existing = JSON.parse(content) as AuthCredentials;
     } catch {
       // No existing file
+    }
+
+    // A login key belongs to the server that issued it. Re-pointing its
+    // serverUrl at another server would send the key there on its next use
+    // (including the revoke on logout), so leave that file untouched.
+    const existingServerUrl = existing?.serverUrl === LEGACY_SWAMP_CLUB_URL
+      ? DEFAULT_SWAMP_CLUB_URL
+      : existing?.serverUrl;
+    if (
+      existing?.apiKey && existingServerUrl && existingServerUrl !== serverUrl
+    ) {
+      return;
     }
 
     const merged: AuthCredentials = {
