@@ -406,6 +406,13 @@ export function createAutoResolveInstallerAdapter(
   };
 }
 
+/** Catalog row states that mean a source failed to load (as in doctor). */
+const FAILED_SOURCE_STATES: ReadonlySet<string> = new Set([
+  "BundleBuildFailed",
+  "ValidationFailed",
+  "EntryPointUnreadable",
+]);
+
 /**
  * Whether any catalog row for a source under `extensionDir` is in a failed
  * state. Matches by path rather than extension_name: failed pulled sources
@@ -422,7 +429,7 @@ function hasFailedSourceUnder(
   return repository.getCatalogStore().findBySourcePathPrefix(prefix).some(
     (row) =>
       row.source_path.startsWith(prefix) &&
-      (row.state === "BundleBuildFailed" || row.state === "ValidationFailed"),
+      row.state !== undefined && FAILED_SOURCE_STATES.has(row.state),
   );
 }
 

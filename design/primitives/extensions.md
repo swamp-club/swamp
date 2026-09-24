@@ -890,9 +890,18 @@ auto-resolve does:
   `.swamp/pulled-extensions/<name>/` is absent and no source files the lockfile
   lists remain on disk. A clean install goes ahead.
 - **Intact**: the lockfile entry, the directory and every file the lockfile
-  lists are present. A registration failure is then local, and the resolver
-  reports `alreadyInstalledButFailed` with the install path and the `--force`
-  recovery command.
+  lists are present. The resolver then checks the extension catalog for a
+  failed source (`BundleBuildFailed`, `ValidationFailed` or
+  `EntryPointUnreadable`) under the extension's directory, matched by path.
+  - If one failed, or the catalog is unavailable, the failure is local. The
+    resolver reports `alreadyInstalledButFailed` with the install path and the
+    `--force` recovery command.
+  - If none failed, the extension loaded but does not provide the type, usually
+    because the installed version predates it (swamp-club#2476). The resolver
+    reports `installedWithoutType`. When the registry has a newer CalVer
+    version, it names that version and `swamp extension update <name>`. In JSON
+    mode the event has `reason: "type_not_provided"` with `installedVersion`
+    and `newerVersion`.
 - **Truncated**: the lockfile entry and directory exist, but some listed files
   are missing (swamp-club#133). This "present but incomplete" state used to
   cause misleading `Unknown <kind> type` errors later. The resolver now reports

@@ -554,48 +554,59 @@ Deno.test("auto_resolver_adapters: inspectInstallation reports loadFailures fals
   }
 });
 
-Deno.test("auto_resolver_adapters: inspectInstallation reports loadFailures true for a failed source under the extension", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
-  try {
-    const result = await inspectWithCatalogRows(tmpDir, "@fake/broken", [
-      {
-        sourceRel: ".swamp/pulled-extensions/@fake/broken/models/x.ts",
-        state: "BundleBuildFailed",
-      },
-    ]);
-    assertEquals(result.state === "intact" && result.loadFailures, true);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
+for (
+  const state of [
+    "BundleBuildFailed",
+    "ValidationFailed",
+    "EntryPointUnreadable",
+  ]
+) {
+  Deno.test(`auto_resolver_adapters: inspectInstallation reports loadFailures true for a source in state ${state}`, async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const result = await inspectWithCatalogRows(tmpDir, "@fake/broken", [
+        {
+          sourceRel: ".swamp/pulled-extensions/@fake/broken/models/x.ts",
+          state,
+        },
+      ]);
+      assertEquals(result.state === "intact" && result.loadFailures, true);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  });
+}
 
-Deno.test("auto_resolver_adapters: inspectInstallation ignores failed sources of sibling extensions", async () => {
+Deno.test("auto_resolver_adapters: inspectInstallation ignores failed sources of a sibling extension sharing its name prefix", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // '@fake/foo-bar' shares the '@fake/foo' prefix, and '@fake/fooxbar'
-    // matches '@fake/foo_bar' under SQL LIKE's '_' wildcard. Neither is
-    // the inspected extension.
-    const sibling = await inspectWithCatalogRows(tmpDir, "@fake/foo", [
+    // '@fake/foo-bar' starts with '@fake/foo' but is another extension.
+    const result = await inspectWithCatalogRows(tmpDir, "@fake/foo", [
       {
         sourceRel: ".swamp/pulled-extensions/@fake/foo-bar/models/x.ts",
         state: "BundleBuildFailed",
       },
     ]);
-    assertEquals(sibling.state === "intact" && sibling.loadFailures, false);
+    assertEquals(result.state === "intact" && result.loadFailures, false);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
-  const tmpDir2 = await Deno.makeTempDir({ prefix: "swamp_test_" });
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation ignores rows matched only by an SQL LIKE wildcard in the name", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    const wildcard = await inspectWithCatalogRows(tmpDir2, "@fake/foo_bar", [
+    // Under LIKE, the '_' in '@fake/foo_bar' matches the 'x' in
+    // '@fake/fooxbar'; the startsWith re-check must discard that row.
+    const result = await inspectWithCatalogRows(tmpDir, "@fake/foo_bar", [
       {
         sourceRel: ".swamp/pulled-extensions/@fake/fooxbar/models/x.ts",
         state: "ValidationFailed",
       },
     ]);
-    assertEquals(wildcard.state === "intact" && wildcard.loadFailures, false);
+    assertEquals(result.state === "intact" && result.loadFailures, false);
   } finally {
-    await Deno.remove(tmpDir2, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
