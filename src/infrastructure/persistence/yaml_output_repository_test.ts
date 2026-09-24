@@ -1076,7 +1076,9 @@ Deno.test(
       assertEquals(result.deleted, 1);
       assertEquals(await pathExists(yamlPath), false);
       assertEquals(await pathExists(logPath), false);
-      assertEquals(dirtyPaths.includes(logPath), true);
+      // The record syncs with the datastore; the repo-local log never did.
+      assertEquals(dirtyPaths.includes(yamlPath), true);
+      assertEquals(dirtyPaths.includes(logPath), false);
     });
   },
 );
@@ -1174,9 +1176,9 @@ Deno.test(
         return Promise.resolve();
       };
       const repo = new YamlOutputRepository(dir, undefined, markDirty);
-      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
       const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
-      await writeAgedLog(orphan, twoDaysAgo);
+      await writeAgedLog(orphan, tenDaysAgo);
       const orphanBytes = (await Deno.stat(orphan)).size;
 
       const result = await repo.deleteByMethodLifetime(
@@ -1204,8 +1206,8 @@ Deno.test(
         dir,
         new Date(Date.now() - 2 * HOUR_MS),
       );
-      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
-      await Deno.utime(logPath, twoDaysAgo, twoDaysAgo);
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+      await Deno.utime(logPath, tenDaysAgo, tenDaysAgo);
 
       const result = await repo.deleteByMethodLifetime(
         new Date(Date.now() - DAY_MS),
@@ -1220,20 +1222,67 @@ Deno.test(
 );
 
 Deno.test(
-  "deleteByMethodLifetime: keeps an unreferenced run log younger than an hour",
+  "deleteByMethodLifetime: keeps a silent in-progress run's log under a short cutoff",
   async () => {
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
-      // A run opens its log before its output record exists.
-      const starting = join(localMethodDir(dir), "run-still-starting.log");
-      await writeAgedLog(starting, new Date(Date.now() - 30 * 60 * 1000));
+      // A direct run writes its output record only when it finishes, so a
+      // long run that has logged nothing for two days has no record yet.
+      const running = join(localMethodDir(dir), "run-in-progress.log");
+      await writeAgedLog(running, new Date(Date.now() - 2 * DAY_MS));
 
       const result = await repo.deleteByMethodLifetime(
-        new Date(Date.now() - 60 * 1000),
+        new Date(Date.now() - HOUR_MS),
       );
 
       assertEquals(result.bytesReclaimed, 0);
-      assertEquals(await pathExists(starting), true);
+      assertEquals(await pathExists(running), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: keeps a silent in-progress run's log past its method's outputLifetime",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      // server-token redeem declares outputLifetime: "1d".
+      const running = join(
+        dir,
+        ".swamp",
+        "outputs",
+        SERVER_TOKEN_MODEL_TYPE.normalized,
+        "redeem",
+        "run-in-progress.log",
+      );
+      await writeAgedLog(running, new Date(Date.now() - 2 * DAY_MS));
+
+      await repo.deleteByMethodLifetime(new Date(Date.now() - 30 * DAY_MS));
+
+      assertEquals(await pathExists(running), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: keeps orphan candidates beside an unreadable record",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
+      await writeAgedLog(orphan, new Date(Date.now() - 10 * DAY_MS));
+      // A recent record gc would not delete, and cannot parse.
+      await Deno.writeTextFile(
+        join(localMethodDir(dir), "corrupt.yaml"),
+        "id: [unclosed\n",
+      );
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.bytesReclaimed, 0);
+      assertEquals(await pathExists(orphan), true);
     });
   },
 );
@@ -1246,16 +1295,16 @@ Deno.test(
         dir,
         join(dir, "datastore", "outputs"),
       );
-      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
       const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
-      await writeAgedLog(orphan, twoDaysAgo);
+      await writeAgedLog(orphan, tenDaysAgo);
       // An output recorded in the datastore still claims its local log.
       const kept = await makeOutputWithRunLog(
         repo,
         dir,
         new Date(Date.now() - 2 * HOUR_MS),
       );
-      await Deno.utime(kept.logPath, twoDaysAgo, twoDaysAgo);
+      await Deno.utime(kept.logPath, tenDaysAgo, tenDaysAgo);
 
       await repo.deleteByMethodLifetime(new Date(Date.now() - DAY_MS));
 
@@ -1270,14 +1319,16 @@ Deno.test(
   async () => {
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
-      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      // Old enough that the output's own log is also an orphan-sweep
+      // candidate, so a double count would show.
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
       const { yamlPath, logPath } = await makeOutputWithRunLog(
         repo,
         dir,
-        twoDaysAgo,
+        tenDaysAgo,
       );
       const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
-      await writeAgedLog(orphan, twoDaysAgo);
+      await writeAgedLog(orphan, tenDaysAgo);
       const cutoff = new Date(Date.now() - DAY_MS);
 
       const preview = await repo.deleteByMethodLifetime(cutoff, {

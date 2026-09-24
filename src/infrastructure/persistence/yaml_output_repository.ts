@@ -43,11 +43,13 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { lifetimeToMs } from "../../domain/data/data_metadata.ts";
 
 /**
- * Minimum age before run gc treats an unreferenced run log as orphaned. A run
- * opens its log before its output record is saved, so a young log with no
- * record may belong to a run that is still starting.
+ * Minimum age before run gc treats an unreferenced run log as orphaned,
+ * whatever the retention cutoff. A direct model method run writes its output
+ * record only when it finishes, so for its whole duration its log has no
+ * record pointing at it. The log's mtime moves with every line written, so
+ * only a run that has been silent this long could lose its log.
  */
-const ORPHAN_LOG_MIN_AGE_MS = 60 * 60 * 1000;
+const ORPHAN_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * YAML-based implementation of OutputRepository.
@@ -509,8 +511,9 @@ export class YamlOutputRepository implements OutputRepository {
 
   /**
    * Removes an output record and its run log, returning the bytes reclaimed.
-   * Both paths are marked dirty before removal so datastore sync propagates
-   * the deletions. On a dry run nothing is touched and only bytes are counted.
+   * Paths under baseDir are marked dirty before removal so datastore sync
+   * propagates the deletions; a repo-local log beside a datastore is never
+   * synced. On a dry run nothing is touched and only bytes are counted.
    */
   private async removeOutputFiles(
     yamlPath: string,
@@ -532,7 +535,9 @@ export class YamlOutputRepository implements OutputRepository {
     if (dryRun) return bytes;
 
     await this.notifyDirty(yamlPath);
-    if (logPath && logExists) await this.notifyDirty(logPath);
+    if (logPath && logExists && this.inBaseDir(logPath)) {
+      await this.notifyDirty(logPath);
+    }
     try {
       await Deno.remove(yamlPath);
     } catch (error) {
@@ -554,9 +559,9 @@ export class YamlOutputRepository implements OutputRepository {
    * Removes run logs in the repo-local outputs root that no remaining output
    * references: logs left behind before outputs were deleted by their
    * recorded logFile, and logs of runs that failed before their output was
-   * saved. A log must be older than its method's cutoff and
-   * ORPHAN_LOG_MIN_AGE_MS, which protects a run whose log is open before its
-   * output record exists.
+   * saved. A log must be older than both its method's cutoff and
+   * ORPHAN_LOG_MIN_AGE_MS, since a run still in progress has no output record
+   * yet. A method directory whose records cannot all be read is skipped.
    */
   private async sweepOrphanLogs(
     cutoffFor: (relativePath: string) => number,
@@ -595,11 +600,14 @@ export class YamlOutputRepository implements OutputRepository {
     let bytes = 0;
     for (const [dir, candidates] of candidatesByDir) {
       const referenced = await this.referencedLogs(dir, deletedYamls);
+      if (!referenced) continue;
       for (const candidate of candidates) {
         if (referenced.has(candidate.path)) continue;
         bytes += candidate.size;
         if (dryRun) continue;
-        await this.notifyDirty(candidate.path);
+        if (this.inBaseDir(candidate.path)) {
+          await this.notifyDirty(candidate.path);
+        }
         try {
           await Deno.remove(candidate.path);
         } catch (error) {
@@ -614,12 +622,13 @@ export class YamlOutputRepository implements OutputRepository {
   /**
    * Collects the run logs claimed by the outputs that remain for the method
    * directory `localDir`, reading YAMLs from that directory and from its
-   * counterpart under baseDir.
+   * counterpart under baseDir. Returns null when a record cannot be read, so
+   * the caller keeps every log rather than guess which one it claims.
    */
   private async referencedLogs(
     localDir: string,
     deletedYamls: Set<string>,
-  ): Promise<Set<string>> {
+  ): Promise<Set<string> | null> {
     const referenced = new Set<string>();
     const dirs = new Set([
       localDir,
@@ -638,7 +647,7 @@ export class YamlOutputRepository implements OutputRepository {
             if (logPath) referenced.add(logPath);
           } catch (error) {
             if (error instanceof Deno.errors.NotFound) continue;
-            throw error;
+            return null;
           }
         }
       } catch (error) {
@@ -672,11 +681,13 @@ export class YamlOutputRepository implements OutputRepository {
     return logDir === yamlDir || logDir === localYamlDir ? logPath : null;
   }
 
+  private inBaseDir(path: string): boolean {
+    return path.startsWith(this.baseDir + SEPARATOR);
+  }
+
   /** The outputs root a file lives under, for empty-directory cleanup. */
   private rootFor(path: string): string {
-    return path.startsWith(this.baseDir + SEPARATOR)
-      ? this.baseDir
-      : this.localOutputsDir;
+    return this.inBaseDir(path) ? this.baseDir : this.localOutputsDir;
   }
 
   private async collectFiles(
