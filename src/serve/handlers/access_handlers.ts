@@ -68,6 +68,7 @@ import {
 import { ActionSchema } from "../../domain/access/action.ts";
 import { parseResourceSelector } from "../../domain/access/resource_selector.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -1024,6 +1025,11 @@ export async function handleAccessTokenMint(
         principalId: payload.principalId,
         principalEmail: payload.principalEmail,
         durationMs: payload.durationMs,
+        // serve always registers the control-plane vault at boot, so name it
+        // explicitly (as the local CLI path does). Leaving it unset makes
+        // resolveVaultName count _token-secrets alongside any user vault and
+        // fail with "Multiple vaults are configured".
+        vaultName: TOKEN_SECRETS_VAULT_NAME,
       }),
       withDefaults({
         completed: (e) => {

@@ -257,15 +257,27 @@ vault. It is a copy: the token secret remains in its control-plane vault.
 
 ### Minting for a remote serve
 
-`swamp access token mint` runs against a local repo. When a datastore is
-configured, the token secret is stored in the control-plane vault (not a
-user-configured vault). Use `swamp access token reveal <name>` on the serve host
-to retrieve the credential. If the control-plane vault cannot initialize (for
-example, expired or wrong datastore credentials), `access token mint`, `rotate`
-and `reveal`, and `worker token create`, fail with that underlying error. Fix
-the datastore access and rerun; do not create a vault named `_token-secrets`.
-For headless deployments, mint inside the serve process's own environment — e.g.
-via `kubectl exec` — not on the operator's laptop.
+`swamp access token mint` stores the token secret in the `_token-secrets`
+control-plane vault, never in a user-configured vault. If the control-plane
+vault cannot initialize (for example, expired or wrong datastore credentials),
+`access token mint`, `rotate` and `reveal`, and `worker token create`, fail with
+that underlying error. Fix the datastore access and rerun; do not create a vault
+named `_token-secrets`.
+
+To mint for a running serve, go through it with `--server` (admin only):
+
+```bash
+swamp access token mint <name> --principal user:<id> --server wss://swamp.example.com
+```
+
+The serve accepts the token at once — no restart. Prefer this over minting in a
+separate process on the serve host (e.g. `kubectl exec`): with a remote
+datastore, a running serve does not pull out-of-process token definitions, so
+the token fails until serve restarts.
+
+The mint output does not include the credential, and `reveal` has no `--server`.
+Run `swamp access token reveal <name> --yes` where the serve's repo or datastore
+is reachable.
 
 ## OAuth Login
 
