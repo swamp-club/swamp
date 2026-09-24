@@ -844,6 +844,10 @@ runs exist, the CLI prompts you to specify `--run`.
 `--from` targets template step names (not forEach-expanded names). For forEach
 steps, all iterations are re-evaluated — completed iterations with truthy guards
 are skipped; failed/unstarted iterations execute. Only works on failed runs.
+Both `--from` and retry refuse a workflow whose shape changed since the run (a
+step renamed or moved, a step added to a job the resume re-runs, or a job
+renamed or added) and fail forEach iterations the changed collection drops; see
+[execution-semantics.md](references/execution-semantics.md#resume-from-a-failed-step).
 
 **`assert`** — A CEL predicate that evaluates over prior step data and records
 pass/fail. Use assert steps to validate that earlier steps produced the expected

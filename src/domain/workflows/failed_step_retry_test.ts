@@ -408,3 +408,40 @@ Deno.test("selectRetryTemplates: refusals stay within the serve limit for long n
   run.complete();
   refusal(workflow, run);
 });
+
+Deno.test("selectRetryTemplates: refuses a step stranded by a workflow change", () => {
+  const workflow = createWorkflow();
+  const run = createFailedRun(workflow);
+  run.resetForResumeFrom(new Set(["compile"]), [
+    { jobName: "build", stepName: "compile" },
+  ]);
+  run.resumeFromFailed();
+  const build = run.getJob("build")!;
+  build.failStrandedResetSteps();
+  build.fail();
+  run.complete();
+  const error = refusal(workflow, run);
+  assertStringIncludes(
+    error.message,
+    `Step "compile" in job "build" did not run: the workflow or a forEach collection changed. Start a new run.`,
+  );
+});
+
+Deno.test("selectRetryTemplates: a stranded-step refusal stays within the serve limit for long names", () => {
+  const long = (prefix: string) =>
+    `${prefix}-${"a".repeat(15 - prefix.length)}`;
+  const workflow = Workflow.create({
+    name: long("wf"),
+    jobs: [Job.create({ name: long("job"), steps: [step(long("step"))] })],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.resetForResumeFrom(new Set([long("step")]), [
+    { jobName: long("job"), stepName: long("step") },
+  ]);
+  const job = run.getJob(long("job"))!;
+  job.failStrandedResetSteps();
+  job.fail();
+  run.complete();
+  refusal(workflow, run);
+});

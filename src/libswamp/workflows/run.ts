@@ -501,6 +501,10 @@ export function toRunData(
             stepData.skipReason = { ...step.skipReason };
           }
 
+          if (step.failureKind) {
+            stepData.failureKind = step.failureKind;
+          }
+
           if (step.approvalDecision) {
             stepData.approval = mapApprovalDecision(
               step.approvalDecision,

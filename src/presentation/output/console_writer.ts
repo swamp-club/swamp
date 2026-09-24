@@ -142,10 +142,10 @@ export class PipeWriter {
     duration: string,
     timestamp: string,
   ): string {
-    return this.line(
-      name,
-      `${red("failed")} ${stepPath} ${dim(`in ${duration} · ${timestamp}`)}`,
-    );
+    // A step that never started, such as one stranded by a workflow change,
+    // has no duration.
+    const when = duration ? `in ${duration} · ${timestamp}` : `· ${timestamp}`;
+    return this.line(name, `${red("failed")} ${stepPath} ${dim(when)}`);
   }
 
   failedJobLine(name: string, timestamp: string): string {

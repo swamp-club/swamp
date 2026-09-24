@@ -153,6 +153,16 @@ Deno.test("PipeWriter.completedLine: formats completion", () => {
   });
 });
 
+Deno.test("PipeWriter.failedStepLine: omits the duration of a step that never started", () => {
+  noColor(() => {
+    const pipe = new PipeWriter(["main"]);
+    assertEquals(
+      pipe.failedStepLine("main", "deploy-b", "", "23:43:50 UTC"),
+      " main │ failed deploy-b · 23:43:50 UTC",
+    );
+  });
+});
+
 Deno.test("PipeWriter.failedStepLine: formats step failure in red", () => {
   noColor(() => {
     const pipe = new PipeWriter(["transform"]);

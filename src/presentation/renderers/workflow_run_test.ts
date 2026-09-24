@@ -792,6 +792,60 @@ Deno.test("ConsoleWorkflowRunRenderer: an allowed failure is not offered for ret
   assertStringIncludes(output, "swamp workflow history logs run-1");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: a step stranded by a workflow change points to a new run", async () => {
+  const runView = makeRunView("failed");
+  runView.jobs[0].steps[0].failureKind = "workflow_changed";
+  const output = await renderFailedRun(runView, " --repo-dir ./infra");
+  assertStringIncludes(
+    output,
+    "To start a new run:  swamp workflow run test-pipeline --repo-dir ./infra",
+  );
+  assertEquals(output.includes("To retry failed steps"), false);
+  assertEquals(output.includes("history get"), false);
+  // The stranded step's own error is the one printed, so no second reason.
+  assertEquals(output.includes("A step did not run"), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: the new-run hint points to the run's inputs in JSON, on its own line", async () => {
+  const runView = makeRunView("failed");
+  runView.inputs = { env: "prod" };
+  runView.jobs[0].steps[0].failureKind = "workflow_changed";
+  const output = await renderFailedRun(
+    runView,
+    " --server wss://swamp.example.com",
+  );
+  const lines = output.split("\n");
+  const hint = lines.findIndex((l) => l.includes("To start a new run:"));
+  assertStringIncludes(
+    lines[hint],
+    "swamp workflow run test-pipeline --server wss://swamp.example.com",
+  );
+  assertStringIncludes(
+    lines[hint + 1],
+    "Run inputs:          swamp workflow history get run-1 --json --server wss://swamp.example.com",
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: says why a new run is needed when a real failure is reported first", async () => {
+  const runView = makeRunView("failed");
+  runView.jobs[0].steps.push({
+    name: "fetch-b",
+    status: "failed",
+    error: "Not run",
+    failureKind: "workflow_changed",
+  });
+  const output = await renderFailedRun(runView);
+  assertStringIncludes(output, "connection refused");
+  assertStringIncludes(
+    output,
+    "A step did not run because the workflow or a forEach collection changed since the run.",
+  );
+  assertStringIncludes(
+    output,
+    "To start a new run:  swamp workflow run test-pipeline",
+  );
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: suspended hints keep the command target", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",

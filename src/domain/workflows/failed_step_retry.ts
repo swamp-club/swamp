@@ -51,6 +51,8 @@ export function entryTemplateOf(step: FailedStepRef): string {
  *
  * A run is eligible when:
  * - no failed step is a rejected approval (retry never re-opens a gate);
+ * - no failed step was stranded by a workflow change (a retry would fail it
+ *   again);
  * - every job and step is succeeded, failed, or skipped;
  * - at least one failed step exists, and every failed job contains one;
  * - each entry template is a step of the same job in the current workflow;
@@ -73,6 +75,16 @@ export function selectRetryTemplates(
         `retry won't re-open it. Add --from ${
           entryTemplateOf(rejected)
         } to ask again. ${history}`,
+    );
+  }
+
+  const stranded = failed.find((s) => s.failureKind === "workflow_changed");
+  if (stranded) {
+    throw new UserError(
+      `Step "${
+        entryTemplateOf(stranded)
+      }" in job "${stranded.jobName}" did not run: the workflow or a forEach collection changed. ` +
+        `Start a new run. ${history}`,
     );
   }
 
@@ -110,8 +122,9 @@ export function selectRetryTemplates(
     const template = entryTemplateOf(step);
     const job = workflow.jobs.find((j) => j.name === step.jobName);
     if (!job?.steps.some((s) => s.name === template)) {
-      // No --from hint: --from fails on a renamed step and skips a step
-      // moved to another job, so only a new run is safe to suggest.
+      // No --from hint: --from refuses a renamed step and a step moved to
+      // another job too (see planFailedRunResume), so only a new run can be
+      // suggested.
       throw new UserError(
         `Step "${step.stepName}" in job "${step.jobName}" is not in the current workflow. ` +
           `Start a new run. ${history}`,

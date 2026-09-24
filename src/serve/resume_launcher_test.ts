@@ -155,6 +155,59 @@ Deno.test("startDetachedResume: refuses a run that is not suspended without regi
   assertEquals(registry.registered.length, 0);
 });
 
+for (const from of ["deploy", undefined]) {
+  Deno.test(
+    `startDetachedResume: refuses ${
+      from ? "--from" : "a retry"
+    } on a workflow whose structure changed, without registering it`,
+    async () => {
+      // The run failed at deploy; since then a step was added to its job.
+      const run = WorkflowRun.create(makeWorkflow());
+      run.start();
+      const job = run.getJob("main")!;
+      job.getStep("gate")!.succeed();
+      job.getStep("deploy")!.fail("boom");
+      job.fail();
+      run.complete();
+      const edited = Workflow.create({
+        name: "gated",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "gate",
+                task: StepTask.manualApproval("ok"),
+              }),
+              Step.create({ name: "deploy", task: StepTask.model("d", "run") }),
+              Step.create({ name: "verify", task: StepTask.model("v", "run") }),
+            ],
+          }),
+        ],
+      });
+      const { ctx, registry } = makeHarness(edited, run);
+
+      const result = await startDetachedResume(ctx, registry, {
+        workflowIdOrName: "gated",
+        runId: run.id,
+        principalId: null,
+        from,
+      });
+
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertEquals(result.code, "workflow_resume_failed");
+        assertStringIncludes(
+          result.message,
+          `Step "verify" in job "main" is not in the run. Start a new run.`,
+        );
+        assertEquals(result.message.length <= 200, true, result.message);
+      }
+      assertEquals(registry.registered.length, 0);
+    },
+  );
+}
+
 Deno.test("startDetachedResume: registers the resume and unwinds the registration when it fails", async () => {
   const workflow = makeWorkflow();
   const run = makeApprovedRun(workflow);
