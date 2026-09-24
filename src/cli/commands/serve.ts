@@ -84,8 +84,13 @@ import {
 import {
   DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
   DEFAULT_WORKER_GC_INTERVAL_MS,
+  workerGcListPredicate,
   WorkerGcService,
 } from "../../serve/worker_gc_service.ts";
+import {
+  createBookkeepingRecordQuery,
+  reapEndedBookkeepingRecords,
+} from "../../serve/bookkeeping_gc.ts";
 import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
 import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
@@ -131,10 +136,7 @@ import {
   type WorkerPruneResult,
   workerTokenList,
 } from "../../libswamp/mod.ts";
-import {
-  WORKER_MODEL_TYPE,
-  WorkerStateSchema,
-} from "../../domain/models/worker/worker_model.ts";
+import { WorkerStateSchema } from "../../domain/models/worker/worker_model.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
   isSensitiveHeader,
@@ -5509,7 +5511,7 @@ export const serveCommand = new Command()
       const buildPruneDeps = (): WorkerPruneDeps => ({
         listWorkers: async () => {
           const records = await repoContext.dataQueryService.query(
-            `modelType == "${WORKER_MODEL_TYPE.normalized}" && name == "state-main"`,
+            workerGcListPredicate(repoContext.unifiedDataRepo.namespace),
             { loadAttributes: true },
           ) as DataRecord[];
           return records.flatMap((r) => {
@@ -5576,9 +5578,29 @@ export const serveCommand = new Command()
         },
       });
 
+      const gcSyncNamespace = isCustomDatastoreConfig(datastoreConfig)
+        ? datastoreConfig.namespace
+        : undefined;
       workerGcService = new WorkerGcService({
         intervalMs: DEFAULT_WORKER_GC_INTERVAL_MS,
         gracePeriodMs: DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
+        syncService,
+        syncNamespace: gcSyncNamespace,
+        syncGate,
+        reapBookkeeping: (gracePeriodMs, isStopping) =>
+          reapEndedBookkeepingRecords(
+            {
+              query: createBookkeepingRecordQuery(
+                repoContext.dataQueryService,
+              ),
+              repo: repoContext.unifiedDataRepo,
+              syncService,
+              syncNamespace: gcSyncNamespace,
+              syncGate,
+            },
+            gracePeriodMs,
+            isStopping,
+          ),
         runPrune: async (gracePeriodMs: number): Promise<WorkerPruneResult> => {
           const deps = buildPruneDeps();
           let result: WorkerPruneResult = {

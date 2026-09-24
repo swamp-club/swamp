@@ -502,19 +502,33 @@ The scheduler reads and writes this data as its source of truth, so there is no
 second store to drift out of sync.
 
 The cost is churn. Every busy/idle flip and lease change is a new version, and
-garbage collection (`swamp data gc`) is manual. So the built-in
+`swamp data gc` is manual and never removes a `lifetime: "infinite"` record
+(it only trims each record's version history). So the built-in
 models **declare retention up front**: bounded `garbageCollection` version
 counts (worker 20; token, lease, pending-dispatch 10; fleet-probe 1), with
 `lifetime: "infinite"` on all but the fleet probe
 (`src/domain/models/worker/*_model.ts`).
 
-**Worker and token reaping:** `WorkerGcService` runs periodically on the serve
-side (default interval 1 h, default grace period 24 h). It prunes worker records
-disconnected for longer than the grace period, then removes their stale
-bindings from enrollment tokens with the `prune_bindings` model method.
-`swamp worker prune` is the CLI equivalent. Step-lease and pending-dispatch
-records are not reaped automatically yet, so their count grows without limit;
-the declared counts only cap each record's version history.
+**Worker, token and bookkeeping reaping:** `WorkerGcService` runs periodically
+on the serve side (default interval 1 h, default grace period 24 h). Each cycle
+has two independent parts, so a failure in one never skips the other:
+
+- **Workers and tokens.** It prunes worker records disconnected for longer than
+  the grace period, then removes their stale bindings from enrollment tokens
+  with the `prune_bindings` model method. `swamp worker prune` is the CLI
+  equivalent.
+- **Step leases and pending dispatches.** It deletes every ended record — a
+  lease that is `completed`, `failed` or `expired`, a dispatch that is
+  `dispatched`, `timed_out`, `cancelled` or `orphaned` — whose `endedAt` is
+  older than the grace period (`src/domain/models/worker/bookkeeping_retention.ts`,
+  `src/serve/bookkeeping_gc.ts`). Active leases and waiting dispatches are never
+  touched. There is no CLI equivalent; only serve writes these records.
+
+Both parts only list records in the repository's own namespace, and both commit
+their deletes to a remote datastore as sync-gate units — the worker prune as one
+unit, the bookkeeping reap in batches of 100 — so a poller pull cannot restore a
+deleted record before its push (see the sync gate in
+[datastores.md](datastores.md#markdirty-contract)).
 
 ### Boot reconciliation
 
@@ -1307,11 +1321,11 @@ Non-goals for v1:
 - **Whole-environment dispatch.** Every dispatched step gets the full
   orchestrator environment snapshot; per-token or per-label scoping is a later
   refinement.
-- **No periodic bookkeeping GC for leases and pending dispatches.** These
-  records build up until an operator runs `swamp data gc`; only the boot sweep
-  is automatic. Worker and enrollment-token records are pruned by
-  `WorkerGcService` (periodic, serve side) and `swamp worker prune` (manual).
-  See `src/serve/worker_gc_service.ts` and `src/libswamp/worker/prune.ts`.
+- **Bookkeeping method outputs are not reaped by serve.** `WorkerGcService`
+  reaps ended lease and dispatch records (see "Worker, token and bookkeeping
+  reaping"), but each lease or dispatch transition also writes a method output
+  record and run log under `.swamp/outputs/`. Only a manual `swamp run gc`
+  removes those.
 - **No in-flight resume.** A dispatch that loses its control socket is
   re-dispatched from scratch if no write had landed
   (`src/serve/dispatch_service.ts`); partial progress on the worker is lost.

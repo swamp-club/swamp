@@ -1117,6 +1117,11 @@ The gate has two modes:
   - a whole mutating handler, at its dispatch site in `connection.ts`
     (`withSyncGate`);
   - the server-token mint in `device_auth_handler.ts`;
+  - the worker GC cycle in `worker_gc_service.ts`: the whole worker prune and
+    its push as one unit, then each bookkeeping reap batch (up to 100 ended
+    step leases and pending dispatches, `bookkeeping_gc.ts`) with its push as
+    its own unit, releasing the gate between batches so waiting runs are not
+    held behind a large first reap;
   - each poller's pull (`gatedPull`).
 - **Shared**, held by every run push and step-start pull (`withSharedSyncGate`):
   each step's model-lock pull and flush push (serve passes `acquireModelLocks` a
@@ -1154,7 +1159,10 @@ Six properties of the gate are easy to misread:
   concurrently, as extensions have had to tolerate since swamp-club#2235.
 - **In-process only.** It does not cover HA peers: another instance's dirty
   path can still re-upload what this one deleted. The cross-process
-  `DistributedLock` covers the CLI flush path, not serve pushes.
+  `DistributedLock` covers the CLI flush path, not serve pushes. This includes
+  the worker GC: a peer whose cache still holds a reaped lease or dispatch can
+  re-upload it on its first full-walk push after a restart (`markDirty` rule
+  4). The record is still ended, so the next reap deletes it again.
 - **Waits are bounded, in different ways.** A request cancelled while queued
   still mutates. The cancel signal is not passed to the gate acquisition,
   because a rejected acquisition would leave the client with no response frame,

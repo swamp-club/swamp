@@ -53,6 +53,13 @@ export const LeaseStateSchema = z.enum([
 
 export type LeaseState = z.infer<typeof LeaseStateSchema>;
 
+/** Lease states that end a lease; a lease in one of them is never rewritten. */
+export const TERMINAL_LEASE_STATES: ReadonlySet<LeaseState> = new Set([
+  "completed",
+  "failed",
+  "expired",
+]);
+
 export const StepLeaseSchema = z.object({
   leaseId: z.string(),
   dispatchId: z.string(),
