@@ -24,6 +24,7 @@ import {
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
 import { assertContainedPath } from "../infrastructure/persistence/safe_path.ts";
+import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { join } from "@std/path";
 import type {
@@ -52,6 +53,7 @@ import {
   renderAutoResolveAlreadyInstalled,
   renderAutoResolveCollectiveNotTrusted,
   renderAutoResolveInstalled,
+  renderAutoResolveInstalledWithoutType,
   renderAutoResolveInstalling,
   renderAutoResolveLegacyInstallation,
   renderAutoResolveLocalSourceFailed,
@@ -146,8 +148,10 @@ export function createAutoResolveInstallerAdapter(
       //   tree is broken; surface a distinct error with `--force`
       //   recovery.
       // - intact: everything lined up. If the type still failed to
-      //   register, the cause is local (user edits) — issue #121's
-      //   "never overwrite" guard applies.
+      //   register, either a source failed to load (user edits — issue
+      //   #121's "never overwrite" guard applies) or the installed
+      //   version does not provide the type (swamp-club#2476);
+      //   `loadFailures` tells the resolver which.
       //
       // Bundle artifacts under .swamp/{bundles,vault-bundles,
       // datastore-bundles,report-bundles,webhook-bundles}/ are excluded
@@ -199,7 +203,15 @@ export function createAutoResolveInstallerAdapter(
       if (missing.length > 0) {
         return { state: "truncated", path, missing };
       }
-      return { state: "intact", path };
+      const loadFailures = repository
+        ? hasFailedSourceUnder(repository, path)
+        : undefined;
+      return {
+        state: "intact",
+        path,
+        installedVersion: entry.version,
+        ...(loadFailures === undefined ? {} : { loadFailures }),
+      };
     },
 
     async install(extensionName: string) {
@@ -395,6 +407,26 @@ export function createAutoResolveInstallerAdapter(
 }
 
 /**
+ * Whether any catalog row for a source under `extensionDir` is in a failed
+ * state. Matches by path rather than extension_name: failed pulled sources
+ * can be recorded under a placeholder identity (swamp-club#2505). The
+ * trailing "/" keeps `@x/foo` from matching `@x/foo-bar`, and the
+ * `startsWith` re-check discards rows that SQL LIKE matched only because
+ * `_` or `%` in the name acted as a wildcard.
+ */
+function hasFailedSourceUnder(
+  repository: ExtensionRepository,
+  extensionDir: string,
+): boolean {
+  const prefix = `${canonicalizePath(extensionDir)}/`;
+  return repository.getCatalogStore().findBySourcePathPrefix(prefix).some(
+    (row) =>
+      row.source_path.startsWith(prefix) &&
+      (row.state === "BundleBuildFailed" || row.state === "ValidationFailed"),
+  );
+}
+
+/**
  * Creates an AutoResolveOutputPort adapter that renders auto-resolution
  * events to the terminal in log or JSON mode.
  */
@@ -423,6 +455,20 @@ export function createAutoResolveOutputAdapter(
     },
     alreadyInstalledButFailed(extension: string, path: string) {
       renderAutoResolveAlreadyInstalled(extension, path, mode);
+    },
+    installedWithoutType(
+      extension: string,
+      type: string,
+      installedVersion: string | undefined,
+      newerVersion: string | undefined,
+    ) {
+      renderAutoResolveInstalledWithoutType(
+        extension,
+        type,
+        installedVersion,
+        newerVersion,
+        mode,
+      );
     },
     alreadyInstalledTruncated(
       extension: string,

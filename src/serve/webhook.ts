@@ -317,10 +317,13 @@ export async function resolveExtensionWebhookEndpoints(
       ? webhookTypeRegistry.get(verifier.scheme)
       : undefined;
     if (!info) {
+      // The scheme is a webhook type, not an extension name — one
+      // extension can ship several types under other names, so the hint
+      // points at search rather than a pull of the scheme itself.
       throw new UserError(
         `Webhook ${endpoint.route} uses scheme '${verifier.scheme}', but no ` +
-          `webhook extension of that type is installed. Install it with ` +
-          `'swamp extension pull ${verifier.scheme}'.`,
+          `installed extension provides that webhook type. Pull the ` +
+          `extension that ships it — find it with 'swamp extension search'.`,
       );
     }
     let config: Record<string, unknown> = { ...verifier.config };

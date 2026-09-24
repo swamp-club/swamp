@@ -29,6 +29,7 @@ import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_c
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { PathTraversalError } from "../infrastructure/persistence/safe_path.ts";
+import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
@@ -388,6 +389,7 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns intact when every
     const result = await adapter.inspectInstallation("@fake/on-disk");
     assertEquals(result, {
       state: "intact",
+      installedVersion: "2026.01.01.1",
       path: join(tmpDir, ".swamp", "pulled-extensions", "@fake/on-disk"),
     });
   } finally {
@@ -481,10 +483,119 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns intact when lockf
     const result = await adapter.inspectInstallation("@fake/no-files");
     assertEquals(result, {
       state: "intact",
+      installedVersion: "2026.01.01.1",
       path: join(tmpDir, ".swamp", "pulled-extensions", "@fake/no-files"),
     });
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// swamp-club#2476: an intact install reports whether any of its sources
+// failed to load, so the resolver can tell local edits apart from an
+// installed version that simply lacks the requested type.
+
+/** Seeds an intact pulled tree and a catalog holding the given rows. */
+async function inspectWithCatalogRows(
+  tmpDir: string,
+  extensionName: string,
+  rows: { sourceRel: string; state: string }[],
+) {
+  const files = [`.swamp/pulled-extensions/${extensionName}/manifest.yaml`];
+  const lockfilePath = await seedLockfile(tmpDir, { [extensionName]: files });
+  await seedPulledTree(tmpDir, extensionName, files);
+  const catalog = new ExtensionCatalogStore(
+    join(tmpDir, ".swamp", "_extension_catalog.db"),
+  );
+  try {
+    for (const { sourceRel, state } of rows) {
+      catalog.upsert({
+        type_normalized: `@fake/${crypto.randomUUID()}`,
+        kind: "model",
+        bundle_path: "",
+        source_path: canonicalizePath(join(tmpDir, sourceRel)),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        state,
+      });
+    }
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      repository: makeRepoForCatalog(catalog, tmpDir),
+    });
+    return await adapter.inspectInstallation(extensionName);
+  } finally {
+    catalog.close();
+  }
+}
+
+Deno.test("auto_resolver_adapters: inspectInstallation reports loadFailures false when no source under the extension failed", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const result = await inspectWithCatalogRows(tmpDir, "@fake/clean", [
+      {
+        sourceRel: ".swamp/pulled-extensions/@fake/clean/models/x.ts",
+        state: "Indexed",
+      },
+    ]);
+    assertEquals(result, {
+      state: "intact",
+      path: join(tmpDir, ".swamp", "pulled-extensions", "@fake/clean"),
+      installedVersion: "2026.01.01.1",
+      loadFailures: false,
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation reports loadFailures true for a failed source under the extension", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const result = await inspectWithCatalogRows(tmpDir, "@fake/broken", [
+      {
+        sourceRel: ".swamp/pulled-extensions/@fake/broken/models/x.ts",
+        state: "BundleBuildFailed",
+      },
+    ]);
+    assertEquals(result.state === "intact" && result.loadFailures, true);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation ignores failed sources of sibling extensions", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    // '@fake/foo-bar' shares the '@fake/foo' prefix, and '@fake/fooxbar'
+    // matches '@fake/foo_bar' under SQL LIKE's '_' wildcard. Neither is
+    // the inspected extension.
+    const sibling = await inspectWithCatalogRows(tmpDir, "@fake/foo", [
+      {
+        sourceRel: ".swamp/pulled-extensions/@fake/foo-bar/models/x.ts",
+        state: "BundleBuildFailed",
+      },
+    ]);
+    assertEquals(sibling.state === "intact" && sibling.loadFailures, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+  const tmpDir2 = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const wildcard = await inspectWithCatalogRows(tmpDir2, "@fake/foo_bar", [
+      {
+        sourceRel: ".swamp/pulled-extensions/@fake/fooxbar/models/x.ts",
+        state: "ValidationFailed",
+      },
+    ]);
+    assertEquals(wildcard.state === "intact" && wildcard.loadFailures, false);
+  } finally {
+    await Deno.remove(tmpDir2, { recursive: true });
   }
 });
 
@@ -519,6 +630,7 @@ Deno.test("auto_resolver_adapters: inspectInstallation ignores absent bundle art
     const result = await adapter.inspectInstallation("@fake/with-bundles");
     assertEquals(result, {
       state: "intact",
+      installedVersion: "2026.01.01.1",
       path: join(
         tmpDir,
         ".swamp",

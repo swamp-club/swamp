@@ -57,6 +57,18 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
     alreadyInstalledButFailed(ext: string, path: string) {
       calls.push(`alreadyInstalledButFailed:${ext}:${path}`);
     },
+    installedWithoutType(
+      ext: string,
+      type: string,
+      installed: string | undefined,
+      newer: string | undefined,
+    ) {
+      calls.push(
+        `installedWithoutType:${ext}:${type}:${installed ?? "-"}:${
+          newer ?? "-"
+        }`,
+      );
+    },
     alreadyInstalledTruncated(ext: string, path: string, missing: string[]) {
       calls.push(
         `alreadyInstalledTruncated:${ext}:${path}:${missing.join(",")}`,
@@ -371,6 +383,8 @@ Deno.test("ExtensionAutoResolver - refuses to install when extension is intact o
   const installer = createMockInstaller(true, "2026.03.16.1", {
     state: "intact",
     path: "/fake/pulled-extensions/@swamp/aws",
+    installedVersion: "2026.03.16.1",
+    loadFailures: true,
   });
   const resolver = new ExtensionAutoResolver({
     allowedCollectives: ["swamp"],
@@ -392,6 +406,110 @@ Deno.test("ExtensionAutoResolver - refuses to install when extension is intact o
   assertEquals(kinds.includes("installing"), false);
   assertEquals(kinds.includes("alreadyInstalledButFailed"), true);
   assertEquals(kinds.includes("alreadyInstalledTruncated"), false);
+});
+
+/** Resolves a type against an intact install and returns the output calls. */
+async function resolveAgainstIntact(
+  inspection: InstallationInspection,
+  latestVersion = "2026.09.24.1",
+): Promise<{ result: boolean; calls: string[]; installCalls: string[] }> {
+  const output = createMockOutput();
+  const installer = createMockInstaller(true, latestVersion, inspection);
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["acme"],
+    extensionLookup: createMockLookup(
+      { "@acme/send": { description: "Send", latestVersion } },
+      ["@acme/send"],
+    ),
+    extensionInstaller: installer,
+    output,
+  });
+  const result = await resolver.resolve("@acme/send-webhook");
+  return { result, calls: output.calls, installCalls: installer.installCalls };
+}
+
+Deno.test("ExtensionAutoResolver - reports an older intact install that lacks the type, with the newer version", async () => {
+  // swamp-club#2476: the installed version loaded cleanly but predates the
+  // type. Must not blame local edits or suggest --force.
+  const { result, calls, installCalls } = await resolveAgainstIntact({
+    state: "intact",
+    path: "/fake/pulled-extensions/@acme/send",
+    installedVersion: "2026.09.19.2",
+    loadFailures: false,
+  });
+  assertEquals(result, false);
+  assertEquals(installCalls, []);
+  assertEquals(
+    calls.filter((c) => c.startsWith("installedWithoutType:")),
+    [
+      "installedWithoutType:@acme/send:@acme/send-webhook:2026.09.19.2:2026.09.24.1",
+    ],
+  );
+  assertEquals(
+    calls.some((c) => c.startsWith("alreadyInstalledButFailed:")),
+    false,
+  );
+});
+
+Deno.test("ExtensionAutoResolver - reports a latest intact install that lacks the type without a newer version", async () => {
+  const { calls } = await resolveAgainstIntact({
+    state: "intact",
+    path: "/fake/pulled-extensions/@acme/send",
+    installedVersion: "2026.09.24.1",
+    loadFailures: false,
+  });
+  assertEquals(
+    calls.filter((c) => c.startsWith("installedWithoutType:")),
+    ["installedWithoutType:@acme/send:@acme/send-webhook:2026.09.24.1:-"],
+  );
+});
+
+Deno.test("ExtensionAutoResolver - compares versions by CalVer, not as strings", async () => {
+  // A string compare would rank .9 above .10 and suggest no upgrade.
+  const { calls } = await resolveAgainstIntact(
+    {
+      state: "intact",
+      path: "/fake/pulled-extensions/@acme/send",
+      installedVersion: "2026.09.24.9",
+      loadFailures: false,
+    },
+    "2026.09.24.10",
+  );
+  assertEquals(
+    calls.filter((c) => c.startsWith("installedWithoutType:")),
+    [
+      "installedWithoutType:@acme/send:@acme/send-webhook:2026.09.24.9:2026.09.24.10",
+    ],
+  );
+});
+
+Deno.test("ExtensionAutoResolver - omits the newer version when the installed version is not CalVer", async () => {
+  const { calls } = await resolveAgainstIntact({
+    state: "intact",
+    path: "/fake/pulled-extensions/@acme/send",
+    installedVersion: "legacy",
+    loadFailures: false,
+  });
+  assertEquals(
+    calls.filter((c) => c.startsWith("installedWithoutType:")),
+    ["installedWithoutType:@acme/send:@acme/send-webhook:legacy:-"],
+  );
+});
+
+Deno.test("ExtensionAutoResolver - keeps the local-edits error when load failures are unknown", async () => {
+  // Without a catalog the adapter cannot tell; fall back to the
+  // conservative issue #121 message rather than claim the install is clean.
+  const { calls, installCalls } = await resolveAgainstIntact({
+    state: "intact",
+    path: "/fake/pulled-extensions/@acme/send",
+    installedVersion: "2026.09.19.2",
+  });
+  assertEquals(installCalls, []);
+  assertEquals(
+    calls.filter((c) => c.startsWith("alreadyInstalledButFailed:")),
+    ["alreadyInstalledButFailed:@acme/send:/fake/pulled-extensions/@acme/send"],
+  );
+  assertEquals(calls.some((c) => c.startsWith("installedWithoutType:")), false);
 });
 
 Deno.test("ExtensionAutoResolver - surfaces truncated error when tree is incomplete", async () => {
