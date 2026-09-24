@@ -86,6 +86,11 @@ const MALFORMED_EXPRESSION_MESSAGES: Record<
     suggestion:
       'An expression ends at the first }}, so a string inside it cannot hold {{...}}. Build the braces with CEL string concatenation instead, e.g. ${{ "{" + "{name}" + "}" }}.',
   },
+  "unclosed-expression": {
+    issue: "Unclosed ${{...}} expression",
+    suggestion:
+      'An expression ends at the first }} after its ${{. This one is not valid CEL up to there, or has no }} at all, so a brace is probably missing or out of place. Close it with }} where it should end. If the ${{ is another service\'s text, build it with CEL string concatenation, e.g. ${{ "$" + "{{" }}.',
+  },
 };
 
 /**
@@ -722,6 +727,14 @@ export class DefaultModelValidationService implements ModelValidationService {
       };
     });
 
+    // An unclosed expression already has its error; its references would
+    // only add a second one for the same missing brace.
+    const unclosed = new Set(
+      malformed
+        .filter((m) => m.form === "unclosed-expression")
+        .map((m) => `${m.path}\0${m.text}`),
+    );
+
     // Extract and validate all expressions from definition data
     const allExpressionData = {
       globalArguments: definition.globalArguments,
@@ -729,6 +742,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     };
     for (const exprLocation of extractExpressions(allExpressionData)) {
       const { celExpression, raw, path } = exprLocation;
+      if (unclosed.has(`${path}\0${raw}`)) continue;
 
       // Validate model references
       const pathRefs = extractPathReferences(celExpression);

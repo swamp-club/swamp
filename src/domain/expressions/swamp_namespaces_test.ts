@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { isSwampExpression, type SwampScope } from "./swamp_namespaces.ts";
+import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import {
+  isSwampExpression,
+  parsesAsCel,
+  type SwampScope,
+} from "./swamp_namespaces.ts";
 
 // A CLI run: no steps/run/webhook bound; the definition declares two inputs.
 const cliScope: SwampScope = {
@@ -90,4 +95,54 @@ Deno.test("isSwampExpression: macro-bound variables are not roots", () => {
 
 Deno.test("isSwampExpression: false when the expression does not parse", () => {
   assertEquals(isSwampExpression("not valid cel !!!", cliScope), false);
+});
+
+Deno.test("parsesAsCel: parses text as evaluation does", () => {
+  for (
+    const cel of [
+      "self.name",
+      // Parses only once the hyphenated model ref is rewritten.
+      "model.web-1a.resource.state.main.attributes.id",
+      "'{{host.name}}'",
+      "{'a': {'b': 1}}",
+      // Optional syntax, which the top-level cel-js parse rejects.
+      "data.latest('m', 'rec').?attributes.?name.orValue('{{')",
+      "inputs.cfg[?'k'].orValue(1)",
+    ]
+  ) {
+    assertEquals(parsesAsCel(cel), true, cel);
+  }
+});
+
+Deno.test("parsesAsCel: agrees with the evaluator's own syntax check", () => {
+  const evaluator = new CelEvaluator();
+  for (
+    const cel of [
+      "self.name",
+      "model.web-1a.resource.state.main.attributes.id",
+      "data.latest('m', 'rec').?attributes.?name.orValue('')",
+      "inputs.cfg[?'k'].orValue(1)",
+      "cel.bind(v, inputs.cidrBlock, v + 1)",
+      "'{{host.name",
+      "self.name } && ls",
+      "self.?name } && ls",
+      "if eq(parameters.env, 'prod')",
+    ]
+  ) {
+    assertEquals(parsesAsCel(cel), evaluator.validate(cel).valid, cel);
+  }
+});
+
+Deno.test("parsesAsCel: false for text that is not CEL", () => {
+  for (
+    const cel of [
+      "'{{host.name",
+      "self.name } && ls",
+      "if eq(parameters.env, 'prod')",
+      "...",
+      "",
+    ]
+  ) {
+    assertEquals(parsesAsCel(cel), false, cel);
+  }
 });

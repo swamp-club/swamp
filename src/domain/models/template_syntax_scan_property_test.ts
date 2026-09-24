@@ -20,6 +20,7 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { scanTemplateSyntax } from "./template_syntax_scan.ts";
+import { parsesAsCel } from "../expressions/swamp_namespaces.ts";
 
 /**
  * Strings built from template-like fragments, so matches, near-matches and
@@ -102,7 +103,9 @@ Deno.test("scanTemplateSyntax: reports only broken expressions at or below a dec
             ),
         });
         const reportable = [
-          ...scan.malformed.filter((f) => f.form !== "inside-expression"),
+          ...scan.malformed.filter((f) =>
+            f.form !== "inside-expression" && f.form !== "unclosed-expression"
+          ),
           ...scan.foreign,
         ];
         for (const finding of reportable) {
@@ -114,6 +117,60 @@ Deno.test("scanTemplateSyntax: reports only broken expressions at or below a dec
             `reported declared path ${finding.path}`,
           );
         }
+      },
+    ),
+    { numRuns: 300 },
+  );
+});
+
+Deno.test("scanTemplateSyntax: an unclosed expression is never one that parses", () => {
+  fc.assert(
+    fc.property(arbTemplateText, (value) => {
+      const scan = scanTemplateSyntax({ v: value }, {
+        declaredInputs: new Set(),
+      });
+      for (const finding of scan.malformed) {
+        if (finding.form !== "unclosed-expression") continue;
+        assert(finding.text.startsWith("${{"), finding.text);
+        if (finding.text.endsWith("}}")) {
+          assert(!parsesAsCel(finding.text.slice(3, -2)), finding.text);
+        }
+      }
+    }),
+    { numRuns: 500 },
+  );
+});
+
+/** Expressions that parse, some holding braces inside a CEL string. */
+const arbSoundExpression = fc.constantFrom(
+  "${{ self.name }}",
+  "${{ '{{' }}",
+  "${{ '{' + '{host.name}' + '}' }}",
+  "${{ {'a': {'b': 1} } }}",
+  "${{ model.web-1a.resource.state.main.attributes.id }}",
+  '${{ "${HOME}" }}',
+  '${{ "$" + "{{" }}',
+  "${{ data.latest('m', 'rec').?attributes.?fmt.orValue('{{') }}",
+);
+
+/** Foreign text with no `$`, so it can never open or extend an expression. */
+const arbForeignText = fc.array(
+  fc.constantFrom("{{", "}}", "{", "}", " ", "'", '"', "host.name", "\n"),
+  { maxLength: 8 },
+).map((parts) => parts.join(""));
+
+Deno.test("scanTemplateSyntax: expressions that parse are never reported as broken", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.tuple(arbForeignText, arbSoundExpression), { maxLength: 4 }),
+      arbForeignText,
+      (pairs, tail) => {
+        const value = pairs.map(([text, expr]) => text + expr).join("") + tail;
+        const scan = scanTemplateSyntax({ v: value }, {
+          declaredInputs: new Set(),
+          isDeclaredForeign: () => true,
+        });
+        assertEquals(scan.malformed, [], value);
       },
     ),
     { numRuns: 300 },

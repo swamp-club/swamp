@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type ASTNode, parse as parseCel } from "cel-js";
+import { type ASTNode, Environment, parse as parseCel } from "cel-js";
 import { transformHyphenatedModelRefs } from "./expression_parser.ts";
 
 /**
@@ -51,6 +51,29 @@ const SWAMP_ROOT_NAMESPACES: ReadonlySet<string> = new Set([
   "steps",
   "webhook",
 ]);
+
+/**
+ * The grammar evaluation parses. The top-level cel-js `parse` leaves optional
+ * syntax (`.?`, `[?`) off, but the evaluator's environment enables it.
+ */
+const EVALUATION_GRAMMAR = new Environment({
+  unlistedVariablesAreDyn: true,
+  enableOptionalTypes: true,
+});
+
+/**
+ * Whether text parses as CEL the way evaluation parses it: with optional
+ * syntax enabled, and hyphenated model refs (`model.web-1a`) rewritten first.
+ * Text that evaluates always parses here.
+ */
+export function parsesAsCel(celExpression: string): boolean {
+  try {
+    EVALUATION_GRAMMAR.parse(transformHyphenatedModelRefs(celExpression));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** What a swamp evaluation provides, to judge whether an expression is swamp's. */
 export interface SwampScope {
