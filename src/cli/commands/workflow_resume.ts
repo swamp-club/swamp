@@ -430,6 +430,7 @@ export const workflowResumeCommand = withRemoteOptions(
       resolvePulledExtensionsRoot(repoDir),
       repoContext.hydrateFile,
       unlocked.vaultsDir,
+      unlocked.datastoreResolver,
     );
 
     const abort = new AbortController();

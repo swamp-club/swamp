@@ -26,7 +26,8 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { dirname, join } from "@std/path";
+import { dirname, join, relative } from "@std/path";
+import { walk } from "@std/fs/walk";
 import { hostname } from "node:os";
 import {
   computeStepsToReset,
@@ -40,6 +41,7 @@ import {
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import "../models/models.ts";
@@ -8584,5 +8586,337 @@ Deno.test("WorkflowExecutionService.run: definition fingerprint lets recovery ma
     );
     const drifted = await assessRecoveryForRun(edited, interrupted);
     assertEquals(drifted.fingerprintMismatch, true);
+  });
+});
+
+// swamp-club#2381: workflow execution resolves its datastore-tier subdirs
+// through the datastore path resolver, as the model-method path does.
+
+/** Files under `root`, relative and sorted; empty when `root` is missing. */
+async function listFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    for await (const entry of walk(root, { includeDirs: false })) {
+      files.push(relative(root, entry.path));
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return files.sort();
+}
+
+/** A filesystem datastore rooted outside the repo's `.swamp/`. */
+function externalDatastore(
+  repoDir: string,
+  datastoreDir: string,
+): DefaultDatastorePathResolver {
+  return new DefaultDatastorePathResolver(repoDir, {
+    type: "filesystem",
+    path: datastoreDir,
+  });
+}
+
+function serviceWithResolver(
+  workflowRepo: WorkflowRepository,
+  runRepo: WorkflowRunRepository,
+  repoDir: string,
+  executor: StepExecutor,
+  catalogStore: CatalogStore,
+  datastoreResolver: DefaultDatastorePathResolver,
+): WorkflowExecutionService {
+  return new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    repoDir,
+    executor,
+    undefined,
+    catalogStore,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    datastoreResolver,
+  );
+}
+
+Deno.test("WorkflowExecutionService: passes the datastore resolver to step, guard model.method() and child workflow contexts (swamp-club#2381)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const resolvers = new Map<string, unknown>();
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        resolvers.set(ctx.stepName, ctx.datastoreResolver);
+        // A null guard result lets the guarded step run as well.
+        return Promise.resolve(
+          ctx.stepName.startsWith("__guard_") ? null : { executed: true },
+        );
+      },
+    };
+    await workflowRepo.save(Workflow.create({
+      name: "child",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "child-step",
+          task: StepTask.modelMethod("some-model", "run"),
+        })],
+      })],
+    }));
+    const parent = Workflow.create({
+      name: "parent",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "guarded",
+            task: StepTask.modelMethod("some-model", "run"),
+            guard: '${{ model.method("infra", "exists") }}',
+          }),
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("child"),
+          }),
+        ],
+      })],
+    });
+    await workflowRepo.save(parent);
+
+    const resolver = externalDatastore(tempDir, join(tempDir, "external-ds"));
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const run = await serviceWithResolver(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        catalogStore,
+        resolver,
+      ).execute(parent.name);
+      assertEquals(run.status, "succeeded");
+    } finally {
+      catalogStore.close();
+    }
+
+    assertEquals([...resolvers.keys()].sort(), [
+      "__guard_guarded",
+      "child-step",
+      "guarded",
+    ]);
+    for (const [stepName, seen] of resolvers) {
+      assertEquals(seen === resolver, true, `${stepName} lost the resolver`);
+    }
+  });
+});
+
+Deno.test("WorkflowExecutionService: saves and replays evaluated workflows through the datastore resolver (swamp-club#2381)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const datastoreDir = join(tempDir, "external-ds");
+    const resolver = externalDatastore(tempDir, datastoreDir);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = serviceWithResolver(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        catalogStore,
+        resolver,
+      );
+      const run = await service.execute(workflow.name);
+      assertEquals(run.status, "succeeded");
+
+      const evaluated = await listFiles(
+        join(datastoreDir, "workflows-evaluated"),
+      );
+      assertEquals(evaluated.length, 2, JSON.stringify(evaluated));
+      assertEquals(
+        evaluated.includes(join("runs", run.id, "evaluated-workflow.yaml")),
+        true,
+        JSON.stringify(evaluated),
+      );
+      assertEquals(
+        await listFiles(join(tempDir, ".swamp", "workflows-evaluated")),
+        [],
+      );
+
+      // Nothing repo-local exists, so a replay must read the datastore copy.
+      const replay = await service.execute(workflow.name, {
+        lastEvaluated: true,
+      });
+      assertEquals(replay.status, "succeeded");
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+/** Registers a per-run model type whose `run` method records its arguments. */
+async function registerRecordingModel(
+  received: unknown[],
+): Promise<ModelType> {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+  const modelType = ModelType.create(
+    `@test-2381/routing-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    resources: {},
+    methods: {
+      run: {
+        description: "records its arguments",
+        arguments: z.object({ value: z.string() }),
+        execute: (args: { value: string }) => {
+          received.push(args);
+          return Promise.resolve({});
+        },
+      },
+    },
+  });
+  return modelType;
+}
+
+function recordingDefinition(name: string, modelType: ModelType): Definition {
+  return Definition.create({
+    name,
+    type: modelType.normalized,
+    methods: { run: { arguments: { value: "routed" } } },
+  });
+}
+
+async function executeStep(
+  tempDir: string,
+  catalogStore: CatalogStore,
+  modelName: string,
+  datastoreResolver?: DefaultDatastorePathResolver,
+): Promise<void> {
+  const step = Step.create({
+    name: "step",
+    task: StepTask.model(modelName, "run"),
+  });
+  await new DefaultStepExecutor().execute(step, {
+    workflowId: createWorkflowId(crypto.randomUUID()),
+    workflowRunId: crypto.randomUUID(),
+    workflowName: "wf",
+    jobName: "job",
+    stepName: "step",
+    repoDir: tempDir,
+    signal: new AbortController().signal,
+    step,
+    catalogStore,
+    datastoreResolver,
+    authoredExpressions: new Set(),
+  });
+}
+
+Deno.test("DefaultStepExecutor: writes outputs and evaluated definitions through the datastore resolver (swamp-club#2381)", async () => {
+  const received: unknown[] = [];
+  const modelType = await registerRecordingModel(received);
+  await withTempDir(async (tempDir) => {
+    const datastoreDir = join(tempDir, "external-ds");
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      await new YamlDefinitionRepository(tempDir).save(
+        modelType,
+        recordingDefinition("routed", modelType),
+      );
+      await executeStep(
+        tempDir,
+        catalogStore,
+        "routed",
+        externalDatastore(tempDir, datastoreDir),
+      );
+    } finally {
+      catalogStore.close();
+    }
+
+    assertEquals(received, [{ value: "routed" }]);
+    const outputs = await listFiles(join(datastoreDir, "outputs"));
+    assertEquals(
+      outputs.filter((f) => f.endsWith(".yaml")).length,
+      1,
+      JSON.stringify(outputs),
+    );
+    assertEquals(
+      (await listFiles(join(datastoreDir, "definitions-evaluated"))).length,
+      1,
+    );
+    for (const subdir of ["outputs", "definitions-evaluated"]) {
+      assertEquals(
+        (await listFiles(join(tempDir, ".swamp", subdir)))
+          .filter((f) => f.endsWith(".yaml")),
+        [],
+        `${subdir} leaked into the repo-local .swamp`,
+      );
+    }
+  });
+});
+
+Deno.test("DefaultStepExecutor: finds a definition that exists only in the datastore's auto-definitions (swamp-club#2381)", async () => {
+  const received: unknown[] = [];
+  const modelType = await registerRecordingModel(received);
+  await withTempDir(async (tempDir) => {
+    const resolver = externalDatastore(tempDir, join(tempDir, "external-ds"));
+    // Saved the way direct type execution saves an auto-definition.
+    await new YamlDefinitionRepository(
+      tempDir,
+      undefined,
+      resolver.resolvePath("auto-definitions"),
+      false,
+    ).save(modelType, recordingDefinition("auto-routed", modelType));
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      await executeStep(tempDir, catalogStore, "auto-routed", resolver);
+    } finally {
+      catalogStore.close();
+    }
+    assertEquals(received, [{ value: "routed" }]);
+  });
+});
+
+Deno.test("DefaultStepExecutor: keeps outputs and evaluated definitions repo-local without a datastore resolver", async () => {
+  const received: unknown[] = [];
+  const modelType = await registerRecordingModel(received);
+  await withTempDir(async (tempDir) => {
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      await new YamlDefinitionRepository(tempDir).save(
+        modelType,
+        recordingDefinition("local", modelType),
+      );
+      await executeStep(tempDir, catalogStore, "local");
+    } finally {
+      catalogStore.close();
+    }
+    assertEquals(received, [{ value: "routed" }]);
+    assertEquals(
+      (await listFiles(join(tempDir, ".swamp", "outputs")))
+        .filter((f) => f.endsWith(".yaml")).length,
+      1,
+    );
+    assertEquals(
+      (await listFiles(join(tempDir, ".swamp", "definitions-evaluated")))
+        .length,
+      1,
+    );
   });
 });

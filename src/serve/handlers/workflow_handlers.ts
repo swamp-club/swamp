@@ -104,6 +104,7 @@ import {
   runWithParentTrace,
 } from "../../infrastructure/tracing/mod.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
@@ -516,7 +517,10 @@ export async function handleWorkflowApprovals(
   try {
     const libCtx = createLibSwampContext();
     const runRepo = ctx.repoContext.workflowRunRepo;
-    const evaluatedRepo = new YamlEvaluatedWorkflowRepository(ctx.repoDir);
+    const evaluatedRepo = new YamlEvaluatedWorkflowRepository(
+      ctx.repoDir,
+      ctx.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+    );
     const deps = createWorkflowApprovalsDeps(
       ctx.repoContext.workflowRepo,
       runRepo,
