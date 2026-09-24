@@ -42,8 +42,16 @@ export interface AdminAuthDeps {
   readonly instanceId?: string;
 }
 
+// Per-request HTTP admin auth holds no session, so the token identity that
+// binds WebSocket sessions is not part of it (auth-mode none has no token).
 export type AdminAuthResult =
-  | { ok: true; authResult: ServerTokenAuthResult & { ok: true } }
+  | {
+    ok: true;
+    authResult: Omit<
+      ServerTokenAuthResult & { ok: true },
+      "tokenName" | "tokenCreatedAt"
+    >;
+  }
   | { ok: false; response: Response };
 
 export async function authenticateAdmin(

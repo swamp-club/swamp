@@ -230,6 +230,13 @@ swamp access token revoke <name>
 swamp access token rotate <name>                       # revoke + mint replacement
 ```
 
+Revoking, rotating or expiring a token also ends WebSocket sessions already open
+with it — immediately on the instance that ran the revoke or rotate, and within
+about 30s everywhere else (HA peers, revokes run directly against the repo). The
+socket closes with `4003 "Session revoked"`, or `4002` on expiry. Rotation keeps
+sessions opened with the new credential. With audit enabled, each closed session
+records an `auth.session.terminated` event.
+
 ### Wiring a token into an external secret store
 
 Use `reveal` to pipe the plaintext directly into a secret store without it

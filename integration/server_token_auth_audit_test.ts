@@ -141,12 +141,13 @@ Deno.test("server token auth: direct ingress is read-only and emits a secret-fre
     );
     await emitter.flush();
 
-    assertEquals(result, {
-      ok: true,
-      principalId: "user:integration",
-      collectives: [],
-      groups: [],
-    });
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.principalId, "user:integration");
+    assertEquals(result.collectives, []);
+    assertEquals(result.groups, []);
+    assertEquals(result.tokenName, name);
+    assertEquals(typeof result.tokenCreatedAt, "string");
     assertEquals(
       await repoContext.unifiedDataRepo.listVersions(
         SERVER_TOKEN_MODEL_TYPE,

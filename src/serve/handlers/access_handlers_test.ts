@@ -24,8 +24,16 @@ import {
   handleAccessCanI,
   handleAccessCheck,
   handleAccessReload,
+  handleAccessTokenRevoke,
+  handleAccessTokenRotate,
 } from "./access_handlers.ts";
-import { type ConnectionContext, setConnectionCollectives } from "./shared.ts";
+import {
+  type ConnectionContext,
+  removeConnection,
+  setConnectionCollectives,
+  setConnectionToken,
+  terminateTokenSessions,
+} from "./shared.ts";
 import type { AccessCheckPayload } from "../protocol.ts";
 import type {
   AccessDecisionService,
@@ -574,4 +582,75 @@ Deno.test("handleAccessReload: re-marks the paths reconcile wrote, per path, bef
       repoContext.catalogStore.close();
     }
   });
+});
+
+// ── token sessions end only when the revoke or rotate succeeds ──────────
+
+function bindSession(name: string): { closes: number[] } {
+  const closes: number[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send() {},
+    close(code?: number) {
+      closes.push(code ?? 0);
+      removeConnection(socket);
+    },
+  } as unknown as WebSocket;
+  setConnectionCollectives(socket, [], [], "user:alice");
+  setConnectionToken(socket, {
+    name,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    principalId: "user:alice",
+  });
+  return { closes };
+}
+
+function cleanupSessions(name: string): void {
+  terminateTokenSessions(name, {
+    code: 1000,
+    reason: "test cleanup",
+    cause: "revoked",
+    initiatedBy: "system",
+  });
+}
+
+// No repository behind the context, so the token operation itself fails.
+const failingCtx = () => createCtx(createMockDecisionService().service);
+
+Deno.test("handleAccessTokenRevoke: a failed revoke closes no sessions", async () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const session = bindSession(name);
+  const caller = createMockSocket();
+
+  await handleAccessTokenRevoke(
+    caller,
+    failingCtx(),
+    "req-1",
+    { name },
+    new AbortController(),
+    { kind: "user", id: "admin" },
+  );
+
+  assertEquals(JSON.parse(caller.sent[0]).type, "error");
+  assertEquals(session.closes, []);
+  cleanupSessions(name);
+});
+
+Deno.test("handleAccessTokenRotate: a failed rotate closes no sessions", async () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const session = bindSession(name);
+  const caller = createMockSocket();
+
+  await handleAccessTokenRotate(
+    caller,
+    failingCtx(),
+    "req-1",
+    { name },
+    new AbortController(),
+    { kind: "user", id: "admin" },
+  );
+
+  assertEquals(JSON.parse(caller.sent[0]).type, "error");
+  assertEquals(session.closes, []);
+  cleanupSessions(name);
 });

@@ -74,11 +74,16 @@ import {
   getConnectionCollectives,
   getConnectionGroups,
   pushChangedToRemote,
+  resolveDisplayPrincipal,
   sanitizeErrorForClient,
   send,
   sendError,
+  terminateTokenSessions,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { readServerTokenRecord } from "../token_auth.ts";
+
+const rotateLogger = getSwampLogger(["serve", "access", "rotate"]);
 
 import {
   consumeStream,
@@ -927,6 +932,17 @@ export async function handleAccessTokenRevoke(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    // Every mint of the name is revoked, so every session opened with it ends.
+    // Runs after the reply so a caller revoking their own token still gets it.
+    terminateTokenSessions(payload.name, {
+      code: 4003,
+      reason: "Session revoked",
+      cause: "revoked",
+      initiatedBy: initiatorOf(principal, ctx),
+      requestId,
+      audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
+    });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_token_revoke_failed", message);
@@ -985,12 +1001,54 @@ export async function handleAccessTokenRotate(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    await terminateRotatedSessions(payload.name, ctx, requestId, principal);
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_token_rotate_failed", message);
   } finally {
     await pushChangedToRemote(ctx);
   }
+}
+
+function initiatorOf(
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): string {
+  return principal ? resolveDisplayPrincipal(principal, ctx) : "system";
+}
+
+/**
+ * Ends the sessions opened with a token's old credential after a rotate.
+ * Sessions opened with the replacement (a client may already have reconnected)
+ * are kept by excluding the new mint's createdAt. If the new record cannot be
+ * read, every session of the name closes: the old credential is certainly
+ * dead, and a holder of the new one can reconnect. Never throws.
+ */
+async function terminateRotatedSessions(
+  name: string,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+): Promise<void> {
+  let newMint: string | undefined;
+  try {
+    newMint = (await readServerTokenRecord(ctx.repoContext, name)).createdAt;
+  } catch (error) {
+    rotateLogger.warn(
+      "Could not read rotated token {name}; closing all of its sessions: {error}",
+      { name, error: error instanceof Error ? error.message : String(error) },
+    );
+  }
+  terminateTokenSessions(name, {
+    exceptCreatedAt: newMint,
+    code: 4003,
+    reason: "Session revoked: token rotated, reconnect with the new credential",
+    cause: "rotated",
+    initiatedBy: initiatorOf(principal, ctx),
+    requestId,
+    audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
+  });
 }
 
 export async function handleAccessTokenMint(

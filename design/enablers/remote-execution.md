@@ -207,6 +207,22 @@ model run, or update `lastUsedAt`. It accepts the token via
 `?token=` query parameter, in that priority order; the CLI uses the
 `Authorization` header. Unauthenticated connections get HTTP 401.
 
+A token's authority ends for sessions that are already open, not just for new
+connections. Each session is bound to the token name and the record's
+`createdAt` (rotation rewrites it) it was opened with (`setConnectionToken` in
+`src/serve/handlers/shared.ts`). The `access.token.revoke` and
+`access.token.rotate` handlers close the token's sessions on their own instance
+once they reply; rotate keeps sessions already opened with the new credential.
+`TokenSessionRevalidationService` (`src/serve/token_session_revalidation_service.ts`)
+re-reads the record of every open session's token every 30s and closes sessions
+whose token is revoked (4003), rotated (4003), deleted (4003) or expired (4002).
+That pass covers revokes made from the CLI or on an HA peer, whose record
+arrives through the runtime data poller, so a peer ends the session within the
+poll interval plus 30s. A read that fails for any other reason keeps the session
+until the next pass. `terminateTokenSessions` is the one path that closes them,
+and it records an `auth.session.terminated` audit event per session (see
+[serve-audit.md](serve-audit.md)). The 8-hour session cap still applies.
+
 The client looks for the token in this order:
 
 1. the `--token` flag;

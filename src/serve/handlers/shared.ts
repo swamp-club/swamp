@@ -44,6 +44,7 @@ import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../../domain/models/worker/enrollme
 import { WORKER_MODEL_TYPE } from "../../domain/models/worker/worker_model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
+  parsePrincipal,
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
@@ -303,6 +304,8 @@ const connectionPrincipalId = new WeakMap<WebSocket, string>();
 const connectionSourceIp = new WeakMap<WebSocket, string>();
 const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
+const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
+const tokenSockets = new Map<string, Set<WebSocket>>();
 
 export function setConnectionCollectives(
   socket: WebSocket,
@@ -335,6 +338,17 @@ export function removeConnection(socket: WebSocket): void {
     }
     connectionPrincipalId.delete(socket);
   }
+  const binding = connectionTokens.get(socket);
+  if (binding) {
+    const sockets = tokenSockets.get(binding.name);
+    if (sockets) {
+      sockets.delete(socket);
+      if (sockets.size === 0) {
+        tokenSockets.delete(binding.name);
+      }
+    }
+    connectionTokens.delete(socket);
+  }
 }
 
 export function updateCollectivesForPrincipal(
@@ -355,6 +369,148 @@ export function closeConnectionsForPrincipal(principalId: string): void {
   if (!sockets) return;
   for (const socket of sockets) {
     socket.close(4003, "Session revoked");
+  }
+}
+
+/**
+ * The server token a session was opened with. `createdAt` identifies the mint:
+ * rotation rewrites it, so sessions opened with a rotated-away credential can
+ * be told apart from sessions opened with its replacement.
+ */
+export interface TokenSessionBinding {
+  readonly name: string;
+  readonly createdAt: string;
+  readonly principalId: string;
+}
+
+/** Why the server ended a token's sessions. Recorded as the audit detail. */
+export type TokenSessionTerminationCause =
+  | "revoked"
+  | "rotated"
+  | "expired"
+  | "deleted";
+
+export interface TokenSessionAuditContext {
+  readonly emitter?: Pick<AuditEmitter, "emit">;
+  readonly instanceId?: string;
+}
+
+export interface TerminateTokenSessionsOptions {
+  /** Only close sessions opened with this mint of the token. */
+  readonly onlyCreatedAt?: string;
+  /** Close every session except those opened with this mint. */
+  readonly exceptCreatedAt?: string;
+  readonly code: number;
+  readonly reason: string;
+  readonly cause: TokenSessionTerminationCause;
+  /** Principal that caused the termination, or `system`. */
+  readonly initiatedBy: string;
+  readonly requestId?: string;
+  readonly audit?: TokenSessionAuditContext;
+}
+
+const sessionLogger = getSwampLogger(["serve", "sessions"]);
+
+export function setConnectionToken(
+  socket: WebSocket,
+  binding: TokenSessionBinding,
+): void {
+  connectionTokens.set(socket, binding);
+  let sockets = tokenSockets.get(binding.name);
+  if (!sockets) {
+    sockets = new Set();
+    tokenSockets.set(binding.name, sockets);
+  }
+  sockets.add(socket);
+}
+
+/** Each distinct token mint that has at least one open session. */
+export function listTokenSessions(): {
+  name: string;
+  createdAt: string;
+}[] {
+  const sessions: { name: string; createdAt: string }[] = [];
+  for (const [name, sockets] of tokenSockets) {
+    const mints = new Set<string>();
+    for (const socket of sockets) {
+      const binding = connectionTokens.get(socket);
+      if (binding) mints.add(binding.createdAt);
+    }
+    for (const createdAt of mints) sessions.push({ name, createdAt });
+  }
+  return sessions;
+}
+
+/**
+ * Ends the open sessions of a server token, auditing each one before its
+ * socket closes. This is the single path the server uses to cut off a token
+ * whose authority has ended. Returns the number of sessions closed.
+ */
+export function terminateTokenSessions(
+  name: string,
+  options: TerminateTokenSessionsOptions,
+): number {
+  const sockets = tokenSockets.get(name);
+  if (!sockets) return 0;
+  // Copy first: closing a socket runs removeConnection, which edits the set.
+  const targets = [...sockets].filter((socket) => {
+    const binding = connectionTokens.get(socket);
+    if (!binding) return false;
+    if (
+      options.onlyCreatedAt !== undefined &&
+      binding.createdAt !== options.onlyCreatedAt
+    ) return false;
+    if (
+      options.exceptCreatedAt !== undefined &&
+      binding.createdAt === options.exceptCreatedAt
+    ) return false;
+    return true;
+  });
+  for (const socket of targets) {
+    emitSessionTerminated(socket, name, options);
+    socket.close(options.code, options.reason);
+  }
+  if (targets.length > 0) {
+    sessionLogger.info(
+      "Closed {count} session(s) for token {name} ({cause})",
+      { count: targets.length, name, cause: options.cause },
+    );
+  }
+  return targets.length;
+}
+
+function emitSessionTerminated(
+  socket: WebSocket,
+  name: string,
+  options: TerminateTokenSessionsOptions,
+): void {
+  const emitter = options.audit?.emitter;
+  if (!emitter) return;
+  try {
+    const principal = parsePrincipal(
+      connectionTokens.get(socket)?.principalId ?? "",
+    );
+    emitter.emit(buildAuditEvent({
+      instanceId: options.audit?.instanceId ?? "unknown",
+      category: "auth",
+      stage: "response",
+      outcome: "success",
+      action: "auth.session.terminated",
+      resourceKind: "server-token",
+      resourceName: name,
+      principalKind: principal.kind,
+      principalId: principal.id,
+      initiatedBy: options.initiatedBy,
+      sourceIp: getConnectionSourceIp(socket),
+      requestId: options.requestId ?? crypto.randomUUID(),
+      detail: options.cause,
+    }));
+  } catch (error) {
+    // Best-effort: an audit failure must never keep a dead session open.
+    sessionLogger.warn(
+      "Failed to emit session termination audit event for {name}: {error}",
+      { name, error: error instanceof Error ? error.message : String(error) },
+    );
   }
 }
 
@@ -573,7 +729,7 @@ function emitDenial(
   }));
 }
 
-function resolveDisplayPrincipal(
+export function resolveDisplayPrincipal(
   principal: Principal,
   ctx: ConnectionContext,
 ): string {
