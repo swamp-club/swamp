@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { FileServerCredentialRepository } from "./server_credential_repository.ts";
 import type { ServerCredential } from "../../domain/auth/server_credential.ts";
 
@@ -376,4 +377,77 @@ Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_URL with wss:// matc
 
   assertExists(loaded);
   assertEquals(loaded.token, "env_token_wss_cross");
+});
+
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_URL with an unsupported scheme falls through to file", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileServerCredentialRepository({
+      configDir: join(tmpDir, "swamp"),
+      getServerToken: () => "env_token_123",
+      getServerUrl: () => "ftp://swamp.acme.internal:9090",
+    });
+    await repo.save(TEST_CREDENTIAL);
+
+    const loaded = await repo.get(TEST_CREDENTIAL.serverUrl);
+    assertExists(loaded);
+    assertEquals(loaded.token, TEST_CREDENTIAL.token);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("FileServerCredentialRepository.get: unparseable SWAMP_SERVER_URL falls through to file", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileServerCredentialRepository({
+      configDir: join(tmpDir, "swamp"),
+      getServerToken: () => "env_token_123",
+      getServerUrl: () => "not a url",
+    });
+    await repo.save(TEST_CREDENTIAL);
+
+    const loaded = await repo.get(TEST_CREDENTIAL.serverUrl);
+    assertExists(loaded);
+    assertEquals(loaded.token, TEST_CREDENTIAL.token);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("FileServerCredentialRepository.get: invalid SWAMP_SERVER_URL warning hides credentials", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["auth", "credential"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const repo = new FileServerCredentialRepository({
+      configDir: join(tmpDir, "swamp"),
+      getServerToken: () => "env_token_123",
+      getServerUrl: () => "ftp://alice:hunter2@h:2121/?token=abc.s3cret",
+    });
+
+    const loaded = await repo.get(TEST_CREDENTIAL.serverUrl);
+
+    assertEquals(loaded, null);
+    assertEquals(records.length, 1);
+    const message = records[0].message.map(String).join("");
+    assertStringIncludes(message, "SWAMP_SERVER_URL");
+    for (const secret of ["alice", "hunter2", "s3cret"]) {
+      assertEquals(message.includes(secret), false, secret);
+    }
+  } finally {
+    await reset();
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
 });

@@ -1067,6 +1067,81 @@ Deno.test("resolveServerTokenFromOptions: falls back to env var when no options"
   }
 });
 
+/** A credential repository that fails the test if it is ever read. */
+function unreachableRepo(): ServerCredentialRepository {
+  return {
+    get: () => Promise.reject(new Error("credential repo must not be read")),
+    save: () => Promise.resolve(),
+    remove: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+  };
+}
+
+Deno.test("resolveServerToken: an unsupported scheme throws UserError before the credential lookup", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveServerToken(
+        "ftp://127.0.0.1:59999/",
+        undefined,
+        unreachableRepo(),
+      ),
+    UserError,
+  );
+  assertStringIncludes(
+    error.message,
+    "Invalid --server URL 'ftp://127.0.0.1:59999'",
+  );
+});
+
+Deno.test("resolveServerToken: an unparseable URL throws UserError without echoing it", async () => {
+  const error = await assertRejects(
+    () => resolveServerToken("not a url s3cret", undefined, unreachableRepo()),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Invalid --server URL —");
+  assertEquals(error.message.includes("s3cret"), false);
+});
+
+Deno.test("resolveServerToken: an unsupported scheme throws UserError even with an explicit token", async () => {
+  await assertRejects(
+    () =>
+      resolveServerToken(
+        "ftp://127.0.0.1:59999/",
+        "explicit.token",
+        unreachableRepo(),
+      ),
+    UserError,
+  );
+});
+
+Deno.test("resolveServerToken: the invalid-URL error hides credentials", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveServerToken(
+        "ftp://alice:hunter2@h:2121/?token=abc.s3cret",
+        undefined,
+        unreachableRepo(),
+      ),
+    UserError,
+  );
+  assertStringIncludes(error.message, "'ftp://h:2121'");
+  for (const secret of ["alice", "hunter2", "s3cret"]) {
+    assertEquals(error.message.includes(secret), false, secret);
+  }
+});
+
+Deno.test("resolveServerTokenFromOptions: an unsupported scheme throws UserError", async () => {
+  await assertRejects(
+    () =>
+      resolveServerTokenFromOptions(
+        "ftp://127.0.0.1:59999/",
+        {},
+        unreachableRepo(),
+      ),
+    UserError,
+  );
+});
+
 // ── auth error classification tests ──────────────────────────────────
 
 /**

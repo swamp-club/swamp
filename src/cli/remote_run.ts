@@ -221,6 +221,10 @@ export async function readTokenFile(
  * 3. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
  * 4. Stored credential in `~/.config/swamp/servers.json`
  *
+ * The server URL is validated first, whichever source supplies the token,
+ * so an unsupported scheme or unparseable value fails with a UserError
+ * before any credential lookup.
+ *
  * Callers that have Cliffy `options` should use
  * `resolveServerTokenFromOptions()` which handles `--token` / `--token-file`
  * mutual exclusivity and file reading before delegating here.
@@ -230,6 +234,7 @@ export async function resolveServerToken(
   explicitToken?: string,
   credentialRepo?: ServerCredentialRepository,
 ): Promise<string | undefined> {
+  parseServerFlag(serverUrl);
   if (explicitToken) return explicitToken;
   const envTokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
   if (envTokenFile) {
@@ -265,14 +270,13 @@ export async function resolveServerTokenFromOptions(
 }
 
 /**
- * Normalizes a server URL to a WebSocket URL (ws/wss).
- * Accepts http(s) and ws(s) inputs. Uses the domain normalizeServerUrl
- * for canonical normalization, then converts http→ws / https→wss.
+ * Normalizes the server URL to its http(s) credential form, throwing a
+ * UserError that never echoes credentials (userinfo, `?token=`) when the
+ * value is unparseable or its scheme is not http(s) or ws(s).
  */
-export function toWebSocketUrl(server: string): string {
-  let normalized: string;
+function parseServerFlag(server: string): string {
   try {
-    normalized = normalizeServerUrlForCredentials(server);
+    return normalizeServerUrlForCredentials(server);
   } catch {
     const shown = redactServerUrl(server);
     throw new UserError(
@@ -281,7 +285,15 @@ export function toWebSocketUrl(server: string): string {
       } — expected ws://host:port (or http://)`,
     );
   }
-  const parsed = new URL(normalized);
+}
+
+/**
+ * Normalizes a server URL to a WebSocket URL (ws/wss).
+ * Accepts http(s) and ws(s) inputs. Uses the domain normalizeServerUrl
+ * for canonical normalization, then converts http→ws / https→wss.
+ */
+export function toWebSocketUrl(server: string): string {
+  const parsed = new URL(parseServerFlag(server));
   if (parsed.protocol === "http:") {
     parsed.protocol = "ws:";
   } else if (parsed.protocol === "https:") {
