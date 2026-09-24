@@ -59,11 +59,11 @@ swamp data get my-model execution-log --no-content --json
 output shape.
 
 **Binary content:** When the stored bytes are valid UTF-8, `contentEncoding` is
-`"utf-8"` and `content` is the text (a leading byte-order mark is dropped).
-Otherwise (an image, an archive) `contentEncoding` is `"base64"` and `content`
-is the base64-encoded bytes, so no byte is lost. Without `--json`, binary data
-prints a one-line notice instead of the bytes. To save a base64 artifact as a
-file:
+`"utf-8"` and `content` is the text (a leading byte-order mark is dropped), or
+the parsed value for `application/json` content that parses. Otherwise (an
+image, an archive) `contentEncoding` is `"base64"` and `content` is the
+base64-encoded bytes, so no byte is lost. Without `--json`, binary data prints a
+one-line notice instead of the bytes. To save a base64 artifact as a file:
 
 ```bash
 swamp data get my-model logo --json | jq -r .content | base64 -d > logo.png

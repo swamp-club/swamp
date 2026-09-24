@@ -74,10 +74,11 @@ JSON output shapes for `swamp data` commands when using `--json`.
 }
 ```
 
-`contentEncoding` is `"utf-8"` when the stored bytes are valid UTF-8 (`content`
-is the text, without any leading byte-order mark) and `"base64"` otherwise, e.g.
-an image (`content` is the base64-encoded bytes). Both fields are absent with
-`--no-content`.
+`contentEncoding` is `"utf-8"` when the stored bytes are valid UTF-8 and
+`"base64"` otherwise, e.g. an image (`content` is then the base64-encoded
+bytes). With `"utf-8"`, `content` is the text without any leading byte-order
+mark, except that `application/json` content that parses is shown as the parsed
+value. Both fields are absent with `--no-content`.
 
 ## Versions
 

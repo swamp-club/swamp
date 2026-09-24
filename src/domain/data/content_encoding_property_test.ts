@@ -53,7 +53,7 @@ Deno.test("encodeContent property: UTF-8 text is returned as the same utf-8 text
       // Whole code points only (no lone surrogates, which TextEncoder would
       // replace), and no leading U+FEFF, which the decoder drops as a BOM.
       fc.string({ unit: "grapheme", maxLength: 128 }).filter((s) =>
-        !s.startsWith("﻿")
+        !s.startsWith("\uFEFF")
       ),
       (text) => {
         assertEquals(encodeContent(new TextEncoder().encode(text)), {
