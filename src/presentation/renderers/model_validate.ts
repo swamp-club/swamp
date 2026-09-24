@@ -65,6 +65,11 @@ function formatWarningLines(
         lines.push(`    ${detail.path} uses ${bold(detail.envVar)}`);
       }
     }
+    if (w.templates) {
+      for (const detail of w.templates) {
+        lines.push(`    ${detail.path} passes ${bold(detail.text)}`);
+      }
+    }
     lines.push(`    ${yellow(arrow)} ${w.message}`);
   }
   return lines;

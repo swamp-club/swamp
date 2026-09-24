@@ -292,6 +292,13 @@ swamp model validate my-shell --method create --json # Validate for a specific m
       "envVars": [
         { "path": "globalArguments.baseUrl", "envVar": "JENKINS_BASE_URL" }
       ]
+    },
+    {
+      "name": "Template syntax passed through",
+      "message": "This text is not a swamp expression and is passed to the method unchanged. ...",
+      "templates": [
+        { "path": "globalArguments.message", "text": "{{host.name}}" }
+      ]
     }
   ],
   "passed": true
@@ -314,18 +321,25 @@ swamp model validate my-shell --method create --json # Validate for a specific m
 
 ### IMPORTANT: Handling Validation Warnings
 
-**When `warnings` is non-empty, STOP and ask the user before proceeding.** The
-most common warning is "Environment variables detected" — this means the model's
-behavior depends on env vars that may differ between machines or environments.
+**When `warnings` contains "Environment variables detected", STOP and ask the
+user before proceeding.** This means the model's behavior depends on env vars
+that may differ between machines or environments.
 
-- If `warnings` contains env var usage, **tell the user** which fields use which
-  env vars and ask if this is intentional.
+- **Tell the user** which fields use which env vars and ask if this is
+  intentional.
 - **Suggest alternatives:** separate models per environment (e.g.,
   `prod-jenkins` and `dev-jenkins` with hardcoded values), or `vault.get()` for
   sensitive values.
 - **Never silently run a method** on a model with env var warnings without user
   confirmation — the data artifacts will be stored under the model name and may
   contain results from an unintended environment.
+
+**"Template syntax passed through" does not need a stop.** It lists `{{ ... }}`
+or `${ ... }` text that is not a swamp expression (Datadog `{{host.name}}`,
+shell `${HOME}`), which the method receives unchanged. Mention it to the user.
+Only if a listed value was meant as a swamp expression, rewrite it as
+`${{ ... }}`. A `{{ ... }}` on a swamp root (`self`, `model`, `env`, `inputs`,
+...) fails `Expression paths` instead; the error names the remedies.
 
 ## Expression Language
 

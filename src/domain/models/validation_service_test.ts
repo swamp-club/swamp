@@ -22,6 +22,7 @@ import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_eval
 import { z } from "zod";
 import {
   DefaultModelValidationService,
+  FOREIGN_TEMPLATE_WARNING_NAME,
   ValidationResult,
 } from "./validation_service.ts";
 import { DATA_NAMESPACE_ACCESSORS } from "../expressions/expression_parser.ts";
@@ -485,32 +486,106 @@ Deno.test("validateModel with no expressions passes validation", async () => {
   assertEquals(exprResult?.passed, true);
 });
 
-// Malformed expression detection tests
+// Template-like text: malformed swamp expressions vs another service's syntax
 
-Deno.test("validateModel detects malformed expression with missing $ prefix", async () => {
-  const service = new DefaultModelValidationService();
-  const definition = Definition.create({
+/**
+ * A model type whose `message` global argument and `write` method's `run`
+ * argument are declared as foreign template text. Built as a plain object so
+ * the tests do not register a type in the process-global registry.
+ */
+const foreignTemplateModel: ModelDefinition = {
+  type: ModelType.create("test/foreign-template"),
+  version: "2026.09.24.1",
+  globalArguments: z.object({
+    message: z.string().meta({ foreignTemplate: true }).describe("Alert body"),
+    query: z.string().optional(),
+  }),
+  methods: {
+    write: {
+      description: "Write test",
+      arguments: z.object({
+        run: z.string().meta({ foreignTemplate: true }),
+        workingDir: z.string().optional(),
+      }),
+      execute: () => Promise.resolve({}),
+    },
+  },
+};
+
+async function validateWith(
+  modelDef: ModelDefinition,
+  props: Parameters<typeof Definition.create>[0],
+) {
+  const definition = Definition.create(props);
+  const mockRepo = createMockDefinitionRepo([
+    { name: props.name, type: modelDef.type.normalized, definition },
+  ]);
+  const { results, warnings } = await new DefaultModelValidationService()
+    .validateModel(definition, modelDef, mockRepo);
+  return {
+    expressionPaths: results.find((r) => r.name === "Expression paths"),
+    warnings,
+  };
+}
+
+Deno.test("validateModel reports a dropped $ on a swamp expression with both remedies", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "{{self.name}}" },
+  });
+  assertEquals(expressionPaths?.passed, false);
+  const error = expressionPaths?.error ?? "";
+  assertStringIncludes(error, "{{self.name}}");
+  assertStringIncludes(error, "instead of ${{");
+  assertStringIncludes(error, 'at "globalArguments.message"');
+  assertStringIncludes(error, 'Add "$" prefix');
+  assertStringIncludes(error, ".meta({ foreignTemplate: true })");
+  assertStringIncludes(error, "CEL string concatenation");
+  assertStringIncludes(error, '${{ "{" + "{name}" + "}" }}');
+  assertEquals(warnings, []);
+});
+
+Deno.test("validateModel keeps a colliding vendor root like {{env.name}} an error with both remedies", async () => {
+  const { expressionPaths } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "crashed in {{env.name}}" },
+  });
+  assertEquals(expressionPaths?.passed, false);
+  assertStringIncludes(expressionPaths?.error ?? "", "{{env.name}}");
+  assertStringIncludes(
+    expressionPaths?.error ?? "",
+    ".meta({ foreignTemplate: true })",
+  );
+});
+
+Deno.test("validateModel warns, not fails, on another service's double-brace syntax", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
     name: "test-definition",
     globalArguments: {
-      // Missing $ prefix - should be ${{ ... }}
-      message: "{{my-vpc.VpcId}}",
+      message: "{{#is_alert}}crashed on {{host.name}}{{/is_alert}}",
     },
   });
-
-  const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "test/expr-validation", definition },
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0].name, FOREIGN_TEMPLATE_WARNING_NAME);
+  assertEquals(warnings[0].name, "Template syntax passed through");
+  assertStringIncludes(warnings[0].message, "passed to the method unchanged");
+  assertEquals(warnings[0].templates, [
+    { path: "globalArguments.message", text: "{{#is_alert}}" },
+    { path: "globalArguments.message", text: "{{host.name}}" },
+    { path: "globalArguments.message", text: "{{/is_alert}}" },
   ]);
+});
 
-  const { results } = await service.validateModel(
-    definition,
-    testExprModel,
-    mockRepo,
-  );
-
-  const exprResult = results.find((r) => r.name === "Expression paths");
-  assertEquals(exprResult?.passed, false);
-  assertStringIncludes(exprResult?.error ?? "", "{{my-vpc.VpcId}}");
-  assertStringIncludes(exprResult?.error ?? "", "instead of ${{");
+Deno.test("validateModel treats {{my-vpc.VpcId}} as another service's syntax", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "{{my-vpc.VpcId}}" },
+  });
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings[0].templates, [
+    { path: "globalArguments.message", text: "{{my-vpc.VpcId}}" },
+  ]);
 });
 
 Deno.test("validateModel detects malformed expression with single braces", async () => {
@@ -539,31 +614,143 @@ Deno.test("validateModel detects malformed expression with single braces", async
   assertStringIncludes(exprResult?.error ?? "", "double braces");
 });
 
-Deno.test("validateModel detects malformed expression in nested attributes", async () => {
-  const service = new DefaultModelValidationService();
-  const definition = Definition.create({
+Deno.test("validateModel warns on template text in nested attributes with its full path", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
     name: "test-definition",
     globalArguments: {
       message: "valid",
-      nested: {
-        value: "{{invalid-expression}}",
-      },
+      nested: { value: "{{invalid-expression}}" },
     },
   });
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings[0].templates, [
+    { path: "globalArguments.nested.value", text: "{{invalid-expression}}" },
+  ]);
+});
 
-  const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "test/expr-validation", definition },
+Deno.test("validateModel reports every match in a string, failing on the swamp one", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "{{host.name}} in {{self.name}}" },
+  });
+  assertEquals(expressionPaths?.passed, false);
+  assertStringIncludes(expressionPaths?.error ?? "", "{{self.name}}");
+  assertEquals(warnings[0].templates, [
+    { path: "globalArguments.message", text: "{{host.name}}" },
+  ]);
+});
+
+Deno.test("validateModel attributes {{inputs.X}} by the definition's declared inputs", async () => {
+  const declared = await validateWith(testExprModel, {
+    name: "test-definition",
+    inputs: { type: "object", properties: { env: { type: "string" } } },
+    globalArguments: { message: "{{inputs.env}}" },
+  });
+  assertEquals(declared.expressionPaths?.passed, false);
+
+  const undeclared = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "{{inputs.env}}" },
+  });
+  assertEquals(undeclared.expressionPaths?.passed, true);
+  assertEquals(undeclared.warnings[0].templates?.[0].text, "{{inputs.env}}");
+});
+
+Deno.test("validateModel warns on shell ${VAR} and fails on a single-brace swamp root", async () => {
+  const shell = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: 'echo "${HOME}"' },
+  });
+  assertEquals(shell.expressionPaths?.passed, true);
+  assertEquals(shell.warnings[0].templates, [
+    { path: "globalArguments.message", text: "${HOME}" },
   ]);
 
-  const { results } = await service.validateModel(
-    definition,
-    testExprModel,
-    mockRepo,
-  );
+  const terraform = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "${data.aws_ami.ubuntu.id}" },
+  });
+  assertEquals(terraform.expressionPaths?.passed, false);
+  const error = terraform.expressionPaths?.error ?? "";
+  assertStringIncludes(error, "double braces");
+  assertStringIncludes(error, ".meta({ foreignTemplate: true })");
+  assertStringIncludes(error, '${{ "$" + "{name}" }}');
+  assertEquals(error.includes('"{" + "{name}" + "}"'), false);
+});
 
-  const exprResult = results.find((r) => r.name === "Expression paths");
-  assertEquals(exprResult?.passed, false);
-  assertStringIncludes(exprResult?.error ?? "", "nested.value");
+Deno.test("validateModel accepts the concatenation examples its errors suggest", async () => {
+  const { expressionPaths, warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: {
+      message: 'crashed in ${{ "{" + "{env.name}" + "}" }}',
+      nested: { ami: '${{ "$" + "{data.aws_ami.ubuntu.id}" }}' },
+    },
+  });
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(
+    warnings.filter((w) => w.name === FOREIGN_TEMPLATE_WARNING_NAME),
+    [],
+  );
+});
+
+Deno.test("validateModel stays silent on declared foreign template fields", async () => {
+  const { expressionPaths, warnings } = await validateWith(
+    foreignTemplateModel,
+    {
+      name: "test-definition",
+      globalArguments: { message: "{{env.name}} crashed on {{host.name}}" },
+      methods: {
+        write: { arguments: { run: 'echo "${HOME}" {{self.name}}' } },
+      },
+    },
+  );
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings, []);
+});
+
+Deno.test("validateModel still checks undeclared fields of a type that declares others", async () => {
+  const { expressionPaths, warnings } = await validateWith(
+    foreignTemplateModel,
+    {
+      name: "test-definition",
+      globalArguments: { message: "{{host.name}}", query: "{{host.name}}" },
+      methods: { write: { arguments: { run: "ok", workingDir: "${HOME}" } } },
+    },
+  );
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings[0].templates, [
+    { path: "globalArguments.query", text: "{{host.name}}" },
+    { path: "methods.write.arguments.workingDir", text: "${HOME}" },
+  ]);
+});
+
+Deno.test("validateModel fails {{...}} inside a ${{ }} string, even in a declared field", async () => {
+  for (const modelDef of [testExprModel, foreignTemplateModel]) {
+    const { expressionPaths, warnings } = await validateWith(modelDef, {
+      name: "test-definition",
+      globalArguments: { message: 'crashed on ${{ "{{host.name}}" }}' },
+    });
+    assertEquals(expressionPaths?.passed, false);
+    const error = expressionPaths?.error ?? "";
+    assertStringIncludes(error, "cuts it short");
+    assertStringIncludes(error, "ends at the first }}");
+    assertStringIncludes(error, "CEL string concatenation");
+    assertEquals(warnings, []);
+  }
+});
+
+Deno.test("validateModel still validates ${{ }} expressions inside a declared field", async () => {
+  const { expressionPaths, warnings } = await validateWith(
+    foreignTemplateModel,
+    {
+      name: "test-definition",
+      globalArguments: { message: "${{my-vpc.VpcId}} on {{host.name}}" },
+    },
+  );
+  assertEquals(expressionPaths?.passed, false);
+  assertStringIncludes(expressionPaths?.error ?? "", "my-vpc.VpcId");
+  assertStringIncludes(expressionPaths?.error ?? "", 'Missing "model." prefix');
+  assertEquals(warnings, []);
 });
 
 Deno.test("validateModel detects incomplete model reference like my-vpc.VpcId", async () => {

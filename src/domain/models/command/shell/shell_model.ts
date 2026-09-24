@@ -36,7 +36,9 @@ const shellStrategy = selectShellStrategy();
  * Schema for shell model input attributes.
  */
 export const ShellInputAttributesSchema = z.object({
-  run: z.string().min(1).describe("The shell command to execute"),
+  run: z.string().min(1).meta({ foreignTemplate: true }).describe(
+    "The shell command to execute",
+  ),
   workingDir: z.string().optional().describe(
     "Working directory for command execution",
   ),

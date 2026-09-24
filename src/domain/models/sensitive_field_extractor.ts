@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { z } from "zod";
+import type { z } from "zod";
 import { containsExpression } from "../expressions/expression_parser.ts";
+import { extractFieldsWithMetadata } from "./zod_field_metadata.ts";
 
 /**
  * Information about a sensitive field extracted from a Zod schema.
@@ -42,93 +43,6 @@ interface SensitiveMetadata {
 }
 
 /**
- * Internal Zod v4 definition structure for schema introspection.
- */
-interface ZodDef {
-  type: string;
-  innerType?: z.ZodTypeAny;
-  schema?: z.ZodTypeAny;
-  shape?: Record<string, z.ZodTypeAny>;
-}
-
-/**
- * Gets the internal definition from a Zod schema.
- */
-function getSchemaDef(schema: z.ZodTypeAny): ZodDef {
-  return (schema as unknown as { _def: ZodDef })._def;
-}
-
-/**
- * Gets the definition type string from a Zod schema.
- */
-function getSchemaType(schema: z.ZodTypeAny): string {
-  return getSchemaDef(schema)?.type ?? "";
-}
-
-/**
- * Unwraps optional, nullable, default, and effects wrappers to get the underlying schema.
- */
-function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
-  const schemaType = getSchemaType(schema);
-  const def = getSchemaDef(schema);
-
-  const wrapperTypes = ["optional", "nullable", "default"];
-  if (wrapperTypes.includes(schemaType) && def.innerType) {
-    return unwrapSchema(def.innerType);
-  }
-  if (schemaType === "effects" && def.schema) {
-    return unwrapSchema(def.schema);
-  }
-  return schema;
-}
-
-/**
- * Checks metadata on a schema at multiple levels (before and after unwrapping).
- * Handles both `.meta().optional()` and `.optional().meta()` orderings.
- */
-function getSensitiveMetadata(
-  schema: z.ZodTypeAny,
-): SensitiveMetadata | undefined {
-  // Check metadata on the outer schema (handles `.optional().meta()`)
-  const outerMeta = z.globalRegistry.get(schema) as
-    | SensitiveMetadata
-    | undefined;
-  if (outerMeta?.sensitive) {
-    return outerMeta;
-  }
-
-  // Check at each unwrap level (handles `.meta().optional()`)
-  let current = schema;
-  while (true) {
-    const schemaType = getSchemaType(current);
-    const def = getSchemaDef(current);
-
-    const wrapperTypes = ["optional", "nullable", "default"];
-    if (wrapperTypes.includes(schemaType) && def.innerType) {
-      const innerMeta = z.globalRegistry.get(def.innerType) as
-        | SensitiveMetadata
-        | undefined;
-      if (innerMeta?.sensitive) {
-        return innerMeta;
-      }
-      current = def.innerType;
-    } else if (schemaType === "effects" && def.schema) {
-      const innerMeta = z.globalRegistry.get(def.schema) as
-        | SensitiveMetadata
-        | undefined;
-      if (innerMeta?.sensitive) {
-        return innerMeta;
-      }
-      current = def.schema;
-    } else {
-      break;
-    }
-  }
-
-  return undefined;
-}
-
-/**
  * Extracts sensitive field information from a Zod schema.
  *
  * Walks the schema's object shape recursively, checking each field for
@@ -143,41 +57,18 @@ export function extractSensitiveFields(
   schema: z.ZodTypeAny,
   prefix = "",
 ): SensitiveFieldInfo[] {
-  const unwrapped = unwrapSchema(schema);
-  const schemaType = getSchemaType(unwrapped);
-
-  if (schemaType !== "object") {
-    return [];
-  }
-
-  const def = getSchemaDef(unwrapped);
-  if (!def.shape) {
-    return [];
-  }
-
-  const results: SensitiveFieldInfo[] = [];
-
-  for (const [key, fieldSchema] of Object.entries(def.shape)) {
-    const fieldPath = prefix ? `${prefix}.${key}` : key;
-
-    // Check if this field has sensitive metadata
-    const meta = getSensitiveMetadata(fieldSchema);
-    if (meta?.sensitive) {
-      results.push({
-        path: fieldPath,
-        vaultName: meta.vaultName,
-        vaultKey: meta.vaultKey,
-      });
-    }
-
-    // Recurse into nested objects
-    const unwrappedField = unwrapSchema(fieldSchema);
-    if (getSchemaType(unwrappedField) === "object") {
-      results.push(...extractSensitiveFields(unwrappedField, fieldPath));
-    }
-  }
-
-  return results;
+  return extractFieldsWithMetadata(
+    schema,
+    (meta) => Boolean((meta as SensitiveMetadata).sensitive),
+    prefix,
+  ).map(({ path, meta }) => {
+    const sensitive = meta as SensitiveMetadata;
+    return {
+      path,
+      vaultName: sensitive.vaultName,
+      vaultKey: sensitive.vaultKey,
+    };
+  });
 }
 
 /**

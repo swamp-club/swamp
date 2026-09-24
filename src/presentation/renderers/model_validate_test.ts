@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { consumeStream } from "../../libswamp/mod.ts";
 import type { ModelValidateEvent } from "../../libswamp/mod.ts";
 import { createModelValidateRenderer } from "./model_validate.ts";
@@ -108,4 +109,70 @@ Deno.test("ModelValidateRenderer - error throws UserError", () => {
     UserError,
     "boom",
   );
+});
+
+const templateWarningData = {
+  modelId: "def-1",
+  modelName: "dd-monitor",
+  type: "bitbison/datadog-monitor",
+  validations: [{ name: "Expression paths", passed: true }],
+  warnings: [{
+    name: "Template syntax passed through",
+    message: "This text is not a swamp expression.",
+    templates: [
+      { path: "globalArguments.message", text: "{{host.name}}" },
+      { path: "methods.execute.arguments.run", text: "${HOME}" },
+    ],
+  }],
+  passed: true,
+};
+
+Deno.test("ModelValidateRenderer - log mode lists template syntax passed through", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelValidateRenderer("log");
+    await consumeStream(
+      toStream([{ kind: "completed", data: templateWarningData }]),
+      renderer.handlers(),
+    );
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Template syntax passed through");
+    assertStringIncludes(
+      combined,
+      "    globalArguments.message passes {{host.name}}",
+    );
+    assertStringIncludes(
+      combined,
+      "    methods.execute.arguments.run passes ${HOME}",
+    );
+    assertEquals(renderer.passed(), true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonModelValidateRenderer - includes the templates of a template syntax warning", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelValidateRenderer("json");
+    await consumeStream(
+      toStream([{ kind: "completed", data: templateWarningData }]),
+      renderer.handlers(),
+    );
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.warnings[0].name, "Template syntax passed through");
+    assertEquals(parsed.warnings[0].templates, [
+      { path: "globalArguments.message", text: "{{host.name}}" },
+      { path: "methods.execute.arguments.run", text: "${HOME}" },
+    ]);
+    assertEquals(parsed.passed, true);
+  } finally {
+    console.log = originalLog;
+  }
 });

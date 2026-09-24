@@ -20,6 +20,7 @@
 import { assertEquals, assertStrictEquals } from "@std/assert";
 import {
   containsExpression,
+  expressionSpans,
   extractCelExpression,
   extractExpressions,
   extractInputReferences,
@@ -39,6 +40,12 @@ Deno.test("containsExpression returns true for strings with expressions", () => 
   assertEquals(containsExpression("${{ model.foo.input.x }}"), true);
   assertEquals(containsExpression("Hello ${{ self.name }}!"), true);
   assertEquals(containsExpression("${{x}}"), true);
+});
+
+Deno.test("expressionSpans: returns each expression's offsets, ending at the first }}", () => {
+  assertEquals(expressionSpans("a ${{ x }} b ${{ y }}"), [[2, 10], [13, 21]]);
+  assertEquals(expressionSpans('${{ "{{host.name}}" }}'), [[0, 18]]);
+  assertEquals(expressionSpans("no expressions {{ here }}"), []);
 });
 
 Deno.test("containsExpression returns false for strings without expressions", () => {

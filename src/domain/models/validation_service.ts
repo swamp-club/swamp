@@ -32,6 +32,13 @@ import {
   valueContainsExpression,
 } from "../expressions/expression_parser.ts";
 import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
+import { foreignTemplatePathPredicate } from "./foreign_template_fields.ts";
+import {
+  scanTemplateSyntax,
+  type TemplateSyntaxFinding,
+  type TemplateSyntaxForm,
+  type TemplateSyntaxScan,
+} from "./template_syntax_scan.ts";
 import { CalVer } from "./calver.ts";
 import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
 import {
@@ -46,83 +53,46 @@ import {
 } from "../expressions/schema_path_validator.ts";
 
 /**
- * Represents a malformed expression found in the data.
+ * The second remedy for template-like text, for when it is another service's
+ * syntax rather than a swamp expression with its syntax slightly wrong. The
+ * example rebuilds the matched form, so it differs per form.
  */
-interface MalformedExpression {
-  /** The path where the malformed expression was found */
-  path: string;
-  /** The raw string containing the malformed expression */
-  raw: string;
-  /** The type of malformation detected */
-  issue: string;
-  /** Suggestion for fixing the malformation */
-  suggestion: string;
+function foreignTemplateRemedy(example: string): string {
+  return `If this is another service's template syntax, build it with CEL string concatenation, e.g. ${example}, or have the model type declare the field with .meta({ foreignTemplate: true }).`;
 }
 
 /**
- * Patterns that indicate a malformed expression.
+ * Error text for template-like text that swamp would claim as its own
+ * expression once the syntax is fixed.
  */
-const MALFORMED_PATTERNS: Array<{
-  pattern: RegExp;
-  issue: string;
-  suggestion: string;
-}> = [
-  {
-    // {{...}} without the $ prefix (negative lookbehind ensures no $ before)
-    pattern: /(?<!\$)\{\{(?!\{)[^}]+\}\}/,
+const MALFORMED_EXPRESSION_MESSAGES: Record<
+  TemplateSyntaxForm,
+  { issue: string; suggestion: string }
+> = {
+  "bare-double-brace": {
     issue: "Expression uses {{...}} instead of ${{...}}",
-    suggestion: 'Add "$" prefix: ${{...}}',
+    suggestion: `Add "$" prefix: \${{...}}. ${
+      foreignTemplateRemedy('${{ "{" + "{name}" + "}" }}')
+    }`,
   },
-  {
-    // ${...} with single braces (common mistake)
-    pattern: /\$\{(?!\{)[^}]+\}/,
+  "single-brace": {
     issue: "Expression uses ${...} instead of ${{...}}",
-    suggestion: "Use double braces: ${{...}}",
+    suggestion: `Use double braces: \${{...}}. ${
+      foreignTemplateRemedy('${{ "$" + "{name}" }}')
+    }`,
   },
-];
+  "inside-expression": {
+    issue: "Template text {{...}} inside a ${{...}} expression cuts it short",
+    suggestion:
+      'An expression ends at the first }}, so a string inside it cannot hold {{...}}. Build the braces with CEL string concatenation instead, e.g. ${{ "{" + "{name}" + "}" }}.',
+  },
+};
 
 /**
- * Scans a data structure for malformed expressions.
+ * Name of the warning for another service's template syntax. Agent guidance
+ * and acceptance tests identify the warning by this name.
  */
-function findMalformedExpressions(
-  data: unknown,
-  basePath = "",
-): MalformedExpression[] {
-  const malformed: MalformedExpression[] = [];
-  findMalformedExpressionsRecursive(data, basePath, malformed);
-  return malformed;
-}
-
-function findMalformedExpressionsRecursive(
-  data: unknown,
-  path: string,
-  malformed: MalformedExpression[],
-): void {
-  if (typeof data === "string") {
-    // Check for malformed expression patterns
-    for (const { pattern, issue, suggestion } of MALFORMED_PATTERNS) {
-      const match = data.match(pattern);
-      if (match) {
-        malformed.push({
-          path,
-          raw: match[0],
-          issue,
-          suggestion,
-        });
-      }
-    }
-  } else if (Array.isArray(data)) {
-    for (let i = 0; i < data.length; i++) {
-      const itemPath = path ? `${path}[${i}]` : `[${i}]`;
-      findMalformedExpressionsRecursive(data[i], itemPath, malformed);
-    }
-  } else if (data !== null && typeof data === "object") {
-    for (const [key, value] of Object.entries(data)) {
-      const propPath = path ? `${path}.${key}` : key;
-      findMalformedExpressionsRecursive(value, propPath, malformed);
-    }
-  }
-}
+export const FOREIGN_TEMPLATE_WARNING_NAME = "Template syntax passed through";
 
 /**
  * Value object representing a validation warning.
@@ -137,6 +107,7 @@ export class ValidationWarning {
     readonly name: string,
     readonly message: string,
     readonly details?: EnvVarUsageDetail[],
+    readonly templates?: ForeignTemplateDetail[],
   ) {}
 
   /**
@@ -155,6 +126,23 @@ export class ValidationWarning {
   }
 
   /**
+   * Creates a warning about another service's template syntax, which is
+   * passed to the method unchanged.
+   */
+  static foreignTemplateSyntax(
+    templates: ForeignTemplateDetail[],
+  ): ValidationWarning {
+    const message =
+      "This text is not a swamp expression and is passed to the method unchanged. If you meant a swamp expression, write ${{ ... }}. If it is another service's template syntax, the model type can declare the field with .meta({ foreignTemplate: true }) to silence this warning.";
+    return new ValidationWarning(
+      FOREIGN_TEMPLATE_WARNING_NAME,
+      message,
+      undefined,
+      templates,
+    );
+  }
+
+  /**
    * Value equality comparison.
    */
   equals(other: ValidationWarning): boolean {
@@ -163,6 +151,16 @@ export class ValidationWarning {
       this.message === other.message
     );
   }
+}
+
+/**
+ * Describes another service's template syntax found in a model definition.
+ */
+export interface ForeignTemplateDetail {
+  /** The definition path holding the text (e.g., "globalArguments.message") */
+  path: string;
+  /** The template text (e.g., "{{host.name}}") */
+  text: string;
 }
 
 /**
@@ -317,10 +315,19 @@ export class DefaultModelValidationService implements ModelValidationService {
       this.validateMethodArguments(definition, modelDef),
     ];
 
+    // Template-like text: swamp's own expressions with the syntax slightly
+    // wrong fail Expression paths; another service's syntax only warns.
+    const templateScan = this.scanTemplateSyntax(definition, modelDef);
+
     // Add expression path validation if definitionRepo is provided
     if (definitionRepo) {
       validations.push(
-        this.validateExpressionPaths(definition, modelDef, definitionRepo),
+        this.validateExpressionPaths(
+          definition,
+          modelDef,
+          definitionRepo,
+          templateScan.malformed,
+        ),
       );
     }
 
@@ -342,9 +349,50 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     // Detect env var usage and generate warnings
-    const warnings = this.detectEnvVarUsage(definition);
+    const warnings = [
+      ...this.detectEnvVarUsage(definition),
+      ...this.foreignTemplateWarnings(templateScan.foreign),
+    ];
 
     return { results, warnings };
+  }
+
+  /**
+   * Scans the authored globalArguments and method data for template-like
+   * text, skipping fields the model type declares as foreign template text.
+   */
+  private scanTemplateSyntax(
+    definition: Definition,
+    modelDef: ModelDefinition,
+  ): TemplateSyntaxScan {
+    return scanTemplateSyntax(
+      {
+        globalArguments: definition.globalArguments,
+        methods: definition.methodData,
+      },
+      {
+        declaredInputs: new Set(
+          Object.keys(definition.inputs?.properties ?? {}),
+        ),
+        isDeclaredForeign: foreignTemplatePathPredicate(modelDef),
+      },
+    );
+  }
+
+  /**
+   * Returns a warning listing another service's template syntax, if any.
+   */
+  private foreignTemplateWarnings(
+    foreign: TemplateSyntaxFinding[],
+  ): ValidationWarning[] {
+    if (foreign.length === 0) {
+      return [];
+    }
+    return [
+      ValidationWarning.foreignTemplateSyntax(
+        foreign.map(({ path, text }) => ({ path, text })),
+      ),
+    ];
   }
 
   /**
@@ -656,27 +704,23 @@ export class DefaultModelValidationService implements ModelValidationService {
    *
    * Extracts all expressions from definition attributes, resolves model references,
    * and validates that the paths exist in the referenced schemas.
-   * Also detects malformed expressions that don't match the proper ${{...}} syntax.
+   * Also reports template-like text that swamp would claim as its own
+   * expression once the syntax is fixed (a dropped `$` or a missing brace).
    */
   private async validateExpressionPaths(
     definition: Definition,
     modelDef: ModelDefinition,
     definitionRepo: DefinitionRepository,
+    malformed: TemplateSyntaxFinding[],
   ): Promise<ValidationResult> {
-    const errors: ExpressionPathError[] = [];
-
-    // First, check for malformed expressions in globalArguments and methods
-    const malformedErrors = [
-      ...findMalformedExpressions(definition.globalArguments),
-      ...findMalformedExpressions(definition.methodData),
-    ].map(
-      (m) => ({
-        expression: m.raw,
-        error: `${m.issue} at "${m.path}"`,
-        suggestion: m.suggestion,
-      }),
-    );
-    errors.push(...malformedErrors);
+    const errors: ExpressionPathError[] = malformed.map((m) => {
+      const { issue, suggestion } = MALFORMED_EXPRESSION_MESSAGES[m.form];
+      return {
+        expression: m.text,
+        error: `${issue} at "${m.path}"`,
+        suggestion,
+      };
+    });
 
     // Extract and validate all expressions from definition data
     const allExpressionData = {

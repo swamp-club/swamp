@@ -590,6 +590,89 @@ not swamp's in a definition that declares no `version` input, but a declared
 input with no value is. Both kinds keep passing through to the method as
 literal text.
 
+## Other Services' Template Syntax
+
+Many services have template languages of their own. Datadog, Grafana,
+Prometheus, Handlebars, Go templates, Argo Workflows, Jinja and Terraform use
+`{{ ... }}` or `${ ... }`. A model that talks to one of them holds that text in
+its arguments, and swamp passes it to the method unchanged. Only `${{ ... }}`
+is swamp's syntax.
+
+Validation looks for text that resembles a swamp expression with its syntax
+slightly wrong: `{{ ... }}` with no leading `$`, and `${ ... }` with a single
+brace (`scanTemplateSyntax`, `src/domain/models/template_syntax_scan.ts`). This
+runs in `swamp model validate` and in the validation a workflow step runs before
+its method. Each match is classified with the rule the runtime applies to
+`${{ ... }}` text (`isSwampExpression`). **A match is a mistake exactly when,
+with the syntax corrected, swamp would claim it as its own expression.**
+
+- `{{ self.name }}`, `{{ model.vpc.resource.vpc.main.attributes.VpcId }}`,
+  `${model.x.y}`, and `{{ inputs.env }}` in a definition that declares `env`
+  are swamp's. They fail the `Expression paths` check, and in a workflow they
+  fail the step.
+- `{{host.name}}`, `{{#is_alert}}`, `{{ .Values.x }}`, `${HOME}`,
+  `${var.region}`, and `{{ inputs.parameters.x }}` (an undeclared input) are
+  not. They produce the `Template syntax passed through` warning, which never
+  fails validation or a step.
+- Text that CEL cannot parse is not swamp's.
+- A `{{ ... }}` that starts inside a `${{ ... }}` expression, as in
+  `${{ "{{host.name}}" }}`, always fails. An expression ends at the first
+  `}}`, so the text cuts it short and it can never evaluate. This holds even in
+  a declared field (below), because it is a broken swamp expression, not
+  another service's text. A `${ ... }` inside an expression is ordinary CEL
+  string content and is not reported.
+
+Validation treats every swamp root as bound. The runtime binds `run`, `steps`,
+`workflow` and `webhook` only inside a workflow. One definition can run both
+directly and as a workflow step, so validation takes the stricter view on
+purpose.
+
+**Colliding names.** Some vendor vocabularies reuse swamp's root names. Text in
+them classifies as swamp's and fails:
+
+- Datadog tag variables such as `{{env.name}}`
+- Argo Workflows' `{{workflow.name}}` and `{{steps.gen.outputs.result}}`
+- Jinja templates that read `env` or `data`
+- Terraform interpolation such as `${data.aws_ami.ubuntu.id}` or
+  `${self.private_ip}`
+- Text with no free root at all, which `isSwampExpression` counts as swamp's:
+  literals such as `{{ true }}`, and calls such as Jinja's `{{ now() }}` or
+  Ansible's `{{ lookup('env', 'HOME') }}`
+
+The error names the ways out. The value can build the braces with CEL string
+concatenation, which passes validation and evaluates to the literal text:
+`${{ "{" + "{env.name}" + "}" }}` for `{{ ... }}`, or
+`${{ "$" + "{data.aws_ami.ubuntu.id}" }}` for `${ ... }`. Or the model type
+can declare the field as foreign template text (below). Concatenation does not
+survive a workflow step that runs a model type directly with inline
+`globalArgs`: the workflow evaluator substitutes those values before the step
+validates the definition it builds from them, so the braces come back
+(swamp-club#2496). Declare the field, or use a named definition, there.
+
+**Declaring a field.** A model type marks a global or method argument that
+holds another service's template syntax with `.meta({ foreignTemplate: true })`
+on its Zod schema (`extractForeignTemplateFields`,
+`src/domain/models/foreign_template_fields.ts`). Validation skips the field and
+everything below it, so it reports neither error nor warning there. The
+declaration silences only this check. It never disables `${{ ... }}`
+evaluation: expressions in the field are still validated and evaluated. It has
+no effect on sensitive handling or vault resolution. `command/shell` declares
+its `run` argument, because shell parameter expansion such as `${HOME}` is
+ordinary there.
+
+The metadata is found the way `sensitive` is. It is read from the field itself
+and through `optional`, `nullable` and `default` wrappers, but not through
+`.transform()`.
+
+Related gaps are tracked separately. A foreign `${{ ... }}`, such as GitHub
+Actions `${{ github.sha }}`, fails validation and throws when a method reads it
+from a global argument (swamp-club#2491). A `literal("...")` function for
+strings that mix swamp and vendor syntax needs an expression scanner that
+understands quoted strings (swamp-club#2492). An unclosed `${{` runs on to a
+later `}}`, so a foreign `{{ ... }}` after it is reported as cutting the
+expression short, instead of the missing brace being reported
+(swamp-club#2497).
+
 ## Sensitive Data
 
 Vault secrets are read with `vault.get('<vault-name>', '<key>')`, the only
