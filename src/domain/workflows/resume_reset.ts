@@ -18,21 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Resuming a failed run: with `--from`, or as a retry without it.
+ * Resuming a failed run (with `--from`, or as a retry without it) or a
+ * suspended run.
  *
- * Computes the reset set and checks, before anything changes, that the
- * current workflow can still be walked against the stored run. Resume walks
- * every job of the current workflow whose stored record is unfinished after
- * the reset (a re-entered job), and looks up each step's record in that same
- * stored job. A step moved, renamed, or added since the run either has no
- * record there (a mid-run crash) or leaves a reset record that no job walks
- * (a false success), so the structure check refuses both.
+ * Computes a failed run's reset set, and checks, before anything changes,
+ * that the current workflow can still be walked against the stored run.
+ * Resume walks every job of the current workflow whose stored record is
+ * unfinished (a re-entered job; for a failed run, after the reset), and looks
+ * up each step's record in that same stored job. A step moved, renamed, or
+ * added since the run either has no record there (a mid-run crash) or leaves
+ * an unfinished record that no job walks (a false success), so the structure
+ * check refuses both.
  */
 
 import { UserError } from "../errors.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
+import type { Job } from "./job.ts";
 import type { Workflow } from "./workflow.ts";
-import type { StepRunRef, WorkflowRun } from "./workflow_run.ts";
+import type { JobRun, StepRunRef, WorkflowRun } from "./workflow_run.ts";
 
 /** Why {@link computeStepsToReset} selected a stored step record. */
 type ResetBranch = "name" | "template" | "prefix";
@@ -59,8 +62,8 @@ export interface ResumeReset {
   readonly tracked: readonly StepRunRef[];
 }
 
-/** Stored statuses resume() treats as finished: it skips a job in one. */
-const FINISHED_JOB_STATUSES: ReadonlySet<string> = new Set([
+/** Stored statuses resume() treats as finished: it skips a job or step in one. */
+const FINISHED_STATUSES: ReadonlySet<string> = new Set([
   "succeeded",
   "failed",
   "skipped",
@@ -237,6 +240,163 @@ export function computeStepsToReset(
 }
 
 /**
+ * A name written with an expression is stored evaluated, so it cannot be
+ * compared with a stored record before the workflow is evaluated.
+ */
+function evaluated(name: string): boolean {
+  return name.includes("${{");
+}
+
+function moved(step: string, stored: string, current: string): string {
+  return `Step "${step}" is in job "${stored}" in the run, job "${current}" in the workflow.`;
+}
+
+/**
+ * Why a stored record of `step` in `job` no longer belongs to that job: the
+ * workflow has the step in another job, or it is no longer a forEach step.
+ */
+function movedOrChanged(workflow: Workflow, step: string, job: string): string {
+  const now = workflow.jobs.find((j) => j.steps.some((s) => s.name === step))
+    ?.name;
+  return now !== undefined && now !== job
+    ? moved(step, job, now)
+    : `Step "${step}" in job "${job}" is no longer a forEach step.`;
+}
+
+/** Rule (a): resume looks up a stored record for every job it walks. */
+function missingJob(workflow: Workflow, run: WorkflowRun): string | undefined {
+  const job = workflow.jobs.find((j) =>
+    !evaluated(j.name) && !run.getJob(j.name)
+  );
+  return job ? `Job "${job.name}" is not in the run.` : undefined;
+}
+
+/**
+ * Rule (b): every step a re-entered job walks, other than a forEach template,
+ * needs a record in that stored job. Call after rule (a) passes. Step names
+ * are unique only within a job, so the step moved from another stored job
+ * only when the workflow no longer has it there; otherwise it was added.
+ */
+function missingStep(
+  workflow: Workflow,
+  run: WorkflowRun,
+  reentered: (jobRun: JobRun) => boolean,
+): string | undefined {
+  for (const job of workflow.jobs) {
+    if (evaluated(job.name)) continue;
+    const jobRun = run.getJob(job.name)!;
+    if (!reentered(jobRun)) continue;
+    for (const step of job.steps) {
+      if (step.forEach || evaluated(step.name)) continue;
+      if (jobRun.getStep(step.name)) continue;
+      const storedIn = run.jobs.find((j) =>
+        j.getStep(step.name) &&
+        !workflow.getJob(j.jobName)?.getStep(step.name)
+      )?.jobName;
+      return storedIn !== undefined
+        ? moved(step.name, storedIn, job.name)
+        : `Step "${step.name}" in job "${job.name}" is not in the run.`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether a stored job already had the step `name` of `job`: a record of that
+ * name, or iterations of it. A forEach step can leave neither (an empty
+ * expansion removes its template record, and `--last-evaluated` or older runs
+ * store iterations without `forEachTemplate`), so once the job has started,
+ * or it holds records named like iterations, that cannot be ruled out and the
+ * step counts as recorded.
+ */
+function recordsStep(
+  jobRun: JobRun | undefined,
+  job: Job,
+  name: string,
+): boolean {
+  if (!jobRun) return false;
+  if (
+    jobRun.steps.some((s) => s.stepName === name || s.forEachTemplate === name)
+  ) {
+    return true;
+  }
+  if (job.getStep(name)?.forEach === undefined) return false;
+  return jobRun.status !== "pending" ||
+    jobRun.steps.some((s) =>
+      s.forEachTemplate === undefined && s.stepName.startsWith(`${name}-`) &&
+      !job.getStep(s.stepName)
+    );
+}
+
+/**
+ * Rule (c) for a suspended run: an unfinished record of an unfinished job
+ * must still be walked in its own job. One whose step the workflow now has
+ * in another job would stay pending while the run reports success. One whose
+ * step no other job has was removed, which is allowed.
+ */
+function movedUnfinishedStep(
+  workflow: Workflow,
+  run: WorkflowRun,
+): string | undefined {
+  const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
+  for (const jobRun of run.jobs) {
+    if (FINISHED_STATUSES.has(jobRun.status)) continue;
+    const ownJob = workflow.getJob(jobRun.jobName);
+    if (!ownJob && hasEvaluatedJob) continue;
+    for (const record of jobRun.steps) {
+      if (FINISHED_STATUSES.has(record.status)) continue;
+      const template = record.forEachTemplate;
+      const name = template ?? record.stepName;
+      const own = ownJob?.getStep(name);
+      if (own && (template === undefined || own.forEach !== undefined)) {
+        continue;
+      }
+      if (own) {
+        return `Step "${name}" in job "${jobRun.jobName}" is no longer a forEach step.`;
+      }
+      // Step names are unique only within a job, so the step cannot have
+      // moved into a job whose stored record already has one of that name:
+      // it was removed from this job. Expression-named jobs are stored
+      // evaluated and cannot be compared.
+      const now = workflow.jobs.find((j) =>
+        !evaluated(j.name) && j.getStep(name) &&
+        !recordsStep(run.getJob(j.name), j, name)
+      );
+      if (now) return moved(name, jobRun.jobName, now.name);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Rule (d) for a suspended run: resume never walks an unfinished job the
+ * workflow no longer has, so the run would end failed with no failed step.
+ */
+function removedUnfinishedJob(
+  workflow: Workflow,
+  run: WorkflowRun,
+): string | undefined {
+  if (workflow.jobs.some((j) => evaluated(j.name))) return undefined;
+  const job = run.jobs.find((j) =>
+    !FINISHED_STATUSES.has(j.status) && !workflow.getJob(j.jobName)
+  );
+  return job
+    ? `Job "${job.jobName}" is in the run but not in the workflow.`
+    : undefined;
+}
+
+/**
+ * How to clear a suspended run a resume refused. `swamp serve` cancels only
+ * runs it is driving, and a local cancel refuses a run serve started, so for
+ * such a run the way out is to revert the edit and resume.
+ */
+function suspendedWayOut(workflow: Workflow, run: WorkflowRun): string {
+  return run.instanceId !== undefined
+    ? "Revert the change to resume it: a suspended run started by swamp serve cannot be cancelled yet."
+    : `To cancel it: 'swamp workflow cancel ${workflow.name} --run ${run.id}'.`;
+}
+
+/**
  * Plans a resume of a failed run: re-entering at `fromStep`, or, without it,
  * retrying the entry template of every failed step (see
  * {@link selectRetryTemplates}). Returns the reset set, or throws a UserError
@@ -244,7 +404,8 @@ export function computeStepsToReset(
  * current workflow. Mutates nothing.
  *
  * Only for a failed run: a suspended run has no reset set, and its
- * unfinished steps would fail the retry eligibility check.
+ * unfinished steps would fail the retry eligibility check. See
+ * {@link checkSuspendedRunResume}.
  *
  * The structure check refuses when:
  * - (a) a job of the current workflow has no stored record;
@@ -291,28 +452,11 @@ export function planFailedRunResume(
   const history = `See 'swamp workflow history logs ${run.id}'.`;
   const refuse = (problem: string) =>
     new UserError(`${problem} Start a new run. ${history}`);
-  const moved = (step: string, stored: string, current: string) =>
-    `Step "${step}" is in job "${stored}" in the run, job "${current}" in the workflow.`;
-  const jobOfStep = (stepName: string) =>
-    workflow.jobs.find((j) => j.steps.some((s) => s.name === stepName))
-      ?.name;
-  const movedOrChanged = (step: string, job: string) => {
-    const now = jobOfStep(step);
-    return now !== undefined && now !== job
-      ? moved(step, job, now)
-      : `Step "${step}" in job "${job}" is no longer a forEach step.`;
-  };
-  // A name written with an expression is stored evaluated, so it cannot be
-  // compared with a stored record before the workflow is evaluated.
-  const evaluated = (name: string) => name.includes("${{");
   const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
 
   // (a) Resume looks up a stored record for every job it walks.
-  for (const job of workflow.jobs) {
-    if (!evaluated(job.name) && !run.getJob(job.name)) {
-      throw refuse(`Job "${job.name}" is not in the run.`);
-    }
-  }
+  const noJob = missingJob(workflow, run);
+  if (noJob !== undefined) throw refuse(noJob);
 
   // (c) A record reset by name or template must be walked in its own job.
   const tracked: StepRunRef[] = [];
@@ -325,34 +469,78 @@ export function planFailedRunResume(
       ownStep(record.forEachTemplate)?.forEach !== undefined;
     if (record.branch === "name") {
       if (!ownStep(record.stepName) && !fromTemplate) {
-        throw refuse(movedOrChanged(record.stepName, record.jobName));
+        throw refuse(
+          movedOrChanged(workflow, record.stepName, record.jobName),
+        );
       }
     } else if (!fromTemplate) {
-      throw refuse(movedOrChanged(record.forEachTemplate!, record.jobName));
+      throw refuse(
+        movedOrChanged(workflow, record.forEachTemplate!, record.jobName),
+      );
     }
     tracked.push({ jobName: record.jobName, stepName: record.stepName });
   }
 
-  // (b) Every step a re-entered job walks, other than a forEach template,
-  // needs a record in that stored job. resetForResumeFrom resets records by
-  // name in every job, so a job is re-entered when any of its records is.
-  for (const job of workflow.jobs) {
-    if (evaluated(job.name)) continue;
-    const jobRun = run.getJob(job.name)!;
-    const reentered = !FINISHED_JOB_STATUSES.has(jobRun.status) ||
-      jobRun.steps.some((s) => steps.has(s.stepName));
-    if (!reentered) continue;
-    for (const step of job.steps) {
-      if (step.forEach || evaluated(step.name)) continue;
-      if (jobRun.getStep(step.name)) continue;
-      const storedIn = run.jobs.find((j) => j.getStep(step.name))?.jobName;
-      throw refuse(
-        storedIn !== undefined
-          ? moved(step.name, storedIn, job.name)
-          : `Step "${step.name}" in job "${job.name}" is not in the run.`,
-      );
-    }
-  }
+  // (b) resetForResumeFrom resets records by name in every job, so a job is
+  // re-entered when any of its records is.
+  const noStep = missingStep(
+    workflow,
+    run,
+    (jobRun) =>
+      !FINISHED_STATUSES.has(jobRun.status) ||
+      jobRun.steps.some((s) => steps.has(s.stepName)),
+  );
+  if (noStep !== undefined) throw refuse(noStep);
 
   return { steps, tracked };
+}
+
+/**
+ * Checks, before anything changes, that a suspended run can be resumed
+ * against the current workflow. Throws a UserError that says how to clear
+ * the run, which stays suspended, then names the job or step. The way out
+ * comes first so serve's 200-character error limit cuts the detail, not the
+ * command. Mutates nothing.
+ *
+ * A suspended run has no reset set: resume re-enters every unfinished job.
+ * The structure check refuses when:
+ * - (a) a job of the current workflow has no stored record;
+ * - (c) an unfinished record of an unfinished job is no longer a step of its
+ *   own job (for an iteration, its `forEachTemplate` as a forEach step), and
+ *   another job has the step with no record of it (a moved step), or its
+ *   forEach step is no longer a forEach step;
+ * - (d) an unfinished job is no longer in the workflow;
+ * - (b) a re-entered job has a step, other than a forEach template, with no
+ *   record in that stored job.
+ *
+ * It leaves alone: an unfinished record whose step no other job has, or one
+ * another job already had (a removed step, which stays pending while the run
+ * completes); a forEach step whose stored records cannot show whether another
+ * job already had it; iterations whose template is still a forEach step of
+ * their job, whatever the collection now evaluates to; records with no
+ * `forEachTemplate`, from `--last-evaluated` or older runs, which match no
+ * step by name; job and step names written with an expression; and finished
+ * jobs, which resume does not walk. Unlike {@link planFailedRunResume}, it
+ * lets through a step removed from one job but kept in another: nothing
+ * resets a suspended run's record, so it was never going to run there.
+ */
+export function checkSuspendedRunResume(
+  workflow: Workflow,
+  run: WorkflowRun,
+): void {
+  const problem = missingJob(workflow, run) ??
+    movedUnfinishedStep(workflow, run) ??
+    removedUnfinishedJob(workflow, run) ??
+    missingStep(
+      workflow,
+      run,
+      (jobRun) => !FINISHED_STATUSES.has(jobRun.status),
+    );
+  if (problem !== undefined) {
+    throw new UserError(
+      `The workflow changed shape since the run started. ${
+        suspendedWayOut(workflow, run)
+      } ${problem}`,
+    );
+  }
 }

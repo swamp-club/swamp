@@ -459,3 +459,100 @@ Deno.test("autoResumeAfterApproval: never retries a run that failed before launc
   assertEquals(registry.registered.length, 0);
   assertEquals(audit.map((e) => e.action), ["workflow.auto_resume_failed"]);
 });
+
+/** The gated workflow with a step "verify" added to job main since the run. */
+function makeEditedWorkflow(opts: { autoResume?: boolean } = {}): Workflow {
+  return Workflow.create({
+    name: "gated",
+    autoResume: opts.autoResume,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("deployer", "run"),
+          }),
+          Step.create({ name: "verify", task: StepTask.model("v", "run") }),
+        ],
+      }),
+    ],
+  });
+}
+
+/**
+ * The approved run of {@link makeApprovedRun}, started by a serve instance
+ * as runs from the dashboard, `--server` and webhooks are.
+ */
+function makeServeOwnedApprovedRun(workflow: Workflow): WorkflowRun {
+  return WorkflowRun.fromData({
+    ...makeApprovedRun(workflow).toData(),
+    instanceId: crypto.randomUUID(),
+  });
+}
+
+for (
+  const [label, suspendedOnly, serveOwned] of [
+    ["a", false, false],
+    ["an auto-resume of a", true, false],
+    ["a serve-owned", false, true],
+    ["an auto-resume of a serve-owned", true, true],
+  ] as const
+) {
+  Deno.test(
+    `startDetachedResume: refuses ${label} suspended run whose workflow changed shape, without registering it`,
+    async () => {
+      const run = serveOwned
+        ? makeServeOwnedApprovedRun(makeWorkflow())
+        : makeApprovedRun(makeWorkflow());
+      const before = JSON.stringify(run.toData());
+      const { ctx, registry } = makeHarness(makeEditedWorkflow(), run);
+
+      const result = await startDetachedResume(ctx, registry, {
+        workflowIdOrName: "gated",
+        runId: run.id,
+        suspendedOnly,
+        principalId: null,
+      });
+
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertEquals(result.code, "workflow_resume_failed");
+        const wayOut = serveOwned
+          ? "Revert the change to resume it: a suspended run started by swamp serve cannot be cancelled yet."
+          : `To cancel it: 'swamp workflow cancel gated --run ${run.id}'.`;
+        assertEquals(
+          result.message,
+          `The workflow changed shape since the run started. ${wayOut} ` +
+            `Step "verify" in job "main" is not in the run.`,
+        );
+      }
+      assertEquals(registry.registered.length, 0);
+      assertEquals(JSON.stringify(run.toData()), before);
+    },
+  );
+}
+
+Deno.test("autoResumeAfterApproval: audits a launch refused because the workflow changed shape", async () => {
+  const run = makeServeOwnedApprovedRun(makeWorkflow({ autoResume: true }));
+  const { ctx, registry, audit } = makeHarness(
+    makeEditedWorkflow({ autoResume: true }),
+    run,
+  );
+
+  const launched = await autoResumeAfterApproval(
+    ctx,
+    outcomeFor(run),
+    "user:approver",
+  );
+
+  assertEquals(launched, false);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit.map((e) => e.action), ["workflow.auto_resume_failed"]);
+  assertStringIncludes(audit[0].detail ?? "", "code=workflow_resume_failed");
+  assertEquals(run.status, "suspended");
+});

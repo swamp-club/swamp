@@ -45,12 +45,25 @@ an expression fail to evaluate, exit 1 with `Workflow resume failed: ...`
 rolled back: check the run with `swamp workflow history get <run-id>` before
 resuming again.
 
+Resume uses the current workflow file. If it was edited during the approval
+window in a way the resume would walk into (a step added or moved into a job the
+resume re-runs, a pending step moved to another job, a pending job removed, or a
+job renamed or added), resume refuses before anything changes and the run stays
+suspended. The refusal starts with the way out:
+`swamp workflow cancel <wf> --run <id>`, then start a new run. A run started by
+`swamp serve` cannot be cancelled while suspended, so for one of those the
+refusal says to revert the change and resume. Removing a step, and narrowing a
+`forEach` through `--input`, still work. Approve and reject are not checked.
+Names written with an expression are not checked, so a step added with one still
+fails with `Step run not found`.
+
 Under `swamp serve`, a workflow with `autoResume: true` resumes without that
 second invocation. Serve launches the resume once an approval made through serve
 decides the last gate. `--auto-resume` does the same for workflows that declare
 no inputs. An automatic resume supplies no inputs. If it fails to start, the run
-stays suspended and needs a manual resume. The dashboard lists
-approved-but-suspended runs with a Resume action and the equivalent CLI command.
+stays suspended and needs a manual resume, or, when the workflow changed shape,
+a cancel or a revert of the change. The dashboard lists approved-but-suspended
+runs with a Resume action and the equivalent CLI command.
 
 ### Retry the Failed Steps of a Failed Run
 
@@ -95,9 +108,7 @@ workflow changed shape since the run: a step was renamed, moved to another job,
 or added to a job the resume re-runs, or a job was renamed or added. Removing a
 step still works. An iteration dropped from a smaller or renamed `forEach`
 collection — including one changed by an `--input` override on the resume —
-fails as `Not run: ...` (`failureKind: workflow_changed`); start a new run. A
-suspended resume against an edited workflow is not checked yet
-(swamp-club#2498).
+fails as `Not run: ...` (`failureKind: workflow_changed`); start a new run.
 
 ## Step Evaluation Order
 

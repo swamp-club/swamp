@@ -25,7 +25,10 @@ import type {
 } from "./repositories.ts";
 import { createWorkflowId, createWorkflowRunId } from "./workflow_id.ts";
 import { UserError } from "../errors.ts";
-import { planFailedRunResume } from "./resume_reset.ts";
+import {
+  checkSuspendedRunResume,
+  planFailedRunResume,
+} from "./resume_reset.ts";
 
 export interface SuspendedRunInfo {
   workflowName: string;
@@ -96,11 +99,17 @@ export type ResumableRunInfo = SuspendedRunInfo;
 export interface ResolveResumableRunOptions {
   /** The --from step; when set, only a failed run is resumable. */
   fromStep?: string;
+  /**
+   * Accept only a suspended run, as auto-resume after an approval needs.
+   * Takes precedence over `fromStep`.
+   */
+  suspendedOnly?: boolean;
 }
 
 /**
  * Resolves the run for `workflow resume`.
  *
+ * - With `suspendedOnly`: resolves like {@link resolveSuspendedRun}.
  * - With `runId`: loads that run. With --from it must be failed; without,
  *   suspended or failed (a failed run is retried).
  * - Without `runId`: requires exactly one failed run with --from, or exactly
@@ -108,9 +117,11 @@ export interface ResolveResumableRunOptions {
  *   so approve followed by a bare resume never becomes ambiguous because of
  *   old failed runs.
  *
- * A failed run is planned here — retry eligibility without --from, and the
- * structure check either way — so callers fail before starting anything;
- * resume() checks again.
+ * The resolved run is checked here — retry eligibility and the structure
+ * check for a failed run, the structure check for a suspended one — so
+ * callers fail before starting anything; resume() checks again. Approve and
+ * reject use {@link resolveSuspendedRun}, which does not check the structure,
+ * so a gate can still be decided after the workflow changed.
  */
 export async function resolveResumableRun(
   workflowRepo: WorkflowRepository,
@@ -119,12 +130,15 @@ export async function resolveResumableRun(
   runId?: string,
   options: ResolveResumableRunOptions = {},
 ): Promise<ResumableRunInfo> {
-  if (!options.fromStep && !runId) {
-    return await resolveSuspendedRun(
+  if (options.suspendedOnly || (!options.fromStep && !runId)) {
+    const resolved = await resolveSuspendedRun(
       workflowRepo,
       runRepo,
       workflowIdOrName,
+      runId,
     );
+    checkSuspendedRunResume(resolved.workflow, resolved.run);
+    return resolved;
   }
 
   const workflow = await workflowRepo.findByName(workflowIdOrName) ??
@@ -150,7 +164,9 @@ export async function resolveResumableRun(
       planFailedRunResume(workflow, run, options.fromStep);
     } else if (run.status === "failed") {
       planFailedRunResume(workflow, run);
-    } else if (run.status !== "suspended") {
+    } else if (run.status === "suspended") {
+      checkSuspendedRunResume(workflow, run);
+    } else {
       throw new UserError(
         `Run ${runId} is not suspended or failed (status: ${run.status}).` +
           nextActionForStatus(run.status, workflow.name, run.id),

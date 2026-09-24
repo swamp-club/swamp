@@ -459,3 +459,64 @@ for (
     assertEquals(JSON.stringify(run.toData()), before);
   });
 }
+
+for (
+  const [label, runId, options] of [
+    ["a bare resume", false, {}],
+    ["--run", true, {}],
+    ["suspendedOnly with --run", true, { suspendedOnly: true }],
+    ["suspendedOnly without --run", false, { suspendedOnly: true }],
+  ] as const
+) {
+  Deno.test(`resolveResumableRun: ${label} refuses a suspended run whose workflow changed shape`, async () => {
+    const run = createSuspendedRun(createWorkflow("test-wf"));
+    const before = JSON.stringify(run.toData());
+    const { workflowRepo, runRepo } = stubRepos(createEditedWorkflow(), [run]);
+
+    await assertRejects(
+      () =>
+        resolveResumableRun(
+          workflowRepo,
+          runRepo,
+          "test-wf",
+          runId ? run.id : undefined,
+          options,
+        ),
+      Error,
+      `The workflow changed shape since the run started. ` +
+        `To cancel it: 'swamp workflow cancel test-wf --run ${run.id}'. ` +
+        `Step "t" in job "j" is not in the run.`,
+    );
+    assertEquals(JSON.stringify(run.toData()), before);
+  });
+}
+
+Deno.test("resolveResumableRun: suspendedOnly refuses a failed run as not suspended", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = createFailedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  await assertRejects(
+    () =>
+      resolveResumableRun(workflowRepo, runRepo, "test-wf", run.id, {
+        suspendedOnly: true,
+      }),
+    Error,
+    `Run ${run.id} is not suspended (status: failed)`,
+  );
+});
+
+Deno.test("resolveSuspendedRun: approve and reject still resolve a suspended run whose workflow changed shape", async () => {
+  // Deciding a gate records a decision and runs nothing, so it is allowed;
+  // the resume that follows is refused.
+  const run = createSuspendedRun(createWorkflow("test-wf"));
+  const { workflowRepo, runRepo } = stubRepos(createEditedWorkflow(), [run]);
+
+  const result = await resolveSuspendedRun(
+    workflowRepo,
+    runRepo,
+    "test-wf",
+    run.id,
+  );
+  assertEquals(result.run.id, run.id);
+});
