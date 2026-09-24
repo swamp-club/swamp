@@ -929,6 +929,7 @@ const silentOutput: AutoResolveOutputPort = {
   collectiveNotTrusted: () => {},
   localSourceFailed: () => {},
   noStableVersion: () => {},
+  installedWithoutType: () => {},
 };
 
 /**
