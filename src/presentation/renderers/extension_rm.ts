@@ -53,6 +53,19 @@ class LogExtensionRmRenderer implements ExtensionRmRenderer {
             count: e.data.dirsRemoved,
           });
         }
+        const failedFiles = e.data.failedFiles ?? [];
+        if (failedFiles.length > 0) {
+          this.#logger.warn(
+            "Could not delete {count} file(s); remove them by hand:",
+            { count: failedFiles.length },
+          );
+          for (const failed of failedFiles) {
+            this.#logger.warn("  {path} ({reason})", {
+              path: failed.path,
+              reason: failed.reason,
+            });
+          }
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
