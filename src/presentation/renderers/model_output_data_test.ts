@@ -18,8 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import {
   consumeStream,
+  type ModelOutputDataData,
   type ModelOutputDataEvent,
 } from "../../libswamp/mod.ts";
 import { createModelOutputDataRenderer } from "./model_output_data.ts";
@@ -126,4 +128,55 @@ Deno.test("ModelOutputDataRenderer - error throws UserError", () => {
     UserError,
     "Data not found",
   );
+});
+
+async function captureLog(
+  mode: "log" | "json",
+  data: ModelOutputDataData,
+): Promise<string> {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createModelOutputDataRenderer(mode);
+    await consumeStream(
+      toStream([{ kind: "completed", data }]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = originalLog;
+  }
+  return stripAnsiCode(logs.join("\n"));
+}
+
+Deno.test("LogModelOutputDataRenderer - binary content prints a notice, not the content", async () => {
+  const output = await captureLog("log", {
+    ...makeCompletedData(),
+    contentType: "image/png",
+    contentEncoding: "base64",
+    data: "iVBORw0KGgo=",
+  });
+  assertEquals(output, "(binary data — use --json to get it base64-encoded)");
+});
+
+Deno.test("LogModelOutputDataRenderer - utf-8 text content is printed as is", async () => {
+  const output = await captureLog("log", {
+    ...makeCompletedData(),
+    contentType: "text/plain",
+    contentEncoding: "utf-8",
+    data: "héllo wörld",
+  });
+  assertEquals(output, "héllo wörld");
+});
+
+Deno.test("JsonModelOutputDataRenderer - binary content passes through as base64", async () => {
+  const output = await captureLog("json", {
+    ...makeCompletedData(),
+    contentType: "image/png",
+    contentEncoding: "base64",
+    data: "iVBORw0KGgo=",
+  });
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.contentEncoding, "base64");
+  assertEquals(parsed.data, "iVBORw0KGgo=");
 });

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { dim } from "@std/fmt/colors";
 import type {
   EventHandlers,
   ModelOutputDataEvent,
@@ -30,7 +31,11 @@ class LogModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        if (typeof e.data.data === "string") {
+        if (e.data.contentEncoding === "base64") {
+          console.log(
+            dim("(binary data — use --json to get it base64-encoded)"),
+          );
+        } else if (typeof e.data.data === "string") {
           console.log(e.data.data);
         } else {
           console.log(JSON.stringify(e.data.data, null, 2));

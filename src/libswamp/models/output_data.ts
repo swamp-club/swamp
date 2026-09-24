@@ -24,6 +24,10 @@ import type {
 } from "../../domain/models/model_output.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import {
+  type ContentEncoding,
+  encodeContent,
+} from "../../domain/data/content_encoding.ts";
+import {
   isPartialId,
   matchByPartialId,
 } from "../../domain/models/model_lookup.ts";
@@ -48,6 +52,12 @@ export interface ModelOutputDataData {
   dataName: string;
   version: number;
   contentType: string;
+  /**
+   * How `data` is encoded when it is the artifact's content as a string:
+   * `utf-8` text, or `base64` when the bytes are not valid UTF-8. Absent when
+   * `data` is parsed JSON.
+   */
+  contentEncoding?: ContentEncoding;
   field: string | null;
   data: unknown;
 }
@@ -299,19 +309,23 @@ export async function* modelOutputData(
         return;
       }
 
-      // Try to parse as JSON if content type is JSON
-      let displayData: unknown;
-      const isJson = data.contentType === "application/json";
-
-      if (isJson) {
+      // Encode before interpreting, so bytes that are not valid UTF-8 come
+      // back as base64 rather than lossily decoded text. Only valid UTF-8 is
+      // parsed as JSON.
+      const encoded = encodeContent(content);
+      let displayData: unknown = encoded.content;
+      let contentEncoding: ContentEncoding | undefined =
+        encoded.contentEncoding;
+      if (
+        data.contentType === "application/json" &&
+        encoded.contentEncoding === "utf-8"
+      ) {
         try {
-          const text = new TextDecoder().decode(content);
-          displayData = JSON.parse(text);
+          displayData = JSON.parse(encoded.content);
+          contentEncoding = undefined;
         } catch {
-          displayData = new TextDecoder().decode(content);
+          // Not valid JSON: return the text as is.
         }
-      } else {
-        displayData = new TextDecoder().decode(content);
       }
 
       // If a specific field is requested, extract it
@@ -352,6 +366,7 @@ export async function* modelOutputData(
           dataName: data.name,
           version: data.version,
           contentType: data.contentType,
+          ...(contentEncoding ? { contentEncoding } : {}),
           field: input.field ?? null,
           data: displayData,
         },

@@ -191,8 +191,12 @@ removes every version.
   recovery" is a read-time convenience, never a delete.
 - **CLI**: `swamp data get <model> <name> [--version N] [--no-content]`, or
   `--workflow <name> [--run <id>]` to read what a run produced
-  (`src/domain/data/workflow_data_service.ts`). Also `swamp data list` (grouped
-  by type), `swamp data versions`, `swamp data search` and
+  (`src/domain/data/workflow_data_service.ts`). `data get`, serve's `data.get`
+  and `swamp model output data` return content without loss: text when the
+  stored bytes are valid UTF-8 (less a leading byte-order mark), otherwise
+  base64, with a `contentEncoding` of `utf-8` or `base64` saying which
+  (`content_encoding.ts` `encodeContent`). Also `swamp data list` (grouped by
+  type), `swamp data versions`, `swamp data search` and
   `swamp data query '<predicate>' [--select] [--limit]`
   (`src/cli/commands/data_*.ts`). `search` takes free text plus `--type`,
   `--lifetime`, `--owner-type`, `--workflow`, `--model`, `--content-type`,
