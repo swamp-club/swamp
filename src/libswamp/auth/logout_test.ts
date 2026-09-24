@@ -285,3 +285,23 @@ Deno.test("createAuthLogoutDeps: loads the stored login key even when SWAMP_API_
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("createAuthLogoutDeps: an auth.json without serverUrl revokes against the default server", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    await new AuthRepository({ configDir, getApiKey: () => undefined }).save({
+      serverUrl: "",
+      apiKey: "swamp_login_key",
+      apiKeyId: "key-1",
+      username: "testuser",
+    });
+
+    const creds = await createAuthLogoutDeps({ repo: { configDir } })
+      .loadCredentials();
+
+    assertEquals(creds?.serverUrl, "https://swamp-club.com");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

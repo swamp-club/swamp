@@ -983,23 +983,31 @@ export class SwampClubClient {
         `${this.serverUrl} answered HTTP ${res.status} without confirming the API key was revoked.`,
       );
     }
-    // Both answers that end with deleting credentials must come from
-    // swamp-club itself: a proxy or gateway can answer 401 on its own, or
-    // strip x-api-key, while the key is still valid.
+    // 401 and 403 count only with the exact bodies swamp-club's route sends: a
+    // proxy or gateway can answer them on its own (or strip x-api-key) while
+    // the key is still valid, e.g. with {"error":"invalid_token"}.
     if (res.status === 401) {
-      if (typeof fields.error === "string") return { kind: "already_invalid" };
+      if (fields.error === "Unauthorized") return { kind: "already_invalid" };
       throw new UserError(
         `${this.serverUrl} answered HTTP 401 without a swamp-club error body, so it is unclear whether the API key is still valid.`,
       );
     }
-    if (res.status === 403) return { kind: "not_personal_key" };
+    if (
+      res.status === 403 &&
+      fields.error === "Only a personal API key can revoke itself"
+    ) {
+      return { kind: "not_personal_key" };
+    }
     if (res.status === 404) return { kind: "unsupported" };
 
-    const body = text.length > MAX_ERROR_BODY_CHARS
-      ? `${text.slice(0, MAX_ERROR_BODY_CHARS)}…`
-      : text;
+    const flat = text.replace(/\s+/g, " ").trim();
+    const body = flat.length > MAX_ERROR_BODY_CHARS
+      ? `${flat.slice(0, MAX_ERROR_BODY_CHARS)}…`
+      : flat;
     throw new UserError(
-      `${this.serverUrl} answered HTTP ${res.status}: ${body}`,
+      body
+        ? `${this.serverUrl} answered HTTP ${res.status}: ${body}`
+        : `${this.serverUrl} answered HTTP ${res.status}.`,
     );
   }
 

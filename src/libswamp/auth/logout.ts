@@ -26,6 +26,7 @@ import {
   SwampClubClient,
 } from "../../infrastructure/http/swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import type { LibSwampContext } from "../context.ts";
 import { cancelled, type SwampError } from "../errors.ts";
 
@@ -97,7 +98,8 @@ export function createAuthLogoutDeps(
       if (!creds) return null;
       return {
         username: creds.username,
-        serverUrl: creds.serverUrl,
+        // A file from before serverUrl was always written means the default.
+        serverUrl: creds.serverUrl || DEFAULT_SWAMP_CLUB_URL,
         apiKey: creds.apiKey ?? "",
       };
     },
