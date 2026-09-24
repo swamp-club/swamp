@@ -25,13 +25,21 @@
  * real run tracker, reloads the run through fresh repository instances, and
  * retries it with a counting step executor. The second half retries through
  * both branches of the serve handler against a real repository, where a
- * shell step's exit code comes from an input the retry overrides.
+ * shell step's exit code comes from an input the retry overrides. The last
+ * section runs the `workflow resume` command in-process against a failed run
+ * and checks how it reports a resume that fails (swamp-club#2432).
  */
 
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { assertEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { Command } from "@cliffy/command";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
 import {
@@ -58,6 +66,9 @@ import {
   swampPath,
 } from "../src/infrastructure/persistence/paths.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
+import { workflowResumeCommand } from "../src/cli/commands/workflow_resume.ts";
+import { UserError } from "../src/domain/errors.ts";
+import { buildErrorJson } from "../src/presentation/output/error_output.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { handleWorkflowResume } from "../src/serve/handlers/workflow_handlers.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
@@ -545,3 +556,132 @@ for (const withRegistry of [false, true]) {
     });
   }
 }
+
+// ── The workflow resume command on a real repository ────────────────────
+
+/**
+ * Runs `swamp workflow resume` in-process against `repoDir` and returns the
+ * error it rejects with — the error `main.ts` would render.
+ */
+async function resumeCommandError(
+  repoDir: string,
+  args: string[],
+): Promise<Error> {
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("resume", workflowResumeCommand);
+  return await assertRejects(
+    () => root.parse(["resume", ...args, "--repo-dir", repoDir]),
+    Error,
+  );
+}
+
+async function reloadRun(
+  repoDir: string,
+  workflow: Workflow,
+  runId: string,
+): Promise<WorkflowRun | null> {
+  return await new YamlWorkflowRunRepository(repoDir).findById(
+    createWorkflowId(workflow.id),
+    createWorkflowRunId(runId),
+  );
+}
+
+for (const from of [undefined, "package"]) {
+  const mode = from ? "--from" : "retry";
+  Deno.test({
+    name:
+      `workflowResumeCommand: an evaluation failure (${mode}) is a classified UserError and leaves the run failed`,
+    // The command leaves its run tracker and catalog store to process exit.
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withRepo(async (repoDir) => {
+        const { workflow, tracker, catalogStore, failed } = await failPipeline(
+          repoDir,
+        );
+        try {
+          const before = (await reloadRun(repoDir, workflow, failed.id))!
+            .toData();
+
+          const error = await resumeCommandError(repoDir, [
+            workflow.name,
+            "--run",
+            failed.id,
+            ...(from ? ["--from", from] : []),
+            "--input",
+            "build=x",
+          ]);
+
+          assertInstanceOf(error, UserError);
+          assertEquals(error.code, "workflow_resume_failed");
+          assertEquals(
+            error.message.startsWith(
+              "Workflow resume failed: Invalid expression",
+            ),
+            true,
+            error.message,
+          );
+          assertStringIncludes(error.message, "no such overload");
+
+          // The --json shape: classified, and no internal stack.
+          const json = buildErrorJson(error);
+          assertEquals(json.code, "workflow_resume_failed");
+          assertEquals("stack" in json, false);
+
+          // resume() restored the run, so it can be resumed again.
+          const reloaded = await reloadRun(repoDir, workflow, failed.id);
+          assertEquals(reloaded?.status, "failed");
+          assertEquals(reloaded?.toData(), before);
+        } finally {
+          tracker.close();
+          catalogStore.close();
+        }
+      });
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "workflowResumeCommand: a UserError from the resume stream passes through unchanged",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const { workflow, tracker, catalogStore, failed } = await failPipeline(
+        repoDir,
+      );
+      try {
+        // The resolver accepts any --from on a failed run; resume() rejects
+        // the unknown step inside the stream.
+        const error = await resumeCommandError(repoDir, [
+          workflow.name,
+          "--run",
+          failed.id,
+          "--from",
+          "nosuchstep",
+        ]);
+
+        assertInstanceOf(error, UserError);
+        assertStringIncludes(
+          error.message,
+          'Step "nosuchstep" not found in workflow',
+        );
+        assertEquals(
+          error.message.startsWith("Workflow resume failed:"),
+          false,
+          error.message,
+        );
+        assertEquals(error.code, undefined);
+        assertEquals(
+          (await reloadRun(repoDir, workflow, failed.id))?.status,
+          "failed",
+        );
+      } finally {
+        tracker.close();
+        catalogStore.close();
+      }
+    });
+  },
+});

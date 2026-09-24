@@ -602,6 +602,7 @@ Codes used across libswamp generators and the CLI error boundary:
 | `workflow_load_failed`      | `workflows/run`    | Workflow file exists but could not be loaded    |
 | `workflow_execution_failed` | `workflows/run`    | Workflow step execution failed                  |
 | `input_validation_failed`   | `workflows/run`    | Workflow input validation failed                |
+| `workflow_resume_failed`    | `workflow_resume`  | Unexpected resume error; serve: also refusals   |
 
 This table is not exhaustive — generators may define additional codes for
 domain-specific errors. The `code` field is always a `snake_case` string.

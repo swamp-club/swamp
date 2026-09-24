@@ -337,6 +337,14 @@ suspended and `--from` resumes. A retry that throws once steps are running
 completes the run as failed. It can leave pending reset steps behind. Automatic
 retry refuses such a run and suggests `resume --run <id> --from <step>`.
 
+The local `workflow resume` command reports an error from `resume()` that is not
+a `UserError` as one line, `Workflow resume failed: <message>`, with the code
+`workflow_resume_failed`, the code serve also sends for a failed resume. The
+original error and its stack go to the debug log. A `UserError` passes through
+unchanged, with its message, any next-command hint and any code it carries. An
+error while an interrupted resume unwinds (Ctrl-C or `--timeout` after the run
+started) is not reported; the run is recorded as cancelled instead.
+
 **Run tracker:** the tracker row follows the resuming process. See
 [run tracker](../enablers/run-tracker.md).
 

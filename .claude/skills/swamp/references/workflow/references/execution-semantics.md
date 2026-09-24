@@ -36,7 +36,14 @@ Resume is a separate invocation: `swamp workflow resume <workflow>`. It
 re-enters the executor, skips completed steps, and runs the remaining pending
 steps. Resume accepts `--input` to supply or override values that were not
 available at the original run time (e.g., elevated credentials issued during the
-gate).
+gate). If a resume fails while it is being prepared (building the expression
+context and evaluating expressions, before any step runs), the run is left as it
+was, so fix the input and resume again. A refusal, such as an unknown `--from`
+step, keeps its own message. Other errors, such as an `--input` value that makes
+an expression fail to evaluate, exit 1 with `Workflow resume failed: ...`
+(`--json` code `workflow_resume_failed`). A failure after steps start is not
+rolled back: check the run with `swamp workflow history get <run-id>` before
+resuming again.
 
 Under `swamp serve`, a workflow with `autoResume: true` resumes without that
 second invocation. Serve launches the resume once an approval made through serve

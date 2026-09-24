@@ -505,7 +505,26 @@ export const workflowResumeCommand = withRemoteOptions(
       } catch (error) {
         // An error before `started` is a real failure to resume, not the
         // abort unwinding, so it is reported.
-        if (!abort.signal.aborted || !started) throw error;
+        if (!abort.signal.aborted || !started) {
+          // A UserError is already user-facing: resume()'s refusals name the
+          // next command to run, and any code it carries must reach the JSON
+          // output and exit code intact. Wrapping it would lose both, so it
+          // passes through unchanged.
+          if (error instanceof UserError) {
+            throw error;
+          }
+          // Anything else is unexpected. Keep the original error, stack
+          // included, at debug level, then report it as one classified line —
+          // the code serve sends for a failed resume.
+          cliCtx.logger.debug`Workflow resume failed: ${error}`;
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          throw new UserError(
+            `Workflow resume failed: ${message}`,
+            "workflow_resume_failed",
+          );
+        }
       }
       if (abort.signal.aborted) {
         // resume() saves the cancelled status itself. This covers an unwind
