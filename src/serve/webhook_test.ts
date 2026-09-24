@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   buildWebhookPayload,
@@ -824,15 +824,18 @@ Deno.test("resolveExtensionWebhookEndpoints: rejects invalid config", async () =
 });
 
 Deno.test("resolveExtensionWebhookEndpoints: rejects an unresolvable type", async () => {
-  await assertRejects(
+  const error = await assertRejects(
     () =>
       resolveExtensionWebhookEndpoints(
         [extensionEndpoint("@test/nope", {})],
         () => Promise.resolve(false),
       ),
     UserError,
-    "no webhook extension of that type is installed",
+    "no installed extension provides that webhook type",
   );
+  // The scheme is a type, not an extension name (swamp-club#2476).
+  assertEquals(error.message.includes("extension pull @test/nope"), false);
+  assertStringIncludes(error.message, "swamp extension search");
 });
 
 Deno.test("resolveExtensionWebhookEndpoints: leaves built-in endpoints untouched", async () => {

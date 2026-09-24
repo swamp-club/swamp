@@ -156,6 +156,48 @@ export function renderAutoResolveAlreadyInstalled(
   }
 }
 
+export function renderAutoResolveInstalledWithoutType(
+  extension: string,
+  type: string,
+  installedVersion: string | undefined,
+  newerVersion: string | undefined,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify({
+        event: "auto_resolve",
+        status: "failed",
+        extension,
+        type,
+        reason: "type_not_provided",
+        installedVersion: installedVersion ?? null,
+        newerVersion: newerVersion ?? null,
+      }),
+    );
+  } else {
+    const installed = installedVersion
+      ? `${extension}@${installedVersion}`
+      : extension;
+    writeOutput(
+      gutterLine(
+        "Error",
+        STATUS_COLORS.error,
+        `${installed} is installed but does not provide ${type}`,
+      ),
+    );
+    if (newerVersion) {
+      writeContentLine(
+        `${extension}@${newerVersion} is available and may provide it. To upgrade: swamp extension update ${extension}`,
+      );
+    } else {
+      writeContentLine(
+        `Check the type name, or find the extension that provides it with: swamp extension search`,
+      );
+    }
+  }
+}
+
 export function renderAutoResolveTruncated(
   extension: string,
   path: string,

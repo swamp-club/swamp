@@ -23,6 +23,7 @@ import {
   renderAutoResolveAlreadyInstalled,
   renderAutoResolveCollectiveNotTrusted,
   renderAutoResolveInstalled,
+  renderAutoResolveInstalledWithoutType,
   renderAutoResolveInstalling,
   renderAutoResolveLegacyInstallation,
   renderAutoResolveLocalSourceFailed,
@@ -107,6 +108,45 @@ Deno.test("renderAutoResolveAlreadyInstalled: log mode shows Error not Warning",
   assertStringIncludes(output, "already installed at");
   assertStringIncludes(output, "failed to load");
   assertStringIncludes(output, 'swamp extension pull "@acme/widget" --force');
+});
+
+Deno.test("renderAutoResolveInstalledWithoutType: log mode names the newer version and update command", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstalledWithoutType(
+      "@acme/send",
+      "@acme/send-webhook",
+      "2026.09.19.2",
+      "2026.09.24.1",
+      "log",
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(
+    output,
+    "@acme/send@2026.09.19.2 is installed but does not provide @acme/send-webhook",
+  );
+  assertStringIncludes(output, "@acme/send@2026.09.24.1 is available");
+  assertStringIncludes(output, "swamp extension update @acme/send");
+  // swamp-club#2476: an install that loaded cleanly is not "failed to
+  // load", and a destructive --force re-pull is not the fix.
+  assertEquals(output.includes("failed to load"), false);
+  assertEquals(output.includes("--force"), false);
+});
+
+Deno.test("renderAutoResolveInstalledWithoutType: log mode without a newer version points at search", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstalledWithoutType(
+      "@acme/send",
+      "@acme/send-webhook",
+      "2026.09.24.1",
+      undefined,
+      "log",
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "does not provide @acme/send-webhook");
+  assertStringIncludes(output, "swamp extension search");
+  assertEquals(output.includes("swamp extension update"), false);
 });
 
 Deno.test("renderAutoResolveTruncated: log mode shows Error not Warning", () => {
@@ -213,6 +253,33 @@ Deno.test("renderAutoResolveAlreadyInstalled: json mode emits failed status", ()
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.status, "failed");
     assertEquals(parsed.reason, "already_installed");
+  } finally {
+    console.log = origLog;
+  }
+});
+
+Deno.test("renderAutoResolveInstalledWithoutType: json mode emits type_not_provided", () => {
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    renderAutoResolveInstalledWithoutType(
+      "@acme/send",
+      "@acme/send-webhook",
+      "2026.09.19.2",
+      undefined,
+      "json",
+    );
+    assertEquals(logs.length, 1);
+    assertEquals(JSON.parse(logs[0]), {
+      event: "auto_resolve",
+      status: "failed",
+      extension: "@acme/send",
+      type: "@acme/send-webhook",
+      reason: "type_not_provided",
+      installedVersion: "2026.09.19.2",
+      newerVersion: null,
+    });
   } finally {
     console.log = origLog;
   }

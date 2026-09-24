@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { CalVer } from "../models/calver.ts";
 import { ModelType } from "../models/model_type.ts";
 import { type ModelDefinition, modelRegistry } from "../models/model.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
@@ -72,9 +73,14 @@ export interface ExtensionInstallResultInfo {
  *   pinned version that will be installed — so progress output reports the
  *   version that actually lands, not registry-latest (swamp-club#465).
  * - `intact`: lockfile entry exists, the directory exists, and every
- *   file listed in the lockfile is present on disk. If the type still
- *   failed to register, the cause is local (e.g. user edits with a
- *   syntax error) — see `AutoResolveOutputPort.alreadyInstalledButFailed`.
+ *   file listed in the lockfile is present on disk. `installedVersion` is
+ *   the lockfile version. `loadFailures` is true when a source under the
+ *   extension's directory failed to bundle or validate, false when none
+ *   did, and absent when the adapter cannot tell. With failures (or
+ *   unknown), the cause is local — see
+ *   `AutoResolveOutputPort.alreadyInstalledButFailed`. Without, the
+ *   extension loaded but does not provide the type — see
+ *   `AutoResolveOutputPort.installedWithoutType` (swamp-club#2476).
  * - `truncated`: lockfile entry + directory both exist, but one or more
  *   files the lockfile lists are absent from disk. This is the
  *   "present but incomplete" state that looks installed to a directory
@@ -86,7 +92,12 @@ export interface ExtensionInstallResultInfo {
  */
 export type InstallationInspection =
   | { state: "missing"; lockedVersion?: string }
-  | { state: "intact"; path: string }
+  | {
+    state: "intact";
+    path: string;
+    installedVersion?: string;
+    loadFailures?: boolean;
+  }
   | { state: "truncated"; path: string; missing: string[] }
   | { state: "legacy"; paths: string[] };
 
@@ -143,6 +154,19 @@ export interface AutoResolveOutputPort {
    * opt-in command to reset to the registry version.
    */
   alreadyInstalledButFailed(extension: string, path: string): void;
+  /**
+   * Emitted when auto-resolution finds an intact extension whose sources
+   * all loaded, yet it does not provide the requested type — typically
+   * because the installed version predates the one that added it.
+   * `newerVersion` is set when the registry has a newer version than the
+   * one installed, which may provide the type. See swamp-club#2476.
+   */
+  installedWithoutType(
+    extension: string,
+    type: string,
+    installedVersion: string | undefined,
+    newerVersion: string | undefined,
+  ): void;
   /**
    * Emitted when auto-resolution finds a pulled extension directory
    * that is incomplete — the lockfile says certain files should be
@@ -298,7 +322,7 @@ export class ExtensionAutoResolver {
       );
 
       if (extensionName) {
-        return await this.installAndLoad(extensionName);
+        return await this.installAndLoad(extensionName, normalizedType);
       }
 
       // Step 2: Search fallback
@@ -308,7 +332,7 @@ export class ExtensionAutoResolver {
       );
 
       if (searchResult) {
-        return await this.installAndLoad(searchResult);
+        return await this.installAndLoad(searchResult, normalizedType);
       }
 
       output.notFound(normalizedType);
@@ -419,7 +443,10 @@ export class ExtensionAutoResolver {
   /**
    * Installs an extension and hot-loads its models/vaults into live registries.
    */
-  private async installAndLoad(extensionName: string): Promise<boolean> {
+  private async installAndLoad(
+    extensionName: string,
+    normalizedType: string,
+  ): Promise<boolean> {
     const { extensionLookup, extensionInstaller, output } = this.config;
 
     // Get extension info for display
@@ -442,7 +469,19 @@ export class ExtensionAutoResolver {
       extensionName,
     );
     if (inspection.state === "intact") {
-      output.alreadyInstalledButFailed(extensionName, inspection.path);
+      // Only blame local edits when a source actually failed to load (or
+      // the adapter cannot tell). An install that loaded cleanly but lacks
+      // the type is usually an older version (swamp-club#2476).
+      if (inspection.loadFailures === false) {
+        output.installedWithoutType(
+          extensionName,
+          normalizedType,
+          inspection.installedVersion,
+          newerVersionThan(inspection.installedVersion, version),
+        );
+      } else {
+        output.alreadyInstalledButFailed(extensionName, inspection.path);
+      }
       return false;
     }
     if (inspection.state === "truncated") {
@@ -507,6 +546,23 @@ export class ExtensionAutoResolver {
     }
     return false;
   }
+}
+
+/**
+ * Returns `latest` when both versions are CalVer and `latest` is newer than
+ * `installed`; undefined otherwise, including for grandfathered lockfile
+ * entries whose version is missing or not CalVer.
+ */
+function newerVersionThan(
+  installed: string | undefined,
+  latest: string,
+): string | undefined {
+  if (!installed || !CalVer.isValid(installed) || !CalVer.isValid(latest)) {
+    return undefined;
+  }
+  return CalVer.compare(CalVer.create(latest), CalVer.create(installed)) > 0
+    ? latest
+    : undefined;
 }
 
 /**
