@@ -368,7 +368,7 @@ export function closeConnectionsForPrincipal(principalId: string): void {
   const sockets = principalSockets.get(principalId);
   if (!sockets) return;
   for (const socket of [...sockets]) {
-    closeSession(socket, 4003, "Session revoked");
+    closeSession(socket, 4003, PRINCIPAL_REVOKED_REASON);
   }
 }
 
@@ -422,9 +422,10 @@ export type TokenSessionTerminationCause =
   | "deleted"
   | "invalid";
 
-// Close reasons for token-driven terminations (all well under the 123-byte
+// Close reasons for server-initiated revocations (all well under the 123-byte
 // close-frame limit). Each names its cause, so a client can tell a revoked
-// token apart from a principal losing access ("Session revoked").
+// token apart from a principal losing access.
+export const PRINCIPAL_REVOKED_REASON = "Session revoked: access removed";
 export const TOKEN_REVOKED_REASON = "Session revoked: token revoked";
 export const TOKEN_ROTATED_REASON =
   "Session revoked: token rotated, reconnect with the new credential";

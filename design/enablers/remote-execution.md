@@ -242,8 +242,11 @@ session's work running. The 8-hour session cap still applies.
 On the client, a run whose socket closes with 4003 stops and reports the
 server's reason (`src/cli/remote_run.ts`) instead of reconnecting: the
 credential was revoked, so reattaching with it cannot succeed. Other drops
-after the run ID is known, including the 4002 session cap, still reconnect and
-send `run.attach`.
+after the run ID is known, including 4002, still reconnect and send
+`run.attach`: 4002 covers both the 8-hour cap, where reconnecting works, and
+token expiry, where the upgrade refuses it. The client keeps the last close
+reason and, when a reconnect is refused, reports it alongside the refusal, so
+an expired token reads as expired rather than as a bare authentication error.
 
 One known edge in HA: a client that reconnects with a rotated credential to a
 peer that has not yet pulled the new record is bound to the old `createdAt`,

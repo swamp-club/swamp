@@ -645,7 +645,10 @@ Deno.test("closeConnectionsForPrincipal: stops each session's work before closin
   closeConnectionsForPrincipal(principalId);
 
   assertEquals(order, ["teardown", "close"]);
-  assertEquals(s.closes, [{ code: 4003, reason: "Session revoked" }]);
+  assertEquals(s.closes, [{
+    code: 4003,
+    reason: "Session revoked: access removed",
+  }]);
 });
 
 Deno.test("closeSession: a failing teardown still closes the socket", () => {

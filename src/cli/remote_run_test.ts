@@ -1311,6 +1311,70 @@ Deno.test({
 
 Deno.test({
   name:
+    "remote run: when a reconnect after a server close is refused, the error names the close reason",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // First connection: the run starts, then the token expires (4002). Every
+    // reconnect is refused at the upgrade, as serve does for an expired token.
+    let upgrades = 0;
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        upgrades++;
+        if (upgrades > 1) {
+          return new Response("Unauthorized: expired", { status: 401 });
+        }
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const request = JSON.parse(event.data as string);
+          socket.send(JSON.stringify({
+            type: "event",
+            id: request.id,
+            event: {
+              kind: "started",
+              runId: "run-expired",
+              workflowName: "wf",
+              seq: 1,
+            },
+          }));
+          setTimeout(
+            () =>
+              socket.close(
+                4002,
+                "Session expired: token expired, re-authenticate with a new token",
+              ),
+            20,
+          );
+        };
+        return response;
+      },
+    );
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: `ws://127.0.0.1:${server.addr.port}`,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(
+        error.message,
+        "(code 4002: Session expired: token expired, re-authenticate with a new token)",
+      );
+      assertStringIncludes(error.message, "reconnecting failed");
+      assertStringIncludes(error.message, "swamp run history");
+      assertEquals(upgrades, 2, "one reconnect attempt, then stop");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "remote run: a revoked session (4003) after the run started reports why instead of reconnecting",
   sanitizeOps: false,
   sanitizeResources: false,

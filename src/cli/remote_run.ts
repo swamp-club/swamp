@@ -1064,7 +1064,7 @@ interface OutboundRequest {
 
 type StreamOutcome =
   | { kind: "done" }
-  | { kind: "disconnected" }
+  | { kind: "disconnected"; closeDetail?: string }
   | { kind: "elsewhere"; instanceId: string }
   | { kind: "interrupted"; instanceId: string; reason: string };
 
@@ -1261,7 +1261,7 @@ async function* singleConnectionStream(
           );
         }
         if (state.runId) {
-          return { kind: "disconnected" as const };
+          return { kind: "disconnected" as const, closeDetail };
         }
         throw new UserError(
           `Connection to the server closed before the run completed${closeDetail}`,
@@ -1308,6 +1308,9 @@ async function* streamServerRun(
     payload: { runId: string; afterSeq: number };
   } = request;
   const logger = getReconnectLogger();
+  // Why the server closed the last connection (e.g. ` (code 4002: Session
+  // expired: token expired, …)`), so a reconnect that fails can say why.
+  let lastCloseDetail = "";
 
   while (true) {
     let outcome: StreamOutcome;
@@ -1324,6 +1327,16 @@ async function* streamServerRun(
         yield result.value;
       }
     } catch (err) {
+      if (err instanceof UserError && lastCloseDetail && !receivedEvents) {
+        // A reconnect after the server closed the session failed — most often
+        // because the token expired. Say why the session ended, not just why
+        // the reconnect was refused.
+        throw new UserError(
+          `The server ended this session${lastCloseDetail} and reconnecting ` +
+            `failed: ${err.message}. ` +
+            "Check the run's final status with: swamp run history",
+        );
+      }
       if (
         !state.runId || err instanceof DOMException ||
         err instanceof UserError || !(err instanceof Error)
@@ -1343,6 +1356,7 @@ async function* streamServerRun(
     if (receivedEvents) {
       reconnectRetries = 0;
       elsewhereRetries = 0;
+      lastCloseDetail = "";
     }
 
     if (outcome.kind === "done") {
@@ -1378,10 +1392,11 @@ async function* streamServerRun(
     }
 
     // disconnected — attempt reconnection
+    if (outcome.closeDetail) lastCloseDetail = outcome.closeDetail;
     reconnectRetries++;
     if (reconnectRetries > MAX_RECONNECT_RETRIES) {
       throw new UserError(
-        "Connection lost and could not reconnect after " +
+        `Connection lost${lastCloseDetail} and could not reconnect after ` +
           `${MAX_RECONNECT_RETRIES} retries. ` +
           "Check the run's final status with: swamp run history",
       );
