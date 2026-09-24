@@ -688,9 +688,9 @@ the model, self and env reference checks, whose extractors would otherwise read
 `github.event.model.foo` as a model reference. Foreign text joins the
 `Template syntax passed through` warning, and a declared field silences it
 there too. The `Global arguments` schema check keeps foreign text in, as the
-run does, rather than skipping the check. Two cases still fail: text whose first name is one of the repo's
-models (`${{ my-vpc.VpcId }}` is a missing `model.` prefix), and text that CEL
-cannot parse.
+run does, rather than skipping the check. Two cases still fail: text whose
+first name is one of the repo's models (`${{ my-vpc.VpcId }}` is a missing
+`model.` prefix), and text that CEL cannot parse.
 
 Related gaps are tracked separately. A `literal("...")` function for
 strings that mix swamp and vendor syntax needs an expression scanner that
