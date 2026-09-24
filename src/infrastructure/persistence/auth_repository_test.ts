@@ -21,9 +21,8 @@ import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { AuthRepository } from "./auth_repository.ts";
 import {
-  apiKeyFingerprint,
   type AuthCredentials,
-  scopeCacheFingerprint,
+  keyFingerprint,
 } from "../../domain/auth/auth_credentials.ts";
 
 const TEST_CREDENTIALS: AuthCredentials = {
@@ -247,7 +246,7 @@ Deno.test("AuthRepository - load merges cached identity when fingerprint matches
     });
     await fileRepo.save({
       ...TEST_CREDENTIALS,
-      apiKeyFingerprint: "swamp_env_ke",
+      apiKeyFingerprint: await keyFingerprint("swamp_env_key_123"),
       collectives: ["myorg"],
     });
 
@@ -277,7 +276,7 @@ Deno.test("AuthRepository - load does not merge when fingerprint mismatches (key
     });
     await fileRepo.save({
       ...TEST_CREDENTIALS,
-      apiKeyFingerprint: "swamp_old_ke",
+      apiKeyFingerprint: await keyFingerprint("swamp_old_key_000"),
       collectives: ["stale-org"],
     });
 
@@ -290,6 +289,36 @@ Deno.test("AuthRepository - load does not merge when fingerprint mismatches (key
 
     assertExists(loaded);
     assertEquals(loaded.apiKey, "swamp_new_key_456");
+    assertEquals(loaded.username, "");
+    assertEquals(loaded.collectives, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - load treats a legacy 12-char prefix fingerprint as stale", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const fileRepo = new AuthRepository({
+      configDir,
+      getApiKey: () => undefined,
+    });
+    // Written by CLIs that cached the key's first 12 characters.
+    await fileRepo.save({
+      ...TEST_CREDENTIALS,
+      apiKeyFingerprint: "swamp_env_ke",
+      collectives: ["myorg"],
+    });
+
+    const envRepo = new AuthRepository({
+      configDir,
+      getApiKey: () => "swamp_env_key_123",
+      getServerUrl: () => undefined,
+    });
+    const loaded = await envRepo.load();
+
+    assertExists(loaded);
     assertEquals(loaded.username, "");
     assertEquals(loaded.collectives, undefined);
   } finally {
@@ -367,7 +396,7 @@ Deno.test("AuthRepository - saveIdentityCache leaves a login key for another ser
       "https://other.example.com",
       "envuser",
       ["envorg"],
-      apiKeyFingerprint("swamp_env_key_123"),
+      await keyFingerprint("swamp_env_key_123"),
       ["extensions:push"],
     );
 
@@ -391,7 +420,7 @@ Deno.test("AuthRepository - load serves an env key's identity cached beside a lo
       "https://other.example.com",
       "envuser",
       ["envorg"],
-      apiKeyFingerprint("swamp_env_key_123"),
+      await keyFingerprint("swamp_env_key_123"),
       ["extensions:push"],
     );
 
@@ -759,20 +788,4 @@ Deno.test("AuthRepository - delete also removes scope_cache.json", async () => {
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
-});
-
-// ── scopeCacheFingerprint tests ───────────────────────────────────────
-
-import { assertNotEquals } from "@std/assert";
-
-Deno.test("scopeCacheFingerprint: tokens sharing 12-char prefix produce different hashes", async () => {
-  const fpA = await scopeCacheFingerprint("swamp_org_abTOKEN_A_REST");
-  const fpB = await scopeCacheFingerprint("swamp_org_abTOKEN_B_REST");
-  assertNotEquals(fpA, fpB);
-});
-
-Deno.test("scopeCacheFingerprint: same token produces stable hash", async () => {
-  const fp1 = await scopeCacheFingerprint("swamp_org_abMyToken123");
-  const fp2 = await scopeCacheFingerprint("swamp_org_abMyToken123");
-  assertEquals(fp1, fp2);
 });

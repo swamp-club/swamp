@@ -41,6 +41,8 @@ export interface AuthTokenListItem {
   id: string;
   name: string;
   keyPrefix: string;
+  /** Absent when the server does not report one. */
+  fingerprint?: string;
   enabled: boolean;
   expiresAt: string | null;
   createdAt: string;
@@ -101,6 +103,7 @@ function toListItem(token: CollectiveTokenMetadata): AuthTokenListItem {
     id: token.id,
     name: token.name,
     keyPrefix: token.keyPrefix,
+    ...(token.fingerprint ? { fingerprint: token.fingerprint } : {}),
     enabled: token.enabled,
     expiresAt: token.expiresAt,
     createdAt: token.createdAt,

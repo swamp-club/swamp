@@ -24,17 +24,13 @@ export const DEFAULT_SWAMP_CLUB_URL = "https://swamp-club.com";
  * old domain can be transparently migrated on load. */
 export const LEGACY_SWAMP_CLUB_URL = "https://swamp.club";
 
-/** First 12 characters of an API key, used for identity-cache staleness detection. */
-export function apiKeyFingerprint(apiKey: string): string {
-  return apiKey.slice(0, 12);
-}
-
-/** SHA-256-based fingerprint for the scope cache, avoiding the prefix-collision
- *  problem where collective tokens sharing a 10-char `swamp_org_` prefix had
- *  only 2 distinguishing characters in the old 12-char prefix scheme. */
-export async function scopeCacheFingerprint(
-  apiKey: string,
-): Promise<string> {
+/**
+ * The fingerprint of an API key: the first 16 hex characters of the SHA-256 of
+ * the full key. swamp-club shows the same value next to every personal API key
+ * and collective token, so it identifies which key to revoke without revealing
+ * any of it. Also the cache key for the identity and scope caches.
+ */
+export async function keyFingerprint(apiKey: string): Promise<string> {
   const data = new TextEncoder().encode(apiKey);
   const hash = await crypto.subtle.digest("SHA-256", data);
   const bytes = new Uint8Array(hash);
@@ -56,7 +52,9 @@ export interface AuthCredentials {
   collectives?: string[];
   /** Cached token scopes from the last login/whoami (collective tokens only) */
   scopes?: string[];
-  /** Prefix of the API key that was active when identity was cached.
-   *  Used to detect key rotation for SWAMP_API_KEY users. */
+  /** {@link keyFingerprint} of the API key that was active when identity was
+   *  cached. Used to detect key rotation for SWAMP_API_KEY users. Older files
+   *  hold a 12-character key prefix instead, which never matches and so reads
+   *  as stale. */
   apiKeyFingerprint?: string;
 }

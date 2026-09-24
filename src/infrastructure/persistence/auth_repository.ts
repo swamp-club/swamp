@@ -21,9 +21,9 @@ import { join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampConfigDir } from "./paths.ts";
 import {
-  apiKeyFingerprint,
   type AuthCredentials,
   DEFAULT_SWAMP_CLUB_URL,
+  keyFingerprint,
   LEGACY_SWAMP_CLUB_URL,
 } from "../../domain/auth/auth_credentials.ts";
 
@@ -95,7 +95,7 @@ export class AuthRepository {
     const envApiKey = this.getApiKey();
     if (envApiKey) {
       const serverUrl = this.getServerUrl() ?? DEFAULT_SWAMP_CLUB_URL;
-      const fingerprint = apiKeyFingerprint(envApiKey);
+      const fingerprint = await keyFingerprint(envApiKey);
 
       let username = "";
       let collectives: string[] | undefined;

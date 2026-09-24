@@ -508,3 +508,29 @@ Deno.test("JsonAuthWhoamiRenderer - omits effectiveServeUrl for an unparseable s
   assertEquals("effectiveServeUrl" in JSON.parse(output), false);
   assertEquals(output.includes("zz9"), false);
 });
+
+// --- key fingerprint rendering ---
+
+Deno.test("LogAuthWhoamiRenderer - shows the key fingerprint", () => {
+  const output = captureLog(
+    { ...makeIdentity(), fingerprint: "7cba95208c56e033" },
+    "log",
+  );
+  assertStringIncludes(output, "Fingerprint: 7cba95208c56e033");
+});
+
+Deno.test("JsonAuthWhoamiRenderer - personal credential includes the fingerprint", () => {
+  const output = captureLog(
+    { ...makeIdentity(), fingerprint: "7cba95208c56e033" },
+    "json",
+  );
+  assertEquals(JSON.parse(output).fingerprint, "7cba95208c56e033");
+});
+
+Deno.test("JsonAuthWhoamiRenderer - collective token includes the fingerprint", () => {
+  const output = captureLog(
+    { ...makeCollectiveTokenIdentity(), fingerprint: "7cba95208c56e033" },
+    "json",
+  );
+  assertEquals(JSON.parse(output).fingerprint, "7cba95208c56e033");
+});

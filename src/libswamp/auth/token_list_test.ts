@@ -212,3 +212,27 @@ Deno.test("authTokenList: handles empty token list", async () => {
   >;
   assertEquals(completed.data.tokens, []);
 });
+
+Deno.test("authTokenList: passes through a server fingerprint and omits the field when absent", async () => {
+  const ctx = createLibSwampContext();
+  const deps = makeDeps({
+    listTokens: () =>
+      Promise.resolve({
+        tokens: [
+          { ...testListResponse.tokens[0], fingerprint: "7cba95208c56e033" },
+          testListResponse.tokens[1],
+        ],
+      }),
+  });
+
+  const events = await collect<AuthTokenListEvent>(
+    authTokenList(ctx, deps, { collective: "myorg" }),
+  );
+
+  const completed = events[1] as Extract<
+    AuthTokenListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.tokens[0].fingerprint, "7cba95208c56e033");
+  assertEquals("fingerprint" in completed.data.tokens[1], false);
+});

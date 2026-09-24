@@ -117,9 +117,8 @@ import {
   setScopeResolutionFailed,
 } from "./auth_context.ts";
 import {
-  apiKeyFingerprint,
   DEFAULT_SWAMP_CLUB_URL,
-  scopeCacheFingerprint,
+  keyFingerprint,
 } from "../domain/auth/auth_credentials.ts";
 import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
@@ -1581,7 +1580,7 @@ export async function runCli(args: string[]): Promise<void> {
       if (creds) {
         if (creds.apiKey) setCollectiveToken(creds.apiKey);
         if (isCollectiveToken()) {
-          const scopeFingerprint = await scopeCacheFingerprint(creds.apiKey);
+          const scopeFingerprint = await keyFingerprint(creds.apiKey);
           const cachedScopes = await authRepo.loadScopeCache(scopeFingerprint);
           if (cachedScopes) {
             setAuthScopes(cachedScopes);
@@ -1611,7 +1610,7 @@ export async function runCli(args: string[]): Promise<void> {
               creds.serverUrl,
               response.username,
               collectives,
-              apiKeyFingerprint(creds.apiKey),
+              await keyFingerprint(creds.apiKey),
               response.scopes,
             );
           }
