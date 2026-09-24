@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join, resolve } from "@std/path";
-import { assertContainedPath } from "../../infrastructure/persistence/safe_path.ts";
+import {
+  assertContainedPath,
+  PathTraversalError,
+} from "../../infrastructure/persistence/safe_path.ts";
 import { tombstoneAll } from "../../domain/extensions/extension.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
@@ -30,6 +33,16 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
+/**
+ * A tracked file that `extension rm` could not delete. `reason` is the
+ * Deno error name (e.g. `PermissionDenied`), never the error message,
+ * so no absolute path reaches a serve client.
+ */
+export interface FailedFile {
+  path: string;
+  reason: string;
+}
+
 /** Result of `RemoveExtensionService.execute()`. */
 export interface RemoveExtensionResult {
   name: string;
@@ -37,7 +50,19 @@ export interface RemoveExtensionResult {
   filesDeleted: number;
   filesSkipped: number;
   dirsRemoved: number;
+  /**
+   * Tracked files left on disk because deleting them failed. The
+   * catalog and lockfile no longer track them, so the user has to
+   * remove them by hand.
+   */
+  failedFiles: FailedFile[];
 }
+
+/** Removes a filesystem path. Defaults to `Deno.remove`. */
+export type RemovePathFn = (
+  path: string,
+  options?: Deno.RemoveOptions,
+) => Promise<void>;
 
 /**
  * W2 lifecycle service for removing an installed extension. **Closes
@@ -54,6 +79,13 @@ export interface RemoveExtensionResult {
  * means a mid-rm crash leaves files on disk but the catalog clean — the
  * next loader pass surfaces the orphans via the existing
  * `findStaleFiles` fallback. Pinned in plan v4.
+ *
+ * **Validate before mutating.** Every tracked path is checked before
+ * the catalog write, so a path outside the repo fails the rm with
+ * nothing changed and a retry still sees the extension installed.
+ * Once the catalog and lockfile are updated, a file that cannot be
+ * deleted is reported in `failedFiles` instead of aborting the rm
+ * halfway (swamp-club#2489).
  *
  * **Idempotency.** A double-rm yields a clean `UserError("not
  * installed")` on the second call, NOT silent success and NOT an
@@ -73,27 +105,33 @@ export class RemoveExtensionService {
   private readonly lockfileRepository: LockfileRepository;
   private readonly repoDir: string;
   private readonly pulledExtensionsRoot: string;
+  private readonly removePath: RemovePathFn;
 
   constructor(args: {
     repository: ExtensionRepository;
     lockfileRepository: LockfileRepository;
     repoDir: string;
     pulledExtensionsRoot?: string;
+    /** Test seam. Defaults to `Deno.remove`. */
+    removePath?: RemovePathFn;
   }) {
     this.repository = args.repository;
     this.lockfileRepository = args.lockfileRepository;
     this.repoDir = args.repoDir;
     this.pulledExtensionsRoot = args.pulledExtensionsRoot ??
       resolvePulledExtensionsRoot(this.repoDir);
+    this.removePath = args.removePath ?? Deno.remove;
   }
 
   /**
    * Removes the extension named `name`. Throws {@link UserError} if
-   * `name` is not installed. Returns counts of files deleted, skipped
-   * (already-missing), and parent directories pruned.
+   * `name` is not installed, or if any tracked path resolves outside
+   * the repo (nothing is changed in that case). Returns counts of
+   * files deleted, skipped (already-missing), and parent directories
+   * pruned, plus the files that could not be deleted.
    *
-   * Ordering: catalog tombstone-save → lockfile remove → filesystem
-   * delete → empty-dir prune.
+   * Ordering: path validation → catalog tombstone-save → lockfile
+   * remove → filesystem delete → empty-dir prune.
    */
   async execute(name: string): Promise<RemoveExtensionResult> {
     // 1. Idempotency check — surface a clean error if the extension
@@ -108,6 +146,30 @@ export class RemoveExtensionService {
 
     const version = lockfileEntry?.version ?? extensions[0]?.version ?? "";
     const trackedFiles = lockfileEntry?.files ?? [];
+
+    // 1b. Validate every tracked path before changing anything. A path
+    //     outside the repo (e.g. a pre-.swamp lockfile written with
+    //     SWAMP_MODELS_DIR outside the repo) would otherwise fail
+    //     mid-delete, after the catalog and lockfile had already
+    //     forgotten the extension.
+    const uncontained: string[] = [];
+    for (const filePath of trackedFiles) {
+      try {
+        assertContainedPath(filePath, this.repoDir);
+      } catch (error) {
+        if (!(error instanceof PathTraversalError)) throw error;
+        uncontained.push(filePath);
+      }
+    }
+    if (uncontained.length > 0) {
+      throw new UserError(
+        `Extension ${name} lists ${uncontained.length} path(s) outside ` +
+          `the repository in upstream_extensions.json (first: ` +
+          `${uncontained[0]}). Nothing was removed. Delete those paths ` +
+          `from the extension's "files" list, then retry ` +
+          `\`swamp extension rm ${name}\`.`,
+      );
+    }
 
     // 2. Catalog tombstone-save FIRST. saveAll([tombstoneAll(ext)])
     //    DELETEs every row owned by this extension in one SQLite
@@ -139,23 +201,28 @@ export class RemoveExtensionService {
     }
 
     // 4. Filesystem delete. Last step — by the time we get here the
-    //    catalog and lockfile have already forgotten this extension.
+    //    catalog and lockfile have already forgotten this extension,
+    //    so a failed delete is recorded and the loop carries on
+    //    rather than leaving the remaining files half-removed.
     let filesDeleted = 0;
     let filesSkipped = 0;
+    const failedFiles: FailedFile[] = [];
     const parentDirs: string[] = [];
     for (const filePath of trackedFiles) {
-      assertContainedPath(filePath, this.repoDir);
       const absolutePath = join(this.repoDir, filePath);
       try {
         const stat = await Deno.stat(absolutePath);
-        await Deno.remove(absolutePath, { recursive: stat.isDirectory });
+        await this.removePath(absolutePath, { recursive: stat.isDirectory });
         filesDeleted++;
         parentDirs.push(dirname(absolutePath));
       } catch (error) {
         if (error instanceof Deno.errors.NotFound) {
           filesSkipped++;
         } else {
-          throw error;
+          failedFiles.push({
+            path: filePath,
+            reason: error instanceof Error ? error.name : "Error",
+          });
         }
       }
     }
@@ -208,6 +275,7 @@ export class RemoveExtensionService {
       filesDeleted,
       filesSkipped,
       dirsRemoved,
+      failedFiles,
     };
   }
 }

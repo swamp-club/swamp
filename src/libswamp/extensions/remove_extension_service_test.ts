@@ -1128,3 +1128,134 @@ Deno.test(
     );
   },
 );
+
+// =============================================================
+// swamp-club#2489: validate before mutating, keep going on errors
+// =============================================================
+
+async function installStubExtension(
+  repoDir: string,
+  repository: ExtensionRepository,
+  lockfileRepository: LockfileRepository,
+  extName: string,
+  files: string[],
+): Promise<void> {
+  const installSvc = new InstallExtensionService({
+    denoRuntime: testDenoRuntime,
+    repository,
+    installExtensionFn: async (ref, ctx) => {
+      await ctx.lockfileRepository.writeEntry(ref.name, "1.0.0", files);
+      return makeStubInstallResult(ref.name, "1.0.0", files);
+    },
+  });
+  await installSvc.execute(
+    { name: extName, version: "1.0.0" },
+    makeInstallContext(repoDir, lockfileRepository),
+  );
+}
+
+Deno.test(
+  "RemoveExtensionService.execute: a tracked path outside the repo fails with nothing removed",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const extName = `@test/outside-${id}`;
+        const modelPath = await stageModel(
+          repoDir,
+          extName,
+          "model.ts",
+          MINIMAL_MODEL_CODE(`@test/outside-model-${id}`),
+        );
+        const modelRel = `.swamp/pulled-extensions/${extName}/models/model.ts`;
+        await installStubExtension(
+          repoDir,
+          repository,
+          lockfileRepository,
+          extName,
+          [modelRel, "../outside.txt", "/etc/outside.txt"],
+        );
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await assertRejects(
+          () => removeSvc.execute(extName),
+          UserError,
+          "lists 2 path(s) outside the repository",
+        );
+
+        // Nothing changed: catalog rows, the lockfile entry on disk and
+        // the tracked file all survive.
+        assertEquals(repository.loadByName(extName).length, 1);
+        const onDisk = await LockfileRepository.create(
+          lockfileRepository.lockfilePath,
+        );
+        assertEquals(onDisk.getEntry(extName)?.version, "1.0.0");
+        assertEquals((await Deno.stat(modelPath)).isFile, true);
+
+        // A retry still sees the extension as installed.
+        await assertRejects(
+          () => removeSvc.execute(extName),
+          UserError,
+          "Nothing was removed",
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: a file it cannot delete is reported and the rm completes",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const extName = `@test/locked-${id}`;
+        const lockedPath = await stageModel(
+          repoDir,
+          extName,
+          "a.ts",
+          MINIMAL_MODEL_CODE(`@test/locked-a-${id}`),
+        );
+        const freePath = await stageModel(
+          repoDir,
+          extName,
+          "b.ts",
+          MINIMAL_MODEL_CODE(`@test/locked-b-${id}`),
+        );
+        const lockedRel = `.swamp/pulled-extensions/${extName}/models/a.ts`;
+        const freeRel = `.swamp/pulled-extensions/${extName}/models/b.ts`;
+        await installStubExtension(
+          repoDir,
+          repository,
+          lockfileRepository,
+          extName,
+          [lockedRel, freeRel],
+        );
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+          removePath: (path, options) =>
+            path === lockedPath
+              ? Promise.reject(new Deno.errors.PermissionDenied("locked"))
+              : Deno.remove(path, options),
+        });
+        const result = await removeSvc.execute(extName);
+
+        assertEquals(result.failedFiles, [
+          { path: lockedRel, reason: "PermissionDenied" },
+        ]);
+        assertEquals(result.filesDeleted, 1);
+        assertEquals((await Deno.stat(lockedPath)).isFile, true);
+        await assertRejects(() => Deno.stat(freePath), Deno.errors.NotFound);
+        assertEquals(repository.loadByName(extName).length, 0);
+        assertEquals(lockfileRepository.getEntry(extName), null);
+      },
+    );
+  },
+);

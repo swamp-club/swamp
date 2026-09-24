@@ -1356,10 +1356,17 @@ recognise, counts as current-layout and is ignored rather than swept.
 
 ## Removal
 
-`extension rm` first tombstones the extension's catalog rows, freeing its
-`(kind, type)` slots atomically in one SQLite transaction. It then removes the
-lockfile entry, deletes the files tracked in `upstream_extensions.json`, and
-prunes empty parent directories.
+`extension rm` first checks that every file tracked in `upstream_extensions.json`
+resolves inside the repository. If any path does not, for example in a lockfile
+written before `.swamp/` existed with `SWAMP_MODELS_DIR` outside the repo, rm
+fails with nothing changed and names the paths to remove from the entry.
+
+It then tombstones the extension's catalog rows, freeing its `(kind, type)`
+slots atomically in one SQLite transaction. After that it removes the lockfile
+entry, deletes the tracked files, and prunes empty parent directories. A file
+that cannot be deleted, for example because of a permission error or a file
+locked on Windows, does not stop the rm. It is listed in `failedFiles` for the
+user to remove by hand, since nothing tracks it any more.
 
 If other installed extensions depend on the target (found by scanning their
 `manifest.yaml` files on disk), a warning is shown first.
@@ -1383,7 +1390,8 @@ catalog rows, and the unified loader builds on it.
 ### Asymmetric ordering
 
 Install is **filesystem → lockfile → catalog**. Remove is the inverse:
-**catalog → lockfile → filesystem**.
+**catalog → lockfile → filesystem**, preceded by a path check that changes
+nothing when it fails.
 
 If rm deleted files first, the catalog would briefly point
 at deleted bundle files and concurrent type resolution would crash. With the

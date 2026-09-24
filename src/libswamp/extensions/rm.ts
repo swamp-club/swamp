@@ -28,7 +28,10 @@ import { UserError } from "../../domain/errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
-import { RemoveExtensionService } from "./remove_extension_service.ts";
+import {
+  type FailedFile,
+  RemoveExtensionService,
+} from "./remove_extension_service.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
@@ -47,6 +50,12 @@ export interface ExtensionRmData {
   filesDeleted: number;
   filesSkipped: number;
   dirsRemoved: number;
+  /**
+   * Tracked files that could not be deleted and are left on disk.
+   * Optional because a thin client may talk to an older server that
+   * does not send it.
+   */
+  failedFiles?: FailedFile[];
 }
 
 export type ExtensionRmEvent =
@@ -194,7 +203,7 @@ export async function* extensionRm(
 
       const result = await service.execute(input.extensionName);
       ctx.logger
-        .debug`Removed ${input.extensionName} (v${result.version}); ${result.filesDeleted} file(s) deleted, ${result.filesSkipped} skipped, ${result.dirsRemoved} dir(s) pruned`;
+        .debug`Removed ${input.extensionName} (v${result.version}); ${result.filesDeleted} file(s) deleted, ${result.filesSkipped} skipped, ${result.failedFiles.length} failed, ${result.dirsRemoved} dir(s) pruned`;
       yield {
         kind: "completed",
         data: {
@@ -203,6 +212,7 @@ export async function* extensionRm(
           filesDeleted: result.filesDeleted,
           filesSkipped: result.filesSkipped,
           dirsRemoved: result.dirsRemoved,
+          failedFiles: result.failedFiles,
         },
       };
     })(),
