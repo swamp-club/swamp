@@ -20,7 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { assertPathStringIncludes } from "./path_test_helpers.ts";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { dirname, join, SEPARATOR } from "@std/path";
 import {
   createModelOutputId,
   type ExecutionProvenance,
@@ -918,6 +918,467 @@ Deno.test(
       const fallback = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
       const result = await repo.deleteByMethodLifetime(fallback);
       assertEquals(result.deleted, 1);
+    });
+  },
+);
+
+// --- run log removal (swamp-club#2475) ---
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+function localMethodDir(repoDir: string): string {
+  return join(repoDir, ".swamp", "outputs", registeredType.normalized, "run");
+}
+
+async function writeAgedLog(path: string, age: Date): Promise<void> {
+  await ensureDir(dirname(path));
+  await Deno.writeTextFile(path, "run log line\n");
+  await Deno.utime(path, age, age);
+}
+
+/**
+ * Saves a succeeded output with a run log, then ages both files to
+ * startedAt. By default the log lives in the repo-local outputs root and is
+ * named from a timestamp a few ms before startedAt, as createRunLog does.
+ * `logPath` places the log elsewhere; `logFile` records a different value
+ * than the log's path (as a hand-edited record would); `logWrittenAt` sets
+ * the log's mtime instead of startedAt.
+ */
+async function makeOutputWithRunLog(
+  repo: YamlOutputRepository,
+  repoDir: string,
+  startedAt: Date,
+  overrides?: { logPath?: string; logFile?: string; logWrittenAt?: Date },
+): Promise<{ output: ModelOutput; yamlPath: string; logPath: string }> {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "run",
+    status: "running",
+    startedAt,
+    provenance: defaultProvenance,
+  });
+  const logStamp = new Date(startedAt.getTime() - 4).toISOString()
+    .replace(/[:.]/g, "-");
+  const logPath = overrides?.logPath ??
+    join(localMethodDir(repoDir), `${output.definitionId}-${logStamp}.log`);
+  await writeAgedLog(logPath, overrides?.logWrittenAt ?? startedAt);
+  output.setLogFile(overrides?.logFile ?? logPath);
+  output.markSucceeded();
+  await repo.save(registeredType, "run", output);
+  const yamlPath = repo.getPath(registeredType, "run", output);
+  await Deno.utime(yamlPath, startedAt, startedAt);
+  return { output, yamlPath, logPath };
+}
+
+function workflowRunLogPath(repoDir: string): string {
+  return join(
+    repoDir,
+    ".swamp",
+    "workflow-runs",
+    crypto.randomUUID(),
+    `workflow-run-${crypto.randomUUID()}.log`,
+  );
+}
+
+Deno.test(
+  "deleteByMethodLifetime: removes the run log recorded in logFile",
+  async () => {
+    await withTempDir(async (dir) => {
+      const dirtyPaths: string[] = [];
+      const markDirty = (path?: string): Promise<void> => {
+        if (path) dirtyPaths.push(path);
+        return Promise.resolve();
+      };
+      const repo = new YamlOutputRepository(dir, undefined, markDirty);
+      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      // A fresh log is out of the orphan sweep's reach, so only the
+      // output's own removal can delete it.
+      const { yamlPath, logPath } = await makeOutputWithRunLog(
+        repo,
+        dir,
+        twoDaysAgo,
+        { logWrittenAt: new Date() },
+      );
+      const yamlBytes = (await Deno.stat(yamlPath)).size;
+      const logBytes = (await Deno.stat(logPath)).size;
+      dirtyPaths.length = 0;
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.deleted, 1);
+      assertEquals(result.bytesReclaimed, yamlBytes + logBytes);
+      assertEquals(await pathExists(logPath), false);
+      assertEquals(await pathExists(localMethodDir(dir)), false);
+      assertEquals(dirtyPaths.includes(logPath), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteOlderThan: removes the run log recorded in logFile",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      // A fresh log is out of the orphan sweep's reach, so only the
+      // output's own removal can delete it.
+      const { logPath } = await makeOutputWithRunLog(repo, dir, twoDaysAgo, {
+        logWrittenAt: new Date(),
+      });
+
+      const result = await repo.deleteOlderThan(new Date(Date.now() - DAY_MS));
+
+      assertEquals(result.deleted, 1);
+      assertEquals(await pathExists(logPath), false);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: removes the repo-local run log of a datastore output",
+  async () => {
+    await withTempDir(async (dir) => {
+      const dirtyPaths: string[] = [];
+      const markDirty = (path?: string): Promise<void> => {
+        if (path) dirtyPaths.push(path);
+        return Promise.resolve();
+      };
+      const datastoreOutputs = join(dir, "datastore", "outputs");
+      const repo = new YamlOutputRepository(dir, datastoreOutputs, markDirty);
+      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      // A fresh log is out of the orphan sweep's reach, so only the
+      // output's own removal can delete it.
+      const { yamlPath, logPath } = await makeOutputWithRunLog(
+        repo,
+        dir,
+        twoDaysAgo,
+        { logWrittenAt: new Date() },
+      );
+      assertPathStringIncludes(yamlPath, "datastore");
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.deleted, 1);
+      assertEquals(await pathExists(yamlPath), false);
+      assertEquals(await pathExists(logPath), false);
+      // The record syncs with the datastore; the repo-local log never did.
+      assertEquals(dirtyPaths.includes(yamlPath), true);
+      assertEquals(dirtyPaths.includes(logPath), false);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: leaves a workflow run's log a step output points at",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      const workflowLog = workflowRunLogPath(dir);
+      const { yamlPath } = await makeOutputWithRunLog(repo, dir, twoDaysAgo, {
+        logPath: workflowLog,
+      });
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.deleted, 1);
+      assertEquals(await pathExists(yamlPath), false);
+      assertEquals(await pathExists(workflowLog), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: ignores a logFile outside the output's method directory",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      // A relative logFile that climbs out of the method directory.
+      const traversed = join(dir, "outside.log");
+      await makeOutputWithRunLog(repo, dir, twoDaysAgo, {
+        logPath: traversed,
+        logFile: [
+          ".swamp",
+          "outputs",
+          ...registeredType.normalized.split("/"),
+          "run",
+          "..",
+          "..",
+          "..",
+          "..",
+          "outside.log",
+        ].join(SEPARATOR),
+      });
+      // An absolute logFile somewhere else entirely.
+      const absolute = join(dir, "elsewhere", "absolute.log");
+      await makeOutputWithRunLog(repo, dir, twoDaysAgo, { logPath: absolute });
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.deleted, 2);
+      assertEquals(await pathExists(traversed), true);
+      assertEquals(await pathExists(absolute), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: removes the same-stem log of a record without logFile",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
+      const old = await makeOutput(repo, twoDaysAgo);
+      const yamlPath = repo.getPath(registeredType, "run", old);
+      await Deno.utime(yamlPath, twoDaysAgo, twoDaysAgo);
+      // Younger than the orphan-sweep floor, so only the record's own
+      // removal can delete it.
+      const legacyLog = yamlPath.replace(/\.yaml$/, ".log");
+      await writeAgedLog(legacyLog, new Date());
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.deleted, 1);
+      assertEquals(await pathExists(legacyLog), false);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: sweeps unreferenced run logs past the cutoff",
+  async () => {
+    await withTempDir(async (dir) => {
+      const dirtyPaths: string[] = [];
+      const markDirty = (path?: string): Promise<void> => {
+        if (path) dirtyPaths.push(path);
+        return Promise.resolve();
+      };
+      const repo = new YamlOutputRepository(dir, undefined, markDirty);
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+      const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
+      await writeAgedLog(orphan, tenDaysAgo);
+      const orphanBytes = (await Deno.stat(orphan)).size;
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.deleted, 0);
+      assertEquals(result.bytesReclaimed, orphanBytes);
+      assertEquals(await pathExists(orphan), false);
+      assertEquals(await pathExists(localMethodDir(dir)), false);
+      assertEquals(dirtyPaths.includes(orphan), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: keeps an old run log a surviving output references",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      // The output started inside the retention window, but its log was
+      // last written before the cutoff.
+      const { yamlPath, logPath } = await makeOutputWithRunLog(
+        repo,
+        dir,
+        new Date(Date.now() - 2 * HOUR_MS),
+      );
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+      await Deno.utime(logPath, tenDaysAgo, tenDaysAgo);
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.deleted, 0);
+      assertEquals(result.bytesReclaimed, 0);
+      assertEquals(await pathExists(yamlPath), true);
+      assertEquals(await pathExists(logPath), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: keeps a silent in-progress run's log under a short cutoff",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      // A direct run writes its output record only when it finishes, so a
+      // long run that has logged nothing for two days has no record yet.
+      const running = join(localMethodDir(dir), "run-in-progress.log");
+      await writeAgedLog(running, new Date(Date.now() - 2 * DAY_MS));
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - HOUR_MS),
+      );
+
+      assertEquals(result.bytesReclaimed, 0);
+      assertEquals(await pathExists(running), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: keeps a silent in-progress run's log past its method's outputLifetime",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      // server-token redeem declares outputLifetime: "1d".
+      const running = join(
+        dir,
+        ".swamp",
+        "outputs",
+        SERVER_TOKEN_MODEL_TYPE.normalized,
+        "redeem",
+        "run-in-progress.log",
+      );
+      await writeAgedLog(running, new Date(Date.now() - 2 * DAY_MS));
+
+      await repo.deleteByMethodLifetime(new Date(Date.now() - 30 * DAY_MS));
+
+      assertEquals(await pathExists(running), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: keeps orphan candidates beside an unreadable record",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
+      await writeAgedLog(orphan, new Date(Date.now() - 10 * DAY_MS));
+      // A recent record gc would not delete, and cannot parse.
+      await Deno.writeTextFile(
+        join(localMethodDir(dir), "corrupt.yaml"),
+        "id: [unclosed\n",
+      );
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.bytesReclaimed, 0);
+      assertEquals(await pathExists(orphan), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: sweeps the repo-local root when outputs live in a datastore",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(
+        dir,
+        join(dir, "datastore", "outputs"),
+      );
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+      const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
+      await writeAgedLog(orphan, tenDaysAgo);
+      // An output recorded in the datastore still claims its local log.
+      const kept = await makeOutputWithRunLog(
+        repo,
+        dir,
+        new Date(Date.now() - 2 * HOUR_MS),
+      );
+      await Deno.utime(kept.logPath, tenDaysAgo, tenDaysAgo);
+
+      await repo.deleteByMethodLifetime(new Date(Date.now() - DAY_MS));
+
+      assertEquals(await pathExists(orphan), false);
+      assertEquals(await pathExists(kept.logPath), true);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: dry run removes nothing and reports the real byte count",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      // Old enough that the output's own log is also an orphan-sweep
+      // candidate, so a double count would show.
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+      const { yamlPath, logPath } = await makeOutputWithRunLog(
+        repo,
+        dir,
+        tenDaysAgo,
+      );
+      const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
+      await writeAgedLog(orphan, tenDaysAgo);
+      const cutoff = new Date(Date.now() - DAY_MS);
+
+      const preview = await repo.deleteByMethodLifetime(cutoff, {
+        dryRun: true,
+      });
+
+      assertEquals(await pathExists(yamlPath), true);
+      assertEquals(await pathExists(logPath), true);
+      assertEquals(await pathExists(orphan), true);
+
+      const real = await repo.deleteByMethodLifetime(cutoff);
+      assertEquals(preview, real);
+      assertEquals(await pathExists(logPath), false);
+    });
+  },
+);
+
+Deno.test("YamlOutputRepository.delete removes the output's run log", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const { output, logPath } = await makeOutputWithRunLog(
+      repo,
+      dir,
+      new Date(),
+    );
+
+    await repo.delete(registeredType, "run", output.id);
+
+    assertEquals(await pathExists(logPath), false);
+    assertEquals(await pathExists(localMethodDir(dir)), false);
+  });
+});
+
+Deno.test(
+  "YamlOutputRepository.delete leaves a workflow run's log",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const workflowLog = workflowRunLogPath(dir);
+      const { output } = await makeOutputWithRunLog(repo, dir, new Date(), {
+        logPath: workflowLog,
+      });
+
+      await repo.delete(registeredType, "run", output.id);
+
+      assertEquals(
+        await repo.findById(registeredType, "run", output.id),
+        null,
+      );
+      assertEquals(await pathExists(workflowLog), true);
     });
   },
 );

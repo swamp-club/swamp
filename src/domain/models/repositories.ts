@@ -106,7 +106,9 @@ export interface OutputRepository {
   save(type: ModelType, method: string, output: ModelOutput): Promise<void>;
 
   /**
-   * Deletes an output.
+   * Deletes an output together with its own run log. A log the output only
+   * references (a workflow step's output points at its workflow run's log)
+   * is left in place.
    *
    * @param type - The model type
    * @param method - The method name
@@ -130,8 +132,9 @@ export interface OutputRepository {
   getPath(type: ModelType, method: string, output: ModelOutput): string;
 
   /**
-   * Deletes all outputs older than the cutoff.
-   * Returns the number of outputs deleted and bytes reclaimed.
+   * Deletes all outputs older than the cutoff, with their own run logs, and
+   * sweeps run logs that no remaining output references.
+   * Returns the number of outputs deleted and bytes reclaimed (logs included).
    */
   deleteOlderThan(
     cutoff: Date,
@@ -144,6 +147,7 @@ export interface OutputRepository {
    * policies from the model registry when available. Methods without a declared
    * lifetime (or from unregistered types) use the fallback cutoff. The effective
    * cutoff for a method is the more aggressive (more recent) of the two.
+   * Run logs are removed and swept as in {@link deleteOlderThan}.
    */
   deleteByMethodLifetime(
     fallbackCutoff: Date,
