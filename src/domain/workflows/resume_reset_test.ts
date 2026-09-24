@@ -20,7 +20,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { UserError } from "../errors.ts";
 import { Job } from "./job.ts";
-import { planFailedRunResume } from "./resume_reset.ts";
+import {
+  checkSuspendedRunResume,
+  planFailedRunResume,
+} from "./resume_reset.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
@@ -60,9 +63,9 @@ interface JobSpec {
   condition?: TriggerCondition;
 }
 
-function workflow(jobs: JobSpec[]): Workflow {
+function workflow(jobs: JobSpec[], name = "resume-wf"): Workflow {
   return Workflow.create({
-    name: "resume-wf",
+    name,
     jobs: jobs.map((j) =>
       Job.create({
         name: j.name,
@@ -638,5 +641,517 @@ Deno.test("planFailedRunResume: says when a reset forEach step became a plain st
   assertStringIncludes(
     refusal(plainNow, run, "push"),
     `Step "push" in job "deploy" is no longer a forEach step.`,
+  );
+});
+
+Deno.test("planFailedRunResume: an added step named like one kept in another job is not called moved", () => {
+  const before = workflow([
+    { name: "a", steps: [plain("x")] },
+    { name: "b", steps: [plain("y")] },
+  ]);
+  const run = failedRun(before, ["x"]);
+  const added = workflow([
+    { name: "a", steps: [plain("x"), plain("y")] },
+    { name: "b", steps: [plain("y")] },
+  ]);
+  assertStringIncludes(
+    refusal(added, run, "x"),
+    `Step "y" in job "a" is not in the run.`,
+  );
+});
+
+/**
+ * main: prep → gate → deploy → notify; post (depends on main): announce.
+ * The shape of the swamp-club#2498 reproduction.
+ */
+function gatedBefore(): Workflow {
+  return workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+      ],
+    },
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+}
+
+/**
+ * A run of `wf` suspended at `gate` in job `main` and then approved: the
+ * steps up to the gate succeeded, the rest of `main` is pending, `main` is
+ * running, and every other job is pending.
+ */
+function suspendedRun(wf: Workflow): WorkflowRun {
+  const run = WorkflowRun.create(wf);
+  run.start();
+  const main = run.getJob("main")!;
+  main.start();
+  for (const step of main.steps) {
+    if (step.stepName === "gate") {
+      step.waitForApproval("Approve deploy?");
+      step.succeed();
+      break;
+    }
+    step.succeed();
+  }
+  run.suspend();
+  return run;
+}
+
+function suspendedRefusal(wf: Workflow, run: WorkflowRun): string {
+  const before = JSON.stringify(run.toData());
+  try {
+    checkSuspendedRunResume(wf, run);
+  } catch (error) {
+    assert(error instanceof UserError, `expected UserError, got ${error}`);
+    assertEquals(JSON.stringify(run.toData()), before, "run was mutated");
+    assert(
+      error.message.length <= MAX_CLIENT_ERROR_LENGTH,
+      `message is ${error.message.length} characters: ${error.message}`,
+    );
+    assert(!ABSOLUTE_PATH.test(error.message), error.message);
+    assertStringIncludes(
+      error.message,
+      `To cancel: 'swamp workflow cancel ${wf.name} --run ${run.id}'.`,
+    );
+    return error.message;
+  }
+  throw new Error("expected checkSuspendedRunResume to refuse");
+}
+
+Deno.test("checkSuspendedRunResume: accepts an unchanged workflow", () => {
+  const wf = gatedBefore();
+  checkSuspendedRunResume(wf, suspendedRun(wf));
+});
+
+Deno.test("checkSuspendedRunResume: refuses a step added to a job it re-enters", () => {
+  const added = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+        plain("lint", ["gate"]),
+      ],
+    },
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(added, suspendedRun(gatedBefore())),
+    `Step "lint" in job "main" is not in the run.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: refuses a pending step moved into a job it re-enters", () => {
+  const moved = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+    {
+      name: "post",
+      steps: [plain("announce"), plain("notify")],
+      dependsOn: ["main"],
+    },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(moved, suspendedRun(gatedBefore())),
+    `Step "notify" is in job "main" in the run, job "post" in the workflow.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: refuses a pending step moved into a finished job", () => {
+  // Resume skips the finished job "pre", so only the record left pending in
+  // "main" shows the move; without the check the run would report success.
+  const before = workflow([
+    { name: "pre", steps: [plain("check")] },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+      ],
+    },
+  ]);
+  const run = suspendedRun(before);
+  run.getJob("pre")!.getStep("check")!.succeed();
+  run.getJob("pre")!.succeed();
+  const moved = workflow([
+    { name: "pre", steps: [plain("check"), plain("notify")] },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(moved, run),
+    `Step "notify" is in job "main" in the run, job "pre" in the workflow.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: refuses a step moved out of a job the workflow no longer has", () => {
+  const moved = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+        plain("announce", ["notify"]),
+      ],
+    },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(moved, suspendedRun(gatedBefore())),
+    `Step "announce" is in job "post" in the run, job "main" in the workflow.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: refuses an added or renamed job", () => {
+  const run = suspendedRun(gatedBefore());
+  const mainSpec = (): JobSpec => ({
+    name: "main",
+    steps: [
+      plain("prep"),
+      plain("gate", ["prep"]),
+      plain("deploy", ["gate"]),
+      plain("notify", ["deploy"]),
+    ],
+  });
+  const extra = workflow([
+    mainSpec(),
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+    { name: "extra", steps: [plain("audit")], dependsOn: ["main"] },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(extra, run),
+    `Job "extra" is not in the run.`,
+  );
+  const renamed = workflow([
+    mainSpec(),
+    { name: "post2", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(renamed, run),
+    `Job "post2" is not in the run.`,
+  );
+});
+
+/** main: prep → gate → deploy (forEach), expanded to deploy-dev, deploy-prod. */
+function gatedForEach(): { before: Workflow; run: WorkflowRun } {
+  const before = workflow([
+    {
+      name: "main",
+      steps: [plain("prep"), plain("gate", ["prep"]), each("deploy", ["gate"])],
+    },
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+  const run = suspendedRun(before);
+  // A job expands its forEach steps when it starts, before the gate suspends.
+  run.getJob("main")!.replaceExpandedSteps("deploy", [
+    "deploy-dev",
+    "deploy-prod",
+  ]);
+  return { before, run };
+}
+
+Deno.test("checkSuspendedRunResume: says when an expanded forEach step became a plain step", () => {
+  const { run } = gatedForEach();
+  const plainNow = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(plainNow, run),
+    `Step "deploy" in job "main" is no longer a forEach step.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: refuses a forEach step moved to another job", () => {
+  const { run } = gatedForEach();
+  const moved = workflow([
+    { name: "main", steps: [plain("prep"), plain("gate", ["prep"])] },
+    {
+      name: "post",
+      steps: [plain("announce"), each("deploy")],
+      dependsOn: ["main"],
+    },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(moved, run),
+    `Step "deploy" is in job "main" in the run, job "post" in the workflow.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: accepts iterations of a forEach step, whatever its collection now holds", () => {
+  // The check never evaluates a collection, so narrowing it through a
+  // resume --input still resumes, as before.
+  const { before, run } = gatedForEach();
+  checkSuspendedRunResume(before, run);
+});
+
+Deno.test("checkSuspendedRunResume: accepts a removed step, which stays pending", () => {
+  const removed = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+  checkSuspendedRunResume(removed, suspendedRun(gatedBefore()));
+});
+
+Deno.test("checkSuspendedRunResume: accepts a step removed from one job but kept in another", () => {
+  // Step names are unique only within a job. "post" already had its own
+  // "notify", so the one in "main" was removed, not moved.
+  const before = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+      ],
+    },
+    {
+      name: "post",
+      steps: [plain("announce"), plain("notify")],
+      dependsOn: ["main"],
+    },
+  ]);
+  const removed = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+    {
+      name: "post",
+      steps: [plain("announce"), plain("notify")],
+      dependsOn: ["main"],
+    },
+  ]);
+  checkSuspendedRunResume(removed, suspendedRun(before));
+});
+
+Deno.test("checkSuspendedRunResume: an added step named like one kept in another job is not called moved", () => {
+  const added = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+        plain("announce", ["notify"]),
+      ],
+    },
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(added, suspendedRun(gatedBefore())),
+    `Step "announce" in job "main" is not in the run.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: accepts a removed unfinished job", () => {
+  const removed = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+      ],
+    },
+  ]);
+  checkSuspendedRunResume(removed, suspendedRun(gatedBefore()));
+});
+
+Deno.test("checkSuspendedRunResume: accepts a step added to a finished job, which resume does not walk", () => {
+  const before = workflow([
+    { name: "pre", steps: [plain("check")] },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+  const run = suspendedRun(before);
+  run.getJob("pre")!.getStep("check")!.succeed();
+  run.getJob("pre")!.succeed();
+  const added = workflow([
+    { name: "pre", steps: [plain("check"), plain("lint")] },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+  checkSuspendedRunResume(added, run);
+});
+
+Deno.test("checkSuspendedRunResume: accepts a forEach step added to a job it re-enters", () => {
+  // Resume adds its iteration records as it expands them.
+  const added = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+        plain("notify", ["deploy"]),
+        each("smoke", ["deploy"]),
+      ],
+    },
+    { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
+  ]);
+  checkSuspendedRunResume(added, suspendedRun(gatedBefore()));
+});
+
+Deno.test("checkSuspendedRunResume: accepts records with no forEachTemplate from an evaluated workflow", () => {
+  // --last-evaluated and older runs store concrete iteration names with no
+  // forEachTemplate; they match no step by name.
+  const wf = workflow([
+    {
+      name: "main",
+      steps: [plain("prep"), plain("gate", ["prep"]), each("deploy", ["gate"])],
+    },
+  ]);
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: wf.id,
+    workflowName: wf.name,
+    status: "suspended",
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      steps: [
+        { stepName: "prep", status: "succeeded" },
+        { stepName: "gate", status: "succeeded" },
+        { stepName: "deploy-dev", status: "pending" },
+        { stepName: "deploy-prod", status: "pending" },
+      ],
+    }],
+  });
+  checkSuspendedRunResume(wf, run);
+});
+
+Deno.test("checkSuspendedRunResume: leaves job and step names written with an expression to evaluation", () => {
+  const wf = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("notify-${{ inputs.env }}", ["gate"]),
+      ],
+    },
+    { name: "deploy-${{ inputs.env }}", steps: [plain("push")] },
+  ]);
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: wf.id,
+    workflowName: wf.name,
+    status: "suspended",
+    jobs: [
+      {
+        jobName: "main",
+        status: "running",
+        steps: [
+          { stepName: "prep", status: "succeeded" },
+          { stepName: "gate", status: "succeeded" },
+          { stepName: "notify-prod", status: "pending" },
+        ],
+      },
+      {
+        jobName: "deploy-prod",
+        status: "pending",
+        steps: [{ stepName: "push", status: "pending" }],
+      },
+    ],
+  });
+  checkSuspendedRunResume(wf, run);
+});
+
+Deno.test("checkSuspendedRunResume: accepts a run that suspended again at a gate a failed-run resume reset", () => {
+  const wf = gatedBefore();
+  const run = suspendedRun(wf);
+  run.getJob("main")!.getStep("deploy")!.markResetByResume();
+  checkSuspendedRunResume(wf, run);
+});
+
+Deno.test("checkSuspendedRunResume: refusals stay within the serve limit for long names", () => {
+  // Names serve refusals must fit: 16 characters each, including the
+  // workflow name in the cancel command, and a UUID run id.
+  const long = (prefix: string) =>
+    `${prefix}-${"a".repeat(15 - prefix.length)}`;
+  const [name, main, post, notify] = [
+    long("workflow"),
+    long("main"),
+    long("post"),
+    long("notify"),
+  ];
+  const before = workflow([
+    {
+      name: main,
+      steps: [plain("gate"), plain(notify, ["gate"])],
+    },
+    { name: post, steps: [plain("announce")], dependsOn: [main] },
+  ], name);
+  const run = WorkflowRun.create(before);
+  run.start();
+  run.getJob(main)!.start();
+  run.getJob(main)!.getStep("gate")!.succeed();
+  run.suspend();
+  const moved = workflow([
+    { name: main, steps: [plain("gate")] },
+    {
+      name: post,
+      steps: [plain("announce"), plain(notify)],
+      dependsOn: [main],
+    },
+  ], name);
+  assertStringIncludes(
+    suspendedRefusal(moved, run),
+    `Step "${notify}" is in job "${main}" in the run, job "${post}" in the workflow.`,
   );
 });

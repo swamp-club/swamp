@@ -9690,3 +9690,282 @@ Deno.test("resume: --from still works in a job whose name is written with an inp
     assertEquals(executor.count("deploy-prod/b"), 2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Resume a suspended run against a changed workflow (swamp-club#2498)
+// ---------------------------------------------------------------------------
+
+/**
+ * main: prep → gate → deploy → notify; post (depends on main): announce. The
+ * shape of the swamp-club#2498 reproduction.
+ */
+function gatedJobs(post: Step[] = [modelStep("announce")]): JobShape[] {
+  return [
+    {
+      name: "main",
+      steps: [
+        modelStep("prep"),
+        Step.create({
+          name: "gate",
+          task: StepTask.manualApproval("Approve deploy?"),
+          dependsOn: [{
+            step: "prep",
+            condition: TriggerCondition.succeeded(),
+          }],
+        }),
+        dependentStep("deploy", ["gate"]),
+        dependentStep("notify", ["deploy"]),
+      ],
+    },
+    { name: "post", steps: post, dependsOn: ["main"] },
+  ];
+}
+
+/**
+ * Runs `before` until it suspends at the gate in job main, approves the gate,
+ * and saves `after` in the workflow's place.
+ */
+async function suspendThenEdit(
+  tempDir: string,
+  before: Workflow,
+  after: JobShape[],
+  inputs?: Record<string, unknown>,
+) {
+  const { workflowRepo, runRepo, executor, service } = await setupRetry(
+    tempDir,
+    before,
+  );
+  const suspended = await service.execute(before.name, { inputs });
+  assertEquals(suspended.status, "suspended");
+  const gate = suspended.getJob("main")!.getStep("gate")!;
+  gate.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:test",
+    decidedAt: new Date().toISOString(),
+  });
+  gate.succeed();
+  await runRepo.save(before.id, suspended);
+  await workflowRepo.save(shapedWorkflow(after, before.id));
+  return { runRepo, executor, service, run: suspended };
+}
+
+/**
+ * Suspends a run of {@link gatedJobs}, saves `after`, and asserts that
+ * resuming refuses with `message` without saving the run or calling a step.
+ */
+async function assertSuspendedResumeRefused(
+  tempDir: string,
+  after: JobShape[],
+  message: string,
+): Promise<void> {
+  const before = shapedWorkflow(gatedJobs());
+  const { runRepo, executor, service, run } = await suspendThenEdit(
+    tempDir,
+    before,
+    after,
+  );
+  const stored = JSON.stringify(
+    (await runRepo.findById(before.id, run.id))!.toData(),
+  );
+  const saves = runRepo.saves;
+  const calls = [...executor.calls.values()].reduce((a, b) => a + b, 0);
+
+  const error = await assertRejects(
+    () => drainResume(service, before.name, run.id),
+    UserError,
+    message,
+  );
+  assertStringIncludes(
+    error.message,
+    `To cancel: 'swamp workflow cancel changed-wf --run ${run.id}'.`,
+  );
+
+  assertEquals(runRepo.saves, saves);
+  const after_ = (await runRepo.findById(before.id, run.id))!;
+  assertEquals(JSON.stringify(after_.toData()), stored);
+  assertEquals(after_.status, "suspended");
+  assertEquals(
+    [...executor.calls.values()].reduce((a, b) => a + b, 0),
+    calls,
+  );
+}
+
+Deno.test("resume: refuses a suspended run with a step added to the gate's job, instead of crashing mid-run", async () => {
+  await withTempDir(async (tempDir) => {
+    const [main, post] = gatedJobs();
+    await assertSuspendedResumeRefused(
+      tempDir,
+      [
+        { ...main, steps: [...main.steps, dependentStep("lint", ["gate"])] },
+        post,
+      ],
+      `Step "lint" in job "main" is not in the run.`,
+    );
+  });
+});
+
+Deno.test("resume: refuses a suspended run with a pending step moved to another job, before running anything", async () => {
+  await withTempDir(async (tempDir) => {
+    const [main, post] = gatedJobs();
+    await assertSuspendedResumeRefused(
+      tempDir,
+      [
+        { ...main, steps: main.steps.slice(0, 3) },
+        { ...post, steps: [...post.steps, modelStep("notify")] },
+      ],
+      `Step "notify" is in job "main" in the run, job "post" in the workflow.`,
+    );
+  });
+});
+
+Deno.test("resume: refuses a suspended run with an added job, instead of reporting success", async () => {
+  await withTempDir(async (tempDir) => {
+    await assertSuspendedResumeRefused(
+      tempDir,
+      [
+        ...gatedJobs(),
+        { name: "extra", steps: [modelStep("audit")], dependsOn: ["main"] },
+      ],
+      `Job "extra" is not in the run.`,
+    );
+  });
+});
+
+Deno.test("resume: a suspended run still resumes after a pending step is removed", async () => {
+  await withTempDir(async (tempDir) => {
+    const before = shapedWorkflow(gatedJobs());
+    const [main, post] = gatedJobs();
+    const { executor, service, run } = await suspendThenEdit(
+      tempDir,
+      before,
+      [{ ...main, steps: main.steps.slice(0, 3) }, post],
+    );
+    const resumed = await drainResume(service, before.name, run.id);
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.count("main/deploy"), 1);
+    assertEquals(executor.count("post/announce"), 1);
+    // The removed step's record stays pending, as before.
+    assertEquals(
+      resumed!.getJob("main")!.getStep("notify")!.status,
+      "pending",
+    );
+  });
+});
+
+Deno.test("resume: a suspended run still resumes after a step is removed from one job but kept in another", async () => {
+  await withTempDir(async (tempDir) => {
+    const before = shapedWorkflow(
+      gatedJobs([modelStep("announce"), modelStep("notify")]),
+    );
+    const [main, post] = gatedJobs([
+      modelStep("announce"),
+      modelStep("notify"),
+    ]);
+    const { executor, service, run } = await suspendThenEdit(
+      tempDir,
+      before,
+      [{ ...main, steps: main.steps.slice(0, 3) }, post],
+    );
+    const resumed = await drainResume(service, before.name, run.id);
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.count("main/notify"), 0);
+    assertEquals(executor.count("post/notify"), 1);
+  });
+});
+
+Deno.test("resume: a forEach narrowed through --input on a suspended resume still succeeds", async () => {
+  await withTempDir(async (tempDir) => {
+    const shape: JobShape[] = [{
+      name: "main",
+      steps: [
+        Step.create({ name: "gate", task: StepTask.manualApproval("Go?") }),
+        eachStep("deploy-${{ self.env }}", "${{ inputs.envs }}", {
+          dependsOn: ["gate"],
+        }),
+      ],
+    }];
+    const workflow = shapedWorkflow(shape);
+    const { executor, service, run } = await suspendThenEdit(
+      tempDir,
+      workflow,
+      shape,
+      { envs: ["a", "b"] },
+    );
+    const resumed = await drainResume(service, workflow.name, run.id, {
+      inputs: { envs: ["a"] },
+    });
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.count("main/deploy-a"), 1);
+    assertEquals(executor.count("main/deploy-b"), 0);
+    // The iteration the smaller collection drops stays pending, as before.
+    assertEquals(
+      resumed!.getJob("main")!.getStep("deploy-b")!.status,
+      "pending",
+    );
+  });
+});
+
+Deno.test("resume: refuses a recovered run with no run plan whose workflow changed shape, and leaves it suspended", async () => {
+  await withTempDir(async (tempDir) => {
+    // A run started with --last-evaluated records no run plan, so recovery's
+    // fingerprint check cannot refuse a changed definition. The resume that
+    // 'workflow recover' prints refuses instead, once the run is suspended
+    // and can be cancelled.
+    const before = shapedWorkflow(gatedJobs());
+    const { workflowRepo, runRepo, executor, service } = await setupRetry(
+      tempDir,
+      before,
+    );
+    const interrupted = WorkflowRun.fromData({
+      id: crypto.randomUUID(),
+      workflowId: before.id,
+      workflowName: before.name,
+      status: "interrupted",
+      jobs: [
+        {
+          jobName: "main",
+          status: "unknown",
+          steps: [
+            { stepName: "prep", status: "succeeded" },
+            { stepName: "gate", status: "succeeded" },
+            { stepName: "deploy", status: "unknown" },
+            { stepName: "notify", status: "pending" },
+          ],
+        },
+        {
+          jobName: "post",
+          status: "pending",
+          steps: [{ stepName: "announce", status: "pending" }],
+        },
+      ],
+    });
+    const [main, post] = gatedJobs();
+    const edited = shapedWorkflow(
+      [
+        { ...main, steps: [...main.steps, dependentStep("lint", ["gate"])] },
+        post,
+      ],
+      before.id,
+    );
+    await workflowRepo.save(edited);
+    assertEquals(
+      (await assessRecoveryForRun(edited, interrupted)).fingerprintMismatch,
+      false,
+    );
+    // What 'swamp workflow recover' does before printing the resume command.
+    interrupted.resetUnknownStepsForRecovery();
+    await runRepo.save(before.id, interrupted);
+
+    const error = await assertRejects(
+      () => drainResume(service, before.name, interrupted.id),
+      UserError,
+      `Step "lint" in job "main" is not in the run.`,
+    );
+    assertStringIncludes(error.message, "swamp workflow cancel changed-wf");
+    assertEquals(
+      (await runRepo.findById(before.id, interrupted.id))!.status,
+      "suspended",
+    );
+    assertEquals(executor.calls.size, 0);
+  });
+});

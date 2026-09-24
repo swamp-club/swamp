@@ -33,7 +33,11 @@ import { deepMerge } from "../inputs/input_merge.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { JobRun, WorkflowRun, type WorkflowRunData } from "./workflow_run.ts";
-import { planFailedRunResume, type ResumeReset } from "./resume_reset.ts";
+import {
+  checkSuspendedRunResume,
+  planFailedRunResume,
+  type ResumeReset,
+} from "./resume_reset.ts";
 import { nextActionForStatus } from "./suspended_run_resolver.ts";
 import {
   type GraphNode,
@@ -2583,7 +2587,9 @@ export class WorkflowExecutionService {
   /**
    * Resumes a workflow run, keeping its run ID and completed step results.
    *
-   * - A suspended run continues once every approval gate is decided.
+   * - A suspended run continues once every approval gate is decided, unless
+   *   the workflow changed shape since the run (see
+   *   {@link checkSuspendedRunResume}).
    * - A failed run with `fromStep` re-enters at that step and its dependents.
    * - A failed run without `fromStep` retries: every failed step's entry
    *   template and its dependents are reset (see {@link planFailedRunResume}).
@@ -2654,6 +2660,7 @@ export class WorkflowExecutionService {
           nextActionForStatus(existingRun.status, workflow.name, runId),
       );
     } else {
+      checkSuspendedRunResume(workflow, existingRun);
       const waiting = existingRun.findWaitingApprovalStep();
       if (waiting) {
         throw new UserError(

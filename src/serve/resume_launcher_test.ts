@@ -459,3 +459,79 @@ Deno.test("autoResumeAfterApproval: never retries a run that failed before launc
   assertEquals(registry.registered.length, 0);
   assertEquals(audit.map((e) => e.action), ["workflow.auto_resume_failed"]);
 });
+
+/** The gated workflow with a step "verify" added to job main since the run. */
+function makeEditedWorkflow(opts: { autoResume?: boolean } = {}): Workflow {
+  return Workflow.create({
+    name: "gated",
+    autoResume: opts.autoResume,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("deployer", "run"),
+          }),
+          Step.create({ name: "verify", task: StepTask.model("v", "run") }),
+        ],
+      }),
+    ],
+  });
+}
+
+for (const suspendedOnly of [false, true]) {
+  Deno.test(
+    `startDetachedResume: refuses ${
+      suspendedOnly ? "an auto-resume of a" : "a"
+    } suspended run whose workflow changed shape, without registering it`,
+    async () => {
+      const run = makeApprovedRun(makeWorkflow());
+      const before = JSON.stringify(run.toData());
+      const { ctx, registry } = makeHarness(makeEditedWorkflow(), run);
+
+      const result = await startDetachedResume(ctx, registry, {
+        workflowIdOrName: "gated",
+        runId: run.id,
+        suspendedOnly,
+        principalId: null,
+      });
+
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertEquals(result.code, "workflow_resume_failed");
+        assertEquals(
+          result.message,
+          `Step "verify" in job "main" is not in the run. ` +
+            `To cancel: 'swamp workflow cancel gated --run ${run.id}'.`,
+        );
+      }
+      assertEquals(registry.registered.length, 0);
+      assertEquals(JSON.stringify(run.toData()), before);
+    },
+  );
+}
+
+Deno.test("autoResumeAfterApproval: audits a launch refused because the workflow changed shape", async () => {
+  const run = makeApprovedRun(makeWorkflow({ autoResume: true }));
+  const { ctx, registry, audit } = makeHarness(
+    makeEditedWorkflow({ autoResume: true }),
+    run,
+  );
+
+  const launched = await autoResumeAfterApproval(
+    ctx,
+    outcomeFor(run),
+    "user:approver",
+  );
+
+  assertEquals(launched, false);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit.map((e) => e.action), ["workflow.auto_resume_failed"]);
+  assertStringIncludes(audit[0].detail ?? "", "code=workflow_resume_failed");
+  assertEquals(run.status, "suspended");
+});

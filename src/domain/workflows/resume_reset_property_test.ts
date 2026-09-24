@@ -22,7 +22,11 @@ import fc from "fast-check";
 import { UserError } from "../errors.ts";
 import { Job } from "./job.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
-import { computeStepsToReset, planFailedRunResume } from "./resume_reset.ts";
+import {
+  checkSuspendedRunResume,
+  computeStepsToReset,
+  planFailedRunResume,
+} from "./resume_reset.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
@@ -270,6 +274,149 @@ Deno.test("planFailedRunResume: always refuses a renamed plain step in the job i
         `Step "${
           victim!.name
         }-renamed" in job "${job.name}" is not in the run.`,
+      );
+    }),
+  );
+});
+
+interface SuspendedCase {
+  jobs: GeneratedJob[];
+  /** The job suspended at a gate: earlier jobs finished, later ones pending. */
+  gateJob: number;
+  /** Steps of the gate job before this index finished; the rest are pending. */
+  gateStep: number;
+}
+
+/**
+ * Jobs from {@link arbJobs}, sometimes with a step name repeated in another
+ * job (names are unique only within a job), and where the run suspended.
+ */
+const arbSuspendedCase: fc.Arbitrary<SuspendedCase> = fc
+  .tuple(
+    arbJobs,
+    fc.nat(),
+    fc.nat(),
+    fc.option(fc.tuple(fc.nat(), fc.nat())),
+  )
+  .map(([generated, gateJob, gateStep, duplicate]) => {
+    const jobs = generated.map((j) => ({ ...j, steps: [...j.steps] }));
+    if (duplicate && jobs.length > 1) {
+      const all = jobs.flatMap((j) => j.steps);
+      const source = all[duplicate[0] % all.length];
+      const target = jobs[duplicate[1] % jobs.length];
+      if (!target.steps.some((s) => s.name === source.name)) {
+        target.steps.push({ ...source, dependsOn: undefined });
+      }
+    }
+    const gate = gateJob % jobs.length;
+    return {
+      jobs,
+      gateJob: gate,
+      gateStep: gateStep % (jobs[gate].steps.length + 1),
+    };
+  });
+
+/**
+ * A run suspended in job `gateJob`: earlier jobs succeeded, that job's steps
+ * before `gateStep` succeeded and the rest are pending, and later jobs are
+ * pending. A job expands its forEach steps when it starts.
+ */
+function buildSuspendedRun(workflow: Workflow, c: SuspendedCase): WorkflowRun {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  c.jobs.forEach((job, i) => {
+    if (i > c.gateJob) return;
+    const jobRun = run.getJob(job.name)!;
+    jobRun.start();
+    job.steps.forEach((step, k) => {
+      const records = step.forEach
+        ? ITEMS.map((item) => `${step.name}-${item}`)
+        : [step.name];
+      if (step.forEach) jobRun.replaceExpandedSteps(step.name, records);
+      if (i < c.gateJob || k < c.gateStep) {
+        for (const record of records) jobRun.getStep(record)!.succeed();
+      }
+    });
+    if (i < c.gateJob) jobRun.succeed();
+  });
+  run.suspend();
+  return run;
+}
+
+/** Steps with unfinished records: from the gate on, and in later jobs. */
+function unfinishedSteps(c: SuspendedCase): { job: number; name: string }[] {
+  return c.jobs.flatMap((job, i) =>
+    i < c.gateJob ? [] : job.steps
+      .filter((_, k) => i > c.gateJob || k >= c.gateStep)
+      .map((s) => ({ job: i, name: s.name }))
+  );
+}
+
+/** `jobs` with every step-level dependency dropped, so edits stay valid. */
+function independent(jobs: GeneratedJob[]): GeneratedJob[] {
+  return jobs.map((j) => ({
+    ...j,
+    steps: j.steps.map((s) => ({ ...s, dependsOn: undefined })),
+  }));
+}
+
+Deno.test("checkSuspendedRunResume: never refuses a resume of an unchanged workflow", () => {
+  fc.assert(
+    fc.property(arbSuspendedCase, (c) => {
+      const workflow = buildWorkflow(c.jobs);
+      checkSuspendedRunResume(workflow, buildSuspendedRun(workflow, c));
+    }),
+  );
+});
+
+Deno.test("checkSuspendedRunResume: never refuses a removed unfinished step, even when another job keeps its name", () => {
+  fc.assert(
+    fc.property(arbSuspendedCase, fc.nat(), (c, pick) => {
+      const run = buildSuspendedRun(buildWorkflow(c.jobs), c);
+      const candidates = unfinishedSteps(c).filter((s) =>
+        c.jobs[s.job].steps.length > 1
+      );
+      fc.pre(candidates.length > 0);
+      const victim = candidates[pick % candidates.length];
+      const removed = independent(c.jobs).map((job, i) => ({
+        ...job,
+        steps: job.steps.filter((s) =>
+          i !== victim.job || s.name !== victim.name
+        ),
+      }));
+      checkSuspendedRunResume(buildWorkflow(removed), run);
+    }),
+  );
+});
+
+Deno.test("checkSuspendedRunResume: always refuses an unfinished step moved to a job without one of that name", () => {
+  fc.assert(
+    fc.property(arbSuspendedCase, fc.nat(), fc.nat(), (c, pick, target) => {
+      const run = buildSuspendedRun(buildWorkflow(c.jobs), c);
+      const candidates = unfinishedSteps(c).filter((s) =>
+        c.jobs[s.job].steps.length > 1
+      );
+      fc.pre(candidates.length > 0);
+      const victim = candidates[pick % candidates.length];
+      const others = c.jobs.map((_, i) => i).filter((i) =>
+        i !== victim.job && !c.jobs[i].steps.some((s) => s.name === victim.name)
+      );
+      fc.pre(others.length > 0);
+      const to = others[target % others.length];
+      const moved = independent(c.jobs).map((job, i) => ({
+        ...job,
+        steps: job.steps.filter((s) =>
+          i !== victim.job || s.name !== victim.name
+        ),
+      }));
+      const step = c.jobs[victim.job].steps.find((s) =>
+        s.name === victim.name
+      )!;
+      moved[to].steps.push({ ...step, dependsOn: undefined });
+      assertThrows(
+        () => checkSuspendedRunResume(buildWorkflow(moved), run),
+        UserError,
+        "To cancel: 'swamp workflow cancel property-wf",
       );
     }),
   );

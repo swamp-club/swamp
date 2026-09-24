@@ -794,6 +794,11 @@ swamp workflow resume  <workflow-name> --run <run-id> --input authKey=tskey-abc1
 swamp workflow approvals  # list all pending approvals with run IDs
 ```
 
+Editing the workflow while a run is suspended can make its resume refuse (a step
+added or moved, or a job added or renamed); the run stays suspended until
+`swamp workflow cancel <wf> --run <id>`. See
+[execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
+
 **Auto-resume (serve only):** set `autoResume: true` at the top level of the
 workflow to have `swamp serve` resume the run by itself once every gate is
 approved. The approval must go through serve: the dashboard, or

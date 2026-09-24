@@ -29,10 +29,7 @@ import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
 import { serializeEvent } from "./serializer.ts";
 import { isCustomDatastoreConfig } from "../domain/datastore/datastore_config.ts";
-import {
-  resolveResumableRun,
-  resolveSuspendedRun,
-} from "../domain/workflows/suspended_run_resolver.ts";
+import { resolveResumableRun } from "../domain/workflows/suspended_run_resolver.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { createEphemeralStore } from "../infrastructure/persistence/ephemeral_store.ts";
 import {
@@ -98,20 +95,13 @@ export async function startDetachedResume(
   let resolvedRun: WorkflowRun;
   let workflowName: string;
   try {
-    const result = request.suspendedOnly
-      ? await resolveSuspendedRun(
-        workflowRepo,
-        runRepo,
-        request.workflowIdOrName,
-        request.runId,
-      )
-      : await resolveResumableRun(
-        workflowRepo,
-        runRepo,
-        request.workflowIdOrName,
-        request.runId,
-        { fromStep: request.from },
-      );
+    const result = await resolveResumableRun(
+      workflowRepo,
+      runRepo,
+      request.workflowIdOrName,
+      request.runId,
+      { fromStep: request.from, suspendedOnly: request.suspendedOnly },
+    );
     resolvedRun = result.run;
     workflowName = result.workflowName;
   } catch (error) {
@@ -332,9 +322,10 @@ export interface ApprovalOutcome {
  *
  * The run is addressed by the workflow name and run id that the approval
  * resolved, never by the caller's request fields. It is charged to the
- * approver's principal. A refused launch or a failed resume leaves the run
- * suspended and awaiting a manual resume; both are logged and audited, since
- * no client is listening to this run.
+ * approver's principal. A refused launch or a failed resume is logged and
+ * audited, since no client is listening to this run. A refused launch leaves
+ * the run as it was; the logged message says what to do next, such as the
+ * cancel command when the workflow changed shape since the run.
  */
 export async function autoResumeAfterApproval(
   ctx: ConnectionContext,
@@ -361,7 +352,7 @@ export async function autoResumeAfterApproval(
     onTerminal: (terminal) => {
       if (terminal.kind !== "error") return;
       logger.warn(
-        "Auto-resume of run {runId} failed ({code}): {message}; the run needs a manual resume",
+        "Auto-resume of run {runId} failed ({code}): {message}",
         {
           runId: outcome.runId,
           code: terminal.code,
@@ -378,7 +369,7 @@ export async function autoResumeAfterApproval(
 
   if (!launched.ok) {
     logger.warn(
-      "Auto-resume of run {runId} was not started ({code}): {message}; the run needs a manual resume",
+      "Auto-resume of run {runId} was not started ({code}): {message}",
       {
         runId: outcome.runId,
         code: launched.code,
