@@ -32,13 +32,6 @@ export const PENDING_DISPATCH_MODEL_TYPE = ModelType.create(
 
 export const PENDING_DISPATCH_INSTANCE_NAME = "pending";
 
-const TERMINAL_STATES = new Set([
-  "dispatched",
-  "timed_out",
-  "cancelled",
-  "orphaned",
-]);
-
 export const PendingDispatchStateSchema = z.enum([
   "waiting",
   "dispatched",
@@ -48,6 +41,16 @@ export const PendingDispatchStateSchema = z.enum([
 ]);
 
 export type PendingDispatchState = z.infer<typeof PendingDispatchStateSchema>;
+
+/** States that end a queue episode; a record in one of them is never rewritten. */
+export const TERMINAL_PENDING_DISPATCH_STATES: ReadonlySet<
+  PendingDispatchState
+> = new Set([
+  "dispatched",
+  "timed_out",
+  "cancelled",
+  "orphaned",
+]);
 
 export const PendingDispatchSchema = z.object({
   queueId: z.string(),
@@ -128,7 +131,7 @@ async function markDispatched(
   context: MethodContext,
 ): Promise<MethodResult> {
   const record = await readPendingDispatch(context, args.queueId);
-  if (TERMINAL_STATES.has(record.state)) {
+  if (TERMINAL_PENDING_DISPATCH_STATES.has(record.state)) {
     return { dataHandles: [] };
   }
   const updated: PendingDispatch = {
@@ -158,7 +161,7 @@ function endPending(
     context: MethodContext,
   ): Promise<MethodResult> => {
     const record = await readPendingDispatch(context, args.queueId);
-    if (TERMINAL_STATES.has(record.state)) {
+    if (TERMINAL_PENDING_DISPATCH_STATES.has(record.state)) {
       return { dataHandles: [] };
     }
     const updated: PendingDispatch = {
