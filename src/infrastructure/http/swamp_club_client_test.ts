@@ -1091,6 +1091,32 @@ Deno.test("SwampClubClient - revokePresentingApiKey maps 401 to already_invalid"
   }
 });
 
+// A 401 from a proxy or gateway (its own auth challenge, or x-api-key
+// stripped) says nothing about the key, so it must not read as invalid.
+for (
+  const [label, body] of [
+    ["a plain-text body", "Unauthorized"],
+    ["an HTML page", "<html>Proxy authentication required</html>"],
+    ["an empty body", ""],
+    ["JSON without an error field", '{"message":"denied"}'],
+  ]
+) {
+  Deno.test(`SwampClubClient - revokePresentingApiKey throws on a 401 with ${label}`, async () => {
+    const mock = startMockServer(() => new Response(body, { status: 401 }));
+
+    try {
+      const client = new SwampClubClient(`http://localhost:${mock.port}`);
+      const err = await assertRejects(
+        () => client.revokePresentingApiKey("swamp_test_key"),
+        UserError,
+      );
+      assertStringIncludes(err.message, "without a swamp-club error body");
+    } finally {
+      await mock.shutdown();
+    }
+  });
+}
+
 Deno.test("SwampClubClient - revokePresentingApiKey maps 403 to not_personal_key", async () => {
   const mock = startMockServer(() =>
     Response.json({ error: "Only a personal API key can revoke itself" }, {

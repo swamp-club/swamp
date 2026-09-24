@@ -34,8 +34,8 @@ type AnyOptions = any;
 export const authLogoutCommand = new Command()
   .name("logout")
   .description(
-    "Revoke the stored API key on the server, then remove the stored\n" +
-      "credentials. If the key cannot be revoked, the credentials are kept.",
+    "Revoke the stored API key and remove stored credentials.\n\n" +
+      "If the key cannot be revoked on the server, the credentials are kept.",
   )
   .example("Revoke the stored key and log out", "swamp auth logout")
   .action(async function (options: AnyOptions) {

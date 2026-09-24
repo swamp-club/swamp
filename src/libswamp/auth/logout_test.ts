@@ -113,7 +113,7 @@ for (
   const reason of [
     "Could not connect to https://api.example.com: connection refused",
     "https://api.example.com answered HTTP 200 without confirming the API key was revoked.",
-    "Failed to revoke API key on https://api.example.com (HTTP 500): boom",
+    "https://api.example.com answered HTTP 500: boom",
     "Rate limit exceeded.",
   ]
 ) {

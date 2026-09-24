@@ -121,14 +121,12 @@ export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
     saveCredentials: (credentials) => {
       const envKey = getApiKey();
       if (envKey) {
-        // whoami renders from the server response, so a skipped cache write
-        // (a login key for another server) loses nothing here.
         return repo.saveIdentityCache(
           credentials.serverUrl,
           credentials.username,
           credentials.collectives ?? [],
           apiKeyFingerprint(envKey),
-        ).then(() => {});
+        );
       }
       return repo.save(credentials);
     },

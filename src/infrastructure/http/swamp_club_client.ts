@@ -962,16 +962,17 @@ export class SwampClubClient {
       );
     }
 
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+    const fields = typeof data === "object" && data !== null
+      ? data as Record<string, unknown>
+      : {};
+
     if (res.ok) {
-      let data: unknown;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = null;
-      }
-      const fields = typeof data === "object" && data !== null
-        ? data as Record<string, unknown>
-        : {};
       if (fields.revoked === true) {
         return {
           kind: "revoked",
@@ -982,7 +983,15 @@ export class SwampClubClient {
         `${this.serverUrl} answered HTTP ${res.status} without confirming the API key was revoked.`,
       );
     }
-    if (res.status === 401) return { kind: "already_invalid" };
+    // Both answers that end with deleting credentials must come from
+    // swamp-club itself: a proxy or gateway can answer 401 on its own, or
+    // strip x-api-key, while the key is still valid.
+    if (res.status === 401) {
+      if (typeof fields.error === "string") return { kind: "already_invalid" };
+      throw new UserError(
+        `${this.serverUrl} answered HTTP 401 without a swamp-club error body, so it is unclear whether the API key is still valid.`,
+      );
+    }
     if (res.status === 403) return { kind: "not_personal_key" };
     if (res.status === 404) return { kind: "unsupported" };
 
@@ -990,7 +999,7 @@ export class SwampClubClient {
       ? `${text.slice(0, MAX_ERROR_BODY_CHARS)}…`
       : text;
     throw new UserError(
-      `Failed to revoke API key on ${this.serverUrl} (HTTP ${res.status}): ${body}`,
+      `${this.serverUrl} answered HTTP ${res.status}: ${body}`,
     );
   }
 
