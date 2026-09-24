@@ -193,8 +193,11 @@ Colors for `writeOutput` content come from `@std/fmt/colors`, **not** LogTape:
   clean
 - Tests that need to change color state should restore the previous value read
   from `getColorEnabled()` rather than assuming it was on. Better still, inject
-  the effect — `applyColorPolicy` takes the terminal probe and the setter as
-  parameters so tests never touch process-global state
+  the effect — `applyColorPolicy` takes a `NO_COLOR` reader, the terminal probe
+  and the setter as parameters so tests never touch process-global state. Pass
+  `() => undefined` for an unset `NO_COLOR`, never a bare `undefined`: that
+  falls through to the default and reads the real environment, which CI's
+  flaky-test job sets
 
 ## Migration Pattern
 

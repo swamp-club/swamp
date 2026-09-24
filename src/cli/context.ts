@@ -81,9 +81,13 @@ export function isStdoutTty(): boolean {
 export function createContext(
   options: GlobalOptions,
   loggerCategory: string[] = ["cli"],
-  jsonOutputEnv = Deno.env.get("SWAMP_CLI_OUTPUT_JSON"),
+  readJsonOutputEnv: () => string | undefined = () =>
+    Deno.env.get("SWAMP_CLI_OUTPUT_JSON"),
 ): CommandContext {
-  const outputMode = resolveOutputMode(options.json ?? false, jsonOutputEnv);
+  const outputMode = resolveOutputMode(
+    options.json ?? false,
+    readJsonOutputEnv(),
+  );
 
   return {
     outputMode,
@@ -112,9 +116,10 @@ export function interactiveOutputMode(ctx: CommandContext): OutputMode {
  */
 export function getOutputModeFromArgs(
   args: string[],
-  jsonOutputEnv = Deno.env.get("SWAMP_CLI_OUTPUT_JSON"),
+  readJsonOutputEnv: () => string | undefined = () =>
+    Deno.env.get("SWAMP_CLI_OUTPUT_JSON"),
 ): OutputMode {
-  return resolveOutputMode(args.includes("--json"), jsonOutputEnv);
+  return resolveOutputMode(args.includes("--json"), readJsonOutputEnv());
 }
 
 /**
@@ -177,17 +182,20 @@ export function resolveColorEnabled(
  *
  * The environment read, the terminal probe and the effect are all parameters
  * with production defaults, so tests drive the policy through a spy instead of
- * mutating process-global colour state.
+ * mutating process-global colour state. The environment read is a function
+ * rather than a value: an explicit `undefined` would fall through to a value
+ * default and read the process's own `NO_COLOR`, so a caller could never say
+ * "unset" (swamp-club#2462).
  */
 export function applyColorPolicy(
   noColorRequested: boolean,
-  noColorEnv: string | undefined = Deno.env.get("NO_COLOR"),
+  readNoColorEnv: () => string | undefined = () => Deno.env.get("NO_COLOR"),
   stdoutIsTerminal: () => boolean = isStdoutTty,
   setEnabled: (enabled: boolean) => void = setColorEnabled,
 ): boolean {
   const enabled = resolveColorEnabled(
     noColorRequested,
-    noColorEnv,
+    readNoColorEnv(),
     stdoutIsTerminal,
   );
   if (!enabled) {

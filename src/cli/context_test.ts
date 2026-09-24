@@ -58,9 +58,17 @@ function assertCwdDerivedRepoDir(result: string): void {
   );
 }
 
+// Environment readers for the functions that take one. They are functions, not
+// values, so "unset" is expressible: an explicit `undefined` passed to a value
+// default falls through to the process environment, and these tests then fail
+// wherever the variable is set — as NO_COLOR is in the scheduled flaky-test job
+// (swamp-club#2462).
+const unset = () => undefined;
+const envSet = (value: string) => () => value;
+
 Deno.test("createContext returns log mode by default", () => {
   const options: GlobalOptions = {};
-  const context = createContext(options);
+  const context = createContext(options, ["cli"], unset);
   assertEquals(context.outputMode, "log");
 });
 
@@ -110,8 +118,8 @@ Deno.test("createContext uses custom logger name when provided", () => {
 });
 
 Deno.test("getOutputModeFromArgs returns log by default", () => {
-  assertEquals(getOutputModeFromArgs([]), "log");
-  assertEquals(getOutputModeFromArgs(["model", "create"]), "log");
+  assertEquals(getOutputModeFromArgs([], unset), "log");
+  assertEquals(getOutputModeFromArgs(["model", "create"], unset), "log");
 });
 
 Deno.test("getOutputModeFromArgs returns json when --json is present", () => {
@@ -121,25 +129,31 @@ Deno.test("getOutputModeFromArgs returns json when --json is present", () => {
 });
 
 Deno.test("getOutputModeFromArgs enables JSON for a truthy output environment", () => {
-  assertEquals(getOutputModeFromArgs(["model", "list"], "1"), "json");
-  assertEquals(getOutputModeFromArgs(["model", "list"], "true"), "json");
-  assertEquals(getOutputModeFromArgs(["model", "list"], "yes"), "json");
+  assertEquals(getOutputModeFromArgs(["model", "list"], envSet("1")), "json");
+  assertEquals(
+    getOutputModeFromArgs(["model", "list"], envSet("true")),
+    "json",
+  );
+  assertEquals(getOutputModeFromArgs(["model", "list"], envSet("yes")), "json");
 });
 
 Deno.test("getOutputModeFromArgs preserves log output for false output environment values", () => {
-  assertEquals(getOutputModeFromArgs(["model", "list"], undefined), "log");
-  assertEquals(getOutputModeFromArgs(["model", "list"], ""), "log");
-  assertEquals(getOutputModeFromArgs(["model", "list"], "0"), "log");
-  assertEquals(getOutputModeFromArgs(["model", "list"], "false"), "log");
+  assertEquals(getOutputModeFromArgs(["model", "list"], unset), "log");
+  assertEquals(getOutputModeFromArgs(["model", "list"], envSet("")), "log");
+  assertEquals(getOutputModeFromArgs(["model", "list"], envSet("0")), "log");
+  assertEquals(
+    getOutputModeFromArgs(["model", "list"], envSet("false")),
+    "log",
+  );
 });
 
 Deno.test("createContext enables JSON for a truthy output environment", () => {
-  assertEquals(createContext({}, ["test"], "1").outputMode, "json");
+  assertEquals(createContext({}, ["test"], envSet("1")).outputMode, "json");
 });
 
 Deno.test("createContext lets --json override a false output environment", () => {
   assertEquals(
-    createContext({ json: true }, ["test"], "false").outputMode,
+    createContext({ json: true }, ["test"], envSet("false")).outputMode,
     "json",
   );
 });
@@ -605,7 +619,7 @@ Deno.test("createContext: forceLog defaults to false", () => {
 });
 
 Deno.test("createContext: log=true sets forceLog", () => {
-  const ctx = createContext({ log: true });
+  const ctx = createContext({ log: true }, ["cli"], unset);
   assertEquals(ctx.forceLog, true);
   assertEquals(ctx.outputMode, "log");
 });
@@ -707,10 +721,10 @@ Deno.test("resolveTracestate: returns undefined when neither cli nor env set", (
 
 // --- colour policy ------------------------------------------------------------
 //
-// These tests never touch the process-global colour flag. `applyColorPolicy`
-// takes its environment read, its terminal probe and its effect as parameters,
-// so the assertions are about which call was made — which is also the only way
-// to pin the "only ever disables" contract.
+// These tests never touch the process-global colour flag or read the process's
+// NO_COLOR. `applyColorPolicy` takes its environment read, its terminal probe
+// and its effect as parameters, so the assertions are about which call was
+// made — which is also the only way to pin the "only ever disables" contract.
 
 /** Records what `applyColorPolicy` did to the colour switch. */
 function colourSpy(): { calls: boolean[]; setEnabled: (v: boolean) => void } {
@@ -765,7 +779,7 @@ Deno.test("resolveColorEnabled: skips the terminal probe once the answer is know
 Deno.test("applyColorPolicy: disables colour when stdout is not a terminal", () => {
   const spy = colourSpy();
   assertEquals(
-    applyColorPolicy(false, undefined, piped, spy.setEnabled),
+    applyColorPolicy(false, unset, piped, spy.setEnabled),
     false,
   );
   assertEquals(spy.calls, [false]);
@@ -774,7 +788,7 @@ Deno.test("applyColorPolicy: disables colour when stdout is not a terminal", () 
 Deno.test("applyColorPolicy: disables colour for --no-color on a terminal", () => {
   const spy = colourSpy();
   assertEquals(
-    applyColorPolicy(true, undefined, onATerminal, spy.setEnabled),
+    applyColorPolicy(true, unset, onATerminal, spy.setEnabled),
     false,
   );
   assertEquals(spy.calls, [false]);
@@ -783,7 +797,7 @@ Deno.test("applyColorPolicy: disables colour for --no-color on a terminal", () =
 Deno.test("applyColorPolicy: disables colour for NO_COLOR on a terminal", () => {
   const spy = colourSpy();
   assertEquals(
-    applyColorPolicy(false, "1", onATerminal, spy.setEnabled),
+    applyColorPolicy(false, envSet("1"), onATerminal, spy.setEnabled),
     false,
   );
   assertEquals(spy.calls, [false]);
@@ -794,7 +808,7 @@ Deno.test("applyColorPolicy: never enables colour, it only ever disables", () =>
   // the effect with `true` would override a disable swamp did not make.
   const spy = colourSpy();
   assertEquals(
-    applyColorPolicy(false, undefined, onATerminal, spy.setEnabled),
+    applyColorPolicy(false, unset, onATerminal, spy.setEnabled),
     true,
   );
   assertEquals(spy.calls, []);
@@ -815,7 +829,7 @@ Deno.test("applyColorPolicy: reads --no-color from the same parse runCli uses", 
       "--no-color",
     );
     assertEquals(
-      applyColorPolicy(requested, undefined, onATerminal, spy.setEnabled),
+      applyColorPolicy(requested, unset, onATerminal, spy.setEnabled),
       false,
       `--no-color not honoured in ${args.join(" ")}`,
     );
@@ -836,7 +850,7 @@ Deno.test("applyColorPolicy: an option value written with = is not the flag", ()
   );
   assertEquals(requested, false);
   assertEquals(
-    applyColorPolicy(requested, undefined, onATerminal, spy.setEnabled),
+    applyColorPolicy(requested, unset, onATerminal, spy.setEnabled),
     true,
   );
   assertEquals(spy.calls, []);
