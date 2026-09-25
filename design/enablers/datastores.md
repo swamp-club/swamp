@@ -1574,8 +1574,9 @@ lock directly, for when a crashed process left a lock that has not expired.
   datastore-resolved config path. Pulled extension sources stay in the repo's
   `.swamp/config/pulled-extensions` until swamp-club#2429. For custom
   datastores (S3, GCS), `ensureManagedConfigBase` resolves the datastore config
-  to derive the cache-relative config path. Extension commands call it before
-  `resolveManagedConfigPaths` so the module-level registry is filled correctly.
+  to derive the cache-relative config path and records it, with its
+  provenance, in the module-level registry; see "Extension commands and the
+  chicken-and-egg" below.
 - `swamp doctor datastores [--repair [-y]]`: health check with optional repair
   of catalog completeness, unmigrated root-level data, and foreign namespace
   contamination (the last via the optional `repairNamespaceContamination?()` on
@@ -1801,30 +1802,39 @@ config-tier push.
 
 ### Extension commands and the chicken-and-egg
 
-Extension commands (`pull`, `install`, `rm`, `update`) use the lightweight
-`requireRepoMarker` initialization instead of `requireInitializedRepoUnlocked`.
-This avoids a circular failure when the datastore extension itself is being
-pulled or updated (see #445). After the change,
-`pushManagedConfigChangesDeferred` resolves the datastore and creates a sync
-service for the push. This is safe because `config migrate` needs a working
-datastore, so `managedConfig: true` implies the datastore extension is
-installed.
+Under managed config on an extension-backed datastore (S3, GCS), the extension
+lockfile lives at the datastore's config base, but finding that base needs the
+datastore extension, which is itself a pulled extension. swamp breaks the loop
+at startup (`configureStartupExtensions` in `src/cli/mod.ts`,
+swamp-club#2483):
 
-In a managedConfig repo on an extension-backed datastore (S3, GCS), the
-datastore extension must load before the managed config base, and so the
-extension lockfile, can be located. The datastore-kind loader therefore finds
-datastore extensions on disk (swamp-club#2483). It scans both in-repo pulled
-roots (`.swamp/config/pulled-extensions` and the pre-migrate
-`.swamp/pulled-extensions`) for extension roots whose manifest name matches
-their path and whose `datastores/` has sources, deduped by name with the
-managed root preferred. It reads no lockfile, so it works whichever lockfile
-recorded the extension, including right after `datastore config migrate`. A
-directory it cannot read is skipped with a warning. Reconcile walks and exempts
-those sources the same way, and the auto-resolve hot-load includes them. As a
-result, datastore code under either root loads whether or not a lockfile lists
-it, at the same trust level as repo-local `extensions/`: an extension a
-teammate removed from the shared lockfile, or a copy left under the legacy
-root after migrate, keeps loading until its directory is deleted.
+1. **Datastore extensions are found on disk.** The datastore-kind loader scans
+   both in-repo pulled roots (`.swamp/config/pulled-extensions` and the
+   pre-migrate `.swamp/pulled-extensions`) for extension roots whose manifest
+   name matches their path and whose `datastores/` has sources, deduped by
+   name with the managed root preferred. It reads no lockfile, so it works
+   whichever lockfile recorded the extension, including right after
+   `datastore config migrate`. A directory it cannot read is skipped with a
+   warning. Reconcile walks and exempts those sources the same way at every
+   construction site. As a result, datastore code under
+   either root loads whether or not a lockfile lists it, at the same trust
+   level as repo-local `extensions/`: an extension a teammate removed from the
+   shared lockfile, or a copy left under the legacy root after migrate, keeps
+   loading until its directory is deleted.
+2. **The base is resolved once, installed-only.** Startup calls
+   `ensureManagedConfigBase` with `autoResolve: false`: nothing is installed
+   from the network before logging starts. Filesystem datastores always
+   resolve; extension-backed ones skip this for thin clients (`--server`,
+   `SWAMP_SERVE_URL`, `SWAMP_SERVER_URL`), and the loaders resolve on first
+   use instead.
+3. **The registry records provenance.** A base from the datastore resolver is
+   *resolved*; the in-repo `.swamp/config` fallback is *unresolved*. The last
+   resolved registration wins and a fallback never replaces a resolved base,
+   so the base cannot move within a process.
+4. **Loaders read the lockfile path when they load.** Reconcile and the
+   missing-source-files check run only once the base is resolved; if startup
+   had to skip them, they run once, best-effort, when a loader first finds it
+   resolved. A missing lockfile is normal and silent; an unreadable one warns.
 
 Until swamp-club#2495, the auto-resolver records installs in the in-repo
 `.swamp/config/upstream_extensions.json` rather than the datastore's lockfile,
@@ -1839,6 +1849,10 @@ reports it (`isAbsentFromDisk`, mirroring the auto-resolver's `missing`
 inspection). `update`,
 `rm` and `install` act on the resolved lockfile only, and workflows from
 auto-resolved extensions stay invisible to the workflow loaders, as before.
+
+The resolved lockfile is a cache file: on a fresh machine it is absent until
+`swamp datastore sync --pull` hydrates it. Extension write commands do not
+hydrate it first; swamp-club#2495 tracks that lost-update risk.
 
 ### Pod boot sequence under managed config
 

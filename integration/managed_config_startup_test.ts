@@ -18,29 +18,30 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration tests for managedConfig repos on an extension-backed datastore
- * (swamp-club#2483): datastore extensions discovered on disk, and the
- * transitional in-repo auto-resolve lockfile read alongside the resolved one.
+ * Integration tests for managed config base resolution at startup
+ * (swamp-club#2483).
  *
- * The datastore extension here is a real on-disk fixture that the datastore
- * loader scans, bundles and registers; nothing lists it in a lockfile.
+ * A managedConfig repo on an extension-backed datastore must resolve its
+ * config base before any loader reads a lockfile. The datastore extension
+ * here is a real on-disk fixture: the datastore loader scans it, bundles it,
+ * registers it and resolves the base end to end, which a filesystem
+ * datastore cannot exercise. Everything runs in-process on a temp dir; the
+ * loader may spawn `deno` to bundle, as other loader tests do.
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
 import {
-  configureExtensionLoaders,
+  configureStartupExtensions,
   type DeferredWarning,
 } from "../src/cli/mod.ts";
 import {
-  ensureManagedConfigBase,
-  resolveManagedConfigPaths,
-} from "../src/cli/repo_context.ts";
-import {
   getManagedConfigBase,
-  managedConfigLockfilePath,
+  isManagedConfig,
+  isManagedConfigBaseResolved,
   resetManagedConfigRegistry,
+  resolvePulledExtensionsRoot,
 } from "../src/infrastructure/persistence/paths.ts";
 import {
   type RepoMarkerData,
@@ -56,7 +57,13 @@ import {
   getAutoResolver,
   setAutoResolver,
 } from "../src/domain/extensions/auto_resolver_context.ts";
+import {
+  type AutoResolveOutputPort,
+  ExtensionAutoResolver,
+} from "../src/domain/extensions/extension_auto_resolver.ts";
 import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
+
+const unsetDatastoreEnv = () => undefined;
 
 const DATASTORE_CODE = (typeId: string, cacheDir: string) => `
 export const datastore = {
@@ -110,6 +117,14 @@ export const model = {
 };
 `;
 
+interface Fixture {
+  repoDir: string;
+  cacheDir: string;
+  scope: string;
+  datastoreType: string;
+  marker: RepoMarkerData;
+}
+
 /** Writes a pulled extension root with its manifest. */
 async function writeExtension(
   root: string,
@@ -117,14 +132,16 @@ async function writeExtension(
   kind: string,
   file: string,
   code: string,
-): Promise<void> {
+): Promise<string> {
   const extRoot = join(root, ...name.split("/"));
   await ensureDir(join(extRoot, kind));
   await Deno.writeTextFile(
     join(extRoot, "manifest.yaml"),
     `manifestVersion: 1\nname: "${name}"\nversion: "1.0.0"\n`,
   );
-  await Deno.writeTextFile(join(extRoot, kind, file), code);
+  const path = join(extRoot, kind, file);
+  await Deno.writeTextFile(path, code);
+  return path;
 }
 
 async function writeLockfile(
@@ -139,36 +156,15 @@ async function writeLockfile(
   await Deno.writeTextFile(path, JSON.stringify(map));
 }
 
-interface Fixture {
-  repoDir: string;
-  marker: RepoMarkerData;
-  cacheDir: string;
-  scope: string;
-  /** The in-repo lockfile, where auto-resolve records installs. */
-  localLockfilePath: string;
-  /** The lockfile at the datastore's config base. */
-  resolvedLockfilePath: string;
-  warnings: DeferredWarning[];
-}
-
 /**
- * Configures the extension loaders for a temp managedConfig repo whose
- * datastore extension sits under `root` (or nowhere), runs `fn`, and
- * restores the process-global state it touched.
- *
- * `setup` runs before the loaders are configured. With `lockfile: "resolved"`
- * the loaders read the lockfile at the datastore's config base, as they do
- * once the base resolves; by default they read the in-repo lockfile.
+ * Runs `fn` against a temp managedConfig repo and restores every piece of
+ * process-global state the startup sequence touches.
  */
-async function withExtensionBackedRepo(
-  root: "managed" | "legacy" | "none",
+async function withManagedRepo(
   fn: (fixture: Fixture) => Promise<void>,
-  opts: {
-    setup?: (fixture: Fixture) => Promise<void>;
-    lockfile?: "local" | "resolved";
-  } = {},
+  opts: { datastoreRoot?: "managed" | "legacy" | "none" } = {},
 ): Promise<void> {
-  const repoDir = await Deno.makeTempDir({ prefix: "swamp_ds_on_disk_" });
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_mc_startup_" });
   const cacheDir = join(repoDir, "cache");
   const scope = `@t${crypto.randomUUID().slice(0, 8)}`;
   const datastoreType = `${scope}/store`;
@@ -179,47 +175,24 @@ async function withExtensionBackedRepo(
     tools: [],
     datastore: { type: datastoreType, managedConfig: true },
   };
-  const fixture: Fixture = {
-    repoDir,
-    marker,
-    cacheDir,
-    scope,
-    localLockfilePath: managedConfigLockfilePath(repoDir),
-    resolvedLockfilePath: join(cacheDir, "config", "upstream_extensions.json"),
-    warnings: [],
-  };
   const previousResolver = getAutoResolver();
   setAutoResolver(null);
   try {
     await new RepoMarkerRepository().write(RepoPath.create(repoDir), marker);
-    if (root !== "none") {
-      const pulledRoot = root === "managed"
+    const where = opts.datastoreRoot ?? "managed";
+    if (where !== "none") {
+      const root = where === "managed"
         ? join(repoDir, ".swamp", "config", "pulled-extensions")
         : join(repoDir, ".swamp", "pulled-extensions");
       await writeExtension(
-        pulledRoot,
+        root,
         datastoreType,
         "datastores",
         "store.ts",
         DATASTORE_CODE(datastoreType, cacheDir),
       );
     }
-    await opts.setup?.(fixture);
-    // As runCli does: record the repo as managed before the loaders ask for
-    // the pulled root.
-    resolveManagedConfigPaths(repoDir, marker);
-    await configureExtensionLoaders(
-      repoDir,
-      marker,
-      [],
-      fixture.warnings,
-      true,
-      undefined,
-      opts.lockfile === "resolved"
-        ? fixture.resolvedLockfilePath
-        : fixture.localLockfilePath,
-    );
-    await fn(fixture);
+    await fn({ repoDir, cacheDir, scope, datastoreType, marker });
   } finally {
     for (
       const registry of [
@@ -243,206 +216,477 @@ async function withExtensionBackedRepo(
   }
 }
 
-// ── datastore extensions found on disk ─────────────────────────────────────
+async function startup(
+  fixture: Fixture,
+  opts: {
+    thinClient?: boolean;
+    suppressWarning?: (warning: DeferredWarning) => boolean;
+  } = {},
+): Promise<{ warnings: DeferredWarning[]; dispose: () => void }> {
+  const warnings: DeferredWarning[] = [];
+  const dispose = await configureStartupExtensions({
+    repoDir: fixture.repoDir,
+    marker: fixture.marker,
+    resolvedSources: [],
+    deferredWarnings: warnings,
+    quiet: true,
+    thinClient: opts.thinClient ?? false,
+    readDatastoreEnv: unsetDatastoreEnv,
+    suppressWarning: opts.suppressWarning,
+  });
+  return { warnings, dispose };
+}
 
-Deno.test("configureExtensionLoaders: a datastore extension on disk resolves the managed config base with no lockfile", async () => {
-  await withExtensionBackedRepo("managed", async (fixture) => {
-    const resolved = await ensureManagedConfigBase(
+Deno.test("configureStartupExtensions: resolves the managed config base from a datastore extension on disk", async () => {
+  await withManagedRepo(async (fixture) => {
+    const { dispose } = await startup(fixture);
+    try {
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), true);
+      const base = getManagedConfigBase(fixture.repoDir) ?? "";
+      assertEquals(
+        base.startsWith(fixture.cacheDir),
+        true,
+        `base ${base} should be under the cache ${fixture.cacheDir}`,
+      );
+      assertPathEquals(
+        resolvePulledExtensionsRoot(fixture.repoDir),
+        join(fixture.repoDir, ".swamp", "config", "pulled-extensions"),
+      );
+    } finally {
+      dispose();
+    }
+  });
+});
+
+Deno.test("configureStartupExtensions: finds a datastore extension left under the legacy root after migrate", async () => {
+  await withManagedRepo(async (fixture) => {
+    const { dispose } = await startup(fixture);
+    try {
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), true);
+    } finally {
+      dispose();
+    }
+  }, { datastoreRoot: "legacy" });
+});
+
+Deno.test("configureStartupExtensions: loaders read the resolved lockfile and the transitional local one", async () => {
+  await withManagedRepo(async (fixture) => {
+    // Resolve once to learn the base, then write its lockfile.
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(fixture.repoDir) ?? "";
+    first.dispose();
+    const pulledRoot = join(
       fixture.repoDir,
-      fixture.marker,
-      undefined,
-      { autoResolve: false },
+      ".swamp",
+      "config",
+      "pulled-extensions",
     );
-    assertEquals(resolved, true);
-    assertPathEquals(
-      getManagedConfigBase(fixture.repoDir) ?? "",
-      join(fixture.cacheDir, "config"),
+    const teamType = `${fixture.scope}/team/thing`;
+    const autoType = `${fixture.scope}/auto/thing`;
+    await writeExtension(
+      pulledRoot,
+      `${fixture.scope}/team`,
+      "models",
+      "thing.ts",
+      MODEL_CODE(teamType),
     );
+    await writeExtension(
+      pulledRoot,
+      `${fixture.scope}/auto`,
+      "models",
+      "thing.ts",
+      MODEL_CODE(autoType),
+    );
+    await writeLockfile(join(base, "upstream_extensions.json"), {
+      [`${fixture.scope}/team`]: { files: [] },
+    });
+    await writeLockfile(
+      join(fixture.repoDir, ".swamp", "config", "upstream_extensions.json"),
+      { [`${fixture.scope}/auto`]: { files: [] } },
+    );
+    modelRegistry.resetLoadedFlag();
+
+    const { dispose } = await startup(fixture);
+    try {
+      await modelRegistry.ensureLoaded();
+      await modelRegistry.ensureTypeLoaded(teamType);
+      await modelRegistry.ensureTypeLoaded(autoType);
+      assertEquals(modelRegistry.has(teamType), true);
+      assertEquals(modelRegistry.has(autoType), true);
+    } finally {
+      dispose();
+    }
   });
 });
 
-Deno.test("configureExtensionLoaders: finds a datastore extension left under the legacy root after migrate", async () => {
-  await withExtensionBackedRepo("legacy", async ({ repoDir, marker }) => {
-    assertEquals(
-      await ensureManagedConfigBase(repoDir, marker, undefined, {
-        autoResolve: false,
-      }),
-      true,
-    );
-  });
-});
-
-Deno.test("configureExtensionLoaders: with no datastore extension on disk the base stays unresolved", async () => {
-  await withExtensionBackedRepo("none", async ({ repoDir, marker }) => {
-    assertEquals(
-      await ensureManagedConfigBase(repoDir, marker, undefined, {
-        autoResolve: false,
-      }),
-      false,
-    );
-  });
-});
-
-// ── the transitional in-repo auto-resolve lockfile ─────────────────────────
-
-Deno.test("configureExtensionLoaders: loaders read the resolved lockfile and the transitional local one", async () => {
-  let teamType = "";
-  let autoType = "";
-  await withExtensionBackedRepo("managed", async () => {
-    await modelRegistry.ensureLoaded();
-    await modelRegistry.ensureTypeLoaded(teamType);
-    await modelRegistry.ensureTypeLoaded(autoType);
-    assertEquals(modelRegistry.has(teamType), true);
-    assertEquals(modelRegistry.has(autoType), true);
-  }, {
-    lockfile: "resolved",
-    setup: async (fixture) => {
-      const pulledRoot = join(
-        fixture.repoDir,
-        ".swamp",
-        "config",
-        "pulled-extensions",
+Deno.test("configureStartupExtensions: the missing-files warning reads the resolved lockfile, and reports a truncated auto-resolved entry separately with a delete hint", async () => {
+  await withManagedRepo(async (fixture) => {
+    const { repoDir, scope } = fixture;
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(repoDir) ?? "";
+    first.dispose();
+    const missing = (name: string) =>
+      `.swamp/config/pulled-extensions/${name}/models/gone.ts`;
+    await writeLockfile(join(base, "upstream_extensions.json"), {
+      [`${scope}/team-gone`]: { files: [missing(`${scope}/team-gone`)] },
+    });
+    // auto-cut and auto-cut2 keep their directories with a file missing
+    // (truncated trees); auto-gone has no directory left.
+    for (const name of ["auto-cut", "auto-cut2"]) {
+      await Deno.mkdir(
+        join(repoDir, ".swamp", "config", "pulled-extensions", scope, name),
+        { recursive: true },
       );
-      teamType = `${fixture.scope}/team/thing`;
-      autoType = `${fixture.scope}/auto/thing`;
-      await writeExtension(
-        pulledRoot,
-        `${fixture.scope}/team`,
-        "models",
-        "thing.ts",
-        MODEL_CODE(teamType),
-      );
-      await writeExtension(
-        pulledRoot,
-        `${fixture.scope}/auto`,
-        "models",
-        "thing.ts",
-        MODEL_CODE(autoType),
-      );
-      await writeLockfile(fixture.resolvedLockfilePath, {
-        [`${fixture.scope}/team`]: { files: [] },
-      });
-      await writeLockfile(fixture.localLockfilePath, {
-        [`${fixture.scope}/auto`]: { files: [] },
-      });
-    },
-  });
-});
-
-Deno.test("configureExtensionLoaders: the missing-files warning reports a truncated auto-resolved entry separately, with a delete hint", async () => {
-  await withExtensionBackedRepo("managed", ({ scope, warnings }) => {
-    const team = warnings.find((w) =>
-      w.error.includes("pulled extension(s) have missing source files")
-    );
-    const local = warnings.find((w) =>
-      w.error.includes("auto-resolved extension(s) have missing source")
-    );
-    assertStringIncludes(team?.error ?? "", `${scope}/team-gone`);
-    assertEquals((team?.error ?? "").includes(`${scope}/auto-cut`), false);
-    assertStringIncludes(local?.error ?? "", `${scope}/auto-cut`);
-    // Everything to delete is named, the skill dir included: a surviving
-    // skill would stop the auto-resolver from reinstalling.
-    assertStringIncludes(
-      local?.error ?? "",
-      `${join(".swamp", "config", "pulled-extensions", scope, "auto-cut")}, ` +
-        join(".swamp", "pulled-extensions", "skills", "auto-cut-skill"),
-    );
-    assertEquals((local?.error ?? "").includes("--force"), false);
-    // Every truncated extension's paths are named, not just the first.
-    assertStringIncludes(
-      local?.error ?? "",
-      `${scope}/auto-cut2: ${
-        join(".swamp", "config", "pulled-extensions", scope, "auto-cut2")
-      }`,
-    );
-    // Gone entirely, it awaits reinstall on next use: nothing to report.
-    assertEquals(
-      warnings.some((w) => w.error.includes(`${scope}/auto-gone`)),
-      false,
-    );
-    return Promise.resolve();
-  }, {
-    lockfile: "resolved",
-    setup: async (
-      { repoDir, scope, resolvedLockfilePath, localLockfilePath },
-    ) => {
-      const missing = (name: string) =>
-        `.swamp/config/pulled-extensions/${name}/models/gone.ts`;
-      await writeLockfile(resolvedLockfilePath, {
-        [`${scope}/team-gone`]: { files: [missing(`${scope}/team-gone`)] },
-      });
-      // auto-cut and auto-cut2 keep their directories with a file missing
-      // (truncated trees); auto-gone has no directory left.
-      for (const name of ["auto-cut", "auto-cut2"]) {
-        await Deno.mkdir(
-          join(repoDir, ".swamp", "config", "pulled-extensions", scope, name),
-          { recursive: true },
-        );
-      }
-      const skill = ".swamp/pulled-extensions/skills/auto-cut-skill/SKILL.md";
-      await Deno.mkdir(join(repoDir, dirname(skill)), { recursive: true });
-      await Deno.writeTextFile(join(repoDir, skill), "x");
-      await writeLockfile(localLockfilePath, {
-        [`${scope}/auto-cut`]: {
-          files: [missing(`${scope}/auto-cut`), skill],
-        },
+    }
+    const skill = ".swamp/pulled-extensions/skills/auto-cut-skill/SKILL.md";
+    await Deno.mkdir(join(repoDir, dirname(skill)), { recursive: true });
+    await Deno.writeTextFile(join(repoDir, skill), "x");
+    await writeLockfile(
+      join(repoDir, ".swamp", "config", "upstream_extensions.json"),
+      {
+        [`${scope}/auto-cut`]: { files: [missing(`${scope}/auto-cut`), skill] },
         [`${scope}/auto-cut2`]: { files: [missing(`${scope}/auto-cut2`)] },
         [`${scope}/auto-gone`]: { files: [missing(`${scope}/auto-gone`)] },
-      });
-    },
-  });
-});
-
-Deno.test("configureExtensionLoaders: malformed lockfile entries are skipped by the missing-files check", async () => {
-  await withExtensionBackedRepo("managed", ({ scope, warnings }) => {
-    const team = warnings.find((w) =>
-      w.error.includes("pulled extension(s) have missing source files")
+      },
     );
-    assertStringIncludes(team?.error ?? "", `${scope}/team-gone`);
-    assertEquals((team?.error ?? "").includes(`${scope}/null-entry`), false);
-    return Promise.resolve();
-  }, {
-    lockfile: "resolved",
-    setup: async ({ scope, resolvedLockfilePath }) => {
-      await ensureDir(join(resolvedLockfilePath, ".."));
-      await Deno.writeTextFile(
-        resolvedLockfilePath,
-        JSON.stringify({
-          [`${scope}/null-entry`]: null,
-          [`${scope}/null-file`]: { version: "1.0.0", files: [null] },
-          [`${scope}/number-files`]: { version: "1.0.0", files: 5 },
-          [`${scope}/team-gone`]: {
-            version: "1.0.0",
-            pulledAt: "2026-01-01T00:00:00Z",
-            files: [
-              `.swamp/config/pulled-extensions/${scope}/team-gone/models/gone.ts`,
-            ],
-          },
-        }),
+
+    const { warnings, dispose } = await startup(fixture);
+    try {
+      const team = warnings.find((w) =>
+        w.error.includes("pulled extension(s) have missing source files")
       );
-    },
+      const local = warnings.find((w) =>
+        w.error.includes("auto-resolved extension(s) have missing source")
+      );
+      assertStringIncludes(team?.error ?? "", `${scope}/team-gone`);
+      assertEquals((team?.error ?? "").includes(`${scope}/auto-cut`), false);
+      assertStringIncludes(local?.error ?? "", `${scope}/auto-cut`);
+      // Everything to delete is named, the skill dir included: a surviving
+      // skill would stop the auto-resolver from reinstalling.
+      assertStringIncludes(
+        local?.error ?? "",
+        `${
+          join(".swamp", "config", "pulled-extensions", scope, "auto-cut")
+        }, ` +
+          join(".swamp", "pulled-extensions", "skills", "auto-cut-skill"),
+      );
+      assertEquals((local?.error ?? "").includes("--force"), false);
+      // Every truncated extension's paths are named, not just the first.
+      assertStringIncludes(
+        local?.error ?? "",
+        `${scope}/auto-cut2: ${
+          join(".swamp", "config", "pulled-extensions", scope, "auto-cut2")
+        }`,
+      );
+      // Gone entirely, it awaits reinstall on next use: nothing to report.
+      assertEquals(
+        warnings.some((w) => w.error.includes(`${scope}/auto-gone`)),
+        false,
+      );
+    } finally {
+      dispose();
+    }
   });
 });
 
-Deno.test("configureExtensionLoaders: a transitional local lockfile containing null is skipped", async () => {
-  await withExtensionBackedRepo("managed", ({ scope, warnings }) => {
-    const team = warnings.find((w) =>
-      w.error.includes("pulled extension(s) have missing source files")
+Deno.test("configureStartupExtensions: the deferred missing-files check honours suppressWarning", async () => {
+  await withManagedRepo(async (fixture) => {
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(fixture.repoDir) ?? "";
+    first.dispose();
+    await writeLockfile(join(base, "upstream_extensions.json"), {
+      [`${fixture.scope}/team-gone`]: {
+        files: [
+          `.swamp/config/pulled-extensions/${fixture.scope}/team-gone/models/gone.ts`,
+        ],
+      },
+    });
+    const offered: DeferredWarning[] = [];
+    // Forget the base the first startup resolved, so the thin client below
+    // starts unresolved.
+    resetManagedConfigRegistry();
+
+    // A thin client skips startup resolution, so the missing-files check
+    // runs deferred, on the first load.
+    const { warnings, dispose } = await startup(fixture, {
+      thinClient: true,
+      suppressWarning: (warning) => {
+        offered.push(warning);
+        return true;
+      },
+    });
+    try {
+      assertEquals(warnings, []);
+      await modelRegistry.ensureLoaded();
+      assertStringIncludes(
+        offered.map((w) => w.error).join("\n"),
+        `${fixture.scope}/team-gone`,
+      );
+    } finally {
+      dispose();
+    }
+  });
+});
+
+Deno.test("configureStartupExtensions: a failed datastore resolution is remembered in a repo without managedConfig", async () => {
+  await withManagedRepo(async (fixture) => {
+    // No managedConfig, and a datastore extension nobody can install.
+    const marker: RepoMarkerData = {
+      ...fixture.marker,
+      datastore: { type: `${fixture.scope}/missing-datastore` },
+    };
+    const lookups: string[] = [];
+    // A no-op output port that stays valid when the port gains methods.
+    const silentOutput = new Proxy({}, {
+      get: () => () => {},
+    }) as AutoResolveOutputPort;
+    setAutoResolver(
+      new ExtensionAutoResolver({
+        allowedCollectives: [fixture.scope.slice(1)],
+        extensionLookup: {
+          getExtension: (name) => {
+            lookups.push(name);
+            return Promise.resolve(null);
+          },
+          searchExtensions: () => Promise.resolve({ extensions: [] }),
+        },
+        extensionInstaller: {
+          inspectInstallation: () => Promise.resolve({ state: "missing" }),
+          install: () => Promise.resolve(null),
+          hotLoadModels: () => Promise.resolve(0),
+          hotLoadVaults: () => Promise.resolve(),
+          hotLoadDatastores: () => Promise.resolve(),
+          hotLoadWebhooks: () => Promise.resolve(),
+          failedLocalSourceMatchesType: () => false,
+        },
+        output: silentOutput,
+      }),
     );
-    assertStringIncludes(team?.error ?? "", `${scope}/team-gone`);
-    return Promise.resolve();
-  }, {
-    lockfile: "resolved",
-    setup: async ({ scope, resolvedLockfilePath, localLockfilePath }) => {
-      await writeLockfile(resolvedLockfilePath, {
-        [`${scope}/team-gone`]: {
+    const dispose = await configureStartupExtensions({
+      repoDir: fixture.repoDir,
+      marker,
+      resolvedSources: [],
+      deferredWarnings: [],
+      quiet: true,
+      thinClient: false,
+      readDatastoreEnv: unsetDatastoreEnv,
+    });
+    try {
+      await modelRegistry.ensureLoaded();
+      const afterFirstLoader = lookups.length;
+      assertEquals(afterFirstLoader > 0, true);
+      await vaultTypeRegistry.ensureLoaded();
+      assertEquals(lookups.length, afterFirstLoader);
+    } finally {
+      dispose();
+    }
+  }, { datastoreRoot: "none" });
+});
+
+Deno.test("configureStartupExtensions: a lockfile unreadable at startup leaves catalog repair to the first load", async () => {
+  await withManagedRepo(async (fixture) => {
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(fixture.repoDir) ?? "";
+    first.dispose();
+    const lockfilePath = join(base, "upstream_extensions.json");
+    await ensureDir(base);
+    await Deno.writeTextFile(lockfilePath, "null\n");
+    const offered: DeferredWarning[] = [];
+
+    const { warnings, dispose } = await startup(fixture, {
+      suppressWarning: (warning) => {
+        offered.push(warning);
+        return true;
+      },
+    });
+    try {
+      // The sync finishes rewriting the lockfile before the first load.
+      await writeLockfile(lockfilePath, {
+        [`${fixture.scope}/team-gone`]: {
           files: [
-            `.swamp/config/pulled-extensions/${scope}/team-gone/models/gone.ts`,
+            `.swamp/config/pulled-extensions/${fixture.scope}/team-gone/models/gone.ts`,
           ],
         },
       });
-      await ensureDir(join(localLockfilePath, ".."));
-      await Deno.writeTextFile(localLockfilePath, "null\n");
-    },
+      await modelRegistry.ensureLoaded();
+      assertEquals(warnings, []);
+      assertStringIncludes(
+        offered.map((w) => w.error).join("\n"),
+        `${fixture.scope}/team-gone`,
+      );
+    } finally {
+      dispose();
+    }
   });
+});
+
+Deno.test("configureStartupExtensions: a load that cannot read the lockfile is retried by the next load", async () => {
+  await withManagedRepo(async (fixture) => {
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(fixture.repoDir) ?? "";
+    first.dispose();
+    const lockfilePath = join(base, "upstream_extensions.json");
+    await ensureDir(base);
+    await Deno.writeTextFile(lockfilePath, "null\n");
+
+    const { dispose } = await startup(fixture);
+    try {
+      await assertRejects(() => modelRegistry.ensureLoaded(), SyntaxError);
+      await writeLockfile(lockfilePath, {});
+      await modelRegistry.ensureLoaded();
+    } finally {
+      dispose();
+    }
+  });
+});
+
+Deno.test("configureStartupExtensions: a transitional local lockfile containing null is skipped", async () => {
+  await withManagedRepo(async (fixture) => {
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(fixture.repoDir) ?? "";
+    first.dispose();
+    await writeLockfile(join(base, "upstream_extensions.json"), {
+      [`${fixture.scope}/team-gone`]: {
+        files: [
+          `.swamp/config/pulled-extensions/${fixture.scope}/team-gone/models/gone.ts`,
+        ],
+      },
+    });
+    await Deno.writeTextFile(
+      join(fixture.repoDir, ".swamp", "config", "upstream_extensions.json"),
+      "null\n",
+    );
+
+    const { warnings, dispose } = await startup(fixture);
+    try {
+      const team = warnings.find((w) =>
+        w.error.includes("pulled extension(s) have missing source files")
+      );
+      assertStringIncludes(team?.error ?? "", `${fixture.scope}/team-gone`);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+Deno.test("configureStartupExtensions: a resolved lockfile containing null does not fail startup", async () => {
+  await withManagedRepo(async (fixture) => {
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(fixture.repoDir) ?? "";
+    first.dispose();
+    await ensureDir(base);
+    await Deno.writeTextFile(join(base, "upstream_extensions.json"), "null\n");
+
+    const { warnings, dispose } = await startup(fixture);
+    try {
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), true);
+      assertEquals(
+        warnings.filter((w) => w.error.includes("missing source files")),
+        [],
+      );
+    } finally {
+      dispose();
+    }
+  });
+});
+
+Deno.test("configureStartupExtensions: malformed lockfile entries are skipped by the missing-files check", async () => {
+  await withManagedRepo(async (fixture) => {
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(fixture.repoDir) ?? "";
+    first.dispose();
+    await ensureDir(base);
+    await Deno.writeTextFile(
+      join(base, "upstream_extensions.json"),
+      JSON.stringify({
+        [`${fixture.scope}/null-entry`]: null,
+        [`${fixture.scope}/null-file`]: { version: "1.0.0", files: [null] },
+        [`${fixture.scope}/number-files`]: { version: "1.0.0", files: 5 },
+        [`${fixture.scope}/team-gone`]: {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [
+            `.swamp/config/pulled-extensions/${fixture.scope}/team-gone/models/gone.ts`,
+          ],
+        },
+      }),
+    );
+
+    const { warnings, dispose } = await startup(fixture);
+    try {
+      const team = warnings.find((w) =>
+        w.error.includes("pulled extension(s) have missing source files")
+      );
+      assertStringIncludes(team?.error ?? "", `${fixture.scope}/team-gone`);
+      assertEquals(
+        (team?.error ?? "").includes(`${fixture.scope}/null-entry`),
+        false,
+      );
+    } finally {
+      dispose();
+    }
+  });
+});
+
+Deno.test("configureStartupExtensions: with no datastore extension installed the base stays unresolved", async () => {
+  await withManagedRepo(async (fixture) => {
+    const { dispose } = await startup(fixture);
+    try {
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), false);
+      assertEquals(isManagedConfig(fixture.repoDir), true);
+      // A read-only load resolves installed-only and never auto-installs.
+      await modelRegistry.ensureLoaded();
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), false);
+    } finally {
+      dispose();
+    }
+  }, { datastoreRoot: "none" });
+});
+
+Deno.test("configureStartupExtensions: a thin client skips eager resolution, and the first load resolves", async () => {
+  await withManagedRepo(async (fixture) => {
+    const { dispose } = await startup(fixture, { thinClient: true });
+    try {
+      assertEquals(isManagedConfig(fixture.repoDir), true);
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), false);
+      await modelRegistry.ensureLoaded();
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), true);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+Deno.test("configureStartupExtensions: a filesystem datastore at a custom path resolves even for a thin client", async () => {
+  await withManagedRepo(async (fixture) => {
+    const datastorePath = join(fixture.repoDir, "ds");
+    await ensureDir(datastorePath);
+    const marker: RepoMarkerData = {
+      ...fixture.marker,
+      datastore: {
+        type: "filesystem",
+        path: datastorePath,
+        managedConfig: true,
+      },
+    };
+    const warnings: DeferredWarning[] = [];
+    const dispose = await configureStartupExtensions({
+      repoDir: fixture.repoDir,
+      marker,
+      resolvedSources: [],
+      deferredWarnings: warnings,
+      quiet: true,
+      thinClient: true,
+      readDatastoreEnv: unsetDatastoreEnv,
+    });
+    try {
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), true);
+      assertEquals(
+        (getManagedConfigBase(fixture.repoDir) ?? "").startsWith(datastorePath),
+        true,
+      );
+    } finally {
+      dispose();
+    }
+  }, { datastoreRoot: "none" });
 });

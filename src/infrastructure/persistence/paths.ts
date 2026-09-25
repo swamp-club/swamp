@@ -230,11 +230,45 @@ export function isManagedConfigBaseResolved(repoDir: string): boolean {
 }
 
 /**
- * Test-only: clears the managed config registry so tests stay independent
- * under `deno test --repeats`.
+ * Single-flight memo for installed-only managed config resolution, keyed by
+ * the resolved repo dir. The CLI supplies the resolution step; this module
+ * only owns the state so the test reset can clear it with the registry.
+ */
+const managedConfigResolutionMemo = new Map<string, Promise<boolean>>();
+
+/**
+ * Runs `resolveOnce` at most once at a time per repo and caches a successful
+ * outcome. A failed outcome (`false` or a throw) is not cached, so a later
+ * call retries once the datastore extension is on disk.
+ */
+export function resolveManagedConfigOnce(
+  repoDir: string,
+  resolveOnce: () => Promise<boolean>,
+): Promise<boolean> {
+  const key = resolve(repoDir);
+  const inFlight = managedConfigResolutionMemo.get(key);
+  if (inFlight) return inFlight;
+  const attempt = resolveOnce().then(
+    (resolved) => {
+      if (!resolved) managedConfigResolutionMemo.delete(key);
+      return resolved;
+    },
+    (error) => {
+      managedConfigResolutionMemo.delete(key);
+      throw error;
+    },
+  );
+  managedConfigResolutionMemo.set(key, attempt);
+  return attempt;
+}
+
+/**
+ * Test-only: clears the managed config registry and the resolution memo so
+ * tests stay independent under `deno test --repeats`.
  */
 export function resetManagedConfigRegistry(): void {
   managedConfigRegistry.clear();
+  managedConfigResolutionMemo.clear();
 }
 
 export function resolveEffectiveDefinitionsDir(repoDir: string): string {

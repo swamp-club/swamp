@@ -25,6 +25,7 @@ import {
   isLocalhostUrl,
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
+  isThinClientCommand,
   isUpdateCheckDisabledByEnv,
   resolveAutoResolverLockfilePath,
   resolveLogLevel,
@@ -812,5 +813,58 @@ Deno.test("resolveAutoResolverLockfilePath: records in the in-repo lockfile on a
       () => undefined,
     ),
     join(base, "upstream_extensions.json"),
+  );
+});
+
+// ── isThinClientCommand (swamp-club#2483) ───────────────────────────────────
+
+const noEnv = () => undefined;
+
+Deno.test("isThinClientCommand: the --server flag marks a thin client", () => {
+  assertEquals(
+    isThinClientCommand(
+      extractCommandInfo(["model", "get", "x", "--server", "https://s"]),
+      noEnv,
+    ),
+    true,
+  );
+  assertEquals(
+    isThinClientCommand(
+      extractCommandInfo(["model", "get", "x", "--server=https://s"]),
+      noEnv,
+    ),
+    true,
+  );
+});
+
+Deno.test("isThinClientCommand: SWAMP_SERVE_URL and SWAMP_SERVER_URL mark a thin client", () => {
+  const info = extractCommandInfo(["model", "get", "x"]);
+  assertEquals(
+    isThinClientCommand(
+      info,
+      (n) => n === "SWAMP_SERVE_URL" ? "https://s" : undefined,
+    ),
+    true,
+  );
+  assertEquals(
+    isThinClientCommand(
+      info,
+      (n) => n === "SWAMP_SERVER_URL" ? "https://s" : undefined,
+    ),
+    true,
+  );
+});
+
+Deno.test("isThinClientCommand: local commands and serve are not thin clients", () => {
+  assertEquals(
+    isThinClientCommand(extractCommandInfo(["model", "get", "x"]), noEnv),
+    false,
+  );
+  assertEquals(
+    isThinClientCommand(
+      extractCommandInfo(["serve"]),
+      (n) => n === "SWAMP_SERVE_URL" ? "https://s" : undefined,
+    ),
+    false,
   );
 });

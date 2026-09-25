@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   bundleNamespace,
   getManagedConfigBase,
@@ -31,6 +31,7 @@ import {
   managedConfigLockfilePath,
   registerManagedConfig,
   resetManagedConfigRegistry,
+  resolveManagedConfigOnce,
   resolvePulledExtensionsRoot,
   SWAMP_DATA_DIR,
   SWAMP_MARKER_FILE,
@@ -475,11 +476,64 @@ Deno.test("isManagedConfigBaseResolved: false for unregistered and inactive repo
   assertEquals(isManagedConfigBaseResolved(inactive), false);
 });
 
-Deno.test("resetManagedConfigRegistry: clears registrations", () => {
+Deno.test("resolveManagedConfigOnce: runs concurrent callers once and caches success", async () => {
+  const repo = `/repo/memo-${crypto.randomUUID()}`;
+  let calls = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => release = r);
+  const resolveOnce = async () => {
+    calls++;
+    await gate;
+    return true;
+  };
+  const first = resolveManagedConfigOnce(repo, resolveOnce);
+  const second = resolveManagedConfigOnce(repo, resolveOnce);
+  release();
+  assertEquals(await first, true);
+  assertEquals(await second, true);
+  assertEquals(await resolveManagedConfigOnce(repo, resolveOnce), true);
+  assertEquals(calls, 1);
+});
+
+Deno.test("resolveManagedConfigOnce: does not cache an unresolved outcome", async () => {
+  const repo = `/repo/memo-${crypto.randomUUID()}`;
+  let calls = 0;
+  const resolveOnce = () => {
+    calls++;
+    return Promise.resolve(calls > 1);
+  };
+  assertEquals(await resolveManagedConfigOnce(repo, resolveOnce), false);
+  assertEquals(await resolveManagedConfigOnce(repo, resolveOnce), true);
+  assertEquals(calls, 2);
+});
+
+Deno.test("resolveManagedConfigOnce: does not cache a thrown error", async () => {
+  const repo = `/repo/memo-${crypto.randomUUID()}`;
+  let calls = 0;
+  const resolveOnce = () => {
+    calls++;
+    return calls === 1
+      ? Promise.reject(new Error("boom"))
+      : Promise.resolve(true);
+  };
+  await assertRejects(() => resolveManagedConfigOnce(repo, resolveOnce));
+  assertEquals(await resolveManagedConfigOnce(repo, resolveOnce), true);
+  assertEquals(calls, 2);
+});
+
+Deno.test("resetManagedConfigRegistry: clears registrations and the memo", async () => {
   const repo = `/repo/reset-${crypto.randomUUID()}`;
   registerManagedConfig(repo, true, "/cache/ns/config");
+  let calls = 0;
+  const resolveOnce = () => {
+    calls++;
+    return Promise.resolve(true);
+  };
+  await resolveManagedConfigOnce(repo, resolveOnce);
   resetManagedConfigRegistry();
   assertEquals(isManagedConfig(repo), false);
+  await resolveManagedConfigOnce(repo, resolveOnce);
+  assertEquals(calls, 2);
 });
 
 // --- resolvePulledExtensionsRoot / managedConfigLockfilePath ---

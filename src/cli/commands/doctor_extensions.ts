@@ -23,7 +23,7 @@
 //
 // Relies on `doctor` not being in NON_REPO_COMMANDS — see
 // `cli/mod.ts:NON_REPO_COMMANDS` (the constant lives near line 191).
-// Without that, configureExtensionLoaders never runs and the
+// Without that, configureStartupExtensions never runs and the
 // registries' ensureLoaded would be no-ops.
 //
 // Caller does NOT need to call resetState/resetLoadedFlag — the
