@@ -287,6 +287,27 @@ vault cannot initialize (for example, expired or wrong datastore credentials),
 that underlying error. Fix the datastore access and rerun; do not create a vault
 named `_token-secrets`.
 
+By default the key that encrypts `_token-secrets` is stored in the datastore
+beside the secrets, so datastore read access can decrypt every token. To keep
+the key elsewhere, generate one yourself (`openssl rand -base64 32`), store it
+in a user vault whose storage is outside the datastore, and name it in
+`serve.yaml`:
+
+```yaml
+token-secrets:
+  vault: prod-secrets
+  key: swamp-token-secrets-key
+```
+
+Check it with `swamp serve check-config` (it checks the key is usable, not that
+it matches a control plane already moved to another key). Then restart all serve
+instances together: the first start re-encrypts the existing secrets and removes
+the stored key. Local token commands refuse to run until serve has done this,
+and afterwards refuse without the block or with a different key. Put the same
+block in `.swamp/serve.yaml` on every host that runs the token commands locally,
+and rotate tokens minted before the change: older datastore backups still hold
+the old key.
+
 To mint for a running serve, go through it with `--server` (admin only):
 
 ```bash

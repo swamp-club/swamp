@@ -26,8 +26,17 @@ import {
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
 import { UserError } from "../errors.ts";
-import { initializeControlPlaneVault } from "./control_plane_vault_init.ts";
+import {
+  controlPlaneVaultInitError,
+  initializeControlPlaneVault,
+  resolveTokenSecretsKey,
+  type TokenSecretsKeyVaultReader,
+} from "./control_plane_vault_init.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "./control_plane_vault_provider.ts";
+import {
+  classifyTokenKeyRecord,
+  TokenSecretsKeyError,
+} from "./token_secrets_key.ts";
 import type { VaultProvider } from "./vault_provider.ts";
 import { VaultService } from "./vault_service.ts";
 
@@ -146,6 +155,120 @@ Deno.test("initializeControlPlaneVault: throws the store failure for a local con
     error.message,
     "Check that the local control-plane store is readable and intact",
   );
+});
+
+const KEY_REF = { vault: "prod-secrets", key: "swamp-token-key" };
+
+function keyReader(
+  secrets: Record<string, string>,
+): TokenSecretsKeyVaultReader & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    get(vaultName: string, secretKey: string): Promise<string> {
+      calls.push(`${vaultName}/${secretKey}`);
+      const value = secrets[`${vaultName}/${secretKey}`];
+      return value === undefined
+        ? Promise.reject(new Error(`Secret '${secretKey}' not found`))
+        : Promise.resolve(value);
+    },
+  };
+}
+
+function randomKeyBase64(): string {
+  return btoa(
+    String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))),
+  );
+}
+
+Deno.test("resolveTokenSecretsKey: reads and decodes the key from the named vault", async () => {
+  const value = randomKeyBase64();
+  const reader = keyReader({ "prod-secrets/swamp-token-key": value });
+  const resolved = await resolveTokenSecretsKey(KEY_REF, reader);
+  assertEquals(resolved.ref, KEY_REF);
+  assertEquals(btoa(String.fromCharCode(...resolved.key)), value);
+  assertEquals(reader.calls, ["prod-secrets/swamp-token-key"]);
+});
+
+Deno.test("resolveTokenSecretsKey: a missing secret fails closed naming the vault and key", async () => {
+  const error = await assertRejects(
+    () => resolveTokenSecretsKey(KEY_REF, keyReader({})),
+    UserError,
+  );
+  assertStringIncludes(error.message, "vault 'prod-secrets'");
+  assertStringIncludes(error.message, "key 'swamp-token-key'");
+  assertStringIncludes(error.message, "not found");
+});
+
+Deno.test("resolveTokenSecretsKey: an unusable value fails closed without echoing it", async () => {
+  const value = "short-and-wrong";
+  const error = await assertRejects(
+    () =>
+      resolveTokenSecretsKey(
+        KEY_REF,
+        keyReader({ "prod-secrets/swamp-token-key": value }),
+      ),
+    UserError,
+  );
+  assertStringIncludes(error.message, "is not usable");
+  assertEquals(error.message.includes(value), false);
+});
+
+Deno.test("initializeControlPlaneVault: with a token secrets key the store gets a marker, not a key", async () => {
+  const store = createMockStore();
+  const result = await initializeControlPlaneVault(store, true, {
+    tokenSecretsKey: KEY_REF,
+    vaultService: () =>
+      Promise.resolve(
+        keyReader({ "prod-secrets/swamp-token-key": randomKeyBase64() }),
+      ),
+  });
+  await result.provider.put("server-token-a", "secret-a");
+  assertEquals(await result.provider.get("server-token-a"), "secret-a");
+  assertEquals(
+    classifyTokenKeyRecord(await store.get("token-secrets/encryption-key"))
+      .kind,
+    "marker",
+  );
+});
+
+Deno.test("initializeControlPlaneVault: without a token secrets key the vault service is never built", async () => {
+  let built = false;
+  await initializeControlPlaneVault(createMockStore(), true, {
+    vaultService: () => {
+      built = true;
+      return Promise.resolve(keyReader({}));
+    },
+  });
+  assertEquals(built, false);
+});
+
+Deno.test("initializeControlPlaneVault: a key error is reported as is, without the datastore hint", async () => {
+  const error = await assertRejects(
+    () =>
+      initializeControlPlaneVault(createMockStore(), true, {
+        tokenSecretsKey: KEY_REF,
+        vaultService: () => Promise.resolve(keyReader({})),
+      }),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Could not read the token secrets key");
+  assertEquals(error.message.includes("datastore credentials"), false);
+});
+
+Deno.test("controlPlaneVaultInitError: other UserErrors still get the vault prefix and datastore hint", () => {
+  const error = controlPlaneVaultInitError(
+    new UserError("Namespace mismatch: bound to root"),
+    true,
+  );
+  assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+  assertStringIncludes(error.message, "Namespace mismatch: bound to root");
+  assertStringIncludes(error.message, "Check the datastore credentials");
+});
+
+Deno.test("controlPlaneVaultInitError: a token secrets key error is returned unchanged", () => {
+  const original = new TokenSecretsKeyError("fix the key");
+  assertEquals(controlPlaneVaultInitError(original, true), original);
 });
 
 Deno.test("initializeControlPlaneVault: a failed init does not replace the registered provider", async () => {

@@ -31,8 +31,23 @@ export interface ServeCheckConfigData {
   readonly entries: readonly AccessListCheckEntry[];
   readonly allowedCollectives: readonly string[];
   readonly wouldStart: boolean;
-  /** Why serve would refuse to start; set when `wouldStart` is false. */
+  /**
+   * Why the auth settings would stop serve starting. An unusable token
+   * secrets key also sets `wouldStart` false and is reported in
+   * `tokenSecretsKey.error` instead.
+   */
   readonly refusal?: string;
+  /** Set when serve.yaml has a token-secrets block. */
+  readonly tokenSecretsKey?: TokenSecretsKeyCheck;
+}
+
+/** Whether the external token secrets key resolves. Never holds the key. */
+export interface TokenSecretsKeyCheck {
+  readonly vault: string;
+  readonly key: string;
+  readonly status: "ok" | "failed";
+  /** Why the key is unusable; set when `status` is "failed". */
+  readonly error?: string;
 }
 
 const CHECKMARK = "✓";
@@ -96,10 +111,25 @@ export function renderServeCheckConfig(
     }
   }
 
+  const tokenKey = data.tokenSecretsKey;
+  if (tokenKey) {
+    lines.push("");
+    lines.push(
+      `${
+        bold(cyan("Token secrets key:"))
+      } vault ${tokenKey.vault}, key ${tokenKey.key}`,
+    );
+    lines.push(
+      tokenKey.status === "ok"
+        ? `  ${green(CHECKMARK)} resolves to a usable 32-byte key`
+        : `  ${red(CROSS)} ${red(tokenKey.error ?? "not usable")}`,
+    );
+  }
+
   const notFound = data.entries.filter((e) => e.status === "not-found").length;
   let result = green("PASSED");
   if (!data.passed) {
-    const why = data.refusal !== undefined
+    const why = data.refusal !== undefined || tokenKey?.status === "failed"
       ? "swamp serve would refuse to start"
       : `${notFound} unknown name(s); swamp serve would start without them`;
     result = `${red("FAILED")} ${dim(`(${why})`)}`;

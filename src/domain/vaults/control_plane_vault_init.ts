@@ -22,8 +22,14 @@ import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
 import { UserError } from "../errors.ts";
 import {
   ControlPlaneVaultProvider,
+  type ExternalTokenKey,
   TOKEN_SECRETS_VAULT_NAME,
 } from "./control_plane_vault_provider.ts";
+import {
+  parseTokenSecretsKeyMaterial,
+  TokenSecretsKeyError,
+  type TokenSecretsKeyRef,
+} from "./token_secrets_key.ts";
 import { VaultService } from "./vault_service.ts";
 
 const logger = getLogger(["vaults", "control-plane-init"]);
@@ -43,6 +49,9 @@ export function controlPlaneVaultInitError(
   isRemote: boolean,
 ): UserError {
   logger.debug`Control-plane vault initialization error: ${err}`;
+  // Key configuration errors already say what to fix; the datastore hint
+  // below would point the operator at the wrong thing.
+  if (err instanceof TokenSecretsKeyError) return err;
   const hint = isRemote
     ? "Check the datastore credentials and endpoint, then rerun."
     : "Check that the local control-plane store is readable and intact, then rerun.";
@@ -51,6 +60,63 @@ export function controlPlaneVaultInitError(
       isRemote ? "remote datastore" : "local control plane"
     }): ${err instanceof Error ? err.message : String(err)}\n${hint}`,
   );
+}
+
+/** Reads secrets from the vault that holds the external token key. */
+export interface TokenSecretsKeyVaultReader {
+  get(
+    vaultName: string,
+    secretKey: string,
+    callerContext?: string,
+  ): Promise<string>;
+}
+
+/**
+ * Reads and decodes the external token key named by serve.yaml
+ * `token-secrets`. Fails closed with a UserError when the vault or secret is
+ * missing or the value is not a usable key; messages never include the value.
+ */
+export async function resolveTokenSecretsKey(
+  ref: TokenSecretsKeyRef,
+  vaultService: TokenSecretsKeyVaultReader,
+): Promise<ExternalTokenKey> {
+  const location = `vault '${ref.vault}', key '${ref.key}'`;
+  let value: string;
+  try {
+    value = await vaultService.get(
+      ref.vault,
+      ref.key,
+      "serve:token-secrets-key",
+    );
+  } catch (err) {
+    throw new TokenSecretsKeyError(
+      `Could not read the token secrets key from ${location}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  try {
+    return { ref, key: parseTokenSecretsKeyMaterial(value) };
+  } catch (err) {
+    throw new TokenSecretsKeyError(
+      `Token secrets key in ${location} is not usable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+export interface ControlPlaneVaultInitOptions {
+  /**
+   * The serve.yaml `token-secrets` reference. When set, the key is read from
+   * that vault and the control plane never stores key bytes. It must come
+   * from local configuration only, never from datastore content.
+   */
+  readonly tokenSecretsKey?: TokenSecretsKeyRef;
+  /** Builds the vault service used to read the key; only called when needed. */
+  readonly vaultService?: () => Promise<TokenSecretsKeyVaultReader>;
+  /** Passed to the provider; the token commands set false. */
+  readonly migrate?: boolean;
 }
 
 /**
@@ -65,9 +131,26 @@ export function controlPlaneVaultInitError(
 export async function initializeControlPlaneVault(
   store: ControlPlaneStore,
   isRemote: boolean,
+  options?: ControlPlaneVaultInitOptions,
 ): Promise<ControlPlaneVaultInitResult> {
-  const provider = new ControlPlaneVaultProvider(store);
+  let provider: ControlPlaneVaultProvider;
   try {
+    let externalKey: ExternalTokenKey | undefined;
+    if (options?.tokenSecretsKey) {
+      if (!options.vaultService) {
+        throw new Error(
+          "A token secrets key is configured but no vault service was provided",
+        );
+      }
+      externalKey = await resolveTokenSecretsKey(
+        options.tokenSecretsKey,
+        await options.vaultService(),
+      );
+    }
+    provider = new ControlPlaneVaultProvider(store, {
+      externalKey,
+      migrate: options?.migrate,
+    });
     await provider.initialize();
   } catch (err) {
     throw controlPlaneVaultInitError(err, isRemote);

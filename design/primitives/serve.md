@@ -279,6 +279,75 @@ lands either before the re-read or after the unit. The gap is in two places:
 
 Both fail closed: the token has to be minted again.
 
+**Token secrets key.** By default the AES-256-GCM key that encrypts
+`_token-secrets` is generated on first use and stored beside the ciphertext, at
+`token-secrets/encryption-key` in the same control-plane store. With a remote
+control plane that means read access to the datastore decrypts every token
+secret: the encryption adds nothing beyond the bucket's own access control.
+Operators opt in to a key held elsewhere with a `serve.yaml` block:
+
+```yaml
+token-secrets:
+  vault: prod-secrets # any user vault except _token-secrets
+  key: swamp-token-secrets-key
+```
+
+The operator generates the key (32 bytes, hex or base64, e.g.
+`openssl rand -base64 32`) and stores it in that vault. Swamp never generates
+it or writes it to the datastore; keys with the same value in every byte are
+rejected. The rules (`src/domain/vaults/token_secrets_key.ts`,
+`ControlPlaneVaultProvider`):
+
+- The key comes only from local `serve.yaml`: serve's `--config` file, and
+  `.swamp/serve.yaml` for the local token commands. It is read once at startup;
+  changing it needs a restart. `swamp serve check-config` reads it and reports
+  whether it is usable, without printing it; it does not compare it with the
+  fingerprint of a control plane already moved to an external key, which serve
+  checks at startup.
+- The vault must keep its storage outside the datastore. `local_encryption`
+  keeps its key in the always-local `.swamp/secrets/`, so it works on one host;
+  in HA every instance, and every host that runs `access token` commands
+  locally, needs the same key, which fits a shared external vault.
+- Serve refuses to start (and the token commands fail) if the vault or secret is
+  missing, the value is not a usable key, or it is not the key the control plane
+  was moved to.
+- The first opted-in serve start re-encrypts every entry under
+  `token-secrets/values/` with the external key. Only then does it overwrite
+  `encryption-key` with a marker: the vault reference and an HMAC fingerprint of
+  the key, which decrypts nothing. A crash before that leaves the old key in
+  place, and the next start resumes. Entries neither key decrypts are left as
+  they are and logged by name. The token commands never migrate (the provider's
+  `migrate: false`): they refuse until serve has, because migrating from a CLI
+  process would change the key under running instances that still hold the old
+  one.
+- Serve migrates whenever it finds a co-located key, so restoring a backup of
+  `_control/token-secrets/` from before the move makes the next start migrate
+  again from that backup. The same applies to anyone with datastore write
+  access, who could plant a key and ciphertext of their choosing: the external
+  key protects against datastore read access, not write access.
+- The marker is not a valid AES key, so a swamp release without this support
+  refuses to start rather than generating a new co-located key. A process with
+  no `token-secrets` block also refuses, naming the vault and key recorded in
+  the marker, but never reads the key from that reference: the marker is
+  datastore content and must not choose the key source. There is no way back to
+  a co-located key.
+- Restart every instance with the block together. An instance still on the old
+  key while another migrates can write a secret neither key opens. Opted-in
+  instances may migrate at the same time: each re-reads an entry just before
+  writing it back and skips it if a peer changed or deleted it since (a
+  rotation after the peer finished, say). The store has no compare-and-swap,
+  so a change inside that one round-trip can still be overwritten.
+- The token commands read `.swamp/serve.yaml` only for this block. A file that
+  cannot be read or parsed is skipped with a warning, so the default path keeps
+  working; a control plane already moved to an external key still refuses.
+- Moving to the external key cannot reach copies made before the move: datastore
+  backups, noncurrent object versions on a versioned bucket, and root-level
+  `_control/token-secrets/` left by the namespace migration (see High
+  availability) still hold the old key. Serve logs a warning for the first two
+  after migrating, and an error on every namespaced start while a co-located key
+  remains at the root. Rotate tokens minted before the move and delete those
+  copies.
+
 **Grants.** Each request is authorized against an in-memory `PolicySnapshot`
 built from grant and group data (`src/domain/access/policy_snapshot_loader.ts`).
 With a remote datastore, an `AccessDataPoller` pulls `data/swamp/grant` and
@@ -393,7 +462,7 @@ as its instance id. The coordination records:
 | `pending-runs/<id>`                         | Cron and webhook triggers, dual-written with the SQLite tracker | `replayPendingRuns` at boot                                                |
 | `fire-records/<workflowId>/<time>`          | `putIfAbsent` by whichever instance wins the cron fire          | Reaper (4 h TTL)                                                           |
 | `claims/reconcile-instance/<instanceId>`    | `putIfAbsent` by the instance that will reap a dead peer        | `cleanupExpiredClaims` (5 min TTL)                                         |
-| `token-secrets/*`                           | `ControlPlaneVaultProvider`                                     | Token auth on every instance                                               |
+| `token-secrets/*`                           | `ControlPlaneVaultProvider`; `encryption-key` is the co-located key, or a marker with `token-secrets` set | Token auth on every instance                                               |
 
 **Boot.** Before accepting traffic an instance
 (`src/serve/boot_reconciliation.ts`):

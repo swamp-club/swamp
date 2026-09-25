@@ -34,6 +34,8 @@ import {
   type WebhookScheme,
 } from "./webhook_verifiers.ts";
 import type { VerifierConfig } from "./webhook_verifiers.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
 
 const logger = getSwampLogger(["serve", "config"]);
 
@@ -163,6 +165,10 @@ export interface ServeConfigFile {
     sinks?: Array<Record<string, unknown>>;
     alerts?: Array<Record<string, unknown>>;
   };
+  "token-secrets"?: {
+    vault?: string;
+    key?: string;
+  };
 }
 
 export interface AuditStoreConfigEntry {
@@ -255,7 +261,10 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "dashboard",
   "auto-resume",
   "audit",
+  "token-secrets",
 ]);
+
+const KNOWN_TOKEN_SECRETS_KEYS = new Set(["vault", "key"]);
 
 const KNOWN_AUTH_KEYS = new Set([
   "mode",
@@ -343,6 +352,19 @@ export function loadServeConfig(
       KNOWN_TLS_KEYS,
       path,
       "tls.",
+    );
+  }
+
+  const tokenSecrets = raw["token-secrets"];
+  if (
+    tokenSecrets && typeof tokenSecrets === "object" &&
+    !Array.isArray(tokenSecrets)
+  ) {
+    warnUnknownKeys(
+      tokenSecrets as Record<string, unknown>,
+      KNOWN_TOKEN_SECRETS_KEYS,
+      path,
+      "token-secrets.",
     );
   }
 
@@ -570,6 +592,60 @@ function validateConfigValues(
   if (raw.audit !== undefined) {
     validateAuditConfig(raw.audit, path);
   }
+
+  if (raw["token-secrets"] !== undefined) {
+    validateTokenSecretsConfig(raw["token-secrets"], path);
+  }
+}
+
+/**
+ * Validates the `token-secrets` block, which opts serve in to an external key
+ * for the `_token-secrets` control-plane vault. Both fields are required, and
+ * the vault cannot be `_token-secrets` itself.
+ */
+export function validateTokenSecretsConfig(value: unknown, path: string): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new UserError(
+      `Invalid token-secrets in ${path}: expected mapping with vault and key`,
+    );
+  }
+  const block = value as Record<string, unknown>;
+  for (const field of ["vault", "key"] as const) {
+    const fieldValue = block[field];
+    // Values are used exactly as written, so surrounding whitespace is an
+    // error rather than trimmed: the checks below see what the lookup sees.
+    if (
+      typeof fieldValue !== "string" || fieldValue.length === 0 ||
+      fieldValue.trim() !== fieldValue
+    ) {
+      throw new UserError(
+        `Invalid token-secrets.${field} in ${path}: expected a non-empty ` +
+          "string without surrounding whitespace",
+      );
+    }
+  }
+  if (block.vault === TOKEN_SECRETS_VAULT_NAME) {
+    throw new UserError(
+      `Invalid token-secrets.vault in ${path}: the key cannot be stored in ` +
+        `${TOKEN_SECRETS_VAULT_NAME}, the vault it encrypts. Name a vault ` +
+        "whose storage is outside the datastore.",
+    );
+  }
+}
+
+/**
+ * Returns the external token key reference from a loaded serve config, or
+ * undefined when the `token-secrets` block is absent. Serve reads it once at
+ * startup; changing it needs a restart.
+ */
+export function parseTokenSecretsKeyConfig(
+  config: ServeConfigFile | null,
+  path: string,
+): TokenSecretsKeyRef | undefined {
+  const block = config?.["token-secrets"];
+  if (block === undefined) return undefined;
+  validateTokenSecretsConfig(block, path);
+  return { vault: block.vault!, key: block.key! };
 }
 
 function validateWebhookEntry(

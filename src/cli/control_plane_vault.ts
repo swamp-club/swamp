@@ -24,8 +24,19 @@ import {
   type ControlPlaneVaultInitResult,
   initializeControlPlaneVault,
 } from "../domain/vaults/control_plane_vault_init.ts";
+import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
+import { VaultService } from "../domain/vaults/vault_service.ts";
 import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
+import {
+  parseTokenSecretsKeyConfig,
+  readServeConfigFile,
+  SERVE_CONFIG_PATH,
+  type ServeConfigFile,
+} from "../serve/serve_config.ts";
+import { getLogger } from "@logtape/logtape";
+
+const logger = getLogger(["cli", "control-plane-vault"]);
 
 export interface ControlPlaneVaultCliOptions {
   namespace?: string;
@@ -66,5 +77,28 @@ export async function initializeControlPlaneVaultForCli(
     store = new FileSystemControlPlaneStore(swampPath(repoDir));
   }
 
-  return await initializeControlPlaneVault(store, hasRemote);
+  // The key source comes only from the repo's serve.yaml, read quietly so
+  // token commands don't repeat serve's config warnings. A file that can't
+  // be read or parsed is skipped with a warning: these commands never read
+  // it before, and a control plane already moved to an external key still
+  // fails closed without a key. An invalid token-secrets block is an error;
+  // it names the file and field, so it is not wrapped in the datastore hint.
+  let serveConfig: ServeConfigFile | null = null;
+  try {
+    serveConfig = await readServeConfigFile(repoDir);
+  } catch (err) {
+    logger.warn`Ignoring ${SERVE_CONFIG_PATH} for the token secrets key: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+  }
+  const tokenSecretsKey: TokenSecretsKeyRef | undefined =
+    parseTokenSecretsKeyConfig(serveConfig, SERVE_CONFIG_PATH);
+
+  // Token commands never migrate: running serve instances still hold the
+  // co-located key, and serve migrates when it restarts with the block.
+  return await initializeControlPlaneVault(store, hasRemote, {
+    tokenSecretsKey,
+    vaultService: () => VaultService.fromRepository(repoDir),
+    migrate: false,
+  });
 }
