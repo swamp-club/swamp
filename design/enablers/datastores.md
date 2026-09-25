@@ -434,7 +434,11 @@ Serve runs three background pollers to fix this:
 
 - **ConfigPoller** refreshes managed configuration. It pulls extension files
   (`config/pulled-extensions/`) separately from definitions (`config/`), so the
-  extension registry reloads only when extension files change.
+  extension registry reloads only when extension files change. Extension
+  sources are not pushed today (they live in each repo's own pulled root until
+  swamp-club#2429); peers push only the lockfile, which arrives with the
+  definitions, so this reload fires only when `config/pulled-extensions/`
+  itself changes, as after `datastore config migrate`.
 - **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) refreshes
   access-control grants and groups, then reloads the policy snapshot.
 - **RuntimeDataPoller** (`subdirs: ["data"]`) refreshes the `data/` subtree
@@ -1565,10 +1569,11 @@ lock directly, for when a crashed process left a lock that has not expired.
   extension lockfile and pulled extensions into the datastore `config/` tier and
   set `managedConfig: true` (`datastore_config_migrate.ts`). That flag alone
   activates managed config: whenever it is true, `resolveManagedConfigPaths`
-  (`src/cli/repo_context.ts`) points the pulled-extensions root and lockfile at
-  the datastore-resolved config path. For custom datastores (S3, GCS),
-  `ensureManagedConfigBase` resolves the datastore config to derive the
-  cache-relative config path. Extension commands call it before
+  (`src/cli/repo_context.ts`) points the extension lockfile at the
+  datastore-resolved config path. Pulled extension sources stay in the repo's
+  `.swamp/config/pulled-extensions` until swamp-club#2429. For custom
+  datastores (S3, GCS), `ensureManagedConfigBase` resolves the datastore config
+  to derive the cache-relative config path. Extension commands call it before
   `resolveManagedConfigPaths` so the module-level registry is filled correctly.
 - `swamp doctor datastores [--repair [-y]]`: health check with optional repair
   of catalog completeness, unmigrated root-level data, and foreign namespace
@@ -1785,7 +1790,7 @@ remote with `pushManagedConfigChanges` (`src/cli/managed_config_sync.ts`):
 | Model definition create/edit | `config/models/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
-| Extension pull/install/rm/update | `config/pulled-extensions/`, `config/upstream_extensions.json` | `pushManagedConfigChangesDeferred` | `ctx.syncService.pushChanged` after marking the lockfile; serve still writes sources outside the tier (swamp-club#2429) |
+| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2429) | `pushManagedConfigChangesDeferred` | `ctx.syncService.pushChanged` after marking the lockfile |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 
 Auto-definitions are a normal datastore subdirectory
@@ -1817,31 +1822,30 @@ Recommended init container sequence for a stateless pod:
    config into the datastore tier and pushes; later boots the sentinel skips the
    copy.
 5. **`swamp extension install`**: restore pulled extensions whose source files
-   are missing from the hydrated cache. It writes to the config tier and pushes
-   to the remote.
+   are missing from the repo's pulled root. It records into the config-tier
+   lockfile and pushes the lockfile; sources are not pushed.
 
-Step 5 (`extension install`) must run so pulled extension sources
-are complete. The remote `config/pulled-extensions/` tree may be incomplete if
-the first `config migrate` ran before extensions were installed.
+Step 5 must run on every pod so pulled extension sources are complete: each
+pod restores its own sources.
 
 ### Recovery from missing-extensions state
 
 When a pod boots and logs "N pulled extension(s) have missing source files":
 
-1. **From an operator machine with datastore access:**
+1. **On the pod (or its image's init step):**
    ```bash
    swamp extension install --repo-dir /path/to/repo
    ```
-   This restores source files and pushes them to the remote. The next pod boot
-   pulls the complete tree.
+   This restores the source files locally. Sources are not pushed to the
+   remote, so each pod restores its own (pod boot step 5).
 
 2. **Via the serve API (with `--hot-reload` enabled):**
    ```bash
    swamp extension install --server https://pod-url
    swamp serve reload --server https://pod-url
    ```
-   The serve handler installs and pushes to the remote. `serve reload`
-   re-bundles the updated extensions. Without `--hot-reload` the reload step
+   The serve handler installs on that pod and pushes the lockfile.
+   `serve reload` re-bundles the updated extensions. Without `--hot-reload` the reload step
    fails and the pod must be restarted.
 
 ### Extension auto-reload via config poller
@@ -1849,8 +1853,10 @@ When a pod boots and logs "N pulled extension(s) have missing source files":
 With `managedConfig`, the config poller pulls `config/pulled-extensions/`
 separately from the rest of `config/` and calls `performServeReload` only when
 extension files changed. Definition-only changes (model, vault or workflow YAML
-edits) invalidate catalogs without reloading extension registries. Extensions
-that arrive after boot (from another instance's `extension install --server` or
-`extension pull`) are found and loaded without a restart or manual SIGHUP.
+edits) invalidate catalogs without reloading extension registries. Because
+extension sources are not pushed (they stay in each repo's pulled root until
+swamp-club#2429), another instance's `extension pull` or `extension install`
+changes only the lockfile here, so it does not trigger this reload; run
+`extension install` on each pod instead.
 `--hot-reload` is still useful for trigger overrides and workflow reloading via
 `swamp serve reload`, but extension registration no longer needs it.

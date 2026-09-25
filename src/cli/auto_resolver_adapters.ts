@@ -111,7 +111,6 @@ interface InstallerAdapterConfig {
   repoDir: string;
   denoRuntime: DenoRuntime;
   datastoreResolver?: DatastorePathResolver;
-  pulledExtensionsRoot?: string;
   /**
    * W1b/(a-2) wiring: shared ExtensionRepository used by hotLoadModels
    * to attach user extensions whose base type was just registered, and
@@ -176,8 +175,7 @@ export function createAutoResolveInstallerAdapter(
       // A lockfile entry exists; carry its pinned version so the installer's
       // progress output reports the version that will actually be installed
       // (the install path pins to it) rather than registry-latest.
-      const pulledRoot = config.pulledExtensionsRoot ??
-        resolvePulledExtensionsRoot(repoDir);
+      const pulledRoot = resolvePulledExtensionsRoot(repoDir);
       const path = join(pulledRoot, extensionName);
       // Pre-anchor lockfile entries (grandfather path in
       // UpstreamExtensionEntry) may omit `files`. Treat an absent or

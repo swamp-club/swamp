@@ -390,9 +390,10 @@ config poller pulls extension files (`config/pulled-extensions/`) separately fro
 definition files (`config/models/`, `config/vaults/`, etc.). It calls
 `performServeReload` only when extension files changed. Definition-only changes
 (e.g. a model YAML edit) invalidate catalogs but do not reload extension
-registries. New extensions are found through `createExtensionDiscoverer`
-(`src/serve/extension_reload.ts`) and registered with no restart or manual
-SIGHUP.
+registries. Extension sources are not pushed today (each repo keeps them in its
+own pulled root until swamp-club#2429), so a peer's `extension pull` changes
+only the lockfile and does not trigger this reload; each instance runs
+`extension install` for its own sources.
 
 **Rolling restart.** On SIGTERM an instance stops accepting triggers, drains
 active runs for 30 s, aborts the rest and waits 5 s more. It marks those
@@ -444,7 +445,8 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `swamp serve reload --server` fails and new extensions need a full pod
   restart. The `ConfigPoller` refreshes definitions (models, workflows, vaults)
   every `--datastore-poll-interval` (default 30 s) and reloads extension type registries only when extension files
-  under `config/pulled-extensions/` change (see
+  under `config/pulled-extensions/` change, which peers' extension commands do
+  not do while sources stay in each repo (swamp-club#2429; see
   [High availability](#high-availability)). SIGHUP (`swamp serve reload`) remains
   available for manual reloads. See
   [datastores §Managed Config](../enablers/datastores.md#managed-config-deployment-architecture)
@@ -509,7 +511,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   reconciliation claims are skipped. Two instances on such a store can fire a
   schedule twice (`src/cli/commands/serve.ts`,
   `src/serve/boot_reconciliation.ts`).
-- The config poller does not reload extension type registries. New or changed
+- The config poller reloads extension type registries only when
+  `config/pulled-extensions/` changes, which peers' extension commands do not
+  do while sources stay in each repo (swamp-club#2429). New or changed
   extension types need `swamp serve reload` or a restart
   (`src/cli/commands/serve.ts`, `ConfigPoller` wiring). After a successful
   `--server` operation, state-modifying extension commands (`pull`, `install`,
