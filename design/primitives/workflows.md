@@ -1087,6 +1087,13 @@ re-run, and cron scheduling safe without re-running completed steps.
 4. If truthy → step is skipped with reason `"guarded"`
 5. If falsy → step proceeds to execution
 
+Each `forEach` iteration checks its step's `dependsOn` before its own guard, as
+a plain step does. An unmet condition skips every iteration with reason
+`"dependency"`. A `dependsOn` that names a `forEach` step sees one status for
+all of its iterations (`JobRun.getStatus()`): running while any is unfinished,
+unknown if any is unknown, failed if any failed, skipped if all were skipped,
+and otherwise succeeded.
+
 ### Expression context
 
 Guards see the same context as other step expressions:
