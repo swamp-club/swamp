@@ -2261,6 +2261,24 @@ Deno.test("loadServeConfig: token-secrets requires both vault and key", () => {
   }
 });
 
+Deno.test("loadServeConfig: token-secrets values with surrounding whitespace are rejected", () => {
+  for (
+    const block of [
+      { vault: " _token-secrets", key: "k" },
+      { vault: "prod-secrets", key: "k " },
+    ]
+  ) {
+    withTempDir((dir) => {
+      writeConfig(dir, { "token-secrets": block });
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        "without surrounding whitespace",
+      );
+    });
+  }
+});
+
 Deno.test("loadServeConfig: token-secrets cannot name _token-secrets as its vault", () => {
   withTempDir((dir) => {
     writeConfig(dir, {

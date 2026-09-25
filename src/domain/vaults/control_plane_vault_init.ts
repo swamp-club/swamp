@@ -27,6 +27,7 @@ import {
 } from "./control_plane_vault_provider.ts";
 import {
   parseTokenSecretsKeyMaterial,
+  TokenSecretsKeyError,
   type TokenSecretsKeyRef,
 } from "./token_secrets_key.ts";
 import { VaultService } from "./vault_service.ts";
@@ -50,7 +51,7 @@ export function controlPlaneVaultInitError(
   logger.debug`Control-plane vault initialization error: ${err}`;
   // Key configuration errors already say what to fix; the datastore hint
   // below would point the operator at the wrong thing.
-  if (err instanceof UserError) return err;
+  if (err instanceof TokenSecretsKeyError) return err;
   const hint = isRemote
     ? "Check the datastore credentials and endpoint, then rerun."
     : "Check that the local control-plane store is readable and intact, then rerun.";
@@ -88,7 +89,7 @@ export async function resolveTokenSecretsKey(
       "serve:token-secrets-key",
     );
   } catch (err) {
-    throw new UserError(
+    throw new TokenSecretsKeyError(
       `Could not read the token secrets key from ${location}: ${
         err instanceof Error ? err.message : String(err)
       }`,
@@ -97,7 +98,7 @@ export async function resolveTokenSecretsKey(
   try {
     return { ref, key: parseTokenSecretsKeyMaterial(value) };
   } catch (err) {
-    throw new UserError(
+    throw new TokenSecretsKeyError(
       `Token secrets key in ${location} is not usable: ${
         err instanceof Error ? err.message : String(err)
       }`,
@@ -114,6 +115,8 @@ export interface ControlPlaneVaultInitOptions {
   readonly tokenSecretsKey?: TokenSecretsKeyRef;
   /** Builds the vault service used to read the key; only called when needed. */
   readonly vaultService?: () => Promise<TokenSecretsKeyVaultReader>;
+  /** Passed to the provider; the token commands set false. */
+  readonly migrate?: boolean;
 }
 
 /**
@@ -144,7 +147,10 @@ export async function initializeControlPlaneVault(
         await options.vaultService(),
       );
     }
-    provider = new ControlPlaneVaultProvider(store, { externalKey });
+    provider = new ControlPlaneVaultProvider(store, {
+      externalKey,
+      migrate: options?.migrate,
+    });
     await provider.initialize();
   } catch (err) {
     throw controlPlaneVaultInitError(err, isRemote);

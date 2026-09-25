@@ -293,12 +293,14 @@ token-secrets:
   key: swamp-token-secrets-key
 ```
 
-Check it with `swamp serve check-config`. On the next start serve re-encrypts
-the existing secrets and removes the stored key. After that, serve and the local
-token commands refuse to run without the block, or with a different key. Put the
-same block in `.swamp/serve.yaml` on every host that runs the token commands
-locally, restart all instances together, and rotate tokens minted before the
-change: older datastore backups still hold the old key.
+Check it with `swamp serve check-config` (it checks the key is usable, not that
+it matches a control plane already moved to another key). Then restart all serve
+instances together: the first start re-encrypts the existing secrets and removes
+the stored key. Local token commands refuse to run until serve has done this,
+and afterwards refuse without the block or with a different key. Put the same
+block in `.swamp/serve.yaml` on every host that runs the token commands locally,
+and rotate tokens minted before the change: older datastore backups still hold
+the old key.
 
 To mint for a running serve, go through it with `--server` (admin only):
 

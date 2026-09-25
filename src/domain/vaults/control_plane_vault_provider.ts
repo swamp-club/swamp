@@ -32,13 +32,13 @@ import {
   importAesKey,
 } from "../crypto/aes_gcm.ts";
 import { getLogger } from "@logtape/logtape";
-import { UserError } from "../errors.ts";
 import {
   classifyTokenKeyRecord,
   serializeTokenKeyMarker,
   tokenKeyFingerprint,
   type TokenKeyMarker,
   type TokenKeyRecord,
+  TokenSecretsKeyError,
   type TokenSecretsKeyRef,
 } from "./token_secrets_key.ts";
 
@@ -83,12 +83,20 @@ export interface ControlPlaneVaultProviderOptions {
    * co-located key the first time it starts.
    */
   readonly externalKey?: ExternalTokenKey;
+  /**
+   * Whether finding the co-located key may start the migration to the
+   * external key. Serve migrates; the token commands pass false, because
+   * migrating from a CLI process would change the key under running serve
+   * instances that still hold the old one. Defaults to true.
+   */
+  readonly migrate?: boolean;
 }
 
 export class ControlPlaneVaultProvider
   implements VaultProvider, VaultDeleteProvider {
   readonly #store: ControlPlaneStore;
   readonly #externalKey: ExternalTokenKey | undefined;
+  readonly #migrate: boolean;
   #key: CryptoKey | undefined;
 
   constructor(
@@ -97,6 +105,7 @@ export class ControlPlaneVaultProvider
   ) {
     this.#store = store;
     this.#externalKey = options?.externalKey;
+    this.#migrate = options?.migrate ?? true;
   }
 
   async initialize(): Promise<void> {
@@ -262,7 +271,7 @@ export class ControlPlaneVaultProvider
 
     if (record.kind === "marker") {
       if (record.marker.fingerprint !== fingerprint) {
-        throw new UserError(
+        throw new TokenSecretsKeyError(
           `The token secrets key in vault '${external.ref.vault}' (key ` +
             `'${external.ref.key}') is not the key the ` +
             `${TOKEN_SECRETS_VAULT_NAME} control plane is encrypted with ` +
@@ -277,6 +286,15 @@ export class ControlPlaneVaultProvider
     }
 
     if (record.kind === "legacy") {
+      if (!this.#migrate) {
+        throw new TokenSecretsKeyError(
+          `The ${TOKEN_SECRETS_VAULT_NAME} control plane still uses its ` +
+            "co-located key. Restart swamp serve with the token-secrets " +
+            "block to move the secrets to the external key, then rerun. " +
+            "Token commands never do this themselves, so running serve " +
+            "instances keep working until they restart.",
+        );
+      }
       await this.#migrateFromCoLocatedKey(
         await importAesKey(record.key),
         key,
@@ -364,8 +382,10 @@ async function canDecrypt(
  * has no key configured. Names the recorded vault reference so the operator
  * knows what to configure; the reference is never used to fetch a key.
  */
-export function externalKeyRequiredError(marker: TokenKeyMarker): UserError {
-  return new UserError(
+export function externalKeyRequiredError(
+  marker: TokenKeyMarker,
+): TokenSecretsKeyError {
+  return new TokenSecretsKeyError(
     `The ${TOKEN_SECRETS_VAULT_NAME} control plane is encrypted with an ` +
       `external key (configured from vault '${marker.vault}', key ` +
       `'${marker.key}'), but no token secrets key is configured here. Add a ` +

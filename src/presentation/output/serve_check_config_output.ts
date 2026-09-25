@@ -31,7 +31,11 @@ export interface ServeCheckConfigData {
   readonly entries: readonly AccessListCheckEntry[];
   readonly allowedCollectives: readonly string[];
   readonly wouldStart: boolean;
-  /** Why serve would refuse to start; set when `wouldStart` is false. */
+  /**
+   * Why the auth settings would stop serve starting. An unusable token
+   * secrets key also sets `wouldStart` false and is reported in
+   * `tokenSecretsKey.error` instead.
+   */
   readonly refusal?: string;
   /** Set when serve.yaml has a token-secrets block. */
   readonly tokenSecretsKey?: TokenSecretsKeyCheck;

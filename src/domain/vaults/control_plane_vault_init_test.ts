@@ -27,12 +27,16 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
 import { UserError } from "../errors.ts";
 import {
+  controlPlaneVaultInitError,
   initializeControlPlaneVault,
   resolveTokenSecretsKey,
   type TokenSecretsKeyVaultReader,
 } from "./control_plane_vault_init.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "./control_plane_vault_provider.ts";
-import { classifyTokenKeyRecord } from "./token_secrets_key.ts";
+import {
+  classifyTokenKeyRecord,
+  TokenSecretsKeyError,
+} from "./token_secrets_key.ts";
 import type { VaultProvider } from "./vault_provider.ts";
 import { VaultService } from "./vault_service.ts";
 
@@ -250,6 +254,21 @@ Deno.test("initializeControlPlaneVault: a key error is reported as is, without t
   );
   assertStringIncludes(error.message, "Could not read the token secrets key");
   assertEquals(error.message.includes("datastore credentials"), false);
+});
+
+Deno.test("controlPlaneVaultInitError: other UserErrors still get the vault prefix and datastore hint", () => {
+  const error = controlPlaneVaultInitError(
+    new UserError("Namespace mismatch: bound to root"),
+    true,
+  );
+  assertStringIncludes(error.message, TOKEN_SECRETS_VAULT_NAME);
+  assertStringIncludes(error.message, "Namespace mismatch: bound to root");
+  assertStringIncludes(error.message, "Check the datastore credentials");
+});
+
+Deno.test("controlPlaneVaultInitError: a token secrets key error is returned unchanged", () => {
+  const original = new TokenSecretsKeyError("fix the key");
+  assertEquals(controlPlaneVaultInitError(original, true), original);
 });
 
 Deno.test("initializeControlPlaneVault: a failed init does not replace the registered provider", async () => {

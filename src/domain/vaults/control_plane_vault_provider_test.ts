@@ -40,6 +40,7 @@ import {
 import {
   classifyTokenKeyRecord,
   tokenKeyFingerprint,
+  TokenSecretsKeyError,
 } from "./token_secrets_key.ts";
 
 await initializeLogging({});
@@ -275,6 +276,28 @@ Deno.test("ControlPlaneVaultProvider: migrates every secret from a co-located ke
     () => new ControlPlaneVaultProvider(store).initialize(),
     UserError,
   );
+});
+
+Deno.test("ControlPlaneVaultProvider: with migrate false, a co-located key is left alone and startup fails", async () => {
+  const store = createMockStore();
+  const legacy = new ControlPlaneVaultProvider(store);
+  await legacy.initialize();
+  await legacy.put("server-token-a", "secret-a");
+  const keyBefore = await store.get(KEY_PATH);
+  const blobBefore = await store.get(`${VALUES_PREFIX}server-token-a`);
+
+  const err = await assertRejects(
+    () =>
+      new ControlPlaneVaultProvider(store, {
+        externalKey: { ref: REF, key: randomKeyBytes() },
+        migrate: false,
+      }).initialize(),
+    TokenSecretsKeyError,
+  );
+  assertStringIncludes(err.message, "Restart swamp serve");
+  assertEquals(await store.get(KEY_PATH), keyBefore);
+  assertEquals(await store.get(`${VALUES_PREFIX}server-token-a`), blobBefore);
+  assertEquals(await legacy.get("server-token-a"), "secret-a");
 });
 
 Deno.test("ControlPlaneVaultProvider: resumes a migration interrupted before the marker was written", async () => {

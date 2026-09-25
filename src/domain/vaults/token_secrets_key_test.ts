@@ -32,6 +32,7 @@ import {
   serializeTokenKeyMarker,
   tokenKeyFingerprint,
   type TokenKeyMarker,
+  TokenSecretsKeyError,
 } from "./token_secrets_key.ts";
 
 function sequentialKey(): Uint8Array {
@@ -63,6 +64,21 @@ Deno.test("parseTokenSecretsKeyMaterial: decodes a 64-char hex key", () => {
 Deno.test("parseTokenSecretsKeyMaterial: decodes a base64 key and ignores surrounding whitespace", () => {
   const key = sequentialKey();
   assertEquals(parseTokenSecretsKeyMaterial(`  ${toBase64(key)}\n`), key);
+});
+
+Deno.test("parseTokenSecretsKeyMaterial: accepts base64 without its padding", () => {
+  const key = sequentialKey();
+  const unpadded = toBase64(key).replace(/=+$/, "");
+  assertEquals(unpadded.length, 43);
+  assertEquals(parseTokenSecretsKeyMaterial(unpadded), key);
+});
+
+Deno.test("parseTokenSecretsKeyMaterial: errors are TokenSecretsKeyErrors", () => {
+  assertThrows(
+    () => parseTokenSecretsKeyMaterial("A"),
+    TokenSecretsKeyError,
+    "not valid hex or base64",
+  );
 });
 
 Deno.test("parseTokenSecretsKeyMaterial: rejects base64 that decodes to the wrong length", () => {

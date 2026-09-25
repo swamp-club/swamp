@@ -75,19 +75,19 @@ export async function initializeControlPlaneVaultForCli(
 
   // The key source comes only from the repo's serve.yaml, read quietly so
   // token commands don't repeat serve's config warnings. A control plane
-  // already moved to an external key fails closed without it.
-  let tokenSecretsKey: TokenSecretsKeyRef | undefined;
-  try {
-    tokenSecretsKey = parseTokenSecretsKeyConfig(
+  // already moved to an external key fails closed without it. Config errors
+  // name the file and field, so they are not wrapped in the datastore hint.
+  const tokenSecretsKey: TokenSecretsKeyRef | undefined =
+    parseTokenSecretsKeyConfig(
       await readServeConfigFile(repoDir),
       SERVE_CONFIG_PATH,
     );
-  } catch (err) {
-    throw controlPlaneVaultInitError(err, hasRemote);
-  }
 
+  // Token commands never migrate: running serve instances still hold the
+  // co-located key, and serve migrates when it restarts with the block.
   return await initializeControlPlaneVault(store, hasRemote, {
     tokenSecretsKey,
     vaultService: () => VaultService.fromRepository(repoDir),
+    migrate: false,
   });
 }

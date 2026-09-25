@@ -258,7 +258,9 @@ rejected. The rules (`src/domain/vaults/token_secrets_key.ts`,
 - The key comes only from local `serve.yaml`: serve's `--config` file, and
   `.swamp/serve.yaml` for the local token commands. It is read once at startup;
   changing it needs a restart. `swamp serve check-config` reads it and reports
-  whether it is usable, without printing it.
+  whether it is usable, without printing it; it does not compare it with the
+  fingerprint of a control plane already moved to an external key, which serve
+  checks at startup.
 - The vault must keep its storage outside the datastore. `local_encryption`
   keeps its key in the always-local `.swamp/secrets/`, so it works on one host;
   in HA every instance, and every host that runs `access token` commands
@@ -266,12 +268,20 @@ rejected. The rules (`src/domain/vaults/token_secrets_key.ts`,
 - Serve refuses to start (and the token commands fail) if the vault or secret is
   missing, the value is not a usable key, or it is not the key the control plane
   was moved to.
-- The first opted-in start re-encrypts every entry under
+- The first opted-in serve start re-encrypts every entry under
   `token-secrets/values/` with the external key. Only then does it overwrite
   `encryption-key` with a marker: the vault reference and an HMAC fingerprint of
   the key, which decrypts nothing. A crash before that leaves the old key in
   place, and the next start resumes. Entries neither key decrypts are left as
-  they are and logged by name.
+  they are and logged by name. The token commands never migrate (the provider's
+  `migrate: false`): they refuse until serve has, because migrating from a CLI
+  process would change the key under running instances that still hold the old
+  one.
+- Serve migrates whenever it finds a co-located key, so restoring a backup of
+  `_control/token-secrets/` from before the move makes the next start migrate
+  again from that backup. The same applies to anyone with datastore write
+  access, who could plant a key and ciphertext of their choosing: the external
+  key protects against datastore read access, not write access.
 - The marker is not a valid AES key, so a swamp release without this support
   refuses to start rather than generating a new co-located key. A process with
   no `token-secrets` block also refuses, naming the vault and key recorded in

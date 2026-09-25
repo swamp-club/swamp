@@ -29,6 +29,13 @@ import { UserError } from "../errors.ts";
 /** Length of an AES-256 key in bytes. */
 export const TOKEN_SECRETS_KEY_BYTES = 32;
 
+/**
+ * A problem with the external token key or its configuration. The message
+ * already says what to fix, so callers report it as is rather than adding
+ * datastore hints.
+ */
+export class TokenSecretsKeyError extends UserError {}
+
 /** Where the operator stores the external key: a vault name and secret key. */
 export interface TokenSecretsKeyRef {
   readonly vault: string;
@@ -40,7 +47,8 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 
 /**
  * Decodes operator-supplied key material. Accepts exactly 64 hex characters,
- * or base64 that decodes to exactly 32 bytes (e.g. `openssl rand -base64 32`).
+ * or base64 (padded or not) that decodes to exactly 32 bytes (e.g.
+ * `openssl rand -base64 32`).
  * Rejects any other length or encoding, and keys whose bytes are all the same.
  * Error messages never include the value.
  */
@@ -52,8 +60,9 @@ export function parseTokenSecretsKeyMaterial(value: string): Uint8Array {
     for (let i = 0; i < TOKEN_SECRETS_KEY_BYTES; i++) {
       bytes[i] = parseInt(trimmed.slice(i * 2, i * 2 + 2), 16);
     }
-  } else if (BASE64_PATTERN.test(trimmed) && trimmed.length % 4 === 0) {
-    const binary = atob(trimmed);
+  } else if (BASE64_PATTERN.test(trimmed) && trimmed.length % 4 !== 1) {
+    // Accept unpadded base64 too; some generators strip the '=' padding.
+    const binary = atob(trimmed.padEnd(Math.ceil(trimmed.length / 4) * 4, "="));
     bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) {
       bytes[i] = binary.charCodeAt(i);
@@ -61,19 +70,19 @@ export function parseTokenSecretsKeyMaterial(value: string): Uint8Array {
   }
 
   if (!bytes) {
-    throw new UserError(
+    throw new TokenSecretsKeyError(
       "Token secrets key is not valid hex or base64. Generate one with " +
         "'openssl rand -base64 32'.",
     );
   }
   if (bytes.length !== TOKEN_SECRETS_KEY_BYTES) {
-    throw new UserError(
+    throw new TokenSecretsKeyError(
       `Token secrets key must decode to ${TOKEN_SECRETS_KEY_BYTES} bytes, ` +
         `got ${bytes.length}. Generate one with 'openssl rand -base64 32'.`,
     );
   }
   if (bytes.every((b) => b === bytes[0])) {
-    throw new UserError(
+    throw new TokenSecretsKeyError(
       "Token secrets key has the same value in every byte. Generate a random " +
         "key with 'openssl rand -base64 32'.",
     );

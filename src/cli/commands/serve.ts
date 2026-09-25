@@ -1250,7 +1250,7 @@ async function checkTokenSecretsKey(
 const checkConfigCommand = new Command()
   .name("check-config")
   .description(
-    "Check a serve config's auth settings without starting the server.\n\n" +
+    "Check a serve config's auth settings and token secrets key without starting the server.\n\n" +
       "Loads the auth settings the same way 'swamp serve' does (flags, env vars, then the " +
       "config file), validates them, and in oauth mode looks up every admin and " +
       "allowed-user name on the OAuth provider. Exits non-zero if a name is unknown " +
@@ -1258,7 +1258,9 @@ const checkConfigCommand = new Command()
       "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
       "for a custom provider). With a token-secrets block, also reads the token " +
       "secrets key from its vault and checks it is a usable 32-byte key, without " +
-      "printing it. Nothing is written to the repository or the vault.",
+      "printing it; it does not compare the key with the one a control plane was " +
+      "already moved to, which serve checks at startup. Nothing is written to the " +
+      "repository or the vault.",
   )
   .example("Check the repository's serve config", "swamp serve check-config")
   .example(

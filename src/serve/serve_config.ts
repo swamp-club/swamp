@@ -604,9 +604,15 @@ export function validateTokenSecretsConfig(value: unknown, path: string): void {
   const block = value as Record<string, unknown>;
   for (const field of ["vault", "key"] as const) {
     const fieldValue = block[field];
-    if (typeof fieldValue !== "string" || fieldValue.trim().length === 0) {
+    // Values are used exactly as written, so surrounding whitespace is an
+    // error rather than trimmed: the checks below see what the lookup sees.
+    if (
+      typeof fieldValue !== "string" || fieldValue.length === 0 ||
+      fieldValue.trim() !== fieldValue
+    ) {
       throw new UserError(
-        `Invalid token-secrets.${field} in ${path}: expected a non-empty string`,
+        `Invalid token-secrets.${field} in ${path}: expected a non-empty ` +
+          "string without surrounding whitespace",
       );
     }
   }

@@ -335,6 +335,23 @@ Deno.test("initializeControlPlaneVaultForCli: fails closed without a serve.yaml 
   });
 });
 
+Deno.test("initializeControlPlaneVaultForCli: never migrates a co-located key, leaving that to serve", async () => {
+  await withTempDir(async (repoDir) => {
+    // A control plane created before the opt-in: co-located key.
+    await initializeControlPlaneVaultForCli(repoDir, undefined);
+    const keyBefore = await readKeyRecord(repoDir);
+    assertEquals(classifyTokenKeyRecord(keyBefore).kind, "legacy");
+
+    await setUpExternalKey(repoDir);
+    const error = await assertRejects(
+      () => initializeControlPlaneVaultForCli(repoDir, undefined),
+      UserError,
+    );
+    assertStringIncludes(error.message, "Restart swamp serve");
+    assertEquals(await readKeyRecord(repoDir), keyBefore);
+  });
+});
+
 Deno.test("initializeControlPlaneVaultForCli: rejects _token-secrets as the key's vault", async () => {
   await withTempDir(async (repoDir) => {
     await writeServeYaml(repoDir, TOKEN_SECRETS_VAULT_NAME);
