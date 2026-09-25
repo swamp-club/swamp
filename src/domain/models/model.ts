@@ -1015,6 +1015,19 @@ export class ModelRegistry {
   }
 
   /**
+   * Test-only: removes the configured loaders and clears the loaded state,
+   * so loaders a test installed do not leak into later tests. It does not
+   * restore loaders set before the test, and does not clear
+   * already-registered types.
+   */
+  clearLoadersForTesting(): void {
+    this.extensionLoader = null;
+    this.typeLoader = null;
+    this.extensionsLoaded = false;
+    this.extensionLoadPromise = null;
+  }
+
+  /**
    * Surgically removes a single type from the registry so it can be
    * re-registered with updated metadata (e.g. after an extension
    * bundle upgrade). Removes from both {@link models} and

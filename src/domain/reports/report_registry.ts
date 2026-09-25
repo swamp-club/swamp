@@ -96,6 +96,19 @@ export class ReportRegistry {
   }
 
   /**
+   * Test-only: removes the configured loaders and clears the loaded state,
+   * so loaders a test installed do not leak into later tests. It does not
+   * restore loaders set before the test, and does not clear
+   * already-registered types.
+   */
+  clearLoadersForTesting(): void {
+    this.extensionLoader = null;
+    this.typeLoader = null;
+    this.extensionsLoaded = false;
+    this.extensionLoadPromise = null;
+  }
+
+  /**
    * Surgically removes a single report from the registry so it can be
    * re-registered with updated metadata after a bundle upgrade.
    */

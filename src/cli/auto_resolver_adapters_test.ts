@@ -22,6 +22,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
   createAutoResolveInstallerAdapter,
+  hotLoadDatastoreDirs,
   isBundleArtifactPath,
   isPulledSkillPath,
 } from "./auto_resolver_adapters.ts";
@@ -705,6 +706,82 @@ Deno.test("auto_resolver_adapters: hotLoadDatastores is a no-op when no pulled d
     // Empty lockfile for datastores perspective (no datastore dir
     // exists for @fake/ext). Should not throw.
     await adapter.hotLoadDatastores();
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+/**
+ * Writes a pulled datastore extension root under `rootSegments`: a manifest
+ * whose name matches its path, plus one datastore source.
+ */
+async function seedDatastoreExtension(
+  repoDir: string,
+  rootSegments: string[],
+  name: string,
+): Promise<string> {
+  const extRoot = join(repoDir, ...rootSegments, ...name.split("/"));
+  await ensureDir(join(extRoot, "datastores"));
+  await Deno.writeTextFile(
+    join(extRoot, "manifest.yaml"),
+    `manifestVersion: 1\nname: "${name}"\nversion: "2026.01.01.1"\n`,
+  );
+  await Deno.writeTextFile(
+    join(extRoot, "datastores", "store.ts"),
+    "export const datastore = {};\n",
+  );
+  return join(extRoot, "datastores");
+}
+
+Deno.test("hotLoadDatastoreDirs: adds datastore extensions found on disk, once each, sorted", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const listedDir = await seedDatastoreExtension(
+      tmpDir,
+      [".swamp", "pulled-extensions"],
+      "@fake/listed",
+    );
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/listed": [
+        ".swamp/pulled-extensions/@fake/listed/datastores/store.ts",
+      ],
+    });
+    const unlistedDir = await seedDatastoreExtension(
+      tmpDir,
+      [".swamp", "config", "pulled-extensions"],
+      "@acme/store",
+    );
+
+    const dirs = await hotLoadDatastoreDirs(lockfilePath, tmpDir, true);
+
+    assertEquals(dirs, [listedDir, unlistedDir].sort());
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("hotLoadDatastoreDirs: reads only lockfile-listed dirs without datastoresOnDisk", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const listedDir = await seedDatastoreExtension(
+      tmpDir,
+      [".swamp", "pulled-extensions"],
+      "@fake/listed",
+    );
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/listed": [
+        ".swamp/pulled-extensions/@fake/listed/datastores/store.ts",
+      ],
+    });
+    await seedDatastoreExtension(
+      tmpDir,
+      [".swamp", "config", "pulled-extensions"],
+      "@acme/store",
+    );
+
+    const dirs = await hotLoadDatastoreDirs(lockfilePath, tmpDir, false);
+
+    assertEquals(dirs, [listedDir]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

@@ -1027,7 +1027,10 @@ export {
 
 // Pulled-extension enumeration helper
 export {
+  choosePulledDatastoreDirsOnDisk,
+  enumeratePulledDatastoreExtensionsOnDisk,
   enumeratePulledExtensionDirs,
+  type OnDiskDatastoreExtension,
   type PulledExtensionType,
 } from "./extensions/enumerate_pulled.ts";
 

@@ -1574,3 +1574,177 @@ Deno.test({
     );
   },
 });
+
+// -- managedConfig on an extension-backed datastore (swamp-club#2483) -------
+
+const MINIMAL_DATASTORE_CODE = (typeId: string) => `
+export const datastore = {
+  type: "${typeId}",
+  name: "Test Store",
+  description: "A test datastore",
+  createProvider: (_config: Record<string, unknown>) => ({
+    createLock: (_datastorePath: string) => ({
+      acquire: async () => {},
+      release: async () => {},
+      withLock: async (fn: () => Promise<unknown>) => fn(),
+      inspect: async () => null,
+      forceRelease: async (_nonce: string) => false,
+    }),
+    createVerifier: () => ({
+      verify: async () => ({
+        healthy: true,
+        message: "ok",
+        latencyMs: 1,
+        datastoreType: "${typeId}",
+      }),
+    }),
+    resolveDatastorePath: (repoDir: string) => repoDir,
+  }),
+};
+`;
+
+Deno.test(
+  "ReconcileFromDisk pulled: scanOnDiskDatastores keeps datastore rows left under the legacy root after migrate",
+  async () => {
+    const id = crypto.randomUUID().slice(0, 8);
+    const extName = `@test/store-${id}`;
+    const typeId = `@test/store-${id}`;
+    const run = async (scanOnDiskDatastores: boolean) => {
+      let unreadable = 0;
+      await withPulledFixtureRepo(
+        async ({ repoDir, repository, catalog, lockfileRepository }) => {
+          // `datastore config migrate` leaves the pre-migrate copy under the
+          // legacy root; the managed root is empty.
+          const extRoot = join(
+            swampPath(repoDir, "pulled-extensions"),
+            extName,
+          );
+          await ensureDir(join(extRoot, "datastores"));
+          await Deno.writeTextFile(
+            join(extRoot, "manifest.yaml"),
+            `manifestVersion: 1\nname: "${extName}"\nversion: "1.0.0"\n`,
+          );
+          const source = join(extRoot, "datastores", "store.ts");
+          await Deno.writeTextFile(source, MINIMAL_DATASTORE_CODE(typeId));
+          catalog.upsertWithIdentity({
+            source_path: source,
+            type_normalized: typeId,
+            kind: "datastore",
+            bundle_path: "",
+            version: "1.0.0",
+            description: "",
+            extends_type: "",
+            source_mtime: "",
+            source_fingerprint: "fp",
+            state: "Indexed",
+            extension_name: extName,
+            extension_version: "1.0.0",
+          });
+
+          const service = new ReconcileFromDiskService({
+            denoRuntime: testDenoRuntime,
+            repository,
+            lockfileRepository,
+            repoDir,
+            pulledExtensionsRoot: swampPath(
+              repoDir,
+              "config",
+              "pulled-extensions",
+            ),
+            scanOnDiskDatastores,
+          });
+          const result = await service.execute({ dryRun: true });
+          unreadable =
+            result.transitions.filter((t) =>
+              t.toState === "EntryPointUnreadable"
+            ).length;
+        },
+        { [extName]: { version: "1.0.0", files: [] } },
+      );
+      return unreadable;
+    };
+
+    assertEquals(await run(false) > 0, true, "control: rows are blanked");
+    assertEquals(await run(true), 0, "scan: rows stay Indexed");
+  },
+);
+
+Deno.test(
+  "ReconcileFromDisk pulled: scanOnDiskDatastores does not tombstone datastore sources missing from the lockfile",
+  async () => {
+    const id = crypto.randomUUID().slice(0, 8);
+    const extName = `@test/store-${id}`;
+    const typeId = `@test/store-${id}`;
+    const run = async (scanOnDiskDatastores: boolean) => {
+      let tombstoned: string[] = [];
+      await withPulledFixtureRepo(
+        async ({ repoDir, repository, catalog, lockfileRepository }) => {
+          // A teammate removed the extension from the shared lockfile, but
+          // its sources are still on disk under the managed root.
+          const extRoot = join(
+            swampPath(repoDir, "config", "pulled-extensions"),
+            extName,
+          );
+          await ensureDir(join(extRoot, "datastores"));
+          await Deno.writeTextFile(
+            join(extRoot, "manifest.yaml"),
+            `manifestVersion: 1\nname: "${extName}"\nversion: "1.0.0"\n`,
+          );
+          const source = join(extRoot, "datastores", "store.ts");
+          await Deno.writeTextFile(source, MINIMAL_DATASTORE_CODE(typeId));
+          const row = {
+            bundle_path: "",
+            version: "1.0.0",
+            description: "",
+            extends_type: "",
+            source_mtime: "",
+            source_fingerprint: "fp",
+            state: "Indexed",
+            extension_name: extName,
+            extension_version: "1.0.0",
+          };
+          catalog.upsertWithIdentity({
+            ...row,
+            source_path: source,
+            type_normalized: typeId,
+            kind: "datastore",
+          });
+          // Control: a model source of the same extension is not covered by
+          // the datastore exemption and is still orphaned.
+          catalog.upsertWithIdentity({
+            ...row,
+            source_path: join(extRoot, "models", "ghost.ts"),
+            type_normalized: `${extName}/ghost`,
+            kind: "model",
+          });
+
+          const service = new ReconcileFromDiskService({
+            denoRuntime: testDenoRuntime,
+            repository,
+            lockfileRepository,
+            repoDir,
+            scanOnDiskDatastores,
+          });
+          const result = await service.execute({ dryRun: true });
+          tombstoned = result.transitions
+            .filter((t) => t.toState === "Tombstoned")
+            .map((t) => pathBasename(t.source.canonicalPath))
+            .sort();
+        },
+        {},
+      );
+      return tombstoned;
+    };
+
+    assertEquals(
+      await run(false),
+      ["ghost.ts", "store.ts"],
+      "control: every orphaned source is tombstoned",
+    );
+    assertEquals(
+      await run(true),
+      ["ghost.ts"],
+      "scan: the on-disk datastore source is kept",
+    );
+  },
+);
