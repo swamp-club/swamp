@@ -29,6 +29,7 @@ import {
   ForEachExpansionService,
 } from "./for_each_expansion_service.ts";
 import { coerceToSuffix } from "./data_suffix.ts";
+import { coerceInputTypes } from "../inputs/input_coercion.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 // deno-lint-ignore verbatim-module-syntax
@@ -303,6 +304,41 @@ async function resolveScalarExpression(
  */
 function abortReason(signal: AbortSignal): string {
   return signal.reason instanceof Error ? signal.reason.message : "aborted";
+}
+
+/**
+ * Coerces resume override inputs to their declared types and checks them
+ * against the workflow's input schema, as `workflow run` does for a fresh
+ * run. Only the supplied keys are checked, each by its value merged over the
+ * run's stored inputs: a partial nested override (`--input creds.key=new`)
+ * is complete only once merged. Keys not supplied are not re-checked. Throws
+ * a UserError coded `input_validation_failed`, the code `workflow run` uses.
+ * The run id comes before the detail so serve's 200-character error limit
+ * cuts the detail.
+ */
+function coerceResumeInputs(
+  workflow: Workflow,
+  run: WorkflowRun,
+  inputs: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!workflow.inputs) return inputs;
+  const coerced = coerceInputTypes(inputs, workflow.inputs);
+  const merged = deepMerge({ ...run.inputs }, coerced);
+  const supplied = Object.fromEntries(
+    Object.keys(coerced).map((key) => [key, merged[key]]),
+  );
+  const { errors } = new InputValidationService().validateProvided(
+    supplied,
+    workflow.inputs,
+  );
+  if (errors.length > 0) {
+    throw new UserError(
+      `Resume inputs do not match the workflow's input schema; run ${run.id} is unchanged: ` +
+        errors.map((e) => e.message).join("; "),
+      "input_validation_failed",
+    );
+  }
+  return coerced;
 }
 
 /**
@@ -2712,8 +2748,11 @@ export class WorkflowExecutionService {
    *   template and its dependents are reset (see {@link planFailedRunResume}).
    *
    * Terminal steps outside the reset set are skipped and their outputs are
-   * restored into `steps.*`. A refusal changes nothing; a failure after the
-   * run is marked running but before execution starts restores the run.
+   * restored into `steps.*`. Override `inputs` are coerced to their declared
+   * types and checked against the workflow's input schema, as `workflow run`
+   * does; a mismatch is a refusal (see {@link coerceResumeInputs}). A
+   * refusal changes nothing; a failure after the run is marked running but
+   * before execution starts restores the run.
    */
   async *resume(
     workflowIdOrName: string,
@@ -2787,6 +2826,15 @@ export class WorkflowExecutionService {
       }
     }
 
+    // A value that does not match its declared type would otherwise fail
+    // only once the run is reset, for a forEach input leaving the job running
+    // with its iterations pending (swamp-club#2502).
+    const resumeInputs = coerceResumeInputs(
+      workflow,
+      existingRun,
+      options?.inputs ?? {},
+    );
+
     // Taken before any mutation. If anything throws after the save below and
     // before execution starts, the run is restored to exactly this state
     // rather than left running with nothing driving it.
@@ -2802,7 +2850,6 @@ export class WorkflowExecutionService {
     // Record the key names of any resume-time inputs for audit (never the
     // values — they may be secrets such as a freshly minted auth key). Done
     // before the save below so the audit trail persists immediately.
-    const resumeInputs = options?.inputs ?? {};
     if (Object.keys(resumeInputs).length > 0) {
       existingRun.recordResumeInputs(Object.keys(resumeInputs));
     }

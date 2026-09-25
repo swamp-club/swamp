@@ -27,6 +27,7 @@ import {
   ModelOutput,
 } from "../../domain/models/model_output.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
@@ -420,6 +421,7 @@ Deno.test("YamlOutputRepository invokes markDirty with relPath on mutations", as
 async function makeOutput(
   repo: YamlOutputRepository,
   startedAt: Date,
+  type: ModelType = registeredType,
 ): Promise<ModelOutput> {
   const output = ModelOutput.create({
     definitionId: createDefinitionId(crypto.randomUUID()),
@@ -429,9 +431,80 @@ async function makeOutput(
     provenance: defaultProvenance,
   });
   output.markSucceeded();
-  await repo.save(registeredType, "run", output);
+  await repo.save(type, "run", output);
   return output;
 }
+
+/**
+ * Configures the global model registry's extension loader to register one
+ * lazy extension type, as the real catalog loader does, and runs `fn` with
+ * that type. Nothing is loaded until something calls `ensureLoaded()`. The
+ * type name is unique per run and the loaded flag is reset on both sides, so
+ * every `--repeats` run goes through the loader again.
+ */
+async function withLazyExtensionType(
+  fn: (type: ModelType) => Promise<void>,
+): Promise<void> {
+  const type = ModelType.create(
+    `@user/output-ext-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.resetLoadedFlag();
+  modelRegistry.setLoader(() => {
+    modelRegistry.registerLazy({
+      type,
+      bundlePath: "unused.js",
+      sourcePath: "unused.ts",
+      version: "2026.09.25.1",
+    });
+    return Promise.resolve();
+  });
+  try {
+    await fn(type);
+  } finally {
+    modelRegistry.invalidateType(type);
+    modelRegistry.setLoader(() => Promise.resolve());
+    modelRegistry.resetLoadedFlag();
+  }
+}
+
+Deno.test(
+  "findAllGlobal: loads extension types before walking the registry",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withLazyExtensionType(async (extType) => {
+        const repo = new YamlOutputRepository(dir);
+        const output = await makeOutput(repo, new Date(), extType);
+        assertEquals(modelRegistry.has(extType), false);
+
+        const found = await repo.findAllGlobal();
+
+        const match = found.find((f) => f.output.id === output.id);
+        assertEquals(match?.type.normalized, extType.normalized);
+        assertEquals(match?.method, "run");
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: loads extension types before walking the registry",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withLazyExtensionType(async (extType) => {
+        const repo = new YamlOutputRepository(dir);
+        const output = await makeOutput(repo, new Date(), extType);
+        assertEquals(modelRegistry.has(extType), false);
+
+        const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+        const found = await repo.findAllGlobalSince(cutoff);
+
+        assertEquals(found.length, 1);
+        assertEquals(found[0].output.id, output.id);
+        assertEquals(found[0].type.normalized, extType.normalized);
+      });
+    });
+  },
+);
 
 Deno.test("findAllGlobalSince: returns only in-window outputs", async () => {
   await withTempDir(async (dir) => {

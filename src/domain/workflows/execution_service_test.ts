@@ -45,7 +45,7 @@ import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts"
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
-import { Definition } from "../definitions/definition.ts";
+import { Definition, type InputsSchema } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import "../models/models.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
@@ -8203,10 +8203,10 @@ async function setupRetry(
   tempDir: string,
   workflow: Workflow,
   tracker?: RunTrackerRepository,
+  executor = new CountingStepExecutor(),
 ) {
   const workflowRepo = new InMemoryWorkflowRepository();
   const runRepo = new SpyWorkflowRunRepository();
-  const executor = new CountingStepExecutor();
   await workflowRepo.save(workflow);
   const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
   const service = new WorkflowExecutionService(
@@ -10320,4 +10320,298 @@ Deno.test({
       "Expression uses {{...}} instead of ${{...}}",
     );
   },
+});
+
+// ---------------------------------------------------------------------------
+// Resume override inputs are coerced and checked (swamp-club#2502)
+// ---------------------------------------------------------------------------
+
+/** Records the evaluated task inputs of each step it runs. */
+class InputCapturingExecutor extends CountingStepExecutor {
+  readonly taskInputs = new Map<string, unknown>();
+
+  override execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    const task = step.task.data;
+    if (task.type === "model_method") {
+      this.taskInputs.set(ctx.stepName, task.inputs);
+    }
+    return super.execute(step, ctx);
+  }
+}
+
+/** A workflow named "typed-wf" with one job, main, and the given inputs. */
+function typedWorkflow(inputs: InputsSchema, steps: Step[]): Workflow {
+  return Workflow.create({
+    name: "typed-wf",
+    inputs,
+    jobs: [Job.create({ name: "main", steps })],
+  });
+}
+
+const ENVS_SCHEMA: InputsSchema = {
+  properties: {
+    envs: { type: "array", items: { type: "string" } },
+    n: { type: "number" },
+  },
+  required: ["envs"],
+};
+
+/** Fails a run of `workflow` at the steps in `failing`, then clears them. */
+async function failTyped(
+  tempDir: string,
+  workflow: Workflow,
+  failing: string[],
+  inputs: Record<string, unknown>,
+) {
+  const executor = new InputCapturingExecutor();
+  const harness = await setupRetry(tempDir, workflow, undefined, executor);
+  for (const step of failing) executor.failing.add(step);
+  const failed = await harness.service.execute(workflow.name, { inputs });
+  assertEquals(failed.status, "failed");
+  executor.failing.clear();
+  return { ...harness, executor, failed };
+}
+
+Deno.test("resume: a key=value array override is coerced to the declared array type", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = typedWorkflow(ENVS_SCHEMA, [
+      eachStep("deploy-${{ self.env }}", "${{ inputs.envs }}"),
+    ]);
+    const { service, executor, failed } = await failTyped(
+      tempDir,
+      workflow,
+      ["deploy-b"],
+      { envs: ["a", "b"] },
+    );
+
+    const resumed = await drainResume(service, workflow.name, failed.id, {
+      inputs: { envs: '["a","b"]' },
+    });
+
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.count("main/deploy-a"), 2);
+    assertEquals(executor.count("main/deploy-b"), 2);
+    assertEquals(resumed!.getJob("main")!.status, "succeeded");
+  });
+});
+
+Deno.test("resume: number, integer and boolean key=value overrides reach steps typed", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = typedWorkflow(
+      {
+        properties: {
+          n: { type: "number" },
+          count: { type: "integer" },
+          flag: { type: "boolean" },
+        },
+      },
+      [modelStep("report", {
+        inputs: {
+          double: "${{ inputs.n * 2 }}",
+          next: "${{ inputs.count + 1 }}",
+          off: "${{ !inputs.flag }}",
+        },
+      })],
+    );
+    const { service, executor, failed } = await failTyped(
+      tempDir,
+      workflow,
+      ["report"],
+      { n: 5, count: 3, flag: true },
+    );
+
+    const resumed = await drainResume(service, workflow.name, failed.id, {
+      inputs: { n: "6", count: "4", flag: "false" },
+    });
+
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.taskInputs.get("report"), {
+      double: 12,
+      next: 5,
+      off: true,
+    });
+    assertEquals([...resumed!.resumeInputs].sort(), ["count", "flag", "n"]);
+  });
+});
+
+Deno.test("resume: refuses an override that does not match the input schema, and leaves the run unchanged", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = typedWorkflow(ENVS_SCHEMA, [
+      eachStep("deploy-${{ self.env }}", "${{ inputs.envs }}"),
+    ]);
+    const { service, runRepo, executor, failed } = await failTyped(
+      tempDir,
+      workflow,
+      ["deploy-b"],
+      { envs: ["a", "b"] },
+    );
+    const stored = JSON.stringify(
+      (await runRepo.findById(workflow.id, failed.id))!.toData(),
+    );
+    const saves = runRepo.saves;
+    const calls = executor.count("main/deploy-a") +
+      executor.count("main/deploy-b");
+
+    const error = await assertRejects(
+      () =>
+        drainResume(service, workflow.name, failed.id, {
+          inputs: { envs: "a", n: "abc" },
+        }),
+      UserError,
+    );
+
+    assertEquals(
+      error.message,
+      `Resume inputs do not match the workflow's input schema; run ${failed.id} is unchanged: ` +
+        "envs must be a array; n must be a number",
+    );
+    assertEquals(error.code, "input_validation_failed");
+    assertEquals(runRepo.saves, saves);
+    const reloaded = (await runRepo.findById(workflow.id, failed.id))!;
+    assertEquals(JSON.stringify(reloaded.toData()), stored);
+    assertEquals(reloaded.status, "failed");
+    assertEquals(reloaded.getJob("main")!.status, "failed");
+    assertEquals(
+      executor.count("main/deploy-a") + executor.count("main/deploy-b"),
+      calls,
+    );
+  });
+});
+
+Deno.test("resume: a suspended run's key=value override is coerced too", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = typedWorkflow(
+      { properties: { replicas: { type: "integer" } } },
+      [
+        Step.create({ name: "gate", task: StepTask.manualApproval("Scale?") }),
+        modelStep("scale", {
+          inputs: { replicas: "${{ inputs.replicas + 1 }}" },
+          dependsOn: [{
+            step: "gate",
+            condition: TriggerCondition.succeeded(),
+          }],
+        }),
+      ],
+    );
+    const executor = new InputCapturingExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await service.execute(workflow.name, {
+      inputs: { replicas: 2 },
+    });
+    assertEquals(suspended.status, "suspended");
+    const gate = suspended.getJob("main")!.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    await runRepo.save(workflow.id, suspended);
+
+    const resumed = await drainResume(service, workflow.name, suspended.id, {
+      inputs: { replicas: "4" },
+    });
+
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.taskInputs.get("scale"), { replicas: 5 });
+  });
+});
+
+Deno.test("resume: an undeclared override stays additive unless the schema forbids additional properties", async () => {
+  await withTempDir(async (tempDir) => {
+    const steps = [modelStep("deploy", {
+      inputs: { envs: "${{ inputs.envs }}" },
+    })];
+
+    const open = typedWorkflow(ENVS_SCHEMA, steps);
+    const openRun = await failTyped(tempDir, open, ["deploy"], {
+      envs: ["a"],
+    });
+    const resumed = await drainResume(
+      openRun.service,
+      open.name,
+      openRun.failed.id,
+      { inputs: { region: "us-west" } },
+    );
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals([...resumed!.resumeInputs], ["region"]);
+
+    const closed = typedWorkflow(
+      { ...ENVS_SCHEMA, additionalProperties: false },
+      steps,
+    );
+    const closedRun = await failTyped(tempDir, closed, ["deploy"], {
+      envs: ["a"],
+    });
+    const error = await assertRejects(
+      () =>
+        drainResume(closedRun.service, closed.name, closedRun.failed.id, {
+          inputs: { region: "us-west" },
+        }),
+      UserError,
+    );
+    assertStringIncludes(error.message, "region is not a valid input property");
+    assertEquals(error.code, "input_validation_failed");
+  });
+});
+
+Deno.test("resume: a partial nested override is checked merged over the stored object", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = typedWorkflow(
+      {
+        properties: {
+          creds: {
+            type: "object",
+            properties: {
+              key: { type: "string" },
+              region: { type: "string" },
+            },
+            required: ["key", "region"],
+          },
+        },
+      },
+      [modelStep("login", {
+        inputs: {
+          key: "${{ inputs.creds.key }}",
+          region: "${{ inputs.creds.region }}",
+        },
+      })],
+    );
+    const { service, runRepo, executor, failed } = await failTyped(
+      tempDir,
+      workflow,
+      ["login"],
+      { creds: { key: "old", region: "us-east" } },
+    );
+    const saves = runRepo.saves;
+
+    // The merged value is still checked: a nested field of the wrong type
+    // is refused.
+    const error = await assertRejects(
+      () =>
+        drainResume(service, workflow.name, failed.id, {
+          inputs: { creds: { region: 5 } },
+        }),
+      UserError,
+    );
+    assertStringIncludes(error.message, "creds.region must be a string");
+    assertEquals(runRepo.saves, saves);
+
+    // Only key is supplied, as `--input creds.key=new` gives; region comes
+    // from the stored inputs, so the object's required list is met.
+    const resumed = await drainResume(service, workflow.name, failed.id, {
+      inputs: { creds: { key: "new" } },
+    });
+
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.taskInputs.get("login"), {
+      key: "new",
+      region: "us-east",
+    });
+  });
 });
