@@ -11252,8 +11252,9 @@ Deno.test("abort cleanup: a guarded step recorded running when its suspended run
 
     const resumed = await drainResume(service, workflow.name, suspended.id);
 
-    assertEquals(resumed?.status, "succeeded");
-    assertEquals(resumed?.getJob("main")!.getStep("work")!.status, "succeeded");
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.status, "succeeded");
+    assertEquals(resumed.getJob("main")!.getStep("work")!.status, "succeeded");
     assertEquals(executor.count("main/work"), 1);
   });
 });
