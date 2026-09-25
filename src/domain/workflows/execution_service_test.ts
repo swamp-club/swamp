@@ -10023,6 +10023,17 @@ Deno.test("templateScanGlobalArguments: leaves out a supplied key the authored r
   );
 });
 
+Deno.test("templateScanGlobalArguments: ignores inherited keys of the authored record", () => {
+  assertEquals(
+    templateScanGlobalArguments(
+      { constructor: "{{env.name}}" },
+      ["constructor"],
+      {},
+    ),
+    {},
+  );
+});
+
 /**
  * Runs a direct-execution step whose resolver builds a definition holding the
  * evaluated `{{env.name}}`, with `authoredStep` set as given.

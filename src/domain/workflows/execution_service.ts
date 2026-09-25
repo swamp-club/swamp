@@ -561,7 +561,10 @@ export function templateScanGlobalArguments(
   const scanned = { ...definitionGlobals };
   for (const key of suppliedKeys) {
     delete scanned[key];
-    if (typeof authored === "object" && authored !== null && key in authored) {
+    if (
+      typeof authored === "object" && authored !== null &&
+      Object.hasOwn(authored, key)
+    ) {
       scanned[key] = authored[key];
     }
   }
