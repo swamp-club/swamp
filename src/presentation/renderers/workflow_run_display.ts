@@ -87,8 +87,6 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
               return "dependency condition not met";
             case "job_skipped":
               return "job was skipped";
-            case "cancelled":
-              return "cancelled before its guard decided";
           }
         })(step.skipReason);
         writeOutput(`      -> skipped (${detail})`);

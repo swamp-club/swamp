@@ -1977,20 +1977,39 @@ Deno.test("JobRun.cancelPendingSteps: a forEach dependency aggregates to failed 
   assertEquals(job.getStatus("build"), "failed");
 });
 
-Deno.test("JobRun.cancelIfNotStarted: fails a pending job and its pending steps", () => {
-  const job = JobRun.pending("j2", ["s1", "s2"]);
+Deno.test("JobRun.settleNotStarted: fails a job when any of its steps failed", () => {
+  const job = JobRun.pending("j2", ["create", "delete"]);
+  job.cancelPendingSteps(["create"]);
+  job.getStep("delete")!.skip({ kind: "dependency" });
 
-  assertEquals(job.cancelIfNotStarted(), true);
+  job.settleNotStarted();
 
   assertEquals(job.status, "failed");
   assertEquals(job.startedAt, undefined);
-  for (const step of job.steps) {
-    assertEquals(step.status, "failed");
-    assertEquals(step.error, CANCELLED_STEP_ERROR);
-  }
 });
 
-Deno.test("JobRun.cancelIfNotStarted: leaves a job that is not pending alone", () => {
+Deno.test("JobRun.settleNotStarted: skips a job when every step was skipped", () => {
+  const job = JobRun.pending("j2", ["delete"]);
+  job.getStep("delete")!.skip({ kind: "dependency" });
+
+  job.settleNotStarted();
+
+  assertEquals(job.status, "skipped");
+});
+
+Deno.test("JobRun.settleNotStarted: leaves a job pending while a step is undecided", () => {
+  // A guarded step whose guard never ran stays pending, so nothing about the
+  // job can be concluded and no condition on it may fire.
+  const job = JobRun.pending("j2", ["create", "delete"]);
+  job.getStep("delete")!.skip({ kind: "dependency" });
+
+  job.settleNotStarted();
+
+  assertEquals(job.status, "pending");
+  assertEquals(job.getStep("create")!.status, "pending");
+});
+
+Deno.test("JobRun.settleNotStarted: leaves a job that is not pending alone", () => {
   for (
     const settle of [
       (j: JobRun) => j.start(),
@@ -2001,52 +2020,11 @@ Deno.test("JobRun.cancelIfNotStarted: leaves a job that is not pending alone", (
   ) {
     const job = JobRun.pending("j1", ["s1"]);
     settle(job);
+    job.getStep("s1")!.fail("boom");
     const before = job.toData();
 
-    assertEquals(job.cancelIfNotStarted(), false);
+    job.settleNotStarted();
 
     assertEquals(job.toData(), before);
   }
-});
-
-Deno.test("JobRun.cancelPendingSteps: skips a guarded step as cancelled instead of failing it", () => {
-  const job = JobRun.pending("main", ["create", "build"]);
-
-  const settled = job.cancelPendingSteps(
-    ["create", "build"],
-    new Set(["create"]),
-  );
-
-  assertEquals(settled.map((s) => s.stepName), ["create", "build"]);
-  const create = job.getStep("create")!;
-  assertEquals(create.status, "skipped");
-  assertEquals(create.skipReason, { kind: "cancelled" });
-  assertEquals(create.error, undefined);
-  assertEquals(job.getStep("build")!.status, "failed");
-  assertEquals(job.getStep("build")!.error, CANCELLED_STEP_ERROR);
-});
-
-Deno.test("JobRun.cancelIfNotStarted: fails a job with an unguarded step, skips one whose steps are all guarded", () => {
-  const mixed = JobRun.pending("mixed", ["create", "build"]);
-  assertEquals(mixed.cancelIfNotStarted(new Set(["create"])), true);
-  assertEquals(mixed.status, "failed");
-  assertEquals(mixed.getStep("create")!.skipReason, { kind: "cancelled" });
-  assertEquals(mixed.getStep("build")!.error, CANCELLED_STEP_ERROR);
-
-  const guarded = JobRun.pending("guarded", ["create"]);
-  assertEquals(guarded.cancelIfNotStarted(new Set(["create"])), true);
-  assertEquals(guarded.status, "skipped");
-  assertEquals(guarded.getStep("create")!.skipReason, { kind: "cancelled" });
-});
-
-Deno.test("StepSkipReasonSchema: a cancelled skip round-trips", () => {
-  assertEquals(
-    StepSkipReasonSchema.safeParse({ kind: "cancelled" }).success,
-    true,
-  );
-  const step = StepRun.pending("create");
-  step.skip({ kind: "cancelled" });
-  assertEquals(StepRun.fromData(step.toData()).skipReason, {
-    kind: "cancelled",
-  });
 });

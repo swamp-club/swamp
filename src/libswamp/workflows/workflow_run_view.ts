@@ -74,7 +74,7 @@ export interface ApprovalView {
  * were recorded.
  */
 export interface StepSkipReasonView {
-  kind: "dependency" | "guarded" | "job_skipped" | "cancelled";
+  kind: "dependency" | "guarded" | "job_skipped";
   expression?: string;
 }
 

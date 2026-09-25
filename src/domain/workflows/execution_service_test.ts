@@ -10856,7 +10856,7 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
 /**
  * Aborts the run from inside the step named `abortAt`, as a `--timeout` or
  * cancel firing while that step runs. The step then fails with an AbortError,
- * or succeeds as a method that ignores the signal would. A guard call
+ * or succeeds as a method that ignores the signal would. Every guard call
  * (`__guard_<step>`) that succeeds returns `guardValue` (null, so falsy, by
  * default).
  */
@@ -10876,10 +10876,11 @@ class AbortingStepExecutor extends CountingStepExecutor {
     ctx: StepExecutionContext,
   ): Promise<unknown> {
     const result = await super.execute(step, ctx);
-    if (ctx.stepName !== this.abortAt) return result;
-    this.controller.abort();
-    if (this.outcome === "reject") {
-      throw new DOMException("The operation was aborted.", "AbortError");
+    if (ctx.stepName === this.abortAt) {
+      this.controller.abort();
+      if (this.outcome === "reject") {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
     }
     return ctx.stepName.startsWith("__guard_") ? this.guardValue : result;
   }
@@ -10948,16 +10949,17 @@ function assertCancelledBeforeStart(
   }
 }
 
-function assertSkippedAsCancelled(
+/** A guarded step whose guard never decided stays pending: undecided. */
+function assertUndecided(
   run: WorkflowRun,
   jobName: string,
   stepNames: string[],
 ): void {
   for (const name of stepNames) {
     const step = run.getJob(jobName)!.getStep(name)!;
-    assertEquals(step.status, "skipped", name);
-    assertEquals(step.skipReason, { kind: "cancelled" }, name);
+    assertEquals(step.status, "pending", name);
     assertEquals(step.startedAt, undefined, name);
+    assertEquals(step.error, undefined, name);
   }
 }
 
@@ -11143,7 +11145,7 @@ Deno.test("abort cleanup: a queued step whose dependsOn is unmet is skipped, not
   });
 });
 
-Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires does not start and is skipped as cancelled", async () => {
+Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires does not start and stays undecided, failing its job", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "guard-abort-wf",
@@ -11175,7 +11177,8 @@ Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires d
     assertEquals(run.status, "cancelled");
     assertEquals(executor.count("main/__guard_check"), 1);
     assertEquals(executor.count("main/check"), 0);
-    assertSkippedAsCancelled(run, "main", ["check"]);
+    assertUndecided(run, "main", ["check"]);
+    assertEquals(run.getJob("main")!.status, "failed");
   });
 });
 
@@ -11307,7 +11310,7 @@ Deno.test("abort cleanup: a guarded step recorded running when its suspended run
   });
 });
 
-Deno.test("abort cleanup: a guard that skips its step after the abort is honoured, so a failed-gated rollback does not run", async () => {
+Deno.test("abort cleanup: a guard that answers truthy after the abort leaves its step undecided, so a failed-gated rollback does not run", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "guard-skips-after-abort-wf",
@@ -11340,10 +11343,9 @@ Deno.test("abort cleanup: a guard that skips its step after the abort is honoure
     );
 
     assertEquals(run.status, "cancelled");
-    const create = run.getJob("main")!.getStep("create")!;
-    assertEquals(create.status, "skipped");
-    assertEquals(create.skipReason?.kind, "guarded");
+    assertUndecided(run, "main", ["create"]);
     assertEquals(executor.count("main/create"), 0);
+    assertDependencySkipped(run, ["delete"]);
     assertEquals(executor.count("main/delete"), 0);
   });
 });
@@ -11438,7 +11440,7 @@ Deno.test("abort cleanup: a forEach iteration first added on resume is settled w
   });
 });
 
-Deno.test("abort cleanup: a guarded step queued behind job concurrency is skipped as cancelled, so a failed-gated rollback does not run", async () => {
+Deno.test("abort cleanup: a guarded step queued behind job concurrency stays undecided, so a failed-gated rollback does not run", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "queued-guarded-wf",
@@ -11475,13 +11477,13 @@ Deno.test("abort cleanup: a guarded step queued behind job concurrency is skippe
 
     assertEquals(run.status, "cancelled");
     assertEquals(executor.count("main/__guard_create-bucket"), 0);
-    assertSkippedAsCancelled(run, "main", ["create-bucket"]);
+    assertUndecided(run, "main", ["create-bucket"]);
     assertDependencySkipped(run, ["delete-bucket"]);
     assertEquals(executor.count("main/delete-bucket"), 0);
   });
 });
 
-Deno.test("abort cleanup: a guard still answering when the abort ends a multi-step level is skipped as cancelled", async () => {
+Deno.test("abort cleanup: a guard still answering when the abort ends a multi-step level leaves its step undecided", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "inflight-guard-wf",
@@ -11533,7 +11535,7 @@ Deno.test("abort cleanup: a guard still answering when the abort ends a multi-st
 
       assertEquals(run.status, "cancelled");
       assertEquals(executor.count("main/__guard_create-bucket"), 1);
-      assertSkippedAsCancelled(run, "main", ["create-bucket"]);
+      assertUndecided(run, "main", ["create-bucket"]);
       assertEquals(executor.count("main/delete-bucket"), 0);
     } finally {
       guardAnswer.resolve({ exists: true });
@@ -11541,7 +11543,7 @@ Deno.test("abort cleanup: a guard still answering when the abort ends a multi-st
   });
 });
 
-Deno.test("abort cleanup: a job queued behind workflow concurrency with only guarded steps is skipped, so a failed-gated teardown job does not run", async () => {
+Deno.test("abort cleanup: a never-started job with an undecided guarded step stays pending, so a failed-gated teardown job does not run", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "queued-guarded-job-wf",
@@ -11554,6 +11556,11 @@ Deno.test("abort cleanup: a job queued behind workflow concurrency with only gua
             modelStep("create", {
               guard: '${{ model.method("infra", "exists") }}',
             }),
+            modelStep("delete", onStep("create", TriggerCondition.failed())),
+            modelStep(
+              "notify",
+              onStep("create", TriggerCondition.succeeded()),
+            ),
           ],
         }),
         Job.create({
@@ -11578,10 +11585,151 @@ Deno.test("abort cleanup: a job queued behind workflow concurrency with only gua
     );
 
     assertEquals(run.status, "cancelled");
-    assertEquals(run.getJob("j2")!.status, "skipped");
-    assertSkippedAsCancelled(run, "j2", ["create"]);
+    assertEquals(run.getJob("j2")!.status, "pending");
+    assertUndecided(run, "j2", ["create"]);
+    for (const name of ["delete", "notify"]) {
+      const step = run.getJob("j2")!.getStep(name)!;
+      assertEquals(step.status, "skipped", name);
+      assertEquals(step.skipReason?.kind, "dependency", name);
+    }
     assertEquals(run.getJob("teardown")!.status, "skipped");
     assertEquals(executor.count("teardown/destroy"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a never-started job settles its steps in dependency order", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-chain-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("build"),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+            modelStep("ship", onStep("build", TriggerCondition.succeeded())),
+          ],
+        }),
+        Job.create({
+          name: "cleanup",
+          dependsOn: [{ job: "j2", condition: TriggerCondition.completed() }],
+          steps: [modelStep("c")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("j2")!.status, "failed");
+    assertCancelledBeforeStart(run, "j2", ["build", "rollback"]);
+    const ship = run.getJob("j2")!.getStep("ship")!;
+    assertEquals(ship.status, "skipped");
+    assertEquals(ship.skipReason?.kind, "dependency");
+    assertEquals(executor.count("cleanup/c"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a guarded forEach with an undecided iteration does not count as succeeded", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "guarded-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("create", {
+              forEach: EACH_TARGET,
+              concurrency: 1,
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep(
+              "configure",
+              onStep("create", TriggerCondition.succeeded()),
+            ),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_create-b", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+      { targets: ["a", "b", "c"] },
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("create-a")!.status, "succeeded");
+    assertUndecided(run, "main", ["create-b", "create-c"]);
+    assertEquals(executor.count("main/create-b"), 0);
+    assertDependencySkipped(run, ["configure"]);
+    assertEquals(executor.count("main/configure"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a job whose only step stays undecided fails, so a succeeded-gated job does not run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "undecided-job-wf",
+      jobs: [
+        Job.create({
+          name: "provision",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+        Job.create({
+          name: "deploy",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.succeeded(),
+          }],
+          steps: [modelStep("push")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_create", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertUndecided(run, "provision", ["create"]);
+    assertEquals(run.getJob("provision")!.status, "failed");
+    assertEquals(run.getJob("deploy")!.status, "skipped");
+    assertEquals(executor.count("deploy/push"), 0);
   });
 });
 

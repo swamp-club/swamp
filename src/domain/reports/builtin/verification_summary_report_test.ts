@@ -416,27 +416,6 @@ Deno.test("verificationSummaryReport: a guard skip and a deselected group are di
   assertEquals(gate.skippedByKind, { guarded: 2, job_skipped: 1 });
 });
 
-Deno.test("verificationSummaryReport: a step cancelled before its guard decided is described as such", async () => {
-  const ctx = makeWorkflowContext({
-    stepExecutions: [
-      makeStepExecution({
-        jobName: "main",
-        stepName: "create-bucket",
-        status: "skipped",
-        skipReason: { kind: "cancelled" },
-      }),
-    ],
-  });
-
-  const result = await verificationSummaryReport.execute(ctx);
-
-  assertStringIncludes(result.markdown, "cancelled before its guard decided");
-  const steps = result.json.steps as Array<Record<string, unknown>>;
-  assertEquals(steps[0].skipKind, "cancelled");
-  const gate = result.json.gate as Record<string, unknown>;
-  assertEquals(gate.skippedByKind, { cancelled: 1 });
-});
-
 Deno.test("verificationSummaryReport: a skip with no recorded reason says so", async () => {
   const ctx = makeWorkflowContext({
     stepExecutions: [

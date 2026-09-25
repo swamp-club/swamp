@@ -1341,17 +1341,21 @@ order:
   dependency with a queued iteration therefore aggregates to `failed`, and
   cleanup gated on it runs. A `failed`-gated rollback can run for work that
   never started, so it must tolerate having nothing to undo.
-- A never-started step that has a `guard` is skipped with reason `cancelled`
-  instead of failed: its guard never decided whether the step's work was
-  already done, so neither `failed` nor `completed` fires on it, and a
-  rollback does not undo work that may predate the run. A never-started job
-  settles its steps the same way; it fails when any step failed and is skipped
-  when all of its steps were guarded.
+- A never-started step that has a `guard` stays `pending` (undecided): its
+  guard never decided whether the step's work was already done, so no
+  condition may treat it as finished. `succeeded`, `failed`, `completed` and
+  `skipped` are all false for a `pending` step, and a `forEach` with an
+  undecided iteration aggregates to `running`, so neither a `failed`-gated
+  rollback nor a `succeeded`-gated next step runs on it; `always` still does. An undecided step remains `pending` in the
+  cancelled run's record.
 - A step whose guard was being evaluated when the cancellation fired does not
-  start. A guard that answers truthy still skips it (reason `guarded`);
-  otherwise the level skips it as `cancelled`, even when the level settles it
-  before the guard answers. A step recorded `running` when its run resumes
-  starts as before.
+  start and stays undecided, whatever the guard answers: the level may already
+  have moved on. A started job that is left with an undecided step fails, so
+  later levels run in cleanup mode. A step recorded `running` when its run
+  resumes starts as before.
+- A never-started job settles its steps in dependency order, each as above;
+  the job fails when any step failed, is skipped when every step was skipped,
+  and otherwise stays `pending`.
 - Settled steps and jobs get no `step_failed`, `step_skipped`, `job_skipped`
   or `job_completed` event; the run record carries their outcome. `workflow
   resume` settles steps the same way, but not jobs: its job loop has no cleanup
