@@ -130,6 +130,39 @@ Deno.test("enrichExtensionList: stale cache triggers fetch and ONE aggregate wri
   assertEquals(result[1].updateStatus, "up_to_date");
 });
 
+Deno.test("enrichExtensionList: an auto-resolved entry is neither checked nor offered an update", async () => {
+  // A cached newer version must not surface either: `extension update`
+  // cannot act on an auto-resolved entry.
+  const cache = new InMemoryCacheRepo({
+    "@ns/auto": {
+      checkedAt: "2026-05-01T00:00:00.000Z",
+      latestVersion: "2026.05.01.1",
+    },
+  });
+  const fetched: string[] = [];
+  const result = await enrichExtensionList(
+    [
+      { ...baseEntry("@ns/auto", "2026.03.01.1"), autoResolved: true },
+      { ...baseEntry("@ns/stale-auto", "2026.03.01.1"), autoResolved: true },
+      baseEntry("@ns/team", "2026.03.01.1"),
+    ],
+    {
+      getLatestVersion: (name) => {
+        fetched.push(name);
+        return Promise.resolve("2026.05.01.1");
+      },
+      cacheRepository: cache,
+      now: () => new Date("2026-05-01T00:00:01.000Z"),
+      concurrency: 4,
+    },
+  );
+  assertEquals(fetched, ["@ns/team"]);
+  assertEquals("updateStatus" in result[0], false);
+  assertEquals("latestVersion" in result[0], false);
+  assertEquals("updateStatus" in result[1], false);
+  assertEquals(result[2].updateStatus, "update_available");
+});
+
 Deno.test("enrichExtensionList: registry failure stamps cache and marks unknown_offline", async () => {
   const cache = new InMemoryCacheRepo({});
   const result = await enrichExtensionList(

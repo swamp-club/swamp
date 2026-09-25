@@ -118,12 +118,43 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             }
           }
           line += `  (pulled ${ext.pulledAt})`;
+          if (ext.autoResolved) {
+            line += "  (auto-resolved)";
+          }
+          if (ext.onDiskVersion) {
+            line += `  (on disk v${ext.onDiskVersion})`;
+          }
           logger.info("{line}", { line });
+          if (ext.onDiskVersion) {
+            // An auto-resolved entry is reinstalled by the auto-resolver;
+            // pulling it would pin it in the team's lockfile.
+            const toRemove = ext.removeToReinstall?.length
+              ? ext.removeToReinstall.join(", ")
+              : "what it installed";
+            const remedy = ext.autoResolved
+              ? `it was auto-resolved, so delete ${toRemove} and it is ` +
+                `reinstalled at v${ext.version} on next use.`
+              : `run 'swamp extension pull ${ext.name}@${ext.version} ` +
+                `--force' to install the pinned version.`;
+            logger.warn("{line}", {
+              line: `  ${ext.name} is v${ext.onDiskVersion} on disk, not ` +
+                `the pinned v${ext.version}; ${remedy}`,
+            });
+          }
           if (this.verbose) {
             for (const file of ext.files) {
               logger.info("  {file}", { file });
             }
           }
+        }
+        if (exts.some((ext) => ext.autoResolved)) {
+          // update, rm and install act on the team's lockfile only, so the
+          // auto-resolved rows carry no update check.
+          logger.info("{line}", {
+            line: "Auto-resolved extensions are not managed by 'swamp " +
+              "extension update' or 'rm'. To reinstall one, delete the paths " +
+              "in its removeToReinstall (swamp extension list --json).",
+          });
         }
       },
       error: (e) => {

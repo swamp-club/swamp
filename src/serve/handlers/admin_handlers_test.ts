@@ -594,7 +594,7 @@ Deno.test("handleVaultMigrate: marks the new and the old config path before the 
   }
 });
 
-Deno.test("handleExtensionList: reads the managed lockfile, not the models dir (swamp-club#2483)", async () => {
+Deno.test("handleExtensionList: reads the managed lockfile and the transitional local one, not the models dir (swamp-club#2483)", async () => {
   await withTempDir(async (dir) => {
     const { repoDir, datastoreResolver, ctx, cleanup } = await createSyncRepo(
       dir,
@@ -611,6 +611,15 @@ Deno.test("handleExtensionList: reads the managed lockfile, not the models dir (
       await Deno.writeTextFile(
         join(configDir, "upstream_extensions.json"),
         JSON.stringify({ "@test/team": entry }),
+      );
+      await ensureDir(join(repoDir, ".swamp", "config"));
+      await Deno.writeTextFile(
+        join(repoDir, ".swamp", "config", "upstream_extensions.json"),
+        JSON.stringify({ "@test/auto": entry }),
+      );
+      // Installed on disk; one gone entirely would await reinstall instead.
+      await ensureDir(
+        join(repoDir, ".swamp", "config", "pulled-extensions", "@test", "auto"),
       );
       // A pre-migrate models-dir lockfile must be ignored.
       await ensureDir(join(repoDir, "extensions", "models"));
@@ -633,7 +642,7 @@ Deno.test("handleExtensionList: reads the managed lockfile, not the models dir (
       const names = message.payload.data.extensions.map((
         e: { name: string },
       ) => e.name);
-      assertEquals(names, ["@test/team"]);
+      assertEquals(names, ["@test/auto", "@test/team"]);
     } finally {
       cleanup();
     }

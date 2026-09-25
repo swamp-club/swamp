@@ -19,6 +19,8 @@
 
 import { getLogger } from "@logtape/logtape";
 import {
+  isBundleArtifactPath,
+  isPulledSkillPath,
   resolvePulledExtensionsRoot,
   SWAMP_SUBDIRS,
   swampPath,
@@ -26,7 +28,12 @@ import {
 import { assertContainedPath } from "../infrastructure/persistence/safe_path.ts";
 import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
+import { readInstalledEntries } from "../infrastructure/persistence/installed_entries.ts";
+import {
+  readUpstreamExtensions,
+  type UpstreamExtensionEntry,
+} from "../infrastructure/persistence/upstream_extensions.ts";
 import type {
   AutoResolveOutputPort,
   ExtensionInstallerPort,
@@ -67,33 +74,8 @@ import {
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
-// Lockfile-relative prefixes for regenerable bundle output. Sourced from
-// SWAMP_SUBDIRS so a future bundle-dir addition only needs the key list
-// extended below to stay in sync. Forward slashes match how
-// installExtension writes lockfile paths (POSIX-normalized via
-// `relative()` in src/libswamp/extensions/pull.ts).
-const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
-  SWAMP_SUBDIRS.bundles,
-  SWAMP_SUBDIRS.vaultBundles,
-  SWAMP_SUBDIRS.datastoreBundles,
-  SWAMP_SUBDIRS.reportBundles,
-  SWAMP_SUBDIRS.webhookBundles,
-].map((subdir) => `.swamp/${subdir}/`);
-
-export function isBundleArtifactPath(relPath: string): boolean {
-  return BUNDLE_ARTIFACT_PREFIXES.some((prefix) => relPath.startsWith(prefix));
-}
-
-const PULLED_SKILLS_PREFIX = `.swamp/${SWAMP_SUBDIRS.pulledSkills}/`;
-
-/**
- * True for a skill dir under the pulled skills dir. Skills land in a
- * dir shared across extensions, so another extension shipping the same
- * skill name raises a ConflictError on it.
- */
-export function isPulledSkillPath(relPath: string): boolean {
-  return relPath.startsWith(PULLED_SKILLS_PREFIX);
-}
+// Re-exported for existing importers; they live with SWAMP_SUBDIRS.
+export { isBundleArtifactPath, isPulledSkillPath };
 
 interface InstallerAdapterConfig {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
@@ -118,6 +100,15 @@ interface InstallerAdapterConfig {
    * datastore (swamp-club#2483).
    */
   datastoresOnDisk?: boolean;
+  /**
+   * The resolved (team) lockfile, read on each call because the managed
+   * config base can resolve after the adapter is created. When it names a
+   * different file from `lockfilePath`, an extension's pinned version and
+   * checksum come from both files, the resolved entry winning, so
+   * auto-resolve still installs the team's pin (#465). Installs are still
+   * recorded in `lockfilePath` (swamp-club#2483).
+   */
+  resolvedLockfilePath?: () => string | undefined;
   /**
    * W1b/(a-2) wiring: shared ExtensionRepository used by hotLoadModels
    * to attach user extensions whose base type was just registered, and
@@ -172,6 +163,30 @@ export function createAutoResolveInstallerAdapter(
     repository,
   } = config;
 
+  // The resolved (team) lockfile, when installs are recorded elsewhere.
+  const separateResolvedLockfilePath = (): string | undefined => {
+    const resolvedPath = config.resolvedLockfilePath?.();
+    return resolvedPath === undefined ||
+        resolve(resolvedPath) === resolve(lockfilePath)
+      ? undefined
+      : resolvedPath;
+  };
+
+  // The lockfile entry that pins an extension's version and checksum.
+  const findPinnedEntry = async (
+    extensionName: string,
+  ): Promise<UpstreamExtensionEntry | null> => {
+    const resolvedPath = separateResolvedLockfilePath();
+    if (resolvedPath === undefined) {
+      const lockfileRepo = await LockfileRepository.create(lockfilePath);
+      return lockfileRepo.getEntry(extensionName);
+    }
+    const { entries } = await readInstalledEntries(resolvedPath, lockfilePath);
+    return Object.hasOwn(entries, extensionName)
+      ? entries[extensionName]
+      : null;
+  };
+
   return {
     async inspectInstallation(
       extensionName: string,
@@ -202,8 +217,7 @@ export function createAutoResolveInstallerAdapter(
       // output, not source. Clearing the bundle cache (a normal hygiene
       // operation) must not flip the inspection to truncated and steal
       // the user-WIP path from issue #121.
-      const inspectLockfileRepo = await LockfileRepository.create(lockfilePath);
-      const entry = inspectLockfileRepo.getEntry(extensionName);
+      const entry = await findPinnedEntry(extensionName);
       if (!entry) return { state: "missing" };
       // A lockfile entry exists; carry its pinned version so the installer's
       // progress output reports the version that will actually be installed
@@ -259,7 +273,16 @@ export function createAutoResolveInstallerAdapter(
     async install(extensionName: string) {
       async function runInstall(force: boolean) {
         const lockfileRepo = await LockfileRepository.create(lockfilePath);
-        const pinnedEntry = lockfileRepo.getEntry(extensionName);
+        const pinnedEntry = await findPinnedEntry(extensionName);
+        // installExtension treats a dependency as installed only when
+        // lockfileRepo records it. A dependency the team's lockfile records
+        // is installed too: seeding it here keeps it from being reinstalled
+        // over its files, or at an unpinned version on a fresh checkout.
+        const resolvedPath = separateResolvedLockfilePath();
+        const teamInstalled = resolvedPath === undefined
+          ? []
+          : Object.keys(await readUpstreamExtensions(resolvedPath))
+            .filter((name) => name !== extensionName);
         const ref = {
           name: extensionName,
           version: pinnedEntry?.version ?? null,
@@ -273,7 +296,7 @@ export function createAutoResolveInstallerAdapter(
           skillsDirs: [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)],
           repoDir,
           force,
-          alreadyPulled: new Set<string>(),
+          alreadyPulled: new Set<string>(teamInstalled),
           depth: 0,
           ...(pinnedEntry?.checksum
             ? { expectedChecksum: pinnedEntry.checksum }

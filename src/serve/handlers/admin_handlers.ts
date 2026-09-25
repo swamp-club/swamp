@@ -142,6 +142,10 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
+import {
+  transitionalInstalledNames,
+  transitionalLocalLockfilePath,
+} from "../../infrastructure/persistence/installed_entries.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -484,7 +488,11 @@ export async function handleExtensionList(
       RepoPath.create(ctx.repoDir),
     );
     const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
-    const deps = await createExtensionListDeps(lockfilePath);
+    const deps = await createExtensionListDeps(
+      ctx.repoDir,
+      lockfilePath,
+      transitionalLocalLockfilePath(ctx.repoDir, marker, lockfilePath),
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1565,15 +1573,21 @@ export async function handleDoctorExtensions(
       });
       rescanRepo.invalidateAll();
       const denoRuntime = new EmbeddedDenoRuntime();
+      // Same treatment of on-disk datastore extensions and the
+      // transitional in-repo auto-resolve lockfile as the CLI's startup and
+      // doctor reconcile (swamp-club#2483).
       const reconciler = new ReconcileFromDiskService({
         denoRuntime,
         repository: rescanRepo,
         lockfileRepository: reconcileLockfileRepo,
         repoDir,
         localManifestIdentity,
-        // Same treatment of on-disk datastore extensions as the CLI's startup
-        // and doctor reconcile (swamp-club#2483).
         scanOnDiskDatastores: isExtensionBackedDatastore(marker),
+        additionalInstalledNames: await transitionalInstalledNames(
+          repoDir,
+          marker,
+          lockfilePath,
+        ),
       });
       const result = await reconciler.execute();
       reconcileTransitions = result.transitions;

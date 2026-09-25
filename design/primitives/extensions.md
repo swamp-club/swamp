@@ -202,6 +202,30 @@ When enrichment ran, each JSON entry has optional `latestVersion` and
 try" (fields absent) from "tried and failed" (`updateStatus: "unknown_offline"`,
 `latestVersion: null`).
 
+Two more optional fields appear whether or not enrichment ran
+(`src/libswamp/extensions/list.ts`, swamp-club#2483):
+
+- `onDiskVersion` is present when the version in the extension's on-disk
+  manifest differs from the version the lockfile pins, so the loaded code is not
+  what the lockfile pins. Log mode shows `(on disk vX)` on the row, then a
+  remedy line.
+- `autoResolved: true` marks an entry that comes only from the transitional
+  in-repo auto-resolve lockfile, not the team's. Log mode shows
+  `(auto-resolved)` on the row. `update`, `rm` and `install` act on the team's
+  lockfile only, so they do not see such an entry. It is never checked for
+  updates (no `latestVersion` or `updateStatus`), and log mode ends with a
+  footer saying `update` and `rm` do not manage it. Until swamp-club#2495, it is
+  repaired by deleting what it installed so the auto-resolver reinstalls it;
+  `extension pull` would pin it in the team's lockfile. Once its directory and
+  source files are all gone it is not listed, since it awaits that reinstall.
+- `removeToReinstall` accompanies `autoResolved`: the repo-relative paths to
+  delete for that reinstall, namely the extension's directory and any pulled
+  skill dirs it tracks. A skill dir another extension also claims is shared,
+  so only this extension's own files in it are listed. A surviving skill would
+  make the auto-resolver report the extension as a legacy install instead of
+  reinstalling it. The log-mode
+  remedy line names these paths.
+
 ### `swamp extension outdated`
 
 A subcommand for CI gates and scheduled checks. It shows every status other than
@@ -1142,9 +1166,12 @@ datastore, the cache's `config/` for S3 or GCS, with the namespace in front of
 `config/` when one is set (`<path>/<namespace>/config`;
 `resolveManagedConfigPaths`, `src/cli/repo_context.ts`). On managed config,
 pulled sources stay in the repo's `.swamp/config/pulled-extensions` whatever
-the datastore; otherwise they live in `.swamp/pulled-extensions`. The file
-supports clean removal, conflict detection and **integrity-anchored restore**
-(see the `checksum` field below).
+the datastore; otherwise they live in `.swamp/pulled-extensions`. Until
+swamp-club#2495, the auto-resolver in an S3/GCS managed repo records installs
+in the in-repo `.swamp/config/upstream_extensions.json` instead, and readers
+merge it in read-only (see datastores "Extension commands and the
+chicken-and-egg", swamp-club#2483). The file supports clean removal, conflict
+detection and **integrity-anchored restore** (see the `checksum` field below).
 
 ### Structure
 

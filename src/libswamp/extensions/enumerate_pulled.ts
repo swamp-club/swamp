@@ -29,6 +29,7 @@ import { readManifestIdentityAt } from "../../infrastructure/persistence/local_m
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { CATALOG_FAILURE_STATES } from "../../domain/extensions/bundle_freshness.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
+import { readInstalledEntries } from "../../infrastructure/persistence/installed_entries.ts";
 
 /** Types that can appear under a per-extension subtree. */
 export type PulledExtensionType =
@@ -54,15 +55,20 @@ export type PulledExtensionType =
  * `additionalDirs` when invoking `UserModelLoader.loadModels` /
  * `buildIndex`, so the loader walks each extension's subtree in
  * isolation.
+ *
+ * `localLockfilePath` adds the entries of the transitional in-repo
+ * auto-resolve lockfile (see `transitionalLocalLockfilePath`).
  */
 export async function enumeratePulledExtensionDirs(
   lockfilePath: string,
   repoDir: string,
   type: PulledExtensionType,
   pulledExtensionsRoot?: string,
+  localLockfilePath?: string,
 ): Promise<string[]> {
-  const repo = await LockfileRepository.create(lockfilePath);
-  const upstream = repo.getAllEntries();
+  const upstream = localLockfilePath
+    ? (await readInstalledEntries(lockfilePath, localLockfilePath)).entries
+    : (await LockfileRepository.create(lockfilePath)).getAllEntries();
   const pulledRoot = pulledExtensionsRoot ??
     resolvePulledExtensionsRoot(repoDir);
   const dirs: string[] = [];

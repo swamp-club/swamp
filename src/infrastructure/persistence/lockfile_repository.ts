@@ -88,9 +88,10 @@ export class LockfileRepository {
 
   /**
    * Constructs an instance with an explicit cache. Prefer
-   * {@link LockfileRepository.create} for production code; this constructor
+   * {@link LockfileRepository.create} for production code. This constructor
    * is the test seam for fixtures that need a known starting state without
-   * touching disk.
+   * touching disk, and also wraps entries a caller has already read (for
+   * example, `extension list` merging the transitional local lockfile).
    */
   constructor(lockfilePath: string, cache: UpstreamExtensionsMap = {}) {
     this.lockfilePath = lockfilePath;

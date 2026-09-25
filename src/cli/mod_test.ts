@@ -26,6 +26,7 @@ import {
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
   isUpdateCheckDisabledByEnv,
+  resolveAutoResolverLockfilePath,
   resolveLogLevel,
   resolveModelsDir,
   resolveTelemetryEndpoint,
@@ -33,6 +34,12 @@ import {
   shouldSuppressMissingExtensionsWarning,
 } from "./mod.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
+import { join, resolve } from "@std/path";
+import {
+  managedConfigLockfilePath,
+  registerManagedConfig,
+} from "../infrastructure/persistence/paths.ts";
+import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("resolveModelsDir returns default 'extensions/models' when no config", () => {
   // Ensure env var is not set
@@ -775,5 +782,35 @@ Deno.test("shouldSuppressMissingExtensionsWarning: does not suppress non-extensi
       modelWarning,
     ),
     false,
+  );
+});
+
+Deno.test("resolveAutoResolverLockfilePath: records in the in-repo lockfile on an extension-backed datastore", () => {
+  // Registration is keyed by repo path, so a unique path keeps repeats and
+  // other tests independent.
+  const repoDir = resolve(`repo-${crypto.randomUUID()}`);
+  const base = resolve(`cache-${crypto.randomUUID()}`, "config");
+  registerManagedConfig(repoDir, true, base, true);
+  const marker = (type: string) => ({
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    datastore: { type, managedConfig: true },
+  });
+
+  assertPathEquals(
+    resolveAutoResolverLockfilePath(
+      repoDir,
+      marker("@swamp/s3-datastore"),
+      () => undefined,
+    ),
+    managedConfigLockfilePath(repoDir),
+  );
+  assertPathEquals(
+    resolveAutoResolverLockfilePath(
+      repoDir,
+      marker("filesystem"),
+      () => undefined,
+    ),
+    join(base, "upstream_extensions.json"),
   );
 });
