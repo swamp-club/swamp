@@ -296,6 +296,10 @@ The mint output does not include the credential, and `reveal` has no `--server`.
 Run `swamp access token reveal <name> --yes` where the serve's repo or datastore
 is reachable.
 
+`swamp worker token create <name> --duration <d> --server <url>` also stores the
+secret in `_token-secrets` unless `--vault <name>` names another vault on the
+server.
+
 ## OAuth Login
 
 ```bash

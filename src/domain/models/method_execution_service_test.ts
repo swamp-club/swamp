@@ -46,6 +46,7 @@ import { MALFORMED_TYPE_VERSION_CODE } from "./definition_upgrade_service.ts";
 import { getLogger } from "@logtape/logtape";
 import { createModelOutputId, type ModelOutput } from "./model_output.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { VaultService } from "../vaults/vault_service.ts";
 
 /**
  * Test model that mimics the echo model's write method.
@@ -557,6 +558,63 @@ Deno.test(
     assertEquals(result.dataHandles!.length >= 1, true);
   },
 );
+
+// swamp-club#2422: serve registers the reserved _token-secrets vault in every
+// VaultService. It cannot hold user data, so the fail-fast must not count it:
+// otherwise the method runs its side effects and only then fails to store the
+// sensitive output.
+Deno.test("executeWorkflow - fails fast for sensitive output when only a reserved vault is registered", async () => {
+  const service = new DefaultMethodExecutionService();
+  let ran = false;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/sensitive-output"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({}),
+    resources: {
+      "cred": {
+        description: "Credential",
+        schema: z.object({ secret: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+        sensitiveOutput: true,
+      },
+    },
+    methods: {
+      create: {
+        description: "Create a credential",
+        arguments: z.object({}),
+        execute: () => {
+          ran = true;
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: "_token-secrets",
+    type: "mock",
+    config: {},
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    vaultService,
+  });
+
+  await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({ name: "cred-maker", globalArguments: {} }),
+        model,
+        "create",
+        context,
+      ),
+    UserError,
+    "no vault is configured",
+  );
+  assertEquals(ran, false);
+});
 
 Deno.test("executeWorkflow - throws error for unknown method", async () => {
   const service = new DefaultMethodExecutionService();

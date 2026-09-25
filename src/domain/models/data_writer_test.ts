@@ -882,6 +882,44 @@ Deno.test("processSensitiveResourceData: throws error when no vault configured",
   );
 });
 
+// swamp-club#2422: serve registers the reserved _token-secrets vault
+// everywhere. It must not count as a configured vault, or a repo with no user
+// vault gets a misleading reserved-vault error instead of the no-vault one.
+Deno.test("processSensitiveResourceData: throws no-vault error when only a reserved vault is registered", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      secret: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { secret: "my-secret" };
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: "_token-secrets",
+    type: "mock",
+    config: {},
+  });
+
+  await assertRejects(
+    () =>
+      processSensitiveResourceData(
+        data,
+        spec,
+        vaultService,
+        modelType,
+        modelId,
+        "create",
+        "creds",
+        "main",
+      ),
+    Error,
+    "no vault is configured",
+  );
+  assertEquals(data.secret, "my-secret");
+});
+
 Deno.test("processSensitiveResourceData: sensitiveOutput flag treats all fields as sensitive", async () => {
   const spec: ResourceOutputSpec = {
     schema: z.object({

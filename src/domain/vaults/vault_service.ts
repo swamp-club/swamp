@@ -78,6 +78,14 @@ export class VaultService {
     VaultService.#globalProviders.set(name, { type, provider });
   }
 
+  /**
+   * Removes a provider added with {@link registerGlobalProvider}. VaultService
+   * instances created earlier keep it; later ones no longer see it.
+   */
+  static unregisterGlobalProvider(name: string): void {
+    VaultService.#globalProviders.delete(name);
+  }
+
   private readonly providers = new Map<string, VaultProvider>();
   private readonly vaultTypes = new Map<string, string>();
   private readonly auditFlags = new Map<string, boolean>();
@@ -521,6 +529,16 @@ export class VaultService {
    */
   getVaultNames(): string[] {
     return Array.from(this.providers.keys());
+  }
+
+  /**
+   * Lists the vaults a user configured, leaving out swamp's reserved internal
+   * vaults (such as the `_token-secrets` control-plane vault that serve
+   * registers). Use this, not {@link getVaultNames}, to decide whether a vault
+   * is available for user data: reserved vaults never accept it.
+   */
+  getUserVaultNames(): string[] {
+    return this.getVaultNames().filter((name) => !isReservedVaultName(name));
   }
 
   /**

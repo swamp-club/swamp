@@ -53,9 +53,11 @@ If a spec needs a vault and the repository has none, the definition is reported.
 ## Vault availability
 
 The scan builds a `VaultService` with `VaultService.fromRepository(repoDir)` and
-checks `getVaultNames().length > 0`, meaning at least one vault is configured
-(`src/libswamp/models/doctor_vaults.ts`). The runtime pre-flight uses the same
-check.
+checks `getUserVaultNames().length > 0`, meaning at least one user vault is
+configured (`src/libswamp/models/doctor_vaults.ts`). Reserved vaults, such as
+the `_token-secrets` control-plane vault that serve registers in every
+`VaultService`, are not counted: sensitive data is never stored in them. The
+runtime pre-flight and `processSensitiveResourceData` use the same check.
 
 ## Best-effort residual
 

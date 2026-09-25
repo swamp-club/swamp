@@ -108,7 +108,8 @@ export async function createDoctorVaultsDeps(
       const vs = await VaultService.fromRepository(repoDir, {
         vaultsDir: options?.vaultsDir,
       });
-      return vs.getVaultNames().length > 0;
+      // Reserved vaults (serve's _token-secrets) never hold user data.
+      return vs.getUserVaultNames().length > 0;
     },
   };
 }

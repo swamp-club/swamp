@@ -99,6 +99,8 @@ Deno.test("workerTokenCreateCommand: --vault help and example say it needs --ser
     o.name === "vault"
   );
   assertStringIncludes(vaultOpt!.description, "only with --server");
+  // swamp-club#2422: omitting --vault on the server means _token-secrets.
+  assertStringIncludes(vaultOpt!.description, "defaults to _token-secrets");
   const vaultExamples = workerTokenCreateCommand.getExamples().filter((e) =>
     e.description.includes("--vault")
   );

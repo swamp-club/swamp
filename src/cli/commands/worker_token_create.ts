@@ -66,7 +66,7 @@ export const workerTokenCreateCommand = withRemoteOptions(
       "swamp worker token create ci-runner-3 --duration 24h",
     )
     .example(
-      "Choose the server vault that stores the plaintext",
+      "Store the plaintext in a named server vault instead of the control-plane vault",
       "swamp worker token create ci-runner-3 --duration 7d --vault prod-vault --server wss://swamp.example.com",
     )
     .example(
@@ -85,7 +85,7 @@ export const workerTokenCreateCommand = withRemoteOptions(
     )
     .option(
       "--vault <vault:string>",
-      "Vault on the server that stores the token plaintext (only with --server; local creation always uses the control-plane vault)",
+      `Vault on the server that stores the token plaintext (only with --server; defaults to ${TOKEN_SECRETS_VAULT_NAME}, which local creation always uses)`,
     )
     .option(
       "--max-enrollments <n:string>",

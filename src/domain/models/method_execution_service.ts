@@ -756,8 +756,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       if (
         isMutatingKind(methodKind) && modelRequiresVault(modelDef.resources)
       ) {
+        // Count user vaults only: serve registers the reserved _token-secrets
+        // vault everywhere, and data_writer refuses to store data in it.
         const hasVault = context.vaultService &&
-          context.vaultService.getVaultNames().length > 0;
+          context.vaultService.getUserVaultNames().length > 0;
         if (!hasVault) {
           throw new UserError(
             `Model "${currentDefinition.name}" has sensitive resource output ` +
