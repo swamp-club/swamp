@@ -27,7 +27,10 @@ import { migrateHomeRepoTelemetry } from "../infrastructure/persistence/telemetr
 import { UserError } from "../domain/errors.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
-import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import {
+  bufferStartupWarnings,
+  initializeLogging,
+} from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
 import { runCommand } from "./commands/run.ts";
@@ -1541,6 +1544,9 @@ export async function runCli(args: string[]): Promise<void> {
     const loaderSpan = getTracer().startSpan(
       "swamp.cli.configure_extension_loaders",
     );
+    // Loader warnings raised while resolving the managed config base below
+    // would otherwise be dropped: logging starts only after Cliffy parses.
+    await bufferStartupWarnings();
     await ensureManagedConfigBase(repoDir, marker);
     const { lockfilePath: managedLockfilePath } = resolveManagedConfigPaths(
       repoDir,
