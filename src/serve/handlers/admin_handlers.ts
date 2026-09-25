@@ -174,6 +174,7 @@ import {
   type ServeReloadOptions,
 } from "../extension_reload.ts";
 import { isReservedVaultName } from "./vault_handlers.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
 
 /**
  * Derives managed-config paths from the connection context's datastore resolver.
@@ -2029,7 +2030,12 @@ export async function handleWorkerTokenCreate(
       workerTokenCreate(libCtx, deps, {
         name: payload.name,
         durationMs: payload.durationMs,
-        vaultName: payload.vaultName,
+        // An explicit --vault wins: redeem reads the secret from the vault
+        // recorded on the token, so any configured vault works. Without one,
+        // use the control-plane vault, as the local CLI path does. Leaving it
+        // unset makes resolveVaultName count _token-secrets alongside any
+        // user vault and fail with "Multiple vaults are configured".
+        vaultName: payload.vaultName ?? TOKEN_SECRETS_VAULT_NAME,
         maxEnrollments: payload.maxEnrollments,
       }),
       withDefaults({

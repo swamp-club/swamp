@@ -524,6 +524,16 @@ export class VaultService {
   }
 
   /**
+   * Lists the vaults a user configured, leaving out swamp's reserved internal
+   * vaults (such as the `_token-secrets` control-plane vault that serve
+   * registers). Use this, not {@link getVaultNames}, to decide whether a vault
+   * is available for user data: reserved vaults never accept it.
+   */
+  getUserVaultNames(): string[] {
+    return this.getVaultNames().filter((name) => !isReservedVaultName(name));
+  }
+
+  /**
    * Returns the repo-level default vault name if configured and the vault
    * is registered, otherwise undefined.
    */

@@ -219,6 +219,20 @@ Deno.test("VaultService - ensureDefaultVaults is a no-op", () => {
   assertEquals(vaultService.getVaultNames().length, 0);
 });
 
+Deno.test("VaultService.getUserVaultNames: leaves out reserved vaults", () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: "_token-secrets",
+    type: "mock",
+    config: {},
+  });
+  assertEquals(vaultService.getVaultNames().length, 1);
+  assertEquals(vaultService.getUserVaultNames(), []);
+
+  vaultService.registerVault({ name: "team-vault", type: "mock", config: {} });
+  assertEquals(vaultService.getUserVaultNames(), ["team-vault"]);
+});
+
 Deno.test("VaultService - basic functionality", async (t) => {
   await t.step("should register and list vault names", () => {
     const vaultService = new VaultService();

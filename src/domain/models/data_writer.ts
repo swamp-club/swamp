@@ -39,6 +39,7 @@ import type {
 } from "./model.ts";
 import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
+import { isReservedVaultName } from "../vaults/vault_name.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import {
   extractSensitiveFields,
@@ -418,9 +419,11 @@ export async function processSensitiveResourceData(
     return [];
   }
 
-  // Validate vault availability
-  const vaultNames = vaultService.getVaultNames();
-  if (vaultNames.length === 0) {
+  // Validate vault availability. Reserved vaults (such as the _token-secrets
+  // control-plane vault serve registers) never hold user data, so only user
+  // vaults count.
+  const userVaultNames = vaultService.getUserVaultNames();
+  if (userVaultNames.length === 0) {
     const fieldList = fieldsWithValues.map((f) => `'${f.field.path}'`).join(
       ", ",
     );
@@ -430,13 +433,11 @@ export async function processSensitiveResourceData(
     );
   }
 
-  const userVaultNames = vaultNames.filter((n) => !n.startsWith("_"));
-
   for (const { field, originalValue } of fieldsWithValues) {
     const targetVault = field.vaultName ?? spec.vaultName ??
-      vaultService.getDefaultVaultName() ?? userVaultNames[0] ?? vaultNames[0];
+      vaultService.getDefaultVaultName() ?? userVaultNames[0];
 
-    if (targetVault.startsWith("_")) {
+    if (isReservedVaultName(targetVault)) {
       throw new Error(
         `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,
       );
