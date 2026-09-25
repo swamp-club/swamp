@@ -1174,10 +1174,10 @@ Guard-skipped steps emit a `step_skipped` event with `reason: "guarded"`
 (the raw CEL string) and `guardResult` (the evaluated value), so consumers can
 show why the step was skipped.
 
-Console output shows the guard expression inline:
+Console output names the skipped step and shows the guard expression inline:
 
 ```
-   main │ skipped (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0
+   main │ skipped do-work (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0
 ```
 
 JSON output includes both fields:

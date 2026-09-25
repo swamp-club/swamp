@@ -731,7 +731,7 @@ fails the step with a `step_failed` event containing the error message.
 
 **Events and rendering:** Guard-skipped steps emit a `step_skipped` event with
 `reason: "guarded"` (vs `"dependency"` for dependency skips). The console
-renderer shows `skipped (guarded)` to distinguish from dependency skips.
+renderer shows `skipped <step> (guarded)` to distinguish from dependency skips.
 
 ## Step Task Types
 
