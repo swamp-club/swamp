@@ -103,11 +103,6 @@ const MALFORMED_EXPRESSION_MESSAGES: Record<
 export const FOREIGN_TEMPLATE_WARNING_NAME = "Template syntax passed through";
 
 /**
- * Name of the note on a definition swamp wrote in `.swamp/auto-definitions/`.
- */
-export const AUTO_DEFINITION_WARNING_NAME = "Auto-definition";
-
-/**
  * Value object representing a validation warning.
  *
  * Warnings do not cause validation to fail — they surface information
@@ -154,19 +149,6 @@ export class ValidationWarning {
       undefined,
       templates,
     );
-  }
-
-  /**
-   * Creates a note for a definition swamp wrote itself, in
-   * `.swamp/auto-definitions/`, rather than one an author wrote in `models/`.
-   * One written by a workflow step that runs a model type directly holds the
-   * values that step evaluated, so its findings can be text that evaluation
-   * produced (swamp-club#2496).
-   */
-  static autoDefinition(): ValidationWarning {
-    const message =
-      "swamp wrote this definition in .swamp/auto-definitions/ from the arguments a run passed in; it was not written by hand. One written by a workflow step that runs a model type directly holds the values that step evaluated, so the findings above can be text that evaluation produced. Change the workflow step or command that wrote it rather than this file.";
-    return new ValidationWarning(AUTO_DEFINITION_WARNING_NAME, message);
   }
 
   /**

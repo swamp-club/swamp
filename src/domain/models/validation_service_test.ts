@@ -21,12 +21,10 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { z } from "zod";
 import {
-  AUTO_DEFINITION_WARNING_NAME,
   DefaultModelValidationService,
   FOREIGN_TEMPLATE_WARNING_NAME,
   type ModelValidationOptions,
   ValidationResult,
-  ValidationWarning,
 } from "./validation_service.ts";
 import { DATA_NAMESPACE_ACCESSORS } from "../expressions/expression_parser.ts";
 import { Definition, type DefinitionId } from "../definitions/definition.ts";
@@ -833,15 +831,6 @@ Deno.test("validateModel reports an unclosed expression in authored global argum
   assertEquals(expressionPaths?.passed, false);
   const error = expressionPaths?.error ?? "";
   assertEquals(error.split("Unclosed ${{...}} expression").length - 1, 1);
-});
-
-Deno.test("ValidationWarning.autoDefinition: names the auto-definition and where to fix it", () => {
-  const warning = ValidationWarning.autoDefinition();
-  assertEquals(warning.name, AUTO_DEFINITION_WARNING_NAME);
-  assertEquals(warning.name, "Auto-definition");
-  assertStringIncludes(warning.message, ".swamp/auto-definitions/");
-  assertStringIncludes(warning.message, "evaluation produced");
-  assertStringIncludes(warning.message, "workflow step or command");
 });
 
 Deno.test("validateModel passes another templating system's ${{ }} text with the template warning (swamp-club#2491)", async () => {

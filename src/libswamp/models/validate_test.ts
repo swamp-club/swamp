@@ -33,6 +33,8 @@ import {
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { join } from "@std/path";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -85,6 +87,44 @@ Deno.test(
     await withTempDir(async (dir) => {
       createModelValidateDeps(dir);
       assertEquals(await catalogDbExists(dir), true);
+    });
+  },
+);
+
+Deno.test(
+  "createModelValidateDeps: isAutoDefinition compares IDs, not only names",
+  async () => {
+    await withTempDir(async (dir) => {
+      const type = ModelType.create("aws/ec2");
+      const authored = Definition.create({ name: "shared", version: 1 });
+      const auto = Definition.create({ name: "shared", version: 1 });
+      const autoOnly = Definition.create({ name: "auto-only", version: 1 });
+      await new YamlDefinitionRepository(dir).save(type, authored);
+      const autoRepo = new YamlDefinitionRepository(
+        dir,
+        undefined,
+        join(dir, ".swamp", "auto-definitions"),
+        false,
+      );
+      await autoRepo.save(type, auto);
+      await autoRepo.save(type, autoOnly);
+
+      const store = new CatalogStore(":memory:");
+      try {
+        const deps = createModelValidateDeps(
+          dir,
+          undefined,
+          undefined,
+          new FileSystemUnifiedDataRepository(dir, undefined, store),
+          store,
+        );
+        assertEquals(await deps.isAutoDefinition(authored), false);
+        // Reached by UUID while models/ holds another "shared".
+        assertEquals(await deps.isAutoDefinition(auto), true);
+        assertEquals(await deps.isAutoDefinition(autoOnly), true);
+      } finally {
+        store.close();
+      }
     });
   },
 );
@@ -273,10 +313,11 @@ Deno.test("modelValidate single model propagates warnings", async () => {
   assertEquals(data.warnings[0].envVars?.[0].envVar, "BASE_URL");
 });
 
-Deno.test("modelValidate single auto-definition adds the Auto-definition note", async () => {
-  const deps = makeDeps({ isAutoDefinition: () => Promise.resolve(true) });
+async function validateSingleData(
+  overrides: Partial<ModelValidateDeps>,
+): Promise<ModelValidateData> {
   const events = await collect<ModelValidateEvent>(
-    modelValidate(createLibSwampContext(), deps, {
+    modelValidate(createLibSwampContext(), makeDeps(overrides), {
       modelIdOrName: "my-model",
     }),
   );
@@ -284,27 +325,66 @@ Deno.test("modelValidate single auto-definition adds the Auto-definition note", 
     ModelValidateEvent,
     { kind: "completed" }
   >;
-  const data = completed.data as ModelValidateData;
-  assertEquals(data.passed, true);
+  return completed.data as ModelValidateData;
+}
+
+Deno.test("modelValidate single auto-definition with a failed check adds the Auto-definition note", async () => {
+  const data = await validateSingleData({
+    isAutoDefinition: () => Promise.resolve(true),
+    validateModel: () =>
+      Promise.resolve({
+        results: [{ name: "Expression paths", passed: false, error: "x" }],
+        warnings: [],
+      }),
+  });
+  assertEquals(data.passed, false);
   assertEquals(data.warnings.map((w) => w.name), ["Auto-definition"]);
-  assertStringIncludes(data.warnings[0].message, ".swamp/auto-definitions/");
+  assertStringIncludes(data.warnings[0].message, "evaluation produced");
+});
+
+Deno.test("modelValidate single auto-definition with a warning adds the Auto-definition note", async () => {
+  const data = await validateSingleData({
+    isAutoDefinition: () => Promise.resolve(true),
+    validateModel: () =>
+      Promise.resolve({
+        results: [{ name: "Expression paths", passed: true }],
+        warnings: [{ name: "Template syntax passed through", message: "m" }],
+      }),
+  });
+  assertEquals(data.warnings.map((w) => w.name), [
+    "Template syntax passed through",
+    "Auto-definition",
+  ]);
+});
+
+Deno.test("modelValidate clean auto-definition gets no Auto-definition note", async () => {
+  const data = await validateSingleData({
+    isAutoDefinition: () => Promise.resolve(true),
+  });
+  assertEquals(data.passed, true);
+  assertEquals(data.warnings, []);
 });
 
 Deno.test("modelValidate single models/ definition gets no Auto-definition note", async () => {
-  const events = await collect<ModelValidateEvent>(
-    modelValidate(createLibSwampContext(), makeDeps(), {
-      modelIdOrName: "my-model",
-    }),
-  );
-  const completed = events.at(-1) as Extract<
-    ModelValidateEvent,
-    { kind: "completed" }
-  >;
-  assertEquals((completed.data as ModelValidateData).warnings, []);
+  const data = await validateSingleData({
+    validateModel: () =>
+      Promise.resolve({
+        results: [{ name: "Expression paths", passed: false, error: "x" }],
+        warnings: [],
+      }),
+  });
+  assertEquals(data.warnings, []);
 });
 
 Deno.test("modelValidate all models never adds the Auto-definition note", async () => {
-  const deps = makeDeps({ isAutoDefinition: () => Promise.resolve(true) });
+  const deps = makeDeps({
+    isAutoDefinition: () => Promise.resolve(true),
+    validateModel: () =>
+      Promise.resolve({
+        results: [{ name: "Expression paths", passed: false, error: "x" }],
+        warnings: [],
+      }),
+  });
   const events = await collect<ModelValidateEvent>(
     modelValidate(createLibSwampContext(), deps, {}),
   );

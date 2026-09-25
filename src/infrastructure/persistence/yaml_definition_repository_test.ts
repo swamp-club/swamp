@@ -1568,7 +1568,7 @@ Deno.test("YamlDefinitionRepository.save preserves a typeVersion ahead of the mo
   });
 });
 
-Deno.test("YamlDefinitionRepository.hasPrimaryDefinition tells models/ from auto-definitions", async () => {
+Deno.test("YamlDefinitionRepository.findByNamePrimary never reads auto-definitions", async () => {
   await withTempDir(async (dir) => {
     const primaryDir = join(dir, "models");
     const secondaryDir = join(dir, ".swamp", "auto-definitions");
@@ -1590,15 +1590,22 @@ Deno.test("YamlDefinitionRepository.hasPrimaryDefinition tells models/ from auto
       secondaryDir,
       false,
     );
-    await primaryRepo.save(testType, createTestDefinition("authored"));
+    const authored = createTestDefinition("authored");
+    await primaryRepo.save(testType, authored);
     await secondaryRepo.save(testType, createTestDefinition("auto"));
-    // A name in both resolves to models/, as findByNameGlobal does.
-    await primaryRepo.save(testType, createTestDefinition("both"));
+    const primaryBoth = createTestDefinition("both");
+    await primaryRepo.save(testType, primaryBoth);
     await secondaryRepo.save(testType, createTestDefinition("both"));
 
-    assertEquals(await repo.hasPrimaryDefinition("authored"), true);
-    assertEquals(await repo.hasPrimaryDefinition("auto"), false);
-    assertEquals(await repo.hasPrimaryDefinition("both"), true);
-    assertEquals(await repo.hasPrimaryDefinition("missing"), false);
+    assertEquals(
+      (await repo.findByNamePrimary("authored"))?.definition.id,
+      authored.id,
+    );
+    assertEquals(await repo.findByNamePrimary("auto"), null);
+    assertEquals(
+      (await repo.findByNamePrimary("both"))?.definition.id,
+      primaryBoth.id,
+    );
+    assertEquals(await repo.findByNamePrimary("missing"), null);
   });
 });

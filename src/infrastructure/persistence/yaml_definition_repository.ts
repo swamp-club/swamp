@@ -443,15 +443,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Whether a definition with this name lives in the primary definitions
-   * directory (`models/`), as opposed to only in the secondary one
-   * (`.swamp/auto-definitions/`), which holds definitions swamp wrote itself.
-   * {@link findByNameGlobal} prefers the primary directory, so a definition
-   * it returns came from auto-definitions exactly when this is false.
+   * Finds a definition by name in the primary definitions directory
+   * (`models/`) only, never in the secondary one (`.swamp/auto-definitions/`),
+   * which holds definitions swamp wrote itself. A definition another lookup
+   * returned came from auto-definitions exactly when this finds nothing with
+   * its ID.
    */
-  async hasPrimaryDefinition(name: string): Promise<boolean> {
-    return await this.searchDefinitionByName(this.baseDir, [], name, true) !==
-      null;
+  async findByNamePrimary(
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    return await this.searchDefinitionByName(this.baseDir, [], name, true);
   }
 
   /**

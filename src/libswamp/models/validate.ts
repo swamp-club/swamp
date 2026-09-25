@@ -26,7 +26,6 @@ import {
   DefaultModelValidationService,
   type EnvVarUsageDetail,
   type ForeignTemplateDetail,
-  ValidationWarning,
 } from "../../domain/models/validation_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -104,6 +103,17 @@ interface ValidationWarningResult {
   templates?: ForeignTemplateDetail[];
 }
 
+/**
+ * Note on a definition swamp wrote itself (swamp-club#2496). One a workflow
+ * step wrote from its arguments holds the values that step evaluated, so its
+ * findings can be text evaluation produced rather than an author's mistake.
+ */
+const AUTO_DEFINITION_NOTE: ValidationWarningData = {
+  name: "Auto-definition",
+  message:
+    "swamp wrote this definition from a run's evaluated arguments; findings may be text evaluation produced. Fix the workflow step or command that wrote it, not this file.",
+};
+
 /** Dependencies for the model validate operation. */
 export interface ModelValidateDeps {
   lookupDefinition: (
@@ -113,8 +123,8 @@ export interface ModelValidateDeps {
     Array<{ definition: Definition; type: ModelType }>
   >;
   /**
-   * Whether a definition `lookupDefinition` returned was loaded from
-   * `.swamp/auto-definitions/`, which swamp writes itself, rather than
+   * Whether a definition `lookupDefinition` returned was loaded from the
+   * auto-definitions directory, which swamp writes itself, rather than from
    * `models/`.
    */
   isAutoDefinition: (definition: Definition) => Promise<boolean>;
@@ -189,10 +199,11 @@ export function createModelValidateDeps(
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
     findAllDefinitions: () => definitionRepo.findAllGlobal(),
-    // lookupDefinition prefers models/, so a definition it found that is not
-    // there came from auto-definitions.
+    // Compared by ID: a lookup by UUID can reach an auto-definition while
+    // models/ holds a different definition with the same name.
     isAutoDefinition: async (definition) =>
-      !await definitionRepo.hasPrimaryDefinition(definition.name),
+      (await definitionRepo.findByNamePrimary(definition.name))?.definition
+        .id !== definition.id,
     resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
     validateModel: async (definition, modelDef, _type) => {
       const outcome = await validationService.validateModel(
@@ -336,9 +347,12 @@ async function* validateSingle(
   const outcome = await deps.validateModel(definition, modelDef, modelType);
   const validations = toValidationItemData(outcome.results);
   const warnings = toValidationWarningData(outcome.warnings);
-  if (await deps.isAutoDefinition(definition)) {
-    const note = ValidationWarning.autoDefinition();
-    warnings.push({ name: note.name, message: note.message });
+  // Only when there is a finding to explain: a clean auto-definition needs no
+  // note, and would otherwise report a warning for nothing.
+  const hasFindings = !outcome.results.every((r) => r.passed) ||
+    warnings.length > 0;
+  if (hasFindings && await deps.isAutoDefinition(definition)) {
+    warnings.push({ ...AUTO_DEFINITION_NOTE });
   }
   const allPassed = outcome.results.every((r) => r.passed);
 

@@ -168,7 +168,8 @@ Deno.test("ModelValidateRenderer - log mode shows the Auto-definition note", asy
           ...templateWarningData,
           warnings: [{
             name: "Auto-definition",
-            message: "swamp wrote this definition in .swamp/auto-definitions/",
+            message:
+              "swamp wrote this definition from a run's evaluated arguments",
           }],
         },
       }]),
@@ -176,7 +177,7 @@ Deno.test("ModelValidateRenderer - log mode shows the Auto-definition note", asy
     );
     const combined = stripAnsiCode(logs.join("\n"));
     assertStringIncludes(combined, "Auto-definition");
-    assertStringIncludes(combined, ".swamp/auto-definitions/");
+    assertStringIncludes(combined, "a run's evaluated arguments");
     assertEquals(renderer.passed(), true);
   } finally {
     console.log = originalLog;
