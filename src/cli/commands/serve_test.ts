@@ -25,6 +25,7 @@ import {
   collectServeExtraArgs,
   parseDatastorePollInterval,
   reapOrphanedWorkflowRuns,
+  shouldWarnGroupRefreshIgnored,
   validateWebSocketOrigin,
 } from "./serve.ts";
 import {
@@ -144,6 +145,33 @@ Deno.test("parseDatastorePollInterval: rejects zero and bad formats", () => {
     UserError,
     "Invalid duration format",
   );
+});
+
+// --- --group-refresh-interval warning ---
+
+const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
+
+Deno.test("shouldWarnGroupRefreshIgnored: unset interval never warns", () => {
+  assertEquals(
+    shouldWarnGroupRefreshIgnored(undefined, DEFAULT_GROUP_REFRESH_MS, false),
+    false,
+  );
+  assertEquals(
+    shouldWarnGroupRefreshIgnored(undefined, DEFAULT_GROUP_REFRESH_MS, true),
+    false,
+  );
+});
+
+Deno.test("shouldWarnGroupRefreshIgnored: explicit interval warns without OAuth", () => {
+  assertEquals(shouldWarnGroupRefreshIgnored("2h", 7_200_000, false), true);
+});
+
+Deno.test("shouldWarnGroupRefreshIgnored: explicit zero never warns", () => {
+  assertEquals(shouldWarnGroupRefreshIgnored("0", 0, false), false);
+});
+
+Deno.test("shouldWarnGroupRefreshIgnored: explicit interval with OAuth ready does not warn", () => {
+  assertEquals(shouldWarnGroupRefreshIgnored("2h", 7_200_000, true), false);
 });
 
 // --- Off-loopback security validation ---

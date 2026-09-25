@@ -695,6 +695,19 @@ export function parseDatastorePollInterval(
   return parseTimerDuration(raw, "--datastore-poll-interval");
 }
 
+/**
+ * Whether to warn that `--group-refresh-interval` has no effect. Only an
+ * interval the operator supplied (flag, env var or config key) warrants the
+ * warning — the unset 4h default must stay silent outside OAuth mode.
+ */
+export function shouldWarnGroupRefreshIgnored(
+  raw: string | undefined,
+  intervalMs: number,
+  oauthReady: boolean,
+): boolean {
+  return raw !== undefined && intervalMs > 0 && !oauthReady;
+}
+
 export interface ReapResult {
   readonly reaped: number;
   readonly skipped: number;
@@ -3941,7 +3954,11 @@ export const serveCommand = new Command()
     }
 
     if (
-      groupRefreshMs > 0 && (authConfig.mode !== "oauth" || !oauthClientSecret)
+      shouldWarnGroupRefreshIgnored(
+        groupRefreshRaw,
+        groupRefreshMs,
+        authConfig.mode === "oauth" && Boolean(oauthClientSecret),
+      )
     ) {
       logger.warn(
         "--group-refresh-interval is set but --auth-mode oauth is not configured; group refresh is disabled",
