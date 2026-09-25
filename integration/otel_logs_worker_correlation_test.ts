@@ -25,8 +25,9 @@
 // shipped snapshot on top of Deno.env.toObject(), so OTEL_* is inherited. This
 // test proves both halves without spawning a subprocess:
 //   1. The env plumbing carries OTEL_* + TRACEPARENT into the child env.
-//   2. Feeding that TRACEPARENT through the real initTracing + runWithParentTrace
-//      makes the child's exported log records carry the *parent's* trace id.
+//   2. Feeding that child env through the real initTracing's env lookup, then
+//      runWithParentTrace, makes the child's exported log records carry the
+//      *parent's* trace id.
 
 import { assert, assertEquals } from "@std/assert";
 import {
@@ -89,15 +90,17 @@ Deno.test("worker env: OTEL_* is inherited and TRACEPARENT is overlaid into the 
 });
 
 Deno.test("worker correlation: child logs carry the propagated parent trace id", async () => {
-  const savedTraceparent = Deno.env.get("TRACEPARENT");
   const savedFetch = globalThis.fetch;
   const captured: { url: string; body: string }[] = [];
 
-  // TRACEPARENT must be in Deno.env because initTracing() reads it from the
-  // process environment (it's how W3C trace propagation works across processes).
-  // The OTel logs endpoint is passed via _logsConfig to avoid racing with other
-  // parallel test files that manipulate OTEL_EXPORTER_OTLP_ENDPOINT.
-  Deno.env.set("TRACEPARENT", `00-${PARENT_TRACE}-${PARENT_SPAN}-01`);
+  // The worker child reads TRACEPARENT from its own environment, which
+  // dispatch_handler.ts builds by overlaying the propagated trace headers. Hand
+  // that child env to initTracing through its env lookup instead of writing it
+  // into the process-wide Deno.env: parallel test files and InProcessExecutor
+  // save, set, and delete TRACEPARENT there concurrently (swamp-club#2445).
+  const childEnv = buildChildEnv({}, {}, {
+    traceparent: `00-${PARENT_TRACE}-${PARENT_SPAN}-01`,
+  });
   // deno-lint-ignore no-explicit-any
   globalThis.fetch = ((input: any, init: any): Promise<Response> => {
     if (init?.body) {
@@ -116,7 +119,10 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
     // This mirrors main.ts: initTracing() extracts TRACEPARENT and returns the
     // parent context; runWithParentTrace activates it for the run.
     // Endpoint passed via config to avoid Deno.env races with parallel tests.
-    const parentCtx = await initTracing({ endpoint: "http://collector.test" });
+    const parentCtx = await initTracing({
+      endpoint: "http://collector.test",
+      envGet: (key) => childEnv[key],
+    });
     await initializeLogging({
       jsonMode: true,
       _reset: true,
@@ -156,7 +162,5 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
     assertEquals(found.traceId, PARENT_TRACE);
   } finally {
     globalThis.fetch = savedFetch;
-    if (savedTraceparent === undefined) Deno.env.delete("TRACEPARENT");
-    else Deno.env.set("TRACEPARENT", savedTraceparent);
   }
 });
