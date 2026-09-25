@@ -2028,3 +2028,12 @@ Deno.test("JobRun.settleNotStarted: leaves a job that is not pending alone", () 
     assertEquals(job.toData(), before);
   }
 });
+
+Deno.test("JobRun.settleNotStarted: keeps a job pending while a step is undecided, even beside a cancelled step", () => {
+  const job = JobRun.pending("j2", ["create", "notify"]);
+  job.cancelPendingSteps(["notify"]);
+
+  job.settleNotStarted();
+
+  assertEquals(job.status, "pending");
+});

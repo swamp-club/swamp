@@ -184,3 +184,42 @@ Deno.test("JobRun: cancelling pending steps settles every named pending step and
     ),
   );
 });
+
+Deno.test("JobRun: settling a never-started job is decided by its steps and leaves a started job alone", () => {
+  // A never-started job's steps are pending, cancelled (failed) or skipped.
+  const SETTLED: ReadonlyArray<(step: StepRun) => void> = [
+    () => {},
+    (s) => s.fail(CANCELLED_STEP_ERROR),
+    (s) => s.skip({ kind: "dependency" }),
+  ];
+  fc.assert(
+    fc.property(
+      fc.array(fc.nat({ max: SETTLED.length - 1 }), {
+        minLength: STEPS.length,
+        maxLength: STEPS.length,
+      }),
+      fc.boolean(),
+      (outcomes, started) => {
+        const job = JobRun.pending("a", STEPS);
+        STEPS.forEach((name, i) => SETTLED[outcomes[i]](job.getStep(name)!));
+        if (started) job.start();
+        const before = job.toData();
+        const statuses = job.steps.map((s) => s.status);
+
+        job.settleNotStarted();
+
+        if (started) {
+          assertEquals(job.toData(), before);
+        } else if (statuses.includes("pending")) {
+          assertEquals(job.status, "pending");
+        } else if (statuses.includes("failed")) {
+          assertEquals(job.status, "failed");
+        } else {
+          assertEquals(job.status, "skipped");
+        }
+        // Steps are never changed by settling the job.
+        assertEquals(job.steps.map((s) => s.status), statuses);
+      },
+    ),
+  );
+});

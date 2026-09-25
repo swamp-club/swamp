@@ -11600,6 +11600,52 @@ Deno.test("abort cleanup: a never-started job with an undecided guarded step sta
   });
 });
 
+Deno.test("abort cleanup: a never-started job with an undecided step stays pending beside a cancelled always-gated step", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-undecided-always-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+            modelStep("notify", onStep("create", TriggerCondition.always())),
+          ],
+        }),
+        Job.create({
+          name: "teardown",
+          dependsOn: [{ job: "j2", condition: TriggerCondition.failed() }],
+          steps: [modelStep("destroy")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertUndecided(run, "j2", ["create"]);
+    assertCancelledBeforeStart(run, "j2", ["notify"]);
+    assertEquals(run.getJob("j2")!.status, "pending");
+    assertEquals(run.getJob("teardown")!.status, "skipped");
+    assertEquals(executor.count("teardown/destroy"), 0);
+  });
+});
+
 Deno.test("abort cleanup: a never-started job settles its steps in dependency order", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({

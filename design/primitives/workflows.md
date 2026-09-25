@@ -1361,9 +1361,10 @@ order:
   before. This holds for a job alone in its level; a level holding several
   jobs does not wait for them after the cancellation, and job-level cleanup
   marks a job still running `failed` (swamp-club#2549).
-- A never-started job settles its steps in dependency order, each as above;
-  the job fails when any step failed, is skipped when every step was skipped,
-  and otherwise stays `pending`.
+- A never-started job settles its steps in dependency order, each as above.
+  It stays `pending` while any step is undecided, even when another step was
+  cancelled, since nothing in it ran; otherwise it fails when any step failed
+  and is skipped when every step was skipped.
 - Settled steps and jobs get no `step_failed`, `step_skipped`, `job_skipped`
   or `job_completed` event; the run record carries their outcome. `workflow
   resume` settles steps the same way, but not jobs: its job loop has no cleanup
@@ -1372,11 +1373,11 @@ order:
   so the run can be resumed.
 
 Known limitation: cleanup mode starts only after something in the interrupted
-level failed. When every step of that level finishes successfully despite the
-cancellation (a method that ignores the signal), a later level is reached with
-the cancellation already fired and never enters cleanup mode: a level holding
-one step runs it with the aborted signal, and a level holding several starts
-nothing and leaves them `pending`.
+level failed or was left undecided. When every step of that level finishes
+successfully despite the cancellation (a method that ignores the signal), a
+later level is reached with the cancellation already fired and never enters
+cleanup mode: a level holding one step runs it with the aborted signal, and a
+level holding several starts nothing and leaves them `pending`.
 
 The same applies after a normal step failure without cancellation. Steps with
 `always` or `completed` conditions in later topological levels run instead of

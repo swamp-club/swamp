@@ -812,17 +812,19 @@ export class JobRun implements TriggerEvaluationContext {
 
   /**
    * Settles a job that never started because the run's abort interrupted its
-   * level, once its steps are settled: it fails when any step failed, and is
-   * skipped when every step was skipped. Otherwise it stays `pending`: a
-   * guarded step whose guard never decided leaves nothing to conclude, so
-   * neither `succeeded`, `failed`, `completed` nor `skipped` holds for the
-   * job. Any other job status is left alone.
+   * level, once its steps are settled. While any step is still `pending` (a
+   * guarded step whose guard never decided), the job stays `pending`: nothing
+   * in it ran, so a step cancelled beside it is no evidence of failure, and
+   * neither `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
+   * Otherwise it fails when any step failed and is skipped when every step
+   * was skipped. Any other job status is left alone.
    */
   settleNotStarted(): void {
     if (this._status !== "pending") return;
+    if (this._steps.some((step) => step.status === "pending")) return;
     if (this._steps.some((step) => step.status === "failed")) {
       this.fail();
-    } else if (this._steps.every((step) => step.status === "skipped")) {
+    } else {
       this.skip();
     }
   }
