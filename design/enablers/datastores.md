@@ -1826,6 +1826,20 @@ it, at the same trust level as repo-local `extensions/`: an extension a
 teammate removed from the shared lockfile, or a copy left under the legacy
 root after migrate, keeps loading until its directory is deleted.
 
+Until swamp-club#2495, the auto-resolver records installs in the in-repo
+`.swamp/config/upstream_extensions.json` rather than the datastore's lockfile,
+which pulls would overwrite. It still reads pinned versions and checksums from
+the datastore's lockfile once the base resolves (the resolved entry wins), so a
+fresh checkout auto-installs the team's pin (#465). Loaders, the reconcile
+orphan rule, the missing-files check and `extension list` read those entries
+read-only alongside the resolved lockfile (the resolved entry wins). An
+auto-resolved entry whose directory and source files are all gone awaits
+reinstall on next use, so neither the missing-files check nor `extension list`
+reports it (`isAbsentFromDisk`, mirroring the auto-resolver's `missing`
+inspection). `update`,
+`rm` and `install` act on the resolved lockfile only, and workflows from
+auto-resolved extensions stay invisible to the workflow loaders, as before.
+
 ### Pod boot sequence under managed config
 
 Recommended init container sequence for a stateless pod:

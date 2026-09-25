@@ -711,6 +711,160 @@ Deno.test("auto_resolver_adapters: hotLoadDatastores is a no-op when no pulled d
   }
 });
 
+/** Writes a resolved (team) lockfile outside the repo's own lockfile. */
+async function seedResolvedLockfile(
+  repoDir: string,
+  entries: Record<string, { version: string; checksum?: string }>,
+): Promise<string> {
+  const dir = join(repoDir, "cache", "config");
+  await ensureDir(dir);
+  const lockfilePath = join(dir, "upstream_extensions.json");
+  const map: Record<string, unknown> = {};
+  for (const [name, entry] of Object.entries(entries)) {
+    map[name] = {
+      ...entry,
+      pulledAt: "2026-01-01T00:00:00Z",
+      files: [`.swamp/pulled-extensions/${name}/models/thing.ts`],
+    };
+  }
+  await Deno.writeTextFile(lockfilePath, JSON.stringify(map, null, 2));
+  return lockfilePath;
+}
+
+Deno.test("auto_resolver_adapters: inspectInstallation reads a pin from the resolved lockfile, which wins", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/pinned": [".swamp/pulled-extensions/@fake/pinned/models/thing.ts"],
+    });
+    const resolvedPath = await seedResolvedLockfile(tmpDir, {
+      "@fake/pinned": { version: "1.2.0" },
+      "@fake/team-only": { version: "3.0.0" },
+    });
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      resolvedLockfilePath: () => resolvedPath,
+    });
+
+    assertEquals(await adapter.inspectInstallation("@fake/team-only"), {
+      state: "missing",
+      lockedVersion: "3.0.0",
+    });
+    assertEquals(await adapter.inspectInstallation("@fake/pinned"), {
+      state: "missing",
+      lockedVersion: "1.2.0",
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: install pins the version and checksum from the resolved lockfile", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {});
+    const resolvedPath = await seedResolvedLockfile(tmpDir, {
+      "@fake/team-only": { version: "1.2.0", checksum: "sha-from-team" },
+    });
+    const requestedVersions: string[] = [];
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      getExtension: () =>
+        Promise.resolve({
+          name: "@fake/team-only",
+          description: "",
+          latestVersion: "1.5.0",
+        }),
+      downloadArchive: (_name, version) => {
+        requestedVersions.push(version);
+        return Promise.resolve(new Uint8Array([1, 2, 3]));
+      },
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      resolvedLockfilePath: () => resolvedPath,
+    });
+
+    await assertRejects(
+      () => adapter.install("@fake/team-only"),
+      Error,
+      "Checksum mismatch for @fake/team-only@1.2.0 (stored sha-from-team",
+    );
+    assertEquals(requestedVersions, ["1.2.0"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: install treats a dependency in the resolved lockfile as installed", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const id = crypto.randomUUID().slice(0, 8);
+    const parent = `@t/parent-${id}`;
+    const dep = `@t/dep-${id}`;
+    const version = "2026.01.01.1";
+    const lockfilePath = await seedLockfile(repoDir, {});
+    await seedResolvedLockfile(repoDir, { [dep]: { version } });
+    const resolvedPath = join(
+      repoDir,
+      "cache",
+      "config",
+      "upstream_extensions.json",
+    );
+
+    const archiveDir = await Deno.makeTempDir({ prefix: "swamp_test_arc_" });
+    let archive: Uint8Array;
+    try {
+      const extDir = join(archiveDir, "extension");
+      await ensureDir(join(extDir, "skills", `parent-${id}`));
+      await Deno.writeTextFile(
+        join(extDir, "manifest.yaml"),
+        `manifestVersion: 1\nname: "${parent}"\nversion: "${version}"\n` +
+          `skills:\n  - parent-${id}\ndependencies:\n  - "${dep}"\n`,
+      );
+      await Deno.writeTextFile(
+        join(extDir, "skills", `parent-${id}`, "SKILL.md"),
+        "x",
+      );
+      await createTarGz(extDir, join(archiveDir, "a.tar.gz"));
+      archive = await Deno.readFile(join(archiveDir, "a.tar.gz"));
+    } finally {
+      await Deno.remove(archiveDir, { recursive: true }).catch(() => {});
+    }
+
+    const fetched: string[] = [];
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: (name) => {
+        fetched.push(name);
+        return Promise.resolve({
+          name,
+          description: "",
+          latestVersion: version,
+        });
+      },
+      downloadArchive: () => Promise.resolve(archive),
+      getChecksum: () => Promise.resolve(null),
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+      resolvedLockfilePath: () => resolvedPath,
+    });
+    const result = await adapter.install(parent);
+
+    assertEquals(result?.version, version);
+    assertEquals(fetched, [parent]);
+    const recorded = await LockfileRepository.create(lockfilePath);
+    assertEquals(Object.keys(recorded.getAllEntries()), [parent]);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
 /**
  * Writes a pulled datastore extension root under `rootSegments`: a manifest
  * whose name matches its path, plus one datastore source.

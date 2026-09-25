@@ -75,6 +75,9 @@ export async function enrichExtensionList(
   const stale: StaleTarget[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
+    // `extension update` cannot act on an auto-resolved entry, so it is
+    // not offered one (swamp-club#2483).
+    if (e.autoResolved) continue;
     if (isExtensionCheckStale(cache, e.name, now, e.channel)) {
       stale.push({
         index: i,
@@ -154,6 +157,7 @@ export async function enrichExtensionList(
   );
 
   return entries.map((e, i): EnrichedExtensionListEntry => {
+    if (e.autoResolved) return { ...e };
     const fetchedEntry = fetchedByIndex.get(i);
     if (fetchedEntry?.failed) {
       return {

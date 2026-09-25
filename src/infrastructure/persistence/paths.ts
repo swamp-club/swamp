@@ -102,6 +102,46 @@ export const SWAMP_SUBDIRS = {
   pulledSkills: "pulled-extensions/skills",
 } as const;
 
+// Lockfile-relative prefixes for regenerable bundle output. Sourced from
+// SWAMP_SUBDIRS so a future bundle-dir addition only needs the key list
+// extended below to stay in sync. Forward slashes match how
+// installExtension writes lockfile paths (POSIX-normalized via
+// `relative()` in src/libswamp/extensions/pull.ts).
+const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
+  SWAMP_SUBDIRS.bundles,
+  SWAMP_SUBDIRS.vaultBundles,
+  SWAMP_SUBDIRS.datastoreBundles,
+  SWAMP_SUBDIRS.reportBundles,
+  SWAMP_SUBDIRS.webhookBundles,
+].map((subdir) => `.swamp/${subdir}/`);
+
+/** True for a lockfile path under a regenerable bundle cache. */
+export function isBundleArtifactPath(relPath: string): boolean {
+  return BUNDLE_ARTIFACT_PREFIXES.some((prefix) => relPath.startsWith(prefix));
+}
+
+const PULLED_SKILLS_PREFIX = `.swamp/${SWAMP_SUBDIRS.pulledSkills}/`;
+
+/**
+ * True for a skill dir under the pulled skills dir. Skills land in a
+ * dir shared across extensions, so another extension shipping the same
+ * skill name raises a ConflictError on it.
+ */
+export function isPulledSkillPath(relPath: string): boolean {
+  return relPath.startsWith(PULLED_SKILLS_PREFIX);
+}
+
+/**
+ * The repo-relative skill dir that a lockfile path under the pulled skills
+ * dir belongs to (`.swamp/pulled-extensions/skills/<skill>`), or undefined
+ * for any other path. Lockfile paths use forward slashes.
+ */
+export function pulledSkillDir(relPath: string): string | undefined {
+  if (!isPulledSkillPath(relPath)) return undefined;
+  const skill = relPath.slice(PULLED_SKILLS_PREFIX.length).split("/")[0];
+  return skill ? `${PULLED_SKILLS_PREFIX}${skill}` : undefined;
+}
+
 /**
  * Constructs a path within the .swamp data directory.
  *

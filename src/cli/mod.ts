@@ -21,10 +21,22 @@ import { Command } from "@cliffy/command";
 import { isAbsolute, join, resolve } from "@std/path";
 import {
   globalTelemetryDir,
+  isManagedConfigBaseResolved,
   managedConfigLockfilePath,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
-import { isExtensionBackedDatastore } from "../infrastructure/persistence/managed_config_lockfile.ts";
+import {
+  type InstalledEntries,
+  isAbsentFromDisk,
+  pathsToRemoveForReinstall,
+  readInstalledEntries,
+  transitionalInstalledNames,
+  transitionalLocalLockfilePath,
+} from "../infrastructure/persistence/installed_entries.ts";
+import {
+  type DatastoreEnvReader,
+  isExtensionBackedDatastore,
+} from "../infrastructure/persistence/managed_config_lockfile.ts";
 import { migrateHomeRepoTelemetry } from "../infrastructure/persistence/telemetry_spool_migration.ts";
 import { UserError } from "../domain/errors.ts";
 import {
@@ -427,6 +439,13 @@ export async function configureExtensionLoaders(
   // extensions are found on disk rather than through a lockfile
   // (swamp-club#2483).
   const extensionBacked = isExtensionBackedDatastore(marker);
+  // Until swamp-club#2495, auto-resolved installs there are recorded in the
+  // in-repo lockfile; loaders and reconcile read it alongside this one.
+  const localLockfilePath = transitionalLocalLockfilePath(
+    repoDir,
+    marker,
+    lockfilePath,
+  );
 
   if (
     repository.anyKindNeedsInvalidation() ||
@@ -439,6 +458,11 @@ export async function configureExtensionLoaders(
       repoDir,
       localManifestIdentity,
       scanOnDiskDatastores: extensionBacked,
+      additionalInstalledNames: await transitionalInstalledNames(
+        repoDir,
+        marker,
+        lockfilePath,
+      ),
     });
     await reconciler.execute();
   }
@@ -454,6 +478,7 @@ export async function configureExtensionLoaders(
       quiet,
       effectiveExtDir,
       lockfilePath,
+      localLockfilePath,
     )
   );
   vaultTypeRegistry.setLoader(() =>
@@ -467,6 +492,7 @@ export async function configureExtensionLoaders(
       quiet,
       effectiveExtDir,
       lockfilePath,
+      localLockfilePath,
     )
   );
   if (extensionBacked) {
@@ -493,6 +519,7 @@ export async function configureExtensionLoaders(
         quiet,
         effectiveExtDir,
         undefined,
+        undefined,
         () => choosePulledDatastoreDirsOnDisk(catalog, repoDir),
       )
     );
@@ -507,6 +534,7 @@ export async function configureExtensionLoaders(
         quiet,
         effectiveExtDir,
         lockfilePath,
+        localLockfilePath,
       )
     );
   }
@@ -521,6 +549,7 @@ export async function configureExtensionLoaders(
       quiet,
       effectiveExtDir,
       lockfilePath,
+      localLockfilePath,
     )
   );
   webhookTypeRegistry.setLoader(() =>
@@ -534,6 +563,7 @@ export async function configureExtensionLoaders(
       quiet,
       effectiveExtDir,
       lockfilePath,
+      localLockfilePath,
     )
   );
 
@@ -543,12 +573,28 @@ export async function configureExtensionLoaders(
   if (!Deno.env.get("SWAMP_SERVE_URL")) {
     await checkForMissingPulledExtensions(
       repoDir,
-      marker,
-      deferredWarnings,
       lockfilePath,
+      localLockfilePath,
+      (w) => deferredWarnings.push(w),
     );
     await checkForSupersededSkills(repoDir, marker, deferredWarnings);
   }
+}
+
+/**
+ * The lockfile the auto-resolver records installs in. Until swamp-club#2495,
+ * a managedConfig repo on an extension-backed datastore records them in the
+ * in-repo lockfile, never the datastore's (which pulls would overwrite).
+ * Pins are still read from the datastore's lockfile once the base resolves.
+ */
+export function resolveAutoResolverLockfilePath(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  readDatastoreEnv?: DatastoreEnvReader,
+): string {
+  return isExtensionBackedDatastore(marker, readDatastoreEnv)
+    ? managedConfigLockfilePath(repoDir)
+    : resolveManagedConfigPaths(repoDir, marker).lockfilePath;
 }
 
 /**
@@ -595,6 +641,10 @@ export function configureExtensionAutoResolver(
         repoDir,
         denoRuntime,
         datastoresOnDisk: isExtensionBackedDatastore(marker),
+        resolvedLockfilePath: () =>
+          isManagedConfigBaseResolved(repoDir)
+            ? resolveManagedConfigPaths(repoDir, marker).lockfilePath
+            : undefined,
         repository: new ExtensionRepository({
           catalog: new ExtensionCatalogStore(
             swampPath(repoDir, "_extension_catalog.db"),
@@ -708,6 +758,7 @@ async function loadUserModels(
   _quiet = false,
   extensionsDir?: string,
   managedLockfilePath?: string,
+  localLockfilePath?: string,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
@@ -742,6 +793,8 @@ async function loadUserModels(
       lockfilePath,
       repoDir,
       "models",
+      undefined,
+      localLockfilePath,
     );
 
     // Set type loader on the registry for on-demand loading.
@@ -814,6 +867,7 @@ async function loadUserVaults(
   _quiet = false,
   extensionsDir?: string,
   managedLockfilePath?: string,
+  localLockfilePath?: string,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
@@ -839,6 +893,8 @@ async function loadUserVaults(
       lockfilePath,
       repoDir,
       "vaults",
+      undefined,
+      localLockfilePath,
     );
 
     if (repository) {
@@ -899,6 +955,7 @@ async function loadUserDatastores(
   _quiet = false,
   extensionsDir?: string,
   managedLockfilePath?: string,
+  localLockfilePath?: string,
   pulledDirsOverride?: () => Promise<string[]>,
 ): Promise<void> {
   try {
@@ -926,6 +983,8 @@ async function loadUserDatastores(
         lockfilePath,
         repoDir,
         "datastores",
+        undefined,
+        localLockfilePath,
       );
 
     if (repository) {
@@ -990,6 +1049,7 @@ async function loadUserReports(
   _quiet = false,
   extensionsDir?: string,
   managedLockfilePath?: string,
+  localLockfilePath?: string,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
@@ -1015,6 +1075,8 @@ async function loadUserReports(
       lockfilePath,
       repoDir,
       "reports",
+      undefined,
+      localLockfilePath,
     );
 
     if (repository) {
@@ -1076,6 +1138,7 @@ async function loadUserWebhooks(
   _quiet = false,
   extensionsDir?: string,
   managedLockfilePath?: string,
+  localLockfilePath?: string,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
@@ -1101,6 +1164,8 @@ async function loadUserWebhooks(
       lockfilePath,
       repoDir,
       "webhooks",
+      undefined,
+      localLockfilePath,
     );
 
     if (repository) {
@@ -1153,66 +1218,118 @@ async function loadUserWebhooks(
 }
 
 /**
+ * A lockfile entry's tracked file paths, read defensively: an entry that is
+ * not an object, or whose `files` is not a list, tracks nothing, and
+ * non-string paths are dropped.
+ */
+function trackedSourceFiles(entry: unknown): string[] {
+  if (typeof entry !== "object" || entry === null) return [];
+  const { files } = entry as { files?: unknown };
+  return Array.isArray(files)
+    ? files.filter((file): file is string => typeof file === "string")
+    : [];
+}
+
+/**
  * Check if upstream_extensions.json has entries whose source files are
  * missing from disk. This catches cases where pulled extensions weren't
  * restored (e.g. after git clone without running `swamp extension install`).
+ *
+ * Entries found only in the transitional in-repo auto-resolve lockfile
+ * (`localLockfilePath`) are reported separately: `swamp extension install`
+ * restores only the resolved lockfile, and the auto-resolver reinstalls such
+ * an extension once its directory is gone. One already gone entirely is
+ * awaiting that reinstall and is not reported.
+ * A missing lockfile is normal and silent; an unreadable one warns.
  */
 async function checkForMissingPulledExtensions(
   repoDir: string,
-  marker: RepoMarkerData | null,
-  deferredWarnings: DeferredWarning[],
-  managedLockfilePath?: string,
+  lockfilePath: string,
+  localLockfilePath: string | undefined,
+  report: (warning: DeferredWarning) => void,
 ): Promise<void> {
+  let installed: InstalledEntries;
   try {
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = isAbsolute(modelsDir)
-      ? modelsDir
-      : resolve(repoDir, modelsDir);
-    const lockfilePath = managedLockfilePath ??
-      join(absoluteModelsDir, "upstream_extensions.json");
+    installed = await readInstalledEntries(lockfilePath, localLockfilePath);
+  } catch (error) {
+    // The read error already names the lockfile.
+    logger.warn`Cannot check pulled extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return;
+  }
+  const { entries, localOnly } = installed;
+  if (Object.keys(entries).length === 0) return;
 
-    const lockfileRepository = await LockfileRepository.create(lockfilePath);
-    const upstream = lockfileRepository.getAllEntries();
-    const extensionNames = Object.keys(upstream);
-    if (extensionNames.length === 0) return;
-
-    // Check for any missing source files (skip bundle artifacts — they're
-    // regenerable cache output). Uses the same isBundleArtifactPath filter
-    // as inspectInstallation in auto_resolver_adapters.ts.
-    const missingExtensions: string[] = [];
-    const missingFiles: string[] = [];
-    for (const [name, entry] of Object.entries(upstream)) {
-      if (!entry.files) continue;
-      for (const file of entry.files) {
+  // Check for any missing source files (skip bundle artifacts — they're
+  // regenerable cache output). Uses the same isBundleArtifactPath filter
+  // as inspectInstallation in auto_resolver_adapters.ts. The check is
+  // advisory: a malformed entry is skipped, and anything else that goes
+  // wrong warns rather than failing startup.
+  const missing: Array<{ name: string; file: string }> = [];
+  try {
+    for (const [name, entry] of Object.entries(entries)) {
+      for (const file of trackedSourceFiles(entry)) {
         if (isBundleArtifactPath(file)) continue;
-        const absolutePath = join(repoDir, file);
         try {
-          await Deno.stat(absolutePath);
+          await Deno.stat(join(repoDir, file));
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) {
-            missingExtensions.push(name);
-            missingFiles.push(file);
+            missing.push({ name, file });
             break; // One missing file is enough to flag this extension
           }
         }
       }
     }
+  } catch (error) {
+    logger.warn`Cannot check pulled extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return;
+  }
 
-    if (missingExtensions.length > 0) {
-      const detail = missingFiles.length <= 3
-        ? ` (e.g. ${missingFiles.join(", ")})`
-        : ` (e.g. ${missingFiles.slice(0, 3).join(", ")})`;
-      deferredWarnings.push({
-        kind: "extensions",
-        file: lockfilePath,
-        error:
-          `${missingExtensions.length} pulled extension(s) have missing source files: ${
-            missingExtensions.join(", ")
-          }${detail}. Run 'swamp extension install' to restore them.`,
-      });
-    }
-  } catch {
-    // Non-fatal — don't block startup for lockfile read errors
+  const describe = (items: typeof missing) => {
+    const files = items.map((m) => m.file);
+    const detail = ` (e.g. ${files.slice(0, 3).join(", ")})`;
+    return `${items.map((m) => m.name).join(", ")}${detail}`;
+  };
+  const shared = missing.filter((m) => !localOnly.has(m.name));
+  const local: typeof missing = [];
+  for (const m of missing) {
+    if (!localOnly.has(m.name)) continue;
+    // Gone entirely, it is reinstalled on next use: nothing to repair.
+    if (await isAbsentFromDisk(repoDir, m.name, entries[m.name])) continue;
+    local.push(m);
+  }
+  if (shared.length > 0) {
+    report({
+      kind: "extensions",
+      file: lockfilePath,
+      error: `${shared.length} pulled extension(s) have missing source files: ${
+        describe(shared)
+      }. Run 'swamp extension install' to restore them.`,
+    });
+  }
+  if (local.length > 0) {
+    // Pulling would record the extension in the team's lockfile, so the
+    // remedy is to let the auto-resolver reinstall it. Each extension's
+    // paths name everything to delete, skill dirs included: anything left
+    // makes the auto-resolver treat the extension as installed.
+    const toRemove = local.map(({ name }) => {
+      const paths = pathsToRemoveForReinstall(repoDir, name, entries);
+      return paths.length > 0 ? `${name}: ${paths.join(", ")}` : name;
+    });
+    report({
+      kind: "extensions",
+      file: localLockfilePath ?? lockfilePath,
+      error:
+        `${local.length} auto-resolved extension(s) have missing source files: ${
+          describe(local)
+        }. To reinstall them, delete what each installed ` +
+        `(${toRemove.join("; ")}) and the auto-resolver reinstalls it on ` +
+        `next use. Don't use 'swamp extension pull': it would pin the ` +
+        `extension in the team's lockfile.`,
+    });
   }
 }
 
@@ -1697,15 +1814,13 @@ export async function runCli(args: string[]): Promise<void> {
     if (!commandNeedsLoaderSetup(args) || marker === null) {
       await ensureManagedConfigBase(repoDir, marker);
     }
-    const { lockfilePath: autoResolverLockfilePath } =
-      resolveManagedConfigPaths(repoDir, marker);
     configureExtensionAutoResolver(
       repoDir,
       marker,
       authCollectives,
       getOutputModeFromArgs(args),
       autoResolverIdentity,
-      autoResolverLockfilePath,
+      resolveAutoResolverLockfilePath(repoDir, marker),
     );
   }
 

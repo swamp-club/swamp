@@ -1604,6 +1604,47 @@ export const datastore = {
 `;
 
 Deno.test(
+  "ReconcileFromDisk pulled: additionalInstalledNames keeps an auto-resolved extension from being orphaned",
+  async () => {
+    const extName = `@test/auto-resolved-${crypto.randomUUID().slice(0, 8)}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const extRoot = join(swampPath(repoDir, "pulled-extensions"), extName);
+        catalog.upsertWithIdentity({
+          source_path: join(extRoot, "models", "auto.ts"),
+          type_normalized: `${extName}/auto`,
+          kind: "model",
+          bundle_path: "",
+          version: "1.0.0",
+          description: "",
+          extends_type: "",
+          source_mtime: "",
+          source_fingerprint: "fp",
+          state: "Indexed",
+          extension_name: extName,
+          extension_version: "1.0.0",
+        });
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+          additionalInstalledNames: [extName],
+        });
+        const result = await service.execute({ dryRun: true });
+
+        assertEquals(
+          result.transitions.filter((t) => t.toState === "Tombstoned"),
+          [],
+        );
+      },
+      {},
+    );
+  },
+);
+
+Deno.test(
   "ReconcileFromDisk pulled: scanOnDiskDatastores keeps datastore rows left under the legacy root after migrate",
   async () => {
     const id = crypto.randomUUID().slice(0, 8);

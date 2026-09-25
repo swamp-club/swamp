@@ -24,6 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { transitionalLocalLockfilePath } from "../../infrastructure/persistence/installed_entries.ts";
 import { join, relative, resolve } from "@std/path";
 import {
   createExtensionListDeps,
@@ -168,7 +169,11 @@ export const extensionListCommand = withRemoteOptions(
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   // Read the lockfile first: createExtensionListDeps retries a read that
   // catches a sync pull mid-rewrite.
-  const deps = await createExtensionListDeps(lockfilePath);
+  const deps = await createExtensionListDeps(
+    repoDir,
+    lockfilePath,
+    transitionalLocalLockfilePath(repoDir, marker, lockfilePath),
+  );
 
   // Warn (don't block) if any extensions are still in a legacy layout.
   // list reads the lockfile, which tolerates mixed-generation state. The

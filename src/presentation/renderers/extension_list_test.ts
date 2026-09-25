@@ -156,3 +156,141 @@ Deno.test("JsonExtensionListRenderer - omits enrichment fields when absent", asy
     console.log = originalLog;
   }
 });
+
+Deno.test("LogExtensionListRenderer - flags an on-disk version that differs from the pin", async () => {
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({
+    _reset: true,
+    logLevel: "info",
+    _logsConfig: { exporterKind: "none" },
+  });
+  const lines: string[] = [];
+  const original = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+  };
+  const capture = (...args: unknown[]) => lines.push(args.join(" "));
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  try {
+    const renderer = createExtensionListRenderer("log");
+    await consumeStream(
+      toStream([
+        { kind: "resolving" },
+        {
+          kind: "completed",
+          data: {
+            extensions: [
+              {
+                name: "@swamp/s3-datastore",
+                version: "2026.08.27.1",
+                pulledAt: "2026-01-01",
+                files: [],
+                onDiskVersion: "2026.09.01.1",
+              },
+            ],
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+  }
+  const row = lines.find((l) => l.includes("(pulled 2026-01-01)")) ?? "";
+  assertEquals(row.includes("(on disk v2026.09.01.1)"), true, row);
+  assertEquals(row.includes("(auto-resolved)"), false, row);
+  assertEquals(
+    lines.some((l) => l.includes("Auto-resolved extensions")),
+    false,
+    lines.join("\n"),
+  );
+  const remedy = lines.find((l) => l.includes("on disk, not the pinned")) ??
+    "";
+  assertEquals(
+    remedy.includes(
+      "swamp extension pull @swamp/s3-datastore@2026.08.27.1 --force",
+    ),
+    true,
+    remedy,
+  );
+});
+
+Deno.test("LogExtensionListRenderer - an auto-resolved skew remedy deletes what it installed instead of pulling", async () => {
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({
+    _reset: true,
+    logLevel: "info",
+    _logsConfig: { exporterKind: "none" },
+  });
+  const lines: string[] = [];
+  const original = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+  };
+  const capture = (...args: unknown[]) => lines.push(args.join(" "));
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  try {
+    const renderer = createExtensionListRenderer("log");
+    await consumeStream(
+      toStream([
+        { kind: "resolving" },
+        {
+          kind: "completed",
+          data: {
+            extensions: [
+              {
+                name: "@swamp/aws/ec2",
+                version: "2026.08.27.1",
+                pulledAt: "2026-01-01",
+                files: [],
+                onDiskVersion: "2026.09.01.1",
+                autoResolved: true,
+                removeToReinstall: [
+                  ".swamp/config/pulled-extensions/@swamp/aws/ec2",
+                  ".swamp/pulled-extensions/skills/ec2",
+                ],
+              },
+            ],
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+  }
+  const row = lines.find((l) => l.includes("(pulled 2026-01-01)")) ?? "";
+  assertEquals(row.includes("(auto-resolved)"), true, row);
+  const remedy = lines.find((l) => l.includes("on disk, not the pinned")) ??
+    "";
+  assertEquals(
+    remedy.includes(
+      "delete .swamp/config/pulled-extensions/@swamp/aws/ec2, " +
+        ".swamp/pulled-extensions/skills/ec2 and it is reinstalled",
+    ),
+    true,
+    remedy,
+  );
+  assertEquals(remedy.includes("extension pull"), false, remedy);
+  // One footer explains why update and rm do not act on the row.
+  assertEquals(
+    lines.filter((l) => l.includes("Auto-resolved extensions are not managed"))
+      .length,
+    1,
+    lines.join("\n"),
+  );
+});

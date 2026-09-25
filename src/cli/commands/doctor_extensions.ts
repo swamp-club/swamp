@@ -88,6 +88,7 @@ import {
   resolveManagedConfigPaths,
 } from "../repo_context.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
+import { transitionalInstalledNames } from "../../infrastructure/persistence/installed_entries.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -223,15 +224,21 @@ export const doctorExtensionsCommand = withRemoteOptions(
       });
       rescanRepo.invalidateAll();
       const denoRuntime = new EmbeddedDenoRuntime();
+      // Same treatment of on-disk datastore extensions and the transitional
+      // in-repo auto-resolve lockfile as the startup reconcile
+      // (swamp-club#2483).
       const reconciler = new ReconcileFromDiskService({
         denoRuntime,
         repository: rescanRepo,
         lockfileRepository: reconcileLockfileRepo,
         repoDir,
         localManifestIdentity,
-        // Same treatment of on-disk datastore extensions as the startup
-        // reconcile (swamp-club#2483).
         scanOnDiskDatastores: isExtensionBackedDatastore(marker),
+        additionalInstalledNames: await transitionalInstalledNames(
+          repoDir,
+          marker,
+          lockfilePath,
+        ),
       });
       const result = await reconciler.execute();
       reconcileTransitions = result.transitions;

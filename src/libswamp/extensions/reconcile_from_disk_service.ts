@@ -144,6 +144,7 @@ export class ReconcileFromDiskService {
   private readonly localManifestIdentity: LocalManifestIdentity | null;
   private readonly pulledExtensionsRoot: string;
   private readonly scanOnDiskDatastores: boolean;
+  private readonly additionalInstalledNames: ReadonlySet<string>;
   /** Datastore extensions found on disk, by name; set per execute(). */
   private onDiskDatastores = new Map<string, OnDiskDatastoreExtension>();
 
@@ -163,6 +164,13 @@ export class ReconcileFromDiskService {
      * datastore.
      */
     scanOnDiskDatastores?: boolean;
+    /**
+     * Extension names installed outside the lockfile this service iterates,
+     * such as entries in the transitional in-repo auto-resolve lockfile.
+     * Their catalog rows are not orphaned. Iteration and versions still use
+     * `lockfileRepository` only.
+     */
+    additionalInstalledNames?: readonly string[];
   }) {
     this.denoRuntime = args.denoRuntime;
     this.repository = args.repository;
@@ -172,6 +180,7 @@ export class ReconcileFromDiskService {
     this.pulledExtensionsRoot = args.pulledExtensionsRoot ??
       resolvePulledExtensionsRoot(this.repoDir);
     this.scanOnDiskDatastores = args.scanOnDiskDatastores ?? false;
+    this.additionalInstalledNames = new Set(args.additionalInstalledNames);
   }
 
   async execute(
@@ -543,6 +552,7 @@ export class ReconcileFromDiskService {
     for (const existing of existingExtensions) {
       if (existing.origin !== "pulled") continue;
       if (lockfileEntries[existing.name]) continue;
+      if (this.additionalInstalledNames.has(existing.name)) continue;
       let ext = existing;
       for (const [loc, source] of ext.sources) {
         if (source.state.tag === "Tombstoned") continue;
