@@ -21,6 +21,7 @@ import type { HealthSnapshot } from "../client/useHealthStream";
 import { useRequest } from "../client/useRequest";
 import { extractArray, extractObject } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
+import { serveConfigRows } from "./serve_config_rows";
 
 interface ClusterInstance {
   instanceId: string;
@@ -39,16 +40,6 @@ interface ClusterInstance {
   };
 }
 
-interface ServeConfig {
-  port?: number;
-  host?: string;
-  tls?: boolean;
-  authMode?: string;
-  scheduling?: boolean;
-  dashboard?: boolean;
-  webhooks?: Array<{ route: string; workflow: string }>;
-}
-
 interface WorkerInfo {
   name: string;
   status: string;
@@ -62,7 +53,7 @@ export function System({ health }: { health: HealthSnapshot | null }) {
   const { data: datastoreData } = useRequest("datastore.status");
 
   const instances = extractArray<ClusterInstance>(clusterData);
-  const config = extractObject<ServeConfig>(configData);
+  const configRows = serveConfigRows(configData);
   const workers = extractArray<WorkerInfo>(workersData);
 
   return (
@@ -327,44 +318,24 @@ export function System({ health }: { health: HealthSnapshot | null }) {
       </div>
 
       {/* Serve Configuration */}
-      {config && (
+      {configRows && (
         <div className="panel">
           <div className="panel-header">
             <div className="panel-title">Serve Configuration</div>
           </div>
           <div style={{ padding: 0 }}>
-            <div className="sys-row" style={{ padding: "8px 18px" }}>
-              <span className="sys-key">Port</span>
-              <span className="sys-val">{config.port ?? "—"}</span>
-            </div>
-            <div className="sys-row" style={{ padding: "8px 18px" }}>
-              <span className="sys-key">TLS</span>
-              <span className={`sys-val ${config.tls ? "ok" : ""}`}>
-                {config.tls ? "enabled" : "disabled"}
-              </span>
-            </div>
-            <div className="sys-row" style={{ padding: "8px 18px" }}>
-              <span className="sys-key">Auth Mode</span>
-              <span className="sys-val">{config.authMode ?? "—"}</span>
-            </div>
-            <div className="sys-row" style={{ padding: "8px 18px" }}>
-              <span className="sys-key">Scheduling</span>
-              <span className={`sys-val ${config.scheduling ? "ok" : ""}`}>
-                {config.scheduling ? "enabled" : "disabled"}
-              </span>
-            </div>
-            <div className="sys-row" style={{ padding: "8px 18px" }}>
-              <span className="sys-key">Dashboard</span>
-              <span className="sys-val ok">enabled</span>
-            </div>
-            {config.webhooks && config.webhooks.length > 0 && (
-              <div className="sys-row" style={{ padding: "8px 18px" }}>
-                <span className="sys-key">Webhooks</span>
-                <span className="sys-val">
-                  {config.webhooks.length} endpoints
+            {configRows.map((row) => (
+              <div
+                className="sys-row"
+                style={{ padding: "8px 18px" }}
+                key={row.label}
+              >
+                <span className="sys-key">{row.label}</span>
+                <span className={`sys-val ${row.ok ? "ok" : ""}`}>
+                  {row.value}
                 </span>
               </div>
-            )}
+            ))}
           </div>
         </div>
       )}
