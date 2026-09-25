@@ -34,6 +34,7 @@ import type {
 } from "../domain/extensions/extension_auto_resolver.ts";
 import {
   ConflictError,
+  enumeratePulledDatastoreExtensionsOnDisk,
   enumeratePulledExtensionDirs,
   type ExtensionRegistryInfo,
   installExtension,
@@ -112,6 +113,12 @@ interface InstallerAdapterConfig {
   denoRuntime: DenoRuntime;
   datastoreResolver?: DatastorePathResolver;
   /**
+   * Also hot-load datastore extensions found on disk, as the startup
+   * datastore loader does in managedConfig repos on an extension-backed
+   * datastore (swamp-club#2483).
+   */
+  datastoresOnDisk?: boolean;
+  /**
    * W1b/(a-2) wiring: shared ExtensionRepository used by hotLoadModels
    * to attach user extensions whose base type was just registered, and
    * passed through to every loader's constructor so internal
@@ -119,6 +126,32 @@ interface InstallerAdapterConfig {
    * so existing callers that do not need the attach retry can omit it.
    */
   repository?: ExtensionRepository;
+}
+
+/**
+ * The pulled datastore dirs the auto-resolve hot-load reads: those the
+ * lockfile lists and, when `datastoresOnDisk` is set, every datastore
+ * extension found on disk, deduped and sorted to match the startup
+ * datastore loader (swamp-club#2483).
+ */
+export async function hotLoadDatastoreDirs(
+  lockfilePath: string,
+  repoDir: string,
+  datastoresOnDisk: boolean,
+): Promise<string[]> {
+  const pulledDirs = await enumeratePulledExtensionDirs(
+    lockfilePath,
+    repoDir,
+    "datastores",
+  );
+  if (!datastoresOnDisk) return pulledDirs;
+  const onDisk = await enumeratePulledDatastoreExtensionsOnDisk(repoDir, true);
+  for (const found of onDisk) {
+    if (!pulledDirs.includes(found.datastoresDir)) {
+      pulledDirs.push(found.datastoresDir);
+    }
+  }
+  return pulledDirs.sort();
 }
 
 /**
@@ -370,10 +403,10 @@ export function createAutoResolveInstallerAdapter(
     },
 
     async hotLoadDatastores() {
-      const pulledDirs = await enumeratePulledExtensionDirs(
+      const pulledDirs = await hotLoadDatastoreDirs(
         lockfilePath,
         repoDir,
-        "datastores",
+        config.datastoresOnDisk === true,
       );
       if (pulledDirs.length === 0) return;
       const loader = new ExtensionLoader(

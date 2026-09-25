@@ -58,6 +58,10 @@ import type {
 import { BUNDLE_LAYOUT_VERSION } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
+import {
+  enumeratePulledDatastoreExtensionsOnDisk,
+  type OnDiskDatastoreExtension,
+} from "./enumerate_pulled.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
@@ -139,6 +143,9 @@ export class ReconcileFromDiskService {
   private readonly repoDir: string;
   private readonly localManifestIdentity: LocalManifestIdentity | null;
   private readonly pulledExtensionsRoot: string;
+  private readonly scanOnDiskDatastores: boolean;
+  /** Datastore extensions found on disk, by name; set per execute(). */
+  private onDiskDatastores = new Map<string, OnDiskDatastoreExtension>();
 
   constructor(args: {
     denoRuntime: DenoRuntime;
@@ -147,6 +154,15 @@ export class ReconcileFromDiskService {
     repoDir: string;
     localManifestIdentity?: LocalManifestIdentity | null;
     pulledExtensionsRoot?: string;
+    /**
+     * Treat datastore extensions the way the on-disk datastore loader finds
+     * them (swamp-club#2483): a lockfile entry's datastore sources are walked
+     * at the root the on-disk scan chose (which may be the legacy root after
+     * `datastore config migrate`), and datastore sources under a chosen dir
+     * are never orphaned. Set for managedConfig repos on an extension-backed
+     * datastore.
+     */
+    scanOnDiskDatastores?: boolean;
   }) {
     this.denoRuntime = args.denoRuntime;
     this.repository = args.repository;
@@ -155,6 +171,7 @@ export class ReconcileFromDiskService {
     this.localManifestIdentity = args.localManifestIdentity ?? null;
     this.pulledExtensionsRoot = args.pulledExtensionsRoot ??
       resolvePulledExtensionsRoot(this.repoDir);
+    this.scanOnDiskDatastores = args.scanOnDiskDatastores ?? false;
   }
 
   async execute(
@@ -162,6 +179,13 @@ export class ReconcileFromDiskService {
   ): Promise<ReconcileResult> {
     const dryRun = options?.dryRun ?? false;
     const transitions: ReconcileTransition[] = [];
+
+    this.onDiskDatastores = new Map(
+      this.scanOnDiskDatastores
+        ? (await enumeratePulledDatastoreExtensionsOnDisk(this.repoDir, true))
+          .map((d) => [d.name, d])
+        : [],
+    );
 
     const existingExtensions = this.repository.loadAll();
     const totalExistingRows = countSources(existingExtensions);
@@ -482,7 +506,10 @@ export class ReconcileFromDiskService {
         { kind: KindDir; baseDir: string }
       >();
       for (const kindDir of KIND_DIRS) {
-        const dir = join(extRoot, kindDir);
+        const dir = kindDir === "datastores"
+          ? this.onDiskDatastores.get(extensionName)?.datastoresDir ??
+            join(extRoot, kindDir)
+          : join(extRoot, kindDir);
         const files = await collectTsFiles(dir);
         for (const absolutePath of files) {
           onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
@@ -509,12 +536,21 @@ export class ReconcileFromDiskService {
     }
 
     // Handle orphaned pulled extensions: in catalog but not in lockfile.
+    const chosenDatastoreDirs = [...this.onDiskDatastores.values()].map((d) => {
+      const dir = canonicalizePath(d.datastoresDir);
+      return dir.endsWith("/") ? dir : `${dir}/`;
+    });
     for (const existing of existingExtensions) {
       if (existing.origin !== "pulled") continue;
       if (lockfileEntries[existing.name]) continue;
       let ext = existing;
       for (const [loc, source] of ext.sources) {
         if (source.state.tag === "Tombstoned") continue;
+        if (
+          chosenDatastoreDirs.some((dir) => loc.canonicalPath.startsWith(dir))
+        ) {
+          continue;
+        }
         transitions.push({
           source: loc,
           fromState: source.state.tag,

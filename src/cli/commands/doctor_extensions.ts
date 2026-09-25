@@ -87,6 +87,7 @@ import {
   ensureManagedConfigBase,
   resolveManagedConfigPaths,
 } from "../repo_context.ts";
+import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -228,6 +229,9 @@ export const doctorExtensionsCommand = withRemoteOptions(
         lockfileRepository: reconcileLockfileRepo,
         repoDir,
         localManifestIdentity,
+        // Same treatment of on-disk datastore extensions as the startup
+        // reconcile (swamp-club#2483).
+        scanOnDiskDatastores: isExtensionBackedDatastore(marker),
       });
       const result = await reconciler.execute();
       reconcileTransitions = result.transitions;

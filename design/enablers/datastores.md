@@ -1810,6 +1810,22 @@ service for the push. This is safe because `config migrate` needs a working
 datastore, so `managedConfig: true` implies the datastore extension is
 installed.
 
+In a managedConfig repo on an extension-backed datastore (S3, GCS), the
+datastore extension must load before the managed config base, and so the
+extension lockfile, can be located. The datastore-kind loader therefore finds
+datastore extensions on disk (swamp-club#2483). It scans both in-repo pulled
+roots (`.swamp/config/pulled-extensions` and the pre-migrate
+`.swamp/pulled-extensions`) for extension roots whose manifest name matches
+their path and whose `datastores/` has sources, deduped by name with the
+managed root preferred. It reads no lockfile, so it works whichever lockfile
+recorded the extension, including right after `datastore config migrate`. A
+directory it cannot read is skipped with a warning. Reconcile walks and exempts
+those sources the same way, and the auto-resolve hot-load includes them. As a
+result, datastore code under either root loads whether or not a lockfile lists
+it, at the same trust level as repo-local `extensions/`: an extension a
+teammate removed from the shared lockfile, or a copy left under the legacy
+root after migrate, keeps loading until its directory is deleted.
+
 ### Pod boot sequence under managed config
 
 Recommended init container sequence for a stateless pod:

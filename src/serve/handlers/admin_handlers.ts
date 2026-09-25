@@ -141,6 +141,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -1570,6 +1571,9 @@ export async function handleDoctorExtensions(
         lockfileRepository: reconcileLockfileRepo,
         repoDir,
         localManifestIdentity,
+        // Same treatment of on-disk datastore extensions as the CLI's startup
+        // and doctor reconcile (swamp-club#2483).
+        scanOnDiskDatastores: isExtensionBackedDatastore(marker),
       });
       const result = await reconciler.execute();
       reconcileTransitions = result.transitions;

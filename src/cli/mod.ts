@@ -21,11 +21,17 @@ import { Command } from "@cliffy/command";
 import { isAbsolute, join, resolve } from "@std/path";
 import {
   globalTelemetryDir,
+  managedConfigLockfilePath,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
+import { isExtensionBackedDatastore } from "../infrastructure/persistence/managed_config_lockfile.ts";
 import { migrateHomeRepoTelemetry } from "../infrastructure/persistence/telemetry_spool_migration.ts";
 import { UserError } from "../domain/errors.ts";
-import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
+import {
+  enumeratePulledDatastoreExtensionsOnDisk,
+  enumeratePulledExtensionDirs,
+  purgeUnchosenPulledDatastoreRows,
+} from "../libswamp/mod.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import {
   bufferStartupWarnings,
@@ -418,6 +424,11 @@ export async function configureExtensionLoaders(
     localManifestIdentity,
   });
 
+  // In a managedConfig repo on an extension-backed datastore, datastore
+  // extensions are found on disk rather than through a lockfile
+  // (swamp-club#2483).
+  const extensionBacked = isExtensionBackedDatastore(marker);
+
   if (
     repository.anyKindNeedsInvalidation() ||
     repository.manifestIdentityChanged(localManifestIdentity)
@@ -428,6 +439,7 @@ export async function configureExtensionLoaders(
       lockfileRepository,
       repoDir,
       localManifestIdentity,
+      scanOnDiskDatastores: extensionBacked,
     });
     await reconciler.execute();
   }
@@ -458,18 +470,54 @@ export async function configureExtensionLoaders(
       lockfilePath,
     )
   );
-  datastoreTypeRegistry.setLoader(() =>
-    loadUserDatastores(
-      repoDir,
-      marker,
-      denoRuntime,
-      mergeManifestDirs(sourceDatastoresDirs, "datastores"),
-      repository,
-      quiet,
-      effectiveExtDir,
-      lockfilePath,
-    )
-  );
+  if (extensionBacked) {
+    // The datastore extension must load before the managed config base, and
+    // so the lockfile, can be found. It is discovered on disk under either
+    // in-repo pulled root, whichever lockfile recorded it; rows of a copy
+    // that lost the dedupe are purged so its types do not register twice.
+    const datastoreRepository = new ExtensionRepository({
+      catalog,
+      lockfileRepository: new LockfileRepository(
+        managedConfigLockfilePath(repoDir),
+        {},
+      ),
+      repoRoot: repoDir,
+      localManifestIdentity,
+    });
+    datastoreTypeRegistry.setLoader(() =>
+      loadUserDatastores(
+        repoDir,
+        marker,
+        denoRuntime,
+        mergeManifestDirs(sourceDatastoresDirs, "datastores"),
+        datastoreRepository,
+        quiet,
+        effectiveExtDir,
+        undefined,
+        async () => {
+          const chosen = await enumeratePulledDatastoreExtensionsOnDisk(
+            repoDir,
+            true,
+          );
+          purgeUnchosenPulledDatastoreRows(catalog, repoDir, chosen);
+          return chosen.map((c) => c.datastoresDir);
+        },
+      )
+    );
+  } else {
+    datastoreTypeRegistry.setLoader(() =>
+      loadUserDatastores(
+        repoDir,
+        marker,
+        denoRuntime,
+        mergeManifestDirs(sourceDatastoresDirs, "datastores"),
+        repository,
+        quiet,
+        effectiveExtDir,
+        lockfilePath,
+      )
+    );
+  }
   reportRegistry.setLoader(() =>
     loadUserReports(
       repoDir,
@@ -554,6 +602,7 @@ export function configureExtensionAutoResolver(
         lockfilePath: effectiveLockfilePath,
         repoDir,
         denoRuntime,
+        datastoresOnDisk: isExtensionBackedDatastore(marker),
         repository: new ExtensionRepository({
           catalog: new ExtensionCatalogStore(
             swampPath(repoDir, "_extension_catalog.db"),
@@ -858,6 +907,7 @@ async function loadUserDatastores(
   _quiet = false,
   extensionsDir?: string,
   managedLockfilePath?: string,
+  pulledDirsOverride?: () => Promise<string[]>,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
@@ -878,11 +928,13 @@ async function loadUserDatastores(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
       "upstream_extensions.json",
     );
-    const pulledDirs = await enumeratePulledExtensionDirs(
-      lockfilePath,
-      repoDir,
-      "datastores",
-    );
+    const pulledDirs = pulledDirsOverride
+      ? await pulledDirsOverride()
+      : await enumeratePulledExtensionDirs(
+        lockfilePath,
+        repoDir,
+        "datastores",
+      );
 
     if (repository) {
       datastoreTypeRegistry.setTypeLoader(async (type) => {
