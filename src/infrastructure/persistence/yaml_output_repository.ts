@@ -202,6 +202,14 @@ export class YamlOutputRepository implements OutputRepository {
   async findAllGlobal(): Promise<
     { output: ModelOutput; type: ModelType; method: string }[]
   > {
+    // Output directories are found by walking the registered model types. The
+    // CLI configures the extension loader but does not run it, so a command
+    // that never loaded the registry would walk only built-in types and miss
+    // every extension-typed output (swamp-club#2510). ensureLoaded is
+    // memoized, so callers that already loaded the registry (serve, model
+    // output get) pay nothing.
+    await modelRegistry.ensureLoaded();
+
     const results: { output: ModelOutput; type: ModelType; method: string }[] =
       [];
 
@@ -233,6 +241,9 @@ export class YamlOutputRepository implements OutputRepository {
   async findAllGlobalSince(
     cutoff: Date,
   ): Promise<{ output: ModelOutput; type: ModelType; method: string }[]> {
+    // Load extension types before walking them; see findAllGlobal.
+    await modelRegistry.ensureLoaded();
+
     const results: { output: ModelOutput; type: ModelType; method: string }[] =
       [];
     const cutoffMs = cutoff.getTime();
