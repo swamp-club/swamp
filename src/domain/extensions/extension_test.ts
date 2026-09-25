@@ -40,7 +40,7 @@ const BUNDLE = makeBundleLocation("/repo/.swamp/bundles/x.js", FP);
 function indexedSource(
   relPath: string,
   type: string,
-  kind: "model" | "vault" = "model",
+  kind: "model" | "vault" | "extension" = "model",
 ) {
   const abs = `${EXT_ROOT}/${relPath}`;
   return makeSource({
@@ -170,6 +170,47 @@ Deno.test("makeExtension: I2 — same type across different kinds is allowed", (
     sources: [m, v],
   });
   assertEquals(ext.sources.size, 2);
+});
+
+Deno.test("makeExtension: I2 — extension sources sharing a target type all stay live (swamp-club#2557)", () => {
+  // An extension source's type is the base type it adds methods to, so
+  // several files in one package may target the same base type.
+  const a = indexedSource("models/a.ts", "@scope/base/thing", "extension");
+  const b = indexedSource("models/b.ts", "@scope/base/thing", "extension");
+  const c = indexedSource("models/c.ts", "@scope/base/thing", "extension");
+  const ext = makeExtension({
+    name: "@scope/foo",
+    version: "1.0.0",
+    origin: "pulled",
+    extensionRoot: EXT_ROOT,
+    sources: [a, b, c],
+  });
+  assertEquals(ext.sources.size, 3);
+  for (const source of [a, b, c]) {
+    assertEquals(ext.sources.get(source.id)?.state.tag, "Indexed");
+  }
+});
+
+Deno.test("observeFreshSource: a second extension source on the same target type is not tombstoned (swamp-club#2557)", () => {
+  const a = indexedSource("models/a.ts", "@scope/base/thing", "extension");
+  const ext = makeExtension({
+    name: "@scope/foo",
+    version: "1.0.0",
+    origin: "pulled",
+    extensionRoot: EXT_ROOT,
+    sources: [a],
+  });
+  const bLocation = makeSourceLocation(`${EXT_ROOT}/models/b.ts`, EXT_ROOT);
+  const next = observeFreshSource(ext, {
+    location: bLocation,
+    kind: "extension",
+    fingerprint: FP,
+    type: "@scope/base/thing",
+    bundle: BUNDLE,
+    sourceMtime: "",
+  });
+  assertEquals(next.sources.get(a.id)?.state.tag, "Indexed");
+  assertEquals(next.sources.get(bLocation)?.state.tag, "Bundled");
 });
 
 Deno.test("makeExtension: Tombstoned sources don't trigger I2", () => {

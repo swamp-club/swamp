@@ -1651,7 +1651,9 @@ This catches mass-tombstone bugs.
 deterministic winner and tombstoning the loser instead of throwing. The Source
 with the lexicographically smaller `canonicalPath` wins; the loser is tombstoned
 with reason `"renamed"`. Cross-aggregate uniqueness (I-Repo-1) still throws
-`DuplicateTypeError` at the repository layer.
+`DuplicateTypeError` at the repository layer. Both checks skip `extension`-kind
+Sources: an extension's type is the base type it adds methods to, and one
+package may ship several extension files for the same base type.
 
 **Unreadable dependencies.** `computeSourceFingerprint`
 (`src/domain/extensions/bundle_freshness.ts`) substitutes the internal

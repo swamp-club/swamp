@@ -674,6 +674,109 @@ Deno.test(
 );
 
 Deno.test(
+  "ReconcileFromDisk pulled: two extension files targeting one base type are both indexed (swamp-club#2557)",
+  async () => {
+    const id = crypto.randomUUID().slice(0, 8);
+    const extName = `@test/pulled-multi-ext-${id}`;
+    const baseType = `@test/pulled-multi-base-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const modelsDir = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extName,
+          "models",
+        );
+        await ensureDir(modelsDir);
+        await Deno.writeTextFile(
+          join(modelsDir, "base.ts"),
+          MINIMAL_MODEL_CODE(baseType),
+        );
+        await Deno.writeTextFile(
+          join(modelsDir, "offboarding.ts"),
+          MINIMAL_EXTENSION_CODE(baseType),
+        );
+        await Deno.writeTextFile(
+          join(modelsDir, "projects_observed.ts"),
+          MINIMAL_EXTENSION_CODE(baseType),
+        );
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const result = await service.execute();
+        assertEquals(result.applied, true);
+
+        // Before the fix the aggregate kept only the lexicographically
+        // smallest extension file per target type and tombstoned the rest.
+        const matches = catalog.findExtensionsForType(baseType);
+        assertEquals(
+          matches.map((r) => pathBasename(r.source_path)).sort(),
+          ["offboarding.ts", "projects_observed.ts"],
+        );
+      },
+      { [extName]: { version: "1.0.0", files: [] } },
+    );
+  },
+);
+
+Deno.test(
+  "ReconcileFromDisk pulled: renaming one of two extension files on a base type keeps both attached (swamp-club#2557)",
+  async () => {
+    const id = crypto.randomUUID().slice(0, 8);
+    const extName = `@test/pulled-rename-ext-${id}`;
+    const baseType = `@test/pulled-rename-base-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const modelsDir = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extName,
+          "models",
+        );
+        await ensureDir(modelsDir);
+        await Deno.writeTextFile(
+          join(modelsDir, "base.ts"),
+          MINIMAL_MODEL_CODE(baseType),
+        );
+        await Deno.writeTextFile(
+          join(modelsDir, "a_ext.ts"),
+          MINIMAL_EXTENSION_CODE(baseType),
+        );
+        await Deno.writeTextFile(
+          join(modelsDir, "b_ext.ts"),
+          MINIMAL_EXTENSION_CODE(baseType),
+        );
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await service.execute();
+
+        await Deno.rename(
+          join(modelsDir, "b_ext.ts"),
+          join(modelsDir, "c_ext.ts"),
+        );
+        const result = await service.execute();
+        assertEquals(result.applied, true);
+
+        // The old path drops out; the renamed file and its sibling stay.
+        const matches = catalog.findExtensionsForType(baseType);
+        assertEquals(
+          matches.map((r) => pathBasename(r.source_path)).sort(),
+          ["a_ext.ts", "c_ext.ts"],
+        );
+      },
+      { [extName]: { version: "1.0.0", files: [] } },
+    );
+  },
+);
+
+Deno.test(
   "ReconcileFromDisk pulled: source missing + no lockfile entry → tombstoned (orphan)",
   async () => {
     const ts = Date.now();

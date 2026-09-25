@@ -83,7 +83,9 @@ export type CalVer = string;
  *     tombstone-loser transform: the Source with the lexicographically
  *     smaller `canonicalPath` wins; the loser is tombstoned with reason
  *     `"renamed"`. Cross-aggregate uniqueness is separately enforced by
- *     the repository's I-Repo-1 invariant.
+ *     the repository's I-Repo-1 invariant. `extension`-kind Sources are
+ *     exempt: their `typeNormalized` is the target type they add methods
+ *     to, not a type they define, so several may share it.
  *
  * I3 (ValidationFailed retains fingerprint+bundle) and I4 (Tombstoned
  * excluded from registration but retained in-memory) are structural —
@@ -526,6 +528,11 @@ function updateSourceStateAndFingerprint(
  * path ordering — deterministic across platforms because
  * `canonicalPath` is already NFC-normalised and case-folded.
  *
+ * `extension`-kind Sources are skipped: their type is the base type they
+ * extend, and one package may ship several extension files for the same
+ * base type (swamp-club#2557). This matches the repository's I-Repo-1
+ * check and the catalog's `resolveOriginConflicts`, which skip them too.
+ *
  * Returns a NEW map with losers tombstoned. Callers replace their
  * sources map with the result.
  */
@@ -537,6 +544,7 @@ function enforceI2(
 
   for (const source of sources.values()) {
     if (source.state.tag === "Tombstoned") continue;
+    if (source.kind === "extension") continue;
     const typeName = extractType(source.state);
     if (typeName === null) continue;
     const key = `${source.kind}::${typeName}`;

@@ -28,7 +28,7 @@ import { DatabaseSync } from "node:sqlite";
 import { canonicalizePath } from "./canonicalize_path.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
 import { ensureDirSync } from "@std/fs";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import type { ExtensionRepository } from "./extension_repository.ts";
 import { ExtensionCatalogStore } from "./extension_catalog_store.ts";
 import { DuplicateTypeError } from "./duplicate_type_error.ts";
@@ -100,14 +100,16 @@ function pulledExtension(args: {
   repoRoot: string;
   name: string;
   version: string;
-  sources: Array<{ relPath: string; type: string }>;
+  sources: Array<
+    { relPath: string; type: string; kind?: "model" | "extension" }
+  >;
 }): Extension {
   const extRoot = `${args.repoRoot}/.swamp/pulled-extensions/${args.name}`;
   const sources = args.sources.map((s) => {
     const abs = `${extRoot}/${s.relPath}`;
     return makeSource({
       id: makeSourceLocation(abs, extRoot),
-      kind: "model",
+      kind: s.kind ?? "model",
       fingerprint: "fp-" + s.relPath,
       state: {
         tag: "Indexed",
@@ -922,6 +924,57 @@ Deno.test("ExtensionRepository: I-Repo-1 allows multiple extension rows targetin
     for (const row of extensionRows) {
       assertEquals(row.type_normalized, "@scope/a/thing");
     }
+  });
+});
+
+// ===== Test: swamp-club#2557 — several extension Sources in one package
+// targeting the same base type all persist through the aggregate =====
+Deno.test("ExtensionRepository: extension Sources sharing a target type in one package all persist across save → load → save (swamp-club#2557)", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const base = pulledExtension({
+      repoRoot,
+      name: "@scope/base",
+      version: "1.0.0",
+      sources: [{
+        relPath: "models/projects.ts",
+        type: "@scope/base/projects",
+      }],
+    });
+    const pkg = pulledExtension({
+      repoRoot,
+      name: "@scope/org",
+      version: "1.0.0",
+      sources: [
+        {
+          relPath: "models/offboarding.ts",
+          type: "@scope/base/projects",
+          kind: "extension",
+        },
+        {
+          relPath: "models/projects_observed.ts",
+          type: "@scope/base/projects",
+          kind: "extension",
+        },
+      ],
+    });
+    repo.saveAll([base, pkg]);
+
+    const assertBothAttached = () => {
+      const matches = cat.findExtensionsForType("@scope/base/projects");
+      assertEquals(
+        matches.map((r) => basename(r.source_path)).sort(),
+        ["offboarding.ts", "projects_observed.ts"],
+      );
+      for (const row of matches) {
+        assertEquals(row.extension_name, "@scope/org");
+      }
+    };
+    assertBothAttached();
+
+    // Rebuilding the aggregates from rows and saving them again must not
+    // tombstone the second extension Source (the long-running serve path).
+    repo.saveAll(repo.loadAll());
+    assertBothAttached();
   });
 });
 
