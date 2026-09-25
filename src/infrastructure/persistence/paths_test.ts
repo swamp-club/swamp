@@ -511,6 +511,18 @@ Deno.test("resolvePulledExtensionsRoot: active returns .swamp/config/pulled-exte
   );
 });
 
+// Pulled sources are not synced to the datastore tier (swamp-club#2429), so
+// unlike definitions, workflows and vaults they never follow a managed config
+// base that points outside the repo (swamp-club#2530).
+Deno.test("resolvePulledExtensionsRoot: stays in the repo when the base is a datastore cache", () => {
+  const repo = `/repo/cache-base-${crypto.randomUUID()}`;
+  registerManagedConfig(repo, true, "/cache/ns/config");
+  assertPathEquals(
+    resolvePulledExtensionsRoot(repo),
+    `${repo}/.swamp/config/pulled-extensions`,
+  );
+});
+
 Deno.test("managedConfigLockfilePath: returns .swamp/config/upstream_extensions.json", () => {
   assertPathEquals(
     managedConfigLockfilePath("/repo"),

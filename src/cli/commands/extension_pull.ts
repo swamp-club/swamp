@@ -280,7 +280,7 @@ export const extensionPullCommand = withRemoteOptions(
   // 3. Validate name format
   validateExtensionName(ref.name);
   await ensureManagedConfigBase(repoDir, marker);
-  const { lockfilePath, pulledExtensionsRoot } = resolveManagedConfigPaths(
+  const { lockfilePath } = resolveManagedConfigPaths(
     repoDir,
     marker,
   );
@@ -310,7 +310,7 @@ export const extensionPullCommand = withRemoteOptions(
       lockfilePath,
       skillsDirs,
       repoDir,
-      { identity, pulledExtensionsRoot },
+      { identity },
     );
     const repository = new ExtensionRepository({
       catalog,

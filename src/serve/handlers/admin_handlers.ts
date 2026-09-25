@@ -177,21 +177,21 @@ import { isReservedVaultName } from "./vault_handlers.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
 
 /**
- * Derives managed-config paths from the connection context's datastore resolver.
- * When managedConfig is true, the lockfile and pulled-extensions root live at
- * the datastore-resolved config path (cache path for S3, local for filesystem).
+ * Derives the extension lockfile path from the connection context's
+ * datastore resolver. When managedConfig is true the lockfile lives at the
+ * datastore-resolved config path (cache path for S3, local for filesystem).
+ * Pulled extension sources always live under the in-repo pulled root.
  */
 function resolveManagedPathsFromContext(
   ctx: ConnectionContext,
   marker:
     | import("../../infrastructure/persistence/repo_marker_repository.ts").RepoMarkerData
     | null,
-): { lockfilePath: string; pulledExtensionsRoot: string | undefined } {
+): { lockfilePath: string } {
   if (marker?.datastore?.managedConfig) {
     const configBase = ctx.datastoreResolver.resolvePath("config");
     return {
       lockfilePath: join(configBase, "upstream_extensions.json"),
-      pulledExtensionsRoot: join(configBase, "pulled-extensions"),
     };
   }
   const modelsDir = resolveModelsDir(marker);
@@ -200,7 +200,6 @@ function resolveManagedPathsFromContext(
       isAbsolute(modelsDir) ? modelsDir : resolve(ctx.repoDir, modelsDir),
       "upstream_extensions.json",
     ),
-    pulledExtensionsRoot: undefined,
   };
 }
 
@@ -751,8 +750,7 @@ export async function handleExtensionPull(
 
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const { lockfilePath, pulledExtensionsRoot } =
-      resolveManagedPathsFromContext(ctx, marker);
+    const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -769,7 +767,7 @@ export async function handleExtensionPull(
       lockfilePath,
       skillsDirs,
       repoDir,
-      { identity, pulledExtensionsRoot },
+      { identity },
     );
     const repository = new ExtensionRepository({
       catalog,

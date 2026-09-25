@@ -211,12 +211,6 @@ export interface InstallContext {
   expectedChecksum?: string;
   /** Release channel to record in the lockfile entry. */
   channel?: string;
-  /**
-   * Root directory for pulled extension sources. Defaults to
-   * `.swamp/pulled-extensions` when not provided. With managedConfig,
-   * callers pass `.swamp/config/pulled-extensions`.
-   */
-  pulledExtensionsRoot?: string;
 }
 
 /** Thrown when file conflicts are detected and force is false. */
@@ -335,13 +329,6 @@ export interface ExtensionPullDeps {
    */
   denoRuntime?: DenoRuntime;
   repository?: ExtensionRepository;
-  /**
-   * Root directory for pulled extension sources. When provided, passed
-   * through to {@link InstallContext.pulledExtensionsRoot}. With
-   * managedConfig, callers pass the datastore-resolved
-   * `config/pulled-extensions` path.
-   */
-  pulledExtensionsRoot?: string;
 }
 
 /**
@@ -1038,7 +1025,7 @@ export async function installExtension(
     // @swamp/aws/ec2 and @swamp/aws/eks, or README.md across unrelated
     // extensions). Skills fan out to ctx.skillsDirs — one per enrolled tool.
     const absoluteExtRoot = join(
-      ctx.pulledExtensionsRoot ?? resolvePulledExtensionsRoot(repoDir),
+      resolvePulledExtensionsRoot(repoDir),
       ref.name,
     );
     const absoluteModelsDir = join(absoluteExtRoot, "models");
@@ -1540,7 +1527,6 @@ export async function* extensionPull(
         alreadyPulled: deps.alreadyPulled,
         depth: deps.depth,
         channel: input.channel,
-        pulledExtensionsRoot: deps.pulledExtensionsRoot,
       };
 
       // Let ConflictError propagate — CLI catches it for the two-phase prompt
@@ -1639,7 +1625,6 @@ export async function createExtensionPullDeps(
     denoRuntime?: DenoRuntime;
     repository?: ExtensionRepository;
     identity?: ClientIdentity;
-    pulledExtensionsRoot?: string;
   },
 ): Promise<ExtensionPullDeps> {
   const client = new ExtensionApiClient(serverUrl, args?.identity);
@@ -1662,7 +1647,6 @@ export async function createExtensionPullDeps(
     depth: 0,
     denoRuntime: args?.denoRuntime,
     repository: args?.repository,
-    pulledExtensionsRoot: args?.pulledExtensionsRoot,
   };
 }
 

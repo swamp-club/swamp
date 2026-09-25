@@ -1136,8 +1136,13 @@ Push has three phases:
 
 On pull, the extension's metadata and extracted file list are recorded in
 `upstream_extensions.json`. By default it lives in the models directory
-(`<modelsDir>/upstream_extensions.json`); repos on managed config use
-`.swamp/config/upstream_extensions.json` (`src/cli/repo_context.ts`). The file
+(`<modelsDir>/upstream_extensions.json`). Repos on managed config keep it at
+the datastore's resolved config base: `<path>/config` for a filesystem
+datastore, the cache's `config/` for S3 or GCS, with the namespace in front of
+`config/` when one is set (`<path>/<namespace>/config`;
+`resolveManagedConfigPaths`, `src/cli/repo_context.ts`). On managed config,
+pulled sources stay in the repo's `.swamp/config/pulled-extensions` whatever
+the datastore; otherwise they live in `.swamp/pulled-extensions`. The file
 supports clean removal, conflict detection and **integrity-anchored restore**
 (see the `checksum` field below).
 

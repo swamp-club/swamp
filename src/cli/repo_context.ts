@@ -357,10 +357,9 @@ export async function ensureManagedConfigBase(
 }
 
 /**
- * Resolves the pulled-extensions root and lockfile path based on
- * whether managed config is enabled. When managedConfig is true,
- * these paths point into .swamp/config/ (the datastore interface
- * layer). When false, they use the traditional locations.
+ * Resolves the lockfile path based on whether managed config is enabled.
+ * When managedConfig is true it points into the managed config base (the
+ * datastore config tier); when false it is `<modelsDir>/upstream_extensions.json`.
  *
  * The marker flag (`managedConfig: true` in `.swamp.yaml`) is the sole
  * authority for activation. When no explicit `configBasePath` is provided,
@@ -369,12 +368,15 @@ export async function ensureManagedConfigBase(
  * tier lives at the cache path rather than repo-local `.swamp/config/`.
  * Without a registered base the in-repo `.swamp/config` fallback is used and
  * recorded as unresolved; it never replaces a resolved base.
+ *
+ * Pulled extension sources always live under the in-repo pulled root
+ * (`resolvePulledExtensionsRoot`), whatever the config base.
  */
 export function resolveManagedConfigPaths(
   repoDir: string,
   marker: RepoMarkerData | null,
   configBasePath?: string,
-): { pulledExtensionsRoot: string; lockfilePath: string; active: boolean } {
+): { lockfilePath: string; active: boolean } {
   const managedConfig = marker?.datastore?.managedConfig === true;
   let effectiveBase = configBasePath ?? swampPath(repoDir, "config");
   const resolved = configBasePath !== undefined ||
@@ -394,7 +396,6 @@ export function resolveManagedConfigPaths(
   registerManagedConfig(repoDir, active, effectiveBase, resolved);
   if (active) {
     return {
-      pulledExtensionsRoot: join(effectiveBase, "pulled-extensions"),
       lockfilePath: join(effectiveBase, "upstream_extensions.json"),
       active,
     };
@@ -404,7 +405,6 @@ export function resolveManagedConfigPaths(
     ? rawModelsDir
     : resolve(repoDir, rawModelsDir);
   return {
-    pulledExtensionsRoot: swampPath(repoDir, "pulled-extensions"),
     lockfilePath: join(modelsDir, "upstream_extensions.json"),
     active,
   };
@@ -419,7 +419,6 @@ export interface RepoValidationContext {
   marker: RepoMarkerData | null;
   repoContext: RepositoryContext;
   datastoreResolver: DatastorePathResolver;
-  pulledExtensionsRoot: string;
   lockfilePath: string;
   managedConfig?: boolean;
   /** Resolved vault config directory — the datastore config tier under managedConfig, otherwise `<repoDir>/vaults`. */
@@ -629,7 +628,6 @@ export async function requireInitializedRepoReadOnly(
 
   const configBase = datastoreResolver.resolvePath("config");
   const {
-    pulledExtensionsRoot,
     lockfilePath,
     active: managedActive,
   } = resolveManagedConfigPaths(
@@ -713,7 +711,6 @@ export async function requireInitializedRepoReadOnly(
     marker,
     repoContext,
     datastoreResolver,
-    pulledExtensionsRoot,
     lockfilePath,
     managedConfig: managedActive,
     vaultsDir,
@@ -877,7 +874,6 @@ export function requireInitializedRepo(
 
     const configBase = datastoreResolver.resolvePath("config");
     const {
-      pulledExtensionsRoot,
       lockfilePath,
       active: managedActive,
     } = resolveManagedConfigPaths(
@@ -954,7 +950,6 @@ export function requireInitializedRepo(
       marker,
       repoContext,
       datastoreResolver,
-      pulledExtensionsRoot,
       lockfilePath,
       vaultsDir,
     };
@@ -1045,7 +1040,6 @@ export async function requireInitializedRepoUnlocked(
 
   const configBase = datastoreResolver.resolvePath("config");
   const {
-    pulledExtensionsRoot,
     lockfilePath,
     active: managedActive,
   } = resolveManagedConfigPaths(
@@ -1111,7 +1105,6 @@ export async function requireInitializedRepoUnlocked(
     datastoreResolver,
     datastoreConfig,
     syncService,
-    pulledExtensionsRoot,
     lockfilePath,
     vaultsDir,
   };

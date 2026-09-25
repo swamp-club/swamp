@@ -187,10 +187,11 @@ export interface DatastoreConfigData {
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
   /**
-   * When `true`, model definitions, workflow definitions, vault configs,
-   * the extension lockfile, and pulled extension sources are stored in the
-   * `.swamp/config/` datastore tier instead of top-level directories.
-   * The datastore becomes the single source of truth — instances hydrate
+   * When `true`, model definitions, workflow definitions, vault configs and
+   * the extension lockfile are stored in the datastore's `config/` tier
+   * instead of top-level directories. Pulled extension sources stay in the
+   * repo's `.swamp/config/pulled-extensions` (swamp-club#2429). The datastore
+   * becomes the source of truth for that configuration — instances hydrate
    * from it on startup and a ConfigPoller refreshes periodically.
    */
   managedConfig?: boolean;
