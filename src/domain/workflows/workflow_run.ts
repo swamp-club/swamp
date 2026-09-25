@@ -111,6 +111,13 @@ export const STRANDED_STEP_ERROR =
   "Not run: the workflow or a forEach collection changed since the run. Start a new run.";
 
 /**
+ * The error a step fails with when the run's signal aborted while it ran, or
+ * before it started in a level the abort interrupted. See
+ * {@link JobRun.cancelPendingSteps}.
+ */
+export const CANCELLED_STEP_ERROR = "cancelled";
+
+/**
  * Zod schema for step run.
  */
 export const StepRunSchema = z.object({
@@ -780,6 +787,39 @@ export class JobRun implements TriggerEvaluationContext {
       step.failStranded();
     }
     return stranded;
+  }
+
+  /**
+   * Fails each named step that is still `pending` with
+   * {@link CANCELLED_STEP_ERROR}, and returns them. Called for the steps of a
+   * level the run's abort interrupted: a step queued behind a concurrency
+   * limit never started, and would otherwise stay pending, so a `failed` or
+   * `completed` condition on it could never be met. Steps in any other status
+   * are left alone.
+   */
+  cancelPendingSteps(stepNames: Iterable<string>): StepRun[] {
+    const cancelled: StepRun[] = [];
+    for (const name of stepNames) {
+      const step = this.getStep(name);
+      if (step?.status === "pending") {
+        step.fail(CANCELLED_STEP_ERROR);
+        cancelled.push(step);
+      }
+    }
+    return cancelled;
+  }
+
+  /**
+   * Fails a job that is still `pending`, and every pending step in it, with
+   * {@link CANCELLED_STEP_ERROR}: the run's abort interrupted the job's level
+   * before the job started. Returns whether it did; any other job status is
+   * left alone.
+   */
+  cancelIfNotStarted(): boolean {
+    if (this._status !== "pending") return false;
+    this.cancelPendingSteps(this._steps.map((step) => step.stepName));
+    this.fail();
+    return true;
   }
 
   /**

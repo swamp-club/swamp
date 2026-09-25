@@ -23,7 +23,13 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { Workflow } from "./workflow.ts";
-import { type StepRun, type StepRunRef, WorkflowRun } from "./workflow_run.ts";
+import {
+  CANCELLED_STEP_ERROR,
+  JobRun,
+  type StepRun,
+  type StepRunRef,
+  WorkflowRun,
+} from "./workflow_run.ts";
 
 // Two jobs that share step names, since tracking is per record.
 const JOBS = ["a", "b"];
@@ -141,5 +147,40 @@ Deno.test("WorkflowRun: resetting a stranded step clears its failure kind", () =
       assertEquals(step.status, "pending");
       assertEquals(step.resetByResume, false);
     }),
+  );
+});
+
+Deno.test("JobRun: cancelling pending steps settles every named pending step and leaves the rest untouched", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.nat({ max: TRANSITIONS.length - 1 }), {
+        minLength: STEPS.length,
+        maxLength: STEPS.length,
+      }),
+      fc.subarray(STEPS),
+      (transitions, names) => {
+        const job = JobRun.pending("a", STEPS);
+        STEPS.forEach((name, i) =>
+          TRANSITIONS[transitions[i]](job.getStep(name)!)
+        );
+        const before = new Map(
+          job.steps.map((s) => [s.stepName, s.toData()] as const),
+        );
+
+        const cancelled = job.cancelPendingSteps(names);
+
+        for (const step of job.steps) {
+          const was = before.get(step.stepName)!;
+          if (names.includes(step.stepName) && was.status === "pending") {
+            assertEquals(step.status, "failed");
+            assertEquals(step.error, CANCELLED_STEP_ERROR);
+            assert(cancelled.includes(step));
+          } else {
+            assertEquals(step.toData(), was);
+            assert(!cancelled.includes(step));
+          }
+        }
+      },
+    ),
   );
 });

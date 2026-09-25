@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  CANCELLED_STEP_ERROR,
   JobRun,
   StepRun,
   StepSkipReasonSchema,
@@ -1944,4 +1945,66 @@ Deno.test("JobRun.replaceExpandedSteps: expands more steps than fit in a spread 
   assertEquals(jobRun.getStep("deploy"), undefined);
   // Edited in place: a steps array read before the call sees the expansion.
   assertEquals(steps.length, count + 2);
+});
+
+Deno.test("JobRun.cancelPendingSteps: fails only the named pending steps as cancelled", () => {
+  const job = JobRun.pending("main", ["a", "b", "c", "d"]);
+  job.start();
+  job.getStep("a")!.start();
+  job.getStep("b")!.succeed();
+
+  const cancelled = job.cancelPendingSteps(["a", "b", "c", "missing"]);
+
+  assertEquals(cancelled.map((s) => s.stepName), ["c"]);
+  const c = job.getStep("c")!;
+  assertEquals(c.status, "failed");
+  assertEquals(c.error, CANCELLED_STEP_ERROR);
+  assertEquals(c.startedAt, undefined);
+  assertEquals(job.getStep("a")!.status, "running");
+  assertEquals(job.getStep("b")!.status, "succeeded");
+  assertEquals(job.getStep("d")!.status, "pending");
+  assertEquals(job.status, "running");
+});
+
+Deno.test("JobRun.cancelPendingSteps: a forEach dependency aggregates to failed once its queued iterations are cancelled", () => {
+  const job = JobRun.pending("main", ["build-1", "build-2", "build-3"]);
+  job.registerForEachExpansion("build", ["build-1", "build-2", "build-3"]);
+  job.getStep("build-1")!.fail(CANCELLED_STEP_ERROR);
+  assertEquals(job.getStatus("build"), "running");
+
+  job.cancelPendingSteps(["build-1", "build-2", "build-3"]);
+
+  assertEquals(job.getStatus("build"), "failed");
+});
+
+Deno.test("JobRun.cancelIfNotStarted: fails a pending job and its pending steps", () => {
+  const job = JobRun.pending("j2", ["s1", "s2"]);
+
+  assertEquals(job.cancelIfNotStarted(), true);
+
+  assertEquals(job.status, "failed");
+  assertEquals(job.startedAt, undefined);
+  for (const step of job.steps) {
+    assertEquals(step.status, "failed");
+    assertEquals(step.error, CANCELLED_STEP_ERROR);
+  }
+});
+
+Deno.test("JobRun.cancelIfNotStarted: leaves a job that is not pending alone", () => {
+  for (
+    const settle of [
+      (j: JobRun) => j.start(),
+      (j: JobRun) => j.succeed(),
+      (j: JobRun) => j.skip(),
+      (j: JobRun) => j.markUnknown(),
+    ]
+  ) {
+    const job = JobRun.pending("j1", ["s1"]);
+    settle(job);
+    const before = job.toData();
+
+    assertEquals(job.cancelIfNotStarted(), false);
+
+    assertEquals(job.toData(), before);
+  }
 });

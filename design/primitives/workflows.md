@@ -1320,9 +1320,11 @@ Model method runs cancel the same way, with
 ### Post-Cancellation Cleanup
 
 When a workflow is cancelled (by `--timeout`, Ctrl+C, or `swamp workflow
-cancel`), steps with `always` or `completed` dependency conditions still run,
-so cleanup branches (notifications, resource teardown, metric reporting) can
-run. The engine evaluates the remaining steps in topological order:
+cancel`) and the cancellation stops an in-flight step or interrupts a level,
+steps with `always`, `completed` or `failed` dependency conditions still run,
+so cleanup branches (notifications, resource teardown, metric reporting,
+rollback) can run. The engine evaluates the remaining steps in topological
+order:
 
 - Steps whose dependency conditions are met run with a fresh 30-second cleanup
   signal. `always` is true unconditionally; `completed` is true when the
@@ -1331,6 +1333,26 @@ run. The engine evaluates the remaining steps in topological order:
   skipped.
 - In-flight steps stopped by the cancellation signal are marked `failed` with
   reason `cancelled`.
+- Steps, `forEach` iterations and jobs that the interrupted level never started
+  (queued behind a `concurrency` limit) are settled at the end of that level as
+  if they had been reached: skipped with reason `dependency` when their
+  `dependsOn` is not met, otherwise marked `failed` with reason `cancelled` and
+  no `startedAt`. A `forEach` dependency with a queued iteration therefore
+  aggregates to `failed`, and cleanup gated on it runs. A `failed`-gated
+  rollback can run for work that never started, so it must tolerate having
+  nothing to undo. These steps get no `step_failed` or `step_skipped` event;
+  the run record carries their outcome.
+- A step whose guard was being evaluated when the cancellation fired does not
+  start. It is settled with the rest of its level.
+- A level that suspends at an approval gate keeps its queued steps `pending`,
+  so the run can be resumed.
+
+Known limitation: cleanup mode starts only after something in the interrupted
+level failed. When every step of that level finishes successfully despite the
+cancellation (a method that ignores the signal), a later level is reached with
+the cancellation already fired and never enters cleanup mode: a level holding
+one step runs it with the aborted signal, and a level holding several starts
+nothing and leaves them `pending`.
 
 The same applies after a normal step failure without cancellation. Steps with
 `always` or `completed` conditions in later topological levels run instead of
