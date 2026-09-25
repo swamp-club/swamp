@@ -32,8 +32,15 @@ import {
   importAesKey,
 } from "../src/domain/crypto/aes_gcm.ts";
 import { UserError } from "../src/domain/errors.ts";
+import {
+  initializeControlPlaneVault,
+  type TokenSecretsKeyVaultReader,
+} from "../src/domain/vaults/control_plane_vault_init.ts";
 import { ControlPlaneVaultProvider } from "../src/domain/vaults/control_plane_vault_provider.ts";
-import { classifyTokenKeyRecord } from "../src/domain/vaults/token_secrets_key.ts";
+import {
+  classifyTokenKeyRecord,
+  TokenSecretsKeyError,
+} from "../src/domain/vaults/token_secrets_key.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
 
@@ -105,6 +112,94 @@ async function filesOpenedBy(
   return opened;
 }
 
+/** Every file under the control plane, keyed by path relative to it. */
+async function snapshotControlPlane(dir: string): Promise<Map<string, string>> {
+  const files = new Map<string, string>();
+  const root = join(dir, "_control");
+  for await (const entry of walk(root, { includeDirs: false })) {
+    const bytes = await Deno.readFile(entry.path);
+    files.set(
+      entry.path.slice(root.length),
+      btoa(String.fromCharCode(...bytes)),
+    );
+  }
+  return files;
+}
+
+function keyReader(value: string | undefined): TokenSecretsKeyVaultReader {
+  return {
+    get: () =>
+      value === undefined
+        ? Promise.reject(new Error("Secret 'swamp-token-key' not found"))
+        : Promise.resolve(value),
+  };
+}
+
+Deno.test("token key default: without a token-secrets key the co-located key and its secrets are used as before", async () => {
+  await withTempDir(async (dir) => {
+    const legacyKey = await seedCoLocated(dir);
+    const before = await snapshotControlPlane(dir);
+
+    const { provider } = await initializeControlPlaneVault(
+      new FileSystemControlPlaneStore(dir),
+      false,
+    );
+    for (const [name, value] of Object.entries(SECRETS)) {
+      assertEquals(await provider.get(name), value);
+    }
+    assertEquals(await snapshotControlPlane(dir), before);
+
+    // New secrets still go under the same co-located key.
+    await provider.put("server-token-new", "new-secret");
+    assertEquals(await Deno.readFile(keyRecordPath(dir)), legacyKey);
+    assertEquals(
+      (await filesOpenedBy(dir, legacyKey)).sort(),
+      [...Object.keys(SECRETS), "server-token-new"].sort(),
+    );
+  });
+});
+
+Deno.test("token key error: an unusable key refuses to start and leaves the control plane untouched", async () => {
+  await withTempDir(async (dir) => {
+    await seedCoLocated(dir);
+    const before = await snapshotControlPlane(dir);
+    const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+
+    const cases: Array<[string, string | undefined, string]> = [
+      ["missing secret", undefined, "Could not read the token secrets key"],
+      ["16-byte key", b64(new Uint8Array(16).fill(7)), "got 16"],
+      ["not hex or base64", "not a key!", "not valid hex or base64"],
+      ["all-zero key", b64(new Uint8Array(32)), "same value in every byte"],
+    ];
+    for (const [label, value, message] of cases) {
+      await assertRejects(
+        () =>
+          initializeControlPlaneVault(
+            new FileSystemControlPlaneStore(dir),
+            true,
+            {
+              tokenSecretsKey: REF,
+              vaultService: () => Promise.resolve(keyReader(value)),
+            },
+          ),
+        TokenSecretsKeyError,
+        message,
+        label,
+      );
+      assertEquals(await snapshotControlPlane(dir), before, label);
+    }
+
+    // Dropping the block returns to the default with every secret intact.
+    const { provider } = await initializeControlPlaneVault(
+      new FileSystemControlPlaneStore(dir),
+      true,
+    );
+    for (const [name, value] of Object.entries(SECRETS)) {
+      assertEquals(await provider.get(name), value);
+    }
+  });
+});
+
 Deno.test("token key migration: concurrent opted-in instances move every secret and drop the co-located key", async () => {
   await withTempDir(async (dir) => {
     const legacyKey = await seedCoLocated(dir);
@@ -173,6 +268,7 @@ Deno.test("token key migration: afterwards an instance without the key, or with 
     await seedCoLocated(dir);
     await external(dir, crypto.getRandomValues(new Uint8Array(32)))
       .initialize();
+    const migrated = await snapshotControlPlane(dir);
 
     await assertRejects(
       () =>
@@ -188,6 +284,8 @@ Deno.test("token key migration: afterwards an instance without the key, or with 
       UserError,
       "is not the key",
     );
+    // Refusing writes nothing: no fresh key, no marker, no re-encryption.
+    assertEquals(await snapshotControlPlane(dir), migrated);
     // A swamp release without external-key support reads the record as a raw
     // key; the marker must fail that import rather than be replaced.
     await assertRejects(async () =>
