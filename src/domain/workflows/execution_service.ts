@@ -3539,24 +3539,21 @@ export class WorkflowExecutionService {
       throw new Error(`Step run not found: ${stepName}`);
     }
 
-    // Check if step's trigger condition is met (skip for forEach-expanded steps
-    // as they don't have the same dependencies structure)
-    if (!forEachVar || !forEachVar.name) {
-      const shouldRun = this.shouldStepRun(step, jobRun);
-      if (!shouldRun) {
-        stepRun.skip({ kind: "dependency" });
-        stepSpan.setAttribute("step.status", "skipped");
-        stepSpan.end();
-        yield {
-          kind: "step_skipped",
-          jobId: job.name,
-          stepId: stepName,
-          reason: "dependency",
-          forEachTemplate,
-          forEachIndex,
-        };
-        return;
-      }
+    // Check if step's trigger condition is met. A forEach iteration checks its
+    // template's dependsOn, so every iteration is gated as a plain step is.
+    if (!this.shouldStepRun(step, jobRun)) {
+      stepRun.skip({ kind: "dependency" });
+      stepSpan.setAttribute("step.status", "skipped");
+      stepSpan.end();
+      yield {
+        kind: "step_skipped",
+        jobId: job.name,
+        stepId: stepName,
+        reason: "dependency",
+        forEachTemplate,
+        forEachIndex,
+      };
+      return;
     }
 
     // Build expression context before guard evaluation so self.* is available

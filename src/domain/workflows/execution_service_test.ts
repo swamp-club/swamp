@@ -8153,6 +8153,7 @@ function modelStep(
     dependsOn?: { step: string; condition: TriggerCondition }[];
     inputs?: Record<string, unknown>;
     guard?: string;
+    forEach?: { item: string; in: string };
   } = {},
 ): Step {
   return Step.create({
@@ -8160,6 +8161,7 @@ function modelStep(
     task: StepTask.model("test-model", "run", opts.inputs),
     dependsOn: opts.dependsOn,
     guard: opts.guard,
+    forEach: opts.forEach,
   });
 }
 
@@ -8381,6 +8383,231 @@ Deno.test("resume: a guard still decides whether a reset step runs on retry", as
     assertEquals(announce.status, "skipped");
     // The guard skip does not restore the earlier attempt's output.
     assertEquals(announce.output, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// forEach iterations evaluate their template's dependsOn (swamp-club#2537)
+// ---------------------------------------------------------------------------
+
+const EACH_TARGET = { item: "target", in: "${{ inputs.targets }}" };
+const TARGETS = { targets: ["a", "b"] };
+
+/** deploy, then a plain and a forEach rollback that run only if it failed. */
+function rollbackWorkflow(guard?: string): Workflow {
+  const onFailure = [{ step: "deploy", condition: TriggerCondition.failed() }];
+  return Workflow.create({
+    name: "rollback-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          modelStep("deploy"),
+          modelStep("rollback-plain", { dependsOn: onFailure }),
+          modelStep("rollback", {
+            dependsOn: onFailure,
+            forEach: EACH_TARGET,
+            guard,
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+function assertDependencySkipped(
+  run: WorkflowRun,
+  stepNames: string[],
+): void {
+  for (const name of stepNames) {
+    const step = run.getJob("main")!.getStep(name)!;
+    assertEquals(step.status, "skipped", name);
+    assertEquals(step.skipReason?.kind, "dependency", name);
+  }
+}
+
+Deno.test("forEach dependsOn: a failed-gated forEach step skips every iteration when its dependency succeeds", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = rollbackWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow);
+
+    const run = await service.execute(workflow.name, { inputs: TARGETS });
+
+    assertEquals(run.status, "succeeded");
+    assertDependencySkipped(run, [
+      "rollback-plain",
+      "rollback-a",
+      "rollback-b",
+    ]);
+    assertEquals(executor.count("main/rollback-a"), 0);
+    assertEquals(executor.count("main/rollback-b"), 0);
+  });
+});
+
+Deno.test("forEach dependsOn: a failed-gated forEach step runs every iteration when its dependency fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = rollbackWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("deploy");
+
+    const run = await service.execute(workflow.name, { inputs: TARGETS });
+
+    assertEquals(run.status, "failed");
+    const main = run.getJob("main")!;
+    assertEquals(main.getStep("rollback-a")!.status, "succeeded");
+    assertEquals(main.getStep("rollback-b")!.status, "succeeded");
+    assertEquals(executor.count("main/rollback-a"), 1);
+    assertEquals(executor.count("main/rollback-b"), 1);
+  });
+});
+
+Deno.test("forEach dependsOn: a succeeded-gated forEach step skips every iteration when its dependency fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "precheck-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("precheck"),
+            modelStep("apply", {
+              dependsOn: [{
+                step: "precheck",
+                condition: TriggerCondition.succeeded(),
+              }],
+              forEach: EACH_TARGET,
+            }),
+          ],
+        }),
+      ],
+    });
+    const { executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("precheck");
+
+    const run = await service.execute(workflow.name, { inputs: TARGETS });
+
+    assertEquals(run.status, "failed");
+    assertDependencySkipped(run, ["apply-a", "apply-b"]);
+    assertEquals(executor.count("main/apply-a"), 0);
+    assertEquals(executor.count("main/apply-b"), 0);
+  });
+});
+
+Deno.test("forEach dependsOn: a forEach step gated on another forEach step sees its aggregated status", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "each-on-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("build", { forEach: EACH_TARGET }),
+            modelStep("ship", {
+              dependsOn: [{
+                step: "build",
+                condition: TriggerCondition.succeeded(),
+              }],
+              forEach: EACH_TARGET,
+            }),
+            modelStep("rollback", {
+              dependsOn: [{
+                step: "build",
+                condition: TriggerCondition.failed(),
+              }],
+              forEach: EACH_TARGET,
+            }),
+          ],
+        }),
+      ],
+    });
+    const { executor, service } = await setupRetry(tempDir, workflow);
+
+    const run = await service.execute(workflow.name, { inputs: TARGETS });
+
+    assertEquals(run.status, "succeeded");
+    const main = run.getJob("main")!;
+    assertEquals(main.getStep("ship-a")!.status, "succeeded");
+    assertEquals(main.getStep("ship-b")!.status, "succeeded");
+    assertDependencySkipped(run, ["rollback-a", "rollback-b"]);
+    assertEquals(executor.count("main/rollback-a"), 0);
+    assertEquals(executor.count("main/rollback-b"), 0);
+  });
+});
+
+Deno.test("forEach dependsOn: a skipped iteration's event names its template and index", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = rollbackWorkflow();
+    const { service } = await setupRetry(tempDir, workflow);
+
+    const skipped: Extract<WorkflowExecutionEvent, { kind: "step_skipped" }>[] =
+      [];
+    for await (const event of service.run(workflow.name, { inputs: TARGETS })) {
+      if (event.kind === "step_skipped" && event.forEachTemplate) {
+        skipped.push(event);
+      }
+    }
+    // Iterations of one level run concurrently, so order by index.
+    skipped.sort((a, b) => (a.forEachIndex ?? 0) - (b.forEachIndex ?? 0));
+
+    assertEquals(skipped, [
+      {
+        kind: "step_skipped",
+        jobId: "main",
+        stepId: "rollback-a",
+        reason: "dependency",
+        forEachTemplate: "rollback",
+        forEachIndex: 0,
+      },
+      {
+        kind: "step_skipped",
+        jobId: "main",
+        stepId: "rollback-b",
+        reason: "dependency",
+        forEachTemplate: "rollback",
+        forEachIndex: 1,
+      },
+    ]);
+  });
+});
+
+Deno.test("forEach dependsOn: an iteration's unmet condition skips it before its guard is evaluated", async () => {
+  await withTempDir(async (tempDir) => {
+    // A truthy guard would skip as "guarded" if it were evaluated first.
+    const workflow = rollbackWorkflow("${{ true }}");
+    const { service } = await setupRetry(tempDir, workflow);
+
+    const run = await service.execute(workflow.name, { inputs: TARGETS });
+
+    assertEquals(run.status, "succeeded");
+    assertDependencySkipped(run, ["rollback-a", "rollback-b"]);
+  });
+});
+
+Deno.test("forEach dependsOn: a retry re-checks the condition of reset iterations", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = rollbackWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("deploy");
+
+    const failed = await service.execute(workflow.name, { inputs: TARGETS });
+    assertEquals(failed.status, "failed");
+    assertEquals(
+      failed.getJob("main")!.getStep("rollback-a")!.status,
+      "succeeded",
+    );
+
+    executor.failing.clear();
+    const retried = await drainResume(service, workflow.name, failed.id);
+
+    assertEquals(retried?.status, "succeeded");
+    assertEquals(executor.count("main/deploy"), 2);
+    assertDependencySkipped(retried!, [
+      "rollback-plain",
+      "rollback-a",
+      "rollback-b",
+    ]);
+    assertEquals(executor.count("main/rollback-a"), 1);
+    assertEquals(executor.count("main/rollback-b"), 1);
   });
 });
 
