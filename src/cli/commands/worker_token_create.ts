@@ -85,7 +85,7 @@ export const workerTokenCreateCommand = withRemoteOptions(
     )
     .option(
       "--vault <vault:string>",
-      `Vault on the server that stores the token plaintext (only with --server; default: the control-plane vault, ${TOKEN_SECRETS_VAULT_NAME}; local creation always uses it)`,
+      `Vault on the server that stores the token plaintext (only with --server; defaults to ${TOKEN_SECRETS_VAULT_NAME}, which local creation always uses)`,
     )
     .option(
       "--max-enrollments <n:string>",

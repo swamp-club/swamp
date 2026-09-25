@@ -61,6 +61,9 @@ function createMockSocket(): WebSocket & { sent: string[] } {
 }
 
 async function removeRepo(repoDir: string): Promise<void> {
+  // The control-plane vault is registered process-wide and points into this
+  // repo, so drop it before the repo goes away.
+  VaultService.unregisterGlobalProvider(TOKEN_SECRETS_VAULT_NAME);
   if (Deno.build.os === "windows") {
     // Best-effort: EBUSY can fire when V8 hasn't GC'd native
     // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
@@ -255,7 +258,6 @@ Deno.test("handleWorkerTokenCreate: an unknown --vault is rejected, not replaced
 // only one registered was the reserved control-plane vault.
 Deno.test("createDoctorVaultsDeps: hasVault ignores the control-plane vault serve registers", async () => {
   const bare = await createServeRepo(undefined);
-  const withVault = await createServeRepo("local");
   try {
     assertEquals(
       (await VaultService.fromRepository(bare.repoDir)).getVaultNames(),
@@ -265,12 +267,24 @@ Deno.test("createDoctorVaultsDeps: hasVault ignores the control-plane vault serv
       await (await createDoctorVaultsDeps(bare.repoDir)).hasVault(),
       false,
     );
+  } finally {
+    await removeRepo(bare.repoDir);
+  }
+
+  const withVault = await createServeRepo("local");
+  try {
     assertEquals(
       await (await createDoctorVaultsDeps(withVault.repoDir)).hasVault(),
       true,
     );
+
+    // The teardown in removeRepo leaves no control-plane vault behind.
+    VaultService.unregisterGlobalProvider(TOKEN_SECRETS_VAULT_NAME);
+    assertEquals(
+      (await VaultService.fromRepository(withVault.repoDir)).getVaultNames(),
+      ["local"],
+    );
   } finally {
-    await removeRepo(bare.repoDir);
     await removeRepo(withVault.repoDir);
   }
 });

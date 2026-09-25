@@ -78,6 +78,14 @@ export class VaultService {
     VaultService.#globalProviders.set(name, { type, provider });
   }
 
+  /**
+   * Removes a provider added with {@link registerGlobalProvider}. VaultService
+   * instances created earlier keep it; later ones no longer see it.
+   */
+  static unregisterGlobalProvider(name: string): void {
+    VaultService.#globalProviders.delete(name);
+  }
+
   private readonly providers = new Map<string, VaultProvider>();
   private readonly vaultTypes = new Map<string, string>();
   private readonly auditFlags = new Map<string, boolean>();
