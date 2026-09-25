@@ -178,7 +178,7 @@ families and the verb each handler asks `authorizeOrReject` for:
 | `vault.*`                                                                    | `read` / `write`; conditional `admin` on some handlers                                                                  |
 | `access.*`                                                                   | `read` for `grant.list` / `group.list`; `access.can-i` needs an authenticated principal but no verb; the rest `admin` |
 | `audit.*`, `summarise`, `report.*`                                           | `read`                                                                                                                  |
-| `extension.*`, `doctor.*`, `worker.*`, `datastore.*`, `cluster.*`, `serve.*` | `read` for listings (`cluster.instances`, `serve.config`); `admin` for mutations and `serve.reload`                     |
+| `extension.*`, `doctor.*`, `worker.*`, `datastore.*`, `cluster.*`, `serve.*` | `admin`, except `read` for `extension.list` / `search` / `info` / `outdated` and `datastore.namespace.list`             |
 | `run.*` (`history`, `doctor`, `gc`, `attach`)                                | `admin` for history/doctor; `write` for `run.gc`; `run` on the attached resource for `run.attach`                       |
 | `cancel`                                                                     | `run` on the active run's resource (`src/serve/connection.ts`)                                                          |
 
