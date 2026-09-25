@@ -1342,12 +1342,13 @@ order:
   cleanup gated on it runs. A `failed`-gated rollback can run for work that
   never started, so it must tolerate having nothing to undo.
 - A never-started step that has a `guard` stays `pending` (undecided): its
-  guard never decided whether the step's work was already done, so no
-  condition may treat it as finished. `succeeded`, `failed`, `completed` and
-  `skipped` are all false for a `pending` step, and a `forEach` with an
-  undecided iteration aggregates to `running`, so neither a `failed`-gated
-  rollback nor a `succeeded`-gated next step runs on it; `always` still does.
-  An undecided step remains `pending` in the cancelled run's record.
+  guard never decided whether the step's work was already done.
+  `succeeded`, `failed`, `completed` and `skipped` are all false for a
+  `pending` step, and a `forEach` with an undecided iteration aggregates to
+  `running`, so neither a `failed`-gated rollback nor a `succeeded`-gated next
+  step runs on it; `always` still does, and so does a `not` condition, which
+  is true on a `pending` step. An undecided step remains `pending` in the
+  cancelled run's record.
 - A step whose guard was being evaluated when the cancellation fired does not
   start and stays undecided, whatever the guard answers: the level may already
   have moved on. A step recorded `running` when its run resumes starts as
@@ -1355,8 +1356,11 @@ order:
 - A started job left with an undecided step still runs its later levels in
   cleanup mode. If nothing in it failed, it ends `unknown`: its outcome is
   ambiguous, so neither a `failed`-gated teardown job nor a `succeeded`-gated
-  next job runs on it, and it gets no `job_completed` event. A job that also
-  had a failure ends `failed`, as before.
+  next job runs on it (a `not` condition does), and it gets no
+  `job_completed` event. A job that also had a failure ends `failed`, as
+  before. This holds for a job alone in its level; a level holding several
+  jobs does not wait for them after the cancellation, and job-level cleanup
+  marks a job still running `failed` (swamp-club#2549).
 - A never-started job settles its steps in dependency order, each as above;
   the job fails when any step failed, is skipped when every step was skipped,
   and otherwise stays `pending`.

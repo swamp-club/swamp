@@ -11262,7 +11262,7 @@ Deno.test("abort cleanup: a level that suspends at an approval gate keeps its qu
   });
 });
 
-Deno.test("abort cleanup: a guarded step recorded running when its suspended run is resumed still runs", async () => {
+Deno.test("resume: a guarded step recorded running when its suspended run is resumed still runs", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "resume-running-guarded-wf",

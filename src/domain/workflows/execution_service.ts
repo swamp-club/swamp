@@ -3506,9 +3506,13 @@ export class WorkflowExecutionService {
           });
         } else if (jobUndecided) {
           // Only undecided guarded steps are left, so the job's outcome is
-          // ambiguous: neither failed nor succeeded, and no condition on it
-          // fires. Like other work an abort settles, it gets no event.
-          jobRun.markUnknown();
+          // ambiguous: neither `succeeded`, `failed`, `completed` nor
+          // `skipped` holds for it. Like other work an abort settles, it gets
+          // no event. A job the run's cleanup already failed while this
+          // generator was abandoned (a level holding several jobs,
+          // swamp-club#2549) keeps that status, so the record matches what
+          // later levels saw.
+          if (jobRun.status === "running") jobRun.markUnknown();
           jobSpan.setAttribute("job.status", jobRun.status);
           jobSpan.setStatus({ code: SpanStatusCode.OK });
           return;
@@ -4616,8 +4620,8 @@ export class WorkflowExecutionService {
    * Settles a step the run's abort left unstarted as runStep would have on
    * reaching it: skipped when its dependsOn is unmet, otherwise failed as
    * cancelled like an in-flight step. A step with a guard stays pending: its
-   * guard never decided whether the step's work was already done, so no
-   * condition may treat it as finished.
+   * guard never decided whether the step's work was already done, so neither
+   * `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
    */
   private settleUnstartedStep(
     step: Step | undefined,
