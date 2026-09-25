@@ -702,8 +702,9 @@ evaluated values, not the concatenation. Storing the authored text instead would
 store expressions that only resolve inside the run that passed them in. Running
 `swamp model validate` on that definition by name can therefore report the
 braces. When it reports anything, it adds an `Auto-definition` warning saying
-that swamp wrote the definition from a run's evaluated arguments and that its
-findings may be text evaluation produced. The definition counts as an
+that swamp wrote the definition from a run's evaluated arguments, that its
+findings may be text evaluation produced rather than mistakes, and that any
+change belongs in the workflow step or command that wrote it. The definition counts as an
 auto-definition when `models/` holds no definition with its ID, so one reached
 by UUID is told apart from a same-named definition in `models/`. Validating all
 models skips auto-definitions.

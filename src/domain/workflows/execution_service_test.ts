@@ -10036,10 +10036,16 @@ Deno.test("templateScanGlobalArguments: ignores inherited keys of the authored r
 
 /**
  * Runs a direct-execution step whose resolver builds a definition holding the
- * evaluated `{{env.name}}`, with `authoredStep` set as given.
+ * evaluated `{{env.name}}` under `key`, with `authoredStep` set as given. The
+ * step supplies it as `globalArgs`, or as `inputs` the resolver routes to
+ * global arguments.
  */
 async function runDirectStep(
   authoredStep: Step | undefined,
+  { key = "message", via = "globalArgs" }: {
+    key?: string;
+    via?: "globalArgs" | "inputs";
+  } = {},
 ): Promise<unknown[]> {
   const { z } = await import("zod");
   const { modelRegistry } = await import("../models/model.ts");
@@ -10056,7 +10062,7 @@ async function runDirectStep(
     const modelDef = {
       type: modelType,
       version: "2026.09.25.1",
-      globalArguments: z.object({ message: z.string() }),
+      globalArguments: z.object({ [key]: z.string() }),
       resources: {},
       methods: {
         run: {
@@ -10066,7 +10072,7 @@ async function runDirectStep(
             _args: Record<string, never>,
             context: { globalArgs: Record<string, unknown> },
           ) => {
-            received.push(context.globalArgs.message);
+            received.push(context.globalArgs[key]);
             return Promise.resolve({});
           },
         },
@@ -10077,7 +10083,7 @@ async function runDirectStep(
       _typeArg,
       definitionName,
       _methodName,
-      _inputs,
+      inputs,
       globalArgs,
     ) =>
       Promise.resolve({
@@ -10085,7 +10091,8 @@ async function runDirectStep(
           name: definitionName,
           type: modelType.normalized,
           typeVersion: modelDef.version,
-          globalArguments: globalArgs ?? {},
+          // Without globalArgs, every input routes to a global argument.
+          globalArguments: globalArgs ?? inputs,
         }),
         modelType,
         created: true,
@@ -10095,14 +10102,15 @@ async function runDirectStep(
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     try {
       // The step as the executor sees it, after the workflow evaluator ran.
+      const evaluated = { [key]: "{{env.name}}" };
       const step = Step.create({
         name: "step",
         task: StepTask.directExecution(
           modelType.normalized,
           "direct",
           "run",
-          undefined,
-          { message: "{{env.name}}" },
+          via === "inputs" ? evaluated : undefined,
+          via === "globalArgs" ? evaluated : undefined,
         ),
       });
       await new DefaultStepExecutor(undefined, resolver).execute(step, {
@@ -10143,6 +10151,27 @@ Deno.test({
   fn: async () => {
     const received = await runDirectStep(
       authoredDirectStep('${{ "{" + "{env.name}" + "}" }}'),
+    );
+    assertEquals(received, ["{{env.name}}"]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a direct step reads authored inputs routed to global arguments by own key",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    // A key such as toString is on every object's prototype; only an own key
+    // of the routed method inputs makes it a method argument.
+    const received = await runDirectStep(
+      Step.create({
+        name: "step",
+        task: StepTask.directExecution("any/type", "direct", "run", {
+          toString: '${{ "{" + "{env.name}" + "}" }}',
+        }),
+      }),
+      { key: "toString", via: "inputs" },
     );
     assertEquals(received, ["{{env.name}}"]);
   },

@@ -111,7 +111,7 @@ interface ValidationWarningResult {
 const AUTO_DEFINITION_NOTE: ValidationWarningData = {
   name: "Auto-definition",
   message:
-    "swamp wrote this definition from a run's evaluated arguments; findings may be text evaluation produced. Fix the workflow step or command that wrote it, not this file.",
+    "This definition was written by swamp from a run's evaluated arguments, so these findings may be text that evaluation produced rather than mistakes. If a change is needed, make it in the workflow step or command that wrote the definition, not in this file.",
 };
 
 /** Dependencies for the model validate operation. */
@@ -349,12 +349,11 @@ async function* validateSingle(
   const warnings = toValidationWarningData(outcome.warnings);
   // Only when there is a finding to explain: a clean auto-definition needs no
   // note, and would otherwise report a warning for nothing.
-  const hasFindings = !outcome.results.every((r) => r.passed) ||
-    warnings.length > 0;
+  const allPassed = outcome.results.every((r) => r.passed);
+  const hasFindings = !allPassed || warnings.length > 0;
   if (hasFindings && await deps.isAutoDefinition(definition)) {
     warnings.push({ ...AUTO_DEFINITION_NOTE });
   }
-  const allPassed = outcome.results.every((r) => r.passed);
 
   yield {
     kind: "completed",

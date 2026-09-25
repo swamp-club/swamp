@@ -169,7 +169,7 @@ Deno.test("ModelValidateRenderer - log mode shows the Auto-definition note", asy
           warnings: [{
             name: "Auto-definition",
             message:
-              "swamp wrote this definition from a run's evaluated arguments",
+              "This definition was written by swamp from a run's evaluated arguments",
           }],
         },
       }]),

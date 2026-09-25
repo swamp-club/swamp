@@ -1008,7 +1008,7 @@ export class DefaultStepExecutor implements StepExecutor {
         const suppliedKeys = task.globalArgs
           ? Object.keys(task.globalArgs)
           : Object.keys(task.inputs ?? {}).filter((key) =>
-            !(key in result.routedMethodInputs)
+            !Object.hasOwn(result.routedMethodInputs, key)
           );
         authoredGlobalArguments = templateScanGlobalArguments(
           result.definition.globalArguments,
