@@ -24,6 +24,7 @@ import {
   createLibSwampContext,
   createRepoInitDeps,
   createRepoUpgradeDeps,
+  type ExtensionInstallDeps,
   repoInit,
   repoUpgrade,
 } from "../../libswamp/mod.ts";
@@ -38,6 +39,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
+import { ManagedConfigUnresolvedError } from "../repo_context.ts";
 import { isAuthenticated } from "../auth_context.ts";
 import { VERSION } from "./version.ts";
 
@@ -192,10 +194,25 @@ export const repoUpgradeCommand = new Command()
     // layouts, re-pulls them into the per-extension subtree, and sweeps
     // the legacy files — a single command, no manual follow-up.
     const repoDir = resolveRepoDir(pathArg);
-    const extensionInstallDeps = await createExtensionInstallDeps(
-      repoDir,
-      cliCtx.logger,
-    );
+    // An unresolved managed config base, or a datastore lock that timed
+    // out while resolving it, must not block the core upgrade: skip the
+    // install pass and report why (swamp-club#2483).
+    let extensionInstallDeps: ExtensionInstallDeps | undefined;
+    let extensionInstallSkippedReason: string | undefined;
+    try {
+      extensionInstallDeps = await createExtensionInstallDeps(
+        repoDir,
+        cliCtx.logger,
+      );
+    } catch (error) {
+      const skippable = error instanceof ManagedConfigUnresolvedError ||
+        (error instanceof UserError && error.code === "lock_timeout");
+      if (!skippable) throw error;
+      extensionInstallSkippedReason = error.message;
+    }
+    // The untrusted-collectives check reads the same lockfile the install
+    // pass would; when that is unresolved, the check is skipped.
+    const lockfilePath = extensionInstallDeps?.lockfilePath ?? null;
 
     const renderer = createRepoUpgradeRenderer(cliCtx.outputMode, {
       isAuthenticated: isAuthenticated(),
@@ -207,6 +224,8 @@ export const repoUpgradeCommand = new Command()
         includeGitignore: options.includeGitignore as boolean | undefined,
         version: VERSION,
         extensionInstallDeps,
+        extensionInstallSkippedReason,
+        lockfilePath,
       }),
       renderer.handlers(),
     );

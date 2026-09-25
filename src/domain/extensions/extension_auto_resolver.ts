@@ -295,12 +295,7 @@ export class ExtensionAutoResolver {
    *        "swamp/echo" -> "swamp"
    */
   private extractCollective(normalizedType: string): string | undefined {
-    if (ModelType.isUserNamespace(normalizedType)) {
-      return ModelType.getUserNamespace(normalizedType);
-    }
-    const firstSlash = normalizedType.indexOf("/");
-    if (firstSlash === -1) return undefined;
-    return normalizedType.slice(0, firstSlash);
+    return typeCollective(normalizedType);
   }
 
   /**
@@ -315,24 +310,14 @@ export class ExtensionAutoResolver {
     output.searching(normalizedType);
 
     try {
-      // Step 1: Direct lookup — strip trailing segments and try getExtension
-      const extensionName = await this.directLookup(
+      const extensionName = await findExtensionForType(
         normalizedType,
         collective,
+        this.config.extensionLookup,
       );
 
       if (extensionName) {
         return await this.installAndLoad(extensionName, normalizedType);
-      }
-
-      // Step 2: Search fallback
-      const searchResult = await this.searchFallback(
-        normalizedType,
-        collective,
-      );
-
-      if (searchResult) {
-        return await this.installAndLoad(searchResult, normalizedType);
       }
 
       output.notFound(normalizedType);
@@ -347,97 +332,6 @@ export class ExtensionAutoResolver {
       }
       return false;
     }
-  }
-
-  /**
-   * Tries to find an extension by progressively stripping trailing segments
-   * from the type. For "@swamp/aws/ec2/instance", tries:
-   *   1. @swamp/aws/ec2
-   *   2. @swamp/aws
-   */
-  private async directLookup(
-    normalizedType: string,
-    _collective: string,
-  ): Promise<string | null> {
-    const { extensionLookup } = this.config;
-
-    const candidates = this.buildCandidateNames(normalizedType);
-
-    for (const candidate of candidates) {
-      logger.debug`Trying direct lookup: ${candidate}`;
-      const extInfo = await extensionLookup.getExtension(candidate);
-      if (extInfo) {
-        return candidate;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Builds candidate extension names by trying the full type first, then
-   * stripping trailing segments.
-   * For "@swamp/aws/ec2/instance":
-   *   ["@swamp/aws/ec2/instance", "@swamp/aws/ec2", "@swamp/aws"]
-   * For "@keeb/mongodb-datastore":
-   *   ["@keeb/mongodb-datastore"]
-   */
-  private buildCandidateNames(normalizedType: string): string[] {
-    const candidates: string[] = [];
-
-    if (ModelType.getSegmentCount(normalizedType) >= 2) {
-      const full = normalizedType.startsWith("@")
-        ? normalizedType
-        : `@${normalizedType}`;
-      candidates.push(full);
-    }
-
-    let current = normalizedType;
-    while (true) {
-      const lastSlash = current.lastIndexOf("/");
-      if (lastSlash === -1) break;
-      current = current.slice(0, lastSlash);
-      if (ModelType.getSegmentCount(current) >= 2) {
-        const candidate = current.startsWith("@") ? current : `@${current}`;
-        candidates.push(candidate);
-      }
-    }
-
-    return candidates;
-  }
-
-  /**
-   * Falls back to searching the registry with a text query derived from the type.
-   */
-  private async searchFallback(
-    normalizedType: string,
-    collective: string,
-  ): Promise<string | null> {
-    const { extensionLookup } = this.config;
-
-    // Convert type to search terms: "@swamp/aws/ec2/instance" -> "aws ec2 instance"
-    let searchTerms = normalizedType;
-    if (searchTerms.startsWith("@")) {
-      searchTerms = searchTerms.slice(1);
-    }
-    if (searchTerms.startsWith(collective + "/")) {
-      searchTerms = searchTerms.slice(collective.length + 1);
-    }
-    searchTerms = searchTerms.replace(/\//g, " ");
-
-    logger.debug`Search fallback: q=${searchTerms}, collective=${collective}`;
-
-    const result = await extensionLookup.searchExtensions({
-      q: searchTerms,
-      collective,
-      perPage: 1,
-    });
-
-    if (result.extensions.length > 0) {
-      return result.extensions[0].name;
-    }
-
-    return null;
   }
 
   /**
@@ -563,6 +457,94 @@ function newerVersionThan(
   return CalVer.compare(CalVer.create(latest), CalVer.create(installed)) > 0
     ? latest
     : undefined;
+}
+
+/**
+ * Extracts the collective name from a normalized type string.
+ * e.g., "@swamp/aws/ec2/instance" -> "swamp", "swamp/echo" -> "swamp"
+ */
+export function typeCollective(normalizedType: string): string | undefined {
+  if (ModelType.isUserNamespace(normalizedType)) {
+    return ModelType.getUserNamespace(normalizedType);
+  }
+  const firstSlash = normalizedType.indexOf("/");
+  if (firstSlash === -1) return undefined;
+  return normalizedType.slice(0, firstSlash);
+}
+
+/**
+ * Builds candidate extension names for a type by trying the full type first,
+ * then stripping trailing segments.
+ * For "@swamp/aws/ec2/instance":
+ *   ["@swamp/aws/ec2/instance", "@swamp/aws/ec2", "@swamp/aws"]
+ * For "@keeb/mongodb-datastore":
+ *   ["@keeb/mongodb-datastore"]
+ */
+export function extensionCandidateNames(normalizedType: string): string[] {
+  const candidates: string[] = [];
+
+  if (ModelType.getSegmentCount(normalizedType) >= 2) {
+    const full = normalizedType.startsWith("@")
+      ? normalizedType
+      : `@${normalizedType}`;
+    candidates.push(full);
+  }
+
+  let current = normalizedType;
+  while (true) {
+    const lastSlash = current.lastIndexOf("/");
+    if (lastSlash === -1) break;
+    current = current.slice(0, lastSlash);
+    if (ModelType.getSegmentCount(current) >= 2) {
+      const candidate = current.startsWith("@") ? current : `@${current}`;
+      candidates.push(candidate);
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Finds the registry extension that provides a type: a direct lookup of each
+ * candidate name first, then a search within the type's collective.
+ * Returns null when neither finds one.
+ */
+export async function findExtensionForType(
+  normalizedType: string,
+  collective: string,
+  extensionLookup: ExtensionLookupPort,
+): Promise<string | null> {
+  for (const candidate of extensionCandidateNames(normalizedType)) {
+    logger.debug`Trying direct lookup: ${candidate}`;
+    const extInfo = await extensionLookup.getExtension(candidate);
+    if (extInfo) {
+      return candidate;
+    }
+  }
+
+  // Convert type to search terms: "@swamp/aws/ec2/instance" -> "aws ec2 instance"
+  let searchTerms = normalizedType;
+  if (searchTerms.startsWith("@")) {
+    searchTerms = searchTerms.slice(1);
+  }
+  if (searchTerms.startsWith(collective + "/")) {
+    searchTerms = searchTerms.slice(collective.length + 1);
+  }
+  searchTerms = searchTerms.replace(/\//g, " ");
+
+  logger.debug`Search fallback: q=${searchTerms}, collective=${collective}`;
+
+  const result = await extensionLookup.searchExtensions({
+    q: searchTerms,
+    collective,
+    perPage: 1,
+  });
+
+  if (result.extensions.length > 0) {
+    return result.extensions[0].name;
+  }
+
+  return null;
 }
 
 /**

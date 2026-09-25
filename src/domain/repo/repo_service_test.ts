@@ -2916,7 +2916,7 @@ Deno.test("RepoService.upgrade: returns untrusted collectives from lockfile", as
     await service.init(repoPath);
 
     // Write a lockfile with extensions from an untrusted collective
-    const modelsDir = join(tempDir, "models");
+    const modelsDir = join(tempDir, "extensions", "models");
     await ensureDir(modelsDir);
     await Deno.writeTextFile(
       join(modelsDir, "upstream_extensions.json"),
@@ -2946,7 +2946,7 @@ Deno.test("RepoService.upgrade: returns empty when all collectives are trusted",
     await markerRepo.write(repoPath, marker!);
 
     // Write a lockfile with extensions only from trusted collectives
-    const modelsDir = join(tempDir, "models");
+    const modelsDir = join(tempDir, "extensions", "models");
     await ensureDir(modelsDir);
     await Deno.writeTextFile(
       join(modelsDir, "upstream_extensions.json"),
@@ -2976,7 +2976,7 @@ Deno.test("RepoService.upgrade: skips untrusted warning when trustMemberCollecti
     await markerRepo.write(repoPath, marker!);
 
     // Write a lockfile with extensions from a collective not in trustedCollectives
-    const modelsDir = join(tempDir, "models");
+    const modelsDir = join(tempDir, "extensions", "models");
     await ensureDir(modelsDir);
     await Deno.writeTextFile(
       join(modelsDir, "upstream_extensions.json"),
@@ -2987,6 +2987,53 @@ Deno.test("RepoService.upgrade: skips untrusted warning when trustMemberCollecti
 
     const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.untrustedCollectives, []);
+  });
+});
+
+Deno.test("RepoService.upgrade: reads untrusted collectives from the resolved lockfile path", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    // Under managedConfig the lockfile lives at the datastore's config base,
+    // which the caller resolves and passes in (swamp-club#2483).
+    const configBase = join(tempDir, "cache", "config");
+    await ensureDir(configBase);
+    const lockfilePath = join(configBase, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@acme/widgets": { version: "1.0.0", pulledAt: "2026-01-01" },
+      }),
+    );
+
+    const newService = testService("0.2.0", tempDir);
+    const result = await newService.upgrade(repoPath, { lockfilePath });
+
+    assertEquals(result.untrustedCollectives, ["acme"]);
+  });
+});
+
+Deno.test("RepoService.upgrade: skips the untrusted check when the lockfile is unresolved", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    const modelsDir = join(tempDir, "extensions", "models");
+    await ensureDir(modelsDir);
+    await Deno.writeTextFile(
+      join(modelsDir, "upstream_extensions.json"),
+      JSON.stringify({
+        "@acme/widgets": { version: "1.0.0", pulledAt: "2026-01-01" },
+      }),
+    );
+
+    const newService = testService("0.2.0", tempDir);
+    const result = await newService.upgrade(repoPath, { lockfilePath: null });
 
     assertEquals(result.untrustedCollectives, []);
   });

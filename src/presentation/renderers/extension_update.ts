@@ -27,6 +27,12 @@ import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
+const FALLBACK_LOCKFILE_WARNING =
+  "The datastore could not be resolved (its extension could not be " +
+  "installed or does not load), so this check reads the in-repo lockfile, " +
+  "not the datastore's. Install it with `swamp extension pull <datastore " +
+  "extension>`, then run `swamp datastore sync --pull` for an accurate check.";
+
 class LogExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
   handlers(): EventHandlers<ExtensionUpdateEvent> {
     const logger = getSwampLogger(["extension", "update"]);
@@ -75,6 +81,9 @@ class LogExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
         );
       },
       completed: (e) => {
+        if (e.fallbackLockfile) {
+          logger.warn(FALLBACK_LOCKFILE_WARNING);
+        }
         if (e.mode === "check") {
           renderCheckLog(e.data, logger);
         } else {
@@ -140,7 +149,14 @@ class JsonExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
         );
       },
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        const output = e.fallbackLockfile
+          ? {
+            ...e.data,
+            lockfileSource: "fallback",
+            warning: FALLBACK_LOCKFILE_WARNING,
+          }
+          : e.data;
+        console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);

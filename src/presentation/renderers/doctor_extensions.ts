@@ -347,6 +347,18 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           }
         }
 
+        if (e.report.rescanSkipped) {
+          writeOutput(
+            `\n${yellow("⚠")} ${
+              bold(
+                `Skipped the catalog rescan${
+                  e.report.rescanSkipped.repairSkipped ? " and repairs" : ""
+                }:`,
+              )
+            } ${e.report.rescanSkipped.reason}`,
+          );
+        }
+
         // W6: Aggregate state rendering.
         if (e.report.aggregateState) {
           renderAggregateStateLog(e.report.aggregateState, this.verbose);
@@ -426,6 +438,9 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         }
         if (e.report.repairReport) {
           output.repairReport = e.report.repairReport;
+        }
+        if (e.report.rescanSkipped) {
+          output.rescanSkipped = e.report.rescanSkipped;
         }
         output.loaderErrors = e.report.loaderErrors
           ? Object.fromEntries(e.report.loaderErrors)

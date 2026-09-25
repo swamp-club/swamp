@@ -28,6 +28,7 @@ import { join, resolve } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   acquireModelLocks,
+  assertManagedConfigWritable,
   buildMarkDirtyHook,
   createLockProgressWriter,
   createModelLock,
@@ -36,12 +37,14 @@ import {
   flushSinglePhasePush,
   flushTwoPhasePush,
   type LockProgressWriter,
+  ManagedConfigUnresolvedError,
   MODEL_LOCK_RETRY_INTERVAL_MS,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
   resolveManagedConfigPaths,
+  resolveManagedLockfileForWrite,
   SWAMP_LOCK_HOLDER_PID,
   waitForPerModelLocks,
 } from "./repo_context.ts";
@@ -53,6 +56,14 @@ import {
   resolvePulledExtensionsRoot,
 } from "../infrastructure/persistence/paths.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
+import {
+  getAutoResolver,
+  setAutoResolver,
+} from "../domain/extensions/auto_resolver_context.ts";
+import {
+  type AutoResolveOutputPort,
+  ExtensionAutoResolver,
+} from "../domain/extensions/extension_auto_resolver.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
   type CustomDatastoreConfig,
@@ -2815,7 +2826,9 @@ Deno.test("ensureManagedConfigBase: explicit configBasePath still takes preceden
   }
 });
 
-// ── managed config base resolution (swamp-club#2483) ─────────────────────────
+// ── assertManagedConfigWritable (swamp-club#2483) ───────────────────────────
+
+const unsetDatastoreEnv = () => undefined;
 
 function managedMarker(type: string): RepoMarkerData {
   return {
@@ -2840,6 +2853,237 @@ Deno.test("ensureManagedConfigBase: an unloadable datastore leaves the fallback 
   assertPathEquals(
     lockfilePath,
     join(repo, ".swamp", "config", "upstream_extensions.json"),
+  );
+});
+
+Deno.test("assertManagedConfigWritable: throws a typed error for an unresolved extension datastore", async () => {
+  const repo = resolve(`/repo-guard-${crypto.randomUUID()}`);
+  const type = `@t${crypto.randomUUID().slice(0, 8)}/ds`;
+  const marker = managedMarker(type);
+  await ensureManagedConfigBase(repo, marker, undefined, {
+    autoResolve: false,
+  });
+  resolveManagedConfigPaths(repo, marker);
+  let caught: unknown;
+  try {
+    assertManagedConfigWritable(repo, marker, unsetDatastoreEnv);
+  } catch (error) {
+    caught = error;
+  }
+  if (!(caught instanceof ManagedConfigUnresolvedError)) {
+    throw new Error(`expected ManagedConfigUnresolvedError, got ${caught}`);
+  }
+  assertEquals(caught.code, "managed_config_unresolved");
+  assertStringIncludes(caught.message, `\`swamp extension pull ${type}\``);
+  assertStringIncludes(caught.message, "--force");
+  assertStringIncludes(caught.message, "swamp datastore sync --pull");
+  assertStringIncludes(
+    caught.message,
+    "its datastore extension is not installed and could not be installed " +
+      "automatically",
+  );
+  assertEquals(caught.message.includes("Available types"), false);
+});
+
+Deno.test("assertManagedConfigWritable: drops the legacy s3 pull hint from the reason", async () => {
+  const repo = resolve(`/repo-guard-s3-${crypto.randomUUID()}`);
+  const marker = managedMarker("s3");
+  await ensureManagedConfigBase(repo, marker, undefined, {
+    autoResolve: false,
+  });
+  let message = "";
+  try {
+    assertManagedConfigWritable(repo, marker, unsetDatastoreEnv);
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  assertStringIncludes(message, "`swamp extension pull @swamp/s3-datastore`");
+  assertEquals(message.includes("Install it with"), false);
+});
+
+Deno.test("assertManagedConfigWritable: passes once the base is resolved", async () => {
+  const repo = resolve(`/repo-guard-ok-${crypto.randomUUID()}`);
+  const marker = managedMarker("@swamp/s3-datastore");
+  const resolver = {
+    resolvePath: (subdir: string) => join("/cache/ns", subdir),
+    localPath: () => "",
+    datastorePath: () => "",
+    isDatastoreSubdir: () => false,
+    isExcluded: () => false,
+    config: () => ({ type: "filesystem", path: "/cache" }) as DatastoreConfig,
+  };
+  assertEquals(await ensureManagedConfigBase(repo, marker, resolver), true);
+  // A later lookup without a base must not downgrade the resolved base.
+  resolveManagedConfigPaths(repo, marker);
+  assertEquals(isManagedConfigBaseResolved(repo), true);
+  assertManagedConfigWritable(repo, marker, unsetDatastoreEnv);
+});
+
+Deno.test("assertManagedConfigWritable: does not apply to filesystem or unmanaged repos", () => {
+  const fsRepo = resolve(`/repo-guard-fs-${crypto.randomUUID()}`);
+  assertManagedConfigWritable(
+    fsRepo,
+    managedMarker("filesystem"),
+    unsetDatastoreEnv,
+  );
+  const plainRepo = resolve(`/repo-guard-plain-${crypto.randomUUID()}`);
+  assertManagedConfigWritable(
+    plainRepo,
+    {
+      swampVersion: "1.0.0",
+      initializedAt: "2026-01-01T00:00:00.000Z",
+      datastore: { type: "@swamp/s3-datastore" },
+    },
+    unsetDatastoreEnv,
+  );
+});
+
+Deno.test("resolveManagedLockfileForWrite: exempts the datastore extension while unresolved", async () => {
+  const repo = resolve(`/repo-exempt-${crypto.randomUUID()}`);
+  const type = `@t${crypto.randomUUID().slice(0, 8)}/s3-datastore`;
+  const marker = managedMarker(type);
+  const target = await resolveManagedLockfileForWrite(repo, marker, {
+    exemptTargets: [type],
+    readDatastoreEnv: unsetDatastoreEnv,
+  });
+  assertEquals(target.publish, false);
+  assertPathEquals(
+    target.lockfilePath,
+    join(repo, ".swamp", "config", "upstream_extensions.json"),
+  );
+});
+
+Deno.test("resolveManagedLockfileForWrite: a static candidate match makes no registry calls", async () => {
+  const repo = resolve(`/repo-exempt-static-${crypto.randomUUID()}`);
+  const type = `@t${crypto.randomUUID().slice(0, 8)}/s3-datastore`;
+  let lookups = 0;
+  const target = await resolveManagedLockfileForWrite(
+    repo,
+    managedMarker(type),
+    {
+      exemptTargets: [type],
+      extensionLookup: {
+        getExtension: () => {
+          lookups++;
+          return Promise.resolve(null);
+        },
+        searchExtensions: () => {
+          lookups++;
+          return Promise.resolve({ extensions: [] });
+        },
+      },
+      readDatastoreEnv: unsetDatastoreEnv,
+    },
+  );
+  assertEquals(target.publish, false);
+  assertEquals(lookups, 0);
+});
+
+Deno.test("resolveManagedLockfileForWrite: recognises a search-found datastore extension", async () => {
+  const repo = resolve(`/repo-exempt-search-${crypto.randomUUID()}`);
+  const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+  const marker = managedMarker(`@${collective}/pg`);
+  const target = await resolveManagedLockfileForWrite(repo, marker, {
+    exemptTargets: [`@${collective}/postgres-datastore`],
+    extensionLookup: {
+      getExtension: () => Promise.resolve(null),
+      searchExtensions: () =>
+        Promise.resolve({
+          extensions: [{ name: `@${collective}/postgres-datastore` }],
+        }),
+    },
+    readDatastoreEnv: unsetDatastoreEnv,
+  });
+  assertEquals(target.publish, false);
+});
+
+Deno.test("resolveManagedLockfileForWrite: refuses other targets while unresolved", async () => {
+  const repo = resolve(`/repo-refuse-${crypto.randomUUID()}`);
+  const marker = managedMarker(`@t${crypto.randomUUID().slice(0, 8)}/ds`);
+  await assertRejects(
+    () =>
+      resolveManagedLockfileForWrite(repo, marker, {
+        exemptTargets: ["@swamp/aws/cur"],
+        readDatastoreEnv: unsetDatastoreEnv,
+      }),
+    ManagedConfigUnresolvedError,
+    "swamp datastore sync --pull",
+  );
+  await assertRejects(
+    () =>
+      resolveManagedLockfileForWrite(repo, marker, {
+        readDatastoreEnv: unsetDatastoreEnv,
+      }),
+    ManagedConfigUnresolvedError,
+  );
+});
+
+/**
+ * Installs an auto-resolver for `collective` that records every registry
+ * lookup and finds nothing, runs `fn`, then restores the previous resolver.
+ */
+async function withRecordingAutoResolver(
+  collective: string,
+  fn: (lookups: string[]) => Promise<void>,
+): Promise<void> {
+  const lookups: string[] = [];
+  const previous = getAutoResolver();
+  setAutoResolver(
+    new ExtensionAutoResolver({
+      allowedCollectives: [collective],
+      extensionLookup: {
+        getExtension: (name) => {
+          lookups.push(name);
+          return Promise.resolve(null);
+        },
+        searchExtensions: () => Promise.resolve({ extensions: [] }),
+      },
+      extensionInstaller: {
+        inspectInstallation: () => Promise.resolve({ state: "missing" }),
+        install: () => Promise.resolve(null),
+        hotLoadModels: () => Promise.resolve(0),
+        hotLoadVaults: () => Promise.resolve(),
+        hotLoadDatastores: () => Promise.resolve(),
+        hotLoadWebhooks: () => Promise.resolve(),
+        failedLocalSourceMatchesType: () => false,
+      },
+      // A no-op for every output event.
+      output: new Proxy({}, { get: () => () => {} }) as AutoResolveOutputPort,
+    }),
+  );
+  try {
+    await fn(lookups);
+  } finally {
+    setAutoResolver(previous);
+  }
+}
+
+Deno.test("resolveManagedLockfileForWrite: tries to auto-install a missing datastore extension before refusing", async () => {
+  const repo = resolve(`/repo-autoresolve-${crypto.randomUUID()}`);
+  const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+  const marker = managedMarker(`@${collective}/ds`);
+  await withRecordingAutoResolver(collective, async (lookups) => {
+    await assertRejects(
+      () =>
+        resolveManagedLockfileForWrite(repo, marker, {
+          readDatastoreEnv: unsetDatastoreEnv,
+        }),
+      ManagedConfigUnresolvedError,
+    );
+    assertEquals(lookups.length > 0, true);
+  });
+});
+
+Deno.test("resolveManagedLockfileForWrite: returns the models-dir lockfile for unmanaged repos", async () => {
+  const repo = resolve(`/repo-plain-${crypto.randomUUID()}`);
+  const target = await resolveManagedLockfileForWrite(repo, {
+    swampVersion: "1.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+  });
+  assertEquals(target.publish, true);
+  assertPathEquals(
+    target.lockfilePath,
+    join(repo, "extensions", "models", "upstream_extensions.json"),
   );
 });
 

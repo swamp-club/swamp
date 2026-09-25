@@ -336,6 +336,22 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           }
         }
 
+        if (data.installSkipped) {
+          const alsoSkipped = data.untrustedCollectivesSkipped
+            ? " and the untrusted-collectives check"
+            : "";
+          writeOutput(
+            `${yellow("⚠")} Skipped the extension install pass${alsoSkipped}: ${
+              data.installSkippedReason ?? "its dependencies are unavailable"
+            }`,
+          );
+        } else if (data.untrustedCollectivesSkipped) {
+          writeOutput(
+            `${yellow("⚠")} Skipped the untrusted-collectives check: the ` +
+              `extension lockfile could not be resolved`,
+          );
+        }
+
         if (data.untrustedCollectives.length > 0) {
           writeOutput(
             `${yellow("⚠")} Extensions from untrusted collectives: ${

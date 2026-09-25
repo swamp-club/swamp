@@ -715,3 +715,24 @@ Deno.test(
     assertEquals(completed.report.warnings.length, 1);
   },
 );
+
+Deno.test("doctorExtensions: rescanSkipped from deps reaches the report", async () => {
+  resetExtensionLoadWarnings();
+  const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
+  deps.rescanSkipped = {
+    reason: "Cannot resolve the s3 datastore",
+    repairSkipped: true,
+  };
+
+  const events = await collect(doctorExtensions(deps));
+
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error("expected a completed event");
+  }
+  assertEquals(completed.report.rescanSkipped, {
+    reason: "Cannot resolve the s3 datastore",
+    repairSkipped: true,
+  });
+  assertEquals(completed.report.repairReport, undefined);
+});

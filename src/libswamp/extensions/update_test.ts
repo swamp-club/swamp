@@ -478,3 +478,30 @@ Deno.test(
     );
   },
 );
+
+Deno.test("extensionUpdate: check mode carries fallbackLockfile to completed", async () => {
+  const deps = makeDeps({
+    upstream: { "@test/ext": "2026.01.01.1" },
+    getExtension: () => Promise.resolve({ latestVersion: "2026.01.01.1" }),
+  });
+
+  const completed = await result<ExtensionUpdateEvent>(
+    extensionUpdate(makeCtx(), deps, {
+      checkOnly: true,
+      fallbackLockfile: true,
+    }),
+  );
+
+  assertEquals(completed.fallbackLockfile, true);
+});
+
+Deno.test("extensionUpdate: empty fallback lockfile still carries fallbackLockfile", async () => {
+  const completed = await result<ExtensionUpdateEvent>(
+    extensionUpdate(makeCtx(), makeDeps(), {
+      checkOnly: true,
+      fallbackLockfile: true,
+    }),
+  );
+
+  assertEquals(completed.fallbackLockfile, true);
+});

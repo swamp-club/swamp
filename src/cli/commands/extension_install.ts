@@ -102,12 +102,14 @@ export const extensionInstallCommand = withRemoteOptions(
   }
 
   const repoDir = resolveRepoDir(options.repoDir);
+  // The guard runs before the repo context resolves the datastore, so an
+  // unresolved managed config base reports managed_config_unresolved
+  // rather than a raw "Unknown datastore type" (swamp-club#2483).
+  const deps = await createExtensionInstallDeps(repoDir, cliCtx.logger);
   await requireInitializedRepoReadOnly({
     repoDir,
     outputMode: cliCtx.outputMode,
   });
-
-  const deps = await createExtensionInstallDeps(repoDir, cliCtx.logger);
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const renderer = createExtensionInstallRenderer(cliCtx.outputMode);

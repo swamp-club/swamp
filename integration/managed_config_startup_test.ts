@@ -37,6 +37,10 @@ import {
   type DeferredWarning,
 } from "../src/cli/mod.ts";
 import {
+  ManagedConfigUnresolvedError,
+  resolveManagedLockfileForWrite,
+} from "../src/cli/repo_context.ts";
+import {
   getManagedConfigBase,
   isManagedConfig,
   isManagedConfigBaseResolved,
@@ -628,7 +632,7 @@ Deno.test("configureStartupExtensions: malformed lockfile entries are skipped by
   });
 });
 
-Deno.test("configureStartupExtensions: with no datastore extension installed the base stays unresolved", async () => {
+Deno.test("configureStartupExtensions: with no datastore extension installed the base stays unresolved and writes are refused", async () => {
   await withManagedRepo(async (fixture) => {
     const { dispose } = await startup(fixture);
     try {
@@ -637,6 +641,13 @@ Deno.test("configureStartupExtensions: with no datastore extension installed the
       // A read-only load resolves installed-only and never auto-installs.
       await modelRegistry.ensureLoaded();
       assertEquals(isManagedConfigBaseResolved(fixture.repoDir), false);
+      await assertRejects(
+        () =>
+          resolveManagedLockfileForWrite(fixture.repoDir, fixture.marker, {
+            readDatastoreEnv: unsetDatastoreEnv,
+          }),
+        ManagedConfigUnresolvedError,
+      );
     } finally {
       dispose();
     }

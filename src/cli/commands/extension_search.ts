@@ -25,9 +25,8 @@ import {
   interactiveOutputMode,
 } from "../context.ts";
 import {
-  ensureManagedConfigBase,
   requireRepoMarker,
-  resolveManagedConfigPaths,
+  resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
@@ -51,6 +50,7 @@ import { createExtensionSearchRenderer } from "../../presentation/renderers/exte
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
+import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -260,8 +260,17 @@ export const extensionSearchCommand = withRemoteOptions(
     // Extension install writes to local files only (pulled-extensions/,
     // lockfile) — no datastore needed; see #445.
     const { repoDir, marker } = await requireRepoMarker(".");
-    await ensureManagedConfigBase(repoDir, marker);
-    const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
+    // Refuses to record into a guessed managed config base, except when
+    // installing the repo's own datastore extension, as `extension pull`
+    // allows (swamp-club#2483, #445).
+    const { lockfilePath } = await resolveManagedLockfileForWrite(
+      repoDir,
+      marker,
+      {
+        exemptTargets: [selected.name],
+        extensionLookup: createExtensionRegistryLookup(serverUrl, identity),
+      },
+    );
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);

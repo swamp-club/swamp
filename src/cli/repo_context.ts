@@ -51,6 +51,12 @@ import {
   stripNamespacePrefix,
 } from "../libswamp/mod.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
+import { RENAMED_DATASTORE_TYPES } from "../domain/datastore/renamed_datastore_types.ts";
+import {
+  extensionCandidateNames,
+  type ExtensionLookupPort,
+} from "../domain/extensions/extension_auto_resolver.ts";
+import { datastoreExtensionCandidates } from "../domain/datastore/datastore_extension_candidates.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { ensureDir, walk } from "@std/fs";
@@ -64,9 +70,15 @@ import { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import {
   getManagedConfigBase,
   isManagedConfigBaseResolved,
+  managedConfigLockfilePath,
   registerManagedConfig,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
+import {
+  type DatastoreEnvReader,
+  effectiveDatastoreType,
+  isExtensionBackedDatastore,
+} from "../infrastructure/persistence/managed_config_lockfile.ts";
 import {
   type DistributedLock,
   type LockInfo,
@@ -306,7 +318,8 @@ export interface EnsureManagedConfigBaseOptions {
  *
  * When the datastore cannot be resolved (its extension is not installed or
  * does not load), nothing is registered here: resolveManagedConfigPaths then
- * records the in-repo `.swamp/config` fallback as unresolved. The datastore
+ * records the in-repo `.swamp/config` fallback as unresolved, and write
+ * commands refuse it (see {@link assertManagedConfigWritable}). The datastore
  * type registry's loaded flag is reset so a later attempt rescans for the
  * extension. Transient `lock_timeout` errors are rethrown rather than
  * reported as unresolved.
@@ -342,12 +355,14 @@ export async function ensureManagedConfigBase(
     );
     const configBase = resolver.resolvePath("config");
     registerManagedConfig(repoDir, true, configBase, true);
+    lastResolutionFailure.delete(resolve(repoDir));
     return true;
   } catch (error) {
     if (error instanceof UserError && error.code === "lock_timeout") {
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
+    lastResolutionFailure.set(resolve(repoDir), message);
     const logger = getSwampLogger(["cli", "managed-config"]);
     logger
       .debug`Failed to resolve datastore for managedConfig base: ${message}`;
@@ -355,6 +370,9 @@ export async function ensureManagedConfigBase(
     return false;
   }
 }
+
+/** The most recent managed config resolution failure per repo, for errors. */
+const lastResolutionFailure = new Map<string, string>();
 
 /**
  * Resolves the lockfile path based on whether managed config is enabled.
@@ -408,6 +426,149 @@ export function resolveManagedConfigPaths(
     lockfilePath: join(modelsDir, "upstream_extensions.json"),
     active,
   };
+}
+
+/**
+ * Thrown when an extension command would write the managed extension
+ * lockfile but the managed config base could not be resolved, so the only
+ * lockfile available is the in-repo `.swamp/config` guess. Writing there
+ * would never reach the datastore's lockfile (swamp-club#2483).
+ */
+export class ManagedConfigUnresolvedError extends UserError {
+  constructor(
+    datastoreType: string,
+    reason: string | undefined,
+    datastoreExtension = "<datastore extension>",
+  ) {
+    const detail = reason ? ` (${reason})` : "";
+    super(
+      `Cannot resolve the ${datastoreType} datastore for managedConfig` +
+        `${detail}, so extension changes cannot be recorded in the ` +
+        `datastore's lockfile. Install the datastore extension with ` +
+        `\`swamp extension pull ${datastoreExtension}\` (add \`--force\` ` +
+        `if it is installed but fails to load), then run ` +
+        `\`swamp datastore sync --pull\` and retry.`,
+      "managed_config_unresolved",
+    );
+    this.name = "ManagedConfigUnresolvedError";
+  }
+}
+
+/**
+ * Refuses a managed extension lockfile write when the managed config base
+ * is only the in-repo guess. Applies to managedConfig repos on an
+ * extension-backed datastore; filesystem datastores always resolve.
+ *
+ * @throws ManagedConfigUnresolvedError when the base is unresolved.
+ */
+export function assertManagedConfigWritable(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  readDatastoreEnv?: DatastoreEnvReader,
+): void {
+  if (!isExtensionBackedDatastore(marker, readDatastoreEnv)) return;
+  if (isManagedConfigBaseResolved(repoDir)) return;
+  const type = effectiveDatastoreType(marker, readDatastoreEnv);
+  const extensionType = RENAMED_DATASTORE_TYPES[type] ?? type;
+  throw new ManagedConfigUnresolvedError(
+    type,
+    describeResolutionFailure(lastResolutionFailure.get(resolve(repoDir))),
+    extensionCandidateNames(extensionType)[0],
+  );
+}
+
+/** Where a managed extension lockfile write should go. */
+export interface ManagedLockfileWrite {
+  lockfilePath: string;
+  /**
+   * Whether to publish the lockfile to the datastore afterwards. False when
+   * the datastore-extension exemption records into the in-repo lockfile
+   * because the base is unresolved; nothing in the datastore cache changed.
+   */
+  publish: boolean;
+}
+
+/**
+ * Resolves the lockfile an extension write command should change, applying
+ * the guard against writing to a guessed managed config base
+ * (swamp-club#2483).
+ *
+ * The base is resolved as other commands resolve it, auto-installing a
+ * missing datastore extension, so a fresh checkout's writes work as before.
+ * When the base is resolved (or the repo does not need it), the resolved
+ * lockfile is returned. When it is still unresolved on an extension-backed
+ * datastore (the extension could not be installed or does not load), the
+ * write is allowed only if every target is the datastore extension itself
+ * (the #445 recovery path): it then records into the in-repo lockfile
+ * without publishing. Otherwise {@link ManagedConfigUnresolvedError} is
+ * thrown.
+ *
+ * @param options.exemptTargets Extension names the command writes; pass
+ *   them only for commands that may repair the datastore extension
+ *   (`extension pull`, `extension update <name>`).
+ * @param options.extensionLookup Registry lookup used to recognise datastore
+ *   extensions whose name is not a prefix of the datastore type.
+ */
+export async function resolveManagedLockfileForWrite(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  options?: {
+    exemptTargets?: readonly string[];
+    extensionLookup?: ExtensionLookupPort;
+    readDatastoreEnv?: DatastoreEnvReader;
+  },
+): Promise<ManagedLockfileWrite> {
+  await ensureManagedConfigBase(repoDir, marker);
+  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
+  if (
+    !isExtensionBackedDatastore(marker, options?.readDatastoreEnv) ||
+    isManagedConfigBaseResolved(repoDir)
+  ) {
+    return { lockfilePath, publish: true };
+  }
+  const targets = options?.exemptTargets ?? [];
+  if (targets.length > 0) {
+    const type = effectiveDatastoreType(marker, options?.readDatastoreEnv);
+    const allCandidates = async (lookup?: ExtensionLookupPort) => {
+      const candidates = await datastoreExtensionCandidates(type, lookup);
+      return targets.every((target) => candidates.includes(target));
+    };
+    // Static candidates first: the usual target (`@swamp/s3-datastore`)
+    // needs no registry round trip, which matters on an offline machine.
+    const exempt = await allCandidates() ||
+      (options?.extensionLookup !== undefined &&
+        await allCandidates(options.extensionLookup));
+    if (exempt) {
+      return {
+        lockfilePath: managedConfigLockfilePath(repoDir),
+        publish: false,
+      };
+    }
+  }
+  assertManagedConfigWritable(repoDir, marker, options?.readDatastoreEnv);
+  return { lockfilePath, publish: true };
+}
+
+/**
+ * Keeps the resolution failure short for the guard's message. A missing
+ * datastore extension surfaces from resolution as "Unknown datastore type"
+ * (or, for the legacy `s3` type, "requires the ... extension. Install it
+ * with: swamp extension pull ..."); both are reported as "its datastore
+ * extension is not installed and could not be installed automatically", so
+ * the error's own remedy (pull the extension) is the only one.
+ */
+function describeResolutionFailure(
+  message: string | undefined,
+): string | undefined {
+  if (!message) return undefined;
+  if (
+    message.includes("Unknown datastore type") ||
+    message.includes("Install it with:")
+  ) {
+    return "its datastore extension is not installed and could not be " +
+      "installed automatically";
+  }
+  return message.trim().replace(/[.\s]+$/, "");
 }
 
 /**

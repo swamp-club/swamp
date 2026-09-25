@@ -25,9 +25,8 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
-  ensureManagedConfigBase,
   requireRepoMarker,
-  resolveManagedConfigPaths,
+  resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
 import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
@@ -114,8 +113,11 @@ export const extensionRemoveCommand = withRemoteOptions(
     resolveRepoDir(options.repoDir),
   );
 
-  await ensureManagedConfigBase(repoDir, marker);
-  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
+  // Refuses to change a guessed managed config base (swamp-club#2483).
+  const { lockfilePath } = await resolveManagedLockfileForWrite(
+    repoDir,
+    marker,
+  );
 
   const tool = resolvePrimaryTool(marker);
   const skillsDirRelative = relative(

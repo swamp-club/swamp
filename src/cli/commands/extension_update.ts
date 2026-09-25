@@ -28,7 +28,10 @@ import {
   ensureManagedConfigBase,
   requireRepoMarker,
   resolveManagedConfigPaths,
+  resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
+import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
+import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
 import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
 import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
 import {
@@ -43,7 +46,10 @@ import {
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  isManagedConfigBaseResolved,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { createExtensionUpdateRenderer } from "../../presentation/renderers/extension_update.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
@@ -125,8 +131,36 @@ export const extensionUpdateCommand = withRemoteOptions(
   const { repoDir, marker } = await requireRepoMarker(
     resolveRepoDir(options.repoDir),
   );
-  await ensureManagedConfigBase(repoDir, marker);
-  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
+
+  let extensionName: string | undefined;
+  if (extensionArg) {
+    const ref = parseExtensionRef(extensionArg);
+    extensionName = ref.name;
+  }
+
+  const serverUrl = resolveServerUrl();
+  const identity = await loadIdentity();
+  let lockfilePath: string;
+  let publish = false;
+  let fallbackLockfile = false;
+  if (options.check) {
+    // Read-only: no guard, but say when the answer comes from the in-repo
+    // fallback rather than the datastore's lockfile, because the datastore
+    // extension could not be installed (swamp-club#2483).
+    await ensureManagedConfigBase(repoDir, marker);
+    lockfilePath = resolveManagedConfigPaths(repoDir, marker).lockfilePath;
+    fallbackLockfile = isExtensionBackedDatastore(marker) &&
+      !isManagedConfigBaseResolved(repoDir);
+  } else {
+    // Refuses to record into a guessed managed config base, except when
+    // updating the repo's own datastore extension by name (#445).
+    const target = await resolveManagedLockfileForWrite(repoDir, marker, {
+      exemptTargets: extensionName ? [extensionName] : [],
+      extensionLookup: createExtensionRegistryLookup(serverUrl, identity),
+    });
+    lockfilePath = target.lockfilePath;
+    publish = target.publish;
+  }
 
   // Per-extension models/workflows/vaults/datastores/reports
   // destinations are derived inside installExtension from the
@@ -141,16 +175,7 @@ export const extensionUpdateCommand = withRemoteOptions(
     primarySkillsDirRelative,
   );
 
-  // 4. Parse extension name if given
-  let extensionName: string | undefined;
-  if (extensionArg) {
-    const ref = parseExtensionRef(extensionArg);
-    extensionName = ref.name;
-  }
-
   // 4. Wire deps — inject installExtension from CLI layer
-  const serverUrl = resolveServerUrl();
-
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   // W2 (commit 3): construct shared denoRuntime + repository so each
   // upgrade routes through InstallExtensionService and phase 8 fires
@@ -162,7 +187,6 @@ export const extensionUpdateCommand = withRemoteOptions(
     swampPath(repoDir, "_extension_catalog.db"),
   );
   try {
-    const identity = await loadIdentity();
     const deps = await createExtensionUpdateDeps({
       lockfilePath,
       serverUrl,
@@ -212,6 +236,7 @@ export const extensionUpdateCommand = withRemoteOptions(
       extensionUpdate(ctx, deps, {
         extensionName,
         checkOnly: !!options.check,
+        fallbackLockfile,
       }),
       renderer.handlers(),
     );
@@ -219,7 +244,7 @@ export const extensionUpdateCommand = withRemoteOptions(
     catalog.close();
   }
 
-  if (!options.check) {
+  if (publish) {
     await pushManagedConfigChangesDeferred(repoDir, marker);
   }
 });

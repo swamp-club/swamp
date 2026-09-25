@@ -695,7 +695,11 @@ export async function handleExtensionInstall(
     const marker = await new RepoMarkerRepository().read(
       RepoPath.create(ctx.repoDir),
     );
-    const deps = await createExtensionInstallDeps(ctx.repoDir, logger);
+    // Serve's datastore resolver is always resolved; use its lockfile
+    // rather than the process-wide registry (swamp-club#2483).
+    const deps = await createExtensionInstallDeps(ctx.repoDir, logger, {
+      lockfilePath: resolveManagedPathsFromContext(ctx, marker).lockfilePath,
+    });
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertFalse } from "@std/assert";
+import { assertEquals, assertFalse, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type {
   DoctorExtensionsReport,
@@ -43,6 +43,30 @@ function captureStdout(fn: () => void | Promise<void>): Promise<string> {
       console.log = originalLog;
     })
     .then(() => lines.join("\n"));
+}
+
+async function captureConsole(
+  fn: () => void | Promise<void>,
+): Promise<string> {
+  const lines: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((m) => [m, console[m]] as const);
+  for (const [m] of originals) {
+    console[m] = (...args: unknown[]) => {
+      lines.push(
+        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+      );
+    };
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [m, orig] of originals) {
+      console[m] = orig;
+    }
+  }
+  // deno-lint-ignore no-control-regex
+  return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 function passResult(registry: DoctorRegistryName): DoctorRegistryResult {
@@ -393,5 +417,74 @@ Deno.test(
 
     const parsed = JSON.parse(out);
     assertFalse("denoPath" in parsed);
+  },
+);
+
+Deno.test(
+  "doctor_extensions json renderer: rescanSkipped carries the reason when the rescan did not run",
+  async () => {
+    const out = await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("json");
+      const handlers = r.handlers();
+      await handlers.completed({
+        kind: "completed",
+        report: {
+          ...buildPassReport(),
+          rescanSkipped: {
+            reason: "Cannot resolve the s3 datastore",
+            repairSkipped: true,
+          },
+        },
+      });
+    });
+
+    const parsed = JSON.parse(out);
+    assertEquals(parsed.rescanSkipped, {
+      reason: "Cannot resolve the s3 datastore",
+      repairSkipped: true,
+    });
+    assertFalse("repairReport" in parsed);
+  },
+);
+
+Deno.test(
+  "doctor_extensions json renderer: rescanSkipped omitted when the rescan ran",
+  async () => {
+    const out = await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("json");
+      const handlers = r.handlers();
+      await handlers.completed({
+        kind: "completed",
+        report: buildPassReport(),
+      });
+    });
+
+    const parsed = JSON.parse(out);
+    assertFalse("rescanSkipped" in parsed);
+  },
+);
+
+Deno.test(
+  "doctor_extensions log renderer: warns when the rescan and repairs were skipped",
+  async () => {
+    const out = await captureConsole(async () => {
+      const r = createDoctorExtensionsRenderer("log");
+      const handlers = r.handlers();
+      await handlers.completed({
+        kind: "completed",
+        report: {
+          ...buildPassReport(),
+          rescanSkipped: {
+            reason: "Cannot resolve the s3 datastore",
+            repairSkipped: true,
+          },
+        },
+      });
+    });
+
+    assertStringIncludes(
+      out,
+      "Skipped the catalog rescan and repairs: Cannot resolve the s3 datastore",
+    );
   },
 );

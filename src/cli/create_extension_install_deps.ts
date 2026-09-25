@@ -29,10 +29,7 @@ import {
   LockfileRepository,
   resolveServerUrl,
 } from "../libswamp/mod.ts";
-import {
-  ensureManagedConfigBase,
-  resolveManagedConfigPaths,
-} from "./repo_context.ts";
+import { resolveManagedLockfileForWrite } from "./repo_context.ts";
 
 /**
  * Wires `ExtensionInstallDeps` from a repo directory and a logger.
@@ -46,6 +43,14 @@ import {
 export async function createExtensionInstallDeps(
   repoDir: string,
   logger: Logger,
+  options?: {
+    /**
+     * The lockfile to restore from, already resolved by the caller (serve
+     * derives it from its datastore resolver). Skips the managed config
+     * resolution and the guard.
+     */
+    lockfilePath?: string;
+  },
 ): Promise<ExtensionInstallDeps> {
   // Absolutize up front. Downstream code joins `repoDir` with relative
   // file paths and passes both to filesystem helpers that compare paths
@@ -55,8 +60,11 @@ export async function createExtensionInstallDeps(
   const repoPath = RepoPath.create(absoluteRepoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
-  await ensureManagedConfigBase(absoluteRepoDir, marker);
-  const { lockfilePath } = resolveManagedConfigPaths(absoluteRepoDir, marker);
+  // Refuses to restore into a guessed managed config base: install would
+  // record into a lockfile the datastore never sees (swamp-club#2483).
+  const lockfilePath = options?.lockfilePath ??
+    (await resolveManagedLockfileForWrite(absoluteRepoDir, marker))
+      .lockfilePath;
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
   const absoluteSkillsDirs = resolveUniqueLocalSkillsDirs(
     absoluteRepoDir,

@@ -1054,6 +1054,7 @@ export {
   type DoctorRegistryDeps,
   type DoctorRegistryName,
   type DoctorRegistryResult,
+  type DoctorRescanSkipped,
   type DoctorWarning,
 } from "./extensions/doctor.ts";
 
