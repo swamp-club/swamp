@@ -133,4 +133,59 @@ Deno.test("renderServeCheckConfig: log mode outside oauth has nothing to resolve
   assertStringIncludes(output, "Auth mode: token");
   assertStringIncludes(output, "No usernames to resolve in this mode.");
   assertStringIncludes(output, "Result: PASSED");
+  assertFalse(output.includes("Token secrets key:"));
+});
+
+const tokenMode: ServeCheckConfigData = {
+  passed: true,
+  authMode: "token",
+  entries: [],
+  allowedCollectives: [],
+  wouldStart: true,
+};
+
+Deno.test("renderServeCheckConfig: log mode reports a usable token secrets key", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderServeCheckConfig({
+        ...tokenMode,
+        tokenSecretsKey: { vault: "prod-secrets", key: "k", status: "ok" },
+      }, "log")
+    ),
+  );
+  assertStringIncludes(output, "Token secrets key: vault prod-secrets, key k");
+  assertStringIncludes(output, "✓ resolves to a usable 32-byte key");
+  assertStringIncludes(output, "Result: PASSED");
+});
+
+Deno.test("renderServeCheckConfig: log mode fails when the token secrets key is unusable", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderServeCheckConfig({
+        ...tokenMode,
+        passed: false,
+        wouldStart: false,
+        tokenSecretsKey: {
+          vault: "prod-secrets",
+          key: "k",
+          status: "failed",
+          error: "Could not read the token secrets key",
+        },
+      }, "log")
+    ),
+  );
+  assertStringIncludes(output, "✗ Could not read the token secrets key");
+  assertStringIncludes(
+    output,
+    "Result: FAILED (swamp serve would refuse to start)",
+  );
+});
+
+Deno.test("renderServeCheckConfig: json mode includes the token secrets key check", () => {
+  const data: ServeCheckConfigData = {
+    ...tokenMode,
+    tokenSecretsKey: { vault: "prod-secrets", key: "k", status: "ok" },
+  };
+  const output = captureLogs(() => renderServeCheckConfig(data, "json"));
+  assertEquals(JSON.parse(output), data);
 });

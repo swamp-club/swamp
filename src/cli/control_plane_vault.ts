@@ -24,8 +24,15 @@ import {
   type ControlPlaneVaultInitResult,
   initializeControlPlaneVault,
 } from "../domain/vaults/control_plane_vault_init.ts";
+import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
+import { VaultService } from "../domain/vaults/vault_service.ts";
 import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
+import {
+  parseTokenSecretsKeyConfig,
+  readServeConfigFile,
+  SERVE_CONFIG_PATH,
+} from "../serve/serve_config.ts";
 
 export interface ControlPlaneVaultCliOptions {
   namespace?: string;
@@ -66,5 +73,21 @@ export async function initializeControlPlaneVaultForCli(
     store = new FileSystemControlPlaneStore(swampPath(repoDir));
   }
 
-  return await initializeControlPlaneVault(store, hasRemote);
+  // The key source comes only from the repo's serve.yaml, read quietly so
+  // token commands don't repeat serve's config warnings. A control plane
+  // already moved to an external key fails closed without it.
+  let tokenSecretsKey: TokenSecretsKeyRef | undefined;
+  try {
+    tokenSecretsKey = parseTokenSecretsKeyConfig(
+      await readServeConfigFile(repoDir),
+      SERVE_CONFIG_PATH,
+    );
+  } catch (err) {
+    throw controlPlaneVaultInitError(err, hasRemote);
+  }
+
+  return await initializeControlPlaneVault(store, hasRemote, {
+    tokenSecretsKey,
+    vaultService: () => VaultService.fromRepository(repoDir),
+  });
 }

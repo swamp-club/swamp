@@ -27,6 +27,7 @@ import {
   mergeServeOptions,
   parseAuditConfig,
   parseExplicitFlags,
+  parseTokenSecretsKeyConfig,
   parseWebhookConfig,
   readServeConfigFile,
   type ServeConfigFile,
@@ -2225,4 +2226,81 @@ Deno.test("parseWebhookConfig: lowercases an extension scheme and passes config 
     scheme: "@swamp/telegram",
     config: { mode: "strict" },
   });
+});
+
+Deno.test("parseTokenSecretsKeyConfig: returns the vault and key from a token-secrets block", () => {
+  withTempDir((dir) => {
+    const path = writeConfig(dir, {
+      "token-secrets": { vault: "prod-secrets", key: "swamp-token-key" },
+    });
+    assertEquals(
+      parseTokenSecretsKeyConfig(loadServeConfig(undefined, dir), path),
+      { vault: "prod-secrets", key: "swamp-token-key" },
+    );
+  });
+});
+
+Deno.test("parseTokenSecretsKeyConfig: undefined without a block or config file", () => {
+  assertEquals(parseTokenSecretsKeyConfig(null, "serve.yaml"), undefined);
+  assertEquals(
+    parseTokenSecretsKeyConfig({ port: 1 }, "serve.yaml"),
+    undefined,
+  );
+});
+
+Deno.test("loadServeConfig: token-secrets requires both vault and key", () => {
+  for (const block of [{ vault: "prod-secrets" }, { key: "k" }, "vault"]) {
+    withTempDir((dir) => {
+      writeConfig(dir, { "token-secrets": block });
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        "Invalid token-secrets",
+      );
+    });
+  }
+});
+
+Deno.test("loadServeConfig: token-secrets cannot name _token-secrets as its vault", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      "token-secrets": { vault: "_token-secrets", key: "k" },
+    });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "the vault it encrypts",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: token-secrets is a known key and warns about unknown fields inside it", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["serve", "config"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+  try {
+    withTempDir((dir) => {
+      writeConfig(dir, {
+        "token-secrets": { vault: "prod-secrets", key: "k", rotate: true },
+      });
+      loadServeConfig(undefined, dir);
+    });
+    const unknownKeys = captured
+      .filter((r) =>
+        r.message.map((p) => String(p)).join("").includes("Unknown key")
+      )
+      .map((r) => r.properties.key);
+    assertEquals(unknownKeys, ["token-secrets.rotate"]);
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
 });

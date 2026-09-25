@@ -123,7 +123,11 @@ import {
   renderDaemonStatus,
   toServiceMode,
 } from "../../presentation/output/serve_daemon_output.ts";
-import { renderServeCheckConfig } from "../../presentation/output/serve_check_config_output.ts";
+import {
+  renderServeCheckConfig,
+  type TokenSecretsKeyCheck,
+} from "../../presentation/output/serve_check_config_output.ts";
+import type { TokenSecretsKeyRef } from "../../domain/vaults/token_secrets_key.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { selectCheckConfigToken } from "../serve_check_config_token.ts";
 import { groupCommandAction } from "../group_action.ts";
@@ -155,11 +159,17 @@ import {
   WebhookService,
 } from "../../serve/webhook.ts";
 import {
+  hasCoLocatedTokenKey,
+  TOKEN_SECRETS_VAULT_NAME,
+} from "../../domain/vaults/control_plane_vault_provider.ts";
+import {
   loadServeConfig,
   mergeServeOptions,
   parseAuditConfig,
   parseExplicitFlags,
+  parseTokenSecretsKeyConfig,
   parseWebhookConfig,
+  SERVE_CONFIG_PATH,
   type WebhookConfigEntry,
 } from "../../serve/serve_config.ts";
 import {
@@ -1208,6 +1218,35 @@ const reloadCommand = new Command()
     logger.info`Sent SIGHUP to serve process ${pid}`;
   });
 
+/**
+ * Reads the external token secrets key the way serve would at startup and
+ * reports whether it is usable. Returns undefined when serve.yaml has no
+ * token-secrets block. The key itself is never returned or printed.
+ */
+async function checkTokenSecretsKey(
+  ref: TokenSecretsKeyRef | undefined,
+  repoDir: string,
+): Promise<TokenSecretsKeyCheck | undefined> {
+  if (!ref) return undefined;
+  const { resolveTokenSecretsKey } = await import(
+    "../../domain/vaults/control_plane_vault_init.ts"
+  );
+  try {
+    await resolveTokenSecretsKey(
+      ref,
+      await VaultService.fromRepository(repoDir),
+    );
+    return { vault: ref.vault, key: ref.key, status: "ok" };
+  } catch (err) {
+    return {
+      vault: ref.vault,
+      key: ref.key,
+      status: "failed",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 const checkConfigCommand = new Command()
   .name("check-config")
   .description(
@@ -1217,7 +1256,9 @@ const checkConfigCommand = new Command()
       "allowed-user name on the OAuth provider. Exits non-zero if a name is unknown " +
       "or serve would refuse to start. Uses SWAMP_API_KEY or your 'swamp auth login' " +
       "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
-      "for a custom provider). Nothing is written to the repository or the vault.",
+      "for a custom provider). With a token-secrets block, also reads the token " +
+      "secrets key from its vault and checks it is a usable 32-byte key, without " +
+      "printing it. Nothing is written to the repository or the vault.",
   )
   .example("Check the repository's serve config", "swamp serve check-config")
   .example(
@@ -1284,14 +1325,25 @@ const checkConfigCommand = new Command()
       approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
     });
 
+    const tokenSecretsKey = await checkTokenSecretsKey(
+      parseTokenSecretsKeyConfig(
+        configFile,
+        (options.config as string | undefined) ?? SERVE_CONFIG_PATH,
+      ),
+      repoDir,
+    );
+    const keyUsable = tokenSecretsKey?.status !== "failed";
+
     if (authConfig.mode !== "oauth") {
       renderServeCheckConfig({
-        passed: true,
+        passed: keyUsable,
         authMode: authConfig.mode,
         entries: [],
         allowedCollectives: [],
-        wouldStart: true,
+        wouldStart: keyUsable,
+        ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
       }, ctx.outputMode);
+      if (!keyUsable) Deno.exitCode = 1;
       return;
     }
 
@@ -1325,7 +1377,7 @@ const checkConfigCommand = new Command()
       providerUrl,
     );
     const notFound = check.entries.filter((e) => e.status === "not-found");
-    const passed = check.wouldStart && notFound.length === 0;
+    const passed = check.wouldStart && notFound.length === 0 && keyUsable;
 
     renderServeCheckConfig({
       passed,
@@ -1333,8 +1385,9 @@ const checkConfigCommand = new Command()
       oauthProvider: providerUrl,
       entries: check.entries,
       allowedCollectives: authConfig.allowedCollectives,
-      wouldStart: check.wouldStart,
+      wouldStart: check.wouldStart && keyUsable,
       ...(check.refusal !== undefined ? { refusal: check.refusal } : {}),
+      ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
     }, ctx.outputMode);
 
     // The rendered result already says what failed; like `access can-i`,
@@ -2296,6 +2349,20 @@ export const serveCommand = new Command()
           }
         }
       }
+
+      // The namespace move copies root token-secrets but never deletes them.
+      // With an external key configured, a co-located key left at the root
+      // still decrypts every token secret minted before the move.
+      if (
+        serveNamespace &&
+        configFile?.["token-secrets"] !== undefined &&
+        hasCoLocatedTokenKey(rootRecords)
+      ) {
+        logger.error(
+          "The datastore root still holds a co-located token encryption key and token secrets under _control/token-secrets/, copied into namespace {namespace} but never removed. Anyone with read access to the datastore can decrypt every token secret that existed before the namespace move. Delete _control/token-secrets/ at the datastore root once no swamp serve without a namespace uses it, then rotate those tokens.",
+          { namespace: serveNamespace },
+        );
+      }
     }
 
     // Create the control-plane store AFTER namespace binding (which happens
@@ -2318,19 +2385,26 @@ export const serveCommand = new Command()
     // secrets in the user's vault (which is a poor fit for external backends
     // like AWS SM) with an encrypted control-plane store that supports
     // immediate deletion and has no per-secret cost.
-    const { ControlPlaneVaultProvider, TOKEN_SECRETS_VAULT_NAME } =
-      await import(
-        "../../domain/vaults/control_plane_vault_provider.ts"
+    // With a serve.yaml `token-secrets` block the key comes from that vault
+    // and never from the datastore; serve refuses to start if it can't be read.
+    const { initializeControlPlaneVault } = await import(
+      "../../domain/vaults/control_plane_vault_init.ts"
+    );
+    const { provider: tokenSecretsProvider } =
+      await initializeControlPlaneVault(
+        controlPlaneStore,
+        hasRemoteControlPlane,
+        {
+          tokenSecretsKey: parseTokenSecretsKeyConfig(
+            configFile,
+            (options.config as string | undefined) ?? SERVE_CONFIG_PATH,
+          ),
+          vaultService: () =>
+            VaultService.fromRepository(resolvedRepoDir, {
+              defaultVaultName: repoMarker?.defaultVault,
+            }),
+        },
       );
-    const tokenSecretsProvider = new ControlPlaneVaultProvider(
-      controlPlaneStore,
-    );
-    await tokenSecretsProvider.initialize();
-    VaultService.registerGlobalProvider(
-      TOKEN_SECRETS_VAULT_NAME,
-      "control_plane",
-      tokenSecretsProvider,
-    );
 
     const healthResult = await checkTokenHealth({
       tokenSecretsProvider,
