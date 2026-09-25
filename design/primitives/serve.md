@@ -393,7 +393,8 @@ definition files (`config/models/`, `config/vaults/`, etc.). It calls
 registries. Extension sources are not pushed today (each repo keeps them in its
 own pulled root until swamp-club#2429), so a peer's `extension pull` changes
 only the lockfile and does not trigger this reload; each instance runs
-`extension install` for its own sources.
+`extension install` for its own sources, then `swamp serve reload` or a restart
+so the new types register (see Known limits).
 
 **Rolling restart.** On SIGTERM an instance stops accepting triggers, drains
 active runs for 30 s, aborts the rest and waits 5 s more. It marks those

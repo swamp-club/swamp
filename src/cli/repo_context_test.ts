@@ -48,7 +48,10 @@ import {
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
-import { isManagedConfigBaseResolved } from "../infrastructure/persistence/paths.ts";
+import {
+  isManagedConfigBaseResolved,
+  resolvePulledExtensionsRoot,
+} from "../infrastructure/persistence/paths.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -2730,6 +2733,11 @@ Deno.test("ensureManagedConfigBase: registers cache-based config path via resolv
       lockfilePath,
       join(cachePath, "config", "upstream_extensions.json"),
     );
+    // Sources stay in the repo while the lockfile follows the cache base.
+    assertPathEquals(
+      resolvePulledExtensionsRoot(tmpDir),
+      join(tmpDir, ".swamp", "config", "pulled-extensions"),
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
@@ -2762,6 +2770,10 @@ Deno.test("resolveManagedConfigPaths: picks up registry-populated base when sent
     assertPathEquals(
       lockfilePath,
       join(cachePath, "config", "upstream_extensions.json"),
+    );
+    assertPathEquals(
+      resolvePulledExtensionsRoot(tmpDir),
+      join(tmpDir, ".swamp", "config", "pulled-extensions"),
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});

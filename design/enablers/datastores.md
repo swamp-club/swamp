@@ -438,7 +438,8 @@ Serve runs three background pollers to fix this:
   sources are not pushed today (they live in each repo's own pulled root until
   swamp-club#2429); peers push only the lockfile, which arrives with the
   definitions, so this reload fires only when `config/pulled-extensions/`
-  itself changes, as after `datastore config migrate`.
+  itself changes, as after `datastore config migrate`. Even then it re-bundles
+  from the pod's own pulled root, not from that tree.
 - **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) refreshes
   access-control grants and groups, then reloads the policy snapshot.
 - **RuntimeDataPoller** (`subdirs: ["data"]`) refreshes the `data/` subtree
@@ -1837,7 +1838,9 @@ When a pod boots and logs "N pulled extension(s) have missing source files":
    swamp extension install --repo-dir /path/to/repo
    ```
    This restores the source files locally. Sources are not pushed to the
-   remote, so each pod restores its own (pod boot step 5).
+   remote, so each pod restores its own (pod boot step 5). If serve is already
+   running on the pod, follow with `swamp serve reload` (requires
+   `--hot-reload`) or restart it so the restored types register.
 
 2. **Via the serve API (with `--hot-reload` enabled):**
    ```bash
@@ -1845,8 +1848,9 @@ When a pod boots and logs "N pulled extension(s) have missing source files":
    swamp serve reload --server https://pod-url
    ```
    The serve handler installs on that pod and pushes the lockfile.
-   `serve reload` re-bundles the updated extensions. Without `--hot-reload` the reload step
-   fails and the pod must be restarted.
+   `serve reload` re-bundles the updated extensions. Without `--hot-reload` the
+   reload step fails and the pod must be restarted. This covers only the pod
+   behind that URL; other replicas still need their own restore (step 1).
 
 ### Extension auto-reload via config poller
 
@@ -1856,7 +1860,8 @@ extension files changed. Definition-only changes (model, vault or workflow YAML
 edits) invalidate catalogs without reloading extension registries. Because
 extension sources are not pushed (they stay in each repo's pulled root until
 swamp-club#2429), another instance's `extension pull` or `extension install`
-changes only the lockfile here, so it does not trigger this reload; run
-`extension install` on each pod instead.
-`--hot-reload` is still useful for trigger overrides and workflow reloading via
-`swamp serve reload`, but extension registration no longer needs it.
+changes only the lockfile here, so it does not trigger this reload. A running
+serve learns extension types only at boot or on reload, so each pod needs
+`extension install` followed by `swamp serve reload` or a restart. Until
+swamp-club#2429, `--hot-reload` is therefore needed for extension registration
+as well as for trigger overrides and workflow reloading.
