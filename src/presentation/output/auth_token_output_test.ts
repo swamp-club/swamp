@@ -70,7 +70,6 @@ const listData: AuthTokenListData = {
 
 const revokeData: AuthTokenRevokeData = {
   id: "tok-1",
-  name: "ci-deploy",
   collective: "myorg",
 };
 
@@ -105,18 +104,14 @@ Deno.test("renderAuthTokenList: empty list shows hint", () => {
 
 Deno.test("renderAuthTokenRevoke: log mode shows confirmation", () => {
   const output = captureLogs(() => renderAuthTokenRevoke(revokeData, "log"));
-  assertStringIncludes(output, "ci-deploy");
+  assertStringIncludes(output, "tok-1");
   assertStringIncludes(output, "revoked");
   assertStringIncludes(output, "myorg");
 });
 
 Deno.test("renderAuthTokenRevoke: json mode outputs structured data", () => {
   const output = captureLogs(() => renderAuthTokenRevoke(revokeData, "json"));
-  const parsed = JSON.parse(output);
-  assertEquals(parsed.id, "tok-1");
-  assertEquals(parsed.name, "ci-deploy");
-  assertEquals(parsed.collective, "myorg");
-  assertEquals("key" in parsed, false);
+  assertEquals(JSON.parse(output), { id: "tok-1", collective: "myorg" });
 });
 
 Deno.test("renderAuthTokenList: no FINGERPRINT column when the server sends none", () => {
