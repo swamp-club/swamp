@@ -32,7 +32,11 @@ import {
   parseTokenSecretsKeyConfig,
   readServeConfigFile,
   SERVE_CONFIG_PATH,
+  type ServeConfigFile,
 } from "../serve/serve_config.ts";
+import { getLogger } from "@logtape/logtape";
+
+const logger = getLogger(["cli", "control-plane-vault"]);
 
 export interface ControlPlaneVaultCliOptions {
   namespace?: string;
@@ -74,14 +78,21 @@ export async function initializeControlPlaneVaultForCli(
   }
 
   // The key source comes only from the repo's serve.yaml, read quietly so
-  // token commands don't repeat serve's config warnings. A control plane
-  // already moved to an external key fails closed without it. Config errors
-  // name the file and field, so they are not wrapped in the datastore hint.
+  // token commands don't repeat serve's config warnings. A file that can't
+  // be read or parsed is skipped with a warning: these commands never read
+  // it before, and a control plane already moved to an external key still
+  // fails closed without a key. An invalid token-secrets block is an error;
+  // it names the file and field, so it is not wrapped in the datastore hint.
+  let serveConfig: ServeConfigFile | null = null;
+  try {
+    serveConfig = await readServeConfigFile(repoDir);
+  } catch (err) {
+    logger.warn`Ignoring ${SERVE_CONFIG_PATH} for the token secrets key: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+  }
   const tokenSecretsKey: TokenSecretsKeyRef | undefined =
-    parseTokenSecretsKeyConfig(
-      await readServeConfigFile(repoDir),
-      SERVE_CONFIG_PATH,
-    );
+    parseTokenSecretsKeyConfig(serveConfig, SERVE_CONFIG_PATH);
 
   // Token commands never migrate: running serve instances still hold the
   // co-located key, and serve migrates when it restarts with the block.

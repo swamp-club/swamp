@@ -1258,9 +1258,11 @@ const checkConfigCommand = new Command()
       "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
       "for a custom provider). With a token-secrets block, also reads the token " +
       "secrets key from its vault and checks it is a usable 32-byte key, without " +
-      "printing it; it does not compare the key with the one a control plane was " +
-      "already moved to, which serve checks at startup. Nothing is written to the " +
-      "repository or the vault.",
+      "printing it. It reads only this repository's files and never contacts the " +
+      "datastore, so it cannot tell whether a control plane was already moved to a " +
+      "key (or to a different key), and vaults whose configs arrive through the " +
+      "datastore must be synced first; serve checks both at startup. Nothing is " +
+      "written to the repository or the vault.",
   )
   .example("Check the repository's serve config", "swamp serve check-config")
   .example(

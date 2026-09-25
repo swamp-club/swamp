@@ -345,6 +345,11 @@ export class ControlPlaneVaultProvider
         continue;
       }
       const reencryptedBlob = await aesGcmEncrypt(plaintext, externalKey);
+      // A peer that already migrated may have rotated or deleted this entry
+      // since it was read; writing the stale copy back would undo that.
+      // The store has no compare-and-swap, so re-read just before writing to
+      // shrink that window to one round-trip.
+      if (!sameBytes(await this.#store.get(path), data)) continue;
       await this.#store.put(
         path,
         new TextEncoder().encode(JSON.stringify(reencryptedBlob)),
@@ -363,6 +368,14 @@ export class ControlPlaneVaultProvider
     logger
       .warn`Datastore backups and earlier object versions from before this migration still contain the old key and can decrypt the token secrets that existed then. Rotate those tokens, and purge noncurrent object versions under _control/token-secrets/ if the bucket keeps versions.`;
   }
+}
+
+function sameBytes(a: Uint8Array | null, b: Uint8Array): boolean {
+  if (a === null || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 async function canDecrypt(

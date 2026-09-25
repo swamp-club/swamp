@@ -289,7 +289,14 @@ rejected. The rules (`src/domain/vaults/token_secrets_key.ts`,
   datastore content and must not choose the key source. There is no way back to
   a co-located key.
 - Restart every instance with the block together. An instance still on the old
-  key while another migrates can write a secret neither key opens.
+  key while another migrates can write a secret neither key opens. Opted-in
+  instances may migrate at the same time: each re-reads an entry just before
+  writing it back and skips it if a peer changed or deleted it since (a
+  rotation after the peer finished, say). The store has no compare-and-swap,
+  so a change inside that one round-trip can still be overwritten.
+- The token commands read `.swamp/serve.yaml` only for this block. A file that
+  cannot be read or parsed is skipped with a warning, so the default path keeps
+  working; a control plane already moved to an external key still refuses.
 - Moving to the external key cannot reach copies made before the move: datastore
   backups, noncurrent object versions on a versioned bucket, and root-level
   `_control/token-secrets/` left by the namespace migration (see High

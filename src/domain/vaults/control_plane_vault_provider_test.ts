@@ -326,6 +326,46 @@ Deno.test("ControlPlaneVaultProvider: resumes a migration interrupted before the
   );
 });
 
+Deno.test("ControlPlaneVaultProvider: migration does not overwrite an entry a peer rotated or deleted after it was read", async () => {
+  const store = createMockStore();
+  const legacy = new ControlPlaneVaultProvider(store);
+  await legacy.initialize();
+  await legacy.put("server-token-rotated", "old-secret");
+  await legacy.put("server-token-deleted", "old-secret");
+  await legacy.put("server-token-plain", "plain-secret");
+
+  const key = randomKeyBytes();
+  const externalCryptoKey = await importAesKey(key);
+  const firstRead = new Set<string>();
+  // A peer that already migrated acts right after this instance reads each
+  // entry: it rotates one and deletes another.
+  const peerActingStore: ControlPlaneStore = {
+    ...store,
+    get: async (path) => {
+      const data = await store.get(path);
+      if (!path.startsWith(VALUES_PREFIX) || firstRead.has(path)) return data;
+      firstRead.add(path);
+      if (path.endsWith("server-token-rotated")) {
+        const rotated = await aesGcmEncrypt("new-secret", externalCryptoKey);
+        await store.put(
+          path,
+          new TextEncoder().encode(JSON.stringify(rotated)),
+        );
+      } else if (path.endsWith("server-token-deleted")) {
+        await store.delete(path);
+      }
+      return data;
+    },
+  };
+
+  const migrated = externalProvider(peerActingStore, key);
+  await migrated.initialize();
+
+  assertEquals(await migrated.get("server-token-rotated"), "new-secret");
+  assertEquals(await store.get(`${VALUES_PREFIX}server-token-deleted`), null);
+  assertEquals(await migrated.get("server-token-plain"), "plain-secret");
+});
+
 Deno.test("ControlPlaneVaultProvider: migration leaves entries neither key decrypts untouched", async () => {
   const store = createMockStore();
   const legacy = new ControlPlaneVaultProvider(store);

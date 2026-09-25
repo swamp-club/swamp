@@ -352,6 +352,40 @@ Deno.test("initializeControlPlaneVaultForCli: never migrates a co-located key, l
   });
 });
 
+Deno.test("initializeControlPlaneVaultForCli: a malformed serve.yaml does not break token commands on the default path", async () => {
+  await withTempDir(async (repoDir) => {
+    await Deno.mkdir(swampPath(repoDir), { recursive: true });
+    await Deno.writeTextFile(
+      join(swampPath(repoDir), "serve.yaml"),
+      "port: [unclosed\n",
+    );
+    const result = await initializeControlPlaneVaultForCli(repoDir, undefined);
+    await result.provider.put("server-token-a", "secret-a");
+    assertEquals(await result.provider.get("server-token-a"), "secret-a");
+    assertEquals(
+      classifyTokenKeyRecord(await readKeyRecord(repoDir)).kind,
+      "legacy",
+    );
+  });
+});
+
+Deno.test("initializeControlPlaneVaultForCli: a malformed serve.yaml still fails closed on a control plane moved to an external key", async () => {
+  await withTempDir(async (repoDir) => {
+    await setUpExternalKey(repoDir);
+    await initializeControlPlaneVaultForCli(repoDir, undefined);
+    await Deno.writeTextFile(
+      join(swampPath(repoDir), "serve.yaml"),
+      "token-secrets: [unclosed\n",
+    );
+
+    const error = await assertRejects(
+      () => initializeControlPlaneVaultForCli(repoDir, undefined),
+      UserError,
+    );
+    assertStringIncludes(error.message, `vault '${KEY_VAULT}'`);
+  });
+});
+
 Deno.test("initializeControlPlaneVaultForCli: rejects _token-secrets as the key's vault", async () => {
   await withTempDir(async (repoDir) => {
     await writeServeYaml(repoDir, TOKEN_SECRETS_VAULT_NAME);

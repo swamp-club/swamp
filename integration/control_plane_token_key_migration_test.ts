@@ -135,7 +135,7 @@ function keyReader(value: string | undefined): TokenSecretsKeyVaultReader {
   };
 }
 
-Deno.test("token key default: without a token-secrets key the co-located key and its secrets are used as before", async () => {
+Deno.test("initializeControlPlaneVault: without a token secrets key, the co-located key and its secrets are used as before", async () => {
   await withTempDir(async (dir) => {
     const legacyKey = await seedCoLocated(dir);
     const before = await snapshotControlPlane(dir);
@@ -159,7 +159,7 @@ Deno.test("token key default: without a token-secrets key the co-located key and
   });
 });
 
-Deno.test("token key error: an unusable key refuses to start and leaves the control plane untouched", async () => {
+Deno.test("initializeControlPlaneVault: an unusable token secrets key refuses to start and leaves the control plane untouched", async () => {
   await withTempDir(async (dir) => {
     await seedCoLocated(dir);
     const before = await snapshotControlPlane(dir);
@@ -200,7 +200,7 @@ Deno.test("token key error: an unusable key refuses to start and leaves the cont
   });
 });
 
-Deno.test("token key migration: concurrent opted-in instances move every secret and drop the co-located key", async () => {
+Deno.test("ControlPlaneVaultProvider: concurrent opted-in instances move every secret and drop the co-located key", async () => {
   await withTempDir(async (dir) => {
     const legacyKey = await seedCoLocated(dir);
     const key = crypto.getRandomValues(new Uint8Array(32));
@@ -232,7 +232,7 @@ Deno.test("token key migration: concurrent opted-in instances move every secret 
   });
 });
 
-Deno.test("token key migration: the next start completes an interrupted migration", async () => {
+Deno.test("ControlPlaneVaultProvider: the next start completes an interrupted migration", async () => {
   await withTempDir(async (dir) => {
     await seedCoLocated(dir);
     const key = crypto.getRandomValues(new Uint8Array(32));
@@ -263,7 +263,7 @@ Deno.test("token key migration: the next start completes an interrupted migratio
   });
 });
 
-Deno.test("token key migration: afterwards an instance without the key, or with another key, refuses to start", async () => {
+Deno.test("ControlPlaneVaultProvider: after migration an instance without the key, or with another key, refuses to start", async () => {
   await withTempDir(async (dir) => {
     await seedCoLocated(dir);
     await external(dir, crypto.getRandomValues(new Uint8Array(32)))

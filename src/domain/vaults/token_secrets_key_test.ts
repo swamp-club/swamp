@@ -73,12 +73,14 @@ Deno.test("parseTokenSecretsKeyMaterial: accepts base64 without its padding", ()
   assertEquals(parseTokenSecretsKeyMaterial(unpadded), key);
 });
 
-Deno.test("parseTokenSecretsKeyMaterial: errors are TokenSecretsKeyErrors", () => {
-  assertThrows(
-    () => parseTokenSecretsKeyMaterial("A"),
-    TokenSecretsKeyError,
-    "not valid hex or base64",
-  );
+Deno.test("parseTokenSecretsKeyMaterial: errors are TokenSecretsKeyErrors, including misplaced padding", () => {
+  for (const value of ["A", "AAAAA="]) {
+    assertThrows(
+      () => parseTokenSecretsKeyMaterial(value),
+      TokenSecretsKeyError,
+      "not valid hex or base64",
+    );
+  }
 });
 
 Deno.test("parseTokenSecretsKeyMaterial: rejects base64 that decodes to the wrong length", () => {

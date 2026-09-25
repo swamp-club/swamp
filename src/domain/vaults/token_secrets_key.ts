@@ -62,10 +62,19 @@ export function parseTokenSecretsKeyMaterial(value: string): Uint8Array {
     }
   } else if (BASE64_PATTERN.test(trimmed) && trimmed.length % 4 !== 1) {
     // Accept unpadded base64 too; some generators strip the '=' padding.
-    const binary = atob(trimmed.padEnd(Math.ceil(trimmed.length / 4) * 4, "="));
-    bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    let binary: string | undefined;
+    try {
+      binary = atob(
+        trimmed.padEnd(Math.ceil(trimmed.length / 4) * 4, "="),
+      );
+    } catch {
+      binary = undefined; // misplaced padding, e.g. "AAAAA="
+    }
+    if (binary !== undefined) {
+      bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
     }
   }
 
