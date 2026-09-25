@@ -103,6 +103,11 @@ const MALFORMED_EXPRESSION_MESSAGES: Record<
 export const FOREIGN_TEMPLATE_WARNING_NAME = "Template syntax passed through";
 
 /**
+ * Name of the note on a definition swamp wrote in `.swamp/auto-definitions/`.
+ */
+export const AUTO_DEFINITION_WARNING_NAME = "Auto-definition";
+
+/**
  * Value object representing a validation warning.
  *
  * Warnings do not cause validation to fail — they surface information
@@ -149,6 +154,19 @@ export class ValidationWarning {
       undefined,
       templates,
     );
+  }
+
+  /**
+   * Creates a note for a definition swamp wrote itself, in
+   * `.swamp/auto-definitions/`, rather than one an author wrote in `models/`.
+   * One written by a workflow step that runs a model type directly holds the
+   * values that step evaluated, so its findings can be text that evaluation
+   * produced (swamp-club#2496).
+   */
+  static autoDefinition(): ValidationWarning {
+    const message =
+      "swamp wrote this definition in .swamp/auto-definitions/ from the arguments a run passed in; it was not written by hand. One written by a workflow step that runs a model type directly holds the values that step evaluated, so the findings above can be text that evaluation produced. Change the workflow step or command that wrote it rather than this file.";
+    return new ValidationWarning(AUTO_DEFINITION_WARNING_NAME, message);
   }
 
   /**
@@ -271,6 +289,21 @@ export interface ModelValidationOutcome {
 }
 
 /**
+ * Options that change what model validation reads.
+ */
+export interface ModelValidationOptions {
+  /**
+   * The global arguments as their author wrote them, when the definition
+   * holds evaluated values instead: a definition a workflow step synthesizes
+   * from its own `globalArgs` after the workflow evaluator has substituted
+   * them. The template-syntax scan reads these in place of the definition's
+   * global arguments, so text that evaluation produced is never flagged.
+   * Every other check still reads the definition.
+   */
+  authoredGlobalArguments?: Record<string, unknown>;
+}
+
+/**
  * Domain service interface for model validation.
  */
 export interface ModelValidationService {
@@ -283,6 +316,7 @@ export interface ModelValidationService {
    * @param modelDef - The model definition containing schemas
    * @param definitionRepo - Optional definition repository for resolving model references in expressions
    * @param checkContext - Optional context for running pre-flight checks
+   * @param options - Optional authored text for the template-syntax scan
    * @returns Validation results and warnings
    */
   validateModel(
@@ -290,6 +324,7 @@ export interface ModelValidationService {
     modelDef: ModelDefinition,
     definitionRepo?: DefinitionRepository,
     checkContext?: CheckValidationContext,
+    options?: ModelValidationOptions,
   ): Promise<ModelValidationOutcome>;
 }
 
@@ -316,6 +351,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     modelDef: ModelDefinition,
     definitionRepo?: DefinitionRepository,
     checkContext?: CheckValidationContext,
+    options?: ModelValidationOptions,
   ): Promise<ModelValidationOutcome> {
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
@@ -326,7 +362,11 @@ export class DefaultModelValidationService implements ModelValidationService {
 
     // Template-like text: swamp's own expressions with the syntax slightly
     // wrong fail Expression paths; another service's syntax only warns.
-    const templateScan = this.scanTemplateSyntax(definition, modelDef);
+    const templateScan = this.scanTemplateSyntax(
+      definition,
+      modelDef,
+      options?.authoredGlobalArguments,
+    );
 
     // Add expression path validation if definitionRepo is provided. It also
     // collects ${{ ... }} text written for another templating system, which
@@ -376,14 +416,18 @@ export class DefaultModelValidationService implements ModelValidationService {
   /**
    * Scans the authored globalArguments and method data for template-like
    * text, skipping fields the model type declares as foreign template text.
+   * `authoredGlobalArguments` replaces the definition's global arguments when
+   * those hold evaluated values (see {@link ModelValidationOptions}).
    */
   private scanTemplateSyntax(
     definition: Definition,
     modelDef: ModelDefinition,
+    authoredGlobalArguments?: Record<string, unknown>,
   ): TemplateSyntaxScan {
     return scanTemplateSyntax(
       {
-        globalArguments: definition.globalArguments,
+        globalArguments: authoredGlobalArguments ??
+          definition.globalArguments,
         methods: definition.methodData,
       },
       {

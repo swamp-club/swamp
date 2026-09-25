@@ -396,6 +396,15 @@ export interface StepExecutionContext {
    * See {@link collectAuthoredExpressions}.
    */
   authoredExpressions: ReadonlySet<string>;
+  /**
+   * The step as written in the workflow source, before the workflow evaluator
+   * substituted values into it. A direct-execution step validates the
+   * definition it builds from its evaluated arguments, so the template-syntax
+   * scan reads the authored arguments from here instead (swamp-club#2496).
+   * Absent when the source step is not known; validation then scans the
+   * definition as it is.
+   */
+  authoredStep?: Step;
   /** Tags from the workflow definition, merged into data writer tag overrides */
   workflowTags?: Record<string, string>;
   /** Runtime tags from --tag CLI flags, passed to method execution context */
@@ -525,6 +534,38 @@ export function trackerStatusForRun(
     case "succeeded":
       return "completed";
   }
+}
+
+/**
+ * The global arguments the template-syntax scan reads for a definition that a
+ * direct-execution step built from its own arguments (swamp-club#2496).
+ *
+ * Such a definition holds the values after the workflow evaluator substituted
+ * them, so a CEL concatenation that builds `{{env.name}}`, or a workflow input
+ * carrying it, would read as a `${{` with its `$` dropped. Each key this step
+ * supplied is scanned as the author wrote it instead. When the step wrote its
+ * arguments as one whole-field expression, evaluation produced every key, so
+ * none of them is scanned. Keys the step did not supply, kept from a stored
+ * definition, are scanned as stored.
+ *
+ * @param definitionGlobals - The built definition's global arguments
+ * @param suppliedKeys - The global argument keys this step supplied
+ * @param authored - The step's authored arguments those keys came from: its
+ *   `globalArgs`, or its `inputs` when they were routed to global arguments
+ */
+export function templateScanGlobalArguments(
+  definitionGlobals: Record<string, unknown>,
+  suppliedKeys: readonly string[],
+  authored: Record<string, unknown> | string | undefined,
+): Record<string, unknown> {
+  const scanned = { ...definitionGlobals };
+  for (const key of suppliedKeys) {
+    delete scanned[key];
+    if (typeof authored === "object" && authored !== null && key in authored) {
+      scanned[key] = authored[key];
+    }
+  }
+  return scanned;
 }
 
 /**
@@ -916,6 +957,9 @@ export class DefaultStepExecutor implements StepExecutor {
     let authoredFromDefinition: ReadonlySet<string> = new Set();
 
     let authoredForDirect = ctx.authoredExpressions;
+    // Global arguments the template-syntax scan reads in place of a direct
+    // definition's evaluated ones; see templateScanGlobalArguments.
+    let authoredGlobalArguments: Record<string, unknown> | undefined;
     if (task.modelType && task.modelName) {
       const resolver = allDeps.directTypeResolver;
 
@@ -952,6 +996,23 @@ export class DefaultStepExecutor implements StepExecutor {
       originalDefinition = result.definition;
       modelType = result.modelType;
       authoredFromDefinition = result.authoredExpressions ?? new Set();
+
+      const authoredTask = ctx.authoredStep?.task.data;
+      if (authoredTask?.type === "model_method") {
+        // The resolver takes task.globalArgs as the global arguments when
+        // given, and otherwise routes task.inputs between global and method
+        // arguments by schema.
+        const suppliedKeys = task.globalArgs
+          ? Object.keys(task.globalArgs)
+          : Object.keys(task.inputs ?? {}).filter((key) =>
+            !(key in result.routedMethodInputs)
+          );
+        authoredGlobalArguments = templateScanGlobalArguments(
+          result.definition.globalArguments,
+          suppliedKeys,
+          task.globalArgs ? authoredTask.globalArgs : authoredTask.inputs,
+        );
+      }
 
       task = {
         ...task,
@@ -1023,6 +1084,8 @@ export class DefaultStepExecutor implements StepExecutor {
       originalDefinition,
       modelDef,
       definitionRepo,
+      undefined,
+      { authoredGlobalArguments },
     );
 
     // Fail fast if validation fails
@@ -1863,6 +1926,11 @@ interface StepOptions {
    * never evaluated as if the author had written it.
    */
   authoredExpressions: ReadonlySet<string>;
+  /**
+   * The workflow as loaded, before evaluation, from which each step's
+   * authored task is looked up. See {@link StepExecutionContext.authoredStep}.
+   */
+  authoredWorkflow?: Workflow;
   lastEvaluated?: boolean;
   workflowNestingDepth?: number;
   ancestorWorkflowIds?: Set<string>;
@@ -2049,6 +2117,7 @@ export class WorkflowExecutionService {
       let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
       let authoredExpressions: ReadonlySet<string> = new Set();
+      let authoredWorkflow: Workflow | undefined;
       let deferredExpressions = options?.deferredExpressions ?? [];
       let run: WorkflowRun;
       let workflowLogPath: string;
@@ -2074,6 +2143,12 @@ export class WorkflowExecutionService {
           found,
           new Set(options?.authoredExpressions),
         );
+        // In --last-evaluated mode the steps run from the cached evaluation,
+        // but their authored text is looked up in the source as loaded now.
+        // Only the template-syntax lint reads it, so a source edited since
+        // the cache was written can change what that lint reports, never
+        // what is evaluated or trusted.
+        authoredWorkflow = found;
 
         if (options?.lastEvaluated) {
           // Load previously evaluated workflow from cache
@@ -2269,6 +2344,7 @@ export class WorkflowExecutionService {
 
       const stepOpts: StepOptions = {
         authoredExpressions,
+        authoredWorkflow,
         lastEvaluated: options?.lastEvaluated,
         workflowNestingDepth: options?.workflowNestingDepth,
         ancestorWorkflowIds: options?.ancestorWorkflowIds,
@@ -2812,6 +2888,7 @@ export class WorkflowExecutionService {
 
       const stepOpts: StepOptions = {
         authoredExpressions,
+        authoredWorkflow: workflow,
         workflowTags: resolvedWorkflow.tags,
         runtimeTags: options?.runtimeTags,
         initiatedBy: existingRun.initiatedBy,
@@ -3749,6 +3826,9 @@ export class WorkflowExecutionService {
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
           authoredExpressions: options.authoredExpressions,
+          authoredStep: options.authoredWorkflow?.getJob(job.name)?.getStep(
+            forEachTemplate ?? stepName,
+          ),
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,
           swampSha: options.swampSha,

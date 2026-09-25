@@ -618,7 +618,14 @@ Validation looks for text that resembles a swamp expression with its syntax
 slightly wrong: `{{ ... }}` with no leading `$`, and `${ ... }` with a single
 brace (`scanTemplateSyntax`, `src/domain/models/template_syntax_scan.ts`). This
 runs in `swamp model validate` and in the validation a workflow step runs before
-its method. Each match is classified with the rule the runtime applies to
+its method. It reads authored text, never evaluated values. A workflow step that
+runs a model type directly (`modelType`, `modelName` and inline `globalArgs`)
+validates a definition built from its arguments after the workflow evaluator
+substituted them, so there the scan reads the step's arguments as written in the
+workflow instead, key by key (`templateScanGlobalArguments`,
+`src/domain/workflows/execution_service.ts`). Text that evaluation produced, from
+a CEL concatenation, a workflow input or a step output, is never flagged. Each
+match is classified with the rule the runtime applies to
 `${{ ... }}` text (`isSwampExpression`). **A match is a mistake exactly when,
 with the syntax corrected, swamp would claim it as its own expression.**
 
@@ -686,11 +693,17 @@ The error names the ways out. The value can build the braces with CEL string
 concatenation, which passes validation and evaluates to the literal text:
 `${{ "{" + "{env.name}" + "}" }}` for `{{ ... }}`, or
 `${{ "$" + "{data.aws_ami.ubuntu.id}" }}` for `${ ... }`. Or the model type
-can declare the field as foreign template text (below). Concatenation does not
-survive a workflow step that runs a model type directly with inline
-`globalArgs`: the workflow evaluator substitutes those values before the step
-validates the definition it builds from them, so the braces come back
-(swamp-club#2496). Declare the field, or use a named definition, there.
+can declare the field as foreign template text (below). Concatenation works the
+same in a workflow step that runs a model type directly, since the scan reads
+the step's authored arguments there (above).
+
+The definition such a step saves in `.swamp/auto-definitions/` holds the
+evaluated values, not the concatenation. Storing the authored text instead would
+store expressions that only resolve inside the run that passed them in. Running
+`swamp model validate` on that definition by name can therefore report the
+braces, and it adds an `Auto-definition` warning saying that swamp wrote the
+definition and that its findings can be text evaluation produced. Validating all
+models skips auto-definitions.
 
 **Declaring a field.** A model type marks a global or method argument that
 holds another service's template syntax with `.meta({ foreignTemplate: true })`

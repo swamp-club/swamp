@@ -21,9 +21,12 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { z } from "zod";
 import {
+  AUTO_DEFINITION_WARNING_NAME,
   DefaultModelValidationService,
   FOREIGN_TEMPLATE_WARNING_NAME,
+  type ModelValidationOptions,
   ValidationResult,
+  ValidationWarning,
 } from "./validation_service.ts";
 import { DATA_NAMESPACE_ACCESSORS } from "../expressions/expression_parser.ts";
 import { Definition, type DefinitionId } from "../definitions/definition.ts";
@@ -525,6 +528,7 @@ async function validateWith(
   modelDef: ModelDefinition,
   props: Parameters<typeof Definition.create>[0],
   repoModels: Definition[] = [],
+  options?: ModelValidationOptions,
 ) {
   const definition = Definition.create(props);
   const mockRepo = createMockDefinitionRepo([
@@ -536,7 +540,7 @@ async function validateWith(
     })),
   ]);
   const { results, warnings } = await new DefaultModelValidationService()
-    .validateModel(definition, modelDef, mockRepo);
+    .validateModel(definition, modelDef, mockRepo, undefined, options);
   return {
     expressionPaths: results.find((r) => r.name === "Expression paths"),
     warnings,
@@ -752,6 +756,92 @@ Deno.test("validateModel fails {{...}} inside a ${{ }} string, even in a declare
     assertStringIncludes(error, "CEL string concatenation");
     assertEquals(warnings, []);
   }
+});
+
+Deno.test("validateModel scans authored global arguments in place of evaluated ones (swamp-club#2496)", async () => {
+  // A direct-execution step's definition holds the evaluated braces; the
+  // author wrote the concatenation that produced them.
+  const { expressionPaths, warnings } = await validateWith(
+    testExprModel,
+    {
+      name: "test-definition",
+      globalArguments: { message: "crashed in {{env.name}}" },
+    },
+    [],
+    {
+      authoredGlobalArguments: {
+        message: 'crashed in ${{ "{" + "{env.name}" + "}" }}',
+      },
+    },
+  );
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings, []);
+});
+
+Deno.test("validateModel reports a dropped $ in authored global arguments", async () => {
+  const { expressionPaths } = await validateWith(
+    testExprModel,
+    { name: "test-definition", globalArguments: { message: "fine" } },
+    [],
+    { authoredGlobalArguments: { message: "crashed in {{env.name}}" } },
+  );
+  assertEquals(expressionPaths?.passed, false);
+  assertStringIncludes(expressionPaths?.error ?? "", "{{env.name}}");
+  assertStringIncludes(
+    expressionPaths?.error ?? "",
+    'at "globalArguments.message"',
+  );
+});
+
+Deno.test("validateModel lists foreign text found in authored global arguments", async () => {
+  const { expressionPaths, warnings } = await validateWith(
+    testExprModel,
+    { name: "test-definition", globalArguments: { message: "fine" } },
+    [],
+    { authoredGlobalArguments: { message: "crashed on {{host.name}}" } },
+  );
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings[0].templates, [
+    { path: "globalArguments.message", text: "{{host.name}}" },
+  ]);
+});
+
+Deno.test("validateModel stays silent on declared foreign fields in authored global arguments", async () => {
+  const { expressionPaths, warnings } = await validateWith(
+    foreignTemplateModel,
+    { name: "test-definition", globalArguments: { message: "fine" } },
+    [],
+    { authoredGlobalArguments: { message: "{{env.name}} on {{host.name}}" } },
+  );
+  assertEquals(expressionPaths?.passed, true);
+  assertEquals(warnings, []);
+});
+
+Deno.test("validateModel reports an unclosed expression in authored global arguments once", async () => {
+  // The authored text carries the error; the definition never holds it, so
+  // the reference checks see nothing extra to report.
+  const { expressionPaths } = await validateWith(
+    testExprModel,
+    { name: "test-definition", globalArguments: { message: "evaluated" } },
+    [],
+    {
+      authoredGlobalArguments: {
+        message: "${{ self.name } && docker ps --format '{{.Names}}'",
+      },
+    },
+  );
+  assertEquals(expressionPaths?.passed, false);
+  const error = expressionPaths?.error ?? "";
+  assertEquals(error.split("Unclosed ${{...}} expression").length - 1, 1);
+});
+
+Deno.test("ValidationWarning.autoDefinition: names the auto-definition and where to fix it", () => {
+  const warning = ValidationWarning.autoDefinition();
+  assertEquals(warning.name, AUTO_DEFINITION_WARNING_NAME);
+  assertEquals(warning.name, "Auto-definition");
+  assertStringIncludes(warning.message, ".swamp/auto-definitions/");
+  assertStringIncludes(warning.message, "evaluation produced");
+  assertStringIncludes(warning.message, "workflow step or command");
 });
 
 Deno.test("validateModel passes another templating system's ${{ }} text with the template warning (swamp-club#2491)", async () => {

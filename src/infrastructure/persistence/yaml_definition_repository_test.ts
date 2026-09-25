@@ -1567,3 +1567,38 @@ Deno.test("YamlDefinitionRepository.save preserves a typeVersion ahead of the mo
     assertEquals(reloaded?.typeVersion, "2027.01.01.1");
   });
 });
+
+Deno.test("YamlDefinitionRepository.hasPrimaryDefinition tells models/ from auto-definitions", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+    const primaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      false,
+    );
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+    await primaryRepo.save(testType, createTestDefinition("authored"));
+    await secondaryRepo.save(testType, createTestDefinition("auto"));
+    // A name in both resolves to models/, as findByNameGlobal does.
+    await primaryRepo.save(testType, createTestDefinition("both"));
+    await secondaryRepo.save(testType, createTestDefinition("both"));
+
+    assertEquals(await repo.hasPrimaryDefinition("authored"), true);
+    assertEquals(await repo.hasPrimaryDefinition("auto"), false);
+    assertEquals(await repo.hasPrimaryDefinition("both"), true);
+    assertEquals(await repo.hasPrimaryDefinition("missing"), false);
+  });
+});

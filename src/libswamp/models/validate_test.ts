@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
@@ -102,6 +102,7 @@ function makeDeps(
     lookupDefinition: () => Promise.resolve({ definition, type: modelType }),
     findAllDefinitions: () =>
       Promise.resolve([{ definition, type: modelType }]),
+    isAutoDefinition: () => Promise.resolve(false),
     resolveModelType: () => Promise.resolve({}),
     validateModel: () =>
       Promise.resolve({
@@ -270,4 +271,50 @@ Deno.test("modelValidate single model propagates warnings", async () => {
   assertEquals(data.warnings[0].name, "Environment variables detected");
   assertEquals(data.warnings[0].envVars?.length, 1);
   assertEquals(data.warnings[0].envVars?.[0].envVar, "BASE_URL");
+});
+
+Deno.test("modelValidate single auto-definition adds the Auto-definition note", async () => {
+  const deps = makeDeps({ isAutoDefinition: () => Promise.resolve(true) });
+  const events = await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+    }),
+  );
+  const completed = events.at(-1) as Extract<
+    ModelValidateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as ModelValidateData;
+  assertEquals(data.passed, true);
+  assertEquals(data.warnings.map((w) => w.name), ["Auto-definition"]);
+  assertStringIncludes(data.warnings[0].message, ".swamp/auto-definitions/");
+});
+
+Deno.test("modelValidate single models/ definition gets no Auto-definition note", async () => {
+  const events = await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), makeDeps(), {
+      modelIdOrName: "my-model",
+    }),
+  );
+  const completed = events.at(-1) as Extract<
+    ModelValidateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals((completed.data as ModelValidateData).warnings, []);
+});
+
+Deno.test("modelValidate all models never adds the Auto-definition note", async () => {
+  const deps = makeDeps({ isAutoDefinition: () => Promise.resolve(true) });
+  const events = await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), deps, {}),
+  );
+  const completed = events.at(-1) as Extract<
+    ModelValidateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data;
+  if (!isModelValidateAllData(data)) {
+    throw new Error("expected all-models data");
+  }
+  assertEquals(data.models[0].warnings, []);
 });

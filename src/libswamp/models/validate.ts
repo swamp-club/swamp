@@ -26,6 +26,7 @@ import {
   DefaultModelValidationService,
   type EnvVarUsageDetail,
   type ForeignTemplateDetail,
+  ValidationWarning,
 } from "../../domain/models/validation_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -111,6 +112,12 @@ export interface ModelValidateDeps {
   findAllDefinitions: () => Promise<
     Array<{ definition: Definition; type: ModelType }>
   >;
+  /**
+   * Whether a definition `lookupDefinition` returned was loaded from
+   * `.swamp/auto-definitions/`, which swamp writes itself, rather than
+   * `models/`.
+   */
+  isAutoDefinition: (definition: Definition) => Promise<boolean>;
   resolveModelType: (
     type: ModelType,
   ) => Promise<unknown | null>;
@@ -182,6 +189,10 @@ export function createModelValidateDeps(
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
     findAllDefinitions: () => definitionRepo.findAllGlobal(),
+    // lookupDefinition prefers models/, so a definition it found that is not
+    // there came from auto-definitions.
+    isAutoDefinition: async (definition) =>
+      !await definitionRepo.hasPrimaryDefinition(definition.name),
     resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
     validateModel: async (definition, modelDef, _type) => {
       const outcome = await validationService.validateModel(
@@ -325,6 +336,10 @@ async function* validateSingle(
   const outcome = await deps.validateModel(definition, modelDef, modelType);
   const validations = toValidationItemData(outcome.results);
   const warnings = toValidationWarningData(outcome.warnings);
+  if (await deps.isAutoDefinition(definition)) {
+    const note = ValidationWarning.autoDefinition();
+    warnings.push({ name: note.name, message: note.message });
+  }
   const allPassed = outcome.results.every((r) => r.passed);
 
   yield {
