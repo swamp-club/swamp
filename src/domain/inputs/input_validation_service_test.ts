@@ -476,3 +476,115 @@ Deno.test("InputValidationService.validate handles complex nested structures", (
   );
   assertEquals(invalidResult.valid, false);
 });
+
+// validateProvided tests
+
+Deno.test("InputValidationService.validateProvided skips the required check", () => {
+  const schema: InputsSchema = {
+    properties: {
+      environment: { type: "string" },
+      replicas: { type: "integer" },
+    },
+    required: ["environment", "replicas"],
+  };
+
+  const result = validationService.validateProvided({ replicas: 3 }, schema);
+  assertEquals(result, { valid: true, errors: [] });
+  // validate() still reports the missing required input.
+  assertEquals(validationService.validate({ replicas: 3 }, schema).errors, [
+    { path: "environment", message: "environment is required" },
+  ]);
+});
+
+Deno.test("InputValidationService.validateProvided reports a wrong type", () => {
+  const schema: InputsSchema = {
+    properties: { envs: { type: "array", items: { type: "string" } } },
+    required: ["envs"],
+  };
+
+  const result = validationService.validateProvided({ envs: "a" }, schema);
+  assertEquals(result.valid, false);
+  assertEquals(result.errors, [{
+    path: "envs",
+    message: "envs must be a array",
+  }]);
+});
+
+Deno.test("InputValidationService.validateProvided checks enum values and array items", () => {
+  const schema: InputsSchema = {
+    properties: {
+      environment: { type: "string", enum: ["dev", "prod"] },
+      ports: { type: "array", items: { type: "integer" } },
+    },
+  };
+
+  const result = validationService.validateProvided(
+    { environment: "qa", ports: [80, "443"] },
+    schema,
+  );
+  assertEquals(result.errors, [
+    {
+      path: "environment",
+      message: 'environment must be one of: "dev", "prod"',
+    },
+    { path: "ports[1]", message: "ports[1] must be an integer" },
+  ]);
+});
+
+Deno.test("InputValidationService.validateProvided refuses an undeclared key only under additionalProperties false", () => {
+  const properties: InputsSchema["properties"] = {
+    environment: { type: "string" },
+  };
+
+  assertEquals(
+    validationService.validateProvided({ authKey: "tskey-abc123" }, {
+      properties,
+    }).valid,
+    true,
+  );
+  assertEquals(
+    validationService.validateProvided({ authKey: "tskey-abc123" }, {
+      properties,
+      additionalProperties: false,
+    }).errors,
+    [{ path: "authKey", message: "authKey is not a valid input property" }],
+  );
+});
+
+Deno.test("InputValidationService.validateProvided does not treat Object.prototype names as declared inputs", () => {
+  const schema: InputsSchema = {
+    properties: { environment: { type: "string" } },
+    additionalProperties: false,
+  };
+  // JSON.parse makes __proto__ an own key, as a parsed --input or WebSocket
+  // payload would.
+  const inputs = JSON.parse('{"constructor": "x", "__proto__": "y"}');
+
+  const result = validationService.validateProvided(inputs, schema);
+  assertEquals(result.errors, [
+    {
+      path: "constructor",
+      message: "constructor is not a valid input property",
+    },
+    { path: "__proto__", message: "__proto__ is not a valid input property" },
+  ]);
+  assertEquals(
+    validationService.validate(inputs, schema).errors,
+    result.errors,
+  );
+});
+
+Deno.test("InputValidationService.validateProvided supports the flat schema form", () => {
+  const schema = {
+    replicas: { type: "integer" },
+  } as unknown as InputsSchema;
+
+  assertEquals(
+    validationService.validateProvided({ replicas: 2 }, schema).valid,
+    true,
+  );
+  assertEquals(
+    validationService.validateProvided({ replicas: "2" }, schema).errors,
+    [{ path: "replicas", message: "replicas must be an integer" }],
+  );
+});
