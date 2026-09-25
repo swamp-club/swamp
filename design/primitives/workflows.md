@@ -1337,18 +1337,25 @@ order:
   (queued behind a `concurrency` limit) are settled at the end of that level as
   if they had been reached: skipped when their `dependsOn` is not met (reason
   `dependency` for a step; a skipped job's steps get `job_skipped`), otherwise
-  marked `failed` with reason `cancelled` and no `startedAt`. A `forEach` dependency with a queued iteration therefore
-  aggregates to `failed`, and cleanup gated on it runs. A `failed`-gated
-  rollback can run for work that never started, so it must tolerate having
-  nothing to undo. These steps and jobs get no `step_failed`, `step_skipped`,
-  `job_skipped` or `job_completed` event; the run record carries their
-  outcome. `workflow resume` settles steps the same way, but not jobs: its job
-  loop has no cleanup mode (swamp-club#2550).
+  marked `failed` with reason `cancelled` and no `startedAt`. A `forEach`
+  dependency with a queued iteration therefore aggregates to `failed`, and
+  cleanup gated on it runs. A `failed`-gated rollback can run for work that
+  never started, so it must tolerate having nothing to undo.
+- A never-started step that has a `guard` is skipped with reason `cancelled`
+  instead of failed: its guard never decided whether the step's work was
+  already done, so neither `failed` nor `completed` fires on it, and a
+  rollback does not undo work that may predate the run. A never-started job
+  settles its steps the same way; it fails when any step failed and is skipped
+  when all of its steps were guarded.
 - A step whose guard was being evaluated when the cancellation fired does not
   start. A guard that answers truthy still skips it (reason `guarded`);
-  otherwise it is settled with the rest of its level. If the level settled it
-  before the guard answered, it stays cancelled. A step recorded `running`
-  when its run resumes starts as before.
+  otherwise the level skips it as `cancelled`, even when the level settles it
+  before the guard answers. A step recorded `running` when its run resumes
+  starts as before.
+- Settled steps and jobs get no `step_failed`, `step_skipped`, `job_skipped`
+  or `job_completed` event; the run record carries their outcome. `workflow
+  resume` settles steps the same way, but not jobs: its job loop has no cleanup
+  mode (swamp-club#2550).
 - A level that suspends at an approval gate keeps its queued steps `pending`,
   so the run can be resumed.
 

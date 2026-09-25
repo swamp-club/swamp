@@ -158,7 +158,8 @@ Deno.test("JobRun: cancelling pending steps settles every named pending step and
         maxLength: STEPS.length,
       }),
       fc.subarray(STEPS),
-      (transitions, names) => {
+      fc.subarray(STEPS),
+      (transitions, names, guardedNames) => {
         const job = JobRun.pending("a", STEPS);
         STEPS.forEach((name, i) =>
           TRANSITIONS[transitions[i]](job.getStep(name)!)
@@ -166,18 +167,24 @@ Deno.test("JobRun: cancelling pending steps settles every named pending step and
         const before = new Map(
           job.steps.map((s) => [s.stepName, s.toData()] as const),
         );
+        const guarded = new Set(guardedNames);
 
-        const cancelled = job.cancelPendingSteps(names);
+        const settled = job.cancelPendingSteps(names, guarded);
 
         for (const step of job.steps) {
           const was = before.get(step.stepName)!;
           if (names.includes(step.stepName) && was.status === "pending") {
-            assertEquals(step.status, "failed");
-            assertEquals(step.error, CANCELLED_STEP_ERROR);
-            assert(cancelled.includes(step));
+            if (guarded.has(step.stepName)) {
+              assertEquals(step.status, "skipped");
+              assertEquals(step.skipReason, { kind: "cancelled" });
+            } else {
+              assertEquals(step.status, "failed");
+              assertEquals(step.error, CANCELLED_STEP_ERROR);
+            }
+            assert(settled.includes(step));
           } else {
             assertEquals(step.toData(), was);
-            assert(!cancelled.includes(step));
+            assert(!settled.includes(step));
           }
         }
       },

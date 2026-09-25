@@ -2564,8 +2564,9 @@ export class WorkflowExecutionService {
         // A job this level never started (queued behind workflow concurrency
         // when the abort fired) would stay pending, so a failed or completed
         // condition on it could never be met. Settle it as runJob would have:
-        // skipped when its dependsOn is unmet, otherwise cancelled. A
-        // suspended run keeps its pending jobs to resume.
+        // skipped when its dependsOn is unmet, otherwise cancelled, with its
+        // guarded steps skipped as cancelled. A suspended run keeps its
+        // pending jobs to resume.
         if (
           !abortedBeforeLevel && levelSignal?.aborted &&
           run.status !== "suspended"
@@ -2577,7 +2578,9 @@ export class WorkflowExecutionService {
             if (job && !this.shouldJobRun(job, run)) {
               jobRun.skip();
             } else {
-              jobRun.cancelIfNotStarted();
+              jobRun.cancelIfNotStarted(
+                new Set(job?.steps.filter((s) => s.guard).map((s) => s.name)),
+              );
             }
           }
         }
@@ -3423,12 +3426,15 @@ export class WorkflowExecutionService {
         // when the abort fired) would stay pending, so a failed or completed
         // condition on it could never be met. Settle it as runStep would
         // have: skipped when its dependsOn is unmet, otherwise cancelled like
-        // an in-flight step. A suspended run keeps its pending steps to resume.
+        // an in-flight step. A step with a guard is skipped as cancelled
+        // instead, since its guard never decided whether its work was already
+        // done. A suspended run keeps its pending steps to resume.
         if (
           !abortedBeforeLevel && levelSignal?.aborted &&
           run.status !== "suspended"
         ) {
           const notStarted: string[] = [];
+          const guarded = new Set<string>();
           for (const stepName of level) {
             // An iteration a resume added to the collection has no record
             // until runStep creates one, as it would have on reaching it.
@@ -3442,9 +3448,10 @@ export class WorkflowExecutionService {
               stepRun.skip({ kind: "dependency" });
             } else {
               notStarted.push(stepName);
+              if (step?.guard) guarded.add(stepName);
             }
           }
-          jobRun.cancelPendingSteps(notStarted);
+          jobRun.cancelPendingSteps(notStarted, guarded);
         }
 
         // When the signal aborts mid-level with parallel steps,

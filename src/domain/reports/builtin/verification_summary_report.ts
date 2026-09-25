@@ -50,6 +50,8 @@ function describeSkipReason(reason: StepSkipReasonInfo | undefined): string {
       return "dependency condition not met";
     case "job_skipped":
       return "job was skipped";
+    case "cancelled":
+      return "cancelled before its guard decided";
   }
 }
 

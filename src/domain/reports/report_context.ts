@@ -125,7 +125,7 @@ export interface ModelReportContext extends BaseReportContext {
  * between the two, not a second definition of the concept.
  */
 export interface StepSkipReasonInfo {
-  kind: "dependency" | "guarded" | "job_skipped";
+  kind: "dependency" | "guarded" | "job_skipped" | "cancelled";
   expression?: string;
 }
 

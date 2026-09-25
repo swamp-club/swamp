@@ -10948,6 +10948,19 @@ function assertCancelledBeforeStart(
   }
 }
 
+function assertSkippedAsCancelled(
+  run: WorkflowRun,
+  jobName: string,
+  stepNames: string[],
+): void {
+  for (const name of stepNames) {
+    const step = run.getJob(jobName)!.getStep(name)!;
+    assertEquals(step.status, "skipped", name);
+    assertEquals(step.skipReason, { kind: "cancelled" }, name);
+    assertEquals(step.startedAt, undefined, name);
+  }
+}
+
 function onStep(step: string, condition: TriggerCondition) {
   return { dependsOn: [{ step, condition }] };
 }
@@ -11130,7 +11143,7 @@ Deno.test("abort cleanup: a queued step whose dependsOn is unmet is skipped, not
   });
 });
 
-Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires does not start", async () => {
+Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires does not start and is skipped as cancelled", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "guard-abort-wf",
@@ -11162,7 +11175,7 @@ Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires d
     assertEquals(run.status, "cancelled");
     assertEquals(executor.count("main/__guard_check"), 1);
     assertEquals(executor.count("main/check"), 0);
-    assertCancelledBeforeStart(run, "main", ["check"]);
+    assertSkippedAsCancelled(run, "main", ["check"]);
   });
 });
 
@@ -11422,5 +11435,198 @@ Deno.test("abort cleanup: a forEach iteration first added on resume is settled w
     assertEquals(run.status, "cancelled");
     assertCancelledBeforeStart(run, "main", ["build-b", "build-c"]);
     assertEquals(executor.count("main/rollback"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a guarded step queued behind job concurrency is skipped as cancelled, so a failed-gated rollback does not run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-guarded-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            modelStep("a-slow"),
+            modelStep("create-bucket", {
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep(
+              "delete-bucket",
+              onStep("create-bucket", TriggerCondition.failed()),
+            ),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("a-slow");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("main/__guard_create-bucket"), 0);
+    assertSkippedAsCancelled(run, "main", ["create-bucket"]);
+    assertDependencySkipped(run, ["delete-bucket"]);
+    assertEquals(executor.count("main/delete-bucket"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a guard still answering when the abort ends a multi-step level is skipped as cancelled", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "inflight-guard-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("create-bucket", {
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep("create-db"),
+            modelStep(
+              "delete-bucket",
+              onStep("create-bucket", TriggerCondition.failed()),
+            ),
+          ],
+        }),
+      ],
+    });
+    // The guard's model method answers only when the test releases it, after
+    // the run has finished: a network call still in flight at the abort.
+    const guardAnswer = Promise.withResolvers<unknown>();
+    class HeldGuardExecutor extends AbortingStepExecutor {
+      override async execute(
+        step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        const result = await super.execute(step, ctx);
+        if (ctx.stepName === "__guard_create-bucket") {
+          return await guardAnswer.promise;
+        }
+        return result;
+      }
+    }
+    const executor = new HeldGuardExecutor("create-db");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    try {
+      const { run } = await runUntilAborted(
+        service,
+        workflow,
+        executor.controller.signal,
+      );
+
+      assertEquals(run.status, "cancelled");
+      assertEquals(executor.count("main/__guard_create-bucket"), 1);
+      assertSkippedAsCancelled(run, "main", ["create-bucket"]);
+      assertEquals(executor.count("main/delete-bucket"), 0);
+    } finally {
+      guardAnswer.resolve({ exists: true });
+    }
+  });
+});
+
+Deno.test("abort cleanup: a job queued behind workflow concurrency with only guarded steps is skipped, so a failed-gated teardown job does not run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-guarded-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+        Job.create({
+          name: "teardown",
+          dependsOn: [{ job: "j2", condition: TriggerCondition.failed() }],
+          steps: [modelStep("destroy")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("j2")!.status, "skipped");
+    assertSkippedAsCancelled(run, "j2", ["create"]);
+    assertEquals(run.getJob("teardown")!.status, "skipped");
+    assertEquals(executor.count("teardown/destroy"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a job queued behind workflow concurrency whose dependsOn is unmet is skipped", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-unmet-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "build", steps: [modelStep("compile")] }),
+        Job.create({
+          name: "deploy",
+          dependsOn: [{
+            job: "build",
+            condition: TriggerCondition.succeeded(),
+          }],
+          steps: [modelStep("push")],
+        }),
+        Job.create({
+          name: "revert",
+          dependsOn: [{ job: "build", condition: TriggerCondition.failed() }],
+          steps: [modelStep("undo")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("push");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("revert")!.status, "skipped");
+    assertEquals(
+      run.getJob("revert")!.getStep("undo")!.skipReason?.kind,
+      "job_skipped",
+    );
+    assertEquals(executor.count("revert/undo"), 0);
   });
 });

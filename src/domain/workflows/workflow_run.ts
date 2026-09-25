@@ -84,6 +84,14 @@ export const StepSkipReasonSchema = z.discriminatedUnion("kind", [
     /** The step's job was skipped, so the step never became eligible. */
     kind: z.literal("job_skipped"),
   }),
+  z.object({
+    /**
+     * The run was aborted before the step started, and its `guard` never
+     * decided whether the step's work was already done. Skipped rather than
+     * failed, so a `failed` or `completed` condition on it does not fire.
+     */
+    kind: z.literal("cancelled"),
+  }),
 ]);
 
 /**
@@ -790,35 +798,48 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Fails each named step that is still `pending` with
-   * {@link CANCELLED_STEP_ERROR}, and returns them. Called for the steps of a
-   * level the run's abort interrupted: a step queued behind a concurrency
-   * limit never started, and would otherwise stay pending, so a `failed` or
-   * `completed` condition on it could never be met. Steps in any other status
-   * are left alone.
+   * Settles each named step that is still `pending`, and returns them. Called
+   * for the steps of a level the run's abort interrupted: a step queued
+   * behind a concurrency limit never started, and would otherwise stay
+   * pending, so a `failed` or `completed` condition on it could never be met.
+   * It fails with {@link CANCELLED_STEP_ERROR}, unless it is in `guarded`: its
+   * guard never decided whether its work was already done, so it is skipped
+   * with reason `cancelled` and no condition treats it as failed. Steps in any
+   * other status are left alone.
    */
-  cancelPendingSteps(stepNames: Iterable<string>): StepRun[] {
-    const cancelled: StepRun[] = [];
+  cancelPendingSteps(
+    stepNames: Iterable<string>,
+    guarded: ReadonlySet<string> = new Set(),
+  ): StepRun[] {
+    const settled: StepRun[] = [];
     for (const name of stepNames) {
       const step = this.getStep(name);
-      if (step?.status === "pending") {
+      if (step?.status !== "pending") continue;
+      if (guarded.has(name)) {
+        step.skip({ kind: "cancelled" });
+      } else {
         step.fail(CANCELLED_STEP_ERROR);
-        cancelled.push(step);
       }
+      settled.push(step);
     }
-    return cancelled;
+    return settled;
   }
 
   /**
-   * Fails a job that is still `pending`, and every pending step in it, with
-   * {@link CANCELLED_STEP_ERROR}: the run's abort interrupted the job's level
-   * before the job started. Returns whether it did; any other job status is
-   * left alone.
+   * Settles a job that is still `pending` because the run's abort interrupted
+   * its level before it started. Every pending step is settled as
+   * {@link cancelPendingSteps} does; the job fails when any step failed, and
+   * is skipped when every step was guarded. Returns whether it did; any other
+   * job status is left alone.
    */
-  cancelIfNotStarted(): boolean {
+  cancelIfNotStarted(guarded: ReadonlySet<string> = new Set()): boolean {
     if (this._status !== "pending") return false;
-    this.cancelPendingSteps(this._steps.map((step) => step.stepName));
-    this.fail();
+    this.cancelPendingSteps(this._steps.map((step) => step.stepName), guarded);
+    if (this._steps.some((step) => step.status === "failed")) {
+      this.fail();
+    } else {
+      this.skip();
+    }
     return true;
   }
 
