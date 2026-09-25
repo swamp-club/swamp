@@ -11145,7 +11145,7 @@ Deno.test("abort cleanup: a queued step whose dependsOn is unmet is skipped, not
   });
 });
 
-Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires does not start and stays undecided, failing its job", async () => {
+Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires does not start and stays undecided, and its job ends unknown", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "guard-abort-wf",
@@ -11178,7 +11178,7 @@ Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires d
     assertEquals(executor.count("main/__guard_check"), 1);
     assertEquals(executor.count("main/check"), 0);
     assertUndecided(run, "main", ["check"]);
-    assertEquals(run.getJob("main")!.status, "failed");
+    assertEquals(run.getJob("main")!.status, "unknown");
   });
 });
 
@@ -11347,6 +11347,7 @@ Deno.test("abort cleanup: a guard that answers truthy after the abort leaves its
     assertEquals(executor.count("main/create"), 0);
     assertDependencySkipped(run, ["delete"]);
     assertEquals(executor.count("main/delete"), 0);
+    assertEquals(run.getJob("main")!.status, "unknown");
   });
 });
 
@@ -11537,6 +11538,8 @@ Deno.test("abort cleanup: a guard still answering when the abort ends a multi-st
       assertEquals(executor.count("main/__guard_create-bucket"), 1);
       assertUndecided(run, "main", ["create-bucket"]);
       assertEquals(executor.count("main/delete-bucket"), 0);
+      // create-db was interrupted, so the job failed as before this change.
+      assertEquals(run.getJob("main")!.status, "failed");
     } finally {
       guardAnswer.resolve({ exists: true });
     }
@@ -11685,10 +11688,11 @@ Deno.test("abort cleanup: a guarded forEach with an undecided iteration does not
     assertEquals(executor.count("main/create-b"), 0);
     assertDependencySkipped(run, ["configure"]);
     assertEquals(executor.count("main/configure"), 0);
+    assertEquals(run.getJob("main")!.status, "unknown");
   });
 });
 
-Deno.test("abort cleanup: a job whose only step stays undecided fails, so a succeeded-gated job does not run", async () => {
+Deno.test("abort cleanup: a job left with only an undecided step ends unknown, so neither a succeeded- nor a failed-gated job runs", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "undecided-job-wf",
@@ -11709,9 +11713,28 @@ Deno.test("abort cleanup: a job whose only step stays undecided fails, so a succ
           }],
           steps: [modelStep("push")],
         }),
+        Job.create({
+          name: "teardown",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.failed(),
+          }],
+          steps: [modelStep("destroy")],
+        }),
+        Job.create({
+          name: "notify",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.always(),
+          }],
+          steps: [modelStep("send")],
+        }),
       ],
     });
-    const executor = new AbortingStepExecutor("__guard_create", "succeed");
+    // The guard answers "already exists" as the abort lands.
+    const executor = new AbortingStepExecutor("__guard_create", "succeed", {
+      exists: true,
+    });
     const { service } = await setupRetry(
       tempDir,
       workflow,
@@ -11719,17 +11742,23 @@ Deno.test("abort cleanup: a job whose only step stays undecided fails, so a succ
       executor,
     );
 
-    const { run } = await runUntilAborted(
-      service,
-      workflow,
-      executor.controller.signal,
+    const { run, events } = await finishedRun(
+      service.run(workflow.name, { signal: executor.controller.signal }),
     );
 
     assertEquals(run.status, "cancelled");
     assertUndecided(run, "provision", ["create"]);
-    assertEquals(run.getJob("provision")!.status, "failed");
+    assertEquals(run.getJob("provision")!.status, "unknown");
+    assertEquals(
+      events.some((e) => e.kind === "job_completed" && e.jobId === "provision"),
+      false,
+    );
     assertEquals(run.getJob("deploy")!.status, "skipped");
     assertEquals(executor.count("deploy/push"), 0);
+    assertEquals(run.getJob("teardown")!.status, "skipped");
+    assertEquals(executor.count("teardown/destroy"), 0);
+    // Later levels still run in cleanup mode.
+    assertEquals(executor.count("notify/send"), 1);
   });
 });
 

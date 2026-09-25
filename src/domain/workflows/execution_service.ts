@@ -3322,12 +3322,14 @@ export class WorkflowExecutionService {
 
       // Execute steps level by level
       let jobFailed = false;
+      // Set when an interrupted level leaves a guarded step undecided.
+      let jobUndecided = false;
       for (const level of sortedSteps.levels) {
         // After a step failure with an aborted signal, give subsequent
         // levels a fresh cleanup signal so always/completed dependents
         // can run. shouldStepRun() handles condition-based filtering —
         // steps whose conditions aren't met are skipped naturally.
-        const cleanupMode: boolean = jobFailed &&
+        const cleanupMode: boolean = (jobFailed || jobUndecided) &&
           (options.signal?.aborted ?? false);
         const levelSignal: AbortSignal | undefined = cleanupMode
           ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
@@ -3445,18 +3447,21 @@ export class WorkflowExecutionService {
 
         // When the signal aborts mid-level with parallel steps,
         // mergeWithConcurrency may exit before step_failed events are
-        // consumed. Derive jobFailed from model state so cleanup kicks in. A
-        // guarded step the interrupted level left undecided counts too: the
-        // job did not finish its work.
+        // consumed. Derive jobFailed from model state so cleanup kicks in.
         if (!jobFailed && options.signal?.aborted) {
           jobFailed = jobRun.steps.some((s) =>
             s.status === "running" || s.status === "failed" ||
             s.status === "unknown"
-          ) ||
-            (interrupted &&
-              level.some((name) =>
-                jobRun.getStep(name)?.status === "pending"
-              ));
+          );
+        }
+        // A guarded step the interrupted level left undecided: the job did
+        // not finish its work, so later levels run in cleanup mode, but its
+        // outcome is ambiguous (see the end of the job).
+        if (
+          interrupted &&
+          level.some((name) => jobRun.getStep(name)?.status === "pending")
+        ) {
+          jobUndecided = true;
         }
 
         if (run.status === "suspended") {
@@ -3499,6 +3504,14 @@ export class WorkflowExecutionService {
             code: SpanStatusCode.ERROR,
             message: "Job failed",
           });
+        } else if (jobUndecided) {
+          // Only undecided guarded steps are left, so the job's outcome is
+          // ambiguous: neither failed nor succeeded, and no condition on it
+          // fires. Like other work an abort settles, it gets no event.
+          jobRun.markUnknown();
+          jobSpan.setAttribute("job.status", jobRun.status);
+          jobSpan.setStatus({ code: SpanStatusCode.OK });
+          return;
         } else {
           jobRun.succeed();
           jobSpan.setStatus({ code: SpanStatusCode.OK });

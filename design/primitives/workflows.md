@@ -1346,13 +1346,17 @@ order:
   condition may treat it as finished. `succeeded`, `failed`, `completed` and
   `skipped` are all false for a `pending` step, and a `forEach` with an
   undecided iteration aggregates to `running`, so neither a `failed`-gated
-  rollback nor a `succeeded`-gated next step runs on it; `always` still does. An undecided step remains `pending` in the
-  cancelled run's record.
+  rollback nor a `succeeded`-gated next step runs on it; `always` still does.
+  An undecided step remains `pending` in the cancelled run's record.
 - A step whose guard was being evaluated when the cancellation fired does not
   start and stays undecided, whatever the guard answers: the level may already
-  have moved on. A started job that is left with an undecided step fails, so
-  later levels run in cleanup mode. A step recorded `running` when its run
-  resumes starts as before.
+  have moved on. A step recorded `running` when its run resumes starts as
+  before.
+- A started job left with an undecided step still runs its later levels in
+  cleanup mode. If nothing in it failed, it ends `unknown`: its outcome is
+  ambiguous, so neither a `failed`-gated teardown job nor a `succeeded`-gated
+  next job runs on it, and it gets no `job_completed` event. A job that also
+  had a failure ends `failed`, as before.
 - A never-started job settles its steps in dependency order, each as above;
   the job fails when any step failed, is skipped when every step was skipped,
   and otherwise stays `pending`.

@@ -751,8 +751,9 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Marks the job as unknown — the job was in-flight when the process
-   * crashed and its outcome is ambiguous.
+   * Marks the job as unknown — its outcome is ambiguous: the job was
+   * in-flight when the process crashed, or a cancellation left it with only
+   * guarded steps whose guards never decided.
    */
   markUnknown(): void {
     this._status = "unknown";
