@@ -54,6 +54,8 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   reconciliationInterval: "SWAMP_RECONCILIATION_INTERVAL",
   hydrationTimeout: "SWAMP_HYDRATION_TIMEOUT",
   datastorePollInterval: "SWAMP_DATASTORE_POLL_INTERVAL",
+  tokenGcInterval: "SWAMP_TOKEN_GC_INTERVAL",
+  tokenGcGracePeriod: "SWAMP_TOKEN_GC_GRACE_PERIOD",
   groupRefreshInterval: "SWAMP_GROUP_REFRESH_INTERVAL",
   maxConcurrentRuns: "SWAMP_MAX_CONCURRENT_RUNS",
   maxRunsPerPrincipal: "SWAMP_MAX_RUNS_PER_PRINCIPAL",
@@ -129,6 +131,8 @@ export interface ServeConfigFile {
   "max-run-duration"?: string;
   "hydration-timeout"?: string;
   "datastore-poll-interval"?: string;
+  "token-gc-interval"?: string;
+  "token-gc-grace-period"?: string;
   "enable-internal-api"?: boolean;
   "remote-only"?: boolean;
   dashboard?: boolean;
@@ -244,6 +248,8 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "max-run-duration",
   "hydration-timeout",
   "datastore-poll-interval",
+  "token-gc-interval",
+  "token-gc-grace-period",
   "enable-internal-api",
   "remote-only",
   "dashboard",
@@ -469,6 +475,8 @@ function validateConfigValues(
     ["reconciliation-interval", raw["reconciliation-interval"]],
     ["hydration-timeout", raw["hydration-timeout"]],
     ["datastore-poll-interval", raw["datastore-poll-interval"]],
+    ["token-gc-interval", raw["token-gc-interval"]],
+    ["token-gc-grace-period", raw["token-gc-grace-period"]],
   ];
   for (const [name, value] of stringFields) {
     if (value !== undefined && typeof value !== "string") {
@@ -795,6 +803,8 @@ export interface MergedServeOptions {
   maxRunDuration?: string;
   hydrationTimeout?: string;
   datastorePollInterval?: string;
+  tokenGcInterval?: string;
+  tokenGcGracePeriod?: string;
   enableInternalApi: boolean;
   remoteOnly: boolean;
   dashboard: boolean;
@@ -1139,6 +1149,20 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const tokenGcInterval = resolveString(
+    "token-gc-interval",
+    cliOptions.tokenGcInterval as string | undefined,
+    config?.["token-gc-interval"],
+    undefined,
+  );
+
+  const tokenGcGracePeriod = resolveString(
+    "token-gc-grace-period",
+    cliOptions.tokenGcGracePeriod as string | undefined,
+    config?.["token-gc-grace-period"],
+    undefined,
+  );
+
   const enableInternalApi = resolveBoolean(
     "enable-internal-api",
     cliOptions.enableInternalApi as boolean,
@@ -1231,6 +1255,8 @@ export function mergeServeOptions(
     maxRunDuration,
     hydrationTimeout,
     datastorePollInterval,
+    tokenGcInterval,
+    tokenGcGracePeriod,
     enableInternalApi,
     remoteOnly,
     dashboard,

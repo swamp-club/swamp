@@ -118,6 +118,19 @@ Deno.test("collectServeExtraArgs: includes --datastore-poll-interval", () => {
   assertEquals(args, ["--datastore-poll-interval", "5s"]);
 });
 
+Deno.test("collectServeExtraArgs: includes the token GC settings, including 0", () => {
+  const args = collectServeExtraArgs({
+    tokenGcInterval: "0",
+    tokenGcGracePeriod: "2h",
+  });
+  assertEquals(args, [
+    "--token-gc-interval",
+    "0",
+    "--token-gc-grace-period",
+    "2h",
+  ]);
+});
+
 Deno.test("collectServeExtraArgs: includes --stale-ttl", () => {
   const args = collectServeExtraArgs({ staleTtl: "2m" });
   assertEquals(args, ["--stale-ttl", "2m"]);

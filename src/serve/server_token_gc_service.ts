@@ -30,6 +30,10 @@ export interface TokenGcInfo {
   readonly state: "active" | "expired" | "revoked";
   readonly expiresAt: string;
   readonly revokedAt?: string;
+  /** Vault the token's `token-main` record says holds its secret. */
+  readonly vaultName?: string;
+  /** Secret key the token's `token-main` record names. */
+  readonly secretKey?: string;
 }
 
 export interface ServerTokenGcDeps {
@@ -38,13 +42,17 @@ export interface ServerTokenGcDeps {
 
   listTokens(): Promise<TokenGcInfo[]>;
 
-  deleteTokenSecret(tokenName: string): Promise<void>;
-
-  deleteOAuthAccessToken(tokenName: string): Promise<void>;
-
-  deleteTokenData(definitionId: string, tokenName: string): Promise<void>;
-
-  deleteDefinition(definitionId: string): Promise<void>;
+  /**
+   * Deletes one listed token: its secret, its OAuth access token, and its
+   * definition, data and outputs. The token is re-read first, and the result
+   * is "skipped" when it is gone or `isEligible` no longer holds for its
+   * current record — a mint or rotation may have landed since the listing.
+   * Throws, leaving the token for the next sweep, when a delete fails.
+   */
+  collectToken(
+    token: TokenGcInfo,
+    isEligible: (current: TokenGcInfo) => boolean,
+  ): Promise<"collected" | "skipped">;
 }
 
 export class ServerTokenGcService {
@@ -57,6 +65,10 @@ export class ServerTokenGcService {
     this.#deps = deps;
   }
 
+  /**
+   * Starts the sweep loop. The first sweep runs straight away, on a timer so
+   * it never delays the caller, then once every `intervalMs`.
+   */
   start(): void {
     if (this.#disposed) return;
     logger.info(
@@ -66,7 +78,7 @@ export class ServerTokenGcService {
         grace: this.#deps.gracePeriodMs,
       },
     );
-    this.#scheduleNext();
+    this.#scheduleNext(0);
   }
 
   async dispose(): Promise<void> {
@@ -84,15 +96,16 @@ export class ServerTokenGcService {
     return await this.#sweep();
   }
 
-  #scheduleNext(): void {
+  #scheduleNext(delayMs: number): void {
     if (this.#disposed) return;
     this.#timer = setTimeout(() => {
       void this.#tick();
-    }, this.#deps.intervalMs);
+    }, delayMs);
     Deno.unrefTimer(this.#timer);
   }
 
   async #tick(): Promise<void> {
+    this.#timer = null;
     if (this.#disposed) return;
     this.#running = true;
     try {
@@ -103,7 +116,7 @@ export class ServerTokenGcService {
       }`;
     } finally {
       this.#running = false;
-      this.#scheduleNext();
+      this.#scheduleNext(this.#deps.intervalMs);
     }
   }
 
@@ -118,8 +131,11 @@ export class ServerTokenGcService {
       if (!this.#isGcEligible(token, now)) continue;
 
       try {
-        await this.#gcToken(token);
-        gcCount++;
+        const result = await this.#deps.collectToken(
+          token,
+          (current) => this.#isGcEligible(current, Date.now()),
+        );
+        if (result === "collected") gcCount++;
       } catch (err) {
         logger.warn(
           "Failed to GC server token {name}, will retry next cycle: {error}",
@@ -150,34 +166,5 @@ export class ServerTokenGcService {
     if (!effectivelyExpired) return false;
 
     return (nowMs - expiresAtMs) >= this.#deps.gracePeriodMs;
-  }
-
-  async #gcToken(token: TokenGcInfo): Promise<void> {
-    try {
-      await this.#deps.deleteTokenSecret(token.name);
-    } catch (err) {
-      logger.warn(
-        "Failed to delete token secret for {name}: {error}",
-        {
-          name: token.name,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      );
-    }
-
-    try {
-      await this.#deps.deleteOAuthAccessToken(token.name);
-    } catch (err) {
-      logger.warn(
-        "Failed to delete OAuth access token for {name}: {error}",
-        {
-          name: token.name,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      );
-    }
-
-    await this.#deps.deleteTokenData(token.definitionId, token.name);
-    await this.#deps.deleteDefinition(token.definitionId);
   }
 }
