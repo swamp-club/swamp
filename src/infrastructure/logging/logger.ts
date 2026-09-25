@@ -22,6 +22,7 @@ import {
   getConsoleSink,
   getLogger,
   type LogLevel,
+  type LogRecord,
   type Sink,
   type TextFormatter,
 } from "@logtape/logtape";
@@ -84,6 +85,50 @@ function createStderrSink(formatter: TextFormatter = stderrFormatter): Sink {
 
 let isInitialized = false;
 let systemPipeWidth = 6;
+
+/** Most warnings kept while buffering; later ones are dropped. */
+const STARTUP_BUFFER_CAP = 200;
+let startupBuffer: LogRecord[] | undefined;
+
+/**
+ * Captures warning-level (and higher) records emitted before
+ * {@link initializeLogging} runs, such as extension loader warnings raised
+ * while the CLI resolves the managed config base at startup. The next
+ * {@link initializeLogging} call replaces this configuration and replays
+ * the records through the real loggers, so level and JSON-mode filtering
+ * still apply. Info and debug records stay dropped, as they are today
+ * before logging starts. Does nothing once logging is initialised.
+ *
+ * @param options._reset Test-only: clear the once-per-process guard and any
+ *   pending buffer, so the buffer installs again under `deno test --repeats`.
+ */
+export async function bufferStartupWarnings(
+  options: { _reset?: boolean } = {},
+): Promise<void> {
+  if (options._reset) {
+    isInitialized = false;
+    startupBuffer = undefined;
+  }
+  if (isInitialized || startupBuffer) return;
+  const buffer: LogRecord[] = [];
+  const sink: Sink = (record) => {
+    if (buffer.length < STARTUP_BUFFER_CAP) buffer.push(record);
+  };
+  await configure({
+    sinks: { startupBuffer: sink },
+    loggers: [
+      { category: [], lowestLevel: "warning", sinks: ["startupBuffer"] },
+      {
+        category: ["logtape", "meta"],
+        lowestLevel: "warning",
+        sinks: [],
+        parentSinks: "override",
+      },
+    ],
+    reset: true,
+  });
+  startupBuffer = buffer;
+}
 let serveFormatEnabled = false;
 
 export function setSystemPipeWidth(width: number): void {
@@ -119,6 +164,8 @@ export async function initializeLogging(
   if (isInitialized) {
     return;
   }
+  const buffered = startupBuffer;
+  startupBuffer = undefined;
 
   const logLevel: LogLevel = options.logLevel ?? "info";
 
@@ -263,10 +310,14 @@ export async function initializeLogging(
         parentSinks: jsonMode ? "override" : "inherit",
       },
     ],
-    ...(options._reset ? { reset: true } : {}),
+    ...(options._reset || buffered ? { reset: true } : {}),
   });
 
   isInitialized = true;
+
+  for (const record of buffered ?? []) {
+    getLogger(record.category).emit(record);
+  }
 }
 
 export function getSwampLogger(category: string[]) {
