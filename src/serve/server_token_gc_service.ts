@@ -43,16 +43,16 @@ export interface ServerTokenGcDeps {
   listTokens(): Promise<TokenGcInfo[]>;
 
   /**
-   * Deletes the token's secret. A failure keeps the token's records for the
-   * next sweep, so a secret is never left behind with nothing referencing it.
+   * Deletes one listed token: its secret, its OAuth access token, and its
+   * definition, data and outputs. The token is re-read first, and the result
+   * is "skipped" when it is gone or `isEligible` no longer holds for its
+   * current record — a mint or rotation may have landed since the listing.
+   * Throws, leaving the token for the next sweep, when a delete fails.
    */
-  deleteTokenSecret(token: TokenGcInfo): Promise<void>;
-
-  /** Best effort: a failure is logged and the token is still collected. */
-  deleteOAuthAccessToken(tokenName: string): Promise<void>;
-
-  /** Deletes the token's definition, data and outputs. */
-  deleteTokenRecord(definitionId: string, tokenName: string): Promise<void>;
+  collectToken(
+    token: TokenGcInfo,
+    isEligible: (current: TokenGcInfo) => boolean,
+  ): Promise<"collected" | "skipped">;
 }
 
 export class ServerTokenGcService {
@@ -131,8 +131,11 @@ export class ServerTokenGcService {
       if (!this.#isGcEligible(token, now)) continue;
 
       try {
-        await this.#gcToken(token);
-        gcCount++;
+        const result = await this.#deps.collectToken(
+          token,
+          (current) => this.#isGcEligible(current, Date.now()),
+        );
+        if (result === "collected") gcCount++;
       } catch (err) {
         logger.warn(
           "Failed to GC server token {name}, will retry next cycle: {error}",
@@ -163,26 +166,5 @@ export class ServerTokenGcService {
     if (!effectivelyExpired) return false;
 
     return (nowMs - expiresAtMs) >= this.#deps.gracePeriodMs;
-  }
-
-  async #gcToken(token: TokenGcInfo): Promise<void> {
-    // The secret goes first, and a failure stops here so the next sweep
-    // retries. A stale copy of the records, such as an HA peer's local cache,
-    // cannot authenticate once the secret is gone.
-    await this.#deps.deleteTokenSecret(token);
-
-    try {
-      await this.#deps.deleteOAuthAccessToken(token.name);
-    } catch (err) {
-      logger.warn(
-        "Failed to delete OAuth access token for {name}: {error}",
-        {
-          name: token.name,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      );
-    }
-
-    await this.#deps.deleteTokenRecord(token.definitionId, token.name);
   }
 }

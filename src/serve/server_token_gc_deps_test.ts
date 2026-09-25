@@ -23,7 +23,6 @@ import {
   type ModelDeleteDeps,
 } from "../libswamp/mod.ts";
 import { Definition } from "../domain/definitions/definition.ts";
-import { ModelType } from "../domain/models/model_type.ts";
 import type { DataRecord } from "../domain/data/data_record.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
@@ -35,7 +34,27 @@ import type { TokenGcInfo } from "./server_token_gc_service.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 
 const TOKEN_DEF_ID = "00000000-0000-4000-8000-000000000001";
-const USER_DEF_ID = "00000000-0000-4000-8000-000000000002";
+const OTHER_DEF_ID = "00000000-0000-4000-8000-000000000003";
+
+type DataArtifacts = Awaited<ReturnType<ModelDeleteDeps["findDataArtifacts"]>>;
+
+function tokenAttrs(
+  name: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    name,
+    principalId: "user:alice",
+    principalEmail: "alice@example.com",
+    state: "revoked",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    expiresAt: "2026-10-01T00:00:00.000Z",
+    revokedAt: "2026-09-02T00:00:00.000Z",
+    vaultName: TOKEN_SECRETS_VAULT_NAME,
+    secretKey: `server-token-${name}`,
+    ...overrides,
+  };
+}
 
 function tokenRecord(
   name: string,
@@ -45,22 +64,11 @@ function tokenRecord(
   return {
     modelId: TOKEN_DEF_ID,
     modelName,
-    attributes: {
-      name,
-      principalId: "user:alice",
-      principalEmail: "alice@example.com",
-      state: "revoked",
-      createdAt: "2026-09-01T00:00:00.000Z",
-      expiresAt: "2026-10-01T00:00:00.000Z",
-      revokedAt: "2026-09-02T00:00:00.000Z",
-      vaultName: TOKEN_SECRETS_VAULT_NAME,
-      secretKey: `server-token-${name}`,
-      ...overrides,
-    },
+    attributes: tokenAttrs(name, overrides),
   } as unknown as DataRecord;
 }
 
-function token(overrides: Partial<TokenGcInfo> = {}): TokenGcInfo {
+function listed(overrides: Partial<TokenGcInfo> = {}): TokenGcInfo {
   return {
     name: "ci",
     definitionId: TOKEN_DEF_ID,
@@ -72,54 +80,56 @@ function token(overrides: Partial<TokenGcInfo> = {}): TokenGcInfo {
   };
 }
 
+const always = () => true;
+
 interface Harness {
   input: ServerTokenGcDepsInput;
-  deletedSecrets: Array<[string, string]>;
-  deletedDefinitions: Array<[string, string]>;
-  pushes: number;
+  /** Every mutation, in order: "secret:<vault>/<key>", "data:<id>/<name>", "definition:<id>", "push". */
+  events: string[];
 }
 
 function harness(opts: {
   records?: DataRecord[];
+  /** The stored token-main for TOKEN_DEF_ID; null for none. */
+  stored?: Record<string, unknown> | null;
   deleteVaults?: string[];
   vaultDeleteError?: Error;
-  tokenDefinition?: Definition | null;
+  /** The server-token definition that owns the name "ci"; null for none. */
+  owner?: Definition | null;
 } = {}): Harness {
-  const deletedSecrets: Array<[string, string]> = [];
-  const deletedDefinitions: Array<[string, string]> = [];
+  const events: string[] = [];
   const deleteVaults = new Set(opts.deleteVaults ?? [TOKEN_SECRETS_VAULT_NAME]);
-  const tokenDefinition = opts.tokenDefinition !== undefined
-    ? opts.tokenDefinition
+  const stored = opts.stored !== undefined ? opts.stored : tokenAttrs("ci");
+  const owner = opts.owner !== undefined
+    ? opts.owner
     : Definition.create({ id: TOKEN_DEF_ID, name: "ci", version: 1 });
-  // A user model that shares the token's name. modelDelete's default lookup
-  // would find it; the adapter must never reach it.
-  const userDefinition = Definition.create({
-    id: USER_DEF_ID,
-    name: "ci",
-    version: 1,
-  });
-  const userType = ModelType.create("command/shell");
 
   const modelDeleteDeps: ModelDeleteDeps = {
+    // modelDelete's default lookup would search every model type by name; a
+    // same-named user model must never be reached.
     lookupDefinition: () =>
-      Promise.resolve({ definition: userDefinition, type: userType }),
-    findAllWorkflows: () => Promise.resolve([]),
-    findDataArtifacts: () => Promise.resolve([]),
+      Promise.reject(new Error("default lookup must not be used")),
+    // The workflow reference check matches by name too; it must be skipped.
+    findAllWorkflows: () =>
+      Promise.reject(new Error("workflow check must not run")),
+    findDataArtifacts: () =>
+      Promise.resolve([{ name: "token-main" }] as unknown as DataArtifacts),
     findOutputs: () => Promise.resolve([]),
     getDefinitionPath: () => "/repo/definition.yaml",
     deleteOutput: () => Promise.resolve(),
-    deleteData: () => Promise.resolve(),
-    deleteDefinition: (type, id) => {
-      deletedDefinitions.push([type.normalized, id]);
+    deleteData: (_type, id, name) => {
+      events.push(`data:${id}/${name}`);
+      return Promise.resolve();
+    },
+    deleteDefinition: (_type, id) => {
+      events.push(`definition:${id}`);
       return Promise.resolve();
     },
     deleteEvaluatedDefinition: () => Promise.resolve(),
   };
 
-  const h: Harness = {
-    deletedSecrets,
-    deletedDefinitions,
-    pushes: 0,
+  return {
+    events,
     input: {
       intervalMs: 1000,
       gracePeriodMs: 1000,
@@ -130,8 +140,16 @@ function harness(opts: {
         findByName: (type, name) =>
           Promise.resolve(
             type.normalized === SERVER_TOKEN_MODEL_TYPE.normalized &&
-              tokenDefinition?.name === name
-              ? tokenDefinition
+              owner?.name === name
+              ? owner
+              : null,
+          ),
+      },
+      dataRepo: {
+        getContent: (_type, modelId, dataName) =>
+          Promise.resolve(
+            stored && modelId === TOKEN_DEF_ID && dataName === "token-main"
+              ? new TextEncoder().encode(JSON.stringify(stored))
               : null,
           ),
       },
@@ -141,20 +159,21 @@ function harness(opts: {
           if (opts.vaultDeleteError) {
             return Promise.reject(opts.vaultDeleteError);
           }
-          deletedSecrets.push([vault, key]);
+          events.push(`secret:${vault}/${key}`);
           return Promise.resolve();
         },
       },
       modelDeleteDeps,
       libCtx: createLibSwampContext(),
       pushChanged: () => {
-        h.pushes++;
+        events.push("push");
         return Promise.resolve();
       },
     },
   };
-  return h;
 }
+
+// --- listTokens ---
 
 Deno.test("createServerTokenGcDeps: listTokens maps token-main records", async () => {
   const h = harness({ records: [tokenRecord("ci")] });
@@ -195,134 +214,190 @@ Deno.test("createServerTokenGcDeps: listTokens skips a record whose name differs
   assertEquals(tokens.map((t) => t.name), ["ok"]);
 });
 
-Deno.test("createServerTokenGcDeps: deleteTokenSecret deletes the canonical key from the token secrets vault", async () => {
+// --- collectToken: the normal path ---
+
+Deno.test("createServerTokenGcDeps: collectToken deletes the secret, then the OAuth token, then the records, then pushes", async () => {
   const h = harness();
   const deps = createServerTokenGcDeps(h.input);
 
-  await deps.deleteTokenSecret(token());
+  const result = await deps.collectToken(listed(), always);
 
-  assertEquals(h.deletedSecrets, [[
-    TOKEN_SECRETS_VAULT_NAME,
-    "server-token-ci",
-  ]]);
-});
-
-Deno.test("createServerTokenGcDeps: deleteTokenSecret never deletes a non-canonical key a record names", async () => {
-  const h = harness({ deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "prod"] });
-  const deps = createServerTokenGcDeps(h.input);
-
-  await deps.deleteTokenSecret(
-    token({ vaultName: "prod", secretKey: "db-password" }),
-  );
-
-  assertEquals(h.deletedSecrets, [[
-    TOKEN_SECRETS_VAULT_NAME,
-    "server-token-ci",
-  ]]);
-});
-
-Deno.test("createServerTokenGcDeps: deleteTokenSecret also clears a legacy token's canonical key from its recorded vault", async () => {
-  const h = harness({ deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"] });
-  const deps = createServerTokenGcDeps(h.input);
-
-  await deps.deleteTokenSecret(token({ vaultName: "legacy" }));
-
-  assertEquals(h.deletedSecrets, [
-    [TOKEN_SECRETS_VAULT_NAME, "server-token-ci"],
-    ["legacy", "server-token-ci"],
+  assertEquals(result, "collected");
+  assertEquals(h.events, [
+    `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
+    `secret:${TOKEN_SECRETS_VAULT_NAME}/oauth-access-token-ci`,
+    `data:${TOKEN_DEF_ID}/token-main`,
+    `definition:${TOKEN_DEF_ID}`,
+    "push",
   ]);
 });
 
-Deno.test("createServerTokenGcDeps: deleteTokenSecret skips a recorded vault without delete support", async () => {
-  const h = harness({ deleteVaults: [TOKEN_SECRETS_VAULT_NAME] });
+Deno.test("createServerTokenGcDeps: collectToken never consults workflows or the cross-type lookup", async () => {
+  // Both would reject if called (see harness), and collection would fail.
+  const h = harness();
   const deps = createServerTokenGcDeps(h.input);
 
-  await deps.deleteTokenSecret(token({ vaultName: "read-only" }));
-
-  assertEquals(h.deletedSecrets, [[
-    TOKEN_SECRETS_VAULT_NAME,
-    "server-token-ci",
-  ]]);
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
 
-Deno.test("createServerTokenGcDeps: deleteTokenSecret fails when the token secrets vault cannot delete", async () => {
+// --- collectToken: re-reading the token ---
+
+Deno.test("createServerTokenGcDeps: collectToken skips a token whose record is already gone", async () => {
+  const h = harness({ stored: null });
+  const deps = createServerTokenGcDeps(h.input);
+
+  assertEquals(await deps.collectToken(listed(), always), "skipped");
+  assertEquals(h.events, []);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken re-checks eligibility against the current record", async () => {
+  // Listed as revoked, but rotated back to active before collection.
+  const h = harness({
+    stored: tokenAttrs("ci", { state: "active", revokedAt: undefined }),
+  });
+  const deps = createServerTokenGcDeps(h.input);
+  const seen: string[] = [];
+
+  const result = await deps.collectToken(listed(), (current) => {
+    seen.push(current.state);
+    return current.state !== "active";
+  });
+
+  assertEquals(result, "skipped");
+  assertEquals(seen, ["active"]);
+  assertEquals(h.events, []);
+});
+
+// --- collectToken: records that outlived their definition ---
+
+Deno.test("createServerTokenGcDeps: collectToken leaves the name's secret alone when another definition owns the name", async () => {
+  // An orphaned revoked record (TOKEN_DEF_ID) and a re-minted live token
+  // (OTHER_DEF_ID) share the name "ci" and so the secret key.
+  const h = harness({
+    owner: Definition.create({ id: OTHER_DEF_ID, name: "ci", version: 1 }),
+  });
+  const deps = createServerTokenGcDeps(h.input);
+
+  const result = await deps.collectToken(listed(), always);
+
+  assertEquals(result, "collected");
+  assertEquals(h.events, [`data:${TOKEN_DEF_ID}/token-main`, "push"]);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken deletes only the data of a record with no definition", async () => {
+  const h = harness({ owner: null });
+  const deps = createServerTokenGcDeps(h.input);
+
+  const result = await deps.collectToken(listed(), always);
+
+  assertEquals(result, "collected");
+  assertEquals(h.events, [`data:${TOKEN_DEF_ID}/token-main`, "push"]);
+});
+
+// --- collectToken: secrets ---
+
+Deno.test("createServerTokenGcDeps: collectToken never deletes a non-canonical key a record names", async () => {
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "prod", secretKey: "db-password" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "prod"],
+  });
+  const deps = createServerTokenGcDeps(h.input);
+
+  await deps.collectToken(listed(), always);
+
+  assertEquals(
+    h.events.filter((e) => e.startsWith("secret:")),
+    [
+      `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
+      `secret:${TOKEN_SECRETS_VAULT_NAME}/oauth-access-token-ci`,
+    ],
+  );
+});
+
+Deno.test("createServerTokenGcDeps: collectToken also clears a legacy token's canonical key from its recorded vault", async () => {
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+  });
+  const deps = createServerTokenGcDeps(h.input);
+
+  await deps.collectToken(listed(), always);
+
+  assertEquals(h.events.slice(0, 2), [
+    `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
+    "secret:legacy/server-token-ci",
+  ]);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken skips a recorded vault without delete support", async () => {
+  const h = harness({ stored: tokenAttrs("ci", { vaultName: "read-only" }) });
+  const deps = createServerTokenGcDeps(h.input);
+
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(
+    h.events[0],
+    `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
+  );
+  assertEquals(h.events.includes("secret:read-only/server-token-ci"), false);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken keeps the records when the token secrets vault cannot delete", async () => {
   const h = harness({ deleteVaults: [] });
   const deps = createServerTokenGcDeps(h.input);
 
   await assertRejects(
-    () => deps.deleteTokenSecret(token()),
+    () => deps.collectToken(listed(), always),
     Error,
     "does not support deleting secrets",
   );
+  assertEquals(h.events, []);
 });
 
-Deno.test("createServerTokenGcDeps: deleteTokenSecret treats a missing secret as deleted", async () => {
+Deno.test("createServerTokenGcDeps: collectToken treats a missing secret as deleted", async () => {
   const h = harness({
     vaultDeleteError: new Error("Secret 'server-token-ci' not found"),
   });
   const deps = createServerTokenGcDeps(h.input);
 
-  await deps.deleteTokenSecret(token());
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
 
-Deno.test("createServerTokenGcDeps: deleteTokenSecret rethrows other vault errors", async () => {
+Deno.test("createServerTokenGcDeps: collectToken keeps the records when the secret delete fails", async () => {
   const h = harness({ vaultDeleteError: new Error("access denied") });
   const deps = createServerTokenGcDeps(h.input);
 
   await assertRejects(
-    () => deps.deleteTokenSecret(token()),
+    () => deps.collectToken(listed(), always),
     Error,
     "access denied",
   );
+  assertEquals(h.events, []);
 });
 
-Deno.test("createServerTokenGcDeps: deleteOAuthAccessToken deletes the token's OAuth key", async () => {
+Deno.test("createServerTokenGcDeps: collectToken still collects when the OAuth token delete fails", async () => {
   const h = harness();
-  const deps = createServerTokenGcDeps(h.input);
-
-  await deps.deleteOAuthAccessToken("ci");
-
-  assertEquals(h.deletedSecrets, [
-    [TOKEN_SECRETS_VAULT_NAME, "oauth-access-token-ci"],
-  ]);
-});
-
-Deno.test("createServerTokenGcDeps: deleteTokenRecord deletes the server-token definition, not a same-named user model", async () => {
-  const h = harness();
-  const deps = createServerTokenGcDeps(h.input);
-
-  await deps.deleteTokenRecord(TOKEN_DEF_ID, "ci");
-
-  assertEquals(h.deletedDefinitions, [
-    [SERVER_TOKEN_MODEL_TYPE.normalized, TOKEN_DEF_ID],
-  ]);
-});
-
-Deno.test("createServerTokenGcDeps: deleteTokenRecord leaves a server-token definition with a different id", async () => {
-  const h = harness({
-    tokenDefinition: Definition.create({
-      id: "00000000-0000-4000-8000-000000000003",
-      name: "ci",
-      version: 1,
-    }),
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    vaultService: {
+      ...h.input.vaultService,
+      delete: (vault, key) => {
+        if (key.startsWith("oauth-access-token-")) {
+          return Promise.reject(new Error("store down"));
+        }
+        return h.input.vaultService.delete(vault, key);
+      },
+    },
   });
-  const deps = createServerTokenGcDeps(h.input);
 
-  await deps.deleteTokenRecord(TOKEN_DEF_ID, "ci");
-
-  assertEquals(h.deletedDefinitions, []);
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
 
-Deno.test("createServerTokenGcDeps: deleteTokenRecord treats an already-deleted definition as done", async () => {
-  const h = harness({ tokenDefinition: null });
-  const deps = createServerTokenGcDeps(h.input);
+// --- collectToken: pushing and the sync gate ---
 
-  await deps.deleteTokenRecord(TOKEN_DEF_ID, "ci");
-
-  assertEquals(h.deletedDefinitions, []);
-});
-
-Deno.test("createServerTokenGcDeps: deleteTokenRecord surfaces other delete failures", async () => {
+Deno.test("createServerTokenGcDeps: collectToken still pushes after a partial record delete failure", async () => {
   const h = harness();
   h.input = {
     ...h.input,
@@ -334,59 +409,24 @@ Deno.test("createServerTokenGcDeps: deleteTokenRecord surfaces other delete fail
   const deps = createServerTokenGcDeps(h.input);
 
   await assertRejects(
-    () => deps.deleteTokenRecord(TOKEN_DEF_ID, "ci"),
+    () => deps.collectToken(listed(), always),
     Error,
     "disk full",
   );
+  assertEquals(h.events.at(-1), "push");
 });
 
-Deno.test("createServerTokenGcDeps: deleteTokenRecord pushes the deletes to the remote datastore", async () => {
-  const h = harness();
-  const deps = createServerTokenGcDeps(h.input);
-
-  await deps.deleteTokenRecord(TOKEN_DEF_ID, "ci");
-
-  assertEquals(h.pushes, 1);
-});
-
-Deno.test("createServerTokenGcDeps: deleteTokenRecord does not push when the definition is already gone", async () => {
-  const h = harness({ tokenDefinition: null });
-  const deps = createServerTokenGcDeps(h.input);
-
-  await deps.deleteTokenRecord(TOKEN_DEF_ID, "ci");
-
-  assertEquals(h.pushes, 0);
-});
-
-Deno.test("createServerTokenGcDeps: deleteTokenRecord still pushes after a partial delete failure", async () => {
-  const h = harness();
-  h.input = {
-    ...h.input,
-    modelDeleteDeps: {
-      ...h.input.modelDeleteDeps,
-      deleteDefinition: () => Promise.reject(new Error("disk full")),
-    },
-  };
-  const deps = createServerTokenGcDeps(h.input);
-
-  await assertRejects(() => deps.deleteTokenRecord(TOKEN_DEF_ID, "ci"));
-
-  assertEquals(h.pushes, 1);
-});
-
-Deno.test("createServerTokenGcDeps: a failed push does not fail deleteTokenRecord", async () => {
+Deno.test("createServerTokenGcDeps: a failed push does not fail collectToken", async () => {
   const h = harness();
   const deps = createServerTokenGcDeps({
     ...h.input,
     pushChanged: () => Promise.reject(new Error("remote unavailable")),
   });
 
-  await deps.deleteTokenRecord(TOKEN_DEF_ID, "ci");
-
-  assertEquals(h.deletedDefinitions.length, 1);
+  assertEquals(await deps.collectToken(listed(), always), "collected");
 });
 
-Deno.test("createServerTokenGcDeps: deleteTokenRecord waits for the sync gate", async () => {
+Deno.test("createServerTokenGcDeps: collectToken reads and deletes only while holding the sync gate", async () => {
   const h = harness();
   const syncGate = createSyncGate();
   const deps = createServerTokenGcDeps({ ...h.input, syncGate });
@@ -405,15 +445,18 @@ Deno.test("createServerTokenGcDeps: deleteTokenRecord waits for the sync gate", 
   });
   await entered;
 
-  const deletion = deps.deleteTokenRecord(TOKEN_DEF_ID, "ci");
-  // Let the deletion run as far as it can while the gate is held.
+  let checked = false;
+  const collection = deps.collectToken(listed(), () => {
+    checked = true;
+    return true;
+  });
+  // Let the collection run as far as it can while the gate is held.
   await new Promise((r) => setTimeout(r, 0));
-  assertEquals(h.deletedDefinitions, []);
-  assertEquals(h.pushes, 0);
+  assertEquals(checked, false);
+  assertEquals(h.events, []);
 
   releaseHolder();
   await holder;
-  await deletion;
-  assertEquals(h.deletedDefinitions.length, 1);
-  assertEquals(h.pushes, 1);
+  assertEquals(await collection, "collected");
+  assertEquals(h.events.at(-1), "push");
 });

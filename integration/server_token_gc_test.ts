@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertNotEquals,
+  assertRejects,
+} from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
@@ -53,6 +58,10 @@ import {
 import { createResourceWriter } from "../src/domain/models/data_writer.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { authenticateServerToken } from "../src/serve/token_auth.ts";
 import {
   createServerTokenGcDeps,
@@ -212,13 +221,14 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       "tampered-tok",
       ONE_HOUR,
     );
+    await mint(libCtx, repoDir, repoContext, "reused-tok", ONE_HOUR);
     const expired = await mint(libCtx, repoDir, repoContext, "expired-tok", 1);
     await waitFor(
       () => Date.now() > Date.parse(expired.expiresAt),
       "expired-tok to expire",
     );
 
-    for (const name of ["revoked-tok", "tampered-tok"]) {
+    for (const name of ["revoked-tok", "tampered-tok", "reused-tok"]) {
       const revokeEvents = await collect(
         serverTokenRevoke(
           libCtx,
@@ -258,12 +268,52 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       secretKey: "prod-db-password",
     });
 
-    // A user model that shares a collected token's name.
+    // A user model that shares a collected token's name, used by a workflow.
+    // modelDelete's workflow check matches by name.
     const userType = ModelType.create("command/shell");
     await repoContext.definitionRepo.save(
       userType,
       Definition.create({ name: "revoked-tok", version: 1 }),
     );
+    await repoContext.workflowRepo.save(Workflow.create({
+      name: "deploy-flow",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "run",
+          task: StepTask.model("revoked-tok", "execute", {}),
+        })],
+      })],
+    }));
+
+    // reused-tok's definition file is lost while its revoked record stays,
+    // then the name is minted again: the orphaned record and the live token
+    // share the name, and with it the secret key.
+    const orphanDef = await repoContext.definitionRepo.findByName(
+      SERVER_TOKEN_MODEL_TYPE,
+      "reused-tok",
+    );
+    assertExists(orphanDef);
+    await Deno.remove(
+      join(
+        repoContext.autoDefinitionsDir,
+        SERVER_TOKEN_MODEL_TYPE.toDirectoryPath(),
+        "reused-tok.yaml",
+      ),
+    );
+    const reused = await mint(
+      libCtx,
+      repoDir,
+      repoContext,
+      "reused-tok",
+      ONE_HOUR,
+    );
+    const liveDef = await repoContext.definitionRepo.findByName(
+      SERVER_TOKEN_MODEL_TYPE,
+      "reused-tok",
+    );
+    assertExists(liveDef);
+    assertNotEquals(liveDef.id, orphanDef.id);
 
     // With the default grace period the just-expired token is kept.
     const firstCount = await gcService(
@@ -273,13 +323,29 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       vaultService,
       ONE_HOUR,
     ).runOnce();
-    assertEquals(firstCount, 2);
+    assertEquals(firstCount, 3);
     assertExists(await tokenMain(repoContext, "expired-tok"));
 
     assertEquals(await tokenDefinitionFiles(repoContext), [
       "active-tok",
       "expired-tok",
+      "reused-tok",
     ]);
+
+    // The orphaned record is gone, and the re-minted token kept its secret.
+    assertEquals(
+      await repoContext.unifiedDataRepo.getContent(
+        SERVER_TOKEN_MODEL_TYPE,
+        orphanDef.id,
+        "token-main",
+      ),
+      null,
+    );
+    assertEquals(
+      (await authenticateServerToken(reused.credential, repoDir, repoContext))
+        .ok,
+      true,
+    );
     for (const name of ["revoked-tok", "tampered-tok"]) {
       assertEquals(
         await repoContext.definitionRepo.findByName(
@@ -339,7 +405,10 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
     ).runOnce();
     assertEquals(secondCount, 1);
     assertEquals(await tokenMain(repoContext, "expired-tok"), null);
-    assertEquals(await tokenDefinitionFiles(repoContext), ["active-tok"]);
+    assertEquals(await tokenDefinitionFiles(repoContext), [
+      "active-tok",
+      "reused-tok",
+    ]);
     assertEquals(
       (await authenticateServerToken(active.credential, repoDir, repoContext))
         .ok,

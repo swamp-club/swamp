@@ -761,7 +761,7 @@ function parseTokenGcDuration(
   drivesTimer: boolean,
 ): number {
   const trimmed = raw.trim();
-  if (/^0+[smhdw]?$/i.test(trimmed)) return 0;
+  if (/^0+(ms|[smhdw])?$/i.test(trimmed)) return 0;
   if (/^\d+ms$/i.test(trimmed)) {
     throw new UserError(
       `${flagName} must be in whole seconds or larger units (e.g. 30s, 1h); got ${raw}`,

@@ -24,10 +24,6 @@ import {
   ServerTokenGcService,
   type TokenGcInfo,
 } from "./server_token_gc_service.ts";
-import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
-import { ControlPlaneVaultProvider } from "../domain/vaults/control_plane_vault_provider.ts";
-import { serverTokenSecretKey } from "../domain/models/access/server_token_model.ts";
-import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 const ONE_HOUR = 60 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * ONE_HOUR;
@@ -46,48 +42,29 @@ function makeToken(
 function makeMockDeps(
   tokens: TokenGcInfo[] = [],
   overrides: Partial<ServerTokenGcDeps> = {},
-): ServerTokenGcDeps & {
-  deletedSecrets: string[];
-  deletedOAuthTokens: string[];
-  deletedRecords: Array<{ definitionId: string; tokenName: string }>;
-} {
-  const deletedSecrets: string[] = [];
-  const deletedOAuthTokens: string[] = [];
-  const deletedRecords: Array<{ definitionId: string; tokenName: string }> = [];
-
+): ServerTokenGcDeps & { collected: string[] } {
+  const collected: string[] = [];
   return {
     intervalMs: 100,
     gracePeriodMs: ONE_HOUR,
     listTokens: () => Promise.resolve(tokens),
-    deleteTokenSecret: (token) => {
-      deletedSecrets.push(token.name);
-      return Promise.resolve();
+    collectToken: (token) => {
+      collected.push(token.name);
+      return Promise.resolve("collected");
     },
-    deleteOAuthAccessToken: (name) => {
-      deletedOAuthTokens.push(name);
-      return Promise.resolve();
-    },
-    deleteTokenRecord: (definitionId, tokenName) => {
-      deletedRecords.push({ definitionId, tokenName });
-      return Promise.resolve();
-    },
-    deletedSecrets,
-    deletedOAuthTokens,
-    deletedRecords,
+    collected,
     ...overrides,
   };
 }
 
 Deno.test("runOnce: skips active tokens that have not expired", async () => {
-  const token = makeToken({ name: "oauth-active1" });
-  const deps = makeMockDeps([token]);
+  const deps = makeMockDeps([makeToken({ name: "oauth-active1" })]);
   const service = new ServerTokenGcService(deps);
 
   const count = await service.runOnce();
 
   assertEquals(count, 0);
-  assertEquals(deps.deletedSecrets.length, 0);
-  assertEquals(deps.deletedRecords.length, 0);
+  assertEquals(deps.collected, []);
 });
 
 Deno.test("runOnce: skips expired tokens within the grace period", async () => {
@@ -102,10 +79,10 @@ Deno.test("runOnce: skips expired tokens within the grace period", async () => {
   const count = await service.runOnce();
 
   assertEquals(count, 0);
-  assertEquals(deps.deletedSecrets.length, 0);
+  assertEquals(deps.collected, []);
 });
 
-Deno.test("runOnce: deletes expired tokens past the grace period across all layers", async () => {
+Deno.test("runOnce: collects expired tokens past the grace period", async () => {
   const token = makeToken({
     name: "oauth-old",
     state: "expired",
@@ -117,14 +94,10 @@ Deno.test("runOnce: deletes expired tokens past the grace period across all laye
   const count = await service.runOnce();
 
   assertEquals(count, 1);
-  assertEquals(deps.deletedSecrets, ["oauth-old"]);
-  assertEquals(deps.deletedOAuthTokens, ["oauth-old"]);
-  assertEquals(deps.deletedRecords, [
-    { definitionId: "def-oauth-old", tokenName: "oauth-old" },
-  ]);
+  assertEquals(deps.collected, ["oauth-old"]);
 });
 
-Deno.test("runOnce: deletes revoked tokens immediately without grace period", async () => {
+Deno.test("runOnce: collects revoked tokens immediately without grace period", async () => {
   const token = makeToken({
     name: "oauth-revoked",
     state: "revoked",
@@ -137,14 +110,10 @@ Deno.test("runOnce: deletes revoked tokens immediately without grace period", as
   const count = await service.runOnce();
 
   assertEquals(count, 1);
-  assertEquals(deps.deletedSecrets, ["oauth-revoked"]);
-  assertEquals(deps.deletedOAuthTokens, ["oauth-revoked"]);
-  assertEquals(deps.deletedRecords, [
-    { definitionId: "def-oauth-revoked", tokenName: "oauth-revoked" },
-  ]);
+  assertEquals(deps.collected, ["oauth-revoked"]);
 });
 
-Deno.test("runOnce: GC's active tokens that are past expiresAt plus grace period", async () => {
+Deno.test("runOnce: collects active tokens that are past expiresAt plus grace period", async () => {
   const token = makeToken({
     name: "oauth-stale",
     state: "active",
@@ -156,20 +125,63 @@ Deno.test("runOnce: GC's active tokens that are past expiresAt plus grace period
   const count = await service.runOnce();
 
   assertEquals(count, 1);
-  assertEquals(deps.deletedSecrets, ["oauth-stale"]);
+  assertEquals(deps.collected, ["oauth-stale"]);
 });
 
-Deno.test("runOnce: a record deletion failure skips that token and continues", async () => {
-  const token1 = makeToken({ name: "oauth-fail", state: "revoked" });
-  const token2 = makeToken({ name: "oauth-ok", state: "revoked" });
-  const deletedRecords: string[] = [];
-  const deps = makeMockDeps([token1, token2], {
-    deleteTokenRecord: (_definitionId, tokenName) => {
-      if (tokenName === "oauth-fail") {
+Deno.test("runOnce: re-checks each token against the same policy when collecting it", async () => {
+  const listed = makeToken({ name: "oauth-revoked", state: "revoked" });
+  const verdicts: boolean[] = [];
+  const deps = makeMockDeps([listed], {
+    collectToken: (_token, isEligible) => {
+      // Rotated since the listing: active again, with a fresh expiry.
+      verdicts.push(isEligible(makeToken({ name: "oauth-revoked" })));
+      verdicts.push(isEligible(listed));
+      verdicts.push(
+        isEligible(
+          makeToken({
+            name: "oauth-revoked",
+            state: "expired",
+            expiresAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          }),
+        ),
+      );
+      return Promise.resolve("skipped");
+    },
+  });
+  const service = new ServerTokenGcService(deps);
+
+  await service.runOnce();
+
+  assertEquals(verdicts, [false, true, false]);
+});
+
+Deno.test("runOnce: a skipped token is not counted", async () => {
+  const deps = makeMockDeps([
+    makeToken({ name: "oauth-a", state: "revoked" }),
+    makeToken({ name: "oauth-b", state: "revoked" }),
+  ], {
+    collectToken: (token) =>
+      Promise.resolve(token.name === "oauth-a" ? "skipped" : "collected"),
+  });
+  const service = new ServerTokenGcService(deps);
+
+  const count = await service.runOnce();
+
+  assertEquals(count, 1);
+});
+
+Deno.test("runOnce: a collection failure skips that token and continues", async () => {
+  const collected: string[] = [];
+  const deps = makeMockDeps([
+    makeToken({ name: "oauth-fail", state: "revoked" }),
+    makeToken({ name: "oauth-ok", state: "revoked" }),
+  ], {
+    collectToken: (token) => {
+      if (token.name === "oauth-fail") {
         return Promise.reject(new Error("data store unavailable"));
       }
-      deletedRecords.push(tokenName);
-      return Promise.resolve();
+      collected.push(token.name);
+      return Promise.resolve("collected");
     },
   });
   const service = new ServerTokenGcService(deps);
@@ -177,47 +189,51 @@ Deno.test("runOnce: a record deletion failure skips that token and continues", a
   const count = await service.runOnce();
 
   assertEquals(count, 1);
-  assertEquals(deps.deletedSecrets, ["oauth-fail", "oauth-ok"]);
-  assertEquals(deletedRecords, ["oauth-ok"]);
+  assertEquals(collected, ["oauth-ok"]);
 });
 
-Deno.test("runOnce: a secret deletion failure keeps the token's records for the next sweep", async () => {
-  const token = makeToken({ name: "oauth-nosecret", state: "revoked" });
-  const deps = makeMockDeps([token], {
-    deleteTokenSecret: () => Promise.reject(new Error("vault unavailable")),
-  });
+Deno.test("runOnce: handles mix of eligible and ineligible tokens", async () => {
+  const deps = makeMockDeps([
+    makeToken({ name: "oauth-active" }),
+    makeToken({
+      name: "oauth-recent",
+      state: "expired",
+      expiresAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // 10 min ago
+    }),
+    makeToken({
+      name: "oauth-old",
+      state: "expired",
+      expiresAt: new Date(Date.now() - 2 * ONE_HOUR).toISOString(),
+    }),
+    makeToken({ name: "oauth-revoked", state: "revoked" }),
+  ]);
+  const service = new ServerTokenGcService(deps);
+
+  const count = await service.runOnce();
+
+  assertEquals(count, 2);
+  assertEquals(deps.collected, ["oauth-old", "oauth-revoked"]);
+});
+
+Deno.test("runOnce: returns zero when no tokens are eligible", async () => {
+  const deps = makeMockDeps([]);
   const service = new ServerTokenGcService(deps);
 
   const count = await service.runOnce();
 
   assertEquals(count, 0);
-  assertEquals(deps.deletedOAuthTokens, []);
-  assertEquals(deps.deletedRecords, []);
-});
-
-Deno.test("runOnce: an OAuth access token deletion failure still collects the token", async () => {
-  const token = makeToken({ name: "oauth-nooauth", state: "revoked" });
-  const deps = makeMockDeps([token], {
-    deleteOAuthAccessToken: () => Promise.reject(new Error("store down")),
-  });
-  const service = new ServerTokenGcService(deps);
-
-  const count = await service.runOnce();
-
-  assertEquals(count, 1);
-  assertEquals(deps.deletedRecords, [
-    { definitionId: "def-oauth-nooauth", tokenName: "oauth-nooauth" },
-  ]);
+  assertEquals(deps.collected, []);
 });
 
 Deno.test("start: runs the first sweep straight away, not after the interval", async () => {
-  const token = makeToken({ name: "oauth-revoked", state: "revoked" });
   let listCalls = 0;
   const deps = makeMockDeps([], {
     intervalMs: ONE_HOUR,
     listTokens: () => {
       listCalls++;
-      return Promise.resolve([token]);
+      return Promise.resolve([
+        makeToken({ name: "oauth-revoked", state: "revoked" }),
+      ]);
     },
   });
   const service = new ServerTokenGcService(deps);
@@ -225,7 +241,7 @@ Deno.test("start: runs the first sweep straight away, not after the interval", a
   try {
     service.start();
     await waitFor(
-      () => deps.deletedRecords.length === 1,
+      () => deps.collected.length === 1,
       "first sweep to collect the revoked token",
     );
     assertEquals(listCalls, 1);
@@ -312,109 +328,4 @@ Deno.test("dispose: waits for an in-flight sweep and schedules no further sweep"
   }
 
   assertEquals(listCalls, callsAtDispose);
-});
-
-Deno.test("runOnce: returns zero and does not log when no tokens are eligible", async () => {
-  const deps = makeMockDeps([]);
-  const service = new ServerTokenGcService(deps);
-
-  const count = await service.runOnce();
-
-  assertEquals(count, 0);
-  assertEquals(deps.deletedSecrets.length, 0);
-  assertEquals(deps.deletedOAuthTokens.length, 0);
-  assertEquals(deps.deletedRecords.length, 0);
-});
-
-Deno.test("runOnce: handles mix of eligible and ineligible tokens", async () => {
-  const active = makeToken({ name: "oauth-active" });
-  const recentExpired = makeToken({
-    name: "oauth-recent",
-    state: "expired",
-    expiresAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // 10 min ago
-  });
-  const oldExpired = makeToken({
-    name: "oauth-old",
-    state: "expired",
-    expiresAt: new Date(Date.now() - 2 * ONE_HOUR).toISOString(),
-  });
-  const revoked = makeToken({
-    name: "oauth-revoked",
-    state: "revoked",
-  });
-
-  const deps = makeMockDeps([active, recentExpired, oldExpired, revoked]);
-  const service = new ServerTokenGcService(deps);
-
-  const count = await service.runOnce();
-
-  assertEquals(count, 2);
-  assertEquals(deps.deletedSecrets, ["oauth-old", "oauth-revoked"]);
-  assertEquals(deps.deletedRecords.map((r) => r.definitionId), [
-    "def-oauth-old",
-    "def-oauth-revoked",
-  ]);
-});
-
-function createInMemoryControlPlaneStore(): ControlPlaneStore & {
-  data: Map<string, Uint8Array>;
-} {
-  const data = new Map<string, Uint8Array>();
-  return {
-    data,
-    put: (key: string, value: Uint8Array) => {
-      data.set(key, value);
-      return Promise.resolve();
-    },
-    get: (key: string) => Promise.resolve(data.get(key) ?? null),
-    delete: (key: string) => {
-      data.delete(key);
-      return Promise.resolve();
-    },
-    list: (prefix: string) =>
-      Promise.resolve([...data.keys()].filter((k) => k.startsWith(prefix))),
-  };
-}
-
-Deno.test("runOnce: deletes control plane vault entries for token secrets and OAuth access tokens", async () => {
-  const store = createInMemoryControlPlaneStore();
-  const provider = new ControlPlaneVaultProvider(store);
-  await provider.initialize();
-
-  const tokenName = "oauth-test123";
-  await provider.put(serverTokenSecretKey(tokenName), "secret-value");
-  await provider.put(oauthAccessTokenKey(tokenName), "oauth-token-value");
-
-  const secretsBefore = await provider.list();
-  assertEquals(secretsBefore.length, 2);
-
-  const token = makeToken({
-    name: tokenName,
-    state: "revoked",
-  });
-  const deletedRecords: string[] = [];
-
-  const service = new ServerTokenGcService({
-    intervalMs: 100,
-    gracePeriodMs: ONE_HOUR,
-    listTokens: () => Promise.resolve([token]),
-    deleteTokenSecret: async (t) => {
-      await provider.delete(serverTokenSecretKey(t.name));
-    },
-    deleteOAuthAccessToken: async (name) => {
-      await provider.delete(oauthAccessTokenKey(name));
-    },
-    deleteTokenRecord: (definitionId) => {
-      deletedRecords.push(definitionId);
-      return Promise.resolve();
-    },
-  });
-
-  const count = await service.runOnce();
-
-  assertEquals(count, 1);
-  assertEquals(deletedRecords, [`def-${tokenName}`]);
-  const secretsAfter = await provider.list();
-  assertEquals(secretsAfter.length, 0);
-  assertEquals(store.data.size, 1); // only the encryption key remains
 });

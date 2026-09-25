@@ -241,18 +241,34 @@ Serve garbage-collects server tokens in every auth mode
 once token secret migration is done, then one runs every `--token-gc-interval`.
 A sweep deletes revoked tokens at once, and expired tokens once
 `--token-gc-grace-period` has passed since `expiresAt`, so both drop out of
-`access token list`. For each token it deletes these, in order:
+`access token list`.
 
-1. The secret. A failure keeps the token for the next sweep, so a stale copy of
-   the records, such as an HA peer's local cache, can never authenticate.
-2. The OAuth access token, best effort.
-3. The definition, data and outputs, through `modelDelete`.
+Each token is collected as one unit holding the sync gate exclusively. Serve's
+own token mint, rotate and revoke also hold the gate while they write, and so
+does the OAuth login mint. Inside the unit the GC
+re-reads the token's `token-main` and skips the token if it is gone or no longer
+eligible. Then:
 
-Step 3 and the push that commits it hold the sync gate as one exclusive unit.
+1. It deletes the secret. A failure keeps the token for the next sweep, so a
+   stale copy of the records, such as an HA peer's local cache, can never
+   authenticate.
+2. It deletes the OAuth access token, best effort.
+3. It deletes the definition, data and outputs through `modelDelete`, and
+   pushes the deletes. The workflow reference check is skipped, since it
+   matches by name and a server-token definition is never a step's model.
+
 The secret key is always `server-token-<name>`, never the key the persisted
 record names, so a tampered record cannot make serve delete an unrelated
-secret. Every replica sweeps on its own. A token another replica already
-deleted counts as done.
+secret.
+
+That key is shared by every definition that has carried the name. So when a
+record outlives its definition, and the name now belongs to another definition
+or to none, the GC deletes only that record's data and leaves the secret.
+
+Every replica sweeps on its own, and a token another replica already deleted
+is skipped. The gate is in-process only. A replica whose copy of a record is
+older than another replica's re-mint or rotation of the same name can still
+collect the new token. That fails closed: the token has to be minted again.
 
 **Grants.** Each request is authorized against an in-memory `PolicySnapshot`
 built from grant and group data (`src/domain/access/policy_snapshot_loader.ts`).
