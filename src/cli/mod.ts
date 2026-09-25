@@ -23,6 +23,7 @@ import {
   globalTelemetryDir,
   isManagedConfigBaseResolved,
   managedConfigLockfilePath,
+  resolveManagedConfigOnce,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
 import {
@@ -315,21 +316,78 @@ const NON_REPO_COMMANDS = new Set([
  *
  * @internal Exported for testing
  */
+/** Options for {@link configureStartupExtensions}. */
+export interface StartupExtensionOptions {
+  repoDir: string;
+  marker: RepoMarkerData | null;
+  resolvedSources: ResolvedSourceDirs[];
+  /**
+   * Collects warnings raised before logging is initialised; emitted once
+   * logging starts.
+   */
+  deferredWarnings: DeferredWarning[];
+  quiet?: boolean;
+  extensionsDir?: string;
+  /**
+   * The command runs against a remote `swamp serve` instance. Skips the
+   * eager managed config resolution for extension-backed datastores.
+   */
+  thinClient?: boolean;
+  /** Reads `SWAMP_DATASTORE`; injectable for tests. */
+  readDatastoreEnv?: DatastoreEnvReader;
+  /**
+   * Drops a warning the command should not see (swamp-club#1762). Applied
+   * to warnings the deferred reconcile logs directly; warnings collected at
+   * startup are filtered by the caller.
+   */
+  suppressWarning?: (warning: DeferredWarning) => boolean;
+  /** Test seam: replaces the datastore-kind loader. */
+  datastoreLoader?: () => Promise<void>;
+}
+
 /**
- * Configures the extension loaders on all registries for a given repository.
- * Exported so that commands that can switch repositories at runtime (like
- * `swamp serve open` with its filesystem picker) can re-configure the loaders
- * when the user picks a different repo.
+ * Configures the extension loaders on every registry, and resolves the
+ * managed config base first so no loader captures a guessed lockfile path
+ * (swamp-club#2483).
+ *
+ * Sequence:
+ * 1. Register the repo's managed status (the in-repo fallback, recorded as
+ *    unresolved), so the pulled-extensions root is right from the start.
+ * 2. For a managedConfig repo on an extension-backed datastore, install a
+ *    datastore-kind loader that finds datastore extensions on disk, without
+ *    any lockfile.
+ * 3. Resolve the managed config base once, with installed extensions only:
+ *    always for filesystem datastores (cheap), and for extension-backed ones
+ *    unless the command is a thin client.
+ * 4. Configure the model, vault, report and webhook loaders (and the
+ *    datastore loader for other repos) with a lockfile path read when they
+ *    load. A loader that finds the base still unresolved resolves it first,
+ *    once per process, installed-only.
+ * 5. Run reconcile and the missing-source-files check only once the base is
+ *    resolved (or the repo does not need it); if startup had to skip them,
+ *    they run once, best-effort, when a loader first finds it resolved.
+ *
+ * Until swamp-club#2495, auto-resolved installs in an extension-backed repo
+ * are recorded in the in-repo `.swamp/config/upstream_extensions.json`;
+ * loaders, the reconcile orphan rule and the missing-files check read those
+ * entries alongside the resolved lockfile.
+ *
+ * @returns A disposer that closes the catalog handles (for tests; the CLI
+ *   process exits instead).
  */
-export async function configureExtensionLoaders(
-  repoDir: string,
-  marker: RepoMarkerData | null,
-  resolvedSources: ResolvedSourceDirs[],
-  deferredWarnings: DeferredWarning[],
-  quiet = false,
-  extensionsDir?: string,
-  managedLockfilePath?: string,
-): Promise<void> {
+export async function configureStartupExtensions(
+  options: StartupExtensionOptions,
+): Promise<() => void> {
+  const {
+    repoDir,
+    marker,
+    resolvedSources,
+    deferredWarnings,
+    quiet = false,
+    extensionsDir,
+    thinClient = false,
+    readDatastoreEnv,
+  } = options;
   const effectiveExtDir = extensionsDir ?? repoDir;
 
   // Every extension — including already-pulled repo bundles — is loaded
@@ -399,186 +457,373 @@ export async function configureExtensionLoaders(
     return extra ? [...sourceDirs, ...extra] : sourceDirs;
   };
 
-  let resolverPromise: Promise<DatastorePathResolver | undefined> | undefined;
-  const lazyResolver = (): Promise<DatastorePathResolver | undefined> => {
-    resolverPromise ??= resolveDatastoreConfig(marker, undefined, repoDir)
-      .then((config) =>
-        new DefaultDatastorePathResolver(
+  const catalog = new ExtensionCatalogStore(
+    swampPath(repoDir, "_extension_catalog.db"),
+  );
+  const dispose = () => catalog.close();
+
+  try {
+    const localManifestIdentity = readLocalManifestIdentity(repoDir);
+    const managed = marker?.datastore?.managedConfig === true;
+    const extensionBacked = isExtensionBackedDatastore(
+      marker,
+      readDatastoreEnv,
+    );
+
+    // 1. Record managed status before anything asks for the pulled root.
+    resolveManagedConfigPaths(repoDir, marker);
+
+    // 2. The datastore extension must load before the base can resolve, so
+    // in extension-backed repos it is discovered on disk, not via a lockfile.
+    if (options.datastoreLoader) {
+      datastoreTypeRegistry.setLoader(options.datastoreLoader);
+    } else if (extensionBacked) {
+      const datastoreRepository = new ExtensionRepository({
+        catalog,
+        lockfileRepository: new LockfileRepository(
+          managedConfigLockfilePath(repoDir),
+          {},
+        ),
+        repoRoot: repoDir,
+        localManifestIdentity,
+      });
+      datastoreTypeRegistry.setLoader(() =>
+        loadUserDatastores(
           repoDir,
-          config,
-        ) as DatastorePathResolver
-      )
-      .catch(() => undefined);
-    return resolverPromise;
-  };
+          marker,
+          denoRuntime,
+          mergeManifestDirs(sourceDatastoresDirs, "datastores"),
+          datastoreRepository,
+          quiet,
+          effectiveExtDir,
+          undefined,
+          undefined,
+          () => choosePulledDatastoreDirsOnDisk(catalog, repoDir),
+        )
+      );
+    }
 
-  const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
-  const catalog = new ExtensionCatalogStore(catalogDbPath);
+    // 3. Resolve the base, installed-only. A failed attempt is remembered
+    // for this process so each loader does not rerun the datastore index
+    // pass; anything that resolves the base later (requireInitializedRepo*,
+    // an extension command) is seen through the registry.
+    let resolutionFailed = false;
+    const ensureResolvedForLoaders = async (): Promise<void> => {
+      if (!extensionBacked || resolutionFailed) return;
+      if (isManagedConfigBaseResolved(repoDir)) return;
+      const resolved = await resolveManagedConfigOnce(
+        repoDir,
+        () =>
+          ensureManagedConfigBase(repoDir, marker, undefined, {
+            autoResolve: false,
+          }),
+      );
+      if (!resolved) resolutionFailed = true;
+    };
+    if (managed && !extensionBacked) {
+      await ensureManagedConfigBase(repoDir, marker);
+    } else if (extensionBacked && !thinClient) {
+      await ensureResolvedForLoaders();
+    }
+    const baseReady = () =>
+      !extensionBacked || isManagedConfigBaseResolved(repoDir);
 
-  // W1b: wrap the catalog in an ExtensionRepository so all 5 loaders see
-  // it as their long-lived constructor-injected dependency (per ADV-V2-1
-  // option (a-2)). The lockfile snapshot is frozen at construction (see
-  // ExtensionRepository class JSDoc); the load* functions use a lazy
-  // getter so the lockfile is read on first need rather than at every
-  // configureExtensionLoaders call.
-  const repoModelsDir = resolveModelsDir(marker);
-  const lockfilePath = managedLockfilePath ?? join(
-    isAbsolute(repoModelsDir) ? repoModelsDir : resolve(repoDir, repoModelsDir),
-    "upstream_extensions.json",
-  );
-  const lockfileRepository = await LockfileRepository.create(lockfilePath);
-  const localManifestIdentity = readLocalManifestIdentity(repoDir);
-  const repository = new ExtensionRepository({
-    catalog,
-    lockfileRepository,
-    repoRoot: repoDir,
-    localManifestIdentity,
-  });
-
-  // In a managedConfig repo on an extension-backed datastore, datastore
-  // extensions are found on disk rather than through a lockfile
-  // (swamp-club#2483).
-  const extensionBacked = isExtensionBackedDatastore(marker);
-  // Until swamp-club#2495, auto-resolved installs there are recorded in the
-  // in-repo lockfile; loaders and reconcile read it alongside this one.
-  const localLockfilePath = transitionalLocalLockfilePath(
-    repoDir,
-    marker,
-    lockfilePath,
-  );
-
-  if (
-    repository.anyKindNeedsInvalidation() ||
-    repository.manifestIdentityChanged(localManifestIdentity)
-  ) {
-    const reconciler = new ReconcileFromDiskService({
-      denoRuntime,
-      repository,
-      lockfileRepository,
-      repoDir,
-      localManifestIdentity,
-      scanOnDiskDatastores: extensionBacked,
-      additionalInstalledNames: await transitionalInstalledNames(
+    // 4. Loaders read the lockfile path when they load.
+    const lockfilePathNow = () =>
+      resolveManagedConfigPaths(repoDir, marker).lockfilePath;
+    const localLockfileFor = (lockfilePath: string) =>
+      transitionalLocalLockfilePath(
         repoDir,
         marker,
         lockfilePath,
-      ),
-    });
-    await reconciler.execute();
-  }
+        readDatastoreEnv,
+      );
+    const repositories = new Map<
+      string,
+      Promise<{
+        repository: ExtensionRepository;
+        lockfileRepository: LockfileRepository;
+      }>
+    >();
+    const repositoryFor = (lockfilePath: string) => {
+      let entry = repositories.get(lockfilePath);
+      if (!entry) {
+        entry = LockfileRepository.create(lockfilePath).then(
+          (lockfileRepository) => ({
+            lockfileRepository,
+            repository: new ExtensionRepository({
+              catalog,
+              lockfileRepository,
+              repoRoot: repoDir,
+              localManifestIdentity,
+            }),
+          }),
+        );
+        entry.catch(() => repositories.delete(lockfilePath));
+        repositories.set(lockfilePath, entry);
+      }
+      return entry;
+    };
 
-  modelRegistry.setLoader(() =>
-    loadUserModels(
-      repoDir,
-      marker,
-      denoRuntime,
-      mergeManifestDirs(sourceModelsDirs, "models"),
-      lazyResolver,
-      repository,
-      quiet,
-      effectiveExtDir,
-      lockfilePath,
-      localLockfilePath,
-    )
-  );
-  vaultTypeRegistry.setLoader(() =>
-    loadUserVaults(
-      repoDir,
-      marker,
-      denoRuntime,
-      mergeManifestDirs(sourceVaultsDirs, "vaults"),
-      lazyResolver,
-      repository,
-      quiet,
-      effectiveExtDir,
-      lockfilePath,
-      localLockfilePath,
-    )
-  );
-  if (extensionBacked) {
-    // The datastore extension must load before the managed config base, and
-    // so the lockfile, can be found. It is discovered on disk under either
-    // in-repo pulled root, whichever lockfile recorded it; rows of a copy
-    // that lost the dedupe are purged so its types do not register twice.
-    const datastoreRepository = new ExtensionRepository({
-      catalog,
-      lockfileRepository: new LockfileRepository(
-        managedConfigLockfilePath(repoDir),
-        {},
-      ),
-      repoRoot: repoDir,
-      localManifestIdentity,
-    });
-    datastoreTypeRegistry.setLoader(() =>
-      loadUserDatastores(
-        repoDir,
+    let resolverPromise:
+      | Promise<DatastorePathResolver | undefined>
+      | undefined;
+    const lazyResolver = async (): Promise<
+      DatastorePathResolver | undefined
+    > => {
+      if (extensionBacked) {
+        await ensureResolvedForLoaders();
+        if (!isManagedConfigBaseResolved(repoDir)) return undefined;
+      }
+      resolverPromise ??= resolveDatastoreConfig(
         marker,
-        denoRuntime,
-        mergeManifestDirs(sourceDatastoresDirs, "datastores"),
-        datastoreRepository,
-        quiet,
-        effectiveExtDir,
         undefined,
-        undefined,
-        () => choosePulledDatastoreDirsOnDisk(catalog, repoDir),
+        repoDir,
+        extensionBacked ? { autoResolve: false } : undefined,
       )
-    );
-  } else {
-    datastoreTypeRegistry.setLoader(() =>
-      loadUserDatastores(
-        repoDir,
-        marker,
+        .then((config) =>
+          new DefaultDatastorePathResolver(
+            repoDir,
+            config,
+          ) as DatastorePathResolver
+        )
+        .catch(() => {
+          // An extension-backed repo retries once its base resolves, and the
+          // retry is installed-only. Elsewhere the failure is kept for the
+          // process, so each loader does not re-run the network auto-resolve.
+          if (extensionBacked) resolverPromise = undefined;
+          return undefined;
+        });
+      return resolverPromise;
+    };
+
+    // 5. Reconcile and the missing-files check. Reconcile returns false
+    // when the lockfile cannot be read; the missing-files check reads the
+    // same file, so it is skipped rather than repeating the warning.
+    const runReconcile = async (): Promise<boolean> => {
+      const lockfilePath = lockfilePathNow();
+      let loaded: Awaited<ReturnType<typeof repositoryFor>>;
+      try {
+        loaded = await repositoryFor(lockfilePath);
+      } catch (error) {
+        // The read error already names the lockfile.
+        logger.warn`Skipping extension catalog repair: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        return false;
+      }
+      const { repository, lockfileRepository } = loaded;
+      if (
+        !repository.anyKindNeedsInvalidation() &&
+        !repository.manifestIdentityChanged(localManifestIdentity)
+      ) {
+        return true;
+      }
+      const reconciler = new ReconcileFromDiskService({
         denoRuntime,
-        mergeManifestDirs(sourceDatastoresDirs, "datastores"),
         repository,
-        quiet,
-        effectiveExtDir,
+        lockfileRepository,
+        repoDir,
+        localManifestIdentity,
+        scanOnDiskDatastores: extensionBacked,
+        additionalInstalledNames: await transitionalInstalledNames(
+          repoDir,
+          marker,
+          lockfilePath,
+          readDatastoreEnv,
+        ),
+      });
+      await reconciler.execute();
+      return true;
+    };
+    // Skip local filesystem checks when commands route to a remote serve
+    // instance — the local repo may be a thin checkout whose lockfile
+    // references files that only exist on the server.
+    const checkLocalFiles = !Deno.env.get("SWAMP_SERVE_URL");
+    const checkMissing = (report: (warning: DeferredWarning) => void) => {
+      const lockfilePath = lockfilePathNow();
+      return checkForMissingPulledExtensions(
+        repoDir,
         lockfilePath,
-        localLockfilePath,
+        localLockfileFor(lockfilePath),
+        report,
+      );
+    };
+
+    // Reconcile counts as done only once it has read the lockfile; an
+    // unreadable one (caught mid-rewrite by a sync) is retried on a later
+    // load rather than skipped for the rest of the process.
+    let reconciled = false;
+    if (baseReady()) {
+      reconciled = await runReconcile();
+      if (checkLocalFiles && reconciled) {
+        await checkMissing((w) => deferredWarnings.push(w));
+      }
+    }
+    let deferredReconcile: Promise<void> | undefined;
+    const runDeferredReconcileOnce = (): Promise<void> => {
+      if (reconciled || !baseReady()) return Promise.resolve();
+      deferredReconcile ??= (async () => {
+        try {
+          if (!await runReconcile()) {
+            deferredReconcile = undefined;
+            return;
+          }
+          reconciled = true;
+          if (checkLocalFiles) {
+            await checkMissing((w) => {
+              if (!options.suppressWarning?.(w)) logger.warn`${w.error}`;
+            });
+          }
+        } catch (error) {
+          deferredReconcile = undefined;
+          logger.warn`Extension catalog repair failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      })();
+      return deferredReconcile;
+    };
+
+    const withLoaderContext = async (
+      registry: { resetLoadedFlag(): void },
+      load: (
+        lockfilePath: string,
+        repository: ExtensionRepository,
+        localLockfilePath: string | undefined,
+      ) => Promise<void>,
+    ): Promise<void> => {
+      await ensureResolvedForLoaders();
+      await runDeferredReconcileOnce();
+      const lockfilePath = lockfilePathNow();
+      let repository: ExtensionRepository;
+      try {
+        ({ repository } = await repositoryFor(lockfilePath));
+      } catch (error) {
+        // An unreadable lockfile fails this load, but must not stay cached
+        // in the registry: the next ensureLoaded retries the read.
+        registry.resetLoadedFlag();
+        throw error;
+      }
+      await load(lockfilePath, repository, localLockfileFor(lockfilePath));
+    };
+
+    modelRegistry.setLoader(() =>
+      withLoaderContext(
+        modelRegistry,
+        (lockfilePath, repository, localLockfilePath) =>
+          loadUserModels(
+            repoDir,
+            marker,
+            denoRuntime,
+            mergeManifestDirs(sourceModelsDirs, "models"),
+            lazyResolver,
+            repository,
+            quiet,
+            effectiveExtDir,
+            lockfilePath,
+            localLockfilePath,
+          ),
       )
     );
-  }
-  reportRegistry.setLoader(() =>
-    loadUserReports(
-      repoDir,
-      marker,
-      denoRuntime,
-      mergeManifestDirs(sourceReportsDirs, "reports"),
-      lazyResolver,
-      repository,
-      quiet,
-      effectiveExtDir,
-      lockfilePath,
-      localLockfilePath,
-    )
-  );
-  webhookTypeRegistry.setLoader(() =>
-    loadUserWebhooks(
-      repoDir,
-      marker,
-      denoRuntime,
-      mergeManifestDirs(sourceWebhooksDirs, "webhooks"),
-      lazyResolver,
-      repository,
-      quiet,
-      effectiveExtDir,
-      lockfilePath,
-      localLockfilePath,
-    )
-  );
-
-  // Skip local filesystem checks when commands route to a remote serve
-  // instance — the local repo may be a thin checkout whose lockfile
-  // references files that only exist on the server.
-  if (!Deno.env.get("SWAMP_SERVE_URL")) {
-    await checkForMissingPulledExtensions(
-      repoDir,
-      lockfilePath,
-      localLockfilePath,
-      (w) => deferredWarnings.push(w),
+    vaultTypeRegistry.setLoader(() =>
+      withLoaderContext(
+        vaultTypeRegistry,
+        (lockfilePath, repository, localLockfilePath) =>
+          loadUserVaults(
+            repoDir,
+            marker,
+            denoRuntime,
+            mergeManifestDirs(sourceVaultsDirs, "vaults"),
+            lazyResolver,
+            repository,
+            quiet,
+            effectiveExtDir,
+            lockfilePath,
+            localLockfilePath,
+          ),
+      )
     );
-    await checkForSupersededSkills(repoDir, marker, deferredWarnings);
+    if (!options.datastoreLoader && !extensionBacked) {
+      datastoreTypeRegistry.setLoader(() =>
+        withLoaderContext(
+          datastoreTypeRegistry,
+          (lockfilePath, repository, localLockfilePath) =>
+            loadUserDatastores(
+              repoDir,
+              marker,
+              denoRuntime,
+              mergeManifestDirs(sourceDatastoresDirs, "datastores"),
+              repository,
+              quiet,
+              effectiveExtDir,
+              lockfilePath,
+              localLockfilePath,
+            ),
+        )
+      );
+    }
+    reportRegistry.setLoader(() =>
+      withLoaderContext(
+        reportRegistry,
+        (lockfilePath, repository, localLockfilePath) =>
+          loadUserReports(
+            repoDir,
+            marker,
+            denoRuntime,
+            mergeManifestDirs(sourceReportsDirs, "reports"),
+            lazyResolver,
+            repository,
+            quiet,
+            effectiveExtDir,
+            lockfilePath,
+            localLockfilePath,
+          ),
+      )
+    );
+    webhookTypeRegistry.setLoader(() =>
+      withLoaderContext(
+        webhookTypeRegistry,
+        (lockfilePath, repository, localLockfilePath) =>
+          loadUserWebhooks(
+            repoDir,
+            marker,
+            denoRuntime,
+            mergeManifestDirs(sourceWebhooksDirs, "webhooks"),
+            lazyResolver,
+            repository,
+            quiet,
+            effectiveExtDir,
+            lockfilePath,
+            localLockfilePath,
+          ),
+      )
+    );
+
+    if (checkLocalFiles) {
+      await checkForSupersededSkills(repoDir, marker, deferredWarnings);
+    }
+  } catch (error) {
+    dispose();
+    throw error;
   }
+
+  return dispose;
+}
+
+/**
+ * True when the command runs against a remote `swamp serve` instance: the
+ * `--server` flag, or `SWAMP_SERVE_URL` / `SWAMP_SERVER_URL`. `swamp serve`
+ * itself never counts, and a `serverAddress` in `.swamp.yaml` is not
+ * considered here (such checkouts still resolve at startup).
+ */
+export function isThinClientCommand(
+  commandInfo: { command: string; optionKeys: string[] },
+  readEnv: (name: string) => string | undefined = (name) => Deno.env.get(name),
+): boolean {
+  if (commandInfo.command === "serve") return false;
+  if (commandInfo.optionKeys.includes("--server")) return true;
+  return Boolean(readEnv("SWAMP_SERVE_URL") || readEnv("SWAMP_SERVER_URL"));
 }
 
 /**
@@ -718,7 +963,7 @@ export function shouldSuppressMissingExtensionsWarning(
  * Detects the "neither HOME nor USERPROFILE is set" failure raised by the
  * home-directory path helpers. Used to suppress the misleading per-kind
  * loader warnings in favour of the single actionable warning emitted by
- * {@link configureExtensionLoaders}.
+ * {@link configureStartupExtensions}.
  */
 function isMissingHomeError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("home directory");
@@ -752,9 +997,9 @@ async function loadUserModels(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
-  sourceDirs: string[] = [],
-  resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
-  repository?: ExtensionRepository,
+  sourceDirs: string[],
+  resolverFactory: () => Promise<DatastorePathResolver | undefined>,
+  repository: ExtensionRepository,
   _quiet = false,
   extensionsDir?: string,
   managedLockfilePath?: string,
@@ -770,24 +1015,13 @@ async function loadUserModels(
     const lockfilePath = managedLockfilePath ??
       join(absoluteModelsDir, "upstream_extensions.json");
 
-    const effectiveRepository = repository ?? new ExtensionRepository({
-      catalog: new ExtensionCatalogStore(
-        swampPath(repoDir, "_extension_catalog.db"),
-      ),
-      lockfileRepository: new LockfileRepository(
-        lockfilePath,
-        {},
-      ),
-      repoRoot: repoDir,
-    });
-
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new ExtensionLoader(
       denoRuntime,
       modelKindAdapter,
       repoDir,
       resolver,
-      effectiveRepository,
+      repository,
     );
     const pulledDirs = await enumeratePulledExtensionDirs(
       lockfilePath,
@@ -834,7 +1068,7 @@ async function loadUserModels(
   } catch (error) {
     if (error instanceof UserError) throw error;
     if (error instanceof Deno.errors.NotFound) return;
-    // configureExtensionLoaders already emitted one actionable warning for
+    // configureStartupExtensions already emitted one actionable warning for
     // the missing-home case; suppress the misleading per-kind duplicate.
     if (isMissingHomeError(error)) return;
     if (isTransientError(error)) {
@@ -1708,20 +1942,17 @@ export async function runCli(args: string[]): Promise<void> {
     // Loader warnings raised while resolving the managed config base below
     // would otherwise be dropped: logging starts only after Cliffy parses.
     await bufferStartupWarnings();
-    await ensureManagedConfigBase(repoDir, marker);
-    const { lockfilePath: managedLockfilePath } = resolveManagedConfigPaths(
-      repoDir,
-      marker,
-    );
-    await configureExtensionLoaders(
+    await configureStartupExtensions({
       repoDir,
       marker,
       resolvedSources,
       deferredWarnings,
-      isQuietFromArgs(args),
+      quiet: isQuietFromArgs(args),
       extensionsDir,
-      managedLockfilePath,
-    );
+      thinClient: isThinClientCommand(commandInfo),
+      suppressWarning: (warning) =>
+        shouldSuppressMissingExtensionsWarning(commandInfo, warning),
+    });
     loaderSpan.end();
 
     // Suppress missing-pulled-extensions warning during extension install (swamp-club#1762)
