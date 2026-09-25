@@ -10023,6 +10023,17 @@ Deno.test("templateScanGlobalArguments: leaves out a supplied key the authored r
   );
 });
 
+Deno.test("templateScanGlobalArguments: skips a supplied key the definition does not hold", () => {
+  assertEquals(
+    templateScanGlobalArguments(
+      { region: "us-east-1" },
+      ["region", "dropped"],
+      { region: "us-east-1", dropped: "{{env.name}}" },
+    ),
+    { region: "us-east-1" },
+  );
+});
+
 Deno.test("templateScanGlobalArguments: ignores inherited keys of the authored record", () => {
   assertEquals(
     templateScanGlobalArguments(

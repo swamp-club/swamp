@@ -623,9 +623,9 @@ runs a model type directly (`modelType`, `modelName` and inline `globalArgs`)
 validates a definition built from its arguments after the workflow evaluator
 substituted them, so there the scan reads the step's arguments as written in the
 workflow instead, key by key (`templateScanGlobalArguments`,
-`src/domain/workflows/execution_service.ts`). Text that evaluation produced, from
-a CEL concatenation, a workflow input or a step output, is never flagged. Each
-match is classified with the rule the runtime applies to
+`src/domain/workflows/execution_service.ts`). Text that evaluation produced,
+from a CEL concatenation, a workflow input or a step output, is never flagged.
+Each match is classified with the rule the runtime applies to
 `${{ ... }}` text (`isSwampExpression`). **A match is a mistake exactly when,
 with the syntax corrected, swamp would claim it as its own expression.**
 
@@ -704,10 +704,10 @@ store expressions that only resolve inside the run that passed them in. Running
 braces. When it reports anything, it adds an `Auto-definition` warning saying
 that swamp wrote the definition from a run's evaluated arguments, that its
 findings may be text evaluation produced rather than mistakes, and that any
-change belongs in the workflow step or command that wrote it. The definition counts as an
-auto-definition when `models/` holds no definition with its ID, so one reached
-by UUID is told apart from a same-named definition in `models/`. Validating all
-models skips auto-definitions.
+change belongs in the workflow step or command that wrote it. The definition
+counts as an auto-definition when `models/` holds no definition with its ID, so
+one reached by UUID is told apart from a same-named definition in `models/`.
+Validating all models skips auto-definitions.
 
 **Declaring a field.** A model type marks a global or method argument that
 holds another service's template syntax with `.meta({ foreignTemplate: true })`

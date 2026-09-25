@@ -546,7 +546,8 @@ export function trackerStatusForRun(
  * supplied is scanned as the author wrote it instead. When the step wrote its
  * arguments as one whole-field expression, evaluation produced every key, so
  * none of them is scanned. Keys the step did not supply, kept from a stored
- * definition, are scanned as stored.
+ * definition, are scanned as stored. A supplied key the definition does not
+ * hold never reaches the method, so it is not scanned at all.
  *
  * @param definitionGlobals - The built definition's global arguments
  * @param suppliedKeys - The global argument keys this step supplied
@@ -560,6 +561,7 @@ export function templateScanGlobalArguments(
 ): Record<string, unknown> {
   const scanned = { ...definitionGlobals };
   for (const key of suppliedKeys) {
+    if (!Object.hasOwn(definitionGlobals, key)) continue;
     delete scanned[key];
     if (
       typeof authored === "object" && authored !== null &&
