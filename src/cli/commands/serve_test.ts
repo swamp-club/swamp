@@ -141,7 +141,9 @@ Deno.test("parseTokenGcSettings: accepts seconds and larger units", () => {
 });
 
 Deno.test("parseTokenGcSettings: zero disables the GC or removes the grace period", () => {
-  for (const zero of ["0", "0s", "0ms", "0m", "0h", " 0 "]) {
+  for (
+    const zero of ["0", "0s", "0ms", "0m", "0h", "0d", "0w", "0mo", "0y", " 0 "]
+  ) {
     assertEquals(parseTokenGcSettings(zero, zero), {
       intervalMs: 0,
       gracePeriodMs: 0,

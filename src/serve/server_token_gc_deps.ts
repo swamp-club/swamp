@@ -247,13 +247,16 @@ export function createServerTokenGcDeps(
     },
 
     collectToken: (listed, isEligible) =>
-      // One unit under the sync gate. Mints, rotations and revokes hold the
-      // gate while they write, so the re-read below sees the token as it is
-      // now rather than as the sweep listed it. The local deletes and the
-      // push that commits them must not interleave with a poller pull
-      // either, or the pull would restore the deleted files
-      // (swamp-club#2247). The GC runs from a timer, never inside a gated
-      // handler, so taking the non-reentrant gate here is safe.
+      // One unit under the sync gate. The local deletes and the push that
+      // commits them must not interleave with a poller pull, or the pull
+      // would restore the deleted files (swamp-club#2247). Serve's token
+      // mint, rotate and revoke hold the same gate while they write, so the
+      // re-read below sees the token as it is now rather than as the sweep
+      // listed it. Serve only creates the gate with a remote datastore:
+      // without one, `withSyncGate` runs this unguarded and a rotation can
+      // still land between the re-read and the deletes. The GC runs from a
+      // timer, never inside a gated handler, so taking the non-reentrant
+      // gate here is safe.
       withSyncGate(syncGate, async () => {
         const token = await readToken(listed.definitionId, listed.name);
         if (!token || !isEligible(token)) return "skipped";
@@ -269,7 +272,7 @@ export function createServerTokenGcDeps(
             // the name-keyed secret, belongs to another definition or to
             // none, so only this record's data is deleted.
             logger.warn(
-              "Server token record {name} ({id}) has no definition; deleting its data and leaving the {name} secret alone",
+              "Server token record {name} ({id}) has no definition; deleting its data and leaving its secret alone",
               { name: token.name, id: token.definitionId },
             );
             touchedLocalFiles = true;

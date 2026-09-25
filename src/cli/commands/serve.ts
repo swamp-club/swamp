@@ -761,7 +761,7 @@ function parseTokenGcDuration(
   drivesTimer: boolean,
 ): number {
   const trimmed = raw.trim();
-  if (/^0+(ms|[smhdw])?$/i.test(trimmed)) return 0;
+  if (/^0+(ms|mo|[smhdwy])?$/i.test(trimmed)) return 0;
   if (/^\d+ms$/i.test(trimmed)) {
     throw new UserError(
       `${flagName} must be in whole seconds or larger units (e.g. 30s, 1h); got ${raw}`,
@@ -5790,10 +5790,10 @@ export const serveCommand = new Command()
     // grace period, in every auth mode. It starts after token secret
     // migration so every token's secret is already where the GC looks.
     if (tokenGcSettings.intervalMs === 0) {
-      logger.info("Server token GC disabled (--token-gc-interval 0)");
+      logger.info("Server token GC disabled (token GC interval is 0)");
       if (merged.tokenGcGracePeriod !== undefined) {
         logger.warn(
-          "--token-gc-grace-period has no effect while the server token GC is disabled",
+          "The token GC grace period (--token-gc-grace-period, SWAMP_TOKEN_GC_GRACE_PERIOD or token-gc-grace-period in serve.yaml) has no effect while the server token GC is disabled",
         );
       }
     } else {

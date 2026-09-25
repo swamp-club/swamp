@@ -84,7 +84,7 @@ it the default file is optional.
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
 | `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore |
-| `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger |
+| `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
@@ -243,11 +243,9 @@ A sweep deletes revoked tokens at once, and expired tokens once
 `--token-gc-grace-period` has passed since `expiresAt`, so both drop out of
 `access token list`.
 
-Each token is collected as one unit holding the sync gate exclusively. Serve's
-own token mint, rotate and revoke also hold the gate while they write, and so
-does the OAuth login mint. Inside the unit the GC
-re-reads the token's `token-main` and skips the token if it is gone or no longer
-eligible. Then:
+Each token is collected as one unit holding the sync gate exclusively. Inside
+the unit the GC re-reads the token's `token-main` and skips the token if it is
+gone or no longer eligible. Then:
 
 1. It deletes the secret. A failure keeps the token for the next sweep, so a
    stale copy of the records, such as an HA peer's local cache, can never
@@ -266,9 +264,20 @@ record outlives its definition, and the name now belongs to another definition
 or to none, the GC deletes only that record's data and leaves the secret.
 
 Every replica sweeps on its own, and a token another replica already deleted
-is skipped. The gate is in-process only. A replica whose copy of a record is
-older than another replica's re-mint or rotation of the same name can still
-collect the new token. That fails closed: the token has to be minted again.
+is skipped.
+
+The re-read protects against token writes only where the gate covers them.
+Serve's own token mint, rotate and revoke, and the OAuth login mint, hold the
+gate while they write. So with a remote datastore, a write in the same process
+lands either before the re-read or after the unit. The gap is in two places:
+
+- **No remote datastore.** Serve creates no gate at all, so a rotation or
+  re-mint can land between the re-read and the deletes (swamp-club#2534).
+- **Across replicas.** The gate is in-process only. A replica whose copy of a
+  record is older than another replica's re-mint or rotation of the same name
+  can still collect the new token.
+
+Both fail closed: the token has to be minted again.
 
 **Grants.** Each request is authorized against an in-memory `PolicySnapshot`
 built from grant and group data (`src/domain/access/policy_snapshot_loader.ts`).
