@@ -211,14 +211,6 @@ export interface InstallContext {
   expectedChecksum?: string;
   /** Release channel to record in the lockfile entry. */
   channel?: string;
-  /**
-   * Root directory for pulled extension sources. Defaults to
-   * {@link resolvePulledExtensionsRoot}: `.swamp/config/pulled-extensions`
-   * under managedConfig, `.swamp/pulled-extensions` otherwise. Sources
-   * always live in the repo, whatever the managed config base; this is a
-   * test seam.
-   */
-  pulledExtensionsRoot?: string;
 }
 
 /** Thrown when file conflicts are detected and force is false. */
@@ -1033,7 +1025,7 @@ export async function installExtension(
     // @swamp/aws/ec2 and @swamp/aws/eks, or README.md across unrelated
     // extensions). Skills fan out to ctx.skillsDirs — one per enrolled tool.
     const absoluteExtRoot = join(
-      ctx.pulledExtensionsRoot ?? resolvePulledExtensionsRoot(repoDir),
+      resolvePulledExtensionsRoot(repoDir),
       ref.name,
     );
     const absoluteModelsDir = join(absoluteExtRoot, "models");

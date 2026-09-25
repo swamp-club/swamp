@@ -1818,7 +1818,9 @@ Recommended init container sequence for a stateless pod:
    and `managedConfig: true`.
 2. **`swamp datastore setup extension`**: configure the datastore backend.
 3. **`swamp datastore sync --pull`**: hydrate the local cache from the remote,
-   including `config/` (definitions, pulled extensions, lockfile).
+   including `config/` (definitions and the lockfile). Pulled extension sources
+   are not loaded from the remote (swamp-club#2429); step 5 restores them into
+   the repo's pulled root.
 4. **`swamp datastore config migrate`**: idempotent. First boot copies local
    config into the datastore tier and pushes; later boots the sentinel skips the
    copy.
