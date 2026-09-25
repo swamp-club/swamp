@@ -1340,8 +1340,10 @@ order:
   no `startedAt`. A `forEach` dependency with a queued iteration therefore
   aggregates to `failed`, and cleanup gated on it runs. A `failed`-gated
   rollback can run for work that never started, so it must tolerate having
-  nothing to undo. These steps get no `step_failed` or `step_skipped` event;
-  the run record carries their outcome.
+  nothing to undo. These steps and jobs get no `step_failed`, `step_skipped`,
+  `job_skipped` or `job_completed` event; the run record carries their
+  outcome. `workflow resume` settles steps the same way, but not jobs: its job
+  loop has no cleanup mode (swamp-club#2550).
 - A step whose guard was being evaluated when the cancellation fired does not
   start. It is settled with the rest of its level.
 - A level that suspends at an approval gate keeps its queued steps `pending`,

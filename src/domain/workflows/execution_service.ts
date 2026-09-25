@@ -3669,6 +3669,11 @@ export class WorkflowExecutionService {
       // start: runJob settles it at the end of the level, or already has. A
       // step reached after the abort is left to run as before.
       const abortedBeforeGuard = options.signal?.aborted ?? false;
+      const guardedStep = stepRun;
+      const statusBeforeGuard = guardedStep.status;
+      const abortedDuringGuard = (): boolean =>
+        guardedStep.status !== statusBeforeGuard ||
+        (!abortedBeforeGuard && (options.signal?.aborted ?? false));
       try {
         const celEvaluator = new CelEvaluator();
         const guardContext: Record<string, unknown> = {
@@ -3695,10 +3700,7 @@ export class WorkflowExecutionService {
           guardCel,
           guardContext,
         );
-        if (
-          stepRun.status !== "pending" ||
-          (!abortedBeforeGuard && options.signal?.aborted)
-        ) {
+        if (abortedDuringGuard()) {
           stepSpan.end();
           return;
         }
@@ -3724,10 +3726,7 @@ export class WorkflowExecutionService {
         guardLogger
           .debug`Step ${stepName} guard passed: ${guardCel} → ${guardResult}`;
       } catch (error) {
-        if (
-          stepRun.status !== "pending" ||
-          (!abortedBeforeGuard && options.signal?.aborted)
-        ) {
+        if (abortedDuringGuard()) {
           stepSpan.end();
           return;
         }

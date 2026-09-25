@@ -11210,3 +11210,50 @@ Deno.test("abort cleanup: a level that suspends at an approval gate keeps its qu
     assertEquals(executor.count("main/work2"), 0);
   });
 });
+
+Deno.test("abort cleanup: a guarded step recorded running when its suspended run is resumed still runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-running-guarded-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work", {
+              ...onStep("gate", TriggerCondition.succeeded()),
+              guard: "${{ false }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    const { runRepo, executor, service } = await setupRetry(
+      tempDir,
+      workflow,
+    );
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+    const main = suspended.getJob("main")!;
+    const gate = main.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    // A record saved while the step was in flight: the abort landed as its
+    // level suspended, or the process died after a step event was saved.
+    main.getStep("work")!.start();
+    await runRepo.save(workflow.id, suspended);
+
+    const resumed = await drainResume(service, workflow.name, suspended.id);
+
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(resumed?.getJob("main")!.getStep("work")!.status, "succeeded");
+    assertEquals(executor.count("main/work"), 1);
+  });
+});
