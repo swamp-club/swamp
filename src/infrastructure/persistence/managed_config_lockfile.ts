@@ -30,7 +30,8 @@ const readDatastoreEnvDefault: DatastoreEnvReader = () =>
  * type prefix when set (`filesystem:/path`, `s3:bucket`,
  * `@scope/type:{...}`), otherwise the marker's type, otherwise the default
  * filesystem datastore. Mirrors the precedence of resolveDatastoreConfig
- * without resolving anything.
+ * without resolving anything, except that it skips the `cliArg` tier, which
+ * no caller of resolveDatastoreConfig passes today.
  */
 export function effectiveDatastoreType(
   marker: RepoMarkerData | null,

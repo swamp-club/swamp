@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
+  choosePulledDatastoreDirsOnDisk,
   enumeratePulledDatastoreExtensionsOnDisk,
   enumeratePulledExtensionDirs,
   purgeUnchosenPulledDatastoreRows,
@@ -398,6 +399,53 @@ Deno.test({
         assertEquals(found.map((f) => f.name), ["@swamp/s3-datastore"]);
       } finally {
         await Deno.chmod(stray, 0o755);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "choosePulledDatastoreDirsOnDisk: purges the losing copy's rows only after a complete scan",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempRepo(async (repo) => {
+      const managed = await seedExtension(
+        repo,
+        MANAGED,
+        "@swamp/s3-datastore",
+      );
+      const legacy = await seedExtension(repo, LEGACY, "@swamp/s3-datastore");
+      const managedSource = join(managed, "datastores", "store.ts");
+      const legacySource = join(legacy, "datastores", "store.ts");
+      const run = async () => {
+        const removed: string[] = [];
+        const dirs = await choosePulledDatastoreDirsOnDisk(
+          {
+            findByKind: () => [
+              { source_path: managedSource, state: "Indexed" },
+              { source_path: legacySource, state: "Indexed" },
+            ],
+            removeByRawSourcePath: (p) => removed.push(p),
+          },
+          repo,
+        );
+        return { dirs, removed };
+      };
+
+      const complete = await run();
+      assertEquals(complete.dirs, [join(managed, "datastores")]);
+      assertEquals(complete.removed, [legacySource]);
+
+      // A managed copy the scan cannot read must not have its rows purged.
+      const unreadable = join(managed, "datastores");
+      await Deno.chmod(unreadable, 0o000);
+      try {
+        const partial = await run();
+        assertEquals(partial.dirs, [join(legacy, "datastores")]);
+        assertEquals(partial.removed, []);
+      } finally {
+        await Deno.chmod(unreadable, 0o755);
       }
     });
   },

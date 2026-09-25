@@ -1027,11 +1027,11 @@ export {
 
 // Pulled-extension enumeration helper
 export {
+  choosePulledDatastoreDirsOnDisk,
   enumeratePulledDatastoreExtensionsOnDisk,
   enumeratePulledExtensionDirs,
   type OnDiskDatastoreExtension,
   type PulledExtensionType,
-  purgeUnchosenPulledDatastoreRows,
 } from "./extensions/enumerate_pulled.ts";
 
 // Extension install (restore from lockfile)

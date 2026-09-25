@@ -266,6 +266,17 @@ export function isFresh(state: string | undefined): boolean {
 }
 
 /**
+ * Catalog row states that record a failure. {@link findStaleFiles} keeps
+ * rows in these states even when their source is no longer seen, so the
+ * failure stays visible.
+ */
+export const CATALOG_FAILURE_STATES: ReadonlySet<string> = new Set([
+  "BundleBuildFailed",
+  "EntryPointUnreadable",
+  "OrphanedBundleOnly",
+]);
+
+/**
  * Warm-start incremental change detection. Walks source directories,
  * compares each file's current fingerprint against the catalog, and
  * returns files that need rebundling. Also removes catalog entries
@@ -351,14 +362,9 @@ export async function findStaleFiles(
     }
   }
 
-  const FAILURE_STATES = new Set([
-    "BundleBuildFailed",
-    "EntryPointUnreadable",
-    "OrphanedBundleOnly",
-  ]);
   for (const [normalizedPath, entry] of catalogBySource) {
     if (!seenSources.has(normalizedPath)) {
-      if (!FAILURE_STATES.has(entry.state ?? "Indexed")) {
+      if (!CATALOG_FAILURE_STATES.has(entry.state ?? "Indexed")) {
         catalog.removeBySourcePath(entry.source_path);
       }
     }

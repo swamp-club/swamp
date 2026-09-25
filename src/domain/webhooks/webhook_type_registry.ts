@@ -117,8 +117,9 @@ export class WebhookTypeRegistry {
 
   /**
    * Test-only: removes the configured loaders and clears the loaded state,
-   * so a test that installs loaders leaves the process-global registry as
-   * it found it. Does not clear already-registered types.
+   * so loaders a test installed do not leak into later tests. It does not
+   * restore loaders set before the test, and does not clear
+   * already-registered types.
    */
   clearLoadersForTesting(): void {
     this.extensionLoader = null;

@@ -28,9 +28,8 @@ import { isExtensionBackedDatastore } from "../infrastructure/persistence/manage
 import { migrateHomeRepoTelemetry } from "../infrastructure/persistence/telemetry_spool_migration.ts";
 import { UserError } from "../domain/errors.ts";
 import {
-  enumeratePulledDatastoreExtensionsOnDisk,
+  choosePulledDatastoreDirsOnDisk,
   enumeratePulledExtensionDirs,
-  purgeUnchosenPulledDatastoreRows,
 } from "../libswamp/mod.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import {
@@ -494,14 +493,7 @@ export async function configureExtensionLoaders(
         quiet,
         effectiveExtDir,
         undefined,
-        async () => {
-          const chosen = await enumeratePulledDatastoreExtensionsOnDisk(
-            repoDir,
-            true,
-          );
-          purgeUnchosenPulledDatastoreRows(catalog, repoDir, chosen);
-          return chosen.map((c) => c.datastoresDir);
-        },
+        () => choosePulledDatastoreDirsOnDisk(catalog, repoDir),
       )
     );
   } else {

@@ -27,6 +27,7 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
+import { CATALOG_FAILURE_STATES } from "../../domain/extensions/bundle_freshness.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
 /** Types that can appear under a per-extension subtree. */
@@ -120,12 +121,16 @@ const MAX_EXTENSION_NAME_DEPTH = 6;
  * the managed root in managed repos, which is where auto-resolve and
  * explicit pulls write, otherwise the legacy root.
  *
+ * @param options.onUnreadable Called for each directory the scan skipped
+ *   because it could not read it, so a caller can tell an incomplete scan
+ *   from an extension that is not on disk.
  * @returns Chosen extensions sorted by `datastoresDir`, for a stable
  *   source-dirs fingerprint.
  */
 export async function enumeratePulledDatastoreExtensionsOnDisk(
   repoDir: string,
   preferManagedRoot: boolean,
+  options?: { onUnreadable?: (dir: string) => void },
 ): Promise<OnDiskDatastoreExtension[]> {
   const managedRoot = swampPath(repoDir, "config", "pulled-extensions");
   const legacyRoot = swampPath(repoDir, "pulled-extensions");
@@ -135,7 +140,7 @@ export async function enumeratePulledDatastoreExtensionsOnDisk(
 
   const chosen = new Map<string, OnDiskDatastoreExtension>();
   for (const root of roots) {
-    for (const found of await scanPulledRoot(root)) {
+    for (const found of await scanPulledRoot(root, options?.onUnreadable)) {
       if (!chosen.has(found.name)) chosen.set(found.name, found);
     }
   }
@@ -155,8 +160,13 @@ const logger = getLogger(["swamp", "extensions", "enumerate-pulled"]);
  * not hide every other datastore extension. A missing one is skipped
  * silently.
  */
-function skipUnreadable(dir: string, error: unknown): void {
+function skipUnreadable(
+  dir: string,
+  error: unknown,
+  onUnreadable?: (dir: string) => void,
+): void {
   if (error instanceof Deno.errors.NotFound) return;
+  onUnreadable?.(dir);
   logger
     .warn`Skipping unreadable directory ${dir} while scanning for datastore extensions: ${
     error instanceof Error ? error.message : String(error)
@@ -165,6 +175,7 @@ function skipUnreadable(dir: string, error: unknown): void {
 
 async function scanPulledRoot(
   root: string,
+  onUnreadable?: (dir: string) => void,
 ): Promise<OnDiskDatastoreExtension[]> {
   const found: OnDiskDatastoreExtension[] = [];
 
@@ -176,7 +187,7 @@ async function scanPulledRoot(
       if (identity && identity.name === name) {
         isExtensionRoot = true;
         const datastoresDir = join(dir, "datastores");
-        if (await containsTypeScriptFile(datastoresDir)) {
+        if (await containsTypeScriptFile(datastoresDir, onUnreadable)) {
           found.push({ name, pulledRoot: root, datastoresDir });
         }
       }
@@ -187,7 +198,7 @@ async function scanPulledRoot(
     try {
       entries = await Array.fromAsync(Deno.readDir(dir));
     } catch (error) {
-      skipUnreadable(dir, error);
+      skipUnreadable(dir, error, onUnreadable);
       return;
     }
     for (const entry of entries) {
@@ -204,7 +215,10 @@ async function scanPulledRoot(
   return found;
 }
 
-async function containsTypeScriptFile(dir: string): Promise<boolean> {
+async function containsTypeScriptFile(
+  dir: string,
+  onUnreadable?: (dir: string) => void,
+): Promise<boolean> {
   try {
     for await (
       const _entry of walk(dir, {
@@ -216,7 +230,7 @@ async function containsTypeScriptFile(dir: string): Promise<boolean> {
       return true;
     }
   } catch (error) {
-    skipUnreadable(dir, error);
+    skipUnreadable(dir, error, onUnreadable);
     return false;
   }
   return false;
@@ -238,6 +252,10 @@ export interface DatastoreRowCatalog {
  * kept, as the warm-path freshness check keeps them. Without this, a cold
  * rebuild would leave the losing copy's rows registered alongside the
  * chosen ones.
+ *
+ * `chosen` must come from a scan that skipped no unreadable directory;
+ * otherwise the rows of an extension the scan could not read are purged
+ * too.
  */
 export function purgeUnchosenPulledDatastoreRows(
   catalog: DatastoreRowCatalog,
@@ -253,17 +271,32 @@ export function purgeUnchosenPulledDatastoreRows(
     swampPath(repoDir, "pulled-extensions"),
   ].map(withSlash);
   const chosenDirs = chosen.map((c) => withSlash(c.datastoresDir));
-  const failureStates = new Set([
-    "BundleBuildFailed",
-    "EntryPointUnreadable",
-    "OrphanedBundleOnly",
-  ]);
 
   for (const row of catalog.findByKind("datastore")) {
     const source = canonicalizePath(row.source_path);
     if (!pulledRoots.some((root) => source.startsWith(root))) continue;
     if (chosenDirs.some((dir) => source.startsWith(dir))) continue;
-    if (failureStates.has(row.state ?? "Indexed")) continue;
+    if (CATALOG_FAILURE_STATES.has(row.state ?? "Indexed")) continue;
     catalog.removeByRawSourcePath(row.source_path);
   }
+}
+
+/**
+ * The pulled `datastores/` dirs the startup datastore loader reads in a
+ * managedConfig repo on an extension-backed datastore: those chosen by
+ * {@link enumeratePulledDatastoreExtensionsOnDisk}. After a complete scan
+ * it also purges the catalog rows of copies that lost the dedupe. After a
+ * scan that skipped an unreadable directory it purges nothing, because an
+ * extension it could not read would look like a copy that lost.
+ */
+export async function choosePulledDatastoreDirsOnDisk(
+  catalog: DatastoreRowCatalog,
+  repoDir: string,
+): Promise<string[]> {
+  let complete = true;
+  const chosen = await enumeratePulledDatastoreExtensionsOnDisk(repoDir, true, {
+    onUnreadable: () => complete = false,
+  });
+  if (complete) purgeUnchosenPulledDatastoreRows(catalog, repoDir, chosen);
+  return chosen.map((c) => c.datastoresDir);
 }
