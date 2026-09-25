@@ -100,6 +100,15 @@ import {
   createBookkeepingRecordQuery,
   reapEndedBookkeepingRecords,
 } from "../../serve/bookkeeping_gc.ts";
+import {
+  DEFAULT_TOKEN_GC_GRACE_PERIOD_MS,
+  DEFAULT_TOKEN_GC_INTERVAL_MS,
+  ServerTokenGcService,
+} from "../../serve/server_token_gc_service.ts";
+import {
+  createServerTokenGcDeps,
+  createServerTokenGcRepos,
+} from "../../serve/server_token_gc_deps.ts";
 import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
 import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
@@ -643,6 +652,15 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.datastorePollInterval as string,
     );
   }
+  if (options.tokenGcInterval) {
+    args.push("--token-gc-interval", options.tokenGcInterval as string);
+  }
+  if (options.tokenGcGracePeriod) {
+    args.push(
+      "--token-gc-grace-period",
+      options.tokenGcGracePeriod as string,
+    );
+  }
   if (options.remoteOnly) {
     args.push("--remote-only");
   }
@@ -706,6 +724,52 @@ export function shouldWarnGroupRefreshIgnored(
   oauthReady: boolean,
 ): boolean {
   return raw !== undefined && intervalMs > 0 && !oauthReady;
+}
+
+export interface TokenGcSettings {
+  /** How often the server token GC sweeps; 0 when it is disabled. */
+  readonly intervalMs: number;
+  /** How long an expired token is kept before it is collected. */
+  readonly gracePeriodMs: number;
+}
+
+/**
+ * Parses `--token-gc-interval` and `--token-gc-grace-period`, falling back to
+ * the defaults when unset. An interval of `0` disables the GC; a grace period
+ * of `0` collects expired tokens as soon as they expire. Like
+ * `--datastore-poll-interval`, both take whole seconds or larger units, and
+ * the interval is capped at the maximum safe timer duration because it
+ * drives a timer.
+ */
+export function parseTokenGcSettings(
+  interval: string | undefined,
+  gracePeriod: string | undefined,
+): TokenGcSettings {
+  return {
+    intervalMs: interval === undefined
+      ? DEFAULT_TOKEN_GC_INTERVAL_MS
+      : parseTokenGcDuration(interval, "--token-gc-interval", true),
+    gracePeriodMs: gracePeriod === undefined
+      ? DEFAULT_TOKEN_GC_GRACE_PERIOD_MS
+      : parseTokenGcDuration(gracePeriod, "--token-gc-grace-period", false),
+  };
+}
+
+function parseTokenGcDuration(
+  raw: string,
+  flagName: string,
+  drivesTimer: boolean,
+): number {
+  const trimmed = raw.trim();
+  if (/^0+[smhdw]?$/i.test(trimmed)) return 0;
+  if (/^\d+ms$/i.test(trimmed)) {
+    throw new UserError(
+      `${flagName} must be in whole seconds or larger units (e.g. 30s, 1h); got ${raw}`,
+    );
+  }
+  return drivesTimer
+    ? parseTimerDuration(raw, flagName)
+    : parseTimeout(raw, flagName);
 }
 
 export interface ReapResult {
@@ -969,6 +1033,14 @@ const daemonEnableCommand = new Command()
   .option(
     "--datastore-poll-interval <duration:string>",
     "Datastore poll interval (default: 30s, minimum: 1s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
+  )
+  .option(
+    "--token-gc-interval <duration:string>",
+    "Server token GC interval (default: 1h, 0 disables, env: SWAMP_TOKEN_GC_INTERVAL)",
+  )
+  .option(
+    "--token-gc-grace-period <duration:string>",
+    "How long expired server tokens are kept before GC (default: 1h, env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
   )
   .option(
     "--remote-only",
@@ -1538,6 +1610,16 @@ export const serveCommand = new Command()
       "Only effective with a remote datastore (env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
+    "--token-gc-interval <duration:string>",
+    "How often to delete revoked server tokens, and expired ones past the grace period. " +
+      "Accepts seconds (3600), explicit units (30s, 1h). Default: 1h. 0 disables (env: SWAMP_TOKEN_GC_INTERVAL)",
+  )
+  .option(
+    "--token-gc-grace-period <duration:string>",
+    "How long an expired server token is kept before the token GC deletes it. " +
+      "Accepts seconds (3600), explicit units (30s, 1h). Default: 1h. 0 deletes at expiry (env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
+  )
+  .option(
     "--max-concurrent-runs <count:integer>",
     "Maximum number of concurrent detached runs across all principals. Default: 100. " +
       "(env: SWAMP_MAX_CONCURRENT_RUNS)",
@@ -1710,6 +1792,11 @@ export const serveCommand = new Command()
 
     const datastorePollIntervalMs = parseDatastorePollInterval(
       merged.datastorePollInterval,
+    );
+
+    const tokenGcSettings = parseTokenGcSettings(
+      merged.tokenGcInterval,
+      merged.tokenGcGracePeriod,
     );
 
     const maxConcurrentRuns = merged.maxConcurrentRuns;
@@ -3145,6 +3232,7 @@ export const serveCommand = new Command()
 
     let heartbeatService: InstanceHeartbeatService | undefined;
     let workerGcService: WorkerGcService | undefined;
+    let serverTokenGcService: ServerTokenGcService | undefined;
 
     logger.info("Boot: reaping stale runs via tracker");
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
@@ -5240,6 +5328,9 @@ export const serveCommand = new Command()
       if (workerGcService) {
         await workerGcService.dispose();
       }
+      if (serverTokenGcService) {
+        await serverTokenGcService.dispose();
+      }
       if (heartbeatService) {
         await heartbeatService.stop();
       }
@@ -5693,6 +5784,43 @@ export const serveCommand = new Command()
         },
       });
       workerGcService.start();
+    }
+
+    // Server token GC — deletes revoked tokens, and expired ones past the
+    // grace period, in every auth mode. It starts after token secret
+    // migration so every token's secret is already where the GC looks.
+    if (tokenGcSettings.intervalMs === 0) {
+      logger.info("Server token GC disabled (--token-gc-interval 0)");
+      if (merged.tokenGcGracePeriod !== undefined) {
+        logger.warn(
+          "--token-gc-grace-period has no effect while the server token GC is disabled",
+        );
+      }
+    } else {
+      const tokenGcSync = syncService;
+      serverTokenGcService = new ServerTokenGcService(
+        createServerTokenGcDeps({
+          intervalMs: tokenGcSettings.intervalMs,
+          gracePeriodMs: tokenGcSettings.gracePeriodMs,
+          dataQueryService: repoContext.dataQueryService,
+          ...createServerTokenGcRepos(
+            resolvedRepoDir,
+            repoContext,
+            datastoreResolver,
+          ),
+          vaultService: await VaultService.fromRepository(resolvedRepoDir, {
+            defaultVaultName: repoMarker?.defaultVault,
+          }),
+          libCtx: createLibSwampContext(),
+          pushChanged: tokenGcSync
+            ? async () => {
+              await tokenGcSync.pushChanged({ namespace: serveNamespace });
+            }
+            : undefined,
+          syncGate,
+        }),
+      );
+      serverTokenGcService.start();
     }
 
     isReady = true;

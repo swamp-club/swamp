@@ -1013,6 +1013,95 @@ Deno.test("loadServeConfig: non-string datastore-poll-interval produces error", 
   });
 });
 
+for (
+  const [key, field, envVar] of [
+    ["token-gc-interval", "tokenGcInterval", "SWAMP_TOKEN_GC_INTERVAL"],
+    [
+      "token-gc-grace-period",
+      "tokenGcGracePeriod",
+      "SWAMP_TOKEN_GC_GRACE_PERIOD",
+    ],
+  ] as const
+) {
+  Deno.test(`mergeServeOptions: ${key} CLI flag wins over env and config`, () => {
+    const merged = mergeServeOptions(
+      { [key]: "10s" },
+      { [field]: "2s" },
+      new Set([key]),
+      (name) => name === envVar ? "5s" : undefined,
+    );
+    assertEquals(merged[field], "2s");
+  });
+
+  Deno.test(`mergeServeOptions: ${key} env var wins over config`, () => {
+    const merged = mergeServeOptions(
+      { [key]: "10s" },
+      {},
+      new Set<string>(),
+      (name) => name === envVar ? "5s" : undefined,
+    );
+    assertEquals(merged[field], "5s");
+  });
+
+  Deno.test(`mergeServeOptions: ${key} from config`, () => {
+    const merged = mergeServeOptions(
+      { [key]: "10s" },
+      {},
+      new Set<string>(),
+      () => undefined,
+    );
+    assertEquals(merged[field], "10s");
+  });
+
+  Deno.test(`mergeServeOptions: ${key} defaults to undefined`, () => {
+    const merged = mergeServeOptions(
+      null,
+      {},
+      new Set<string>(),
+      () => undefined,
+    );
+    assertEquals(merged[field], undefined);
+  });
+
+  Deno.test(`loadServeConfig: ${key} is a known key`, async () => {
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["serve", "config"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+      ],
+      reset: true,
+    });
+    try {
+      withTempDir((dir) => {
+        writeConfig(dir, { [key]: "5s" });
+        loadServeConfig(undefined, dir);
+      });
+      const unknownKeyWarnings = captured.filter((r) =>
+        r.message.map((p) => String(p)).join("").includes("Unknown key")
+      );
+      assertEquals(unknownKeyWarnings, []);
+    } finally {
+      await initializeLogging({ _reset: true });
+    }
+  });
+
+  Deno.test(`loadServeConfig: non-string ${key} produces error`, () => {
+    withTempDir((dir) => {
+      writeConfig(dir, { [key]: 30 });
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        "expected string",
+      );
+    });
+  });
+}
+
 // ── Trigger Overrides ────────────────────────────────────────────────
 
 Deno.test("loadServeConfig: parses valid triggers section", () => {

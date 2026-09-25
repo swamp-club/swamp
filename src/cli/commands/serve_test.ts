@@ -24,6 +24,7 @@ import {
   cancelExecution,
   collectServeExtraArgs,
   parseDatastorePollInterval,
+  parseTokenGcSettings,
   reapOrphanedWorkflowRuns,
   shouldWarnGroupRefreshIgnored,
   validateWebSocketOrigin,
@@ -101,6 +102,88 @@ Deno.test("serveCommand has --datastore-poll-interval option", async () => {
   assertStringIncludes(
     pollOpt!.description,
     "SWAMP_DATASTORE_POLL_INTERVAL",
+  );
+});
+
+for (const name of ["token-gc-interval", "token-gc-grace-period"]) {
+  Deno.test(`serveCommand and serve daemon enable have --${name}`, async () => {
+    const { serveCommand } = await import("./serve.ts");
+    const envVar = `SWAMP_${name.toUpperCase().replaceAll("-", "_")}`;
+    const daemonEnable = serveCommand.getCommand("daemon")!.getCommand(
+      "enable",
+    )!;
+    for (const command of [serveCommand, daemonEnable]) {
+      const opt = command.getOptions().find((o) => o.name === name);
+      assertEquals(opt !== undefined, true);
+      assertStringIncludes(opt!.description, envVar);
+    }
+  });
+}
+
+// --- --token-gc-interval / --token-gc-grace-period parsing ---
+
+Deno.test("parseTokenGcSettings: unset gives the 1h defaults", () => {
+  assertEquals(parseTokenGcSettings(undefined, undefined), {
+    intervalMs: 3_600_000,
+    gracePeriodMs: 3_600_000,
+  });
+});
+
+Deno.test("parseTokenGcSettings: accepts seconds and larger units", () => {
+  assertEquals(parseTokenGcSettings("30", "2m"), {
+    intervalMs: 30_000,
+    gracePeriodMs: 120_000,
+  });
+  assertEquals(parseTokenGcSettings("6h", "1d"), {
+    intervalMs: 21_600_000,
+    gracePeriodMs: 86_400_000,
+  });
+});
+
+Deno.test("parseTokenGcSettings: zero disables the GC or removes the grace period", () => {
+  for (const zero of ["0", "0s", "0m", "0h", " 0 "]) {
+    assertEquals(parseTokenGcSettings(zero, zero), {
+      intervalMs: 0,
+      gracePeriodMs: 0,
+    });
+  }
+});
+
+Deno.test("parseTokenGcSettings: rejects milliseconds, naming the flag", () => {
+  assertThrows(
+    () => parseTokenGcSettings("500ms", undefined),
+    UserError,
+    "--token-gc-interval must be in whole seconds or larger units",
+  );
+  assertThrows(
+    () => parseTokenGcSettings(undefined, "500ms"),
+    UserError,
+    "--token-gc-grace-period must be in whole seconds or larger units",
+  );
+});
+
+Deno.test("parseTokenGcSettings: rejects invalid values", () => {
+  assertThrows(
+    () => parseTokenGcSettings("abc", undefined),
+    Error,
+    "Invalid duration format",
+  );
+  assertThrows(
+    () => parseTokenGcSettings(undefined, "abc"),
+    Error,
+    "Invalid duration format",
+  );
+});
+
+Deno.test("parseTokenGcSettings: caps the interval at the timer ceiling but not the grace period", () => {
+  assertThrows(
+    () => parseTokenGcSettings("1mo", undefined),
+    UserError,
+    "--token-gc-interval (1mo) exceeds the maximum safe timer duration",
+  );
+  assertEquals(
+    parseTokenGcSettings(undefined, "60d").gracePeriodMs,
+    60 * 86_400_000,
   );
 });
 

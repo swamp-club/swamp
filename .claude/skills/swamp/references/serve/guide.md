@@ -247,6 +247,12 @@ closed session records an `auth.session.terminated` event whose `detail` is the
 cause: `revoked`, `rotated`, `expired`, `deleted` or `invalid` (filter with
 `swamp audit log --action auth.session.terminated`).
 
+A running serve deletes revoked tokens at its next token GC sweep. It deletes
+expired tokens once a grace period has passed. Deleted tokens drop out of
+`access token list`. The sweep runs every `--token-gc-interval` (default `1h`;
+`0` disables it), and the grace period is `--token-gc-grace-period` (default
+`1h`).
+
 ### Wiring a token into an external secret store
 
 Use `reveal` to pipe the plaintext directly into a secret store without it

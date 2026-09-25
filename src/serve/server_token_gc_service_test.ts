@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   type ServerTokenGcDeps,
   ServerTokenGcService,
@@ -48,38 +49,31 @@ function makeMockDeps(
 ): ServerTokenGcDeps & {
   deletedSecrets: string[];
   deletedOAuthTokens: string[];
-  deletedData: Array<{ definitionId: string; tokenName: string }>;
-  deletedDefinitions: string[];
+  deletedRecords: Array<{ definitionId: string; tokenName: string }>;
 } {
   const deletedSecrets: string[] = [];
   const deletedOAuthTokens: string[] = [];
-  const deletedData: Array<{ definitionId: string; tokenName: string }> = [];
-  const deletedDefinitions: string[] = [];
+  const deletedRecords: Array<{ definitionId: string; tokenName: string }> = [];
 
   return {
     intervalMs: 100,
     gracePeriodMs: ONE_HOUR,
     listTokens: () => Promise.resolve(tokens),
-    deleteTokenSecret: (name) => {
-      deletedSecrets.push(name);
+    deleteTokenSecret: (token) => {
+      deletedSecrets.push(token.name);
       return Promise.resolve();
     },
     deleteOAuthAccessToken: (name) => {
       deletedOAuthTokens.push(name);
       return Promise.resolve();
     },
-    deleteTokenData: (definitionId, tokenName) => {
-      deletedData.push({ definitionId, tokenName });
-      return Promise.resolve();
-    },
-    deleteDefinition: (definitionId) => {
-      deletedDefinitions.push(definitionId);
+    deleteTokenRecord: (definitionId, tokenName) => {
+      deletedRecords.push({ definitionId, tokenName });
       return Promise.resolve();
     },
     deletedSecrets,
     deletedOAuthTokens,
-    deletedData,
-    deletedDefinitions,
+    deletedRecords,
     ...overrides,
   };
 }
@@ -93,7 +87,7 @@ Deno.test("runOnce: skips active tokens that have not expired", async () => {
 
   assertEquals(count, 0);
   assertEquals(deps.deletedSecrets.length, 0);
-  assertEquals(deps.deletedDefinitions.length, 0);
+  assertEquals(deps.deletedRecords.length, 0);
 });
 
 Deno.test("runOnce: skips expired tokens within the grace period", async () => {
@@ -111,7 +105,7 @@ Deno.test("runOnce: skips expired tokens within the grace period", async () => {
   assertEquals(deps.deletedSecrets.length, 0);
 });
 
-Deno.test("runOnce: deletes expired tokens past the grace period across all 4 layers", async () => {
+Deno.test("runOnce: deletes expired tokens past the grace period across all layers", async () => {
   const token = makeToken({
     name: "oauth-old",
     state: "expired",
@@ -125,10 +119,9 @@ Deno.test("runOnce: deletes expired tokens past the grace period across all 4 la
   assertEquals(count, 1);
   assertEquals(deps.deletedSecrets, ["oauth-old"]);
   assertEquals(deps.deletedOAuthTokens, ["oauth-old"]);
-  assertEquals(deps.deletedData, [
+  assertEquals(deps.deletedRecords, [
     { definitionId: "def-oauth-old", tokenName: "oauth-old" },
   ]);
-  assertEquals(deps.deletedDefinitions, ["def-oauth-old"]);
 });
 
 Deno.test("runOnce: deletes revoked tokens immediately without grace period", async () => {
@@ -146,10 +139,9 @@ Deno.test("runOnce: deletes revoked tokens immediately without grace period", as
   assertEquals(count, 1);
   assertEquals(deps.deletedSecrets, ["oauth-revoked"]);
   assertEquals(deps.deletedOAuthTokens, ["oauth-revoked"]);
-  assertEquals(deps.deletedData, [
+  assertEquals(deps.deletedRecords, [
     { definitionId: "def-oauth-revoked", tokenName: "oauth-revoked" },
   ]);
-  assertEquals(deps.deletedDefinitions, ["def-oauth-revoked"]);
 });
 
 Deno.test("runOnce: GC's active tokens that are past expiresAt plus grace period", async () => {
@@ -167,22 +159,16 @@ Deno.test("runOnce: GC's active tokens that are past expiresAt plus grace period
   assertEquals(deps.deletedSecrets, ["oauth-stale"]);
 });
 
-Deno.test("runOnce: partial deletion failure logs warning and continues", async () => {
-  const token1 = makeToken({
-    name: "oauth-fail",
-    state: "revoked",
-  });
-  const token2 = makeToken({
-    name: "oauth-ok",
-    state: "revoked",
-  });
-  let callCount = 0;
+Deno.test("runOnce: a record deletion failure skips that token and continues", async () => {
+  const token1 = makeToken({ name: "oauth-fail", state: "revoked" });
+  const token2 = makeToken({ name: "oauth-ok", state: "revoked" });
+  const deletedRecords: string[] = [];
   const deps = makeMockDeps([token1, token2], {
-    deleteTokenData: (_defId, _name) => {
-      callCount++;
-      if (callCount === 1) {
+    deleteTokenRecord: (_definitionId, tokenName) => {
+      if (tokenName === "oauth-fail") {
         return Promise.reject(new Error("data store unavailable"));
       }
+      deletedRecords.push(tokenName);
       return Promise.resolve();
     },
   });
@@ -190,31 +176,141 @@ Deno.test("runOnce: partial deletion failure logs warning and continues", async 
 
   const count = await service.runOnce();
 
-  // First token fails at deleteTokenData (after secrets succeed), second succeeds fully
   assertEquals(count, 1);
   assertEquals(deps.deletedSecrets, ["oauth-fail", "oauth-ok"]);
-  assertEquals(deps.deletedOAuthTokens, ["oauth-fail", "oauth-ok"]);
+  assertEquals(deletedRecords, ["oauth-ok"]);
 });
 
-Deno.test("dispose: prevents further ticks from running", async () => {
-  const token = makeToken({
-    name: "oauth-disposed",
-    state: "revoked",
+Deno.test("runOnce: a secret deletion failure keeps the token's records for the next sweep", async () => {
+  const token = makeToken({ name: "oauth-nosecret", state: "revoked" });
+  const deps = makeMockDeps([token], {
+    deleteTokenSecret: () => Promise.reject(new Error("vault unavailable")),
   });
+  const service = new ServerTokenGcService(deps);
+
+  const count = await service.runOnce();
+
+  assertEquals(count, 0);
+  assertEquals(deps.deletedOAuthTokens, []);
+  assertEquals(deps.deletedRecords, []);
+});
+
+Deno.test("runOnce: an OAuth access token deletion failure still collects the token", async () => {
+  const token = makeToken({ name: "oauth-nooauth", state: "revoked" });
+  const deps = makeMockDeps([token], {
+    deleteOAuthAccessToken: () => Promise.reject(new Error("store down")),
+  });
+  const service = new ServerTokenGcService(deps);
+
+  const count = await service.runOnce();
+
+  assertEquals(count, 1);
+  assertEquals(deps.deletedRecords, [
+    { definitionId: "def-oauth-nooauth", tokenName: "oauth-nooauth" },
+  ]);
+});
+
+Deno.test("start: runs the first sweep straight away, not after the interval", async () => {
+  const token = makeToken({ name: "oauth-revoked", state: "revoked" });
   let listCalls = 0;
   const deps = makeMockDeps([], {
+    intervalMs: ONE_HOUR,
     listTokens: () => {
       listCalls++;
       return Promise.resolve([token]);
     },
   });
   const service = new ServerTokenGcService(deps);
+
+  try {
+    service.start();
+    await waitFor(
+      () => deps.deletedRecords.length === 1,
+      "first sweep to collect the revoked token",
+    );
+    assertEquals(listCalls, 1);
+  } finally {
+    await service.dispose();
+  }
+});
+
+Deno.test("start: sweeps again after each interval", async () => {
+  let listCalls = 0;
+  const deps = makeMockDeps([], {
+    intervalMs: 10,
+    listTokens: () => {
+      listCalls++;
+      return Promise.resolve([]);
+    },
+  });
+  const service = new ServerTokenGcService(deps);
+
+  try {
+    service.start();
+    await waitFor(() => listCalls >= 3, "three sweeps");
+  } finally {
+    await service.dispose();
+  }
+});
+
+Deno.test("dispose: stops the loop, and a disposed service cannot restart", async () => {
+  let listCalls = 0;
+  const deps = makeMockDeps([], {
+    // A zero interval makes a loop that survived dispose sweep on every
+    // event-loop turn, so the yields below would observe it.
+    intervalMs: 0,
+    listTokens: () => {
+      listCalls++;
+      return Promise.resolve([]);
+    },
+  });
+  const service = new ServerTokenGcService(deps);
   service.start();
+  await waitFor(() => listCalls >= 2, "the loop to sweep twice");
 
   await service.dispose();
-
+  service.start();
   const callsAtDispose = listCalls;
-  await new Promise((r) => setTimeout(r, 250));
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  assertEquals(listCalls, callsAtDispose);
+});
+
+Deno.test("dispose: waits for an in-flight sweep and schedules no further sweep", async () => {
+  let listCalls = 0;
+  let releaseSweep!: () => void;
+  const sweepHeld = new Promise<void>((resolve) => {
+    releaseSweep = resolve;
+  });
+  const deps = makeMockDeps([], {
+    intervalMs: 0,
+    listTokens: async () => {
+      listCalls++;
+      await sweepHeld;
+      return [];
+    },
+  });
+  const service = new ServerTokenGcService(deps);
+  service.start();
+  await waitFor(() => listCalls === 1, "the first sweep to start");
+
+  let disposeDone = false;
+  const disposed = service.dispose().then(() => {
+    disposeDone = true;
+  });
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  assertEquals(disposeDone, false, "dispose must wait for the running sweep");
+  releaseSweep();
+  await disposed;
+  const callsAtDispose = listCalls;
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
   assertEquals(listCalls, callsAtDispose);
 });
 
@@ -227,8 +323,7 @@ Deno.test("runOnce: returns zero and does not log when no tokens are eligible", 
   assertEquals(count, 0);
   assertEquals(deps.deletedSecrets.length, 0);
   assertEquals(deps.deletedOAuthTokens.length, 0);
-  assertEquals(deps.deletedData.length, 0);
-  assertEquals(deps.deletedDefinitions.length, 0);
+  assertEquals(deps.deletedRecords.length, 0);
 });
 
 Deno.test("runOnce: handles mix of eligible and ineligible tokens", async () => {
@@ -255,30 +350,10 @@ Deno.test("runOnce: handles mix of eligible and ineligible tokens", async () => 
 
   assertEquals(count, 2);
   assertEquals(deps.deletedSecrets, ["oauth-old", "oauth-revoked"]);
-  assertEquals(deps.deletedDefinitions, [
+  assertEquals(deps.deletedRecords.map((r) => r.definitionId), [
     "def-oauth-old",
     "def-oauth-revoked",
   ]);
-});
-
-Deno.test("runOnce: secret deletion failure does not prevent data and definition cleanup", async () => {
-  const token = makeToken({
-    name: "oauth-nosecret",
-    state: "revoked",
-  });
-  const deps = makeMockDeps([token], {
-    deleteTokenSecret: () => Promise.reject(new Error("secret already gone")),
-  });
-  const service = new ServerTokenGcService(deps);
-
-  const count = await service.runOnce();
-
-  assertEquals(count, 1);
-  assertEquals(deps.deletedOAuthTokens, ["oauth-nosecret"]);
-  assertEquals(deps.deletedData, [
-    { definitionId: "def-oauth-nosecret", tokenName: "oauth-nosecret" },
-  ]);
-  assertEquals(deps.deletedDefinitions, ["def-oauth-nosecret"]);
 });
 
 function createInMemoryControlPlaneStore(): ControlPlaneStore & {
@@ -317,25 +392,20 @@ Deno.test("runOnce: deletes control plane vault entries for token secrets and OA
     name: tokenName,
     state: "revoked",
   });
-  const deletedData: Array<{ definitionId: string; tokenName: string }> = [];
-  const deletedDefinitions: string[] = [];
+  const deletedRecords: string[] = [];
 
   const service = new ServerTokenGcService({
     intervalMs: 100,
     gracePeriodMs: ONE_HOUR,
     listTokens: () => Promise.resolve([token]),
-    deleteTokenSecret: async (name) => {
-      await provider.delete(serverTokenSecretKey(name));
+    deleteTokenSecret: async (t) => {
+      await provider.delete(serverTokenSecretKey(t.name));
     },
     deleteOAuthAccessToken: async (name) => {
       await provider.delete(oauthAccessTokenKey(name));
     },
-    deleteTokenData: (definitionId, name) => {
-      deletedData.push({ definitionId, tokenName: name });
-      return Promise.resolve();
-    },
-    deleteDefinition: (definitionId) => {
-      deletedDefinitions.push(definitionId);
+    deleteTokenRecord: (definitionId) => {
+      deletedRecords.push(definitionId);
       return Promise.resolve();
     },
   });
@@ -343,6 +413,7 @@ Deno.test("runOnce: deletes control plane vault entries for token secrets and OA
   const count = await service.runOnce();
 
   assertEquals(count, 1);
+  assertEquals(deletedRecords, [`def-${tokenName}`]);
   const secretsAfter = await provider.list();
   assertEquals(secretsAfter.length, 0);
   assertEquals(store.data.size, 1); // only the encryption key remains

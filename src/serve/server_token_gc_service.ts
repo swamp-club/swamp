@@ -30,6 +30,10 @@ export interface TokenGcInfo {
   readonly state: "active" | "expired" | "revoked";
   readonly expiresAt: string;
   readonly revokedAt?: string;
+  /** Vault the token's `token-main` record says holds its secret. */
+  readonly vaultName?: string;
+  /** Secret key the token's `token-main` record names. */
+  readonly secretKey?: string;
 }
 
 export interface ServerTokenGcDeps {
@@ -38,13 +42,17 @@ export interface ServerTokenGcDeps {
 
   listTokens(): Promise<TokenGcInfo[]>;
 
-  deleteTokenSecret(tokenName: string): Promise<void>;
+  /**
+   * Deletes the token's secret. A failure keeps the token's records for the
+   * next sweep, so a secret is never left behind with nothing referencing it.
+   */
+  deleteTokenSecret(token: TokenGcInfo): Promise<void>;
 
+  /** Best effort: a failure is logged and the token is still collected. */
   deleteOAuthAccessToken(tokenName: string): Promise<void>;
 
-  deleteTokenData(definitionId: string, tokenName: string): Promise<void>;
-
-  deleteDefinition(definitionId: string): Promise<void>;
+  /** Deletes the token's definition, data and outputs. */
+  deleteTokenRecord(definitionId: string, tokenName: string): Promise<void>;
 }
 
 export class ServerTokenGcService {
@@ -57,6 +65,10 @@ export class ServerTokenGcService {
     this.#deps = deps;
   }
 
+  /**
+   * Starts the sweep loop. The first sweep runs straight away, on a timer so
+   * it never delays the caller, then once every `intervalMs`.
+   */
   start(): void {
     if (this.#disposed) return;
     logger.info(
@@ -66,7 +78,7 @@ export class ServerTokenGcService {
         grace: this.#deps.gracePeriodMs,
       },
     );
-    this.#scheduleNext();
+    this.#scheduleNext(0);
   }
 
   async dispose(): Promise<void> {
@@ -84,15 +96,16 @@ export class ServerTokenGcService {
     return await this.#sweep();
   }
 
-  #scheduleNext(): void {
+  #scheduleNext(delayMs: number): void {
     if (this.#disposed) return;
     this.#timer = setTimeout(() => {
       void this.#tick();
-    }, this.#deps.intervalMs);
+    }, delayMs);
     Deno.unrefTimer(this.#timer);
   }
 
   async #tick(): Promise<void> {
+    this.#timer = null;
     if (this.#disposed) return;
     this.#running = true;
     try {
@@ -103,7 +116,7 @@ export class ServerTokenGcService {
       }`;
     } finally {
       this.#running = false;
-      this.#scheduleNext();
+      this.#scheduleNext(this.#deps.intervalMs);
     }
   }
 
@@ -153,17 +166,10 @@ export class ServerTokenGcService {
   }
 
   async #gcToken(token: TokenGcInfo): Promise<void> {
-    try {
-      await this.#deps.deleteTokenSecret(token.name);
-    } catch (err) {
-      logger.warn(
-        "Failed to delete token secret for {name}: {error}",
-        {
-          name: token.name,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      );
-    }
+    // The secret goes first, and a failure stops here so the next sweep
+    // retries. A stale copy of the records, such as an HA peer's local cache,
+    // cannot authenticate once the secret is gone.
+    await this.#deps.deleteTokenSecret(token);
 
     try {
       await this.#deps.deleteOAuthAccessToken(token.name);
@@ -177,7 +183,6 @@ export class ServerTokenGcService {
       );
     }
 
-    await this.#deps.deleteTokenData(token.definitionId, token.name);
-    await this.#deps.deleteDefinition(token.definitionId);
+    await this.#deps.deleteTokenRecord(token.definitionId, token.name);
   }
 }

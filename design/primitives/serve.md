@@ -84,6 +84,7 @@ it the default file is optional.
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
 | `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore |
+| `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
@@ -226,15 +227,32 @@ Secrets live in the encrypted control-plane vault (`ControlPlaneVaultProvider`,
 `src/domain/vaults/control_plane_vault_provider.ts`), not the user's vault, so
 they replicate with the control-plane store and can be deleted immediately. At
 boot, right after that vault registers, `checkTokenHealth` reports secrets that
-no longer decrypt and `sweepTokenConsistency` removes token records missing
-their secret (`src/cli/commands/serve.ts`). The CLI token commands (`access
-token mint`, `rotate` and `reveal`, and `worker token create`) register the same
-vault through `initializeControlPlaneVault`
+no longer decrypt, and `sweepTokenConsistency` reports token records missing
+their secret and secrets or data with no definition. Neither deletes anything
+(`src/serve/boot_reconciliation.ts`). The CLI token commands (`access token
+mint`, `rotate` and `reveal`, and `worker token create`) register the same vault
+through `initializeControlPlaneVault`
 (`src/domain/vaults/control_plane_vault_init.ts`). Like serve, they stop with
 the initialization error if it fails; they never fall back to a user vault.
-There is no periodic token garbage
-collector: `ServerTokenGcService` (`src/serve/server_token_gc_service.ts`)
-exists but serve never creates it.
+
+Serve garbage-collects server tokens in every auth mode
+(`ServerTokenGcService`, `src/serve/server_token_gc_service.ts`, wired by
+`src/serve/server_token_gc_deps.ts`). The first sweep runs just after boot,
+once token secret migration is done, then one runs every `--token-gc-interval`.
+A sweep deletes revoked tokens at once, and expired tokens once
+`--token-gc-grace-period` has passed since `expiresAt`, so both drop out of
+`access token list`. For each token it deletes these, in order:
+
+1. The secret. A failure keeps the token for the next sweep, so a stale copy of
+   the records, such as an HA peer's local cache, can never authenticate.
+2. The OAuth access token, best effort.
+3. The definition, data and outputs, through `modelDelete`.
+
+Step 3 and the push that commits it hold the sync gate as one exclusive unit.
+The secret key is always `server-token-<name>`, never the key the persisted
+record names, so a tampered record cannot make serve delete an unrelated
+secret. Every replica sweeps on its own. A token another replica already
+deleted counts as done.
 
 **Grants.** Each request is authorized against an in-memory `PolicySnapshot`
 built from grant and group data (`src/domain/access/policy_snapshot_loader.ts`).
