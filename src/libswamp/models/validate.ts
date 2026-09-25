@@ -127,7 +127,10 @@ export interface ModelValidateDeps {
    * auto-definitions directory, which swamp writes itself, rather than from
    * `models/`.
    */
-  isAutoDefinition: (definition: Definition) => Promise<boolean>;
+  isAutoDefinition: (
+    definition: Definition,
+    type: ModelType,
+  ) => Promise<boolean>;
   resolveModelType: (
     type: ModelType,
   ) => Promise<unknown | null>;
@@ -199,11 +202,8 @@ export function createModelValidateDeps(
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
     findAllDefinitions: () => definitionRepo.findAllGlobal(),
-    // Compared by ID: a lookup by UUID can reach an auto-definition while
-    // models/ holds a different definition with the same name.
-    isAutoDefinition: async (definition) =>
-      (await definitionRepo.findByNamePrimary(definition.name))?.definition
-        .id !== definition.id,
+    isAutoDefinition: (definition, type) =>
+      definitionRepo.isAutoDefinition(definition, type),
     resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
     validateModel: async (definition, modelDef, _type) => {
       const outcome = await validationService.validateModel(
@@ -351,7 +351,9 @@ async function* validateSingle(
   // note, and would otherwise report a warning for nothing.
   const allPassed = outcome.results.every((r) => r.passed);
   const hasFindings = !allPassed || warnings.length > 0;
-  if (hasFindings && await deps.isAutoDefinition(definition)) {
+  // Only reached with findings, so an auto-definition's walk of models/ is
+  // paid only when the note has something to explain.
+  if (hasFindings && await deps.isAutoDefinition(definition, modelType)) {
     warnings.push({ ...AUTO_DEFINITION_NOTE });
   }
 

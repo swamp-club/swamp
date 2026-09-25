@@ -442,16 +442,34 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return null;
   }
 
+  async isAutoDefinition(
+    definition: Definition,
+    type: ModelType,
+  ): Promise<boolean> {
+    if (!this.secondaryBaseDir) return false;
+    // The name lookup is usually answered from the hint the lookup that
+    // loaded the definition recorded; only an auto-definition walks models/.
+    const byName = await this.findByNamePrimary(definition.name);
+    if (byName?.definition.id === definition.id) return false;
+    if (byName === null) return true;
+    // A definition of this name in models/ with another ID: confirm by ID
+    // rather than trust the name.
+    return !(await this.findAll(type)).some((d) => d.id === definition.id);
+  }
+
   /**
    * Finds a definition by name in the primary definitions directory
-   * (`models/`) only, never in the secondary one (`.swamp/auto-definitions/`),
-   * which holds definitions swamp wrote itself. A definition another lookup
-   * returned came from auto-definitions exactly when this finds nothing with
-   * its ID.
+   * (`models/`) only, never in the secondary one.
    */
-  async findByNamePrimary(
+  private async findByNamePrimary(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
+    const hint = this.globalNameToActualPath.get(name);
+    if (hint?.primary) {
+      const hinted = await this.readHintedWithType(hint, name);
+      if (hinted) return hinted;
+      this.globalNameToActualPath.delete(name);
+    }
     return await this.searchDefinitionByName(this.baseDir, [], name, true);
   }
 

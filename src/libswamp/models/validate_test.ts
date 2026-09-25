@@ -118,10 +118,10 @@ Deno.test(
           new FileSystemUnifiedDataRepository(dir, undefined, store),
           store,
         );
-        assertEquals(await deps.isAutoDefinition(authored), false);
+        assertEquals(await deps.isAutoDefinition(authored, type), false);
         // Reached by UUID while models/ holds another "shared".
-        assertEquals(await deps.isAutoDefinition(auto), true);
-        assertEquals(await deps.isAutoDefinition(autoOnly), true);
+        assertEquals(await deps.isAutoDefinition(auto, type), true);
+        assertEquals(await deps.isAutoDefinition(autoOnly, type), true);
       } finally {
         store.close();
       }

@@ -291,6 +291,46 @@ Deno.test("foreign template text: a direct step scans its authored global argume
     assertEquals(each.status, "succeeded", JSON.stringify(each.toData()));
     assertEquals(received, ["{{env.name}}", "{{env.name}}", "{{env.name}}"]);
 
+    // Later steps that reuse the auto-definition the concat run saved, without
+    // supplying the argument, do not lint its stored evaluated values.
+    await repo.workflowRepo.save(Workflow.create({
+      name: "reuse-direct",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          task: StepTask.directExecution(
+            type.normalized,
+            "concat-model",
+            "run",
+          ),
+        })],
+      })],
+    }));
+    await repo.workflowRepo.save(Workflow.create({
+      name: "reuse-by-name",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          task: StepTask.model("concat-model", "run"),
+        })],
+      })],
+    }));
+    const reuseDirect = await service.execute("reuse-direct");
+    assertEquals(
+      reuseDirect.status,
+      "succeeded",
+      JSON.stringify(reuseDirect.toData()),
+    );
+    const reuseByName = await service.execute("reuse-by-name");
+    assertEquals(
+      reuseByName.status,
+      "succeeded",
+      JSON.stringify(reuseByName.toData()),
+    );
+    assertEquals(received.length, 5);
+
     // Resume goes through its own setup; the authored text must reach it too.
     // Resume needs a failed run, so a second step always fails.
     const failing = directWorkflow(
@@ -314,11 +354,11 @@ Deno.test("foreign template text: a direct step scans its authored global argume
     await repo.workflowRepo.save(withFailure);
     const failed = await service.execute("resumable");
     assertEquals(failed.status, "failed");
-    assertEquals(received.length, 4);
+    assertEquals(received.length, 6);
     await collect(
       service.resume("resumable", failed.id, { fromStep: "capture" }),
     );
-    assertEquals(received, Array(5).fill("{{env.name}}"));
+    assertEquals(received, Array(7).fill("{{env.name}}"));
 
     // Written literally, the braces are still a swamp expression missing its $.
     const literal = await service.execute("literal");
@@ -327,6 +367,6 @@ Deno.test("foreign template text: a direct step scans its authored global argume
       JSON.stringify(literal.toData()),
       "Expression uses {{...}} instead of ${{...}}",
     );
-    assertEquals(received.length, 5);
+    assertEquals(received.length, 7);
   });
 });

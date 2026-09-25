@@ -546,20 +546,27 @@ export function trackerStatusForRun(
  * supplied is scanned as the author wrote it instead. When the step wrote its
  * arguments as one whole-field expression, evaluation produced every key, so
  * none of them is scanned. Keys the step did not supply, kept from a stored
- * definition, are scanned as stored. A supplied key the definition does not
- * hold never reaches the method, so it is not scanned at all.
+ * definition, are scanned as stored when an author wrote that definition, and
+ * not at all when it is an auto-definition, whose stored values are another
+ * run's evaluated arguments. A supplied key the definition does not hold
+ * never reaches the method, so it is not scanned at all.
  *
  * @param definitionGlobals - The built definition's global arguments
  * @param suppliedKeys - The global argument keys this step supplied
  * @param authored - The step's authored arguments those keys came from: its
  *   `globalArgs`, or its `inputs` when they were routed to global arguments
+ * @param scanStored - Whether keys the step did not supply are authored text
+ *   to scan: true for a definition in `models/`, false for an auto-definition
  */
 export function templateScanGlobalArguments(
   definitionGlobals: Record<string, unknown>,
   suppliedKeys: readonly string[],
   authored: Record<string, unknown> | string | undefined,
+  scanStored = true,
 ): Record<string, unknown> {
-  const scanned = { ...definitionGlobals };
+  const scanned: Record<string, unknown> = scanStored
+    ? { ...definitionGlobals }
+    : {};
   for (const key of suppliedKeys) {
     if (!Object.hasOwn(definitionGlobals, key)) continue;
     delete scanned[key];
@@ -621,6 +628,16 @@ export interface StepExecutorDeps {
   expressionEvaluator: ExpressionEvaluationService;
   directTypeResolver?: DirectTypeResolver;
   runTracker?: RunTrackerRepository;
+  /**
+   * Whether a definition `definitionRepo` returned was loaded from the
+   * auto-definitions directory, which swamp writes from a run's evaluated
+   * arguments. Its stored global arguments are then not linted as authored
+   * text (swamp-club#2496). Absent, every definition counts as authored.
+   */
+  isAutoDefinition?: (
+    definition: Definition,
+    type: ModelType,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -765,6 +782,8 @@ export class DefaultStepExecutor implements StepExecutor {
       ),
       // directTypeResolver is not available in the lazy buildDeps path.
       // It must be injected via the WorkflowExecutionService constructor.
+      isAutoDefinition: (definition, type) =>
+        definitionRepo.isAutoDefinition(definition, type),
     };
   }
 
@@ -962,9 +981,11 @@ export class DefaultStepExecutor implements StepExecutor {
     let authoredFromDefinition: ReadonlySet<string> = new Set();
 
     let authoredForDirect = ctx.authoredExpressions;
-    // Global arguments the template-syntax scan reads in place of a direct
+    // Global arguments the template-syntax scan reads in place of a
     // definition's evaluated ones; see templateScanGlobalArguments.
     let authoredGlobalArguments: Record<string, unknown> | undefined;
+    const isAutoDefinition = (definition: Definition, type: ModelType) =>
+      allDeps.isAutoDefinition?.(definition, type) ?? Promise.resolve(false);
     if (task.modelType && task.modelName) {
       const resolver = allDeps.directTypeResolver;
 
@@ -1003,7 +1024,14 @@ export class DefaultStepExecutor implements StepExecutor {
       authoredFromDefinition = result.authoredExpressions ?? new Set();
 
       const authoredTask = ctx.authoredStep?.task.data;
-      if (authoredTask?.type === "model_method") {
+      // A step edited since a cached evaluation (--last-evaluated) can have
+      // moved its arguments between globalArgs and inputs; its authored text
+      // then no longer describes the values it runs with, so the definition
+      // is scanned as it is.
+      if (
+        authoredTask?.type === "model_method" &&
+        !task.globalArgs === !authoredTask.globalArgs
+      ) {
         // The resolver takes task.globalArgs as the global arguments when
         // given, and otherwise routes task.inputs between global and method
         // arguments by schema.
@@ -1016,6 +1044,9 @@ export class DefaultStepExecutor implements StepExecutor {
           result.definition.globalArguments,
           suppliedKeys,
           task.globalArgs ? authoredTask.globalArgs : authoredTask.inputs,
+          // A definition this step just created holds only keys it supplied.
+          result.created ||
+            !await isAutoDefinition(result.definition, result.modelType),
         );
       }
 
@@ -1037,6 +1068,11 @@ export class DefaultStepExecutor implements StepExecutor {
       authoredFromDefinition = collectAuthoredExpressions(
         originalDefinition.toData(),
       );
+      // An auto-definition's global arguments are the evaluated values of
+      // the run that wrote it, not authored text; nothing here is authored.
+      if (await isAutoDefinition(originalDefinition, modelType)) {
+        authoredGlobalArguments = {};
+      }
     } else {
       throw new Error(
         "Step task requires either modelIdOrName or modelType + modelName",

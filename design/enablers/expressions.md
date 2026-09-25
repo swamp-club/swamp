@@ -699,15 +699,19 @@ the step's authored arguments there (above).
 
 The definition such a step saves in `.swamp/auto-definitions/` holds the
 evaluated values, not the concatenation. Storing the authored text instead would
-store expressions that only resolve inside the run that passed them in. Running
-`swamp model validate` on that definition by name can therefore report the
-braces. When it reports anything, it adds an `Auto-definition` warning saying
-that swamp wrote the definition from a run's evaluated arguments, that its
-findings may be text evaluation produced rather than mistakes, and that any
-change belongs in the workflow step or command that wrote it. The definition
-counts as an auto-definition when `models/` holds no definition with its ID, so
-one reached by UUID is told apart from a same-named definition in `models/`.
-Validating all models skips auto-definitions.
+store expressions that only resolve inside the run that passed them in. A later
+workflow step that reuses the auto-definition, by `modelName` without supplying
+the argument or by `modelIdOrName`, does not scan its stored values: they are
+another run's evaluated arguments, not authored text
+(`StepExecutorDeps.isAutoDefinition`, answered by
+`YamlDefinitionRepository.isAutoDefinition`, which compares definition IDs).
+Arguments that step supplies are still scanned as written, and a definition in
+`models/` is scanned as stored. Running `swamp model validate` on the
+auto-definition by name can still report the braces. When it reports anything,
+it adds an `Auto-definition` warning saying that swamp wrote the definition from
+a run's evaluated arguments, that its findings may be text evaluation produced
+rather than mistakes, and that any change belongs in the workflow step or
+command that wrote it. Validating all models skips auto-definitions.
 
 **Declaring a field.** A model type marks a global or method argument that
 holds another service's template syntax with `.meta({ foreignTemplate: true })`
