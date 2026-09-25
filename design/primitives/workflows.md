@@ -1335,9 +1335,9 @@ order:
   reason `cancelled`.
 - Steps, `forEach` iterations and jobs that the interrupted level never started
   (queued behind a `concurrency` limit) are settled at the end of that level as
-  if they had been reached: skipped with reason `dependency` when their
-  `dependsOn` is not met, otherwise marked `failed` with reason `cancelled` and
-  no `startedAt`. A `forEach` dependency with a queued iteration therefore
+  if they had been reached: skipped when their `dependsOn` is not met (reason
+  `dependency` for a step; a skipped job's steps get `job_skipped`), otherwise
+  marked `failed` with reason `cancelled` and no `startedAt`. A `forEach` dependency with a queued iteration therefore
   aggregates to `failed`, and cleanup gated on it runs. A `failed`-gated
   rollback can run for work that never started, so it must tolerate having
   nothing to undo. These steps and jobs get no `step_failed`, `step_skipped`,
@@ -1345,7 +1345,10 @@ order:
   outcome. `workflow resume` settles steps the same way, but not jobs: its job
   loop has no cleanup mode (swamp-club#2550).
 - A step whose guard was being evaluated when the cancellation fired does not
-  start. It is settled with the rest of its level.
+  start. A guard that answers truthy still skips it (reason `guarded`);
+  otherwise it is settled with the rest of its level. If the level settled it
+  before the guard answered, it stays cancelled. A step recorded `running`
+  when its run resumes starts as before.
 - A level that suspends at an approval gate keeps its queued steps `pending`,
   so the run can be resumed.
 

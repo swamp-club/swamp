@@ -10857,7 +10857,8 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
  * Aborts the run from inside the step named `abortAt`, as a `--timeout` or
  * cancel firing while that step runs. The step then fails with an AbortError,
  * or succeeds as a method that ignores the signal would. A guard call
- * (`__guard_<step>`) that succeeds returns null, so the guard is falsy.
+ * (`__guard_<step>`) that succeeds returns `guardValue` (null, so falsy, by
+ * default).
  */
 class AbortingStepExecutor extends CountingStepExecutor {
   readonly controller = new AbortController();
@@ -10865,6 +10866,7 @@ class AbortingStepExecutor extends CountingStepExecutor {
   constructor(
     private readonly abortAt: string,
     private readonly outcome: "reject" | "succeed" = "reject",
+    private readonly guardValue: unknown = null,
   ) {
     super();
   }
@@ -10879,20 +10881,17 @@ class AbortingStepExecutor extends CountingStepExecutor {
     if (this.outcome === "reject") {
       throw new DOMException("The operation was aborted.", "AbortError");
     }
-    return ctx.stepName.startsWith("__guard_") ? null : result;
+    return ctx.stepName.startsWith("__guard_") ? this.guardValue : result;
   }
 }
 
-async function runUntilAborted(
-  service: WorkflowExecutionService,
-  workflow: Workflow,
-  signal: AbortSignal,
-  inputs?: Record<string, unknown>,
-): Promise<{ run: WorkflowRun; kinds: string[] }> {
+async function finishedRun(
+  stream: AsyncIterable<WorkflowExecutionEvent>,
+): Promise<{ run: WorkflowRun; events: WorkflowExecutionEvent[] }> {
   let run: WorkflowRun | undefined;
-  const kinds: string[] = [];
-  for await (const event of service.run(workflow.name, { signal, inputs })) {
-    kinds.push(event.kind);
+  const events: WorkflowExecutionEvent[] = [];
+  for await (const event of stream) {
+    events.push(event);
     if (
       event.kind === "cancelled" || event.kind === "completed" ||
       event.kind === "suspended"
@@ -10901,7 +10900,39 @@ async function runUntilAborted(
     }
   }
   assert(run !== undefined, "the run did not finish");
-  return { run, kinds };
+  return { run, events };
+}
+
+async function runUntilAborted(
+  service: WorkflowExecutionService,
+  workflow: Workflow,
+  signal: AbortSignal,
+  inputs?: Record<string, unknown>,
+): Promise<{ run: WorkflowRun; kinds: string[] }> {
+  const { run, events } = await finishedRun(
+    service.run(workflow.name, { signal, inputs }),
+  );
+  return { run, kinds: events.map((e) => e.kind) };
+}
+
+/** Suspends `workflow` at the gate in job main and approves the gate. */
+async function suspendAndApprove(
+  service: WorkflowExecutionService,
+  runRepo: InMemoryWorkflowRunRepository,
+  workflow: Workflow,
+  inputs?: Record<string, unknown>,
+): Promise<WorkflowRun> {
+  const suspended = await service.execute(workflow.name, { inputs });
+  assertEquals(suspended.status, "suspended");
+  const gate = suspended.getJob("main")!.getStep("gate")!;
+  gate.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:test",
+    decidedAt: new Date().toISOString(),
+  });
+  gate.succeed();
+  await runRepo.save(workflow.id, suspended);
+  return suspended;
 }
 
 function assertCancelledBeforeStart(
@@ -11082,14 +11113,18 @@ Deno.test("abort cleanup: a queued step whose dependsOn is unmet is skipped, not
       executor,
     );
 
-    const { run } = await runUntilAborted(
-      service,
-      workflow,
-      executor.controller.signal,
+    const { run, events } = await finishedRun(
+      service.run(workflow.name, { signal: executor.controller.signal }),
     );
 
     assertEquals(run.status, "cancelled");
     assertDependencySkipped(run, ["rollback", "alert"]);
+    // rollback was queued behind deploy, so the level settled it: runStep,
+    // which yields step_skipped, never reached it.
+    assertEquals(
+      events.some((e) => e.kind === "step_skipped" && e.stepId === "rollback"),
+      false,
+    );
     assertEquals(executor.count("main/rollback"), 0);
     assertEquals(executor.count("main/alert"), 0);
   });
@@ -11256,5 +11291,136 @@ Deno.test("abort cleanup: a guarded step recorded running when its suspended run
     assertEquals(resumed.status, "succeeded");
     assertEquals(resumed.getJob("main")!.getStep("work")!.status, "succeeded");
     assertEquals(executor.count("main/work"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a guard that skips its step after the abort is honoured, so a failed-gated rollback does not run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "guard-skips-after-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep("delete", onStep("create", TriggerCondition.failed())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_create", "succeed", {
+      exists: true,
+    });
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    const create = run.getJob("main")!.getStep("create")!;
+    assertEquals(create.status, "skipped");
+    assertEquals(create.skipReason?.kind, "guarded");
+    assertEquals(executor.count("main/create"), 0);
+    assertEquals(executor.count("main/delete"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a guarded step recorded running on resume still starts when the abort fires during its guard", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-running-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work", {
+              ...onStep("gate", TriggerCondition.succeeded()),
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_work", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    suspended.getJob("main")!.getStep("work")!.start();
+    await runRepo.save(workflow.id, suspended);
+
+    const { run } = await finishedRun(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+    );
+
+    // Not left running: the step starts as it did before the abort check,
+    // and the mock method ignores the signal.
+    assertEquals(run.getJob("main")!.getStep("work")!.status, "succeeded");
+    assertEquals(executor.count("main/work"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a forEach iteration first added on resume is settled when the abort leaves it queued", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-grown-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("build", {
+              ...onStep("gate", TriggerCondition.succeeded()),
+              forEach: EACH_TARGET,
+              concurrency: 1,
+            }),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("build-a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow, {
+      targets: ["a", "b"],
+    });
+
+    const { run } = await finishedRun(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+        inputs: { targets: ["a", "b", "c"] },
+      }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["build-b", "build-c"]);
+    assertEquals(executor.count("main/rollback"), 1);
   });
 });

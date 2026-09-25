@@ -3348,6 +3348,7 @@ export class WorkflowExecutionService {
         // Merge parallel step generators within each level
         const stepConcurrencies: number[] = [];
         const levelSteps = new Map<string, Step>();
+        const levelIterations = new Set<string>();
         const stepStreams = level.map((stepName) => {
           // Find the expanded step info if applicable
           let forEachVar: { name: string; value: unknown } | undefined;
@@ -3381,6 +3382,7 @@ export class WorkflowExecutionService {
           }
           const levelStep = originalStep ?? job.getStep(stepName);
           if (levelStep) levelSteps.set(stepName, levelStep);
+          if (forEachVar?.name) levelIterations.add(stepName);
 
           return this.runStep(
             workflow,
@@ -3428,6 +3430,11 @@ export class WorkflowExecutionService {
         ) {
           const notStarted: string[] = [];
           for (const stepName of level) {
+            // An iteration a resume added to the collection has no record
+            // until runStep creates one, as it would have on reaching it.
+            if (!jobRun.getStep(stepName) && levelIterations.has(stepName)) {
+              jobRun.addExpandedStep(stepName);
+            }
             const stepRun = jobRun.getStep(stepName);
             if (stepRun?.status !== "pending") continue;
             const step = levelSteps.get(stepName);
@@ -3665,15 +3672,18 @@ export class WorkflowExecutionService {
         undefined,
         run.id,
       );
-      // When the abort fires while the guard is evaluated, the step does not
-      // start: runJob settles it at the end of the level, or already has. A
-      // step reached after the abort is left to run as before.
+      // When the abort fires while a pending step's guard is evaluated, the
+      // step does not start: runJob settles it at the end of the level, or
+      // already has. A guard that skips the step is still honoured. A step
+      // reached after the abort, or recorded running, runs as before.
       const abortedBeforeGuard = options.signal?.aborted ?? false;
       const guardedStep = stepRun;
       const statusBeforeGuard = guardedStep.status;
+      const settledDuringGuard = (): boolean =>
+        guardedStep.status !== statusBeforeGuard;
       const abortedDuringGuard = (): boolean =>
-        guardedStep.status !== statusBeforeGuard ||
-        (!abortedBeforeGuard && (options.signal?.aborted ?? false));
+        statusBeforeGuard === "pending" && !abortedBeforeGuard &&
+        (options.signal?.aborted ?? false);
       try {
         const celEvaluator = new CelEvaluator();
         const guardContext: Record<string, unknown> = {
@@ -3700,7 +3710,7 @@ export class WorkflowExecutionService {
           guardCel,
           guardContext,
         );
-        if (abortedDuringGuard()) {
+        if (settledDuringGuard()) {
           stepSpan.end();
           return;
         }
@@ -3723,10 +3733,14 @@ export class WorkflowExecutionService {
           };
           return;
         }
+        if (abortedDuringGuard()) {
+          stepSpan.end();
+          return;
+        }
         guardLogger
           .debug`Step ${stepName} guard passed: ${guardCel} → ${guardResult}`;
       } catch (error) {
-        if (abortedDuringGuard()) {
+        if (settledDuringGuard() || abortedDuringGuard()) {
           stepSpan.end();
           return;
         }
