@@ -821,13 +821,14 @@ prior runs alive.
 
 Resume accepts `--input`/`--input-file`/`--stdin` (same parsing as
 `workflow run`). As on a run, `key=value` values are coerced to the declared
-input type and checked against the input schema; a mismatch is refused
-(`input_validation_failed`) before the run changes. Resume inputs merge over the
-inputs the run had when it suspended, with a resume `--input` winning on a key
-collision. Evaluation stays strict, so a workflow must declare the inputs it
-references at run time: declare the input at run (e.g. a placeholder) and supply
-or override its value at resume. The run record records the resume input key
-names (not values) for audit.
+input type and checked, merged over the stored inputs, against the input schema;
+a mismatch is refused before the run changes (`--json` code
+`input_validation_failed`, or `workflow_resume_failed` through `--server`).
+Resume inputs merge over the inputs the run had when it suspended, with a resume
+`--input` winning on a key collision. Evaluation stays strict, so a workflow
+must declare the inputs it references at run time: declare the input at run
+(e.g. a placeholder) and supply or override its value at resume. The run record
+records the resume input key names (not values) for audit.
 
 **Retry a failed run:** `swamp workflow resume <workflow-name> --run <run-id>`
 on a failed run retries its failed steps and their dependents in the same run;

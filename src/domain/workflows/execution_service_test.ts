@@ -10218,3 +10218,59 @@ Deno.test("resume: an undeclared override stays additive unless the schema forbi
     assertEquals(error.code, "input_validation_failed");
   });
 });
+
+Deno.test("resume: a partial nested override is checked merged over the stored object", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = typedWorkflow(
+      {
+        properties: {
+          creds: {
+            type: "object",
+            properties: {
+              key: { type: "string" },
+              region: { type: "string" },
+            },
+            required: ["key", "region"],
+          },
+        },
+      },
+      [modelStep("login", {
+        inputs: {
+          key: "${{ inputs.creds.key }}",
+          region: "${{ inputs.creds.region }}",
+        },
+      })],
+    );
+    const { service, runRepo, executor, failed } = await failTyped(
+      tempDir,
+      workflow,
+      ["login"],
+      { creds: { key: "old", region: "us-east" } },
+    );
+    const saves = runRepo.saves;
+
+    // The merged value is still checked: a nested field of the wrong type
+    // is refused.
+    const error = await assertRejects(
+      () =>
+        drainResume(service, workflow.name, failed.id, {
+          inputs: { creds: { region: 5 } },
+        }),
+      UserError,
+    );
+    assertStringIncludes(error.message, "creds.region must be a string");
+    assertEquals(runRepo.saves, saves);
+
+    // Only key is supplied, as `--input creds.key=new` gives; region comes
+    // from the stored inputs, so the object's required list is met.
+    const resumed = await drainResume(service, workflow.name, failed.id, {
+      inputs: { creds: { key: "new" } },
+    });
+
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.taskInputs.get("login"), {
+      key: "new",
+      region: "us-east",
+    });
+  });
+});

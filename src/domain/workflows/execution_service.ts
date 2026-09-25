@@ -309,25 +309,31 @@ function abortReason(signal: AbortSignal): string {
 /**
  * Coerces resume override inputs to their declared types and checks them
  * against the workflow's input schema, as `workflow run` does for a fresh
- * run. Only the supplied keys are checked: they merge over the run's stored
- * inputs, which a resume does not re-check. Throws a UserError coded
- * `input_validation_failed`, the code `workflow run` uses. The run id comes
- * before the detail so serve's 200-character error limit cuts the detail.
+ * run. Only the supplied keys are checked, each by its value merged over the
+ * run's stored inputs: a partial nested override (`--input creds.key=new`)
+ * is complete only once merged. Keys not supplied are not re-checked. Throws
+ * a UserError coded `input_validation_failed`, the code `workflow run` uses.
+ * The run id comes before the detail so serve's 200-character error limit
+ * cuts the detail.
  */
 function coerceResumeInputs(
   workflow: Workflow,
-  runId: string,
+  run: WorkflowRun,
   inputs: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!workflow.inputs) return inputs;
   const coerced = coerceInputTypes(inputs, workflow.inputs);
+  const merged = deepMerge({ ...run.inputs }, coerced);
+  const supplied = Object.fromEntries(
+    Object.keys(coerced).map((key) => [key, merged[key]]),
+  );
   const { errors } = new InputValidationService().validateProvided(
-    coerced,
+    supplied,
     workflow.inputs,
   );
   if (errors.length > 0) {
     throw new UserError(
-      `Resume inputs do not match the workflow's input schema; run ${runId} is unchanged: ` +
+      `Resume inputs do not match the workflow's input schema; run ${run.id} is unchanged: ` +
         errors.map((e) => e.message).join("; "),
       "input_validation_failed",
     );
@@ -2708,7 +2714,7 @@ export class WorkflowExecutionService {
     // with its iterations pending (swamp-club#2502).
     const resumeInputs = coerceResumeInputs(
       workflow,
-      runId,
+      existingRun,
       options?.inputs ?? {},
     );
 

@@ -39,10 +39,10 @@ available at the original run time (e.g., elevated credentials issued during the
 gate). If a resume fails while it is being prepared (building the expression
 context and evaluating expressions, before any step runs), the run is left as it
 was, so fix the input and resume again. A refusal, such as an unknown `--from`
-step or an `--input` value that does not match its declared type
-(`input_validation_failed`), keeps its own message and changes nothing. Other
-errors, such as an `--input` value that makes an expression fail to evaluate,
-exit 1 with `Workflow resume failed: ...` (`--json` code
+step or an `--input` value that does not match its declared type (`--json` code
+`input_validation_failed` locally), keeps its own message and changes nothing.
+Other errors, such as an `--input` value that makes an expression fail to
+evaluate, exit 1 with `Workflow resume failed: ...` (`--json` code
 `workflow_resume_failed`). A failure after steps start is not rolled back: check
 the run with `swamp workflow history get <run-id>` before resuming again.
 
