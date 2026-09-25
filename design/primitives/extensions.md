@@ -1140,11 +1140,11 @@ On pull, the extension's metadata and extracted file list are recorded in
 the datastore's resolved config base: `<path>/config` for a filesystem
 datastore, the cache's `config/` for S3 or GCS, with the namespace in front of
 `config/` when one is set (`<path>/<namespace>/config`;
-`resolveManagedConfigPaths`, `src/cli/repo_context.ts`). Pulled sources stay in
-the repo's
-`.swamp/config/pulled-extensions` either way. The file supports clean removal,
-conflict detection and **integrity-anchored restore** (see the `checksum` field
-below).
+`resolveManagedConfigPaths`, `src/cli/repo_context.ts`). On managed config,
+pulled sources stay in the repo's `.swamp/config/pulled-extensions` whatever
+the datastore; otherwise they live in `.swamp/pulled-extensions`. The file
+supports clean removal, conflict detection and **integrity-anchored restore**
+(see the `checksum` field below).
 
 ### Structure
 
