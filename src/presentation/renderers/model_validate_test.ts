@@ -154,6 +154,36 @@ Deno.test("ModelValidateRenderer - log mode lists template syntax passed through
   }
 });
 
+Deno.test("ModelValidateRenderer - log mode shows the Auto-definition note", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelValidateRenderer("log");
+    await consumeStream(
+      toStream([{
+        kind: "completed",
+        data: {
+          ...templateWarningData,
+          warnings: [{
+            name: "Auto-definition",
+            message:
+              "This definition was written by swamp from a run's evaluated arguments",
+          }],
+        },
+      }]),
+      renderer.handlers(),
+    );
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Auto-definition");
+    assertStringIncludes(combined, "a run's evaluated arguments");
+    assertEquals(renderer.passed(), true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("JsonModelValidateRenderer - includes the templates of a template syntax warning", async () => {
   const logs: string[] = [];
   const originalLog = console.log;

@@ -103,6 +103,17 @@ interface ValidationWarningResult {
   templates?: ForeignTemplateDetail[];
 }
 
+/**
+ * Note on a definition swamp wrote itself (swamp-club#2496). One a workflow
+ * step wrote from its arguments holds the values that step evaluated, so its
+ * findings can be text evaluation produced rather than an author's mistake.
+ */
+const AUTO_DEFINITION_NOTE: ValidationWarningData = {
+  name: "Auto-definition",
+  message:
+    "This definition was written by swamp from a run's evaluated arguments, so these findings may be text that evaluation produced rather than mistakes. If a change is needed, make it in the workflow step or command that wrote the definition, not in this file.",
+};
+
 /** Dependencies for the model validate operation. */
 export interface ModelValidateDeps {
   lookupDefinition: (
@@ -111,6 +122,15 @@ export interface ModelValidateDeps {
   findAllDefinitions: () => Promise<
     Array<{ definition: Definition; type: ModelType }>
   >;
+  /**
+   * Whether a definition `lookupDefinition` returned was loaded from the
+   * auto-definitions directory, which swamp writes itself, rather than from
+   * `models/`.
+   */
+  isAutoDefinition: (
+    definition: Definition,
+    type: ModelType,
+  ) => Promise<boolean>;
   resolveModelType: (
     type: ModelType,
   ) => Promise<unknown | null>;
@@ -182,6 +202,8 @@ export function createModelValidateDeps(
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
     findAllDefinitions: () => definitionRepo.findAllGlobal(),
+    isAutoDefinition: (definition, type) =>
+      definitionRepo.isAutoDefinition(definition, type),
     resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
     validateModel: async (definition, modelDef, _type) => {
       const outcome = await validationService.validateModel(
@@ -325,7 +347,15 @@ async function* validateSingle(
   const outcome = await deps.validateModel(definition, modelDef, modelType);
   const validations = toValidationItemData(outcome.results);
   const warnings = toValidationWarningData(outcome.warnings);
+  // Only when there is a finding to explain: a clean auto-definition needs no
+  // note, and would otherwise report a warning for nothing.
   const allPassed = outcome.results.every((r) => r.passed);
+  const hasFindings = !allPassed || warnings.length > 0;
+  // Only reached with findings, so an auto-definition's walk of models/ is
+  // paid only when the note has something to explain.
+  if (hasFindings && await deps.isAutoDefinition(definition, modelType)) {
+    warnings.push({ ...AUTO_DEFINITION_NOTE });
+  }
 
   yield {
     kind: "completed",

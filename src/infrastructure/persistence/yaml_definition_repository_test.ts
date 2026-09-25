@@ -1567,3 +1567,65 @@ Deno.test("YamlDefinitionRepository.save preserves a typeVersion ahead of the mo
     assertEquals(reloaded?.typeVersion, "2027.01.01.1");
   });
 });
+
+Deno.test("YamlDefinitionRepository.isAutoDefinition tells models/ from auto-definitions by ID", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+    const primaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      false,
+    );
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+    const otherType = ModelType.create("test/other");
+    const authored = createTestDefinition("authored");
+    const auto = createTestDefinition("auto");
+    const primaryBoth = createTestDefinition("both");
+    const autoBoth = createTestDefinition("both");
+    // Two models/ definitions sharing a name under different types.
+    const firstTwin = createTestDefinition("twin");
+    const secondTwin = createTestDefinition("twin");
+    await primaryRepo.save(testType, authored);
+    await secondaryRepo.save(testType, auto);
+    await primaryRepo.save(testType, primaryBoth);
+    await secondaryRepo.save(testType, autoBoth);
+    await primaryRepo.save(testType, firstTwin);
+    await primaryRepo.save(otherType, secondTwin);
+
+    assertEquals(await repo.isAutoDefinition(authored, testType), false);
+    assertEquals(await repo.isAutoDefinition(auto, testType), true);
+    assertEquals(await repo.isAutoDefinition(primaryBoth, testType), false);
+    // Reached by UUID beside a same-named models/ definition.
+    assertEquals(await repo.isAutoDefinition(autoBoth, testType), true);
+    assertEquals(await repo.isAutoDefinition(firstTwin, testType), false);
+    assertEquals(await repo.isAutoDefinition(secondTwin, otherType), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.isAutoDefinition is false with no auto-definitions dir", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      join(dir, "models"),
+      false,
+    );
+    assertEquals(
+      await repo.isAutoDefinition(createTestDefinition("x"), testType),
+      false,
+    );
+  });
+});

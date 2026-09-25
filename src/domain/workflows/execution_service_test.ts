@@ -31,9 +31,11 @@ import { walk } from "@std/fs/walk";
 import { hostname } from "node:os";
 import {
   DefaultStepExecutor,
+  type DirectTypeResolver,
   type StepExecutionContext,
   type StepExecutor,
   stepNameFromCompositeKey,
+  templateScanGlobalArguments,
   trackerStatusForRun,
   WorkflowExecutionService,
 } from "./execution_service.ts";
@@ -9979,6 +9981,345 @@ Deno.test("resume: refuses a recovered run with no run plan whose workflow chang
     );
     assertEquals(executor.calls.size, 0);
   });
+});
+
+Deno.test("templateScanGlobalArguments: scans supplied keys as authored", () => {
+  assertEquals(
+    templateScanGlobalArguments(
+      { message: "{{env.name}}" },
+      ["message"],
+      { message: '${{ "{" + "{env.name}" + "}" }}' },
+    ),
+    { message: '${{ "{" + "{env.name}" + "}" }}' },
+  );
+});
+
+Deno.test("templateScanGlobalArguments: keeps stored keys the step did not supply", () => {
+  assertEquals(
+    templateScanGlobalArguments(
+      { message: "{{env.name}}", region: "{{ self.name }}" },
+      ["message"],
+      { message: "${{ inputs.msg }}" },
+    ),
+    { message: "${{ inputs.msg }}", region: "{{ self.name }}" },
+  );
+});
+
+Deno.test("templateScanGlobalArguments: leaves out keys a whole-field expression produced", () => {
+  assertEquals(
+    templateScanGlobalArguments(
+      { message: "{{env.name}}", region: "us-east-1" },
+      ["message"],
+      "${{ inputs.cfg }}",
+    ),
+    { region: "us-east-1" },
+  );
+});
+
+Deno.test("templateScanGlobalArguments: leaves out a supplied key the authored record lacks", () => {
+  assertEquals(
+    templateScanGlobalArguments({ message: "{{env.name}}" }, ["message"], {}),
+    {},
+  );
+});
+
+Deno.test("templateScanGlobalArguments: skips a supplied key the definition does not hold", () => {
+  assertEquals(
+    templateScanGlobalArguments(
+      { region: "us-east-1" },
+      ["region", "dropped"],
+      { region: "us-east-1", dropped: "{{env.name}}" },
+    ),
+    { region: "us-east-1" },
+  );
+});
+
+Deno.test("templateScanGlobalArguments: skips stored keys of an auto-definition", () => {
+  assertEquals(
+    templateScanGlobalArguments(
+      { message: "{{env.name}}", region: "{{ self.name }}" },
+      ["message"],
+      { message: "${{ inputs.msg }}" },
+      false,
+    ),
+    { message: "${{ inputs.msg }}" },
+  );
+});
+
+Deno.test("templateScanGlobalArguments: ignores inherited keys of the authored record", () => {
+  assertEquals(
+    templateScanGlobalArguments(
+      { constructor: "{{env.name}}" },
+      ["constructor"],
+      {},
+    ),
+    {},
+  );
+});
+
+/**
+ * Runs a direct-execution step whose resolver builds a definition holding the
+ * evaluated `{{env.name}}` under `key`, with `authoredStep` set as given. The
+ * step supplies it as `globalArgs`, or as `inputs` the resolver routes to
+ * global arguments. With `stored`, the step supplies nothing and the resolver
+ * reuses a definition already holding the text, saved in `models/` or in the
+ * auto-definitions directory.
+ */
+async function runDirectStep(
+  authoredStep: Step | undefined,
+  { key = "message", via = "globalArgs", stored }: {
+    key?: string;
+    via?: "globalArgs" | "inputs";
+    stored?: "models" | "auto";
+  } = {},
+): Promise<unknown[]> {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+
+  const received: unknown[] = [];
+  await withTempDir(async (tempDir) => {
+    const modelType = ModelType.create(
+      `@test-2496/direct-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    const modelDef = {
+      type: modelType,
+      version: "2026.09.25.1",
+      globalArguments: z.object({ [key]: z.string() }),
+      resources: {},
+      methods: {
+        run: {
+          description: "records its global argument",
+          arguments: z.object({}),
+          execute: (
+            _args: Record<string, never>,
+            context: { globalArgs: Record<string, unknown> },
+          ) => {
+            received.push(context.globalArgs[key]);
+            return Promise.resolve({});
+          },
+        },
+      },
+    };
+    modelRegistry.register(modelDef);
+    const storedDefinition = Definition.create({
+      name: "direct",
+      type: modelType.normalized,
+      typeVersion: modelDef.version,
+      globalArguments: { [key]: "{{env.name}}" },
+    });
+    if (stored) {
+      await new YamlDefinitionRepository(
+        tempDir,
+        undefined,
+        stored === "auto"
+          ? join(tempDir, ".swamp", "auto-definitions")
+          : undefined,
+        false,
+      ).save(modelType, storedDefinition);
+    }
+    const resolver: DirectTypeResolver = (
+      _typeArg,
+      definitionName,
+      _methodName,
+      inputs,
+      globalArgs,
+    ) =>
+      Promise.resolve(
+        stored
+          ? {
+            definition: storedDefinition,
+            modelType,
+            created: false,
+            routedMethodInputs: {},
+          }
+          : {
+            definition: Definition.create({
+              name: definitionName,
+              type: modelType.normalized,
+              typeVersion: modelDef.version,
+              // Without globalArgs, every input routes to a global argument.
+              globalArguments: globalArgs ?? inputs,
+            }),
+            modelType,
+            created: true,
+            routedMethodInputs: {},
+          },
+      );
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      // The step as the executor sees it, after the workflow evaluator ran.
+      const evaluated = stored ? undefined : { [key]: "{{env.name}}" };
+      const step = Step.create({
+        name: "step",
+        task: StepTask.directExecution(
+          modelType.normalized,
+          "direct",
+          "run",
+          via === "inputs" ? evaluated : undefined,
+          via === "globalArgs" ? evaluated : undefined,
+        ),
+      });
+      await new DefaultStepExecutor(undefined, resolver).execute(step, {
+        workflowId: createWorkflowId(crypto.randomUUID()),
+        workflowRunId: crypto.randomUUID(),
+        workflowName: "wf",
+        jobName: "job",
+        stepName: "step",
+        repoDir: tempDir,
+        signal: new AbortController().signal,
+        step,
+        authoredStep,
+        catalogStore,
+        authoredExpressions: new Set(),
+        expressionContext: { model: {}, env: {}, inputs: {} },
+      });
+    } finally {
+      catalogStore.close();
+    }
+  });
+  return received;
+}
+
+function authoredDirectStep(message: string): Step {
+  return Step.create({
+    name: "step",
+    task: StepTask.directExecution("any/type", "direct", "run", undefined, {
+      message,
+    }),
+  });
+}
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a direct step validates its authored global arguments (swamp-club#2496)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const received = await runDirectStep(
+      authoredDirectStep('${{ "{" + "{env.name}" + "}" }}'),
+    );
+    assertEquals(received, ["{{env.name}}"]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a direct step reads authored inputs routed to global arguments by own key",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    // A key such as toString is on every object's prototype; only an own key
+    // of the routed method inputs makes it a method argument.
+    const received = await runDirectStep(
+      Step.create({
+        name: "step",
+        task: StepTask.directExecution("any/type", "direct", "run", {
+          toString: '${{ "{" + "{env.name}" + "}" }}',
+        }),
+      }),
+      { key: "toString", via: "inputs" },
+    );
+    assertEquals(received, ["{{env.name}}"]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a direct step reusing an auto-definition does not lint its stored values",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const received = await runDirectStep(
+      Step.create({
+        name: "step",
+        task: StepTask.directExecution("any/type", "direct", "run"),
+      }),
+      { stored: "auto" },
+    );
+    assertEquals(received, ["{{env.name}}"]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a direct step reusing a models/ definition lints its stored values",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const error = await assertRejects(() =>
+      runDirectStep(
+        Step.create({
+          name: "step",
+          task: StepTask.directExecution("any/type", "direct", "run"),
+        }),
+        { stored: "models" },
+      )
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Expression uses {{...}} instead of ${{...}}",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a direct step whose authored shape changed scans the definition as it is",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    // The step ran with globalArgs, but its source now writes inputs, as
+    // after an edit since a --last-evaluated cache was written.
+    const error = await assertRejects(() =>
+      runDirectStep(
+        Step.create({
+          name: "step",
+          task: StepTask.directExecution("any/type", "direct", "run", {
+            message: '${{ "{" + "{env.name}" + "}" }}',
+          }),
+        }),
+      )
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Expression uses {{...}} instead of ${{...}}",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a direct step still fails braces its author wrote literally",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const error = await assertRejects(() =>
+      runDirectStep(authoredDirectStep("{{env.name}}"))
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Expression uses {{...}} instead of ${{...}}",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a direct step with no authored step scans the definition as it is",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const error = await assertRejects(() => runDirectStep(undefined));
+    assertStringIncludes(
+      (error as Error).message,
+      "Expression uses {{...}} instead of ${{...}}",
+    );
+  },
 });
 
 // ---------------------------------------------------------------------------
