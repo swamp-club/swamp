@@ -24,9 +24,10 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
-  getSourceWorkflowDirs,
+  refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { pullManagedConfigAtBoot } from "../managed_config_sync.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   MAX_TIMER_DELAY_MS,
@@ -132,7 +133,6 @@ import {
   createModelDeleteDeps,
   createWorkerListDeps,
   createWorkerModelRunDeps,
-  enumeratePulledExtensionDirs,
   modelDelete,
   modelMethodRun,
   normalizeFireTime,
@@ -1934,16 +1934,39 @@ export const serveCommand = new Command()
     // prefixes from the datastore BEFORE loading extensions. config/ is
     // needed so extension loaders can scan managed dirs; auto-definitions/
     // is needed so model resolution finds definitions created by prior
-    // serve instances (enrollment tokens, server tokens, grants).
+    // serve instances (enrollment tokens, server tokens, grants). The
+    // repository context was created before this pull, so its pulled
+    // workflow dirs are re-enumerated here (swamp-club#2434).
     if (repoMarker?.datastore?.managedConfig && syncService) {
-      await syncService.pullChanged({
-        subdirs: ["config", "auto-definitions"],
+      await pullManagedConfigAtBoot({
+        syncService,
         namespace: isCustomDatastoreConfig(datastoreConfig)
           ? datastoreConfig.namespace
           : undefined,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        extensionWorkflowRepo: repoContext.extensionWorkflowRepo,
+        repoDir: resolvedRepoDir,
+        lockfilePath: extensionLockfilePath,
       });
-      repoContext.catalogStore.invalidate();
     }
+
+    // Re-enumerates pulled extension workflow dirs and, once the scheduler
+    // exists, rescans schedules. Shared by `serve reload` and the config
+    // poller so an extension the poller pulls in registers its workflows
+    // without a manual reload. `rescan` is bound after the scheduler starts.
+    const scheduledWorkflows: { rescan?: () => Promise<void> } = {};
+    const extWorkflowRepo = repoContext.extensionWorkflowRepo;
+    const reloadExtensionWorkflows = extWorkflowRepo
+      ? async (): Promise<number> => {
+        const count = await refreshExtensionWorkflowDirs(
+          extWorkflowRepo,
+          resolvedRepoDir,
+          extensionLockfilePath,
+        );
+        await scheduledWorkflows.rescan?.();
+        return count;
+      }
+      : undefined;
 
     // Index extension registries so types are discoverable at startup.
     // Bundles are imported on demand when workflow steps target them.
@@ -2202,7 +2225,10 @@ export const serveCommand = new Command()
             const result = await performServeReload(
               resolvedRepoDir,
               extensionLockfilePath,
-              { extensionDiscoverer },
+              {
+                extensionDiscoverer,
+                workflowReloader: reloadExtensionWorkflows,
+              },
             );
             if (result.success) {
               if (result.reloadedCount > 0) {
@@ -3915,28 +3941,14 @@ export const serveCommand = new Command()
       connectionCtx.scheduledExecution = scheduledExecution;
     }
 
-    // Wire workflow reloader for hot-reload: re-enumerates pulled extension
-    // workflow dirs and rescans schedules. Built here (cli layer) so the
+    // Wire workflow reloader for hot-reload. Built here (cli layer) so the
     // serve handlers never import from src/cli/.
-    const extWorkflowRepo = repoContext.extensionWorkflowRepo;
-    if (extWorkflowRepo) {
-      connectionCtx.workflowReloader = async () => {
-        const sourceWfDirs = await getSourceWorkflowDirs(resolvedRepoDir);
-        const pulledWfDirs = await enumeratePulledExtensionDirs(
-          extensionLockfilePath,
-          resolvedRepoDir,
-          "workflows",
-        );
-        extWorkflowRepo.updateAdditionalDirs([
-          ...sourceWfDirs,
-          ...pulledWfDirs,
-        ]);
-        if (connectionCtx.scheduledExecution) {
-          await connectionCtx.scheduledExecution.rescanWorkflows();
-        }
-        return pulledWfDirs.length;
-      };
-    }
+    scheduledWorkflows.rescan = async () => {
+      if (connectionCtx.scheduledExecution) {
+        await connectionCtx.scheduledExecution.rescanWorkflows();
+      }
+    };
+    connectionCtx.workflowReloader = reloadExtensionWorkflows;
 
     // Parse group refresh interval and construct service
     let collectiveRefreshService:

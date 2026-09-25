@@ -150,13 +150,23 @@ Deno.test("auto-definition repos must pass markDirtyHook (swamp-club#2275)", asy
 });
 
 Deno.test("serve startup pullChanged must include auto-definitions subdir", async () => {
+  // The early startup pull lives in pullManagedConfigAtBoot, which also
+  // re-enumerates pulled workflow dirs once config/ lands (swamp-club#2434).
   const serveFile = join(ROOT, "src", "cli", "commands", "serve.ts");
-  const content = await Deno.readTextFile(serveFile);
+  const bootPullFile = join(ROOT, "src", "cli", "managed_config_sync.ts");
+  const serveContent = await Deno.readTextFile(serveFile);
+  const bootPullContent = await Deno.readTextFile(bootPullFile);
 
   assertStringIncludes(
-    content,
+    serveContent,
+    "await pullManagedConfigAtBoot(",
+    "serve.ts must run its early startup pull through " +
+      "pullManagedConfigAtBoot (swamp-club#2275, swamp-club#2434).",
+  );
+  assertStringIncludes(
+    bootPullContent,
     '"auto-definitions"',
-    "The early startup pullChanged in serve.ts must include " +
+    "The early startup pullChanged in pullManagedConfigAtBoot must include " +
       '"auto-definitions" in its subdirs list so auto-definitions are ' +
       "available before the serve accepts connections (swamp-club#2275).",
   );

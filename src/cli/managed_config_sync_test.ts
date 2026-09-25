@@ -18,7 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { pushManagedConfigChanges } from "./managed_config_sync.ts";
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
+import {
+  pullManagedConfigAtBoot,
+  pushManagedConfigChanges,
+} from "./managed_config_sync.ts";
+import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
+import { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import type {
   CustomDatastoreConfig,
   DatastoreConfig,
@@ -145,4 +153,135 @@ Deno.test("pushManagedConfigChanges: passes undefined namespace for filesystem c
 
   assertEquals(pushCalls.length, 1);
   assertEquals(pushCalls[0].namespace, undefined);
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-managed-config-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+/**
+ * A sync service whose config pull lands a pulled extension — lockfile
+ * entry plus one workflow — in a cache that was empty until then, as on a
+ * fresh serve instance backed by a remote datastore.
+ */
+function createPullingSyncService(configBase: string): {
+  service: Pick<DatastoreSyncService, "pullChanged">;
+  pullCalls: Array<{ subdirs?: readonly string[]; namespace?: string }>;
+} {
+  const pullCalls: Array<{ subdirs?: readonly string[]; namespace?: string }> =
+    [];
+  const service = {
+    pullChanged: async (
+      opts?: { subdirs?: readonly string[]; namespace?: string },
+    ) => {
+      pullCalls.push({ subdirs: opts?.subdirs, namespace: opts?.namespace });
+      const workflowsDir = join(
+        configBase,
+        "pulled-extensions",
+        "@example",
+        "pkg-a",
+        "workflows",
+      );
+      await ensureDir(workflowsDir);
+      await Deno.writeTextFile(
+        join(workflowsDir, "deploy.yaml"),
+        stringifyYaml({
+          id: crypto.randomUUID(),
+          name: "pkg-a-deploy",
+          version: 1,
+          jobs: [{
+            name: "deploy",
+            steps: [{
+              name: "run",
+              task: {
+                type: "model_method",
+                modelIdOrName: "thing",
+                methodName: "run",
+              },
+            }],
+          }],
+        }),
+      );
+      await Deno.writeTextFile(
+        join(configBase, "upstream_extensions.json"),
+        JSON.stringify({
+          "@example/pkg-a": {
+            version: "2026.09.25.1",
+            pulledAt: "2026-09-25T00:00:00Z",
+          },
+        }),
+      );
+      return 2;
+    },
+  };
+  return { service, pullCalls };
+}
+
+Deno.test("pullManagedConfigAtBoot: registers pulled workflows on a fresh instance with an empty cache", async () => {
+  await withTempDir(async (repoDir) => {
+    const configBase = join(repoDir, "cache", "config");
+    const lockfilePath = join(configBase, "upstream_extensions.json");
+    const pulledExtensionsRoot = join(configBase, "pulled-extensions");
+
+    // Built as requireInitializedRepoUnlocked builds it: pulled workflow
+    // dirs enumerated before anything has been pulled, so none are found.
+    const extensionWorkflowRepo = new ExtensionWorkflowRepository(
+      join(repoDir, "workflows"),
+      await enumeratePulledExtensionDirs(
+        lockfilePath,
+        repoDir,
+        "workflows",
+        pulledExtensionsRoot,
+      ),
+    );
+    assertEquals(await extensionWorkflowRepo.findAll(), []);
+
+    const { service, pullCalls } = createPullingSyncService(configBase);
+    let invalidations = 0;
+    await pullManagedConfigAtBoot({
+      syncService: service,
+      namespace: "ns1",
+      catalogInvalidate: () => invalidations++,
+      extensionWorkflowRepo,
+      repoDir,
+      lockfilePath,
+      pulledExtensionsRoot,
+    });
+
+    assertEquals(pullCalls, [{
+      subdirs: ["config", "auto-definitions"],
+      namespace: "ns1",
+    }]);
+    assertEquals(invalidations, 1);
+    const workflows = await extensionWorkflowRepo.findAll();
+    assertEquals(workflows.map((w) => w.name), ["pkg-a-deploy"]);
+  });
+});
+
+Deno.test("pullManagedConfigAtBoot: pulls and invalidates when there is no extension workflow repository", async () => {
+  await withTempDir(async (repoDir) => {
+    const configBase = join(repoDir, "cache", "config");
+    const { service, pullCalls } = createPullingSyncService(configBase);
+    let invalidations = 0;
+
+    await pullManagedConfigAtBoot({
+      syncService: service,
+      catalogInvalidate: () => invalidations++,
+      extensionWorkflowRepo: null,
+      repoDir,
+      lockfilePath: join(configBase, "upstream_extensions.json"),
+    });
+
+    assertEquals(pullCalls.length, 1);
+    assertEquals(invalidations, 1);
+  });
 });
