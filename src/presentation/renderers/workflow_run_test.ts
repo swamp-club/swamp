@@ -534,6 +534,112 @@ Deno.test("ConsoleWorkflowRunRenderer: forEach steps show [index] notation", asy
   assertStringIncludes(output, "fetch[1]");
 });
 
+function skippedLines(lines: string[]): string[] {
+  return lines.filter((l) => l.includes("skipped")).map((l) => l.trimStart());
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: skipped plain steps name the step", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "main", stepCount: 3, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    { kind: "step_started", jobId: "main", stepId: "deploy" },
+    { kind: "step_completed", jobId: "main", stepId: "deploy" },
+    {
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "rollback",
+      reason: "dependency",
+    },
+    {
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "cleanup",
+      reason: "guarded",
+      guardExpression: "true",
+      guardResult: true,
+    },
+    { kind: "job_completed", jobId: "main", status: "succeeded" },
+    { kind: "completed", run: makeRunView("succeeded") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(skippedLines(lines), [
+    "main │ skipped rollback (dependency)",
+    "main │ skipped cleanup (guarded) · guard: true",
+  ]);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: skipped forEach iterations name the expanded step", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "extract", stepCount: 2, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "extract" },
+    {
+      kind: "step_skipped",
+      jobId: "extract",
+      stepId: "fetch-dev",
+      reason: "guarded",
+      guardExpression: 'self.env != "prod"',
+      guardResult: true,
+      forEachTemplate: "fetch",
+      forEachIndex: 0,
+    },
+    { kind: "job_completed", jobId: "extract", status: "succeeded" },
+    { kind: "completed", run: makeRunView("succeeded") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(skippedLines(lines), [
+    'fetch[0] │ skipped fetch-dev (guarded) · guard: self.env != "prod"',
+  ]);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: skipped job line names no step", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "notify", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_skipped", jobId: "notify" },
+    { kind: "completed", run: makeRunView("succeeded") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(skippedLines(lines), ["notify │ skipped"]);
+});
+
 // --- JsonWorkflowRunRenderer tests ---
 
 Deno.test("JsonWorkflowRunRenderer: intermediate events produce no output", () => {

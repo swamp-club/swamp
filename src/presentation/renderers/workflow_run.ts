@@ -337,7 +337,12 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         this.clearHeartbeat(e.jobId, e.stepId);
         const displayName = this.getDisplayName(e.jobId, e.stepId, e);
         writeOutput(
-          this.pipe.skippedLine(displayName, e.reason, e.guardExpression),
+          this.pipe.skippedStepLine(
+            displayName,
+            e.stepId,
+            e.reason,
+            e.guardExpression,
+          ),
         );
       },
       step_queued: (e) => {

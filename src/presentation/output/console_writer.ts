@@ -164,6 +164,19 @@ export class PipeWriter {
     return this.line(name, `${dim(`skipped${extra}`)}${guard}`);
   }
 
+  skippedStepLine(
+    name: string,
+    stepPath: string,
+    reason?: string,
+    guardExpression?: string,
+  ): string {
+    const extra = reason ? ` (${reason})` : "";
+    const guard = guardExpression
+      ? ` ${dim(`· guard: ${guardExpression}`)}`
+      : "";
+    return this.line(name, `${dim(`skipped ${stepPath}${extra}`)}${guard}`);
+  }
+
   stepLine(
     name: string,
     stepPath: string,

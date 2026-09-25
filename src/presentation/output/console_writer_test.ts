@@ -210,6 +210,38 @@ Deno.test("PipeWriter.skippedLine: omits guard when not provided", () => {
   });
 });
 
+Deno.test("PipeWriter.skippedStepLine: names the step before the reason", () => {
+  noColor(() => {
+    const pipe = new PipeWriter(["main"]);
+    const line = pipe.skippedStepLine("main", "rollback", "dependency");
+    assertEquals(line, " main │ skipped rollback (dependency)");
+  });
+});
+
+Deno.test("PipeWriter.skippedStepLine: includes guard expression when provided", () => {
+  noColor(() => {
+    const pipe = new PipeWriter(["main"]);
+    const line = pipe.skippedStepLine(
+      "main",
+      "cleanup",
+      "guarded",
+      'data.latest("checker", "result").attributes.exitCode == 0',
+    );
+    assertEquals(
+      line,
+      ' main │ skipped cleanup (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0',
+    );
+  });
+});
+
+Deno.test("PipeWriter.skippedStepLine: omits the reason when not provided", () => {
+  noColor(() => {
+    const pipe = new PipeWriter(["main"]);
+    const line = pipe.skippedStepLine("main", "rollback");
+    assertEquals(line, " main │ skipped rollback");
+  });
+});
+
 Deno.test("PipeWriter.stepLine: formats step with model and method", () => {
   noColor(() => {
     const pipe = new PipeWriter(["extract"]);
