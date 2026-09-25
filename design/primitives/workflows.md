@@ -233,11 +233,16 @@ because model code bypasses authorization. On a remote worker both return
 **Resume inputs (`--input`):** `swamp workflow resume` accepts `--input`,
 `--input-file`, and `--stdin`, parsed as in `swamp workflow run`. They supply
 values not available at the original run, such as elevated credentials,
-environment overrides, or an auth key issued during the gate. Resume inputs are
-deep-merged over the inputs captured at suspension (`deepMerge` in
-`src/domain/workflows/execution_service.ts`): existing keys stay, nested
-records merge key by key, and the resume `--input` wins on a collision. The
-merged set is on the expression context before evaluation, so post-gate
+environment overrides, or an auth key issued during the gate. As on a run, each
+supplied value is coerced to its declared input type, and its value merged over
+the stored inputs is checked against the workflow's input schema; a mismatch
+is refused before the run changes (`coerceResumeInputs` in
+`src/domain/workflows/execution_service.ts`). The local CLI reports the refusal
+as `input_validation_failed`; serve reports every resume error as
+`workflow_resume_failed`. Resume inputs are deep-merged
+over the inputs captured at suspension (`deepMerge`): existing keys stay,
+nested records merge key by key, and the resume `--input` wins on a collision.
+The merged set is on the expression context before evaluation, so post-gate
 `inputs.*` expressions see the new values.
 
 Evaluation stays strict: a workflow must declare at run time every input it

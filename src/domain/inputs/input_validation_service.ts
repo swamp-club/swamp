@@ -54,9 +54,6 @@ export class InputValidationService {
     schema: InputsSchema,
   ): InputValidationResult {
     const errors: InputValidationError[] = [];
-
-    // Get properties from schema (supports both flat and nested object formats)
-    const properties = schema.properties ?? schema;
     const required = schema.required ?? [];
 
     // Check for missing required inputs
@@ -69,9 +66,53 @@ export class InputValidationService {
       }
     }
 
-    // Validate each provided input
+    errors.push(...this.validateEntries(inputs, schema));
+
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
+
+  /**
+   * Validates only the inputs that were supplied, skipping the required-input
+   * check. For a partial input set, such as the override inputs of a workflow
+   * resume, which merge over the run's stored inputs.
+   *
+   * @param inputs - The input values supplied
+   * @param schema - The inputs schema to validate against
+   * @returns Validation result with any errors
+   */
+  validateProvided(
+    inputs: Record<string, unknown>,
+    schema: InputsSchema,
+  ): InputValidationResult {
+    const errors = this.validateEntries(inputs, schema);
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
+
+  /**
+   * Validates each supplied input against its declared property, and refuses
+   * an undeclared one when the schema forbids additional properties.
+   */
+  private validateEntries(
+    inputs: Record<string, unknown>,
+    schema: InputsSchema,
+  ): InputValidationError[] {
+    const errors: InputValidationError[] = [];
+
+    // Get properties from schema (supports both flat and nested object formats)
+    const properties = schema.properties ?? schema;
+
     for (const [key, value] of Object.entries(inputs)) {
-      const propSchema = properties[key] as JsonSchemaProperty | undefined;
+      // Own properties only: an input named after an Object.prototype member
+      // (constructor, __proto__) is not a declared input.
+      const propSchema = Object.hasOwn(properties, key)
+        ? properties[key] as JsonSchemaProperty | undefined
+        : undefined;
       if (propSchema) {
         const propErrors = this.validateProperty(key, value, propSchema);
         errors.push(...propErrors);
@@ -83,10 +124,7 @@ export class InputValidationService {
       }
     }
 
-    return {
-      valid: errors.length === 0,
-      errors,
-    };
+    return errors;
   }
 
   /**
