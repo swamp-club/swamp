@@ -21,8 +21,12 @@ import { getLogger } from "@logtape/logtape";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import { isCustomDatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
-import { requireInitializedRepoUnlocked } from "./repo_context.ts";
+import {
+  refreshExtensionWorkflowDirs,
+  requireInitializedRepoUnlocked,
+} from "./repo_context.ts";
 
 const logger = getLogger(["swamp", "cli", "managed-config-sync"]);
 
@@ -78,5 +82,45 @@ export async function pushManagedConfigChangesDeferred(
     logger.warn`Failed to push managed config changes (deferred): ${
       error instanceof Error ? error.message : String(error)
     }`;
+  }
+}
+
+export interface PullManagedConfigAtBootDeps {
+  syncService: Pick<DatastoreSyncService, "pullChanged">;
+  namespace?: string;
+  catalogInvalidate: () => void;
+  extensionWorkflowRepo:
+    | Pick<ExtensionWorkflowRepository, "updateAdditionalDirs">
+    | null;
+  repoDir: string;
+  lockfilePath: string;
+  pulledExtensionsRoot?: string;
+}
+
+/**
+ * Pulls the managed config and auto-definitions tiers at serve boot, then
+ * re-enumerates the pulled-extension workflow directories.
+ *
+ * The repository context is created before this pull, so on an instance
+ * that starts with an empty cache it enumerated pulled workflow dirs
+ * against a lockfile that did not exist yet and registered none of them
+ * (swamp-club#2434). Extension type registries load lazily after this pull
+ * and are unaffected; workflows are the one kind enumerated eagerly.
+ */
+export async function pullManagedConfigAtBoot(
+  deps: PullManagedConfigAtBootDeps,
+): Promise<void> {
+  await deps.syncService.pullChanged({
+    subdirs: ["config", "auto-definitions"],
+    namespace: deps.namespace,
+  });
+  deps.catalogInvalidate();
+  if (deps.extensionWorkflowRepo) {
+    await refreshExtensionWorkflowDirs(
+      deps.extensionWorkflowRepo,
+      deps.repoDir,
+      deps.lockfilePath,
+      deps.pulledExtensionsRoot,
+    );
   }
 }

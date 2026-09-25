@@ -120,6 +120,7 @@ import {
   resolveSourceExtensionDirs,
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
 import { resolveGitMainWorktreeRoot } from "../infrastructure/persistence/git_worktree.ts";
+import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 
 /**
  * Resolves source workflow directories from `.swamp-sources.yaml`.
@@ -148,6 +149,31 @@ export async function getSourceWorkflowDirs(
   const dirs = collectDirsForKind(resolved, "workflows");
   sourceWorkflowDirCache.set(repoDir, dirs);
   return dirs;
+}
+
+/**
+ * Re-enumerates the source and pulled-extension workflow directories and
+ * points the extension workflow repository at them. The repository context
+ * enumerates these once, when it is created; callers that change what is on
+ * disk afterwards (a managed-config pull, a reload) call this to catch up.
+ *
+ * @returns The number of pulled-extension workflow directories found
+ */
+export async function refreshExtensionWorkflowDirs(
+  extWorkflowRepo: Pick<ExtensionWorkflowRepository, "updateAdditionalDirs">,
+  repoDir: string,
+  lockfilePath: string,
+  pulledExtensionsRoot?: string,
+): Promise<number> {
+  const sourceWfDirs = await getSourceWorkflowDirs(repoDir);
+  const pulledWfDirs = await enumeratePulledExtensionDirs(
+    lockfilePath,
+    repoDir,
+    "workflows",
+    pulledExtensionsRoot,
+  );
+  extWorkflowRepo.updateAdditionalDirs([...sourceWfDirs, ...pulledWfDirs]);
+  return pulledWfDirs.length;
 }
 
 /**
