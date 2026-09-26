@@ -422,12 +422,15 @@ export class ExtensionLoader {
         .sort((a, b) =>
           compareExtensionPrecedence(a.contributor, b.contributor)
         );
+      // Extension files in one package often share helper modules.
+      const fingerprintCache = createFreshnessCache();
       for (const { file, module, baseDir, contributor } of ranked) {
         let fingerprint: string | undefined;
         try {
           fingerprint = await computeSourceFingerprint(
             resolve(baseDir, file),
             baseDir,
+            fingerprintCache,
           );
         } catch {
           // Non-fatal — without a fingerprint the file is not marked
@@ -1054,13 +1057,21 @@ export class ExtensionLoader {
         // a row it wrote holds the export's real type — including exports
         // the static extractor cannot read, such as a wrapped
         // `export const extension = withOptions(definition)`. Keep an
-        // up-to-date row instead of re-deriving it from source text
-        // (swamp-club#2562).
+        // up-to-date row's type instead of re-deriving it from source text
+        // (swamp-club#2562). The bundle location can still have moved (a
+        // layout or datastore change), so refresh that.
         const existing = catalog.findBySourcePath(absolutePath);
         const indexed = existing !== undefined &&
           (existing.state ?? "Indexed") !== "Tombstoned" &&
           existing.type_normalized.length > 0;
         if (indexed && existing.source_fingerprint === sourceFingerprint) {
+          if (existing.bundle_path !== bundlePath) {
+            catalog.upsert({
+              ...existing,
+              bundle_path: bundlePath,
+              source_mtime: sourceStat.mtime?.toISOString() ?? "",
+            });
+          }
           continue;
         }
 

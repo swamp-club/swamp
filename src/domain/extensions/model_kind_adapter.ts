@@ -833,7 +833,7 @@ export const modelKindAdapter: KindAdapter = {
     const flatMethods: Record<string, z.infer<typeof UserMethodSchema>> = {};
     for (const methodRecord of ext.methods) {
       for (const [name, method] of Object.entries(methodRecord)) {
-        if (flatMethods[name]) {
+        if (Object.hasOwn(flatMethods, name)) {
           result.failed.push({
             file,
             error:
@@ -873,7 +873,7 @@ export const modelKindAdapter: KindAdapter = {
     if (ext.checks && ext.checks.length > 0) {
       for (const checkRecord of ext.checks) {
         for (const [name, check] of Object.entries(checkRecord)) {
-          if (incomingChecks[name]) {
+          if (Object.hasOwn(incomingChecks, name)) {
             result.failed.push({
               file,
               error:
@@ -896,8 +896,10 @@ export const modelKindAdapter: KindAdapter = {
     };
 
     // Resolve every incoming member against what the type holds now, then
-    // apply additions and overrides in one registry merge. Provenance and
-    // collision records change only after that merge succeeds.
+    // apply additions and overrides in one registry merge. Refused members
+    // are recorded as they are resolved — they are not registered whatever
+    // the merge does. Provenance, and the collisions an override creates,
+    // change only after the merge succeeds.
     const additions: ExtensionMemberSet = {};
     const overrides: ExtensionMemberSet = {};
     const claimed: Array<{ key: string; definition: unknown }> = [];
@@ -941,7 +943,9 @@ export const modelKindAdapter: KindAdapter = {
         const resolution = resolveMember(
           typeKey,
           key,
-          section.existing[name],
+          Object.hasOwn(section.existing, name)
+            ? section.existing[name]
+            : undefined,
           contributor,
         );
         const addTo = (target: ExtensionMemberSet) => {

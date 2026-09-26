@@ -524,6 +524,26 @@ Deno.test("processSecondaryExport: a base-model member always wins over extensio
   });
 });
 
+Deno.test("processSecondaryExport: member names shared with Object.prototype are added, not treated as base collisions", () => {
+  withPrecedenceType((type) => {
+    const result = newResult();
+    modelKindAdapter.processSecondaryExport!(
+      LOCAL_AA,
+      makeExtension(type, ["toString", "constructor"]),
+      result,
+      contributorAt(LOCAL_AA),
+    );
+    assertEquals(result.failed, []);
+    const methods = modelRegistry.get(type)!.methods;
+    assertEquals(Object.hasOwn(methods, "toString"), true);
+    assertEquals(Object.hasOwn(methods, "constructor"), true);
+    assertEquals(
+      getExtensionMemberCollisions().filter((c) => c.type === type),
+      [],
+    );
+  });
+});
+
 Deno.test("processSecondaryExport: stale provenance never lets an extension replace a re-registered base member", () => {
   withPrecedenceType((type) => {
     attach(type, PULLED, "pulled");

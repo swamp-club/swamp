@@ -832,6 +832,8 @@ Deno.test("extensionMemberDoctorDeps: loads each registered target type and repo
       row(broken),
       row(""),
       row("@test/unregistered"),
+      // Malformed: ModelType.create rejects it inside `has`.
+      row("   "),
     ],
   };
   const loaded: string[] = [];
@@ -846,11 +848,12 @@ Deno.test("extensionMemberDoctorDeps: loads each registered target type and repo
     const failures = await extensionMemberDoctorDeps(catalog)
       .attachExtensionMembers!();
     assertEquals(loaded.sort(), [broken, good].sort());
-    assertEquals(failures, [{
-      sourcePath: broken,
-      category: "ExtensionAttachFailed",
-      message: "bundle import failed",
-    }]);
+    // Sorted: the malformed "   " row sorts first.
+    assertEquals(failures.map((f) => [f.sourcePath, f.category]), [
+      ["   ", "ExtensionAttachFailed"],
+      [broken, "ExtensionAttachFailed"],
+    ]);
+    assertEquals(failures[1].message, "bundle import failed");
   } finally {
     modelRegistry.ensureTypeLoaded = original;
     modelRegistry.invalidateType(good);

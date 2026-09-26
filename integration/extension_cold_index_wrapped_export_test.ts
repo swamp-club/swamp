@@ -193,6 +193,36 @@ Deno.test("cold buildIndex does not warn for a wrapped export whose indexed row 
   });
 });
 
+Deno.test("cold buildIndex refreshes a moved bundle path while keeping the import-indexed type", async () => {
+  await withRepo(true, async (repo) => {
+    await new ReconcileFromDiskService({
+      denoRuntime: testDenoRuntime,
+      repository: repo.repository,
+      lockfileRepository: repo.lockfileRepository,
+      repoDir: repo.repoDir,
+    }).execute();
+    const indexed = repo.catalog.findBySourcePath(repo.extPath)!;
+    // As after a bundle layout or datastore change: same source, the row
+    // still names the old bundle location.
+    repo.catalog.upsert({ ...indexed, bundle_path: "/old/location/ext.js" });
+
+    const loader = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repo.repoDir,
+      undefined,
+      repo.repository,
+    );
+    await loader.buildIndex(repo.modelsDir, { indexOnly: true });
+
+    const after = repo.catalog.findBySourcePath(repo.extPath)!;
+    assertEquals(after.bundle_path === "/old/location/ext.js", false);
+    assertEquals((await Deno.stat(after.bundle_path)).isFile, true);
+    assertEquals(after.extends_type, indexed.extends_type);
+    assertEquals(extractionWarningsFor(repo.extPath), []);
+  });
+});
+
 Deno.test("cold buildIndex still warns for a wrapped export nothing has indexed", async () => {
   await withRepo(false, async ({ repoDir, modelsDir, extPath, repository }) => {
     const loader = new ExtensionLoader(

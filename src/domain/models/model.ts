@@ -1301,14 +1301,14 @@ export class ModelRegistry {
     };
     for (const kind of ["methods", "checks", "resources"] as const) {
       for (const name of Object.keys(additions[kind] ?? {})) {
-        if (name in current[kind]) {
+        if (Object.hasOwn(current[kind], name)) {
           throw new Error(
             `${labels[kind]} '${name}' already exists on model type '${key}'`,
           );
         }
       }
       for (const name of Object.keys(overrides[kind] ?? {})) {
-        if (!(name in current[kind])) {
+        if (!Object.hasOwn(current[kind], name)) {
           throw new Error(
             `${
               labels[kind]

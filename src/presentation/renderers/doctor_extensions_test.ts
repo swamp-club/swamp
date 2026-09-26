@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertFalse, assertStringIncludes } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type {
   DoctorExtensionsReport,
@@ -368,13 +369,15 @@ function collisionReport(): DoctorExtensionsReport {
 }
 
 Deno.test("doctor_extensions log renderer: lists member collisions with their winners (swamp-club#2562)", async () => {
-  const out = await captureStdout(async () => {
-    const r = createDoctorExtensionsRenderer("log");
-    await r.handlers().completed({
-      kind: "completed",
-      report: collisionReport(),
-    });
-  });
+  const out = stripAnsiCode(
+    await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("log");
+      await r.handlers().completed({
+        kind: "completed",
+        report: collisionReport(),
+      });
+    }),
+  );
 
   assertStringIncludes(out, "2 extension member collision(s)");
   assertStringIncludes(out, "@x/base method 'probe'");

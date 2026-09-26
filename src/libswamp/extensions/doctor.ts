@@ -516,8 +516,10 @@ export function extensionMemberDoctorDeps(
       }
       const failures: DoctorWarning[] = [];
       for (const type of [...targets].sort()) {
-        if (!modelRegistry.has(type)) continue;
         try {
+          // `has` parses the type name, so a malformed row is reported here
+          // rather than aborting the whole doctor run.
+          if (!modelRegistry.has(type)) continue;
           await modelRegistry.ensureTypeLoaded(type);
         } catch (error) {
           failures.push({

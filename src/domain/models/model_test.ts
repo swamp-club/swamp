@@ -1065,6 +1065,28 @@ Deno.test("ModelRegistry.applyExtensionMembers: rejects an override of a missing
   );
 });
 
+Deno.test("ModelRegistry.applyExtensionMembers: names shared with Object.prototype are own members, not existing ones", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/apply-proto"));
+  registry.applyExtensionMembers(
+    "swamp/apply-proto",
+    { methods: { toString: stubMethod("custom toString") } },
+    {},
+  );
+  assertEquals(
+    registry.get("swamp/apply-proto")!.methods["toString"].description,
+    "custom toString",
+  );
+  assertThrows(
+    () =>
+      registry.applyExtensionMembers("swamp/apply-proto", {}, {
+        methods: { valueOf: stubMethod("valueOf") },
+      }),
+    Error,
+    "Method 'valueOf' does not exist",
+  );
+});
+
 Deno.test("ModelRegistry.applyExtensionMembers: throws on unregistered type", () => {
   const registry = new ModelRegistry();
   assertThrows(
