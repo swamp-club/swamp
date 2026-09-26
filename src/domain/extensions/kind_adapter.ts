@@ -130,15 +130,15 @@ export interface KindAdapter {
   /**
    * Attaches a secondary export (e.g. `export const extension`) to its
    * target type. `contributor` ranks it against other extensions that add
-   * the same member (swamp-club#2562); `sourceFingerprint`, when known,
-   * marks the file attached so later attach passes skip it.
+   * the same member (swamp-club#2562); `attach`, when known, marks the
+   * catalog source attached so later attach passes skip it.
    */
   processSecondaryExport?(
     file: string,
     exported: unknown,
     result: ExtensionLoadResult,
     contributor: ExtensionContributor,
-    sourceFingerprint?: string,
+    attach?: { readonly sourcePath: string; readonly fingerprint: string },
   ): void;
 
   findExtensionsForType?(

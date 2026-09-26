@@ -104,6 +104,18 @@ export async function bundleImportUrl(
  * Path format: .../.swamp/pulled-extensions/@scope/name/<kind>/...
  * For scoped: @scope/name. For unscoped: name.
  */
+/**
+ * The canonical form of `path` with symlinks resolved, or `path` itself
+ * when it cannot be resolved (e.g. the file no longer exists).
+ */
+function realCanonicalPath(path: string): string {
+  try {
+    return canonicalizePath(Deno.realPathSync(path));
+  } catch {
+    return path;
+  }
+}
+
 export function extractExtensionNameFromPath(
   absolutePath: string,
   repoDir: string | null,
@@ -163,6 +175,8 @@ export function extractExtensionNameFromPath(
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
+  /** Symlink-resolved canonical repo root, resolved on first use. */
+  private realRepoDir?: string;
   private readonly datastoreResolver?: DatastorePathResolver;
   private readonly repository?: ExtensionRepository;
   private readonly adapter: KindAdapter;
@@ -442,7 +456,10 @@ export class ExtensionLoader {
             module[this.adapter.secondaryExportKey!],
             result,
             contributor,
-            fingerprint,
+            fingerprint === undefined ? undefined : {
+              sourcePath: canonicalizePath(resolve(baseDir, file)),
+              fingerprint,
+            },
           );
         } catch (error) {
           result.failed.push({ file, error: String(error), baseDir });
@@ -776,38 +793,31 @@ export class ExtensionLoader {
    */
   private contributorFor(sourcePath: string): ExtensionContributor {
     const canonical = canonicalizePath(sourcePath);
+    // Identity is the symlink-resolved path, so one file reached under two
+    // spellings of the repo root (`/tmp/r` from catalog rows, `/private/tmp/r`
+    // from a directory walk on macOS) is one contributor, not two that
+    // collide with each other.
+    const real = realCanonicalPath(canonical);
     return {
-      sourcePath: canonical,
-      pulled: this.repoDir !== null && this.isPulledSource(canonical),
+      sourcePath: real,
+      pulled: this.repoDir !== null && this.isPulledSource(canonical, real),
     };
   }
 
   /**
-   * Prefix match first; on a miss, retry with symlinks resolved, so a row
-   * written under one spelling of the repo root (`/tmp/r`) still ranks as
-   * pulled when read under another (`/private/tmp/r` on macOS). Mirrors the
-   * fallback in {@link extractExtensionNameFromPath}.
+   * A source is pulled when either spelling of it sits under either
+   * spelling of the repo root's pulled roots. Mirrors the realpath fallback
+   * in {@link extractExtensionNameFromPath}.
    */
-  private isPulledSource(canonical: string): boolean {
+  private isPulledSource(canonical: string, real: string): boolean {
     const repoDir = this.repoDir!;
-    if (isPulledExtensionPath(canonical, canonicalizePath(repoDir))) {
-      return true;
-    }
-    let realRepo: string;
-    try {
-      realRepo = canonicalizePath(Deno.realPathSync(repoDir));
-    } catch {
-      return false;
-    }
-    if (isPulledExtensionPath(canonical, realRepo)) return true;
-    try {
-      return isPulledExtensionPath(
-        canonicalizePath(Deno.realPathSync(canonical)),
-        realRepo,
-      );
-    } catch {
-      return false;
-    }
+    const roots = [canonicalizePath(repoDir)];
+    this.realRepoDir ??= realCanonicalPath(roots[0]);
+    if (this.realRepoDir !== roots[0]) roots.push(this.realRepoDir);
+    return roots.some((root) =>
+      isPulledExtensionPath(canonical, root) ||
+      isPulledExtensionPath(real, root)
+    );
   }
 
   public async bundleAndIndexOne(args: {

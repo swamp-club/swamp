@@ -373,6 +373,81 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name:
+    "one file reached under two spellings of the repo root is one contributor, not a self-collision",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixture({}, async (f) => {
+      const alias = `${f.repoDir}-alias`;
+      await Deno.symlink(f.repoDir, alias, { type: "dir" });
+      const realModels = join(
+        Deno.realPathSync(f.repoDir),
+        "extensions",
+        "models",
+      );
+      await ensureDir(realModels);
+      await Deno.writeTextFile(
+        join(realModels, "zz_ext.ts"),
+        `import { z } from "npm:zod@4";
+export const extension = {
+  type: "${f.type}",
+  methods: [{
+    probe: { description: "probe from zz", arguments: z.object({}), execute: async () => ({}) },
+  }],
+};
+`,
+      );
+      const catalog = new ExtensionCatalogStore(
+        join(f.repoDir, ".swamp", "catalog-spellings.db"),
+      );
+      try {
+        const loader = new ExtensionLoader(
+          testDenoRuntime,
+          modelKindAdapter,
+          alias,
+          undefined,
+          new ExtensionRepository({
+            catalog,
+            lockfileRepository: new LockfileRepository(
+              join(f.repoDir, "upstream_extensions.json"),
+            ),
+            repoRoot: alias,
+          }),
+        );
+        // The catalog spells the file through the alias...
+        catalog.upsert({
+          ...extRow(f, "zz"),
+          source_path: canonicalizePath(
+            join(alias, "extensions", "models", "zz_ext.ts"),
+          ),
+        });
+        await loader.loadSingleType(f.type, {
+          bundlePath: f.bundles.base,
+          sourcePath: join(alias, "extensions", "models", "base.ts"),
+        });
+        // ...and a directory walk reaches it through the real path.
+        await loader.load(realModels, { skipAlreadyRegistered: true });
+
+        assertEquals(probe(f.type), "probe from zz");
+        assertEquals(
+          getExtensionMemberCollisions().filter((c) => c.type === f.type),
+          [],
+        );
+        assertEquals(
+          getExtensionLoadWarnings().filter((w) =>
+            w.category === "MemberCollision"
+          ),
+          [],
+        );
+      } finally {
+        catalog.close();
+        await Deno.remove(alias);
+      }
+    });
+  },
+});
+
 Deno.test("a base-model method beats every extension, local or pulled", async () => {
   await withFixture({ baseHasProbe: true }, async (f) => {
     const { catalog, loader } = openLoader(f, "catalog.db");

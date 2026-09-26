@@ -232,23 +232,33 @@ function markExtensionAttached(
 }
 
 /**
+ * Which catalog source an attach pass processed. `sourcePath` is the path
+ * as the catalog spells it — the key `attachPendingExtensionsForType`
+ * looks up — which can differ from the contributor's symlink-resolved
+ * identity.
+ */
+export interface AttachRecord {
+  readonly sourcePath: string;
+  readonly fingerprint: string;
+}
+
+/**
  * Records that an extension file has been processed for a type: it goes
- * into `result.extended`, and — when its fingerprint is known — into the
- * attach map, so a later attach pass does not import it again.
+ * into `result.extended`, and — when the attach record is known — into
+ * the attach map, so a later attach pass does not import it again.
  */
 function recordAttached(
   result: ExtensionLoadResult,
   file: string,
   typeNormalized: string,
-  contributor: ExtensionContributor,
-  sourceFingerprint: string | undefined,
+  attach: AttachRecord | undefined,
 ): void {
   result.extended.push(file);
-  if (sourceFingerprint !== undefined) {
+  if (attach !== undefined) {
     markExtensionAttached(
       typeNormalized,
-      contributor.sourcePath,
-      sourceFingerprint,
+      attach.sourcePath,
+      attach.fingerprint,
     );
   }
 }
@@ -823,7 +833,7 @@ export const modelKindAdapter: KindAdapter = {
     exported: unknown,
     result: ExtensionLoadResult,
     contributor: ExtensionContributor,
-    sourceFingerprint?: string,
+    attach?: AttachRecord,
   ): void {
     const parsed = UserExtensionSchema.safeParse(exported);
     if (!parsed.success) {
@@ -1010,7 +1020,7 @@ export const modelKindAdapter: KindAdapter = {
 
     if (claimed.length === 0) {
       if (collided) {
-        recordAttached(result, file, typeKey, contributor, sourceFingerprint);
+        recordAttached(result, file, typeKey, attach);
       }
       return;
     }
@@ -1042,7 +1052,7 @@ export const modelKindAdapter: KindAdapter = {
         category: "MemberCollision",
       });
     }
-    recordAttached(result, file, typeKey, contributor, sourceFingerprint);
+    recordAttached(result, file, typeKey, attach);
   },
 
   findExtensionsForType(
@@ -1086,7 +1096,10 @@ export const modelKindAdapter: KindAdapter = {
       module.extension,
       result,
       contributor,
-      entry.source_fingerprint ?? "",
+      {
+        sourcePath: entry.source_path,
+        fingerprint: entry.source_fingerprint ?? "",
+      },
     );
 
     for (const failure of result.failed) {
