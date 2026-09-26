@@ -675,6 +675,70 @@ Deno.test("loadSingleType: skips bundle without primary export and removes catal
   }
 });
 
+Deno.test("loadSingleType: an extension that fails to import is skipped; the base type and later extensions still load (swamp-club#2557)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2557_isolate_" });
+  try {
+    const bundlePath = join(dir, "base.js");
+    await Deno.writeTextFile(
+      bundlePath,
+      'export const model = { type: "@test/base" };\n',
+    );
+    const sourcePath = join(dir, "base.ts");
+    await Deno.writeTextFile(sourcePath, "");
+
+    const extRow = (name: string): ExtensionTypeRow => ({
+      source_path: join(dir, `${name}.ts`),
+      type_normalized: "@test/base",
+      kind: "extension",
+      bundle_path: join(dir, `${name}.js`),
+      version: "",
+      description: "",
+      extends_type: "@test/base",
+      source_mtime: "",
+      source_fingerprint: "",
+    });
+
+    const loaded = new Set<string>();
+    const attached: string[] = [];
+    const adapter: KindAdapter = {
+      ...makeStubAdapter(loaded),
+      findExtensionsForType: () => [extRow("broken"), extRow("good")],
+      importAndExtendBundle: (entry) => {
+        if (entry.source_path.endsWith("broken.ts")) {
+          return Promise.reject(new Error("bundle import failed"));
+        }
+        attached.push(entry.source_path);
+        return Promise.resolve();
+      },
+    };
+
+    const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+    try {
+      const repository = new ExtensionRepository({
+        catalog,
+        lockfileRepository: new LockfileRepository(join(dir, "lockfile.json")),
+        repoRoot: dir,
+      });
+      const loader = new ExtensionLoader(
+        stubDenoRuntime,
+        adapter,
+        dir,
+        undefined,
+        repository,
+      );
+
+      await loader.loadSingleType("@test/base", { bundlePath, sourcePath });
+
+      assertEquals(loaded.has("@test/base"), true, "base type must load");
+      assertEquals(attached, [join(dir, "good.ts")]);
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("importBundle: file URL import error propagates instead of falling to data URL", async () => {
   // A bundle that throws ERR_INVALID_ARG_VALUE when imported via data: URL
   // because createRequire rejects non-file URLs. The file URL import should
