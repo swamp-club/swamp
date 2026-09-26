@@ -275,9 +275,10 @@ export class ReconcileFromDiskService {
    * that already has one is returned as `skipped`, untouched. Each
    * extension is saved with its own `saveAll`, so a failure (for example
    * a `DuplicateTypeError`) rolls back only that extension. Each save
-   * still applies saveAll's catalog-wide invariants (unreachable-source
-   * pruning, origin-conflict resolution, I-Repo-1), the same ones every
-   * pull and cold-start reconcile save runs.
+   * still resolves origin conflicts and checks I-Repo-1. It skips
+   * unreachable-source pruning, which would delete the rows of live
+   * sources mounted from outside the repo root that this save does not
+   * include.
    *
    * Unlike {@link execute}, it skips local and source-mounted sources,
    * orphan tombstoning, populated markers and the >50% guardrail. The
@@ -319,7 +320,7 @@ export class ReconcileFromDiskService {
           cache,
         );
         if (transitions.length > 0) {
-          this.repository.saveAll([ext]);
+          this.repository.saveAll([ext], { pruneUnreachable: false });
         }
         results.push({ name, status: "catalogued", transitions });
       } catch (error) {

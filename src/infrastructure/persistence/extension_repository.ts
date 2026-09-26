@@ -223,8 +223,17 @@ export class ExtensionRepository {
    * After the diff is applied, evaluates I-Repo-1 against the full
    * post-save catalog state. Violation → ROLLBACK + throw
    * {@link DuplicateTypeError}.
+   *
+   * `pruneUnreachable: false` skips pruning rows whose source is outside
+   * the repo root. That prune deletes every such row not in this save,
+   * including live sources mounted from outside the repo, so a caller
+   * that only adds aggregates for extensions that have none (serve
+   * reload's scoped reconcile, swamp-club#2355) turns it off.
    */
-  saveAll(extensions: readonly Extension[]): void {
+  saveAll(
+    extensions: readonly Extension[],
+    options?: { pruneUnreachable?: boolean },
+  ): void {
     this.catalog.runInTransaction(() => {
       const protectedPaths = new Set<string>();
       for (const ext of extensions) {
@@ -235,13 +244,15 @@ export class ExtensionRepository {
         }
         this.applyDiffForExtension(ext);
       }
-      const pruned = this.catalog.pruneUnreachableSources(
-        this.repoRoot,
-        protectedPaths,
-      );
-      if (pruned.length > 0) {
-        logger
-          .info`Pruned ${pruned.length} catalog row(s) with unreachable source path(s)`;
+      if (options?.pruneUnreachable ?? true) {
+        const pruned = this.catalog.pruneUnreachableSources(
+          this.repoRoot,
+          protectedPaths,
+        );
+        if (pruned.length > 0) {
+          logger
+            .info`Pruned ${pruned.length} catalog row(s) with unreachable source path(s)`;
+        }
       }
       this._lastOriginConflicts = this.catalog.resolveOriginConflicts(
         this.repoRoot,

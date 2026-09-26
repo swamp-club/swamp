@@ -1320,3 +1320,55 @@ Deno.test(
     });
   },
 );
+
+// ===== saveAll pruneUnreachable option (swamp-club#2355) =====
+Deno.test("ExtensionRepository: saveAll with pruneUnreachable false keeps rows outside the repo root, the default prunes them", () => {
+  withRepository((repo, catalog, repoRoot) => {
+    const outsidePath = "/elsewhere/mounted/extensions/models/mounted.ts";
+    catalog.upsertWithIdentity({
+      source_path: canonicalizePath(outsidePath),
+      type_normalized: "@test/mounted",
+      kind: "model",
+      bundle_path: "",
+      version: "1.0.0",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "fp",
+      state: "Indexed",
+      extension_name: "@local/mounted",
+      extension_version: "1.0.0",
+    });
+
+    repo.saveAll(
+      [
+        pulledExtension({
+          repoRoot,
+          name: "@scope/first",
+          version: "1.0.0",
+          sources: [{ relPath: "models/a.ts", type: "@scope/first/a" }],
+        }),
+      ],
+      { pruneUnreachable: false },
+    );
+    assertEquals(
+      catalog.findBySourcePath(canonicalizePath(outsidePath))?.type_normalized,
+      "@test/mounted",
+      "pruneUnreachable: false must keep the out-of-root row",
+    );
+
+    repo.saveAll([
+      pulledExtension({
+        repoRoot,
+        name: "@scope/second",
+        version: "1.0.0",
+        sources: [{ relPath: "models/b.ts", type: "@scope/second/b" }],
+      }),
+    ]);
+    assertEquals(
+      catalog.findBySourcePath(canonicalizePath(outsidePath)),
+      undefined,
+      "the default save still prunes rows outside the repo root",
+    );
+  });
+});

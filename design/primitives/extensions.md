@@ -1645,7 +1645,9 @@ saving each separately so one failure (for example a `DuplicateTypeError`)
 rolls back only that extension. It skips local and source-mounted sources,
 orphan tombstoning, the populated markers and the >50% guardrail. The
 guardrail stops mass transitions of existing rows, and the scoped form never
-transitions an existing aggregate.
+transitions an existing aggregate. Its saves also skip saveAll's prune of rows
+whose source is outside the repo root (`pruneUnreachable: false`), which would
+otherwise delete the rows of sources mounted from outside the repo.
 
 **dryRun mode:** `execute({ dryRun: true })` collects transitions without
 calling `repository.saveAll()`. It returns `ReconcileTransition` records

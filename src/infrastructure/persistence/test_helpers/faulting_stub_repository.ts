@@ -55,12 +55,15 @@ export class FaultingStubRepository extends ExtensionRepository {
     this.faultOnNextSaveAll = error;
   }
 
-  override saveAll(extensions: readonly Extension[]): void {
+  override saveAll(
+    extensions: readonly Extension[],
+    options?: { pruneUnreachable?: boolean },
+  ): void {
     if (this.faultOnNextSaveAll) {
       const err = this.faultOnNextSaveAll;
       this.faultOnNextSaveAll = null;
       throw err;
     }
-    super.saveAll(extensions);
+    super.saveAll(extensions, options);
   }
 }

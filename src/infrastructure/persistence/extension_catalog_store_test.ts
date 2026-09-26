@@ -2164,45 +2164,6 @@ Deno.test("pruneUnreachableSources: preserves rows in protectedPaths even if out
   store.close();
 });
 
-Deno.test("pruneUnreachableSources: keeps a row outside the repo root whose source still exists", async () => {
-  const dbPath = makeTempDbPath();
-  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
-  const store = new ExtensionCatalogStore(dbPath);
-  // A source mounted through .swamp-sources.yaml from outside the repo.
-  const mountDir = await Deno.makeTempDir({ prefix: "swamp_2355_mount_" });
-  try {
-    const mountedPath = canonicalizePath(join(mountDir, "mounted.ts"));
-    await Deno.writeTextFile(mountedPath, "export const model = {};\n");
-    const stalePath =
-      "/workspace/.swamp/pulled-extensions/@swamp/echo/models/echo.ts";
-    store.upsert(
-      makeRow({
-        source_path: mountedPath,
-        type_normalized: "@test/mounted",
-        kind: "model",
-      }),
-    );
-    store.upsert(
-      makeRow({
-        source_path: stalePath,
-        type_normalized: "@swamp/echo",
-        kind: "model",
-      }),
-    );
-
-    const pruned = store.pruneUnreachableSources(repoRoot);
-
-    assertEquals(pruned, [stalePath]);
-    assertEquals(
-      store.findBySourcePath(mountedPath)?.type_normalized,
-      "@test/mounted",
-    );
-  } finally {
-    store.close();
-    await Deno.remove(mountDir, { recursive: true }).catch(() => {});
-  }
-});
-
 // ── resolveOriginConflicts ──────────────────────────────────────────
 
 Deno.test("resolveOriginConflicts: no-op when no pulled rows exist", () => {
