@@ -25,10 +25,14 @@ import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import {
   enumeratePulledExtensionDirs,
   LockfileRepository,
+  ReconcileFromDiskService,
+  type UncataloguedPulledResult,
 } from "../libswamp/mod.ts";
+import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import {
   modelKindAdapter,
   removeAttachedExtensionsForType,
@@ -74,10 +78,79 @@ export function isReloading(): boolean {
   return reloading;
 }
 
+/**
+ * Catalogues lockfile entries that have no catalog rows, so the register
+ * loop below picks their types up and later reloads hot-reload them.
+ * Files reach a running serve without rows when a managed-config sync
+ * copies them in (swamp-club#2355). Failures are logged, never thrown:
+ * one bad extension must not stop the reload.
+ */
+async function catalogueUncataloguedPulled(args: {
+  catalog: ExtensionCatalogStore;
+  lockfile: LockfileRepository;
+  names: readonly string[];
+  repoDir: string;
+  pulledRoot: string;
+  denoRuntime: DenoRuntime;
+}): Promise<void> {
+  const reconciler = new ReconcileFromDiskService({
+    denoRuntime: args.denoRuntime,
+    repository: new ExtensionRepository({
+      catalog: args.catalog,
+      lockfileRepository: args.lockfile,
+      repoRoot: args.repoDir,
+    }),
+    lockfileRepository: args.lockfile,
+    repoDir: args.repoDir,
+    pulledExtensionsRoot: args.pulledRoot,
+  });
+  let results: UncataloguedPulledResult[];
+  try {
+    // The prefix check that chose `names` is a cheap pre-filter. The
+    // service's own criterion (no aggregate for the name) decides, so an
+    // extension whose rows live under another root is not re-sent to the
+    // reconcile on every reload.
+    const names = reconciler.selectUncataloguedPulled(args.names);
+    if (names.length === 0) return;
+    results = await reconciler.reconcileUncataloguedPulled(names);
+  } catch (err) {
+    logger.warn(
+      "Hot-reload: failed to catalogue new pulled extensions: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    return;
+  }
+  for (const result of results) {
+    if (result.status === "catalogued") {
+      logger.info(
+        "Hot-reload: catalogued pulled extension {extension} ({count} source(s))",
+        { extension: result.name, count: result.transitions.length },
+      );
+    } else if (result.status === "failed") {
+      logger.warn(
+        "Hot-reload: failed to catalogue pulled extension {extension}: {error}",
+        {
+          extension: result.name,
+          error: result.error instanceof Error
+            ? result.error.message
+            : String(result.error),
+        },
+      );
+    }
+  }
+}
+
+/**
+ * Re-registers every catalogued pulled type, after cataloguing lockfile
+ * entries that have no rows yet and re-bundling changed sources.
+ * `denoRuntimeOverride` lets tests supply a stub runtime; production
+ * callers omit it and get an EmbeddedDenoRuntime created on first use.
+ */
 export async function reloadPulledExtensions(
   repoDir: string,
   lockfilePath: string,
   pulledExtensionsRoot?: string,
+  denoRuntimeOverride?: DenoRuntime,
 ): Promise<number> {
   const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
 
@@ -89,8 +162,26 @@ export async function reloadPulledExtensions(
     const pulledRoot = pulledExtensionsRoot ??
       resolvePulledExtensionsRoot(repoDir);
     const rebundled = new Set<string>();
-    let denoRuntime: EmbeddedDenoRuntime | undefined;
+    let denoRuntime: DenoRuntime | undefined = denoRuntimeOverride;
     let denoPath: string | undefined;
+
+    const uncatalogued = Object.keys(entries).filter((extName) =>
+      catalog.findBySourcePathPrefix(
+        canonicalizePath(join(pulledRoot, extName) + "/"),
+      ).length === 0
+    );
+    if (uncatalogued.length > 0) {
+      denoRuntime ??= new EmbeddedDenoRuntime();
+      await catalogueUncataloguedPulled({
+        catalog,
+        lockfile,
+        names: uncatalogued,
+        repoDir,
+        pulledRoot,
+        denoRuntime,
+      });
+    }
+
     for (const [extName] of Object.entries(entries)) {
       const sourcePrefix = canonicalizePath(
         join(pulledRoot, extName) + "/",
@@ -408,6 +499,33 @@ export interface ExtensionDiscoveryDeps {
   lockfilePath: string;
   repoDir: string;
   pulledExtensionsRoot?: string;
+  denoRuntime?: DenoRuntime;
+}
+
+/**
+ * Returns the canonical source paths, under the given pulled extensions,
+ * whose catalog row is of the adapter's kind and whose type is already
+ * registered. reloadPulledExtensions has just re-registered exactly these,
+ * so discovery can skip them before reading, bundling or importing
+ * (swamp-club#2355). Model add-on (`extension` kind) rows are left out, so
+ * those files keep the full load.
+ */
+export function collectRegisteredPulledSources(
+  catalog: ExtensionCatalogStore,
+  pulledRoot: string,
+  extensionNames: readonly string[],
+  adapter: KindAdapter,
+): Set<string> {
+  const paths = new Set<string>();
+  for (const name of extensionNames) {
+    const prefix = canonicalizePath(join(pulledRoot, name) + "/");
+    for (const row of catalog.findBySourcePathPrefix(prefix)) {
+      if (row.kind !== adapter.kind || !row.type_normalized) continue;
+      if (!adapter.hasType(row.type_normalized)) continue;
+      paths.add(canonicalizePath(row.source_path));
+    }
+  }
+  return paths;
 }
 
 export function createExtensionDiscoverer(
@@ -415,7 +533,12 @@ export function createExtensionDiscoverer(
 ): () => Promise<number> {
   return async () => {
     const { lockfilePath, repoDir, pulledExtensionsRoot } = deps;
-    const denoRuntime = new EmbeddedDenoRuntime();
+    const denoRuntime = deps.denoRuntime ?? new EmbeddedDenoRuntime();
+    const pulledRoot = pulledExtensionsRoot ??
+      resolvePulledExtensionsRoot(repoDir);
+    const extensionNames = Object.keys(
+      (await LockfileRepository.create(lockfilePath)).getAllEntries(),
+    );
     let discovered = 0;
 
     const kinds: Array<
@@ -431,22 +554,35 @@ export function createExtensionDiscoverer(
       { type: "webhooks", adapter: webhookKindAdapter },
     ];
 
-    for (const { type, adapter } of kinds) {
-      const dirs = await enumeratePulledExtensionDirs(
-        lockfilePath,
-        repoDir,
-        type,
-        pulledExtensionsRoot,
-      );
-      if (dirs.length === 0) continue;
+    const catalog = new ExtensionCatalogStore(
+      swampPath(repoDir, "_extension_catalog.db"),
+    );
+    try {
+      for (const { type, adapter } of kinds) {
+        const dirs = await enumeratePulledExtensionDirs(
+          lockfilePath,
+          repoDir,
+          type,
+          pulledExtensionsRoot,
+        );
+        if (dirs.length === 0) continue;
 
-      const loader = new ExtensionLoader(denoRuntime, adapter, repoDir);
-      const [primary, ...rest] = dirs;
-      const result = await loader.load(primary, {
-        skipAlreadyRegistered: true,
-        additionalDirs: rest,
-      });
-      discovered += result.loaded.length;
+        const loader = new ExtensionLoader(denoRuntime, adapter, repoDir);
+        const [primary, ...rest] = dirs;
+        const result = await loader.load(primary, {
+          skipAlreadyRegistered: true,
+          additionalDirs: rest,
+          skipSourcePaths: collectRegisteredPulledSources(
+            catalog,
+            pulledRoot,
+            extensionNames,
+            adapter,
+          ),
+        });
+        discovered += result.loaded.length;
+      }
+    } finally {
+      catalog.close();
     }
 
     return discovered;

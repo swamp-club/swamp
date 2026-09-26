@@ -1010,6 +1010,7 @@ export {
   ReconcileFromDiskService,
   type ReconcileResult,
   type ReconcileTransition,
+  type UncataloguedPulledResult,
 } from "./extensions/reconcile_from_disk_service.ts";
 
 // Extension layout detection

@@ -321,6 +321,46 @@ Deno.test("findBySourcePathPrefix: returns matching rows ordered by source_path"
   store.close();
 });
 
+Deno.test("findBySourcePathPrefix and removeBySourcePrefix: treat _ and % in the prefix literally", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+  const root = "/repo/.swamp/pulled-extensions/@acme";
+  store.upsert(makeRow({
+    type_normalized: "@acme/aws-ec2/instance",
+    source_path: `${root}/aws-ec2/models/instance.ts`,
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@acme/aws1ec2/vpc",
+    source_path: `${root}/aws1ec2/models/vpc.ts`,
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@acme/aws_ec2/subnet",
+    source_path: `${root}/aws_ec2/models/subnet.ts`,
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@acme/pct/thing",
+    source_path: `${root}/pct-sibling/models/thing.ts`,
+  }));
+
+  assertEquals(
+    store.findBySourcePathPrefix(`${root}/aws_ec2/`).map((r) =>
+      r.type_normalized
+    ),
+    ["@acme/aws_ec2/subnet"],
+    "_ must not match the - or 1 in a sibling extension's name",
+  );
+  assertEquals(store.findBySourcePathPrefix(`${root}/pct%/`), []);
+
+  assertEquals(store.removeBySourcePrefix(`${root}/aws_ec2/`), 1);
+  assertEquals(
+    store.findAll().map((r) => r.type_normalized).sort(),
+    ["@acme/aws-ec2/instance", "@acme/aws1ec2/vpc", "@acme/pct/thing"],
+    "removing one extension must not delete a sibling's rows",
+  );
+
+  store.close();
+});
+
 Deno.test("findBySourcePathPrefix: works when extension_name is empty", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);

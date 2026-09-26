@@ -1413,10 +1413,18 @@ overrides and refreshes the extension trust list.
 
 1. Opens a fresh `ExtensionCatalogStore` (reads `_extension_catalog.db`)
 2. Reads the lockfile via `LockfileRepository` for extension names/versions
-3. Queries `catalog.findBySourcePathPrefix(sourcePrefix)` for type rows
-4. Re-bundles any source whose fingerprint changed, writing the new bundle
+3. Catalogues lockfile entries that have no catalog rows, via
+   `ReconcileFromDiskService.reconcileUncataloguedPulled()`. Their files
+   reached disk without an install, for example through a managed-config
+   sync into a running serve. Without rows, the steps below would never
+   re-register them, so a later version would not hot-reload
+   (swamp-club#2355). Each extension is saved separately, and a failure is
+   logged and does not stop the reload.
+4. Queries `catalog.findBySourcePathPrefix(sourcePrefix)` for type rows
+5. Re-bundles any source whose fingerprint changed, writing the new bundle
    file and recording the fingerprint with `catalog.updateSourceFingerprint()`
-5. For each type across all four kinds (model, vault, datastore, report):
+6. For each type across all five kinds (model, vault, datastore, report,
+   webhook):
    - `invalidateType()` removes it from the registry's loaded and lazy maps
    - `registerLazy()` re-adds it with the updated `source_fingerprint`
    - `ensureTypeLoaded()` triggers `loadSingleType()` →
@@ -1426,6 +1434,15 @@ overrides and refreshes the extension trust list.
      to the same URL and reuses its cached module; a re-bundled one maps to a
      new URL and its new code runs
 
+SIGHUP and the config poller then run the extension discoverer
+(`createExtensionDiscoverer`), which loads the pulled extension dirs to find
+types the steps above did not register. Before reading, bundling or importing
+a source, it skips any source that has a catalog row of that kind whose type
+is already registered: step 6 has just re-registered exactly those. Only
+sources without such a row, and model add-on (`extension`) files, take the
+full load. A reload with nothing new therefore does no bundle I/O in the
+discovery pass.
+
 ### Catalog Safety Constraint
 
 The reload path never calls `ExtensionCatalogStore.invalidate()`,
@@ -1434,6 +1451,19 @@ The reload path never calls `ExtensionCatalogStore.invalidate()`,
 bundle file and `catalog.updateSourceFingerprint()`, so later reloads skip
 unchanged sources. If a type does not fully load, it also calls
 `catalog.removeBySourcePath()` (`src/domain/extensions/extension_loader.ts`).
+
+The one other write is step 3's scoped reconcile. It creates Extension
+aggregates only for pulled lockfile entries that have none, and does not
+reconcile any existing aggregate. It saves each extension with its own
+`ExtensionRepository.saveAll()` transaction. That save still runs the I-Repo-1
+duplicate-type check and origin-conflict resolution across the whole repo, as
+every `extension pull` save does. The latter can clear the type on another
+extension's pulled row when a local or source-mounted row claims the same
+type. It passes
+`pruneUnreachable: false`, so it skips the prune of rows whose source is outside
+the repo root. That prune deletes every such row the save does not include,
+which would drop the rows of live sources mounted from outside the repo
+through `.swamp-sources.yaml`.
 
 ### Concurrency
 

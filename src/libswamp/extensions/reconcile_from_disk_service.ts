@@ -110,6 +110,28 @@ export interface ReconcileResult {
 }
 
 /**
+ * Per-extension outcome of
+ * {@link ReconcileFromDiskService.reconcileUncataloguedPulled}. Each
+ * extension is saved on its own, so one failure never rolls back another.
+ */
+export type UncataloguedPulledResult =
+  | {
+    readonly name: string;
+    readonly status: "catalogued";
+    readonly transitions: readonly ReconcileTransition[];
+  }
+  | {
+    readonly name: string;
+    readonly status: "skipped";
+    readonly reason: string;
+  }
+  | {
+    readonly name: string;
+    readonly status: "failed";
+    readonly error: unknown;
+  };
+
+/**
  * W3 application service — reconciles on-disk extension state against
  * the persisted catalog aggregate state.
  *
@@ -125,7 +147,9 @@ export interface ReconcileResult {
  *
  * **Trigger points:** cold-start (when `anyKindNeedsInvalidation()`
  * returns true) + explicit `swamp doctor extensions` call. NOT on
- * every command.
+ * every command. Serve reload also runs the scoped
+ * {@link ReconcileFromDiskService.reconcileUncataloguedPulled} for
+ * lockfile entries that have no catalog rows.
  *
  * **dryRun mode:** when `dryRun: true`, collects transitions without
  * calling `repository.saveAll()`. Returns the same structured result
@@ -240,6 +264,106 @@ export class ReconcileFromDiskService {
     }
 
     return { transitions, applied: !dryRun && transitions.length > 0 };
+  }
+
+  /**
+   * Returns the names, in order, that {@link reconcileUncataloguedPulled}
+   * would reconcile: those with a lockfile entry and no aggregate yet.
+   * Callers use it to skip the reconcile when nothing qualifies, so both
+   * apply the one criterion.
+   */
+  selectUncataloguedPulled(extensionNames: readonly string[]): string[] {
+    const skips = this.uncataloguedSkipReasons(extensionNames);
+    return extensionNames.filter((name) => !skips.has(name));
+  }
+
+  /**
+   * Catalogues pulled lockfile entries that have no aggregate yet — files
+   * that reached disk without an install, such as a managed-config sync
+   * into a running serve (swamp-club#2355).
+   *
+   * It creates aggregates only for the named extensions that have none. A
+   * name that already has one is returned as `skipped` and its aggregate is
+   * not reconciled. Each extension is saved with its own `saveAll`, so a
+   * failure (for example a `DuplicateTypeError`) rolls back only that
+   * extension. Each save still runs saveAll's origin-conflict resolution
+   * across the repo, which can clear a pulled row's type when another
+   * origin claims it, as every pull does, and checks I-Repo-1. It skips
+   * unreachable-source pruning, which would delete the rows of live
+   * sources mounted from outside the repo root that this save does not
+   * include.
+   *
+   * Unlike {@link execute}, it skips local and source-mounted sources,
+   * orphan tombstoning, populated markers and the >50% guardrail. The
+   * guardrail stops reconcile from mass transitioning existing rows, and
+   * this method never reconciles an existing aggregate.
+   */
+  async reconcileUncataloguedPulled(
+    extensionNames: readonly string[],
+  ): Promise<UncataloguedPulledResult[]> {
+    this.onDiskDatastores = new Map(
+      this.scanOnDiskDatastores
+        ? (await enumeratePulledDatastoreExtensionsOnDisk(this.repoDir, true))
+          .map((d) => [d.name, d])
+        : [],
+    );
+    const skips = this.uncataloguedSkipReasons(extensionNames);
+    const cache = createFreshnessCache();
+    const results: UncataloguedPulledResult[] = [];
+
+    for (const name of extensionNames) {
+      const skipReason = skips.get(name);
+      if (skipReason) {
+        results.push({ name, status: "skipped", reason: skipReason });
+        continue;
+      }
+      try {
+        const transitions: ReconcileTransition[] = [];
+        const ext = await this.reconcilePulledEntry(
+          name,
+          [],
+          transitions,
+          cache,
+        );
+        if (transitions.length === 0) {
+          results.push({
+            name,
+            status: "skipped",
+            reason: "no entry-point sources on disk",
+          });
+          continue;
+        }
+        this.repository.saveAll([ext], { pruneUnreachable: false });
+        results.push({ name, status: "catalogued", transitions });
+      } catch (error) {
+        results.push({ name, status: "failed", error });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * The shared criterion for the scoped pulled reconcile: a name is skipped
+   * when it has no lockfile entry, or when it already has an aggregate.
+   * Returns the skip reason for each skipped name.
+   */
+  private uncataloguedSkipReasons(
+    extensionNames: readonly string[],
+  ): Map<string, string> {
+    const lockfileEntries = this.lockfileRepository.getAllEntries();
+    const catalogued = new Set(
+      this.repository.loadAll().map((ext) => ext.name),
+    );
+    const reasons = new Map<string, string>();
+    for (const name of extensionNames) {
+      if (!lockfileEntries[name]) {
+        reasons.set(name, "no lockfile entry");
+      } else if (catalogued.has(name)) {
+        reasons.set(name, "already catalogued");
+      }
+    }
+    return reasons;
   }
 
   private async reconcileAll(
@@ -498,50 +622,18 @@ export class ReconcileFromDiskService {
     transitions: ReconcileTransition[],
     cache: FreshnessCache,
   ): Promise<Extension[]> {
-    const pulledRoot = this.pulledExtensionsRoot;
     const result: Extension[] = [];
     const lockfileEntries = this.lockfileRepository.getAllEntries();
 
     for (const extensionName of Object.keys(lockfileEntries)) {
-      const extRoot = join(pulledRoot, extensionName);
-      const version = this.lockfileRepository.getLockedVersion(extensionName) ??
-        "";
-      const existing = existingExtensions.find(
-        (e) => e.name === extensionName && e.version === version,
+      result.push(
+        await this.reconcilePulledEntry(
+          extensionName,
+          existingExtensions,
+          transitions,
+          cache,
+        ),
       );
-
-      const onDiskSources = new Map<
-        string,
-        { kind: KindDir; baseDir: string }
-      >();
-      for (const kindDir of KIND_DIRS) {
-        const dir = kindDir === "datastores"
-          ? this.onDiskDatastores.get(extensionName)?.datastoresDir ??
-            join(extRoot, kindDir)
-          : join(extRoot, kindDir);
-        const files = await collectTsFiles(dir);
-        for (const absolutePath of files) {
-          onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
-        }
-      }
-
-      let ext = existing ?? makeExtension({
-        name: extensionName,
-        version,
-        origin: "pulled",
-        extensionRoot: extRoot,
-        sources: [],
-      });
-
-      ext = await this.reconcileExtension(
-        ext,
-        onDiskSources,
-        transitions,
-        cache,
-        "pulled",
-      );
-
-      result.push(ext);
     }
 
     // Handle orphaned pulled extensions: in catalog but not in lockfile.
@@ -573,6 +665,55 @@ export class ReconcileFromDiskService {
     }
 
     return result;
+  }
+
+  /**
+   * Reconciles one pulled lockfile entry: walks its kind dirs and diffs
+   * them against the entry's aggregate (a new one when none exists).
+   */
+  private async reconcilePulledEntry(
+    extensionName: string,
+    existingExtensions: Extension[],
+    transitions: ReconcileTransition[],
+    cache: FreshnessCache,
+  ): Promise<Extension> {
+    const extRoot = join(this.pulledExtensionsRoot, extensionName);
+    const version = this.lockfileRepository.getLockedVersion(extensionName) ??
+      "";
+    const existing = existingExtensions.find(
+      (e) => e.name === extensionName && e.version === version,
+    );
+
+    const onDiskSources = new Map<
+      string,
+      { kind: KindDir; baseDir: string }
+    >();
+    for (const kindDir of KIND_DIRS) {
+      const dir = kindDir === "datastores"
+        ? this.onDiskDatastores.get(extensionName)?.datastoresDir ??
+          join(extRoot, kindDir)
+        : join(extRoot, kindDir);
+      const files = await collectTsFiles(dir);
+      for (const absolutePath of files) {
+        onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
+      }
+    }
+
+    const ext = existing ?? makeExtension({
+      name: extensionName,
+      version,
+      origin: "pulled",
+      extensionRoot: extRoot,
+      sources: [],
+    });
+
+    return await this.reconcileExtension(
+      ext,
+      onDiskSources,
+      transitions,
+      cache,
+      "pulled",
+    );
   }
 
   private async reconcileExtension(
