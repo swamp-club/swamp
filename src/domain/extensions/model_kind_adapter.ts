@@ -140,10 +140,13 @@ export function getExtensionMemberCollisions(): ExtensionMemberCollision[] {
       });
     }
   }
+  // Code-unit order, like compareExtensionPrecedence, so the listing is the
+  // same on every host and locale.
+  const byCodeUnit = (x: string, y: string) => x < y ? -1 : x > y ? 1 : 0;
   return out.sort((a, b) =>
-    a.type.localeCompare(b.type) ||
-    a.memberKind.localeCompare(b.memberKind) ||
-    a.name.localeCompare(b.name)
+    byCodeUnit(a.type, b.type) ||
+    byCodeUnit(a.memberKind, b.memberKind) ||
+    byCodeUnit(a.name, b.name)
   );
 }
 
@@ -182,7 +185,7 @@ function precedenceReason(
 ): string {
   return winner.pulled !== loser.pulled
     ? `${contributorTier(winner)} beats ${contributorTier(loser)}`
-    : "same origin; the smaller path wins";
+    : "same origin; the alphabetically first path wins";
 }
 
 type MemberResolution =

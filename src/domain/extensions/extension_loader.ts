@@ -778,9 +778,36 @@ export class ExtensionLoader {
     const canonical = canonicalizePath(sourcePath);
     return {
       sourcePath: canonical,
-      pulled: this.repoDir !== null &&
-        isPulledExtensionPath(canonical, canonicalizePath(this.repoDir)),
+      pulled: this.repoDir !== null && this.isPulledSource(canonical),
     };
+  }
+
+  /**
+   * Prefix match first; on a miss, retry with symlinks resolved, so a row
+   * written under one spelling of the repo root (`/tmp/r`) still ranks as
+   * pulled when read under another (`/private/tmp/r` on macOS). Mirrors the
+   * fallback in {@link extractExtensionNameFromPath}.
+   */
+  private isPulledSource(canonical: string): boolean {
+    const repoDir = this.repoDir!;
+    if (isPulledExtensionPath(canonical, canonicalizePath(repoDir))) {
+      return true;
+    }
+    let realRepo: string;
+    try {
+      realRepo = canonicalizePath(Deno.realPathSync(repoDir));
+    } catch {
+      return false;
+    }
+    if (isPulledExtensionPath(canonical, realRepo)) return true;
+    try {
+      return isPulledExtensionPath(
+        canonicalizePath(Deno.realPathSync(canonical)),
+        realRepo,
+      );
+    } catch {
+      return false;
+    }
   }
 
   public async bundleAndIndexOne(args: {

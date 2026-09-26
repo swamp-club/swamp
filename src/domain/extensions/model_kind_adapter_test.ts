@@ -590,7 +590,7 @@ Deno.test("processSecondaryExport: collision warnings name both files and the wi
       messages[1],
       `also provided by ${LOCAL_ZZ}, which wins`,
     );
-    assertStringIncludes(messages[1], "the smaller path wins");
+    assertStringIncludes(messages[1], "the alphabetically first path wins");
   });
 });
 

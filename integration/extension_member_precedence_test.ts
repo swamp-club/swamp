@@ -311,6 +311,68 @@ export const extension = {
   });
 });
 
+Deno.test({
+  name:
+    "a pulled row written under the real repo path still ranks as pulled when the loader uses a symlinked path",
+  // Creating a directory symlink needs extra privileges on Windows.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixture({}, async (f) => {
+      const alias = `${f.repoDir}-alias`;
+      await Deno.symlink(f.repoDir, alias, { type: "dir" });
+      const catalog = new ExtensionCatalogStore(
+        join(f.repoDir, ".swamp", "catalog-alias.db"),
+      );
+      try {
+        const loader = new ExtensionLoader(
+          testDenoRuntime,
+          modelKindAdapter,
+          alias,
+          undefined,
+          new ExtensionRepository({
+            catalog,
+            lockfileRepository: new LockfileRepository(
+              join(f.repoDir, "upstream_extensions.json"),
+            ),
+            repoRoot: alias,
+          }),
+        );
+        // Rows are written under the resolved repo path; the loader only
+        // knows the alias. `.swamp/` sorts before `extensions/`, so only the
+        // pulled row's tier can make the local one win.
+        const realRoot = Deno.realPathSync(f.repoDir);
+        catalog.upsert({
+          ...extRow(f, "pulled"),
+          source_path: canonicalizePath(
+            join(
+              realRoot,
+              ".swamp",
+              "pulled-extensions",
+              "@a",
+              "models",
+              "a.ts",
+            ),
+          ),
+        });
+        catalog.upsert({
+          ...extRow(f, "zz"),
+          source_path: canonicalizePath(
+            join(realRoot, "extensions", "models", "zz_ext.ts"),
+          ),
+        });
+        await loader.loadSingleType(f.type, {
+          bundlePath: f.bundles.base,
+          sourcePath: join(alias, "extensions", "models", "base.ts"),
+        });
+        assertEquals(probe(f.type), "probe from zz");
+      } finally {
+        catalog.close();
+        await Deno.remove(alias);
+      }
+    });
+  },
+});
+
 Deno.test("a base-model method beats every extension, local or pulled", async () => {
   await withFixture({ baseHasProbe: true }, async (f) => {
     const { catalog, loader } = openLoader(f, "catalog.db");

@@ -75,6 +75,11 @@ export interface DoctorOrphanFile {
 }
 
 export interface DoctorWarning {
+  /**
+   * The source file the warning is about. For `ExtensionAttachFailed` it is
+   * the model type that could not be loaded, since no single file is at
+   * fault.
+   */
   sourcePath: string;
   category: string;
   message: string;
