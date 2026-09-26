@@ -1105,6 +1105,11 @@ Deno.test("SwampClubClient - revokeCollectiveToken rejects a 2xx that does not c
       );
       assertStringIncludes(err.message, "without confirming", c.label);
       assertStringIncludes(err.message, "tok-1", c.label);
+      assertStringIncludes(
+        err.message,
+        "swamp auth token list --collective myorg",
+        c.label,
+      );
       assertEquals(err.message.includes("ci-deploy-secret"), false, c.label);
       assertEquals(err.message.includes("proxy-page"), false, c.label);
     } finally {

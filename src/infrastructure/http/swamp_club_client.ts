@@ -950,7 +950,7 @@ export class SwampClubClient {
       (data as Record<string, unknown>).ok !== true
     ) {
       throw new UserError(
-        `${this.serverUrl} answered HTTP ${res.status} without confirming token "${tokenId}" was revoked from collective "${collectiveSlug}".`,
+        `${this.serverUrl} answered HTTP ${res.status} without confirming token "${tokenId}" was revoked from collective "${collectiveSlug}". Check with \`swamp auth token list --collective ${collectiveSlug}\`.`,
       );
     }
   }
