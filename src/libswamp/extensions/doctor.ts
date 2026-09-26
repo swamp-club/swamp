@@ -26,6 +26,10 @@ import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
 import type { RepairReport } from "./doctor_repair.ts";
 import type { ReconcileTransition } from "./reconcile_from_disk_service.ts";
 import { extractTopLevelRootMulti } from "./layout.ts";
+import type { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import type { ExtensionLoadWarningEvent } from "../../infrastructure/logging/extension_load_warnings.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { getExtensionMemberCollisions } from "../../domain/extensions/model_kind_adapter.ts";
 
 /**
  * Public registry name for the doctor report. The infrastructure-layer
@@ -74,6 +78,21 @@ export interface DoctorWarning {
   sourcePath: string;
   category: string;
   message: string;
+}
+
+/**
+ * A member name (method, check or resource spec) that more than one source
+ * adds to one model type, as currently resolved (swamp-club#2562).
+ * `winner` is the winning extension's source path, or null when a
+ * base-model member wins; `losers` are the extensions whose member was not
+ * registered.
+ */
+export interface DoctorMemberCollision {
+  type: string;
+  memberKind: "method" | "check" | "resource";
+  name: string;
+  winner: string | null;
+  losers: readonly string[];
 }
 
 /**
@@ -137,6 +156,11 @@ export interface DoctorExtensionsReport {
    * presence. Empty array when no warnings were emitted.
    */
   warnings: readonly DoctorWarning[];
+  /**
+   * Extension-member collisions and which source won each. Advisory
+   * only: `overallStatus` is unchanged. Empty array when there are none.
+   */
+  memberCollisions: readonly DoctorMemberCollision[];
 }
 
 /**
@@ -217,6 +241,14 @@ export interface DoctorExtensionsDeps {
    * stale warnings from the CLI bootstrap leaking into doctor output.
    */
   resetWarnings?: () => void;
+  /**
+   * Attaches every extension to its target type, so member collisions are
+   * resolved and recorded before the report is built. Runs after the
+   * registries load. Returns warnings for types that could not be loaded.
+   */
+  attachExtensionMembers?: () => Promise<readonly DoctorWarning[]>;
+  /** Returns the currently resolved extension-member collisions. */
+  getMemberCollisions?: () => readonly DoctorMemberCollision[];
   /**
    * Set by the CLI when it skipped the catalog rescan (and repairs).
    * Passed through to the report so JSON callers see the skip too.
@@ -389,6 +421,11 @@ export async function* doctorExtensions(
     };
   }
 
+  let attachWarnings: readonly DoctorWarning[] = [];
+  if (!deps.abortSignal.aborted && deps.attachExtensionMembers) {
+    attachWarnings = await deps.attachExtensionMembers();
+  }
+
   let orphanFiles: DoctorOrphanFile[] = [];
   if (!deps.abortSignal.aborted) {
     const upstreamMap = deps.lockfileRepository.getAllEntries();
@@ -412,7 +449,8 @@ export async function* doctorExtensions(
   }
 
   const recentTransitions = deps.getRecentTransitions?.() ?? [];
-  const warnings = deps.getWarnings?.() ?? [];
+  const warnings = [...(deps.getWarnings?.() ?? []), ...attachWarnings];
+  const memberCollisions = deps.getMemberCollisions?.() ?? [];
 
   const results: DoctorRegistryResult[] = DOCTOR_REGISTRY_ORDER.map((name) => ({
     registry: name,
@@ -438,6 +476,59 @@ export async function* doctorExtensions(
       recentTransitions,
       loaderErrors: loaderErrors.size > 0 ? loaderErrors : undefined,
       warnings,
+      memberCollisions,
     },
+  };
+}
+
+/**
+ * Maps extension load warnings to doctor warnings, keeping each warning's
+ * own category. Warnings raised without one keep the historical
+ * `TypeExtractionFailed` label. Shared by the CLI and serve doctor paths.
+ */
+export function toDoctorWarnings(
+  events: ReadonlyArray<ExtensionLoadWarningEvent>,
+): DoctorWarning[] {
+  return events.map((w) => ({
+    sourcePath: w.file,
+    category: w.category ?? "TypeExtractionFailed",
+    message: w.error,
+  }));
+}
+
+/**
+ * Builds the doctor's extension-member dependencies: attach loads every
+ * model type that an extension row targets (which attaches its extensions
+ * and resolves collisions), and the collision getter reads the attach
+ * record. Shared by the CLI and serve doctor paths.
+ */
+export function extensionMemberDoctorDeps(
+  catalog: Pick<ExtensionCatalogStore, "findByKind">,
+): Pick<
+  DoctorExtensionsDeps,
+  "attachExtensionMembers" | "getMemberCollisions"
+> {
+  return {
+    attachExtensionMembers: async () => {
+      const targets = new Set<string>();
+      for (const row of catalog.findByKind("extension")) {
+        if (row.extends_type) targets.add(row.extends_type);
+      }
+      const failures: DoctorWarning[] = [];
+      for (const type of [...targets].sort()) {
+        if (!modelRegistry.has(type)) continue;
+        try {
+          await modelRegistry.ensureTypeLoaded(type);
+        } catch (error) {
+          failures.push({
+            sourcePath: type,
+            category: "ExtensionAttachFailed",
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return failures;
+    },
+    getMemberCollisions: () => getExtensionMemberCollisions(),
   };
 }

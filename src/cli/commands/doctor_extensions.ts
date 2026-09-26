@@ -53,10 +53,12 @@ import {
   type DoctorExtensionsReport,
   type DoctorRegistryDeps,
   type DoctorRescanSkipped,
+  extensionMemberDoctorDeps,
   ReconcileFromDiskService,
   type ReconcileTransition,
   repairExtensions,
   resolveServerUrl,
+  toDoctorWarnings,
 } from "../../libswamp/mod.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { pullExtension } from "./extension_pull.ts";
@@ -377,13 +379,9 @@ export const doctorExtensionsCommand = withRemoteOptions(
           return buildAggregateState({ extensions, repoDir });
         },
         getRecentTransitions: () => reconcileTransitions,
-        getWarnings: () =>
-          getExtensionLoadWarnings().map((w) => ({
-            sourcePath: w.file,
-            category: "TypeExtractionFailed",
-            message: w.error,
-          })),
+        getWarnings: () => toDoctorWarnings(getExtensionLoadWarnings()),
         resetWarnings: resetExtensionLoadWarnings,
+        ...extensionMemberDoctorDeps(sharedCatalog),
         runRepair: repair && !rescanSkipped
           ? async (aggregateReport) => {
             // In interactive mode without --force, preview first and prompt.

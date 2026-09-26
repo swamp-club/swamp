@@ -65,6 +65,11 @@ import {
   recordSourceFailure,
 } from "./source_failure_recorder.ts";
 import { makeSourceLocation } from "./source_location.ts";
+import {
+  compareExtensionPrecedence,
+  type ExtensionContributor,
+  isPulledExtensionPath,
+} from "./extension_precedence.ts";
 
 /**
  * Build the dynamic import() URL for a bundle file, keyed on the bundle's
@@ -407,12 +412,34 @@ export class ExtensionLoader {
     }
 
     if (this.adapter.processSecondaryExport) {
-      for (const { file, module, baseDir } of secondaryFiles) {
+      // Attach the likely winner first; the outcome does not depend on this
+      // order (swamp-club#2562).
+      const ranked = secondaryFiles
+        .map((f) => ({
+          ...f,
+          contributor: this.contributorFor(resolve(f.baseDir, f.file)),
+        }))
+        .sort((a, b) =>
+          compareExtensionPrecedence(a.contributor, b.contributor)
+        );
+      for (const { file, module, baseDir, contributor } of ranked) {
+        let fingerprint: string | undefined;
+        try {
+          fingerprint = await computeSourceFingerprint(
+            resolve(baseDir, file),
+            baseDir,
+          );
+        } catch {
+          // Non-fatal — without a fingerprint the file is not marked
+          // attached, so a later attach pass re-imports it.
+        }
         try {
           this.adapter.processSecondaryExport(
             file,
             module[this.adapter.secondaryExportKey!],
             result,
+            contributor,
+            fingerprint,
           );
         } catch (error) {
           result.failed.push({ file, error: String(error), baseDir });
@@ -544,6 +571,7 @@ export class ExtensionLoader {
             type,
             catalog,
             (paths) => this.importBundleByPath(paths),
+            (sourcePath) => this.contributorFor(sourcePath),
           );
         }
       }
@@ -694,8 +722,15 @@ export class ExtensionLoader {
       const extensions = this.adapter.findExtensionsForType(
         catalog,
         typeNormalized,
-      );
-      for (const ext of extensions) {
+      )
+        .map((ext) => ({
+          ext,
+          contributor: this.contributorFor(ext.source_path),
+        }))
+        .sort((a, b) =>
+          compareExtensionPrecedence(a.contributor, b.contributor)
+        );
+      for (const { ext, contributor } of extensions) {
         if (this.adapter.importAndExtendBundle) {
           // One extension that fails to import must not take down its base
           // type or the extensions after it (swamp-club#2557).
@@ -704,6 +739,7 @@ export class ExtensionLoader {
               ext,
               (paths) => this.importBundleByPath(paths),
               { loaded: [], extended: [], failed: [] },
+              contributor,
             );
           } catch (error) {
             this.logger
@@ -724,7 +760,24 @@ export class ExtensionLoader {
       typeNormalized,
       catalog,
       (paths) => this.importBundleByPath(paths),
+      (sourcePath) => this.contributorFor(sourcePath),
     );
+  }
+
+  /**
+   * Ranks an extension source for member-collision resolution
+   * (swamp-club#2562). Pulled means under one of this repo's
+   * pulled-extension roots; the rule needs only the repo root, so every
+   * loader instance — cold start, hot load, serve reload — ranks a file
+   * the same way.
+   */
+  private contributorFor(sourcePath: string): ExtensionContributor {
+    const canonical = canonicalizePath(sourcePath);
+    return {
+      sourcePath: canonical,
+      pulled: this.repoDir !== null &&
+        isPulledExtensionPath(canonical, canonicalizePath(this.repoDir)),
+    };
   }
 
   public async bundleAndIndexOne(args: {
@@ -991,17 +1044,35 @@ export class ExtensionLoader {
         const source = Deno.readTextFileSync(absolutePath);
         if (!this.adapter.exportRegex.test(source)) continue;
 
-        const extracted = this.adapter.extractTypeFromSource(source);
-        if (!extracted) {
-          emitTypeExtractionFailure(absolutePath, this.adapter.kind);
-          continue;
-        }
-
         const sourceFingerprint = await computeSourceFingerprint(
           absolutePath,
           dir,
           cache,
         );
+
+        // Startup reconcile indexes sources by importing their bundles, so
+        // a row it wrote holds the export's real type — including exports
+        // the static extractor cannot read, such as a wrapped
+        // `export const extension = withOptions(definition)`. Keep an
+        // up-to-date row instead of re-deriving it from source text
+        // (swamp-club#2562).
+        const existing = catalog.findBySourcePath(absolutePath);
+        const indexed = existing !== undefined &&
+          (existing.state ?? "Indexed") !== "Tombstoned" &&
+          existing.type_normalized.length > 0;
+        if (indexed && existing.source_fingerprint === sourceFingerprint) {
+          continue;
+        }
+
+        const extracted = this.adapter.extractTypeFromSource(source);
+        if (!extracted) {
+          // A stale indexed row is refreshed by the next stale-file scan,
+          // which imports the bundle; only warn when nothing indexed it.
+          if (!indexed) {
+            emitTypeExtractionFailure(absolutePath, this.adapter.kind);
+          }
+          continue;
+        }
 
         catalog.upsert({
           type_normalized: extracted.typeNormalized,

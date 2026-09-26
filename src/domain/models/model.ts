@@ -911,6 +911,16 @@ export interface ModelDefinition<
 }
 
 /**
+ * Members an extension contributes to a model type, as passed to
+ * {@link ModelRegistry.applyExtensionMembers}.
+ */
+export interface ExtensionMemberSet {
+  methods?: Record<string, MethodDefinition>;
+  checks?: Record<string, CheckDefinition>;
+  resources?: Record<string, ResourceOutputSpec>;
+}
+
+/**
  * Metadata for a lazily-indexed model type. The type is known to exist
  * (from the bundle catalog) but its bundle has not been imported yet.
  * Holds just enough information for {@link ModelRegistry.types} and
@@ -1246,6 +1256,94 @@ export class ModelRegistry {
             ...(existing.reports ?? []),
             ...(reports ?? []),
           ],
+        }
+        : {}),
+    };
+
+    this.models.set(key, merged);
+  }
+
+  /**
+   * Applies extension members to a registered type in one immutable merge:
+   * `additions` are new members, `overrides` replace members that already
+   * exist. Used by extension attach, which decides which extension wins a
+   * member-name collision (swamp-club#2562); {@link extend} keeps refusing
+   * to replace anything.
+   *
+   * Everything is validated before the merged definition is built, so a
+   * rejected call leaves the type untouched.
+   *
+   * @throws If the type is not registered, an addition already exists, or
+   *   an override does not exist
+   */
+  applyExtensionMembers(
+    type: string | ModelType,
+    additions: ExtensionMemberSet,
+    overrides: ExtensionMemberSet,
+  ): void {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    const key = modelType.normalized;
+    const existing = this.models.get(key);
+
+    if (!existing) {
+      throw new Error(`Cannot extend unregistered model type: ${key}`);
+    }
+
+    const current: Record<keyof ExtensionMemberSet, Record<string, unknown>> = {
+      methods: existing.methods,
+      checks: existing.checks ?? {},
+      resources: existing.resources ?? {},
+    };
+    const labels: Record<keyof ExtensionMemberSet, string> = {
+      methods: "Method",
+      checks: "Check",
+      resources: "Resource spec",
+    };
+    for (const kind of ["methods", "checks", "resources"] as const) {
+      for (const name of Object.keys(additions[kind] ?? {})) {
+        if (name in current[kind]) {
+          throw new Error(
+            `${labels[kind]} '${name}' already exists on model type '${key}'`,
+          );
+        }
+      }
+      for (const name of Object.keys(overrides[kind] ?? {})) {
+        if (!(name in current[kind])) {
+          throw new Error(
+            `${
+              labels[kind]
+            } '${name}' does not exist on model type '${key}'; nothing to override`,
+          );
+        }
+      }
+    }
+
+    const hasChecks = existing.checks || additions.checks || overrides.checks;
+    const hasResources = existing.resources || additions.resources ||
+      overrides.resources;
+    const merged: ModelDefinition = {
+      ...existing,
+      methods: {
+        ...existing.methods,
+        ...(additions.methods ?? {}),
+        ...(overrides.methods ?? {}),
+      },
+      ...(hasChecks
+        ? {
+          checks: {
+            ...(existing.checks ?? {}),
+            ...(additions.checks ?? {}),
+            ...(overrides.checks ?? {}),
+          },
+        }
+        : {}),
+      ...(hasResources
+        ? {
+          resources: {
+            ...(existing.resources ?? {}),
+            ...(additions.resources ?? {}),
+            ...(overrides.resources ?? {}),
+          },
         }
         : {}),
     };

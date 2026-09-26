@@ -25,6 +25,7 @@ import type {
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { FreshnessKind } from "./bundle_freshness.ts";
+import type { ExtensionContributor } from "./extension_precedence.ts";
 
 export type LoaderKind =
   | "model"
@@ -126,10 +127,18 @@ export interface KindAdapter {
 
   validateNamespace?(rawType: string): string | undefined;
 
+  /**
+   * Attaches a secondary export (e.g. `export const extension`) to its
+   * target type. `contributor` ranks it against other extensions that add
+   * the same member (swamp-club#2562); `sourceFingerprint`, when known,
+   * marks the file attached so later attach passes skip it.
+   */
   processSecondaryExport?(
     file: string,
     exported: unknown,
     result: ExtensionLoadResult,
+    contributor: ExtensionContributor,
+    sourceFingerprint?: string,
   ): void;
 
   findExtensionsForType?(
@@ -147,6 +156,7 @@ export interface KindAdapter {
       },
     ) => Promise<Record<string, unknown>>,
     result: ExtensionLoadResult,
+    contributor: ExtensionContributor,
   ): Promise<void>;
 
   attachPendingExtensionsForType?(
@@ -159,6 +169,7 @@ export interface KindAdapter {
         sourceFingerprint?: string;
       },
     ) => Promise<Record<string, unknown>>,
+    contributorFor: (sourcePath: string) => ExtensionContributor,
   ): Promise<void>;
 
   migrateOldFlatBundles?(repoDir: string, additionalDirs?: string[]): void;

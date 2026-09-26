@@ -21,12 +21,14 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   clearAttachedExtensions,
+  getExtensionMemberCollisions,
   modelKindAdapter,
   removeAttachedExtensionsForType,
 } from "./model_kind_adapter.ts";
 import { basename, join } from "@std/path";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ModelType } from "../models/model_type.ts";
+import type { ExtensionContributor } from "./extension_precedence.ts";
 import { modelRegistry } from "../models/model.ts";
 import {
   getExtensionLoadWarnings,
@@ -164,6 +166,7 @@ Deno.test("importAndExtendBundle: skips standalone model bundle without throwing
     entry,
     () => Promise.resolve({ model: { type: "@test/greeter" } }),
     result,
+    localContributor(entry.source_path),
   );
   assertEquals(result.extended.length, 0);
   assertEquals(result.failed.length, 0);
@@ -192,6 +195,7 @@ Deno.test("importAndExtendBundle: throws for bundle with neither model nor exten
         entry,
         () => Promise.resolve({ helper: true }),
         result,
+        localContributor(entry.source_path),
       ),
     Error,
     "Bundle has no extension export",
@@ -272,6 +276,10 @@ Deno.test("validatePrimaryExport: model with mismatching last toVersion fails", 
 
 // ── processSecondaryExport: method collision pre-filtering ─────────────
 
+function localContributor(sourcePath: string): ExtensionContributor {
+  return { sourcePath, pulled: false };
+}
+
 const testArgs = z.object({});
 
 function registerTestModel(
@@ -324,6 +332,7 @@ Deno.test("processSecondaryExport: colliding method is skipped, sibling is merge
       "extensions/models/probe.ts",
       makeExtension(type, ["retrieve", "probe_marker"]),
       result,
+      localContributor("/repo/extensions/models/probe.ts"),
     );
 
     assertEquals(result.extended, ["extensions/models/probe.ts"]);
@@ -358,6 +367,7 @@ Deno.test("processSecondaryExport: all methods collide — file marked extended,
       "extensions/models/dupe.ts",
       makeExtension(type, ["run", "list"]),
       result,
+      localContributor("/repo/extensions/models/dupe.ts"),
     );
 
     assertEquals(result.extended, ["extensions/models/dupe.ts"]);
@@ -388,6 +398,7 @@ Deno.test("processSecondaryExport: no collision — all methods merged normally"
       "extensions/models/clean.ts",
       makeExtension(type, ["custom_method"]),
       result,
+      localContributor("/repo/extensions/models/clean.ts"),
     );
 
     assertEquals(result.extended, ["extensions/models/clean.ts"]);
@@ -405,6 +416,214 @@ Deno.test("processSecondaryExport: no collision — all methods merged normally"
     modelRegistry.invalidateType(type);
     resetExtensionLoadWarnings();
   }
+});
+
+// ── processSecondaryExport: extension-vs-extension precedence (#2562) ──
+
+const LOCAL_AA = "/repo/extensions/models/aa_ext.ts";
+const LOCAL_ZZ = "/repo/extensions/models/zz_ext.ts";
+const PULLED = "/repo/.swamp/pulled-extensions/@acme/pkg/models/probe.ts";
+
+function contributorAt(sourcePath: string): ExtensionContributor {
+  return { sourcePath, pulled: sourcePath.includes("/pulled-extensions/") };
+}
+
+function labelledExtension(
+  type: string,
+  label: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    type,
+    methods: [{
+      probe: {
+        description: `probe from ${label}`,
+        arguments: testArgs,
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    }],
+    ...extra,
+  };
+}
+
+function newResult() {
+  return {
+    loaded: [] as string[],
+    extended: [] as string[],
+    failed: [] as { file: string; error: string }[],
+  };
+}
+
+function attach(
+  type: string,
+  sourcePath: string,
+  label: string,
+  extra: Record<string, unknown> = {},
+) {
+  const result = newResult();
+  modelKindAdapter.processSecondaryExport!(
+    sourcePath,
+    labelledExtension(type, label, extra),
+    result,
+    contributorAt(sourcePath),
+  );
+  return result;
+}
+
+function probeDescription(type: string): string | undefined {
+  return modelRegistry.get(type)?.methods["probe"]?.description;
+}
+
+function withPrecedenceType(fn: (type: string) => void): void {
+  const type = `@test/precedence-${crypto.randomUUID().slice(0, 8)}`;
+  resetExtensionLoadWarnings();
+  registerTestModel(type, { get: true });
+  try {
+    fn(type);
+  } finally {
+    modelRegistry.invalidateType(type);
+    removeAttachedExtensionsForType(type);
+    resetExtensionLoadWarnings();
+  }
+}
+
+Deno.test("processSecondaryExport: local beats pulled in either attach order", () => {
+  for (const order of [[PULLED, LOCAL_ZZ], [LOCAL_ZZ, PULLED]]) {
+    withPrecedenceType((type) => {
+      for (const path of order) attach(type, path, path);
+      assertEquals(probeDescription(type), `probe from ${LOCAL_ZZ}`);
+      const [collision] = getExtensionMemberCollisions().filter((c) =>
+        c.type === type
+      );
+      assertEquals(collision.winner, LOCAL_ZZ);
+      assertEquals(collision.losers, [PULLED]);
+    });
+  }
+});
+
+Deno.test("processSecondaryExport: within one origin the smaller path wins in either order", () => {
+  for (const order of [[LOCAL_ZZ, LOCAL_AA], [LOCAL_AA, LOCAL_ZZ]]) {
+    withPrecedenceType((type) => {
+      for (const path of order) attach(type, path, path);
+      assertEquals(probeDescription(type), `probe from ${LOCAL_AA}`);
+    });
+  }
+});
+
+Deno.test("processSecondaryExport: a base-model member always wins over extensions", () => {
+  withPrecedenceType((type) => {
+    modelRegistry.invalidateType(type);
+    registerTestModel(type, { get: true, probe: true });
+    attach(type, LOCAL_AA, "aa");
+    assertEquals(probeDescription(type), "Base probe");
+    const [collision] = getExtensionMemberCollisions().filter((c) =>
+      c.type === type
+    );
+    assertEquals(collision.winner, null);
+    assertEquals(collision.losers, [LOCAL_AA]);
+  });
+});
+
+Deno.test("processSecondaryExport: stale provenance never lets an extension replace a re-registered base member", () => {
+  withPrecedenceType((type) => {
+    attach(type, PULLED, "pulled");
+    // The type is re-registered with its own `probe`, without clearing the
+    // attach record (e.g. an invalidation path that skips it).
+    modelRegistry.invalidateType(type);
+    registerTestModel(type, { get: true, probe: true });
+    attach(type, LOCAL_AA, "local");
+    assertEquals(probeDescription(type), "Base probe");
+  });
+});
+
+Deno.test("processSecondaryExport: a re-attaching source replaces its own member silently", () => {
+  withPrecedenceType((type) => {
+    attach(type, LOCAL_AA, "aa v1");
+    const result = attach(type, LOCAL_AA, "aa v2");
+    assertEquals(result.failed.length, 0);
+    assertEquals(probeDescription(type), "probe from aa v2");
+    assertEquals(
+      getExtensionLoadWarnings().filter((w) => w.category === "MemberCollision")
+        .length,
+      0,
+    );
+    assertEquals(
+      getExtensionMemberCollisions().filter((c) => c.type === type).length,
+      0,
+    );
+  });
+});
+
+Deno.test("processSecondaryExport: collision warnings name both files and the winner", () => {
+  withPrecedenceType((type) => {
+    attach(type, PULLED, "pulled");
+    attach(type, LOCAL_ZZ, "local");
+    attach(type, LOCAL_AA.replace("aa_ext", "zzz_ext"), "later local");
+    const messages = getExtensionLoadWarnings()
+      .filter((w) => w.category === "MemberCollision")
+      .map((w) => `${w.file}: ${w.error}`);
+    assertEquals(messages.length, 2);
+    assertStringIncludes(messages[0], LOCAL_ZZ);
+    assertStringIncludes(messages[0], `overrides the one from ${PULLED}`);
+    assertStringIncludes(messages[0], "local beats pulled");
+    assertStringIncludes(
+      messages[1],
+      `also provided by ${LOCAL_ZZ}, which wins`,
+    );
+    assertStringIncludes(messages[1], "the smaller path wins");
+  });
+});
+
+Deno.test("processSecondaryExport: checks and resources follow the same precedence", () => {
+  withPrecedenceType((type) => {
+    const extra = (label: string) => ({
+      checks: [{
+        policy: {
+          description: `policy from ${label}`,
+          execute: () => Promise.resolve({ pass: true }),
+        },
+      }],
+      resources: {
+        audit: {
+          description: `audit from ${label}`,
+          schema: z.object({}),
+          lifetime: "infinite",
+          garbageCollection: 1,
+        },
+      },
+    });
+    attach(type, PULLED, "pulled", extra("pulled"));
+    attach(type, LOCAL_AA, "local", extra("local"));
+    const model = modelRegistry.get(type)!;
+    assertEquals(model.checks?.["policy"]?.description, "policy from local");
+    assertEquals(model.resources?.["audit"]?.description, "audit from local");
+  });
+});
+
+Deno.test("processSecondaryExport: a failed registry merge leaves provenance unchanged", () => {
+  withPrecedenceType((type) => {
+    attach(type, PULLED, "pulled");
+    const original = modelRegistry.applyExtensionMembers;
+    modelRegistry.applyExtensionMembers = () => {
+      throw new Error("merge failed");
+    };
+    let failed;
+    try {
+      failed = attach(type, LOCAL_AA, "local");
+    } finally {
+      modelRegistry.applyExtensionMembers = original;
+    }
+    assertEquals(failed.failed.length, 1);
+    assertEquals(probeDescription(type), "probe from pulled");
+    // The pulled file still owns the member, so a lower-ranked pulled
+    // source is refused rather than treated as overriding a base member.
+    attach(type, PULLED.replace("probe.ts", "zz.ts"), "pulled zz");
+    assertEquals(probeDescription(type), "probe from pulled");
+    const [collision] = getExtensionMemberCollisions().filter((c) =>
+      c.type === type
+    );
+    assertEquals(collision.winner, PULLED);
+  });
 });
 
 // ── attachPendingExtensionsForType: per-extension isolation ────────────
@@ -445,6 +664,7 @@ Deno.test("attachPendingExtensionsForType: an extension that fails to import is 
       type,
       catalog,
       importFn,
+      localContributor,
     );
     const afterFirst = modelRegistry.get(type)?.methods ?? {};
     assertEquals("good_method" in afterFirst, true);
@@ -457,6 +677,7 @@ Deno.test("attachPendingExtensionsForType: an extension that fails to import is 
       type,
       catalog,
       importFn,
+      localContributor,
     );
     assertEquals(
       "broken_method" in (modelRegistry.get(type)?.methods ?? {}),

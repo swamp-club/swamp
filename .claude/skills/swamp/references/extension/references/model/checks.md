@@ -104,5 +104,7 @@ export const extension = {
 };
 ```
 
-Check names must not conflict with checks already defined on the target model
-type — conflicts throw an error at registration time.
+A check whose name the base model already defines is not registered (the base
+check wins) and a `swamp-warning` names the file. When two extensions add the
+same check name, a local extension beats a pulled one, then the smaller file
+path wins — the same rule as methods (see `api.md`, "Name collisions").

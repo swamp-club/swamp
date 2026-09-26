@@ -69,6 +69,7 @@ import {
   extensionInfo,
   extensionInstall,
   extensionList,
+  extensionMemberDoctorDeps,
   extensionPull,
   extensionRm,
   extensionSearch,
@@ -81,6 +82,7 @@ import {
   ReconcileFromDiskService,
   type ReconcileTransition,
   resolveServerUrl,
+  toDoctorWarnings,
   type TriggerOverride,
   UpgradeExtensionService,
   validateExtensionName,
@@ -1653,13 +1655,9 @@ export async function handleDoctorExtensions(
         return buildAggregateState({ extensions, repoDir });
       },
       getRecentTransitions: () => reconcileTransitions,
-      getWarnings: () =>
-        getExtensionLoadWarnings().map((w) => ({
-          sourcePath: w.file,
-          category: "TypeExtractionFailed",
-          message: w.error,
-        })),
+      getWarnings: () => toDoctorWarnings(getExtensionLoadWarnings()),
       resetWarnings: resetExtensionLoadWarnings,
+      ...extensionMemberDoctorDeps(sharedCatalog!),
     };
 
     let result: Record<string, unknown> | undefined;

@@ -830,9 +830,17 @@ export const extension = {
 };
 ```
 
-Resource spec names must be unique -- conflicts with existing resource specs on
-the target model throw an error at registration time. The `resources` field uses
-the same `Record<string, ResourceOutputSpec>` shape as base model definitions.
+The `resources` field uses the same `Record<string, ResourceOutputSpec>` shape
+as base model definitions.
+
+**Name collisions in `export const extension`.** When a method, check, or
+resource spec name is already taken on the target type, only one definition is
+registered and each loser gets a `swamp-warning` naming both files. Precedence:
+the base model's own member always wins; then a local or source-mounted
+extension beats a pulled one (`.swamp/pulled-extensions/`); within one origin
+the smaller file path wins. So to override a pulled package's method, add a
+local extension with the same method name. `swamp doctor extensions` lists every
+collision and its winner.
 
 ---
 

@@ -29,6 +29,7 @@ import { ExtensionLoader } from "../extensions/extension_loader.ts";
 import {
   clearAttachedExtensions,
   modelKindAdapter,
+  removeAttachedExtensionsForType,
 } from "../extensions/model_kind_adapter.ts";
 import { modelRegistry } from "./model.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
@@ -3442,8 +3443,11 @@ Deno.test("attachPendingExtensionsForType: attaches a single pending extension",
       repository,
     );
     await loader.buildIndex(modelsDir);
+    // Simulate a pending extension: its member is gone and it is not
+    // recorded as attached (load() marks what it attaches, swamp-club#2562).
     const base = modelRegistry.get(typeId);
     if (base) delete base.methods.pending;
+    removeAttachedExtensionsForType(typeId);
     assertEquals("pending" in modelRegistry.get(typeId)!.methods, false);
 
     await loader.attachPendingExtensionsForType(typeId);
@@ -3521,11 +3525,13 @@ export const extension = {
     );
     await loader.buildIndex(modelsDir);
 
+    // Simulate pending extensions: members gone, attach record cleared.
     const base = modelRegistry.get(typeId);
     if (base) {
       delete base.methods.alpha;
       delete base.methods.beta;
     }
+    removeAttachedExtensionsForType(typeId);
 
     await loader.attachPendingExtensionsForType(typeId);
 

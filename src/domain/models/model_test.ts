@@ -966,6 +966,114 @@ Deno.test("ModelRegistry.extend: adds resources to model with no existing resour
   assertEquals("state" in extended!.resources!, true);
 });
 
+// --- ModelRegistry.applyExtensionMembers() tests ---
+
+function stubMethod(description: string) {
+  return {
+    description,
+    arguments: z.object({}),
+    execute: () => Promise.resolve({ dataHandles: [] }),
+  };
+}
+
+Deno.test("ModelRegistry.applyExtensionMembers: adds and overrides in one merge", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/apply-members"));
+  registry.extend("swamp/apply-members", { probe: stubMethod("old probe") });
+  const before = registry.get("swamp/apply-members")!;
+
+  registry.applyExtensionMembers(
+    "swamp/apply-members",
+    { methods: { extra: stubMethod("extra") } },
+    { methods: { probe: stubMethod("new probe") } },
+  );
+
+  const after = registry.get("swamp/apply-members")!;
+  assertEquals(after.methods.probe.description, "new probe");
+  assertEquals(after.methods.extra.description, "extra");
+  assertEquals(after.methods.write.description, "Write message to data");
+  // Immutable: the previous definition object is untouched.
+  assertEquals(before.methods.probe.description, "old probe");
+  assertEquals("extra" in before.methods, false);
+});
+
+Deno.test("ModelRegistry.applyExtensionMembers: overrides checks and resources", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/apply-checks"));
+  registry.extend("swamp/apply-checks", {}, {
+    policy: {
+      description: "old policy",
+      execute: () => Promise.resolve({ pass: true }),
+    },
+  });
+
+  registry.applyExtensionMembers("swamp/apply-checks", {}, {
+    checks: {
+      policy: {
+        description: "new policy",
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+    resources: {
+      data: {
+        description: "replaced data",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 1,
+      },
+    },
+  });
+
+  const after = registry.get("swamp/apply-checks")!;
+  assertEquals(after.checks!.policy.description, "new policy");
+  assertEquals(after.resources!.data.description, "replaced data");
+});
+
+Deno.test("ModelRegistry.applyExtensionMembers: rejects an addition that exists and leaves the type untouched", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/apply-reject-add"));
+  const before = registry.get("swamp/apply-reject-add")!;
+
+  assertThrows(
+    () =>
+      registry.applyExtensionMembers(
+        "swamp/apply-reject-add",
+        { methods: { fresh: stubMethod("fresh"), write: stubMethod("dup") } },
+        {},
+      ),
+    Error,
+    "Method 'write' already exists on model type 'swamp/apply-reject-add'",
+  );
+  const after = registry.get("swamp/apply-reject-add")!;
+  assertEquals(after, before);
+  assertEquals("fresh" in after.methods, false);
+});
+
+Deno.test("ModelRegistry.applyExtensionMembers: rejects an override of a missing member", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/apply-reject-override"));
+
+  assertThrows(
+    () =>
+      registry.applyExtensionMembers(
+        "swamp/apply-reject-override",
+        {},
+        { methods: { ghost: stubMethod("ghost") } },
+      ),
+    Error,
+    "Method 'ghost' does not exist on model type 'swamp/apply-reject-override'",
+  );
+});
+
+Deno.test("ModelRegistry.applyExtensionMembers: throws on unregistered type", () => {
+  const registry = new ModelRegistry();
+  assertThrows(
+    () => registry.applyExtensionMembers("swamp/apply-none", {}, {}),
+    Error,
+    "Cannot extend unregistered model type: swamp/apply-none",
+  );
+});
+
 // --- Lazy entry tests ---
 
 function createLazyEntry(typeString: string): LazyModelEntry {

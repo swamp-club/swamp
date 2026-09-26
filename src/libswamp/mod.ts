@@ -1050,12 +1050,15 @@ export {
   type DoctorExtensionsDeps,
   type DoctorExtensionsEvent,
   type DoctorExtensionsReport,
+  type DoctorMemberCollision,
   type DoctorOverallStatus,
   type DoctorRegistryDeps,
   type DoctorRegistryName,
   type DoctorRegistryResult,
   type DoctorRescanSkipped,
   type DoctorWarning,
+  extensionMemberDoctorDeps,
+  toDoctorWarnings,
 } from "./extensions/doctor.ts";
 
 // Extension RowState (used by doctor extensions rendering)

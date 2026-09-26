@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   emitExtensionLoadWarning,
   emitTypeExtractionFailure,
+  getExtensionLoadWarnings,
   resetExtensionLoadWarnings,
 } from "./extension_load_warnings.ts";
 
@@ -171,7 +172,13 @@ Deno.test("emitTypeExtractionFailure: surfaces the regex-mismatch case with a cl
   });
 
   assertStringIncludes(cap.lines[0], "/repo/extensions/vaults/odd.ts");
-  assertStringIncludes(cap.lines[0], "string literal");
+  assertStringIncludes(cap.lines[0], "could not be read statically");
+  assertStringIncludes(cap.lines[0], "indexed from its bundle");
+  assertStringIncludes(cap.lines[0], "string-literal type");
+  assertEquals(
+    getExtensionLoadWarnings().at(-1)?.category,
+    "TypeExtractionFailed",
+  );
 });
 
 Deno.test("resetExtensionLoadWarnings: clears dedupe and hint state", () => {

@@ -32,8 +32,18 @@ import {
   type DoctorRegistryDeps,
   type DoctorRegistryName,
   type DoctorWarning,
+  extensionMemberDoctorDeps,
+  toDoctorWarnings,
 } from "./doctor.ts";
 import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
+import { z } from "zod";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import {
+  modelKindAdapter,
+  removeAttachedExtensionsForType,
+} from "../../domain/extensions/model_kind_adapter.ts";
+import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 interface SpyEntry {
   fn: string;
@@ -735,4 +745,163 @@ Deno.test("doctorExtensions: rescanSkipped from deps reaches the report", async 
     repairSkipped: true,
   });
   assertEquals(completed.report.repairReport, undefined);
+});
+
+// -- Extension member collisions (swamp-club#2562) ---------------------------
+
+Deno.test("doctorExtensions: attaches extension members after every registry loads and reports collisions as warnings", async () => {
+  const { deps, events } = buildDeps();
+  deps.attachExtensionMembers = () => {
+    events.push({ fn: "attachExtensionMembers" });
+    return Promise.resolve([{
+      sourcePath: "@x/broken",
+      category: "ExtensionAttachFailed",
+      message: "boom",
+    }]);
+  };
+  const collision = {
+    type: "@x/base",
+    memberKind: "method" as const,
+    name: "probe",
+    winner: "/repo/extensions/models/local.ts",
+    losers: ["/repo/.swamp/pulled-extensions/@x/y/models/p.ts"],
+  };
+  deps.getMemberCollisions = () => [collision];
+
+  const out = await collect(doctorExtensions(deps));
+  const completed = out.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error("expected completed event");
+  }
+
+  const attachAt = events.findIndex((e) => e.fn === "attachExtensionMembers");
+  const lastEnsure = events.map((e) => e.fn).lastIndexOf("ensureLoaded");
+  assertEquals(attachAt > lastEnsure, true);
+  assertEquals(completed.report.memberCollisions, [collision]);
+  assertEquals(
+    completed.report.warnings.map((w) => w.category),
+    ["ExtensionAttachFailed"],
+  );
+  assertEquals(completed.report.overallStatus, "pass");
+});
+
+Deno.test("doctorExtensions: memberCollisions is empty without the collision dependency", async () => {
+  const { deps } = buildDeps();
+  const out = await collect(doctorExtensions(deps));
+  const completed = out.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error("expected completed event");
+  }
+  assertEquals(completed.report.memberCollisions, []);
+});
+
+Deno.test("toDoctorWarnings: keeps each warning's category and defaults to TypeExtractionFailed", () => {
+  assertEquals(
+    toDoctorWarnings([
+      {
+        kind: "extension",
+        file: "a.ts",
+        error: "x",
+        category: "MemberCollision",
+      },
+      { kind: "model", file: "b.ts", error: "y" },
+    ]),
+    [
+      { sourcePath: "a.ts", category: "MemberCollision", message: "x" },
+      { sourcePath: "b.ts", category: "TypeExtractionFailed", message: "y" },
+    ],
+  );
+});
+
+Deno.test("extensionMemberDoctorDeps: loads each registered target type and reports load failures", async () => {
+  const good = `@test/doctor-good-${crypto.randomUUID().slice(0, 8)}`;
+  const broken = `@test/doctor-broken-${crypto.randomUUID().slice(0, 8)}`;
+  for (const type of [good, broken]) {
+    modelRegistry.register({
+      type: ModelType.create(type),
+      version: "2026.01.01.0",
+      methods: {},
+    });
+  }
+  const row = (extendsType: string) =>
+    ({ extends_type: extendsType }) as ExtensionTypeRow;
+  const catalog = {
+    findByKind: () => [
+      row(good),
+      row(good),
+      row(broken),
+      row(""),
+      row("@test/unregistered"),
+    ],
+  };
+  const loaded: string[] = [];
+  const original = modelRegistry.ensureTypeLoaded;
+  modelRegistry.ensureTypeLoaded = (type) => {
+    loaded.push(String(type));
+    return type === broken
+      ? Promise.reject(new Error("bundle import failed"))
+      : Promise.resolve();
+  };
+  try {
+    const failures = await extensionMemberDoctorDeps(catalog)
+      .attachExtensionMembers!();
+    assertEquals(loaded.sort(), [broken, good].sort());
+    assertEquals(failures, [{
+      sourcePath: broken,
+      category: "ExtensionAttachFailed",
+      message: "bundle import failed",
+    }]);
+  } finally {
+    modelRegistry.ensureTypeLoaded = original;
+    modelRegistry.invalidateType(good);
+    modelRegistry.invalidateType(broken);
+  }
+});
+
+Deno.test("extensionMemberDoctorDeps: collisions come from the attach record, not re-emitted warnings", () => {
+  const type = `@test/doctor-record-${crypto.randomUUID().slice(0, 8)}`;
+  modelRegistry.register({
+    type: ModelType.create(type),
+    version: "2026.01.01.0",
+    methods: {
+      probe: {
+        description: "base probe",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  });
+  try {
+    modelKindAdapter.processSecondaryExport!(
+      "/repo/extensions/models/ext.ts",
+      {
+        type,
+        methods: [{
+          probe: {
+            description: "ext probe",
+            arguments: z.object({}),
+            execute: () => Promise.resolve({ dataHandles: [] }),
+          },
+        }],
+      },
+      { loaded: [], extended: [], failed: [] },
+      { sourcePath: "/repo/extensions/models/ext.ts", pulled: false },
+    );
+    // Doctor resets warnings before it runs; the record must survive that.
+    resetExtensionLoadWarnings();
+    const collisions = extensionMemberDoctorDeps({ findByKind: () => [] })
+      .getMemberCollisions!()
+      .filter((c) => c.type === type);
+    assertEquals(collisions, [{
+      type,
+      memberKind: "method",
+      name: "probe",
+      winner: null,
+      losers: ["/repo/extensions/models/ext.ts"],
+    }]);
+  } finally {
+    modelRegistry.invalidateType(type);
+    removeAttachedExtensionsForType(type);
+    resetExtensionLoadWarnings();
+  }
 });
