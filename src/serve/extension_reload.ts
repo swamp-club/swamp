@@ -134,6 +134,12 @@ async function catalogueUncataloguedPulled(args: {
   }
 }
 
+/**
+ * Re-registers every catalogued pulled type, after cataloguing lockfile
+ * entries that have no rows yet and re-bundling changed sources.
+ * `denoRuntimeOverride` lets tests supply a stub runtime; production
+ * callers omit it and get an EmbeddedDenoRuntime created on first use.
+ */
 export async function reloadPulledExtensions(
   repoDir: string,
   lockfilePath: string,

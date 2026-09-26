@@ -877,11 +877,12 @@ export class ExtensionCatalogStore {
    */
   findBySourcePathPrefix(sourcePrefix: string): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
-      "SELECT * FROM bundle_types WHERE source_path LIKE ? ORDER BY source_path",
+      "SELECT * FROM bundle_types WHERE source_path LIKE ? ESCAPE '\\' ORDER BY source_path",
     );
-    return (stmt.all(`${sourcePrefix}%`) as Record<string, unknown>[]).map(
-      (r) => this.mapRow(r),
-    );
+    return (stmt.all(likePrefixPattern(sourcePrefix)) as Record<
+      string,
+      unknown
+    >[]).map((r) => this.mapRow(r));
   }
 
   /**
@@ -891,9 +892,9 @@ export class ExtensionCatalogStore {
    */
   removeBySourcePrefix(sourcePrefix: string): number {
     const stmt = this.db.prepare(
-      "DELETE FROM bundle_types WHERE source_path LIKE ?",
+      "DELETE FROM bundle_types WHERE source_path LIKE ? ESCAPE '\\'",
     );
-    const result = stmt.run(`${sourcePrefix}%`);
+    const result = stmt.run(likePrefixPattern(sourcePrefix));
     return Number(result.changes);
   }
 
@@ -1537,6 +1538,16 @@ export function sourceDirsFingerprint(
  */
 function inferRepoRootFromDbPath(dbPath: string): string {
   return dirname(dirname(dbPath));
+}
+
+/**
+ * Builds a `LIKE ... ESCAPE '\'` pattern that matches paths starting with
+ * `prefix` literally. Unescaped, `_` in an extension name (`@acme/aws_ec2`)
+ * matches any character, so the prefix would also select a sibling such as
+ * `@acme/aws-ec2` (swamp-club#2355).
+ */
+function likePrefixPattern(prefix: string): string {
+  return `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
 function isReadOnlyError(error: unknown): boolean {

@@ -720,3 +720,61 @@ Deno.test("createExtensionDiscoverer: skips catalogued registered sources before
     },
   );
 });
+
+Deno.test("reloadPulledExtensions: catalogues an uncatalogued extension whose name differs from a catalogued sibling only by _", async () => {
+  const id = crypto.randomUUID().replaceAll("-", "");
+  const hyphenExt = `@test/sib-${id}`;
+  const underscoreExt = `@test/sib_${id}`;
+  const hyphenType = `@test/sib-model-${id}`;
+  const underscoreType = `@test/sib_model-${id}`;
+  await withPulledRepo(
+    [hyphenExt, underscoreExt],
+    async ({ repoDir, lockfilePath, catalog, stage }) => {
+      const hyphenPath = await stage(
+        hyphenExt,
+        "noop",
+        pulledModelCode(hyphenType, "hyphen"),
+      );
+      await stage(
+        underscoreExt,
+        "noop",
+        pulledModelCode(underscoreType, "underscore"),
+      );
+      // Only the hyphenated sibling is catalogued. An unescaped LIKE on
+      // the underscore extension's prefix would match its rows.
+      catalog.upsert({
+        type_normalized: hyphenType,
+        kind: "model",
+        bundle_path: "",
+        source_path: canonicalizePath(hyphenPath),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+      try {
+        await reloadPulledExtensions(
+          repoDir,
+          lockfilePath,
+          undefined,
+          stubDenoRuntime,
+        );
+
+        const underscoreRows = catalog.findBySourcePathPrefix(
+          canonicalizePath(
+            join(swampPath(repoDir, "pulled-extensions"), underscoreExt) + "/",
+          ),
+        );
+        assertEquals(
+          underscoreRows.map((r) => r.type_normalized),
+          [underscoreType],
+          "the underscore extension must be catalogued",
+        );
+      } finally {
+        modelRegistry.invalidateType(hyphenType);
+        modelRegistry.invalidateType(underscoreType);
+      }
+    },
+  );
+});
