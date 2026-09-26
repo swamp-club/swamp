@@ -1279,10 +1279,16 @@ export class ExtensionCatalogStore {
 
   /**
    * Deletes non-Tombstoned rows whose source_path is not under the
-   * given canonical repo root. Returns the paths that were pruned.
-   * Designed to run inside a transaction before I-Repo-1 so stale rows
-   * from prior container sessions (bind-mounted at a different path)
-   * don't block catalog writes.
+   * given canonical repo root and whose source file no longer exists.
+   * Returns the paths that were pruned. Designed to run inside a
+   * transaction before I-Repo-1 so stale rows from prior container
+   * sessions (bind-mounted at a different path) don't block catalog
+   * writes.
+   *
+   * A source outside the repo root that still exists is kept: extensions
+   * mounted through `.swamp-sources.yaml` can live anywhere, and a save
+   * that does not include their aggregate (a pull, or serve reload's
+   * scoped reconcile) must not delete their rows (swamp-club#2355).
    */
   pruneUnreachableSources(
     canonicalRepoRoot: string,
@@ -1297,10 +1303,10 @@ export class ExtensionCatalogStore {
       if ((row.state ?? "Indexed") === "Tombstoned") continue;
       const canonical = canonicalizePath(row.source_path);
       if (protectedPaths?.has(canonical)) continue;
-      if (!canonical.startsWith(prefix)) {
-        this.removeBySourcePath(row.source_path);
-        pruned.push(row.source_path);
-      }
+      if (canonical.startsWith(prefix)) continue;
+      if (sourceExists(row.source_path)) continue;
+      this.removeBySourcePath(row.source_path);
+      pruned.push(row.source_path);
     }
     return pruned;
   }
@@ -1537,6 +1543,19 @@ export function sourceDirsFingerprint(
  */
 function inferRepoRootFromDbPath(dbPath: string): string {
   return dirname(dirname(dbPath));
+}
+
+/**
+ * True unless the source is definitely gone. Any error other than
+ * NotFound (a permission error, say) keeps the row, since pruning deletes.
+ */
+function sourceExists(sourcePath: string): boolean {
+  try {
+    Deno.statSync(sourcePath);
+    return true;
+  } catch (error) {
+    return !(error instanceof Deno.errors.NotFound);
+  }
 }
 
 function isReadOnlyError(error: unknown): boolean {

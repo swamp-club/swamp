@@ -2093,3 +2093,51 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "reconcileUncataloguedPulled: keeps a source-mounted row outside the repo root",
+  async () => {
+    const id = crypto.randomUUID();
+    const newExt = `@test/new-${id}`;
+    const mountDir = await Deno.makeTempDir({ prefix: "swamp_2355_mount_" });
+    try {
+      await withPulledFixtureRepo(
+        async ({ repoDir, repository, catalog, lockfileRepository }) => {
+          // Mounted through .swamp-sources.yaml from outside the repo root.
+          const mountedPath = join(mountDir, "mounted.ts");
+          await Deno.writeTextFile(
+            mountedPath,
+            MINIMAL_MODEL_CODE(`@test/mounted-${id}`),
+          );
+          seedIndexedRow(catalog, {
+            sourcePath: mountedPath,
+            type: `@test/mounted-${id}`,
+            extensionName: `@local/${id}`,
+          });
+          const before = catalog.findBySourcePath(
+            canonicalizePath(mountedPath),
+          );
+          await stagePulledModel(repoDir, newExt, "noop", `${newExt}/noop`);
+
+          const service = new ReconcileFromDiskService({
+            denoRuntime: testDenoRuntime,
+            repository,
+            lockfileRepository,
+            repoDir,
+          });
+          const results = await service.reconcileUncataloguedPulled([newExt]);
+
+          assertEquals(results.map((r) => r.status), ["catalogued"]);
+          assertEquals(
+            catalog.findBySourcePath(canonicalizePath(mountedPath)),
+            before,
+            "the scoped save must not prune a live out-of-root source",
+          );
+        },
+        { [newExt]: { version: "1.0.0", files: [] } },
+      );
+    } finally {
+      await Deno.remove(mountDir, { recursive: true }).catch(() => {});
+    }
+  },
+);

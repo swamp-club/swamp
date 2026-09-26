@@ -1455,10 +1455,14 @@ unchanged sources. If a type does not fully load, it also calls
 The one other write is step 3's scoped reconcile. It adds Extension aggregates
 only for pulled lockfile entries that have none, and never changes an existing
 aggregate. It saves each extension with its own `ExtensionRepository.saveAll()`
-transaction. That save still applies saveAll's catalog-wide invariants
-(pruning rows whose source is outside the repo root, origin-conflict
-resolution, and the I-Repo-1 duplicate-type check), the same ones every
-`extension pull` save runs.
+transaction. That save still applies saveAll's catalog-wide invariants, the
+same ones every `extension pull` save runs:
+
+- It prunes rows whose source is outside the repo root and no longer exists on
+  disk. A live source mounted from outside the repo through
+  `.swamp-sources.yaml` is kept.
+- It resolves origin conflicts.
+- It runs the I-Repo-1 duplicate-type check.
 
 ### Concurrency
 
