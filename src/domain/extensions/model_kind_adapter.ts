@@ -850,7 +850,16 @@ export const modelKindAdapter: KindAdapter = {
         extended: [],
         failed: [],
       };
-      await modelKindAdapter.importAndExtendBundle!(entry, importFn, result);
+      // One extension that fails to import must not stop the rest from
+      // attaching (swamp-club#2557). It stays unmarked, so the next attach
+      // pass retries it.
+      try {
+        await modelKindAdapter.importAndExtendBundle!(entry, importFn, result);
+      } catch (error) {
+        logger
+          .warn`Skipping extension ${entry.source_path} for ${typeNormalized}: ${error}`;
+        continue;
+      }
       if (result.extended.length > 0) {
         markExtensionAttached(
           typeNormalized,

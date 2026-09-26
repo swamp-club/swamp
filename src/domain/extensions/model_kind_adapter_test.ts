@@ -24,6 +24,8 @@ import {
   modelKindAdapter,
   removeAttachedExtensionsForType,
 } from "./model_kind_adapter.ts";
+import { basename, join } from "@std/path";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ModelType } from "../models/model_type.ts";
 import { modelRegistry } from "../models/model.ts";
 import {
@@ -402,6 +404,69 @@ Deno.test("processSecondaryExport: no collision — all methods merged normally"
   } finally {
     modelRegistry.invalidateType(type);
     resetExtensionLoadWarnings();
+  }
+});
+
+// ── attachPendingExtensionsForType: per-extension isolation ────────────
+
+Deno.test("attachPendingExtensionsForType: an extension that fails to import is skipped, the rest attach, and it is retried (swamp-club#2557)", async () => {
+  const type = `@test/isolate-${crypto.randomUUID().slice(0, 8)}`;
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2557_attach_" });
+  const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+  clearAttachedExtensions();
+  registerTestModel(type, { get: true });
+  try {
+    for (const name of ["broken", "good"]) {
+      catalog.upsert({
+        source_path: join(dir, `${name}.ts`),
+        type_normalized: type,
+        kind: "extension",
+        bundle_path: join(dir, `${name}.js`),
+        version: "",
+        description: "",
+        extends_type: type,
+        source_mtime: "",
+        source_fingerprint: `fp-${name}`,
+      });
+    }
+
+    let brokenFails = true;
+    const importFn = (paths: { bundlePath: string }) => {
+      const name = basename(paths.bundlePath, ".js");
+      if (name === "broken" && brokenFails) {
+        return Promise.reject(new Error("bundle import failed"));
+      }
+      return Promise.resolve({
+        extension: makeExtension(type, [`${name}_method`]),
+      });
+    };
+
+    await modelKindAdapter.attachPendingExtensionsForType!(
+      type,
+      catalog,
+      importFn,
+    );
+    const afterFirst = modelRegistry.get(type)?.methods ?? {};
+    assertEquals("good_method" in afterFirst, true);
+    assertEquals("broken_method" in afterFirst, false);
+
+    // The failed extension was not marked attached, so a later pass
+    // attaches it once its bundle imports.
+    brokenFails = false;
+    await modelKindAdapter.attachPendingExtensionsForType!(
+      type,
+      catalog,
+      importFn,
+    );
+    assertEquals(
+      "broken_method" in (modelRegistry.get(type)?.methods ?? {}),
+      true,
+    );
+  } finally {
+    catalog.close();
+    clearAttachedExtensions();
+    modelRegistry.invalidateType(type);
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
 

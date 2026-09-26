@@ -697,11 +697,18 @@ export class ExtensionLoader {
       );
       for (const ext of extensions) {
         if (this.adapter.importAndExtendBundle) {
-          await this.adapter.importAndExtendBundle(
-            ext,
-            (paths) => this.importBundleByPath(paths),
-            { loaded: [], extended: [], failed: [] },
-          );
+          // One extension that fails to import must not take down its base
+          // type or the extensions after it (swamp-club#2557).
+          try {
+            await this.adapter.importAndExtendBundle(
+              ext,
+              (paths) => this.importBundleByPath(paths),
+              { loaded: [], extended: [], failed: [] },
+            );
+          } catch (error) {
+            this.logger
+              .warn`Skipping extension ${ext.source_path} for ${typeNormalized}: ${error}`;
+          }
         }
       }
     }
