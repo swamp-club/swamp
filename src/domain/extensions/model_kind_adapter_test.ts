@@ -646,6 +646,59 @@ Deno.test("processSecondaryExport: a failed registry merge leaves provenance unc
   });
 });
 
+// ── attachPendingExtensionsForType: files that add nothing (#2562) ────
+
+for (
+  const [label, exported] of [
+    ["an extension with no members", "empty"],
+    ["a standalone model bundle cataloged as an extension", "model"],
+  ] as const
+) {
+  Deno.test(`attachPendingExtensionsForType: ${label} is imported once, not on every pass`, async () => {
+    const type = `@test/noop-${crypto.randomUUID().slice(0, 8)}`;
+    const dir = await Deno.makeTempDir({ prefix: "swamp_2562_noop_" });
+    const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+    clearAttachedExtensions();
+    registerTestModel(type, { get: true });
+    try {
+      catalog.upsert({
+        source_path: join(dir, "noop.ts"),
+        type_normalized: type,
+        kind: "extension",
+        bundle_path: join(dir, "noop.js"),
+        version: "",
+        description: "",
+        extends_type: type,
+        source_mtime: "",
+        source_fingerprint: "fp-noop",
+      });
+      let imports = 0;
+      const importFn = () => {
+        imports++;
+        return Promise.resolve(
+          exported === "empty"
+            ? { extension: { type, methods: [] } }
+            : { model: { type } },
+        );
+      };
+      for (let pass = 0; pass < 3; pass++) {
+        await modelKindAdapter.attachPendingExtensionsForType!(
+          type,
+          catalog,
+          importFn,
+          localContributor,
+        );
+      }
+      assertEquals(imports, 1);
+    } finally {
+      catalog.close();
+      clearAttachedExtensions();
+      modelRegistry.invalidateType(type);
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  });
+}
+
 // ── attachPendingExtensionsForType: per-extension isolation ────────────
 
 Deno.test("attachPendingExtensionsForType: an extension that fails to import is skipped, the rest attach, and it is retried (swamp-club#2557)", async () => {

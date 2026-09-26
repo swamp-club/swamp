@@ -1084,11 +1084,13 @@ export class ExtensionLoader {
         const source = Deno.readTextFileSync(absolutePath);
         if (!this.adapter.exportRegex.test(source)) continue;
 
+        // A fingerprint failure must not hide the extraction warning below,
+        // so it only disables the indexed-row shortcut.
         const sourceFingerprint = await computeSourceFingerprint(
           absolutePath,
           dir,
           cache,
-        );
+        ).catch(() => undefined);
 
         // Startup reconcile indexes sources by importing their bundles, so
         // a row it wrote holds the export's real type — including exports
@@ -1101,7 +1103,10 @@ export class ExtensionLoader {
         const indexed = existing !== undefined &&
           (existing.state ?? "Indexed") !== "Tombstoned" &&
           existing.type_normalized.length > 0;
-        if (indexed && existing.source_fingerprint === sourceFingerprint) {
+        if (
+          indexed && sourceFingerprint !== undefined &&
+          existing.source_fingerprint === sourceFingerprint
+        ) {
           if (existing.bundle_path !== bundlePath) {
             catalog.upsert({
               ...existing,
@@ -1121,6 +1126,9 @@ export class ExtensionLoader {
           }
           continue;
         }
+        // As before, a file whose fingerprint cannot be computed is not
+        // indexed from source text.
+        if (sourceFingerprint === undefined) continue;
 
         catalog.upsert({
           type_normalized: extracted.typeNormalized,

@@ -1021,6 +1021,10 @@ export const modelKindAdapter: KindAdapter = {
     if (claimed.length === 0) {
       if (collided) {
         recordAttached(result, file, typeKey, attach);
+      } else if (attach !== undefined) {
+        // Nothing to add, but the file was processed: mark it so later
+        // attach passes do not import it again.
+        markExtensionAttached(typeKey, attach.sourcePath, attach.fingerprint);
       }
       return;
     }
@@ -1084,6 +1088,14 @@ export const modelKindAdapter: KindAdapter = {
       if (module.model) {
         logger
           .warn`Skipping standalone model bundle cataloged as extension: ${entry.bundle_path}`;
+        // Mark it so every later attach pass does not re-import and re-warn.
+        if (entry.extends_type) {
+          markExtensionAttached(
+            entry.extends_type,
+            entry.source_path,
+            entry.source_fingerprint ?? "",
+          );
+        }
         return;
       }
       throw new Error(
