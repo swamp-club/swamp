@@ -126,7 +126,7 @@ export function renderAuthTokenRevoke(
   }
 
   writeOutput(
-    `${green(checkmark)} Token ${bold(data.name)} revoked from collective ${
+    `${green(checkmark)} Token ${bold(data.id)} revoked from collective ${
       bold(data.collective)
     }.`,
   );

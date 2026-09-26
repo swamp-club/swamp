@@ -19,7 +19,6 @@
 
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
-import type { RevokeCollectiveTokenResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import {
@@ -34,9 +33,12 @@ import {
   validationFailed,
 } from "../errors.ts";
 
+/**
+ * A revoke swamp-club has confirmed. The server's answer carries no token
+ * metadata, so this names the token by the id that was revoked.
+ */
 export interface AuthTokenRevokeData {
   id: string;
-  name: string;
   collective: string;
 }
 
@@ -58,7 +60,7 @@ export interface AuthTokenRevokeDeps {
     collective: string,
     tokenId: string,
     signal: AbortSignal,
-  ) => Promise<RevokeCollectiveTokenResponse>;
+  ) => Promise<void>;
   isCollectiveToken: () => boolean;
   serverUrlOverride?: string;
 }
@@ -116,7 +118,7 @@ export async function* authTokenRevoke(
   };
 
   try {
-    const response = await deps.revokeToken(
+    await deps.revokeToken(
       serverUrl,
       credentials.apiKey,
       input.collective,
@@ -127,8 +129,7 @@ export async function* authTokenRevoke(
     yield {
       kind: "completed",
       data: {
-        id: response.token.id,
-        name: response.token.name,
+        id: input.tokenId,
         collective: input.collective,
       },
     };

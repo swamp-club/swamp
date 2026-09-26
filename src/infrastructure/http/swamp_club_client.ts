@@ -52,11 +52,6 @@ export interface ListCollectiveTokensResponse {
   tokens: CollectiveTokenMetadata[];
 }
 
-/** Response from revoking a collective API token — metadata only, no secrets. */
-export interface RevokeCollectiveTokenResponse {
-  token: CollectiveTokenMetadata;
-}
-
 /**
  * The server's answer to a personal API key revoking itself:
  * - `revoked`: the key was deleted.
@@ -881,12 +876,17 @@ export class SwampClubClient {
     return await res.json();
   }
 
+  /**
+   * Revoke (delete) a collective API token. swamp-club answers a successful
+   * DELETE with `{"ok":true}` and no token metadata, so a 2xx counts as revoked
+   * only when its body confirms it; any other answer throws UserError.
+   */
   async revokeCollectiveToken(
     apiKey: string,
     collectiveSlug: string,
     tokenId: string,
     signal?: AbortSignal,
-  ): Promise<RevokeCollectiveTokenResponse> {
+  ): Promise<void> {
     const res = await this.fetch(
       `/api/v1/collectives/${encodeURIComponent(collectiveSlug)}/api-tokens/${
         encodeURIComponent(tokenId)
@@ -922,7 +922,37 @@ export class SwampClubClient {
       );
     }
 
-    return await res.json();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (error) {
+      // Only the caller's own abort stays an AbortError (the fetch wrapper's rule).
+      if (
+        signal?.aborted && error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `Lost the connection to ${this.serverUrl} while reading its response, so whether token "${tokenId}" was revoked is unknown: ${message}. Check with \`swamp auth token list --collective ${collectiveSlug}\`.`,
+      );
+    }
+
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+    if (
+      typeof data !== "object" || data === null ||
+      (data as Record<string, unknown>).ok !== true
+    ) {
+      throw new UserError(
+        `${this.serverUrl} answered HTTP ${res.status} without confirming token "${tokenId}" was revoked from collective "${collectiveSlug}". Check with \`swamp auth token list --collective ${collectiveSlug}\`.`,
+      );
+    }
   }
 
   /**

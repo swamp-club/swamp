@@ -1045,6 +1045,123 @@ Deno.test("SwampClubClient - fetchRecruitLink falls back to raw text when the er
   }
 });
 
+Deno.test("SwampClubClient - revokeCollectiveToken sends DELETE and resolves on {ok:true}", async () => {
+  let seen: { method: string; path: string; apiKey: string | null } | null =
+    null;
+  const mock = startMockServer((req) => {
+    seen = {
+      method: req.method,
+      path: new URL(req.url).pathname,
+      apiKey: req.headers.get("x-api-key"),
+    };
+    return Response.json({ ok: true });
+  });
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.revokeCollectiveToken(
+      "swamp_test_key",
+      "my org",
+      "tok/1",
+    );
+    assertEquals(result, undefined);
+    assertEquals(seen, {
+      method: "DELETE",
+      path: "/api/v1/collectives/my%20org/api-tokens/tok%2F1",
+      apiKey: "swamp_test_key",
+    });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokeCollectiveToken rejects a 2xx that does not confirm the revoke", async () => {
+  const cases: { label: string; response: () => Response }[] = [
+    {
+      label: "token metadata instead of ok",
+      response: () =>
+        Response.json({ token: { id: "tok-1", name: "ci-deploy-secret" } }),
+    },
+    { label: "ok false", response: () => Response.json({ ok: false }) },
+    {
+      label: "non-JSON",
+      response: () => new Response("<html>proxy-page</html>", { status: 200 }),
+    },
+    {
+      label: "no content",
+      response: () => new Response(null, { status: 204 }),
+    },
+  ];
+
+  for (const c of cases) {
+    const mock = startMockServer(() => c.response());
+    try {
+      const client = new SwampClubClient(`http://localhost:${mock.port}`);
+      const err = await assertRejects(
+        () => client.revokeCollectiveToken("swamp_test_key", "myorg", "tok-1"),
+        UserError,
+        undefined,
+        c.label,
+      );
+      assertStringIncludes(err.message, "without confirming", c.label);
+      assertStringIncludes(err.message, "tok-1", c.label);
+      assertStringIncludes(
+        err.message,
+        "swamp auth token list --collective myorg",
+        c.label,
+      );
+      assertEquals(err.message.includes("ci-deploy-secret"), false, c.label);
+      assertEquals(err.message.includes("proxy-page"), false, c.label);
+    } finally {
+      await mock.shutdown();
+    }
+  }
+});
+
+Deno.test("SwampClubClient - revokeCollectiveToken reports an unknown outcome when the body is cut off", async () => {
+  const mock = startMockServer(() =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"ok":'));
+          controller.error(new Error("connection dropped"));
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokeCollectiveToken("swamp_test_key", "myorg", "tok-1"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "unknown");
+    assertStringIncludes(err.message, "swamp auth token list");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokeCollectiveToken surfaces the server error on 422", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Token not found" }, { status: 422 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokeCollectiveToken("swamp_test_key", "myorg", "tok-1"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "HTTP 422");
+    assertStringIncludes(err.message, "Token not found");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
 Deno.test("SwampClubClient - revokePresentingApiKey sends DELETE /api/v1/me/api-key with only the key", async () => {
   let seen: {
     method: string;

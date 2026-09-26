@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
-import type { RevokeCollectiveTokenResponse } from "../../infrastructure/http/swamp_club_client.ts";
+import { UserError } from "../../domain/errors.ts";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
 import {
@@ -35,25 +35,12 @@ const testCredentials: AuthCredentials = {
   username: "adam",
 };
 
-const testRevokeResponse: RevokeCollectiveTokenResponse = {
-  token: {
-    id: "tok-1",
-    name: "ci-deploy",
-    keyPrefix: "swamp_org_ab",
-    enabled: false,
-    expiresAt: null,
-    createdAt: "2026-07-23T00:00:00Z",
-    lastUsedAt: "2026-08-15T12:00:00Z",
-    scopes: ["extensions:push"],
-  },
-};
-
 function makeDeps(
   overrides: Partial<AuthTokenRevokeDeps> = {},
 ): AuthTokenRevokeDeps {
   return {
     loadCredentials: () => Promise.resolve(testCredentials),
-    revokeToken: () => Promise.resolve(testRevokeResponse),
+    revokeToken: () => Promise.resolve(),
     isCollectiveToken: () => false,
     ...overrides,
   };
@@ -73,7 +60,6 @@ Deno.test("authTokenRevoke: yields revoking -> completed on success", async () =
       kind: "completed",
       data: {
         id: "tok-1",
-        name: "ci-deploy",
         collective: "myorg",
       },
     },
@@ -131,7 +117,7 @@ Deno.test("authTokenRevoke: uses serverUrlOverride when provided", async () => {
   const deps = makeDeps({
     revokeToken: (serverUrl, _apiKey, _collective, _tokenId, _signal) => {
       calledUrls.push(serverUrl);
-      return Promise.resolve(testRevokeResponse);
+      return Promise.resolve();
     },
     serverUrlOverride: "https://custom.server",
   });
@@ -151,7 +137,7 @@ Deno.test("authTokenRevoke: passes correct args to revokeToken", async () => {
     revokeToken: (_serverUrl, _apiKey, collective, tokenId, _signal) => {
       capturedCollective = collective;
       capturedTokenId = tokenId;
-      return Promise.resolve(testRevokeResponse);
+      return Promise.resolve();
     },
   });
 
@@ -170,7 +156,7 @@ Deno.test("authTokenRevoke: yields cancelled error on abort", async () => {
   const deps = makeDeps({
     revokeToken: (_serverUrl, _apiKey, _collective, _tokenId, signal) => {
       signal.throwIfAborted();
-      return Promise.resolve(testRevokeResponse);
+      return Promise.resolve();
     },
   });
 
@@ -184,4 +170,33 @@ Deno.test("authTokenRevoke: yields cancelled error on abort", async () => {
   >;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "cancelled");
+});
+
+Deno.test("authTokenRevoke: propagates a UserError from revokeToken", async () => {
+  const ctx = createLibSwampContext();
+  const deps = makeDeps({
+    revokeToken: () =>
+      Promise.reject(
+        new UserError(
+          'Failed to revoke collective token (HTTP 422): {"error":"Token not found"}',
+        ),
+      ),
+  });
+
+  const events: AuthTokenRevokeEvent[] = [];
+  const err = await assertRejects(
+    async () => {
+      for await (
+        const event of authTokenRevoke(ctx, deps, {
+          collective: "myorg",
+          tokenId: "tok-1",
+        })
+      ) {
+        events.push(event);
+      }
+    },
+    UserError,
+  );
+  assertEquals(err.message.includes("Token not found"), true);
+  assertEquals(events.map((e) => e.kind), ["revoking"]);
 });
