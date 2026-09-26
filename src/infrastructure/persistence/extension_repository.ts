@@ -227,7 +227,7 @@ export class ExtensionRepository {
    * `pruneUnreachable: false` skips pruning rows whose source is outside
    * the repo root. That prune deletes every such row not in this save,
    * including live sources mounted from outside the repo, so a caller
-   * that only adds aggregates for extensions that have none (serve
+   * that only creates aggregates for extensions that have none (serve
    * reload's scoped reconcile, swamp-club#2355) turns it off.
    */
   saveAll(

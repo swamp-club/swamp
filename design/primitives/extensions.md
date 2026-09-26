@@ -1640,14 +1640,18 @@ where reconcile would dominate hot-path performance.
 
 Serve reload runs a scoped form, `reconcileUncataloguedPulled()`, for pulled
 lockfile entries that have no catalog rows, such as files a managed-config sync
-copied into a running serve. It adds aggregates only for those extensions,
+copied into a running serve. It creates aggregates only for those extensions,
 saving each separately so one failure (for example a `DuplicateTypeError`)
 rolls back only that extension. It skips local and source-mounted sources,
 orphan tombstoning, the populated markers and the >50% guardrail. The
-guardrail stops mass transitions of existing rows, and the scoped form never
-transitions an existing aggregate. Its saves also skip saveAll's prune of rows
-whose source is outside the repo root (`pruneUnreachable: false`), which would
-otherwise delete the rows of sources mounted from outside the repo.
+guardrail stops reconcile from mass transitioning existing rows, and the
+scoped form never reconciles an existing aggregate. Each save still runs
+saveAll's origin-conflict resolution across the repo, as every pull does, so it
+can clear the type on a pulled row that a local or source-mounted row also
+claims. Its saves skip saveAll's prune of rows whose source is outside the repo
+root (`pruneUnreachable: false`), which would otherwise delete the rows of
+sources mounted from outside the repo. An entry with no entry-point sources on
+disk is reported as skipped, and nothing is saved for it.
 
 **dryRun mode:** `execute({ dryRun: true })` collects transitions without
 calling `repository.saveAll()`. It returns `ReconcileTransition` records

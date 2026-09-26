@@ -267,23 +267,36 @@ export class ReconcileFromDiskService {
   }
 
   /**
+   * Returns the names, in order, that {@link reconcileUncataloguedPulled}
+   * would reconcile: those with a lockfile entry and no aggregate yet.
+   * Callers use it to skip the reconcile when nothing qualifies, so both
+   * apply the one criterion.
+   */
+  selectUncataloguedPulled(extensionNames: readonly string[]): string[] {
+    const skips = this.uncataloguedSkipReasons(extensionNames);
+    return extensionNames.filter((name) => !skips.has(name));
+  }
+
+  /**
    * Catalogues pulled lockfile entries that have no aggregate yet — files
    * that reached disk without an install, such as a managed-config sync
    * into a running serve (swamp-club#2355).
    *
-   * Adds aggregates only for the named extensions that have none; a name
-   * that already has one is returned as `skipped`, untouched. Each
-   * extension is saved with its own `saveAll`, so a failure (for example
-   * a `DuplicateTypeError`) rolls back only that extension. Each save
-   * still resolves origin conflicts and checks I-Repo-1. It skips
+   * It creates aggregates only for the named extensions that have none. A
+   * name that already has one is returned as `skipped` and its aggregate is
+   * not reconciled. Each extension is saved with its own `saveAll`, so a
+   * failure (for example a `DuplicateTypeError`) rolls back only that
+   * extension. Each save still runs saveAll's origin-conflict resolution
+   * across the repo, which can clear a pulled row's type when another
+   * origin claims it, as every pull does, and checks I-Repo-1. It skips
    * unreachable-source pruning, which would delete the rows of live
    * sources mounted from outside the repo root that this save does not
    * include.
    *
    * Unlike {@link execute}, it skips local and source-mounted sources,
    * orphan tombstoning, populated markers and the >50% guardrail. The
-   * guardrail stops mass transitions of existing rows, and this method
-   * never transitions an existing aggregate.
+   * guardrail stops reconcile from mass transitioning existing rows, and
+   * this method never reconciles an existing aggregate.
    */
   async reconcileUncataloguedPulled(
     extensionNames: readonly string[],
@@ -294,21 +307,14 @@ export class ReconcileFromDiskService {
           .map((d) => [d.name, d])
         : [],
     );
-    const lockfileEntries = this.lockfileRepository.getAllEntries();
+    const skips = this.uncataloguedSkipReasons(extensionNames);
     const cache = createFreshnessCache();
     const results: UncataloguedPulledResult[] = [];
 
     for (const name of extensionNames) {
-      if (!lockfileEntries[name]) {
-        results.push({ name, status: "skipped", reason: "no lockfile entry" });
-        continue;
-      }
-      if (this.repository.loadByName(name).length > 0) {
-        results.push({
-          name,
-          status: "skipped",
-          reason: "already catalogued",
-        });
+      const skipReason = skips.get(name);
+      if (skipReason) {
+        results.push({ name, status: "skipped", reason: skipReason });
         continue;
       }
       try {
@@ -319,9 +325,15 @@ export class ReconcileFromDiskService {
           transitions,
           cache,
         );
-        if (transitions.length > 0) {
-          this.repository.saveAll([ext], { pruneUnreachable: false });
+        if (transitions.length === 0) {
+          results.push({
+            name,
+            status: "skipped",
+            reason: "no entry-point sources on disk",
+          });
+          continue;
         }
+        this.repository.saveAll([ext], { pruneUnreachable: false });
         results.push({ name, status: "catalogued", transitions });
       } catch (error) {
         results.push({ name, status: "failed", error });
@@ -329,6 +341,29 @@ export class ReconcileFromDiskService {
     }
 
     return results;
+  }
+
+  /**
+   * The shared criterion for the scoped pulled reconcile: a name is skipped
+   * when it has no lockfile entry, or when it already has an aggregate.
+   * Returns the skip reason for each skipped name.
+   */
+  private uncataloguedSkipReasons(
+    extensionNames: readonly string[],
+  ): Map<string, string> {
+    const lockfileEntries = this.lockfileRepository.getAllEntries();
+    const catalogued = new Set(
+      this.repository.loadAll().map((ext) => ext.name),
+    );
+    const reasons = new Map<string, string>();
+    for (const name of extensionNames) {
+      if (!lockfileEntries[name]) {
+        reasons.set(name, "no lockfile entry");
+      } else if (catalogued.has(name)) {
+        reasons.set(name, "already catalogued");
+      }
+    }
+    return reasons;
   }
 
   private async reconcileAll(

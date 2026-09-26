@@ -106,7 +106,13 @@ async function catalogueUncataloguedPulled(args: {
   });
   let results: UncataloguedPulledResult[];
   try {
-    results = await reconciler.reconcileUncataloguedPulled(args.names);
+    // The prefix check that chose `names` is a cheap pre-filter. The
+    // service's own criterion (no aggregate for the name) decides, so an
+    // extension whose rows live under another root is not re-sent to the
+    // reconcile on every reload.
+    const names = reconciler.selectUncataloguedPulled(args.names);
+    if (names.length === 0) return;
+    results = await reconciler.reconcileUncataloguedPulled(names);
   } catch (err) {
     logger.warn(
       "Hot-reload: failed to catalogue new pulled extensions: {error}",
@@ -115,7 +121,7 @@ async function catalogueUncataloguedPulled(args: {
     return;
   }
   for (const result of results) {
-    if (result.status === "catalogued" && result.transitions.length > 0) {
+    if (result.status === "catalogued") {
       logger.info(
         "Hot-reload: catalogued pulled extension {extension} ({count} source(s))",
         { extension: result.name, count: result.transitions.length },

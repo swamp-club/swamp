@@ -2141,3 +2141,102 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "selectUncataloguedPulled: keeps rowless lockfile entries, drops catalogued names and names without a lockfile entry",
+  async () => {
+    const id = crypto.randomUUID();
+    const rowless = `@test/rowless-${id}`;
+    const elsewhere = `@test/elsewhere-${id}`;
+    const unlisted = `@test/unlisted-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        // Catalogued, but its rows live under another root, so a prefix
+        // check on pulled-extensions/<name>/ alone would call it
+        // uncatalogued.
+        seedIndexedRow(catalog, {
+          sourcePath: join(repoDir, ".swamp", "other-root", elsewhere, "x.ts"),
+          type: `${elsewhere}/x`,
+          extensionName: elsewhere,
+        });
+        await stagePulledModel(repoDir, rowless, "noop", `${rowless}/noop`);
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+
+        assertEquals(
+          service.selectUncataloguedPulled([rowless, elsewhere, unlisted]),
+          [rowless],
+        );
+        const results = await service.reconcileUncataloguedPulled([
+          rowless,
+          elsewhere,
+          unlisted,
+        ]);
+        assertEquals(
+          results.map((r) => [r.name, r.status]),
+          [[rowless, "catalogued"], [elsewhere, "skipped"], [
+            unlisted,
+            "skipped",
+          ]],
+          "reconcileUncataloguedPulled applies the same criterion",
+        );
+      },
+      {
+        [rowless]: { version: "1.0.0", files: [] },
+        [elsewhere]: { version: "1.0.0", files: [] },
+      },
+    );
+  },
+);
+
+Deno.test(
+  "reconcileUncataloguedPulled: an entry with no entry-point sources is skipped, not catalogued",
+  async () => {
+    const id = crypto.randomUUID();
+    const helperOnly = `@test/helper-only-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const libDir = join(
+          swampPath(repoDir, "pulled-extensions"),
+          helperOnly,
+          "models",
+          "_lib",
+        );
+        await ensureDir(libDir);
+        await Deno.writeTextFile(
+          join(libDir, "helper.ts"),
+          "export const helper = () => 1;\n",
+        );
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const results = await service.reconcileUncataloguedPulled([
+          helperOnly,
+        ]);
+
+        assertEquals(results, [{
+          name: helperOnly,
+          status: "skipped",
+          reason: "no entry-point sources on disk",
+        }]);
+        assertEquals(
+          rowsUnder(
+            catalog,
+            join(swampPath(repoDir, "pulled-extensions"), helperOnly),
+          ),
+          [],
+        );
+      },
+      { [helperOnly]: { version: "1.0.0", files: [] } },
+    );
+  },
+);

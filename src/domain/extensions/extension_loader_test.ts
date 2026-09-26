@@ -32,6 +32,7 @@ import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
+import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { bundleImportUrl, ExtensionLoader } from "./extension_loader.ts";
 import type { KindAdapter } from "./kind_adapter.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -575,15 +576,17 @@ async function writePulledModel(
   type: string,
   bundlePrefix = "",
 ): Promise<string> {
-  const { bundleNamespace: bn } = await import(
-    "../../infrastructure/persistence/paths.ts"
-  );
   const sourcePath = join(modelsDir, `${fileBase}.ts`);
   await Deno.writeTextFile(
     sourcePath,
     `export const model = { type: "${type}", name: "${fileBase}" };\n`,
   );
-  const bundleDir = join(repoDir, ".swamp", "bundles", bn(modelsDir, repoDir));
+  const bundleDir = join(
+    repoDir,
+    ".swamp",
+    "bundles",
+    bundleNamespace(modelsDir, repoDir),
+  );
   await Deno.mkdir(bundleDir, { recursive: true });
   await Deno.writeTextFile(
     join(bundleDir, `${fileBase}.js`),

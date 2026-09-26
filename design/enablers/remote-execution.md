@@ -1452,11 +1452,14 @@ bundle file and `catalog.updateSourceFingerprint()`, so later reloads skip
 unchanged sources. If a type does not fully load, it also calls
 `catalog.removeBySourcePath()` (`src/domain/extensions/extension_loader.ts`).
 
-The one other write is step 3's scoped reconcile. It adds Extension aggregates
-only for pulled lockfile entries that have none, and never changes an existing
-aggregate. It saves each extension with its own `ExtensionRepository.saveAll()`
-transaction. That save still resolves origin conflicts and runs the I-Repo-1
-duplicate-type check, as every `extension pull` save does. It passes
+The one other write is step 3's scoped reconcile. It creates Extension
+aggregates only for pulled lockfile entries that have none, and does not
+reconcile any existing aggregate. It saves each extension with its own
+`ExtensionRepository.saveAll()` transaction. That save still runs the I-Repo-1
+duplicate-type check and origin-conflict resolution across the whole repo, as
+every `extension pull` save does. The latter can clear the type on another
+extension's pulled row when a local or source-mounted row claims the same
+type. It passes
 `pruneUnreachable: false`, so it skips the prune of rows whose source is outside
 the repo root. That prune deletes every such row the save does not include,
 which would drop the rows of live sources mounted from outside the repo
