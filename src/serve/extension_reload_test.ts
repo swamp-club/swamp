@@ -19,11 +19,33 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import {
+  collectRegisteredPulledSources,
+  createExtensionDiscoverer,
   isReloading,
   performServeReload,
+  reloadPulledExtensions,
   resolveLockfilePath,
 } from "./extension_reload.ts";
+import {
+  ExtensionCatalogStore,
+  type ExtensionKind,
+} from "../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
+import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
+import {
+  bundleNamespace,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
+import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
+import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
+import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
+import { modelRegistry } from "../domain/models/model.ts";
+import { ModelType } from "../domain/models/model_type.ts";
+import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
+import "../domain/models/models.ts";
 
 Deno.test("isReloading: returns false when no reload is in progress", () => {
   assertEquals(isReloading(), false);
@@ -402,4 +424,299 @@ Deno.test("performServeReload: shares config read between triggers and webhooks"
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
+});
+
+// -- Uncatalogued pulled extensions and discovery skip (swamp-club#2355) ----
+
+const stubDenoRuntime: DenoRuntime = {
+  ensureDeno: () => Promise.resolve("/nonexistent/swamp-test/deno"),
+  getDenoEnv: () => Deno.env.toObject(),
+};
+
+const pulledModelCode = (typeId: string, description: string) => `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.09.26.1",
+  globalArguments: z.object({}),
+  resources: {
+    "data": {
+      description: "x",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 1,
+    },
+  },
+  methods: {
+    noop: {
+      description: "${description}",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+/** A pulled-extension fixture repo: lockfile, catalog and staged sources. */
+async function withPulledRepo(
+  extensionNames: readonly string[],
+  fn: (args: {
+    repoDir: string;
+    lockfilePath: string;
+    catalog: ExtensionCatalogStore;
+    stage: (
+      extName: string,
+      fileBase: string,
+      code: string,
+    ) => Promise<string>;
+  }) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_2355_reload_" });
+  await ensureDir(join(repoDir, "extensions", "models"));
+  const lockfilePath = join(
+    repoDir,
+    "extensions",
+    "models",
+    "upstream_extensions.json",
+  );
+  await Deno.writeTextFile(
+    lockfilePath,
+    JSON.stringify(
+      Object.fromEntries(
+        extensionNames.map((n) => [n, { version: "1.0.0", files: [] }]),
+      ),
+    ),
+  );
+  await ensureDir(swampPath(repoDir));
+  const catalog = new ExtensionCatalogStore(
+    swampPath(repoDir, "_extension_catalog.db"),
+  );
+  // Writes a source plus a matching pre-built bundle, as a sync delivers
+  // both, so no load path has to spawn `deno bundle`.
+  const stage = async (extName: string, fileBase: string, code: string) => {
+    const modelsDir = join(
+      swampPath(repoDir, "pulled-extensions"),
+      extName,
+      "models",
+    );
+    await ensureDir(modelsDir);
+    const sourcePath = join(modelsDir, `${fileBase}.ts`);
+    await Deno.writeTextFile(sourcePath, code);
+    const bundleDir = join(
+      swampPath(repoDir, "bundles"),
+      bundleNamespace(modelsDir, repoDir),
+    );
+    await ensureDir(bundleDir);
+    await Deno.writeTextFile(join(bundleDir, `${fileBase}.js`), code);
+    return sourcePath;
+  };
+  try {
+    await fn({ repoDir, lockfilePath, catalog, stage });
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
+
+/** Mock `deno bundle`: copies the source file to the `-o` output path. */
+const copyingBundler = async (_cmd: string, args: string[]) => {
+  const out = args[args.indexOf("-o") + 1];
+  await Deno.writeTextFile(out, await Deno.readTextFile(args[args.length - 1]));
+  return { stdout: "", stderr: "", code: 0 };
+};
+
+Deno.test("reloadPulledExtensions: catalogues an uncatalogued pulled extension and hot-reloads its next version", async () => {
+  const id = crypto.randomUUID();
+  const extName = `@test/synced-${id}`;
+  const typeId = `@test/synced-model-${id}`;
+  await withPulledRepo([extName], async ({ repoDir, lockfilePath, stage }) => {
+    const sourcePath = await stage(
+      extName,
+      "noop",
+      pulledModelCode(typeId, "noop v1"),
+    );
+    const typeCatalog = new ExtensionCatalogStore(
+      swampPath(repoDir, "_extension_catalog.db"),
+    );
+    const repository = new ExtensionRepository({
+      catalog: typeCatalog,
+      lockfileRepository: await LockfileRepository.create(lockfilePath),
+      repoRoot: repoDir,
+    });
+    const typeLoader = new ExtensionLoader(
+      stubDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      repository,
+    );
+    modelRegistry.setTypeLoader((type, lazy) =>
+      typeLoader.loadSingleType(type, lazy)
+    );
+    try {
+      const first = await reloadPulledExtensions(
+        repoDir,
+        lockfilePath,
+        undefined,
+        stubDenoRuntime,
+      );
+      assertEquals(
+        first,
+        1,
+        "the synced type is registered on the first reload",
+      );
+      assertEquals(
+        modelRegistry.get(typeId)?.methods.noop.description,
+        "noop v1",
+      );
+
+      // The next sync delivers a changed source and bundle.
+      await stage(extName, "noop", pulledModelCode(typeId, "noop v2"));
+      const { calls } = await withMockedCommand(
+        copyingBundler,
+        () =>
+          reloadPulledExtensions(
+            repoDir,
+            lockfilePath,
+            undefined,
+            stubDenoRuntime,
+          ),
+      );
+
+      assertEquals(
+        calls.filter((c) => c.args.includes(sourcePath)).length,
+        1,
+        "the changed source is rebundled by the catalog pass",
+      );
+      assertEquals(
+        modelRegistry.get(typeId)?.methods.noop.description,
+        "noop v2",
+        "the registered definition must be the new version",
+      );
+    } finally {
+      modelRegistry.clearLoadersForTesting();
+      modelRegistry.invalidateType(typeId);
+      typeCatalog.close();
+    }
+  });
+});
+
+Deno.test("collectRegisteredPulledSources: returns only registered rows of the adapter's kind under the lockfile prefixes", async () => {
+  const id = crypto.randomUUID();
+  const extName = `@test/rows-${id}`;
+  const otherExt = `@test/not-in-lockfile-${id}`;
+  await withPulledRepo([extName], ({ repoDir, catalog }) => {
+    const pulledRoot = swampPath(repoDir, "pulled-extensions");
+    const row = (
+      ext: string,
+      file: string,
+      kind: ExtensionKind,
+      type: string,
+    ) => {
+      const sourcePath = canonicalizePath(join(pulledRoot, ext, file));
+      catalog.upsert({
+        type_normalized: type,
+        kind,
+        bundle_path: "",
+        source_path: sourcePath,
+        version: "",
+        description: "",
+        extends_type: kind === "extension" ? type : "",
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+      return sourcePath;
+    };
+    const registered = row(extName, "models/a.ts", "model", `${extName}/a`);
+    row(extName, "models/b.ts", "model", `${extName}/unregistered`);
+    row(extName, "vaults/c.ts", "vault", `${extName}/c`);
+    row(extName, "models/d.ts", "extension", `${extName}/a`);
+    row(otherExt, "models/e.ts", "model", `${otherExt}/e`);
+
+    const registeredTypes = new Set([
+      `${extName}/a`,
+      `${extName}/c`,
+      `${otherExt}/e`,
+    ]);
+    const adapter = {
+      ...modelKindAdapter,
+      hasType: (type: string) => registeredTypes.has(type),
+    };
+
+    assertEquals(
+      [...collectRegisteredPulledSources(
+        catalog,
+        pulledRoot,
+        [extName],
+        adapter,
+      )],
+      [registered],
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("createExtensionDiscoverer: skips catalogued registered sources before import and still discovers new ones", async () => {
+  const id = crypto.randomUUID();
+  const knownExt = `@test/known-${id}`;
+  const newExt = `@test/new-${id}`;
+  const knownType = `@test/known-model-${id}`;
+  const newType = `@test/new-model-${id}`;
+  const importedFlag = `__swamp2355_imported_${id.replaceAll("-", "_")}`;
+  await withPulledRepo(
+    [knownExt, newExt],
+    async ({ repoDir, lockfilePath, catalog, stage }) => {
+      // The catalogued source's bundle records that it was imported.
+      const knownPath = await stage(
+        knownExt,
+        "known",
+        `globalThis.${importedFlag} = true;\n` +
+          pulledModelCode(knownType, "known"),
+      );
+      await stage(newExt, "fresh", pulledModelCode(newType, "fresh"));
+      catalog.upsert({
+        type_normalized: knownType,
+        kind: "model",
+        bundle_path: "",
+        source_path: canonicalizePath(knownPath),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+      modelRegistry.registerLazy({
+        type: ModelType.create(knownType),
+        bundlePath: "",
+        sourcePath: knownPath,
+        version: "",
+      });
+      try {
+        const discover = createExtensionDiscoverer({
+          lockfilePath,
+          repoDir,
+          denoRuntime: stubDenoRuntime,
+        });
+
+        const discovered = await discover();
+
+        assertEquals(
+          (globalThis as Record<string, unknown>)[importedFlag],
+          undefined,
+          "a catalogued source with a registered type must not be imported",
+        );
+        assertEquals(discovered, 1, "the uncatalogued source is discovered");
+        assertEquals(modelRegistry.has(newType), true);
+      } finally {
+        modelRegistry.invalidateType(knownType);
+        modelRegistry.invalidateType(newType);
+        delete (globalThis as Record<string, unknown>)[importedFlag];
+      }
+    },
+  );
 });

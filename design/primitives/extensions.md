@@ -1638,6 +1638,15 @@ deletion-sweep shim.
 and an explicit `swamp doctor extensions`. It does not run on every command,
 where reconcile would dominate hot-path performance.
 
+Serve reload runs a scoped form, `reconcileUncataloguedPulled()`, for pulled
+lockfile entries that have no catalog rows, such as files a managed-config sync
+copied into a running serve. It adds aggregates only for those extensions,
+saving each separately so one failure (for example a `DuplicateTypeError`)
+rolls back only that extension. It skips local and source-mounted sources,
+orphan tombstoning, the populated markers and the >50% guardrail. The
+guardrail stops mass transitions of existing rows, and the scoped form never
+transitions an existing aggregate.
+
 **dryRun mode:** `execute({ dryRun: true })` collects transitions without
 calling `repository.saveAll()`. It returns `ReconcileTransition` records
 (`{ source, fromState, toState, reason }`) that `swamp doctor extensions`

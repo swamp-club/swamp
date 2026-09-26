@@ -209,12 +209,37 @@ export class ExtensionLoader {
     }
   }
 
+  /**
+   * Returns true when the caller listed this source as already handled.
+   * The check runs before the source is read, so a skipped file costs no
+   * read, bundle or import (swamp-club#2355).
+   */
+  private isSkippedSource(
+    baseDir: string,
+    file: string,
+    skipSourcePaths: ReadonlySet<string> | undefined,
+  ): boolean {
+    if (!skipSourcePaths || skipSourcePaths.size === 0) return false;
+    if (!skipSourcePaths.has(canonicalizePath(resolve(baseDir, file)))) {
+      return false;
+    }
+    this.logger
+      .debug`Skipping ${file}: its ${this.adapter.kind} type is already registered`;
+    return true;
+  }
+
   async load(
     dir: string,
     options?: {
       skipAlreadyRegistered?: boolean;
       additionalDirs?: string[];
       indexOnly?: boolean;
+      /**
+       * Canonical absolute source paths to skip without reading, bundling
+       * or importing them. The caller must only pass sources whose types
+       * are already registered: no type check runs for these paths.
+       */
+      skipSourcePaths?: ReadonlySet<string>;
     },
   ): Promise<ExtensionLoadResult> {
     const result: ExtensionLoadResult = {
@@ -246,6 +271,9 @@ export class ExtensionLoader {
 
     if (options?.indexOnly) {
       for (const { file, baseDir } of allFiles) {
+        if (this.isSkippedSource(baseDir, file, options.skipSourcePaths)) {
+          continue;
+        }
         try {
           const absolutePath = resolve(baseDir, file);
           const source = await Deno.readTextFile(absolutePath);
@@ -288,6 +316,9 @@ export class ExtensionLoader {
     }> = [];
 
     for (const { file, baseDir } of allFiles) {
+      if (this.isSkippedSource(baseDir, file, options?.skipSourcePaths)) {
+        continue;
+      }
       try {
         const absolutePath = resolve(baseDir, file);
         const source = await Deno.readTextFile(absolutePath);

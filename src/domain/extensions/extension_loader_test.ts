@@ -31,6 +31,7 @@ import { toFileUrl } from "@std/path";
 import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { bundleImportUrl, ExtensionLoader } from "./extension_loader.ts";
 import type { KindAdapter } from "./kind_adapter.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -556,6 +557,152 @@ Deno.test("load: without indexOnly imports and registers types normally", async 
       true,
       "eager load must register the type",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+// -- load() skipSourcePaths (swamp-club#2355) ------------------------------
+
+/**
+ * Writes a pulled model source plus a pre-built bundle, so bundleWithCache
+ * takes the trustPulledCache fast path. Returns the source path.
+ */
+async function writePulledModel(
+  repoDir: string,
+  modelsDir: string,
+  fileBase: string,
+  type: string,
+  bundlePrefix = "",
+): Promise<string> {
+  const { bundleNamespace: bn } = await import(
+    "../../infrastructure/persistence/paths.ts"
+  );
+  const sourcePath = join(modelsDir, `${fileBase}.ts`);
+  await Deno.writeTextFile(
+    sourcePath,
+    `export const model = { type: "${type}", name: "${fileBase}" };\n`,
+  );
+  const bundleDir = join(repoDir, ".swamp", "bundles", bn(modelsDir, repoDir));
+  await Deno.mkdir(bundleDir, { recursive: true });
+  await Deno.writeTextFile(
+    join(bundleDir, `${fileBase}.js`),
+    `${bundlePrefix}export const model = { type: "${type}", name: "${fileBase}" };\n`,
+  );
+  return sourcePath;
+}
+
+function makeRegisteringAdapter(registered: Set<string>): KindAdapter {
+  return {
+    ...makeStubAdapter(registered),
+    validatePrimaryExport(exported: unknown) {
+      return {
+        success: true,
+        data: { type: (exported as { type: string }).type },
+      };
+    },
+    normalizeType(validated: Record<string, unknown>) {
+      return String(validated.type ?? "");
+    },
+    register(type: string) {
+      registered.add(type);
+    },
+  };
+}
+
+// A bundle that throws when imported: a skipped source must never reach
+// import, so any import of it shows up as a load failure.
+const THROWING_BUNDLE_PREFIX =
+  'throw new Error("skipped source was imported");\n';
+
+Deno.test("load: skipSourcePaths skips a listed source before it is imported", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2355_skip_" });
+  try {
+    const modelsDir = join(
+      dir,
+      ".swamp",
+      "pulled-extensions",
+      "@test",
+      "ext",
+      "models",
+    );
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const skippedType = `@test/skipped-${crypto.randomUUID()}`;
+    const freshType = `@test/fresh-${crypto.randomUUID()}`;
+    const skippedPath = await writePulledModel(
+      dir,
+      modelsDir,
+      "skipped",
+      skippedType,
+      THROWING_BUNDLE_PREFIX,
+    );
+    await writePulledModel(dir, modelsDir, "fresh", freshType);
+
+    const registered = new Set<string>();
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      makeRegisteringAdapter(registered),
+      dir,
+    );
+    const result = await loader.load(modelsDir, {
+      skipAlreadyRegistered: true,
+      skipSourcePaths: new Set([canonicalizePath(skippedPath)]),
+    });
+
+    assertEquals(
+      result.failed,
+      [],
+      "the skipped source's bundle must not be imported",
+    );
+    assertEquals(result.loaded, ["fresh.ts"]);
+    assertEquals(registered.has(skippedType), false);
+    assertEquals(
+      registered.has(freshType),
+      true,
+      "a source not in skipSourcePaths still loads and registers",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("load: indexOnly honours skipSourcePaths", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2355_skip_index_" });
+  try {
+    const modelsDir = join(
+      dir,
+      ".swamp",
+      "pulled-extensions",
+      "@test",
+      "ext",
+      "models",
+    );
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const skippedPath = await writePulledModel(
+      dir,
+      modelsDir,
+      "skipped",
+      `@test/skipped-${crypto.randomUUID()}`,
+    );
+    await writePulledModel(
+      dir,
+      modelsDir,
+      "fresh",
+      `@test/fresh-${crypto.randomUUID()}`,
+    );
+
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      makeRegisteringAdapter(new Set()),
+      dir,
+    );
+    const result = await loader.load(modelsDir, {
+      indexOnly: true,
+      skipSourcePaths: new Set([canonicalizePath(skippedPath)]),
+    });
+
+    assertEquals(result.loaded, ["fresh.ts"]);
+    assertEquals(result.failed, []);
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }

@@ -21,7 +21,12 @@ import { assertEquals, assertGreater } from "@std/assert";
 import { basename as pathBasename, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  bundleNamespace,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
+import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_type_error.ts";
 import { ReconcileFromDiskService } from "./reconcile_from_disk_service.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -1786,6 +1791,305 @@ Deno.test(
       await run(true),
       ["ghost.ts"],
       "scan: the on-disk datastore source is kept",
+    );
+  },
+);
+
+// -- reconcileUncataloguedPulled (swamp-club#2355) --------------------------
+
+/**
+ * Stages a pulled model source plus its pre-built bundle, so reconcile's
+ * bundleAndIndexOne takes the trusted-pulled cache path instead of
+ * spawning `deno bundle`.
+ */
+async function stagePulledModel(
+  repoDir: string,
+  extName: string,
+  fileBase: string,
+  typeId: string,
+): Promise<string> {
+  const modelsDir = join(
+    swampPath(repoDir, "pulled-extensions"),
+    extName,
+    "models",
+  );
+  await ensureDir(modelsDir);
+  const sourcePath = join(modelsDir, `${fileBase}.ts`);
+  await Deno.writeTextFile(sourcePath, MINIMAL_MODEL_CODE(typeId));
+  const bundleDir = join(
+    repoDir,
+    ".swamp",
+    "bundles",
+    bundleNamespace(modelsDir, repoDir),
+  );
+  await ensureDir(bundleDir);
+  await Deno.writeTextFile(
+    join(bundleDir, `${fileBase}.js`),
+    MINIMAL_MODEL_CODE(typeId),
+  );
+  return sourcePath;
+}
+
+function seedIndexedRow(
+  catalog: ExtensionCatalogStore,
+  args: { sourcePath: string; type: string; extensionName: string },
+): void {
+  catalog.upsertWithIdentity({
+    source_path: canonicalizePath(args.sourcePath),
+    type_normalized: args.type,
+    kind: "model",
+    bundle_path: "",
+    version: "1.0.0",
+    description: "",
+    extends_type: "",
+    source_mtime: "",
+    source_fingerprint: "fp",
+    state: "Indexed",
+    extension_name: args.extensionName,
+    extension_version: "1.0.0",
+  });
+}
+
+function rowsUnder(catalog: ExtensionCatalogStore, prefix: string) {
+  return catalog.findBySourcePathPrefix(canonicalizePath(prefix) + "/");
+}
+
+Deno.test(
+  "reconcileUncataloguedPulled: catalogues a pulled extension that has no rows",
+  async () => {
+    const id = crypto.randomUUID();
+    const extName = `@test/uncatalogued-${id}`;
+    const typeId = `@test/uncatalogued-model-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const sourcePath = await stagePulledModel(
+          repoDir,
+          extName,
+          "noop",
+          typeId,
+        );
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+
+        const results = await service.reconcileUncataloguedPulled([extName]);
+
+        assertEquals(results.map((r) => [r.name, r.status]), [
+          [extName, "catalogued"],
+        ]);
+        const row = catalog.findBySourcePath(canonicalizePath(sourcePath));
+        assertEquals(row?.type_normalized, typeId);
+        assertEquals(row?.kind, "model");
+        assertEquals(row?.extension_name, extName);
+        assertEquals(row?.bundle_path.endsWith("noop.js"), true);
+        assertEquals((row?.source_fingerprint ?? "").length > 0, true);
+      },
+      { [extName]: { version: "1.0.0", files: [] } },
+    );
+  },
+);
+
+Deno.test(
+  "reconcileUncataloguedPulled: skips an extension that is already catalogued and leaves its rows unchanged",
+  async () => {
+    const id = crypto.randomUUID();
+    const extName = `@test/already-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const extRoot = join(swampPath(repoDir, "pulled-extensions"), extName);
+        // A second source on disk that the existing aggregate does not
+        // know about: a full reconcile would index it, the scoped one
+        // must not touch this extension at all.
+        await stagePulledModel(repoDir, extName, "extra", `${extName}/extra`);
+        seedIndexedRow(catalog, {
+          sourcePath: join(extRoot, "models", "known.ts"),
+          type: `${extName}/known`,
+          extensionName: extName,
+        });
+        const before = rowsUnder(catalog, extRoot);
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const results = await service.reconcileUncataloguedPulled([extName]);
+
+        assertEquals(results.map((r) => [r.name, r.status]), [
+          [extName, "skipped"],
+        ]);
+        assertEquals(rowsUnder(catalog, extRoot), before);
+      },
+      { [extName]: { version: "1.0.0", files: [] } },
+    );
+  },
+);
+
+Deno.test(
+  "reconcileUncataloguedPulled: leaves other rows alone, tombstones no orphan and marks no kind populated",
+  async () => {
+    const id = crypto.randomUUID();
+    const newExt = `@test/new-${id}`;
+    const otherExt = `@test/other-${id}`;
+    const orphanExt = `@test/orphan-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        await stagePulledModel(repoDir, newExt, "noop", `${newExt}/noop`);
+        const localPath = join(repoDir, "extensions", "models", "local.ts");
+        await Deno.writeTextFile(
+          localPath,
+          MINIMAL_MODEL_CODE(`@test/local-${id}`),
+        );
+        seedIndexedRow(catalog, {
+          sourcePath: localPath,
+          type: `@test/local-${id}`,
+          extensionName: `@local/${id}`,
+        });
+        const pulledRoot = swampPath(repoDir, "pulled-extensions");
+        seedIndexedRow(catalog, {
+          sourcePath: join(pulledRoot, otherExt, "models", "other.ts"),
+          type: `${otherExt}/other`,
+          extensionName: otherExt,
+        });
+        // In the catalog but not in the lockfile: a full reconcile
+        // tombstones this as an orphan.
+        seedIndexedRow(catalog, {
+          sourcePath: join(pulledRoot, orphanExt, "models", "ghost.ts"),
+          type: `${orphanExt}/ghost`,
+          extensionName: orphanExt,
+        });
+        const untouched = () => [
+          catalog.findBySourcePath(canonicalizePath(localPath)),
+          ...rowsUnder(catalog, join(pulledRoot, otherExt)),
+          ...rowsUnder(catalog, join(pulledRoot, orphanExt)),
+        ];
+        const before = untouched();
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const results = await service.reconcileUncataloguedPulled([newExt]);
+
+        assertEquals(results.map((r) => r.status), ["catalogued"]);
+        assertEquals(untouched(), before);
+        for (
+          const kind of [
+            "model",
+            "vault",
+            "datastore",
+            "report",
+            "webhook",
+          ] as const
+        ) {
+          assertEquals(
+            catalog.isPopulated(kind),
+            false,
+            `scoped reconcile must not mark ${kind} populated`,
+          );
+        }
+      },
+      {
+        [newExt]: { version: "1.0.0", files: [] },
+        [otherExt]: { version: "1.0.0", files: [] },
+      },
+    );
+  },
+);
+
+Deno.test(
+  "reconcileUncataloguedPulled: a large new extension is not blocked by the >50% guardrail",
+  async () => {
+    const id = crypto.randomUUID();
+    const existingExt = `@test/existing-${id}`;
+    const bigExt = `@test/big-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const pulledRoot = swampPath(repoDir, "pulled-extensions");
+        // Ten existing rows puts the catalog over the guardrail's minimum.
+        for (let i = 0; i < 10; i++) {
+          seedIndexedRow(catalog, {
+            sourcePath: join(pulledRoot, existingExt, "models", `m${i}.ts`),
+            type: `${existingExt}/m${i}`,
+            extensionName: existingExt,
+          });
+        }
+        for (let i = 0; i < 12; i++) {
+          await stagePulledModel(repoDir, bigExt, `s${i}`, `${bigExt}/s${i}`);
+        }
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const results = await service.reconcileUncataloguedPulled([bigExt]);
+
+        assertEquals(results.map((r) => r.status), ["catalogued"]);
+        assertEquals(rowsUnder(catalog, join(pulledRoot, bigExt)).length, 12);
+      },
+      {
+        [existingExt]: { version: "1.0.0", files: [] },
+        [bigExt]: { version: "1.0.0", files: [] },
+      },
+    );
+  },
+);
+
+Deno.test(
+  "reconcileUncataloguedPulled: a type conflict fails only that extension",
+  async () => {
+    const id = crypto.randomUUID();
+    const ownerExt = `@test/owner-${id}`;
+    const clashExt = `@test/clash-${id}`;
+    const okExt = `@test/ok-${id}`;
+    const takenType = `@test/taken-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const pulledRoot = swampPath(repoDir, "pulled-extensions");
+        seedIndexedRow(catalog, {
+          sourcePath: join(pulledRoot, ownerExt, "models", "taken.ts"),
+          type: takenType,
+          extensionName: ownerExt,
+        });
+        await stagePulledModel(repoDir, clashExt, "taken", takenType);
+        await stagePulledModel(repoDir, okExt, "noop", `${okExt}/noop`);
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const results = await service.reconcileUncataloguedPulled([
+          clashExt,
+          okExt,
+        ]);
+
+        const byName = new Map(results.map((r) => [r.name, r]));
+        const clash = byName.get(clashExt);
+        assertEquals(clash?.status, "failed");
+        assertEquals(
+          clash?.status === "failed" &&
+            clash.error instanceof DuplicateTypeError,
+          true,
+        );
+        assertEquals(rowsUnder(catalog, join(pulledRoot, clashExt)), []);
+        assertEquals(byName.get(okExt)?.status, "catalogued");
+        assertEquals(rowsUnder(catalog, join(pulledRoot, okExt)).length, 1);
+      },
+      {
+        [ownerExt]: { version: "1.0.0", files: [] },
+        [clashExt]: { version: "1.0.0", files: [] },
+        [okExt]: { version: "1.0.0", files: [] },
+      },
     );
   },
 );
