@@ -65,6 +65,11 @@ import {
   recordSourceFailure,
 } from "./source_failure_recorder.ts";
 import { makeSourceLocation } from "./source_location.ts";
+import {
+  compareExtensionPrecedence,
+  type ExtensionContributor,
+  isPulledExtensionPath,
+} from "./extension_precedence.ts";
 
 /**
  * Build the dynamic import() URL for a bundle file, keyed on the bundle's
@@ -99,6 +104,18 @@ export async function bundleImportUrl(
  * Path format: .../.swamp/pulled-extensions/@scope/name/<kind>/...
  * For scoped: @scope/name. For unscoped: name.
  */
+/**
+ * The canonical form of `path` with symlinks resolved, or `path` itself
+ * when it cannot be resolved (e.g. the file no longer exists).
+ */
+function realCanonicalPath(path: string): string {
+  try {
+    return canonicalizePath(Deno.realPathSync(path));
+  } catch {
+    return path;
+  }
+}
+
 export function extractExtensionNameFromPath(
   absolutePath: string,
   repoDir: string | null,
@@ -158,6 +175,8 @@ export function extractExtensionNameFromPath(
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
+  /** Symlink-resolved canonical repo root, resolved on first use. */
+  private realRepoDir?: string;
   private readonly datastoreResolver?: DatastorePathResolver;
   private readonly repository?: ExtensionRepository;
   private readonly adapter: KindAdapter;
@@ -438,12 +457,40 @@ export class ExtensionLoader {
     }
 
     if (this.adapter.processSecondaryExport) {
-      for (const { file, module, baseDir } of secondaryFiles) {
+      // Attach the likely winner first; the outcome does not depend on this
+      // order (swamp-club#2562).
+      const ranked = secondaryFiles
+        .map((f) => ({
+          ...f,
+          contributor: this.contributorFor(resolve(f.baseDir, f.file)),
+        }))
+        .sort((a, b) =>
+          compareExtensionPrecedence(a.contributor, b.contributor)
+        );
+      // Extension files in one package often share helper modules.
+      const fingerprintCache = createFreshnessCache();
+      for (const { file, module, baseDir, contributor } of ranked) {
+        let fingerprint: string | undefined;
+        try {
+          fingerprint = await computeSourceFingerprint(
+            resolve(baseDir, file),
+            baseDir,
+            fingerprintCache,
+          );
+        } catch {
+          // Non-fatal — without a fingerprint the file is not marked
+          // attached, so a later attach pass re-imports it.
+        }
         try {
           this.adapter.processSecondaryExport(
             file,
             module[this.adapter.secondaryExportKey!],
             result,
+            contributor,
+            fingerprint === undefined ? undefined : {
+              sourcePath: canonicalizePath(resolve(baseDir, file)),
+              fingerprint,
+            },
           );
         } catch (error) {
           result.failed.push({ file, error: String(error), baseDir });
@@ -575,6 +622,7 @@ export class ExtensionLoader {
             type,
             catalog,
             (paths) => this.importBundleByPath(paths),
+            (sourcePath) => this.contributorFor(sourcePath),
           );
         }
       }
@@ -725,8 +773,15 @@ export class ExtensionLoader {
       const extensions = this.adapter.findExtensionsForType(
         catalog,
         typeNormalized,
-      );
-      for (const ext of extensions) {
+      )
+        .map((ext) => ({
+          ext,
+          contributor: this.contributorFor(ext.source_path),
+        }))
+        .sort((a, b) =>
+          compareExtensionPrecedence(a.contributor, b.contributor)
+        );
+      for (const { ext, contributor } of extensions) {
         if (this.adapter.importAndExtendBundle) {
           // One extension that fails to import must not take down its base
           // type or the extensions after it (swamp-club#2557).
@@ -735,6 +790,7 @@ export class ExtensionLoader {
               ext,
               (paths) => this.importBundleByPath(paths),
               { loaded: [], extended: [], failed: [] },
+              contributor,
             );
           } catch (error) {
             this.logger
@@ -755,6 +811,43 @@ export class ExtensionLoader {
       typeNormalized,
       catalog,
       (paths) => this.importBundleByPath(paths),
+      (sourcePath) => this.contributorFor(sourcePath),
+    );
+  }
+
+  /**
+   * Ranks an extension source for member-collision resolution
+   * (swamp-club#2562). Pulled means under one of this repo's
+   * pulled-extension roots; the rule needs only the repo root, so every
+   * loader instance — cold start, hot load, serve reload — ranks a file
+   * the same way.
+   */
+  private contributorFor(sourcePath: string): ExtensionContributor {
+    const canonical = canonicalizePath(sourcePath);
+    // Identity is the symlink-resolved path, so one file reached under two
+    // spellings of the repo root (`/tmp/r` from catalog rows, `/private/tmp/r`
+    // from a directory walk on macOS) is one contributor, not two that
+    // collide with each other.
+    const real = realCanonicalPath(canonical);
+    return {
+      sourcePath: real,
+      pulled: this.repoDir !== null && this.isPulledSource(canonical, real),
+    };
+  }
+
+  /**
+   * A source is pulled when either spelling of it sits under either
+   * spelling of the repo root's pulled roots. Mirrors the realpath fallback
+   * in {@link extractExtensionNameFromPath}.
+   */
+  private isPulledSource(canonical: string, real: string): boolean {
+    const repoDir = this.repoDir!;
+    const roots = [canonicalizePath(repoDir)];
+    this.realRepoDir ??= realCanonicalPath(roots[0]);
+    if (this.realRepoDir !== roots[0]) roots.push(this.realRepoDir);
+    return roots.some((root) =>
+      isPulledExtensionPath(canonical, root) ||
+      isPulledExtensionPath(real, root)
     );
   }
 
@@ -1022,17 +1115,51 @@ export class ExtensionLoader {
         const source = Deno.readTextFileSync(absolutePath);
         if (!this.adapter.exportRegex.test(source)) continue;
 
-        const extracted = this.adapter.extractTypeFromSource(source);
-        if (!extracted) {
-          emitTypeExtractionFailure(absolutePath, this.adapter.kind);
-          continue;
-        }
-
+        // A fingerprint failure must not hide the extraction warning below,
+        // so it only disables the indexed-row shortcut.
         const sourceFingerprint = await computeSourceFingerprint(
           absolutePath,
           dir,
           cache,
-        );
+        ).catch(() => undefined);
+
+        // Startup reconcile indexes sources by importing their bundles, so
+        // a row it wrote holds the export's real type — including exports
+        // the static extractor cannot read, such as a wrapped
+        // `export const extension = withOptions(definition)`. Keep an
+        // up-to-date row's type instead of re-deriving it from source text
+        // (swamp-club#2562). The bundle location can still have moved (a
+        // layout or datastore change), so refresh that.
+        const existing = catalog.findBySourcePath(absolutePath);
+        const indexed = existing !== undefined &&
+          (existing.state ?? "Indexed") !== "Tombstoned" &&
+          existing.type_normalized.length > 0;
+        if (
+          indexed && sourceFingerprint !== undefined &&
+          existing.source_fingerprint === sourceFingerprint
+        ) {
+          if (existing.bundle_path !== bundlePath) {
+            catalog.upsert({
+              ...existing,
+              bundle_path: bundlePath,
+              source_mtime: sourceStat.mtime?.toISOString() ?? "",
+            });
+          }
+          continue;
+        }
+
+        const extracted = this.adapter.extractTypeFromSource(source);
+        if (!extracted) {
+          // A stale indexed row is refreshed by the next stale-file scan,
+          // which imports the bundle; only warn when nothing indexed it.
+          if (!indexed) {
+            emitTypeExtractionFailure(absolutePath, this.adapter.kind);
+          }
+          continue;
+        }
+        // As before, a file whose fingerprint cannot be computed is not
+        // indexed from source text.
+        if (sourceFingerprint === undefined) continue;
 
         catalog.upsert({
           type_normalized: extracted.typeNormalized,

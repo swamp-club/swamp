@@ -28,6 +28,7 @@ import {
   type CheckDefinition,
   type CheckResult,
   type DataHandle,
+  type ExtensionMemberSet,
   FileOutputSpecSchema,
   type MethodContext,
   type MethodDefinition,
@@ -56,19 +57,165 @@ import type {
 } from "./kind_adapter.ts";
 import { emitExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { parseExtensionManifest } from "./extension_manifest.ts";
+import {
+  compareExtensionPrecedence,
+  contributorTier,
+  type ExtensionContributor,
+} from "./extension_precedence.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
 const attachedExtensions: Map<string, Map<string, string>> = new Map();
 
+/** The kind of member an extension adds to a model type. */
+export type ExtensionMemberKind = "method" | "check" | "resource";
+
+/**
+ * Which extension contributed a member, and the exact definition object it
+ * contributed. The definition reference tells an extension member apart
+ * from a base-model member that happens to share its name: a member whose
+ * current registry definition is not the recorded one did not come from
+ * the recorded extension (swamp-club#2562).
+ */
+interface MemberProvenance {
+  readonly contributor: ExtensionContributor;
+  readonly definition: unknown;
+}
+
+/** type -> `${kind}:${name}` -> provenance. */
+const memberProvenance: Map<string, Map<string, MemberProvenance>> = new Map();
+
+/**
+ * A member name that more than one source provides for one model type, as
+ * currently resolved. `winner` is the winning extension's canonical source
+ * path, or null when a base-model member wins.
+ */
+export interface ExtensionMemberCollision {
+  readonly type: string;
+  readonly memberKind: ExtensionMemberKind;
+  readonly name: string;
+  readonly winner: string | null;
+  readonly losers: readonly string[];
+}
+
+interface CollisionState {
+  winner: string | null;
+  losers: Set<string>;
+}
+
+/** type -> `${kind}:${name}` -> current collision state. */
+const memberCollisions: Map<string, Map<string, CollisionState>> = new Map();
+
 export function clearAttachedExtensions(): void {
   attachedExtensions.clear();
+  memberProvenance.clear();
+  memberCollisions.clear();
 }
 
 export function removeAttachedExtensionsForType(
   typeNormalized: string,
 ): void {
   attachedExtensions.delete(typeNormalized);
+  memberProvenance.delete(typeNormalized);
+  memberCollisions.delete(typeNormalized);
+}
+
+/**
+ * Every extension-member collision as currently resolved, sorted by type,
+ * kind and name. Read by `swamp doctor extensions`; reflects attach state,
+ * so it does not depend on warnings being re-emitted.
+ */
+export function getExtensionMemberCollisions(): ExtensionMemberCollision[] {
+  const out: ExtensionMemberCollision[] = [];
+  for (const [type, members] of memberCollisions) {
+    for (const [key, state] of members) {
+      if (state.losers.size === 0) continue;
+      const sep = key.indexOf(":");
+      out.push({
+        type,
+        memberKind: key.slice(0, sep) as ExtensionMemberKind,
+        name: key.slice(sep + 1),
+        winner: state.winner,
+        losers: [...state.losers].sort(),
+      });
+    }
+  }
+  // Code-unit order, like compareExtensionPrecedence, so the listing is the
+  // same on every host and locale.
+  const byCodeUnit = (x: string, y: string) => x < y ? -1 : x > y ? 1 : 0;
+  return out.sort((a, b) =>
+    byCodeUnit(a.type, b.type) ||
+    byCodeUnit(a.memberKind, b.memberKind) ||
+    byCodeUnit(a.name, b.name)
+  );
+}
+
+function collisionState(type: string, key: string): CollisionState {
+  let members = memberCollisions.get(type);
+  if (!members) {
+    members = new Map();
+    memberCollisions.set(type, members);
+  }
+  let state = members.get(key);
+  if (!state) {
+    state = { winner: null, losers: new Set() };
+    members.set(key, state);
+  }
+  return state;
+}
+
+function recordCollision(
+  type: string,
+  key: string,
+  winner: string | null,
+  loser: string,
+): void {
+  const state = collisionState(type, key);
+  if (state.winner !== null && state.winner !== winner) {
+    state.losers.add(state.winner);
+  }
+  state.winner = winner;
+  state.losers.add(loser);
+  if (winner !== null) state.losers.delete(winner);
+}
+
+function precedenceReason(
+  winner: ExtensionContributor,
+  loser: ExtensionContributor,
+): string {
+  return winner.pulled !== loser.pulled
+    ? `${contributorTier(winner)} beats ${contributorTier(loser)}`
+    : "same origin; the alphabetically first path wins";
+}
+
+type MemberResolution =
+  | { readonly action: "add" }
+  | { readonly action: "base" }
+  | { readonly action: "replace-self" }
+  | { readonly action: "override"; readonly prior: ExtensionContributor }
+  | { readonly action: "refuse"; readonly winner: ExtensionContributor };
+
+/**
+ * Decides what happens to one incoming member. Base-model members always
+ * win; between extensions {@link compareExtensionPrecedence} decides, so
+ * the outcome does not depend on attach order.
+ */
+function resolveMember(
+  type: string,
+  key: string,
+  existing: unknown,
+  contributor: ExtensionContributor,
+): MemberResolution {
+  if (existing === undefined) return { action: "add" };
+  const prov = memberProvenance.get(type)?.get(key);
+  if (!prov || prov.definition !== existing) return { action: "base" };
+  if (prov.contributor.sourcePath === contributor.sourcePath) {
+    return { action: "replace-self" };
+  }
+  if (compareExtensionPrecedence(contributor, prov.contributor) < 0) {
+    return { action: "override", prior: prov.contributor };
+  }
+  return { action: "refuse", winner: prov.contributor };
 }
 
 function markExtensionAttached(
@@ -82,6 +229,51 @@ function markExtensionAttached(
     attachedExtensions.set(typeNormalized, paths);
   }
   paths.set(sourcePath, fingerprint);
+}
+
+/**
+ * Which catalog source an attach pass processed. `sourcePath` is the path
+ * as the catalog spells it — the key `attachPendingExtensionsForType`
+ * looks up — which can differ from the contributor's symlink-resolved
+ * identity.
+ */
+export interface AttachRecord {
+  readonly sourcePath: string;
+  readonly fingerprint: string;
+}
+
+/**
+ * Records that an extension file has been processed for a type: it goes
+ * into `result.extended`, and — when the attach record is known — into
+ * the attach map, so a later attach pass does not import it again.
+ */
+function recordAttached(
+  result: ExtensionLoadResult,
+  file: string,
+  typeNormalized: string,
+  attach: AttachRecord | undefined,
+): void {
+  result.extended.push(file);
+  if (attach !== undefined) {
+    markExtensionAttached(
+      typeNormalized,
+      attach.sourcePath,
+      attach.fingerprint,
+    );
+  }
+}
+
+/**
+ * Pairs catalog extension rows with their contributors, sorted winner
+ * first by {@link compareExtensionPrecedence}.
+ */
+export function sortByPrecedence(
+  rows: readonly ExtensionTypeRow[],
+  contributorFor: (sourcePath: string) => ExtensionContributor,
+): Array<{ entry: ExtensionTypeRow; contributor: ExtensionContributor }> {
+  return rows
+    .map((entry) => ({ entry, contributor: contributorFor(entry.source_path) }))
+    .sort((a, b) => compareExtensionPrecedence(a.contributor, b.contributor));
 }
 
 function isExtensionAttached(
@@ -640,6 +832,8 @@ export const modelKindAdapter: KindAdapter = {
     file: string,
     exported: unknown,
     result: ExtensionLoadResult,
+    contributor: ExtensionContributor,
+    attach?: AttachRecord,
   ): void {
     const parsed = UserExtensionSchema.safeParse(exported);
     if (!parsed.success) {
@@ -652,7 +846,7 @@ export const modelKindAdapter: KindAdapter = {
     const flatMethods: Record<string, z.infer<typeof UserMethodSchema>> = {};
     for (const methodRecord of ext.methods) {
       for (const [name, method] of Object.entries(methodRecord)) {
-        if (flatMethods[name]) {
+        if (Object.hasOwn(flatMethods, name)) {
           result.failed.push({
             file,
             error:
@@ -673,21 +867,11 @@ export const modelKindAdapter: KindAdapter = {
       return;
     }
 
-    const existingMethodNames = new Set(Object.keys(targetModel.methods));
-    const methods: Record<string, MethodDefinition> = {};
-    const collidingMethods: string[] = [];
+    const typeKey = ModelType.create(ext.type).normalized;
+
+    const incomingMethods: Record<string, MethodDefinition> = {};
     for (const [name, method] of Object.entries(flatMethods)) {
-      if (existingMethodNames.has(name)) {
-        collidingMethods.push(name);
-        emitExtensionLoadWarning({
-          kind: "extension",
-          file,
-          error:
-            `method '${name}' already exists on '${ext.type}'; method not registered`,
-        });
-        continue;
-      }
-      methods[name] = {
+      incomingMethods[name] = {
         description: method.description,
         ...(method.kind ? { kind: method.kind as MethodKind } : {}),
         ...(method.rollbackOnFailure != null
@@ -698,12 +882,11 @@ export const modelKindAdapter: KindAdapter = {
       };
     }
 
-    let checks: Record<string, CheckDefinition> | undefined;
+    const incomingChecks: Record<string, CheckDefinition> = {};
     if (ext.checks && ext.checks.length > 0) {
-      const flatChecks: Record<string, z.infer<typeof UserCheckSchema>> = {};
       for (const checkRecord of ext.checks) {
         for (const [name, check] of Object.entries(checkRecord)) {
-          if (flatChecks[name]) {
+          if (Object.hasOwn(incomingChecks, name)) {
             result.failed.push({
               file,
               error:
@@ -711,68 +894,169 @@ export const modelKindAdapter: KindAdapter = {
             });
             return;
           }
-          flatChecks[name] = check;
+          incomingChecks[name] = {
+            description: check.description,
+            labels: check.labels,
+            appliesTo: check.appliesTo,
+            execute: check.execute,
+          };
         }
       }
-      const existingCheckNames = new Set(
-        Object.keys(targetModel.checks ?? {}),
-      );
-      checks = {};
-      for (const [name, check] of Object.entries(flatChecks)) {
-        if (existingCheckNames.has(name)) {
-          emitExtensionLoadWarning({
-            kind: "extension",
-            file,
-            error:
-              `check '${name}' already exists on '${ext.type}'; check not registered`,
-          });
-          continue;
-        }
-        checks[name] = {
-          description: check.description,
-          labels: check.labels,
-          appliesTo: check.appliesTo,
-          execute: check.execute,
+    }
+
+    const incomingResources: Record<string, ResourceOutputSpec> = {
+      ...(ext.resources ?? {}),
+    };
+
+    // Resolve every incoming member against what the type holds now, then
+    // apply additions and overrides in one registry merge. Refused members
+    // are recorded as they are resolved — they are not registered whatever
+    // the merge does. Provenance, and the collisions an override creates,
+    // change only after the merge succeeds.
+    const additions: ExtensionMemberSet = {};
+    const overrides: ExtensionMemberSet = {};
+    const claimed: Array<{ key: string; definition: unknown }> = [];
+    const overridden: Array<{
+      key: string;
+      label: string;
+      name: string;
+      prior: ExtensionContributor;
+    }> = [];
+    let collided = false;
+
+    const sections: Array<{
+      kind: ExtensionMemberKind;
+      set: keyof ExtensionMemberSet;
+      incoming: Record<string, unknown>;
+      existing: Record<string, unknown>;
+    }> = [
+      {
+        kind: "method",
+        set: "methods",
+        incoming: incomingMethods,
+        existing: targetModel.methods,
+      },
+      {
+        kind: "check",
+        set: "checks",
+        incoming: incomingChecks,
+        existing: targetModel.checks ?? {},
+      },
+      {
+        kind: "resource",
+        set: "resources",
+        incoming: incomingResources,
+        existing: targetModel.resources ?? {},
+      },
+    ];
+
+    for (const section of sections) {
+      for (const [name, definition] of Object.entries(section.incoming)) {
+        const key = `${section.kind}:${name}`;
+        const resolution = resolveMember(
+          typeKey,
+          key,
+          Object.hasOwn(section.existing, name)
+            ? section.existing[name]
+            : undefined,
+          contributor,
+        );
+        const addTo = (target: ExtensionMemberSet) => {
+          const bucket = (target[section.set] ??= {}) as Record<
+            string,
+            unknown
+          >;
+          bucket[name] = definition;
+          claimed.push({ key, definition });
         };
-      }
-      if (Object.keys(checks).length === 0) checks = undefined;
-    }
-
-    let resources: Record<string, ResourceOutputSpec> | undefined;
-    if (ext.resources) {
-      const existingResourceNames = new Set(
-        Object.keys(targetModel.resources ?? {}),
-      );
-      resources = {};
-      for (const [name, spec] of Object.entries(ext.resources)) {
-        if (existingResourceNames.has(name)) {
-          emitExtensionLoadWarning({
-            kind: "extension",
-            file,
-            error:
-              `resource '${name}' already exists on '${ext.type}'; resource not registered`,
-          });
-          continue;
+        switch (resolution.action) {
+          case "add":
+            addTo(additions);
+            break;
+          case "replace-self":
+            addTo(overrides);
+            break;
+          case "override":
+            addTo(overrides);
+            overridden.push({
+              key,
+              label: section.kind,
+              name,
+              prior: resolution.prior,
+            });
+            break;
+          case "base":
+            collided = true;
+            recordCollision(typeKey, key, null, contributor.sourcePath);
+            emitExtensionLoadWarning({
+              kind: "extension",
+              file: contributor.sourcePath,
+              error:
+                `${section.kind} '${name}' already exists on '${ext.type}' as a base model ${section.kind}, which wins; ${section.kind} not registered`,
+              category: "MemberCollision",
+            });
+            break;
+          case "refuse":
+            collided = true;
+            recordCollision(
+              typeKey,
+              key,
+              resolution.winner.sourcePath,
+              contributor.sourcePath,
+            );
+            emitExtensionLoadWarning({
+              kind: "extension",
+              file: contributor.sourcePath,
+              error:
+                `${section.kind} '${name}' on '${ext.type}' is also provided by ${resolution.winner.sourcePath}, which wins (${
+                  precedenceReason(resolution.winner, contributor)
+                }); ${section.kind} not registered`,
+              category: "MemberCollision",
+            });
+            break;
         }
-        resources[name] = spec;
       }
-      if (Object.keys(resources).length === 0) resources = undefined;
     }
 
-    const hasNewMethods = Object.keys(methods).length > 0;
-    const hasNewChecks = checks !== undefined;
-    const hasNewResources = resources !== undefined;
-
-    if (hasNewMethods || hasNewChecks || hasNewResources) {
-      try {
-        modelRegistry.extend(ext.type, methods, checks, resources);
-        result.extended.push(file);
-      } catch (error) {
-        result.failed.push({ file, error: String(error) });
+    if (claimed.length === 0) {
+      if (collided) {
+        recordAttached(result, file, typeKey, attach);
+      } else if (attach !== undefined) {
+        // Nothing to add, but the file was processed: mark it so later
+        // attach passes do not import it again.
+        markExtensionAttached(typeKey, attach.sourcePath, attach.fingerprint);
       }
-    } else if (collidingMethods.length > 0) {
-      result.extended.push(file);
+      return;
     }
+
+    try {
+      modelRegistry.applyExtensionMembers(ext.type, additions, overrides);
+    } catch (error) {
+      result.failed.push({ file, error: String(error) });
+      return;
+    }
+
+    let provenance = memberProvenance.get(typeKey);
+    if (!provenance) {
+      provenance = new Map();
+      memberProvenance.set(typeKey, provenance);
+    }
+    for (const { key, definition } of claimed) {
+      provenance.set(key, { contributor, definition });
+    }
+    for (const { key, label, name, prior } of overridden) {
+      recordCollision(typeKey, key, contributor.sourcePath, prior.sourcePath);
+      emitExtensionLoadWarning({
+        kind: "extension",
+        file: contributor.sourcePath,
+        error:
+          `${label} '${name}' on '${ext.type}' overrides the one from ${prior.sourcePath} (${
+            precedenceReason(contributor, prior)
+          })`,
+        category: "MemberCollision",
+      });
+    }
+    recordAttached(result, file, typeKey, attach);
   },
 
   findExtensionsForType(
@@ -792,6 +1076,7 @@ export const modelKindAdapter: KindAdapter = {
       },
     ) => Promise<Record<string, unknown>>,
     result: ExtensionLoadResult,
+    contributor: ExtensionContributor,
   ): Promise<void> {
     const module = await importFn({
       bundlePath: entry.bundle_path,
@@ -803,6 +1088,14 @@ export const modelKindAdapter: KindAdapter = {
       if (module.model) {
         logger
           .warn`Skipping standalone model bundle cataloged as extension: ${entry.bundle_path}`;
+        // Mark it so every later attach pass does not re-import and re-warn.
+        if (entry.extends_type) {
+          markExtensionAttached(
+            entry.extends_type,
+            entry.source_path,
+            entry.source_fingerprint ?? "",
+          );
+        }
         return;
       }
       throw new Error(
@@ -814,6 +1107,11 @@ export const modelKindAdapter: KindAdapter = {
       entry.source_path,
       module.extension,
       result,
+      contributor,
+      {
+        sourcePath: entry.source_path,
+        fingerprint: entry.source_fingerprint ?? "",
+      },
     );
 
     for (const failure of result.failed) {
@@ -832,12 +1130,18 @@ export const modelKindAdapter: KindAdapter = {
         sourceFingerprint?: string;
       },
     ) => Promise<Record<string, unknown>>,
+    contributorFor: (sourcePath: string) => ExtensionContributor,
   ): Promise<void> {
     const base = modelRegistry.get(typeNormalized);
     if (!base) return;
 
-    const extensions = catalog.findExtensionsForType(typeNormalized);
-    for (const entry of extensions) {
+    // Attach the likely winner first so the common case needs no override.
+    // The outcome does not depend on this order (swamp-club#2562).
+    const extensions = sortByPrecedence(
+      catalog.findExtensionsForType(typeNormalized),
+      contributorFor,
+    );
+    for (const { entry, contributor } of extensions) {
       if (
         isExtensionAttached(
           typeNormalized,
@@ -853,19 +1157,18 @@ export const modelKindAdapter: KindAdapter = {
       // One extension that fails to import must not stop the rest from
       // attaching (swamp-club#2557). It stays unmarked, so the next attach
       // pass retries it.
+      // A processed extension is marked attached by processSecondaryExport.
       try {
-        await modelKindAdapter.importAndExtendBundle!(entry, importFn, result);
+        await modelKindAdapter.importAndExtendBundle!(
+          entry,
+          importFn,
+          result,
+          contributor,
+        );
       } catch (error) {
         logger
           .warn`Skipping extension ${entry.source_path} for ${typeNormalized}: ${error}`;
         continue;
-      }
-      if (result.extended.length > 0) {
-        markExtensionAttached(
-          typeNormalized,
-          entry.source_path,
-          entry.source_fingerprint ?? "",
-        );
       }
     }
   },

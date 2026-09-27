@@ -53,10 +53,12 @@ import {
   type DoctorExtensionsReport,
   type DoctorRegistryDeps,
   type DoctorRescanSkipped,
+  extensionMemberDoctorDeps,
   ReconcileFromDiskService,
   type ReconcileTransition,
   repairExtensions,
   resolveServerUrl,
+  toDoctorWarnings,
 } from "../../libswamp/mod.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { pullExtension } from "./extension_pull.ts";
@@ -192,12 +194,16 @@ export const doctorExtensionsCommand = withRemoteOptions(
     const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
       verbose,
     });
+    const remoteReport = response.data as unknown as DoctorExtensionsReport;
     await consumeStream(
       (async function* () {
         yield {
           kind: "completed" as const,
-          report: response
-            .data as unknown as DoctorExtensionsReport,
+          // A server older than swamp-club#2562 sends no memberCollisions.
+          report: {
+            ...remoteReport,
+            memberCollisions: remoteReport.memberCollisions ?? [],
+          },
         };
       })(),
       renderer.handlers(),
@@ -377,13 +383,9 @@ export const doctorExtensionsCommand = withRemoteOptions(
           return buildAggregateState({ extensions, repoDir });
         },
         getRecentTransitions: () => reconcileTransitions,
-        getWarnings: () =>
-          getExtensionLoadWarnings().map((w) => ({
-            sourcePath: w.file,
-            category: "TypeExtractionFailed",
-            message: w.error,
-          })),
+        getWarnings: () => toDoctorWarnings(getExtensionLoadWarnings()),
         resetWarnings: resetExtensionLoadWarnings,
+        ...extensionMemberDoctorDeps(sharedCatalog),
         runRepair: repair && !rescanSkipped
           ? async (aggregateReport) => {
             // In interactive mode without --force, preview first and prompt.

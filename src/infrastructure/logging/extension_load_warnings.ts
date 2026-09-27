@@ -25,6 +25,15 @@ export type ExtensionKind =
   | "report"
   | "webhook";
 
+/**
+ * What went wrong, for consumers that group warnings (`swamp doctor
+ * extensions`). A warning raised without one keeps the historical
+ * `TypeExtractionFailed` label there.
+ */
+export type ExtensionLoadWarningCategory =
+  | "TypeExtractionFailed"
+  | "MemberCollision";
+
 export interface EmitterOptions {
   writer?: (line: string) => void;
   quiet?: boolean;
@@ -34,6 +43,7 @@ export interface ExtensionLoadWarningEvent {
   readonly kind: ExtensionKind;
   readonly file: string;
   readonly error: string;
+  readonly category?: ExtensionLoadWarningCategory;
 }
 
 interface EmitterState {
@@ -87,7 +97,12 @@ function isSilenced(options: EmitterOptions): boolean {
 }
 
 export function emitExtensionLoadWarning(
-  warning: { kind: ExtensionKind; file: string; error: string },
+  warning: {
+    kind: ExtensionKind;
+    file: string;
+    error: string;
+    category?: ExtensionLoadWarningCategory;
+  },
   options: EmitterOptions = {},
 ): void {
   const state = getState();
@@ -98,6 +113,7 @@ export function emitExtensionLoadWarning(
     kind: warning.kind,
     file: warning.file,
     error: warning.error,
+    ...(warning.category ? { category: warning.category } : {}),
   });
 
   if (isSilenced(options)) return;
@@ -121,7 +137,8 @@ export function emitTypeExtractionFailure(
       kind,
       file,
       error:
-        'type field could not be extracted from the export block — must be a string literal, e.g. type: "@collective/name"',
+        'type could not be read statically from the export block; the file is indexed from its bundle on the next load. A string-literal type (e.g. type: "@collective/name") lets swamp index it without importing.',
+      category: "TypeExtractionFailed",
     },
     options,
   );

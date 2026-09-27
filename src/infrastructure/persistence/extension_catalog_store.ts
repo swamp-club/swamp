@@ -23,6 +23,7 @@ import { ensureDirSync } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { canonicalizePath } from "./canonicalize_path.ts";
 import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
+import { isPulledExtensionPath } from "../../domain/extensions/extension_precedence.ts";
 
 const logger = getLogger(["swamp", "persistence", "extension-catalog"]);
 
@@ -1324,17 +1325,11 @@ export class ExtensionCatalogStore {
    */
   resolveOriginConflicts(repoRoot: string): OriginConflict[] {
     const canonical = canonicalizePath(repoRoot);
-    const sep = canonical.endsWith("/") ? "" : "/";
-    const pulledPrefix = `${canonical}${sep}.swamp/pulled-extensions/`;
-    const managedPulledPrefix =
-      `${canonical}${sep}.swamp/config/pulled-extensions/`;
 
     const rows = this.findAll();
 
-    const isPulledPath = (p: string): boolean => {
-      const c = canonicalizePath(p);
-      return c.startsWith(pulledPrefix) || c.startsWith(managedPulledPrefix);
-    };
+    const isPulledPath = (p: string): boolean =>
+      isPulledExtensionPath(canonicalizePath(p), canonical);
 
     let hasPulled = false;
     for (const row of rows) {

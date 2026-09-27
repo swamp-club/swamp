@@ -38,6 +38,15 @@ import type { KindAdapter } from "./kind_adapter.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
+import {
+  clearAttachedExtensions,
+  modelKindAdapter,
+} from "./model_kind_adapter.ts";
+import { modelRegistry } from "../models/model.ts";
+import {
+  getExtensionLoadWarnings,
+  resetExtensionLoadWarnings,
+} from "../../infrastructure/logging/extension_load_warnings.ts";
 
 // -- Content-addressed bundle import URLs (swamp-club#1140, #2340) -------
 
@@ -885,6 +894,104 @@ Deno.test("loadSingleType: an extension that fails to import is skipped; the bas
       catalog.close();
     }
   } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("loadSingleType then attachPendingExtensionsForType: an extension is imported once and never collides with itself (swamp-club#2562)", async () => {
+  const type = `@test/self-${crypto.randomUUID().slice(0, 8)}`;
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2562_self_" });
+  const baseBundle = join(dir, "base.js");
+  const extBundle = join(dir, "ext.js");
+  await Deno.writeTextFile(
+    baseBundle,
+    `const { z } = globalThis.__swamp_zod;
+export const model = {
+  type: "${type}",
+  version: "2026.01.01.1",
+  methods: {
+    get: { description: "get", arguments: z.object({}), execute: async () => ({}) },
+  },
+};
+`,
+  );
+  await Deno.writeTextFile(
+    extBundle,
+    `const { z } = globalThis.__swamp_zod;
+export const extension = {
+  type: "${type}",
+  methods: [{
+    probe: { description: "probe", arguments: z.object({}), execute: async () => ({}) },
+  }],
+};
+`,
+  );
+  const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+  const originalImport = modelKindAdapter.importAndExtendBundle!;
+  let imports = 0;
+  modelKindAdapter.importAndExtendBundle = (...args) => {
+    imports++;
+    return originalImport(...args);
+  };
+  resetExtensionLoadWarnings();
+  clearAttachedExtensions();
+  try {
+    catalog.upsert({
+      source_path: join(dir, "base.ts"),
+      type_normalized: type,
+      kind: "model",
+      bundle_path: baseBundle,
+      version: "2026.01.01.1",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "fp-base",
+    });
+    catalog.upsert({
+      source_path: join(dir, "ext.ts"),
+      type_normalized: type,
+      kind: "extension",
+      bundle_path: extBundle,
+      version: "",
+      description: "",
+      extends_type: type,
+      source_mtime: "",
+      source_fingerprint: "fp-ext",
+    });
+    const repository = new ExtensionRepository({
+      catalog,
+      lockfileRepository: new LockfileRepository(join(dir, "lockfile.json")),
+      repoRoot: dir,
+    });
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      modelKindAdapter,
+      dir,
+      undefined,
+      repository,
+    );
+
+    await loader.loadSingleType(type, {
+      bundlePath: baseBundle,
+      sourcePath: join(dir, "base.ts"),
+    });
+    await loader.attachPendingExtensionsForType(type);
+
+    assertEquals(imports, 1);
+    assertEquals(
+      "probe" in (modelRegistry.get(type)?.methods ?? {}),
+      true,
+    );
+    assertEquals(
+      getExtensionLoadWarnings().filter((w) => w.error.includes("probe")),
+      [],
+    );
+  } finally {
+    modelKindAdapter.importAndExtendBundle = originalImport;
+    catalog.close();
+    clearAttachedExtensions();
+    resetExtensionLoadWarnings();
+    modelRegistry.invalidateType(type);
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });

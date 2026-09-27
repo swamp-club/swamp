@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertFalse, assertStringIncludes } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type {
   DoctorExtensionsReport,
@@ -92,6 +93,7 @@ function buildPassReport(): DoctorExtensionsReport {
     orphanFiles: [],
     recentTransitions: [],
     warnings: [],
+    memberCollisions: [],
   };
 }
 
@@ -108,6 +110,7 @@ function buildFailReport(): DoctorExtensionsReport {
     orphanFiles: [],
     recentTransitions: [],
     warnings: [],
+    memberCollisions: [],
   };
 }
 
@@ -189,6 +192,7 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
       orphanFiles: [],
       recentTransitions: [],
       warnings: [],
+      memberCollisions: [],
     };
     await handlers.completed({ kind: "completed", report: reversed });
   });
@@ -255,6 +259,7 @@ Deno.test(
         ],
         recentTransitions: [],
         warnings: [],
+        memberCollisions: [],
       };
       await handlers.completed({ kind: "completed", report });
     });
@@ -293,6 +298,7 @@ Deno.test(
         ],
         recentTransitions: [],
         warnings: [],
+        memberCollisions: [],
       };
       // Drive the kind-completed events first so the registry headers
       // get rendered, then completed.
@@ -327,6 +333,88 @@ Deno.test(
     }
   },
 );
+
+function collisionReport(): DoctorExtensionsReport {
+  return {
+    ...buildPassReport(),
+    warnings: [
+      {
+        sourcePath: "/repo/.swamp/pulled-extensions/@x/y/models/p.ts",
+        category: "MemberCollision",
+        message: "method 'probe' ... which wins",
+      },
+      {
+        sourcePath: "/repo/extensions/models/wrapped.ts",
+        category: "TypeExtractionFailed",
+        message: "type could not be read statically",
+      },
+    ],
+    memberCollisions: [
+      {
+        type: "@x/base",
+        memberKind: "method",
+        name: "probe",
+        winner: "/repo/extensions/models/local.ts",
+        losers: ["/repo/.swamp/pulled-extensions/@x/y/models/p.ts"],
+      },
+      {
+        type: "@x/base",
+        memberKind: "check",
+        name: "policy",
+        winner: null,
+        losers: ["/repo/extensions/models/local.ts"],
+      },
+    ],
+  };
+}
+
+Deno.test("doctor_extensions log renderer: lists member collisions with their winners (swamp-club#2562)", async () => {
+  const out = stripAnsiCode(
+    await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("log");
+      await r.handlers().completed({
+        kind: "completed",
+        report: collisionReport(),
+      });
+    }),
+  );
+
+  assertStringIncludes(out, "2 extension member collision(s)");
+  assertStringIncludes(out, "@x/base method 'probe'");
+  assertStringIncludes(out, "wins: /repo/extensions/models/local.ts");
+  assertStringIncludes(
+    out,
+    "not registered: /repo/.swamp/pulled-extensions/@x/y/models/p.ts",
+  );
+  assertStringIncludes(out, "wins: the base model");
+  // Collision warnings are summarised above, not repeated; other warnings
+  // keep their category tag.
+  assertStringIncludes(out, "1 warning(s)");
+  assertStringIncludes(
+    out,
+    "/repo/extensions/models/wrapped.ts [TypeExtractionFailed]",
+  );
+  assertFalse(out.includes("which wins"));
+  assertStringIncludes(out, "OVERALL: PASS");
+});
+
+Deno.test("doctor_extensions json renderer: carries member collisions and warning categories (swamp-club#2562)", async () => {
+  const out = await captureStdout(async () => {
+    const r = createDoctorExtensionsRenderer("json");
+    await r.handlers().completed({
+      kind: "completed",
+      report: collisionReport(),
+    });
+  });
+
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.overallStatus, "pass");
+  assertEquals(parsed.memberCollisions, collisionReport().memberCollisions);
+  assertEquals(
+    parsed.warnings.map((w: { category: string }) => w.category),
+    ["MemberCollision", "TypeExtractionFailed"],
+  );
+});
 
 function sampleTransitions(): ReconcileTransition[] {
   return [

@@ -714,10 +714,50 @@ This supports the push/pull development loop: while you edit a local source that
 is also pulled from the registry, `extension pull` succeeds and the local types
 take precedence. The in-memory registry always worked this way (`load()`
 processes local directories first and deduplicates with `hasType()`); the
-catalog now matches.
+catalog now matches. That dedupe covers primary types only. Members that
+`export const extension` files add to a type follow the rules below.
 
 To re-activate pulled types after removing a local source, run
 `swamp doctor extensions` or any command that rescans the catalog.
+
+### Extension Member Collisions
+
+Several `export const extension` files can add a member (a method, check or
+resource spec) with the same name to one model type. Only one of them is
+registered, and the winner does not depend on catalog order or on which attach
+path ran (swamp-club#2562):
+
+1. A member the base model defines always wins.
+2. Between extensions, a non-pulled source (local or source-mounted) beats a
+   pulled one. A source is pulled when its path is under
+   `<repo>/.swamp/pulled-extensions/` or `<repo>/.swamp/config/pulled-extensions/`
+   (`isPulledExtensionPath`, which `resolveOriginConflicts` shares).
+3. Within one tier, the lexicographically smaller canonical path wins, the same
+   tie-break as I2.
+
+The model kind adapter records which extension contributed each member, along
+with the definition it contributed. When a higher-ranked extension attaches
+later, whether through a stale rescan, an auto-install, or serve reload,
+`ModelRegistry.applyExtensionMembers` replaces the lower-ranked member in one
+immutable merge. `extend()` itself still refuses to replace anything. A source
+that re-attaches replaces its own members silently. Because the record also
+stores the definition object, a member whose current definition is not the
+recorded one counts as a base member, which wins. Each collision emits one
+`MemberCollision` warning that names both files and the winner, and
+`getExtensionMemberCollisions()` exposes the resolved state for
+`swamp doctor extensions`. The loser's other members stay registered, so an
+extension can end up partly active.
+
+Every attach path (`load()`, `loadSingleType`, and
+`attachPendingExtensionsForType`) marks a processed extension attached by
+source path and fingerprint, so a later pass does not import it again.
+
+Cold-start indexing defers to rows written by the import-based reconcile. When
+`populateCatalogFromDir` finds an indexed row with the same fingerprint, it
+keeps that row instead of re-reading the type from source text. That keeps
+exports the static extractor cannot read, such as
+`export const extension = withOptions(definition)`, from warning on every
+catalog rebuild.
 
 ## Split Extensions Directory (`--extensions-dir`)
 
@@ -1716,6 +1756,15 @@ with `--verbose`. It comes through the
 free of infrastructure.
 
 **Repair safety:** repair never touches Indexed and Bundled rows.
+
+**Member collisions and warning categories:** after the registries load, doctor
+loads every model type that an extension row targets, so extensions attach and
+collisions resolve. The report's `memberCollisions` array lists each collision
+with its winner (null when a base-model member wins) and its losers. Each
+warning keeps the category it was raised with (`TypeExtractionFailed`,
+`MemberCollision`, or `ExtensionAttachFailed`). Both are advisory and never
+change `overallStatus`. The CLI and the serve admin handler build these through
+the same helpers, `toDoctorWarnings` and `extensionMemberDoctorDeps`.
 
 ## Lazy Per-Bundle Loading
 

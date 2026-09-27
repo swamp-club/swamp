@@ -329,17 +329,42 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           );
         }
 
-        if (e.report.warnings.length > 0) {
+        if (e.report.memberCollisions.length > 0) {
           writeOutput(
             `\n${yellow("⚠")} ${
               bold(
-                `${e.report.warnings.length} warning(s) (advisory, not failures):`,
+                `${e.report.memberCollisions.length} extension member collision(s) (advisory, not failures):`,
               )
             }`,
           );
-          for (const w of e.report.warnings) {
+          for (const c of e.report.memberCollisions) {
             writeOutput(
-              `    ${yellow("•")} ${w.sourcePath}`,
+              `    ${yellow("•")} ${c.type} ${c.memberKind} '${c.name}'`,
+            );
+            writeOutput(
+              `      ${dim("wins:")} ${c.winner ?? "the base model"}`,
+            );
+            for (const loser of c.losers) {
+              writeOutput(`      ${dim("not registered:")} ${loser}`);
+            }
+          }
+        }
+
+        // Collision warnings are summarised in the section above.
+        const warnings = e.report.warnings.filter((w) =>
+          w.category !== "MemberCollision"
+        );
+        if (warnings.length > 0) {
+          writeOutput(
+            `\n${yellow("⚠")} ${
+              bold(
+                `${warnings.length} warning(s) (advisory, not failures):`,
+              )
+            }`,
+          );
+          for (const w of warnings) {
+            writeOutput(
+              `    ${yellow("•")} ${w.sourcePath} ${dim(`[${w.category}]`)}`,
             );
             writeOutput(
               `      ${dim(w.message)}`,
@@ -446,6 +471,7 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           ? Object.fromEntries(e.report.loaderErrors)
           : {};
         output.warnings = e.report.warnings;
+        output.memberCollisions = e.report.memberCollisions;
         output.recentTransitions = e.report.recentTransitions.map((t) => ({
           sourcePath: t.source.canonicalPath,
           fromState: t.fromState,
