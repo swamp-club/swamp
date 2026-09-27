@@ -19,6 +19,7 @@
 
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { maxOf } from "../../domain/array_extrema.ts";
 import {
   type ActiveRun,
   STALE_TTL_MS,
@@ -37,7 +38,7 @@ function tableLines(
   colorCell?: (columnIndex: number, value: string) => string,
 ): string[] {
   const widths = headers.map((header, i) =>
-    Math.max(header.length, ...rows.map((row) => row[i].length))
+    Math.max(header.length, maxOf(rows.map((row) => row[i].length)) ?? 0)
   );
   const lines: string[] = [
     dim(headers.map((header, i) => header.padEnd(widths[i])).join("  ")),
@@ -162,10 +163,11 @@ export function writeDoctorRunsLog(
       formatDuration(Date.now() - r.startedAt.getTime()),
       String(r.pid),
     ]);
-    lines.push(...tableLines(headers, rows, (col, value) => {
+    const table = tableLines(headers, rows, (col, value) => {
       if (col === 2) return dim(value);
       return value;
-    }));
+    });
+    for (const line of table) lines.push(line);
   }
 
   if (stale.length > 0) {
@@ -180,11 +182,12 @@ export function writeDoctorRunsLog(
       String(r.pid),
       r.hostname,
     ]);
-    lines.push(...tableLines(headers, rows, (col, value) => {
+    const table = tableLines(headers, rows, (col, value) => {
       if (col === 2) return dim(value);
       if (col === 3) return red(value);
       return value;
-    }));
+    });
+    for (const line of table) lines.push(line);
 
     if (fix) {
       lines.push("");

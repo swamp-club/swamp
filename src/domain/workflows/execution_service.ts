@@ -162,6 +162,7 @@ import type { ReportFilterOptions } from "../reports/report_execution_service.ts
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
+import { minOf } from "../array_extrema.ts";
 
 /** Parent-scope roots a deferred expression may read; anything else is scope-free. */
 const SCOPED_REFERENCE = /\b(inputs|self|run|steps)\b/;
@@ -3364,9 +3365,7 @@ export class WorkflowExecutionService {
         });
 
         // Resolve: step (min across level) > job > workflow > global
-        const levelStepConc = stepConcurrencies.length > 0
-          ? Math.min(...stepConcurrencies)
-          : undefined;
+        const levelStepConc = minOf(stepConcurrencies);
         const stepConcurrency = resolveEffectiveConcurrency(
           levelStepConc ?? job.concurrency ?? workflow.concurrency,
           globalLimit,

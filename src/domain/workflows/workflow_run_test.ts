@@ -1925,3 +1925,23 @@ Deno.test("StepRun: the reset marker and failure kind survive persistence", () =
   assertEquals("resetByResume" in plain, false);
   assertEquals("failureKind" in plain, false);
 });
+
+Deno.test("JobRun.replaceExpandedSteps: expands more steps than fit in a spread call", () => {
+  // splice(i, 1, ...insertions) threw RangeError above ~125k expanded steps
+  // (swamp-club#2565).
+  const count = 150_000;
+  const jobRun = JobRun.pending("main", ["before", "deploy", "after"]);
+  const steps = jobRun.steps;
+  const names = Array.from({ length: count }, (_, i) => `deploy-${i}`);
+
+  jobRun.replaceExpandedSteps("deploy", names);
+
+  assertEquals(jobRun.steps.length, count + 2);
+  assertEquals(jobRun.steps[0].stepName, "before");
+  assertEquals(jobRun.steps[1].stepName, "deploy-0");
+  assertEquals(jobRun.steps[count].stepName, `deploy-${count - 1}`);
+  assertEquals(jobRun.steps[count + 1].stepName, "after");
+  assertEquals(jobRun.getStep("deploy"), undefined);
+  // Edited in place: a steps array read before the call sees the expansion.
+  assertEquals(steps.length, count + 2);
+});

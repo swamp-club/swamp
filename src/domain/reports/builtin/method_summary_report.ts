@@ -163,7 +163,9 @@ export const methodSummaryReport: ReportDefinition = {
     }
 
     if (dataHandles.length > 0) {
-      lines.push(...renderPointersMarkdown(definition.name, dataHandles));
+      for (const line of renderPointersMarkdown(definition.name, dataHandles)) {
+        lines.push(line);
+      }
     }
 
     const markdown = lines.join("\n");

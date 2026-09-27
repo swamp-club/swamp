@@ -122,7 +122,7 @@ export class JsonTelemetryRepository implements TelemetryRepository {
 
     while (current <= end) {
       const dayEntries = await this.findByDate(current);
-      entries.push(...dayEntries);
+      for (const entry of dayEntries) entries.push(entry);
       current.setDate(current.getDate() + 1);
     }
 

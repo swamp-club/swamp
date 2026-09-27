@@ -66,7 +66,9 @@ export class InputValidationService {
       }
     }
 
-    errors.push(...this.validateEntries(inputs, schema));
+    for (const error of this.validateEntries(inputs, schema)) {
+      errors.push(error);
+    }
 
     return {
       valid: errors.length === 0,
@@ -115,7 +117,7 @@ export class InputValidationService {
         : undefined;
       if (propSchema) {
         const propErrors = this.validateProperty(key, value, propSchema);
-        errors.push(...propErrors);
+        for (const error of propErrors) errors.push(error);
       } else if (schema.additionalProperties === false) {
         errors.push({
           path: key,
@@ -226,7 +228,7 @@ export class InputValidationService {
     // Array validation
     if (schema.type === "array" && Array.isArray(value)) {
       const arrayErrors = this.validateArray(path, value, schema);
-      errors.push(...arrayErrors);
+      for (const error of arrayErrors) errors.push(error);
     }
 
     // Object validation
@@ -238,7 +240,7 @@ export class InputValidationService {
         value as Record<string, unknown>,
         schema,
       );
-      errors.push(...objectErrors);
+      for (const error of objectErrors) errors.push(error);
     }
 
     return errors;
@@ -337,7 +339,7 @@ export class InputValidationService {
           value[i],
           schema.items,
         );
-        errors.push(...itemErrors);
+        for (const error of itemErrors) errors.push(error);
       }
     }
 
@@ -376,7 +378,7 @@ export class InputValidationService {
             propValue,
             propSchema,
           );
-          errors.push(...propErrors);
+          for (const error of propErrors) errors.push(error);
         } else if (schema.additionalProperties === false) {
           errors.push({
             path: `${path}.${key}`,
@@ -392,7 +394,7 @@ export class InputValidationService {
             propValue,
             schema.additionalProperties,
           );
-          errors.push(...propErrors);
+          for (const error of propErrors) errors.push(error);
         }
       }
     } else if (
@@ -406,7 +408,7 @@ export class InputValidationService {
           propValue,
           schema.additionalProperties,
         );
-        errors.push(...propErrors);
+        for (const error of propErrors) errors.push(error);
       }
     }
 

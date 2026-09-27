@@ -246,26 +246,26 @@ export class DataAccessService {
         (item) => item.data.tags["modelName"] === modelName,
       );
       if (hasNameTag) {
-        results.push(
-          ...items.map((item) => ({
+        for (const item of items) {
+          results.push({
             data: item.data,
             modelType: item.modelType,
             modelId: item.modelId,
-          })),
-        );
+          });
+        }
         continue;
       }
 
       // Tier 2: single-definition heuristic — only if this is the sole
       // definition of this type
       if (allDefsOfType.length === 1) {
-        results.push(
-          ...items.map((item) => ({
+        for (const item of items) {
+          results.push({
             data: item.data,
             modelType: item.modelType,
             modelId: item.modelId,
-          })),
-        );
+          });
+        }
       }
     }
 

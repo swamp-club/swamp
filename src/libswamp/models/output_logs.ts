@@ -212,7 +212,7 @@ export async function* modelOutputLogs(
           if (content) {
             const text = new TextDecoder().decode(content);
             const lines = text.split("\n").filter((line) => line.length > 0);
-            allEntries.push(...lines);
+            for (const line of lines) allEntries.push(line);
           }
         }
       }

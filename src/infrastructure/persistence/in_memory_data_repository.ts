@@ -35,6 +35,7 @@ import {
   type UnifiedDataRepository,
 } from "../../domain/data/repositories.ts";
 import type { CatalogStore } from "./catalog_store.ts";
+import { maxOf } from "../../domain/array_extrema.ts";
 
 const SEP = "\0";
 
@@ -170,7 +171,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     const fromLatest = this.getLatestVersionNumber(type, modelId, dataName) ??
       0;
     const versions = this.listVersionsSync(type, modelId, dataName);
-    const fromMap = versions.length > 0 ? Math.max(...versions) : 0;
+    const fromMap = maxOf(versions) ?? 0;
     return Math.max(fromLatest, fromMap) + 1;
   }
 

@@ -399,9 +399,13 @@ async function listFilesRecursive(
     for await (const entry of Deno.readDir(dir)) {
       const relPath = prefix ? join(prefix, entry.name) : entry.name;
       if (entry.isDirectory && !entry.isSymlink) {
-        files.push(
-          ...await listFilesRecursive(join(dir, entry.name), relPath),
-        );
+        // Loop, not push(...): one directory can hold more files than fit
+        // in a spread call (swamp-club#2565).
+        for (
+          const file of await listFilesRecursive(join(dir, entry.name), relPath)
+        ) {
+          files.push(file);
+        }
       } else {
         files.push(relPath);
       }

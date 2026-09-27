@@ -710,7 +710,11 @@ export class YamlOutputRepository implements OutputRepository {
       for await (const entry of Deno.readDir(dir)) {
         const path = join(dir, entry.name);
         if (entry.isDirectory) {
-          files.push(...await this.collectFiles(path, extension));
+          // Loop, not push(...): one method directory can hold more outputs
+          // than fit in a spread call (swamp-club#2565).
+          for (const file of await this.collectFiles(path, extension)) {
+            files.push(file);
+          }
         } else if (entry.isFile && entry.name.endsWith(extension)) {
           files.push(path);
         }

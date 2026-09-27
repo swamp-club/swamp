@@ -216,7 +216,7 @@ export async function* datastoreSetupFilesystem(
         filesCopied = result.filesCopied;
         bytesCopied = result.bytesCopied;
         directoriesMigrated = result.directoriesMigrated;
-        errors.push(...result.errors);
+        for (const error of result.errors) errors.push(error);
 
         // Verify migration
         const verification = await deps.verifyMigration(
@@ -464,7 +464,7 @@ export async function* datastoreSetupExtension(
           migrationDest,
           config,
         );
-        errors.push(...result.errors);
+        for (const error of result.errors) errors.push(error);
         if (result.errors.length > 0) onlyTimeouts = false;
         filesCopied = result.filesCopied;
         migrationResult = result;
