@@ -105,7 +105,7 @@ export class StoreSink implements AuditSink {
   }
 
   async write(events: readonly AuditEvent[]): Promise<void> {
-    this.#batch.push(...events);
+    for (const event of events) this.#batch.push(event);
     if (this.#batch.length >= this.#batchSize) {
       await this.#writeBatch();
     }

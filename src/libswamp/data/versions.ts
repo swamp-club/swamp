@@ -32,6 +32,7 @@ import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { maxOf } from "../../domain/array_extrema.ts";
 /** Version information for a single data entry. */
 export interface DataVersionInfo {
   version: number;
@@ -153,7 +154,7 @@ export async function* dataVersions(
       }
 
       const versions: DataVersionInfo[] = [];
-      const latestVersion = Math.max(...versionNumbers);
+      const latestVersion = maxOf(versionNumbers);
 
       for (const version of versionNumbers) {
         const data = await deps.findByName(

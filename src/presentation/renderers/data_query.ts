@@ -26,6 +26,7 @@ import type {
 } from "../../libswamp/mod.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { maxOf } from "../../domain/array_extrema.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { Table } from "@cliffy/table";
@@ -166,7 +167,7 @@ function renderListTable(
     return "No matching data found.";
   }
 
-  const maxCols = Math.max(...projected.rows.map((r) => r.length));
+  const maxCols = maxOf(projected.rows.map((r) => r.length)) ?? 0;
   const headers = Array.from({ length: maxCols }, (_, i) => String(i + 1));
   const rows = projected.rows.map((row) => row.map((cell) => formatCell(cell)));
 

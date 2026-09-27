@@ -72,6 +72,38 @@ Deno.test("dataVersions yields resolving then completed", async () => {
   assertEquals(completed.data.versions[0].isLatest, true);
 });
 
+Deno.test(
+  "dataVersions marks the highest version latest past the spread-argument ceiling",
+  async () => {
+    // Math.max(...versions) threw RangeError above ~125k versions
+    // (swamp-club#2565).
+    const count = 150_000;
+    const deps = makeDeps({
+      listVersions: () =>
+        Promise.resolve(Array.from({ length: count }, (_, i) => i + 1)),
+    });
+    const events = await collect<DataVersionsEvent>(
+      dataVersions(createLibSwampContext(), deps, {
+        modelIdOrName: "my-model",
+        dataName: "output",
+      }),
+    );
+
+    assertEquals(events[1].kind, "completed");
+    const completed = events[1] as Extract<
+      DataVersionsEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.data.total, count);
+    assertEquals(completed.data.versions[0].version, count);
+    assertEquals(completed.data.versions[0].isLatest, true);
+    assertEquals(
+      completed.data.versions.filter((v) => v.isLatest).length,
+      1,
+    );
+  },
+);
+
 Deno.test("dataVersions yields error when model not found", async () => {
   const deps = makeDeps({
     lookupDefinition: () => Promise.resolve(null),

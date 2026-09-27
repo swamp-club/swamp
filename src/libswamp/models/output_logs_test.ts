@@ -144,6 +144,29 @@ Deno.test("modelOutputLogs yields log lines", async () => {
   assertEquals(completed.data.totalLines, 2);
 });
 
+Deno.test("modelOutputLogs reads a log with more lines than fit in a spread call", async () => {
+  // push(...lines) threw RangeError above ~125k lines (swamp-club#2565).
+  const count = 150_000;
+  const text = Array.from({ length: count }, (_, i) => `line${i}`).join("\n");
+  const deps = makeDeps({
+    getContent: () => Promise.resolve(new TextEncoder().encode(text)),
+  });
+  const events = await collect<ModelOutputLogsEvent>(
+    modelOutputLogs(createLibSwampContext(), deps, {
+      outputIdArg: "out-123",
+      tail: 1,
+    }),
+  );
+
+  assertEquals(events[1].kind, "completed");
+  const completed = events[1] as Extract<
+    ModelOutputLogsEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.totalLines, count);
+  assertEquals(completed.data.lines, [`line${count - 1}`]);
+});
+
 Deno.test("modelOutputLogs applies tail", async () => {
   const deps = makeDeps();
   const events = await collect<ModelOutputLogsEvent>(

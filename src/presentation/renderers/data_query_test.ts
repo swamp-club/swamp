@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import type { DataRecord } from "../../libswamp/mod.ts";
-import { createDataQueryRenderer } from "./data_query.ts";
+import {
+  createDataQueryRenderer,
+  renderQueryResultsMarkdown,
+} from "./data_query.ts";
 
 function makeRecord(
   overrides: Partial<DataRecord> = {},
@@ -179,4 +182,24 @@ Deno.test("renderJson: empty attributes produce empty content object", () => {
   const results = output.results as Record<string, unknown>[];
   assertEquals(results[0].content, {});
   assertEquals(results[0].attributes, undefined);
+});
+
+Deno.test("renderQueryResultsMarkdown: renders more list rows than fit in a spread call", () => {
+  // Math.max(...rows.map(...)) threw RangeError above ~125k rows, and data
+  // query is unlimited by default (swamp-club#2565).
+  const count = 150_000;
+  const rows = Array.from({ length: count }, (_, i) => [i]);
+  rows[count - 1] = [1, 2, 3];
+
+  const md = renderQueryResultsMarkdown({
+    predicate: "true",
+    results: [],
+    projected: { shape: "list", rows },
+    total: count,
+    limited: false,
+  });
+
+  const lines = md.split("\n");
+  assertEquals(lines[0], "| 1 | 2 | 3 |");
+  assertEquals(lines.length, count + 2);
 });

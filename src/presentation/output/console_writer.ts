@@ -19,6 +19,7 @@
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { maxOf } from "../../domain/array_extrema.ts";
 
 export type ColorFn = (str: string) => string;
 
@@ -305,7 +306,7 @@ export function renderDataBox(
   const allEntries = sections.flatMap((s, i) => i > 0 ? ["", ...s] : s);
 
   const maxWidth = Math.min(
-    Math.max(...allEntries.map((e) => stripAnsi(e).length), 20),
+    Math.max(maxOf(allEntries.map((e) => stripAnsi(e).length)) ?? 0, 20),
     80,
   );
   const boxWidth = maxWidth + 2;

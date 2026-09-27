@@ -691,7 +691,13 @@ export class JobRun implements TriggerEvaluationContext {
         insertions.push(StepRun.pending(name, templateName));
       }
     }
-    this._steps.splice(templateIndex, 1, ...insertions);
+    // Edit in place (callers may hold the `steps` array) without spreading
+    // `insertions` into splice: a forEach can expand to more steps than fit
+    // in a spread call (swamp-club#2565).
+    const after = this._steps.splice(templateIndex);
+    after.shift();
+    for (const step of insertions) this._steps.push(step);
+    for (const step of after) this._steps.push(step);
   }
 
   /**

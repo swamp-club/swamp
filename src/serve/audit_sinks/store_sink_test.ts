@@ -296,3 +296,24 @@ Deno.test("StoreSink: timer flush during close does not duplicate events", async
   const parsed = JSON.parse(content.trim());
   assertEquals(parsed.action, "event-1");
 });
+
+Deno.test("StoreSink: write accepts more events than fit in a spread call", async () => {
+  // push(...events) threw RangeError above ~125k events (swamp-club#2565).
+  const count = 150_000;
+  const store = createMockStore();
+  const sink = new StoreSink({
+    stores: [store],
+    batchSize: count + 1,
+    flushIntervalMs: 60_000,
+  });
+  const event = makeEvent("bulk");
+
+  await sink.write(Array.from({ length: count }, () => event));
+  await sink.close();
+
+  let lines = 0;
+  for (const data of store.written.values()) {
+    lines += decoder.decode(data).trim().split("\n").length;
+  }
+  assertEquals(lines, count);
+});

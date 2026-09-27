@@ -38,6 +38,7 @@ import {
   type ModelTypeInput,
 } from "../../domain/models/model_type.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
+import { maxOf } from "../../domain/array_extrema.ts";
 import type {
   HydrateFileHook,
   MarkDirtyHook,
@@ -930,8 +931,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
       // Update latest marker if needed
       const versions = await this.listVersions(type, modelId, dataName);
-      if (versions.length > 0) {
-        const newLatest = Math.max(...versions);
+      const newLatest = maxOf(versions);
+      if (newLatest !== undefined) {
         await this.updateLatestMarker(type, modelId, dataName, newLatest);
         // Update catalog to reflect new latest version
         const latestData = await this.findByName(
@@ -1073,7 +1074,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // state where both old and new names have valid active data.
     try {
       const versions = await this.listVersions(type, modelId, oldName);
-      const nextTombstoneVersion = Math.max(...versions) + 1;
+      const nextTombstoneVersion = (maxOf(versions) ?? 0) + 1;
       const tombstone = oldData.withRenameMarker({
         version: nextTombstoneVersion,
         renamedTo: newName,
@@ -1141,11 +1142,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // Otherwise, reset the latest marker to the highest remaining version
         // to avoid a corrupted marker pointing to the deleted version.
         const remaining = await this.listVersions(type, modelId, newName);
-        if (remaining.length === 0) {
+        const maxRemaining = maxOf(remaining);
+        if (maxRemaining === undefined) {
           const dataNameDir = this.getDataNameDir(type, modelId, newName);
           await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
         } else {
-          const maxRemaining = Math.max(...remaining);
           await this.updateLatestMarker(type, modelId, newName, maxRemaining);
         }
       } catch (rollbackError) {
@@ -1445,7 +1446,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
     // Final fallback: scan version directories
     const versions = this.listVersionsSync(type, modelId, dataName);
-    return versions.length > 0 ? Math.max(...versions) : null;
+    return maxOf(versions) ?? null;
   }
 
   findByNameSync(
@@ -1768,6 +1769,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // Keep versions within duration
         const duration = parseDataDuration(gc);
         const cutoff = Date.now() - duration;
+        const latestVersion = maxOf(versions);
 
         for (const version of versions) {
           const versionData = await this.findByName(
@@ -1778,7 +1780,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           );
           if (versionData && versionData.createdAt.getTime() < cutoff) {
             // Don't remove if it's the only/latest version
-            if (version !== Math.max(...versions)) {
+            if (version !== latestVersion) {
               versionsToRemove.push(version);
             }
           }
@@ -1844,8 +1846,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           modelId,
           data.name,
         );
-        if (currentVersions.length > 0) {
-          const latestVersion = Math.max(...currentVersions);
+        const latestVersion = maxOf(currentVersions);
+        if (latestVersion !== undefined) {
           await this.updateLatestMarker(
             type,
             modelId,
@@ -1914,7 +1916,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await Deno.mkdir(dataNameDir, { recursive: true });
 
     const versions = await this.listVersions(type, modelId, dataName);
-    let nextVersion = versions.length > 0 ? Math.max(...versions) + 1 : 1;
+    let nextVersion = (maxOf(versions) ?? 0) + 1;
 
     const maxRetries = 100;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -2024,7 +2026,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
     // Final fallback: scan version directories
     const versions = await this.listVersions(type, modelId, dataName);
-    return versions.length > 0 ? Math.max(...versions) : null;
+    return maxOf(versions) ?? null;
   }
 
   private async updateLatestMarker(
