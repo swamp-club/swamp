@@ -1918,7 +1918,8 @@ Recommended init container sequence for a stateless pod:
    the repo's pulled root.
 4. **`swamp datastore config migrate`**: idempotent. First boot copies local
    config into the datastore tier and pushes; later boots the sentinel skips the
-   copy.
+   copy. Either way it sets `managedConfig: true` in `.swamp.yaml` if missing,
+   so a repo joining an already-migrated datastore is configured too.
 5. **`swamp extension install`**: restore pulled extensions whose source files
    are missing from the repo's pulled root. It records into the config-tier
    lockfile and pushes the lockfile; sources are not pushed.
