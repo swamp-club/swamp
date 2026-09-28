@@ -145,6 +145,43 @@ export class CelWorkersNamespace {
 }
 
 /**
+ * A missed `data.latest()`/`data.version()` lookup whose data name may have
+ * been an output spec name. Vary forms are never recorded: their data name is
+ * composed, so it cannot be a spec name.
+ */
+interface SpecNameCandidate {
+  accessor: "latest" | "version";
+  modelName: string;
+  dataName: string;
+}
+
+/** Spec instance names shown in the hint before the rest are counted. */
+const MAX_LISTED_SPEC_INSTANCES = 3;
+
+/**
+ * Renders the hint for a lookup that passed a spec name where a data name was
+ * expected. `names` are the data names written under that spec, newest first.
+ */
+function describeSpecInstances(
+  accessor: "latest" | "version",
+  modelName: string,
+  specName: string,
+  names: string[],
+): string {
+  const listed = names.slice(0, MAX_LISTED_SPEC_INSTANCES)
+    .map((n) => `"${n}"`).join(", ");
+  const rest = names.length - MAX_LISTED_SPEC_INSTANCES;
+  const records = names.length === 1 ? "1 record" : `${names.length} records`;
+  const order = names.length > 1 ? " (newest first)" : "";
+  const more = rest > 0 ? `, and ${rest} more` : "";
+  return `"${specName}" is an output spec name, but data.${accessor}() takes ` +
+    `a data name. ${modelName} has ${records} of spec "${specName}": ` +
+    `${listed}${order}${more}. Pass one of those names to ` +
+    `data.${accessor}(), or use data.findBySpec("${modelName}", ` +
+    `"${specName}") to get every record of that spec.`;
+}
+
+/**
  * Wrapper class for data namespace context objects.
  */
 export class CelDataNamespace {
@@ -157,6 +194,7 @@ export class CelDataNamespace {
    * non-optional select on the missing record raises.
    */
   readonly missedLookups: string[] = [];
+  private readonly specNameCandidates: SpecNameCandidate[] = [];
 
   constructor(delegate: Record<string, unknown>) {
     this.delegate = delegate;
@@ -165,6 +203,7 @@ export class CelDataNamespace {
   /** Drops recorded misses so they cannot leak into a later evaluation. */
   clearMissedLookups(): void {
     this.missedLookups.length = 0;
+    this.specNameCandidates.length = 0;
   }
 
   /**
@@ -172,17 +211,58 @@ export class CelDataNamespace {
    * either a value or a Promise; the Promise arm returns the derived promise
    * so the miss is recorded before cel-js selects a field off the result.
    */
-  private recordMiss(result: unknown, call: string): unknown {
+  private recordMiss(
+    result: unknown,
+    call: string,
+    candidate?: SpecNameCandidate,
+  ): unknown {
+    const miss = () => {
+      this.missedLookups.push(call);
+      if (candidate) this.specNameCandidates.push(candidate);
+    };
     if (result instanceof Promise) {
       return result.then((value) => {
-        if (value === null || value === undefined) {
-          this.missedLookups.push(call);
-        }
+        if (value === null || value === undefined) miss();
         return value;
       });
     }
-    if (result === null || result === undefined) this.missedLookups.push(call);
+    if (result === null || result === undefined) miss();
     return result;
+  }
+
+  /**
+   * Explains missed lookups whose data name is really an output spec name:
+   * `data.latest()` and `data.version()` take the data (instance) name a
+   * model wrote, which is often not its spec name — a model can write spec
+   * `summary` as `sync-<timestamp>`. Returns one paragraph per such lookup,
+   * naming the data names written under that spec. Only called on the error
+   * path, so the lookup costs nothing when an expression succeeds.
+   */
+  explainSpecNameMisses(): string[] {
+    const fn = this.delegate["specInstanceNames"];
+    if (typeof fn !== "function") return [];
+    const explained = new Set<string>();
+    const paragraphs: string[] = [];
+    for (const { accessor, modelName, dataName } of this.specNameCandidates) {
+      const key = `${accessor}\0${modelName}\0${dataName}`;
+      if (explained.has(key)) continue;
+      explained.add(key);
+      let names: string[];
+      try {
+        names = (fn as (m: string, s: string) => string[])(
+          modelName,
+          dataName,
+        );
+      } catch {
+        // The hint is best-effort: never let it replace the original error.
+        continue;
+      }
+      if (!Array.isArray(names) || names.length === 0) continue;
+      paragraphs.push(
+        describeSpecInstances(accessor, modelName, dataName, names),
+      );
+    }
+    return paragraphs;
   }
 
   latest(modelName: string, dataName: string, varyValues?: unknown[]): unknown {
@@ -194,6 +274,9 @@ export class CelDataNamespace {
       return this.recordMiss(
         (fn as (m: string, d: string) => unknown)(modelName, resolvedName),
         `data.latest("${modelName}", "${resolvedName}")`,
+        resolvedName === dataName
+          ? { accessor: "latest", modelName, dataName }
+          : undefined,
       );
     }
     return null;
@@ -222,6 +305,9 @@ export class CelDataNamespace {
             Number(version),
           ),
           `data.version("${modelName}", "${resolvedName}", ${Number(version)})`,
+          resolvedName === dataName
+            ? { accessor: "version", modelName, dataName }
+            : undefined,
         );
       }
       // 3-arg form: version(model, name, version)
@@ -232,6 +318,7 @@ export class CelDataNamespace {
           Number(versionOrVary),
         ),
         `data.version("${modelName}", "${dataName}", ${Number(versionOrVary)})`,
+        { accessor: "version", modelName, dataName },
       );
     }
     return null;
@@ -725,10 +812,15 @@ export class CelEvaluator {
     if (!(data instanceof CelDataNamespace)) return message;
     const missed = [...new Set(data.missedLookups)];
     if (missed.length === 0) return message;
-    return `${message}\n\n${
-      missed.join(" and ")
-    } found no data record — check the model and data names, or use ` +
+    const explained =
+      `${message}\n\n${
+        missed.join(" and ")
+      } found no data record — check the model and data names, or use ` +
       `.?${key} if the record may not exist yet.`;
+    const specHints = data.explainSpecNameMisses();
+    return specHints.length === 0
+      ? explained
+      : `${explained}\n\n${specHints.join("\n\n")}`;
   }
 
   /**

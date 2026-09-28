@@ -316,6 +316,29 @@ export class DataQueryService {
     }
   }
 
+  /**
+   * Data names of the latest records written under `specName` for a model,
+   * newest first. Reads the same rows as {@link checkSpecNameAmbiguity}; used
+   * to explain a `data.latest()` miss whose argument was a spec name rather
+   * than a data name.
+   */
+  latestDataNamesForSpec(
+    modelName: string,
+    specName: string,
+    namespace?: string,
+  ): string[] {
+    if (!specName) return [];
+    if (!this.catalogStore.isPopulated()) {
+      this.backfillSync();
+    }
+    return this.catalogStore
+      .findLatestRowsBySpecName(modelName, specName, namespace)
+      .sort((a, b) =>
+        a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0
+      )
+      .map((r) => r.data_name);
+  }
+
   private async buildRecordFromRow(
     modelName: string,
     dataName: string,

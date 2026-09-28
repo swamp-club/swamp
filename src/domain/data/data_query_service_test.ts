@@ -2272,3 +2272,57 @@ Deno.test("DataQueryService: getLatestRecord sets path only when requested", asy
   assertEquals(shown?.path, expectedContentPath(dir, catalog));
   catalog.close();
 });
+
+Deno.test("DataQueryService.latestDataNamesForSpec: returns data names newest first", () => {
+  const { catalog, service } = setupTest();
+  const write = (name: string, createdAt: string, id: string) =>
+    catalog.upsert(
+      makeRow({
+        data_name: name,
+        spec_name: "summary",
+        created_at: createdAt,
+        id,
+      }),
+    );
+  write("run-b", "2026-01-01T00:00:01.000Z", "data-uuid-b");
+  write("run-c", "2026-01-01T00:00:03.000Z", "data-uuid-c");
+  write("run-a", "2026-01-01T00:00:02.000Z", "data-uuid-a");
+  catalog.upsert(makeRow({ data_name: "other", spec_name: "raw" }));
+
+  assertEquals(service.latestDataNamesForSpec("ingest", "summary"), [
+    "run-c",
+    "run-a",
+    "run-b",
+  ]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.latestDataNamesForSpec: scopes to the given namespace", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ data_name: "local", spec_name: "summary" }));
+  catalog.upsert(
+    makeRow({
+      namespace: "infra",
+      data_name: "remote",
+      spec_name: "summary",
+      id: "data-uuid-infra",
+    }),
+  );
+
+  assertEquals(service.latestDataNamesForSpec("ingest", "summary", ""), [
+    "local",
+  ]);
+  assertEquals(service.latestDataNamesForSpec("ingest", "summary", "infra"), [
+    "remote",
+  ]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.latestDataNamesForSpec: returns no names for an unknown spec", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ spec_name: "result" }));
+
+  assertEquals(service.latestDataNamesForSpec("ingest", "missing"), []);
+  assertEquals(service.latestDataNamesForSpec("other-model", "result"), []);
+  catalog.close();
+});

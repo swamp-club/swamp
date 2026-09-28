@@ -71,6 +71,17 @@ model and data names, or use .?attributes if the record may not exist yet.
 
 **Solutions**:
 
+When the name passed is an output spec name rather than a data name, swamp adds
+a second paragraph naming the data written under that spec:
+
+```
+"syncRunSummary" is an output spec name, but data.latest() takes a data name.
+mirror has 2 records of spec "syncRunSummary": "sync-2026-01-02T…",
+"sync-2026-01-01T…" (newest first). Pass one of those names to data.latest(),
+or use data.findBySpec("mirror", "syncRunSummary") to get every record of that
+spec.
+```
+
 ```bash
 # 1. Confirm the record exists under the name the expression uses
 swamp data list <model-name> --json
@@ -89,7 +100,7 @@ assert that runs before the producing step — use optional selection instead of
 plain select:
 
 ```
-data.latest("model", "spec").?attributes.?ready.orValue(false)
+data.latest("model", "result").?attributes.?ready.orValue(false)
 ```
 
 ### "No data found for model"

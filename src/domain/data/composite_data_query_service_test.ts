@@ -273,3 +273,24 @@ Deno.test("CompositeDataQueryService: getLatestRecord finds ephemeral data in a 
   assertExists(record);
   assertEquals(record.attributes.source, "eph");
 });
+
+Deno.test("CompositeDataQueryService: latestDataNamesForSpec lists ephemeral names first without duplicates", async () => {
+  const { composite, persistentRepo, ephemeralRepo } =
+    createCompositeQueryService();
+  const save = (repo: InMemoryUnifiedDataRepository, name: string) =>
+    repo.save(
+      TEST_TYPE,
+      TEST_MODEL_ID,
+      createTestData({ name }),
+      new TextEncoder().encode("{}"),
+    );
+  await save(persistentRepo, "old-run");
+  await save(persistentRepo, "shared");
+  await save(ephemeralRepo, "shared");
+  await save(ephemeralRepo, "new-run");
+
+  const names = composite.latestDataNamesForSpec("test-model", "test");
+
+  assertEquals(names.slice(0, 2).sort(), ["new-run", "shared"]);
+  assertEquals(names.slice(2), ["old-run"]);
+});

@@ -27,7 +27,12 @@
  * 4. Verify lazy evaluation
  */
 
-import { assertEquals, assertExists } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { Data } from "../src/domain/data/data.ts";
@@ -1742,5 +1747,78 @@ Deno.test("CEL Data Access: data.latest().path is empty for ephemeral data", asy
     } finally {
       ephemeral.dispose();
     }
+  });
+});
+
+// ============================================================================
+// Spec name passed where data.latest() expects a data name (swamp-club#2572)
+// ============================================================================
+
+Deno.test("CEL Data Access: data.latest() with a spec name explains the data names written under it", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("@acme/mirror");
+    const model = Definition.create({ name: "mirror", globalArguments: {} });
+    await definitionRepo.save(type, model);
+
+    // Extensions often write a spec under a per-run instance name.
+    await dataRepo.save(
+      type,
+      model.id,
+      Data.create({
+        name: "sync-2026-01-01T00-00-00Z",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: {
+          type: "resource",
+          specName: "syncRunSummary",
+          modelName: "mirror",
+        },
+        ownerDefinition: createOwner("@acme/mirror:sync"),
+      }),
+      new TextEncoder().encode(JSON.stringify({ prCount: 95 })),
+    );
+
+    const modelResolver = new ModelResolver(definitionRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: new DataQueryService(catalog, dataRepo),
+    });
+    const context = await modelResolver.buildContext();
+    const celEvaluator = new CelEvaluator();
+
+    const error = await assertRejects(() =>
+      celEvaluator.evaluateAsync(
+        'data.latest("mirror", "syncRunSummary").attributes.prCount',
+        context as unknown as Record<string, unknown>,
+      )
+    );
+    const message = (error as Error).message;
+    assertStringIncludes(
+      message,
+      '"syncRunSummary" is an output spec name, but data.latest() takes a data name.',
+    );
+    assertStringIncludes(
+      message,
+      'mirror has 1 record of spec "syncRunSummary": "sync-2026-01-01T00-00-00Z".',
+    );
+
+    // The data name the hint points to resolves.
+    assertEquals(
+      await celEvaluator.evaluateAsync(
+        'data.latest("mirror", "sync-2026-01-01T00-00-00Z").attributes.prCount',
+        context as unknown as Record<string, unknown>,
+      ),
+      95,
+    );
+    catalog.close();
   });
 });

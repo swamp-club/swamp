@@ -280,6 +280,13 @@ export interface DataNamespace {
   findBySpec(modelName: string, specName: string): Promise<DataRecord[]>;
 
   /**
+   * Data names of the latest records a model wrote under `specName`, newest
+   * first, scoped to the namespaces `latest()` would search. Used only to
+   * explain a `latest()`/`version()` miss whose argument was a spec name.
+   */
+  specInstanceNames?(modelName: string, specName: string): string[];
+
+  /**
    * Query data artifacts using a CEL predicate, with optional projection.
    */
   query(
@@ -1055,6 +1062,25 @@ export class ModelResolver {
           checkWildcardAmbiguity(results, rawSpecModelName);
         }
         return dropMissingPaths(deduplicateByName(results));
+      },
+      specInstanceNames: (
+        rawModelName: string,
+        specName: string,
+      ): string[] => {
+        if (!this.dataQueryService) return [];
+        const parsed = parseNamespacedModelName(rawModelName);
+        // Same scope as latest(): own namespace by default, the named one
+        // for an "ns:" prefix, every namespace for "*:".
+        const targetNs = parsed.namespace === undefined
+          ? ownNamespace
+          : parsed.namespace === "*"
+          ? undefined
+          : parsed.namespace;
+        return this.dataQueryService.latestDataNamesForSpec(
+          parsed.modelName,
+          specName,
+          targetNs,
+        );
       },
       query: async (
         predicate: string,
