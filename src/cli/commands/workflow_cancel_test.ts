@@ -20,8 +20,17 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
-import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import { buildCancelUrl, isServeOwnedRun } from "./workflow_cancel.ts";
+import {
+  WorkflowRun,
+  type WorkflowRunInput,
+} from "../../domain/workflows/workflow_run.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import {
+  buildCancelUrl,
+  cancelLocalRun,
+  isServeOwnedRun,
+} from "./workflow_cancel.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -119,4 +128,242 @@ Deno.test("buildCancelUrl: the invalid-URL error hides credentials", () => {
 Deno.test("workflowCancelCommand module loads", async () => {
   const { workflowCancelCommand } = await import("./workflow_cancel.ts");
   assertEquals(workflowCancelCommand.getName(), "cancel");
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-workflow-cancel-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+// A PID that is not this process, so cancelLocalRun asks to kill it.
+const OWNER_PID = Deno.pid + 1;
+
+/**
+ * The run as `workflow cancel` loads it: saved at run start, before the
+ * forEach step `build` expanded.
+ */
+function snapshotData(
+  runId: string,
+  pid: number | null = OWNER_PID,
+): WorkflowRunInput {
+  return {
+    id: runId,
+    workflowId: WORKFLOW_ID,
+    workflowName: "test-workflow",
+    status: "running",
+    startedAt: "2026-07-20T20:00:00.000Z",
+    pid: pid ?? undefined,
+    jobs: [{
+      jobName: "main",
+      status: "pending",
+      steps: [
+        { stepName: "build", status: "pending" },
+        { stepName: "rollback", status: "pending" },
+      ],
+    }],
+    tags: {},
+  };
+}
+
+/** The run as its owning process saves it while handling SIGTERM. */
+function ownerFinalData(
+  runId: string,
+  status: "running" | "cancelled" | "failed" | "succeeded",
+): WorkflowRunInput {
+  const terminal = status !== "running";
+  return {
+    ...snapshotData(runId),
+    status,
+    completedAt: terminal ? "2026-07-20T20:00:03.000Z" : undefined,
+    jobs: [{
+      jobName: "main",
+      status: terminal ? "failed" : "running",
+      startedAt: "2026-07-20T20:00:00.000Z",
+      steps: [
+        {
+          stepName: "build-1",
+          status: terminal ? "failed" : "running",
+          startedAt: "2026-07-20T20:00:00.000Z",
+          error: terminal ? "cancelled" : undefined,
+          forEachTemplate: "build",
+        },
+        {
+          stepName: "rollback",
+          status: terminal ? "skipped" : "pending",
+          skipReason: terminal ? { kind: "dependency" } : undefined,
+        },
+      ],
+    }],
+    tags: status === "cancelled"
+      ? { cancel_reason: "The signal has been aborted" }
+      : {},
+  };
+}
+
+function stepSummary(run: WorkflowRun): string[] {
+  return run.jobs[0].steps.map((s) => `${s.stepName}:${s.status}`);
+}
+
+Deno.test("cancelLocalRun: keeps the record the owner cancelled and records the reason", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(snapshotData(runId));
+    await runRepo.save(workflowId, snapshot);
+
+    const killed: number[] = [];
+    const result = await cancelLocalRun(
+      snapshot,
+      workflowId,
+      "No longer needed",
+      {
+        runRepo,
+        killProcess: async (pid) => {
+          killed.push(pid);
+          await runRepo.save(
+            workflowId,
+            WorkflowRun.fromData(ownerFinalData(runId, "cancelled")),
+          );
+          return true;
+        },
+      },
+    );
+
+    assertEquals(killed, [OWNER_PID]);
+    const stored = await runRepo.findById(workflowId, snapshot.id);
+    for (const run of [result, stored]) {
+      assertEquals(run?.status, "cancelled");
+      assertEquals(run?.tags.cancel_reason, "No longer needed");
+      assertEquals(run?.jobs[0].status, "failed");
+      assertEquals(stepSummary(run!), ["build-1:failed", "rollback:skipped"]);
+      assertEquals(run?.jobs[0].steps[0].error, "cancelled");
+      assertEquals(run?.jobs[0].steps[1].skipReason, { kind: "dependency" });
+    }
+  });
+});
+
+Deno.test("cancelLocalRun: leaves a record the owner finished as failed or succeeded untouched", async () => {
+  for (const status of ["failed", "succeeded"] as const) {
+    await withTempDir(async (dir) => {
+      const runRepo = new YamlWorkflowRunRepository(dir);
+      const workflowId = createWorkflowId(WORKFLOW_ID);
+      const runId = crypto.randomUUID();
+      const snapshot = WorkflowRun.fromData(snapshotData(runId));
+      await runRepo.save(workflowId, snapshot);
+      const ownerFinal = WorkflowRun.fromData(ownerFinalData(runId, status));
+
+      const result = await cancelLocalRun(
+        snapshot,
+        workflowId,
+        "No longer needed",
+        {
+          runRepo,
+          killProcess: async () => {
+            await runRepo.save(workflowId, ownerFinal);
+            return true;
+          },
+        },
+      );
+
+      assertEquals(result?.status, status);
+      const stored = await runRepo.findById(workflowId, snapshot.id);
+      assertEquals(stored?.toData(), ownerFinal.toData());
+    });
+  }
+});
+
+Deno.test("cancelLocalRun: cancels the owner's last saved record when it never finished", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(snapshotData(runId));
+    await runRepo.save(workflowId, snapshot);
+
+    // The owner saved progress, then was SIGKILLed before its final save.
+    const result = await cancelLocalRun(
+      snapshot,
+      workflowId,
+      "No longer needed",
+      {
+        runRepo,
+        killProcess: async () => {
+          await runRepo.save(
+            workflowId,
+            WorkflowRun.fromData(ownerFinalData(runId, "running")),
+          );
+          return true;
+        },
+      },
+    );
+
+    const stored = await runRepo.findById(workflowId, snapshot.id);
+    for (const run of [result, stored]) {
+      assertEquals(run?.status, "cancelled");
+      assertEquals(run?.tags.cancel_reason, "No longer needed");
+      assertEquals(stepSummary(run!), ["build-1:running", "rollback:pending"]);
+    }
+  });
+});
+
+Deno.test("cancelLocalRun: cancels without a kill when no other process owns the run", async () => {
+  for (const pid of [null, Deno.pid]) {
+    await withTempDir(async (dir) => {
+      const runRepo = new YamlWorkflowRunRepository(dir);
+      const workflowId = createWorkflowId(WORKFLOW_ID);
+      const snapshot = WorkflowRun.fromData(
+        snapshotData(crypto.randomUUID(), pid),
+      );
+      await runRepo.save(workflowId, snapshot);
+
+      let killCalls = 0;
+      const result = await cancelLocalRun(
+        snapshot,
+        workflowId,
+        "No longer needed",
+        {
+          runRepo,
+          killProcess: () => {
+            killCalls++;
+            return Promise.resolve(true);
+          },
+        },
+      );
+
+      assertEquals(killCalls, 0);
+      assertEquals(result?.status, "cancelled");
+      const stored = await runRepo.findById(workflowId, snapshot.id);
+      assertEquals(stored?.status, "cancelled");
+      assertEquals(stored?.tags.cancel_reason, "No longer needed");
+    });
+  }
+});
+
+Deno.test("cancelLocalRun: does not recreate a run record deleted during the kill", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const snapshot = WorkflowRun.fromData(snapshotData(crypto.randomUUID()));
+
+    const result = await cancelLocalRun(
+      snapshot,
+      workflowId,
+      "No longer needed",
+      { runRepo, killProcess: () => Promise.resolve(true) },
+    );
+
+    assertEquals(result, null);
+    assertEquals(await runRepo.findById(workflowId, snapshot.id), null);
+  });
 });

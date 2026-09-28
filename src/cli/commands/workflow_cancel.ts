@@ -80,11 +80,41 @@ export function isServeOwnedRun(run: WorkflowRun): boolean {
   return run.instanceId !== undefined;
 }
 
-async function cancelRun(run: WorkflowRun, reason: string): Promise<void> {
+export interface CancelLocalRunDeps {
+  runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
+  killProcess?: (pid: number) => Promise<boolean>;
+}
+
+/**
+ * Cancels a locally-owned run. Stops the owning process first, then re-reads
+ * the run: the owner saves its own final record while handling SIGTERM, and
+ * saving the pre-kill snapshot would overwrite it. A run the owner already
+ * finished keeps its record (a cancelled one gets this reason); a run that is
+ * still active is cancelled. Returns the persisted run, or null when the
+ * record no longer exists.
+ */
+export async function cancelLocalRun(
+  run: WorkflowRun,
+  workflowId: WorkflowId,
+  reason: string,
+  { runRepo, killProcess = killProcessTree }: CancelLocalRunDeps,
+): Promise<WorkflowRun | null> {
   if (run.pid && run.pid !== Deno.pid) {
-    await killProcessTree(run.pid);
+    await killProcess(run.pid);
   }
-  run.cancel(reason);
+  const current = await runRepo.findById(workflowId, run.id);
+  if (!current) {
+    return null;
+  }
+  if (!TERMINAL_STATUSES.has(current.status)) {
+    current.cancel(reason);
+  } else if (current.status === "cancelled") {
+    current.recordCancelReason(reason);
+  } else {
+    return current;
+  }
+  await runRepo.save(workflowId, current);
+  return current;
 }
 
 async function findAllActiveRuns(
@@ -265,15 +295,23 @@ export const workflowCancelCommand = withRemoteOptions(
         runId: string;
         workflowName: string;
         previousStatus: string;
+        status: string;
       }[] = [];
       for (const { run, workflowId, workflowName } of localRuns) {
         const previousStatus = run.status;
-        await cancelRun(run, reason);
-        await runRepo.save(workflowId, run);
+        const finalRun = await cancelLocalRun(run, workflowId, reason, {
+          runRepo,
+        });
+        if (!finalRun) {
+          cliCtx.logger
+            .warn`Workflow run ${run.id} of ${workflowName} no longer exists — skipped`;
+          continue;
+        }
         cancelled.push({
           runId: run.id,
           workflowName,
           previousStatus,
+          status: finalRun.status,
         });
       }
 
@@ -296,7 +334,7 @@ export const workflowCancelCommand = withRemoteOptions(
             .info`Cancelled ${cancelled.length} workflow run(s)`;
           for (const entry of cancelled) {
             cliCtx.logger
-              .info`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> cancelled`;
+              .info`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> ${entry.status}`;
           }
         }
         if (skipped.length > 0) {
@@ -366,23 +404,36 @@ export const workflowCancelCommand = withRemoteOptions(
     }
 
     const previousStatus = run.status;
-    await cancelRun(run, reason);
-    await runRepo.save(createWorkflowId(workflow.id), run);
+    const finalRun = await cancelLocalRun(
+      run,
+      createWorkflowId(workflow.id),
+      reason,
+      { runRepo },
+    );
+    if (!finalRun) {
+      throw new UserError(`Workflow run no longer exists: ${run.id}`);
+    }
+    const status = finalRun.status;
 
     if (cliCtx.outputMode === "json") {
       console.log(JSON.stringify({
         runId: run.id,
         workflowName: workflow.name,
         previousStatus,
-        status: "cancelled",
+        status,
         reason,
       }));
     } else {
+      if (status === "cancelled") {
+        cliCtx.logger
+          .info`Cancelled run ${run.id} of workflow ${workflow.name}`;
+      } else {
+        cliCtx.logger
+          .warn`Run ${run.id} of workflow ${workflow.name} finished as ${status} before the cancel took effect`;
+      }
       cliCtx.logger
-        .info`Cancelled run ${run.id} of workflow ${workflow.name}`;
-      cliCtx.logger
-        .info`Status: ${previousStatus} -> cancelled`;
-      if (options.reason) {
+        .info`Status: ${previousStatus} -> ${status}`;
+      if (options.reason && status === "cancelled") {
         cliCtx.logger.info`Reason: ${reason}`;
       }
     }

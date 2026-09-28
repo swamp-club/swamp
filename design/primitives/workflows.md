@@ -1294,8 +1294,12 @@ The run's output is written to a workflow run log in the datastore at
 Cancel a run with `swamp workflow cancel <workflow> [--run <runId>]`. When
 `swamp serve` is running, the command calls the serve cancel API
 (`POST /api/v1/cancel/workflow-run/<id>`), which fires the AbortController to
-stop the run live. When serve is not running, the command writes the cancelled
-status to the run YAML directly (offline cancel).
+stop the run live. When serve is not running, the command cancels offline: it
+stops the owning `workflow run` process (SIGTERM, then SIGKILL after a grace
+period), re-reads the run, and writes the cancelled status to the run YAML only
+if the run is still active. The owner saves its own final record while handling
+SIGTERM, so a run it already finished keeps that record; a cancelled one gets
+the `--reason` as its `cancel_reason` tag.
 
 `swamp workflow cancel --all` cancels all active runs across all workflows.
 With `--server`, `--run <id>` is required, `--all` is rejected, and `--reason`

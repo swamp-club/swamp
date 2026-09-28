@@ -1064,6 +1064,18 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
   }
 
+  /**
+   * Records why an already-cancelled run was cancelled. Only sets the
+   * cancel_reason tag; no-ops unless the run is cancelled, so it never
+   * changes a run's status.
+   */
+  recordCancelReason(reason: string): void {
+    if (this._status !== "cancelled") {
+      return;
+    }
+    this._tags["cancel_reason"] = reason;
+  }
+
   interrupt(reason: string): void {
     if (
       this._status === "succeeded" || this._status === "failed" ||
