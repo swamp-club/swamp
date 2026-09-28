@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   decodeEntities,
+  MAX_NESTING,
   type MdBlock,
   parseMarkdown,
   safeHref,
@@ -239,4 +240,37 @@ Deno.test("decodeEntities: decodes only marked's escapes, once", () => {
     decodeEntities("&amp;lt; &lt;b&gt; &quot;&#39;"),
     "&lt; <b> \"'",
   );
+});
+
+Deno.test("parseMarkdown: pathological nesting renders as text without throwing", () => {
+  const deep = ">".repeat(5000) + " x";
+  const tree = parseMarkdown(deep, BASE);
+  assertEquals(tree.length > 0, true);
+  const nested = parseMarkdown("- a\n".concat("  ".repeat(200) + "- b"), BASE);
+  assertEquals(nested.length > 0, true);
+});
+
+Deno.test("parseMarkdown: nesting past MAX_NESTING falls back to raw source", () => {
+  const quotes = ">".repeat(MAX_NESTING + 5) + " deep";
+  let node: MdBlock | undefined = parseMarkdown(quotes, BASE)[0];
+  let depth = 0;
+  while (node?.type === "blockquote") {
+    node = node.children[0];
+    depth++;
+  }
+  assertEquals(depth <= MAX_NESTING + 1, true);
+  assertEquals(node?.type, "text");
+});
+
+Deno.test("parseMarkdown: ordinary nesting still renders structurally", () => {
+  assertEquals(parseMarkdown("> > quoted", BASE), [{
+    type: "blockquote",
+    children: [{
+      type: "blockquote",
+      children: [{
+        type: "paragraph",
+        children: [{ type: "text", text: "quoted" }],
+      }],
+    }],
+  }]);
 });

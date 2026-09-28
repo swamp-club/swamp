@@ -55,7 +55,7 @@ Deno.test("resolveEscape: open drawer closes with no detail view", () => {
 });
 
 Deno.test("resolveEscape: closed drawer closes the detail view", () => {
-  assertEquals(resolveEscape(false, true), "close-detail");
+  assertEquals(resolveEscape(false, true), "leave-detail");
 });
 
 Deno.test("resolveEscape: nothing open does nothing", () => {

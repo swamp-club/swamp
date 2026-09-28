@@ -326,7 +326,10 @@ function RunReportPage(
         </>
       }
       link={{ view: "workflows", detail }}
-      loading={historyReq.loading || (md !== null && mdReq.loading)}
+      // Between the run loading and the report request starting, treat the
+      // report as loading so the page never renders blank for a frame.
+      loading={historyReq.loading ||
+        (md !== null && (mdReq.loading || (!mdReq.data && !mdReq.error)))}
       error={error}
       errorLinks={
         <>
@@ -568,7 +571,8 @@ function ContentPanel(
     a.href = url;
     a.download = `${item.name}${extensionFor(kind)}`;
     a.click();
-    URL.revokeObjectURL(url);
+    // Revoking in the same tick can cancel the download in some browsers.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   return (

@@ -134,7 +134,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       if (action === "close-drawer") {
         e.preventDefault();
         setDrawerOpen(false);
-      } else if (action === "close-detail") {
+      } else if (action === "leave-detail") {
         e.preventDefault();
         // Deep-linked items step up to their model or run; other details
         // close to their list view as before.

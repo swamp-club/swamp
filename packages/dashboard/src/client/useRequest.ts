@@ -67,13 +67,18 @@ export function useRequest<T = Record<string, unknown>>(
       setLoading(false);
       return;
     }
-    if (!connected) return;
     // A different request must not show the previous request's result
-    // while it loads; a refetch of the same request keeps it.
+    // while it loads — even while disconnected; a refetch of the same
+    // request keeps it.
     if (lastKeyRef.current !== requestKey) {
       lastKeyRef.current = requestKey;
+      sequence.invalidate();
       setData(null);
+      setError(null);
+      setErrorInfo(null);
+      setLoading(true);
     }
+    if (!connected) return;
     const ticket = sequence.next();
     setLoading(true);
     setError(null);

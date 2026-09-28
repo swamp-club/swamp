@@ -97,20 +97,42 @@ export function decodeEntities(text: string): string {
   return text.replace(/&(?:amp|lt|gt|quot|#39);/g, (m) => ENTITIES[m]);
 }
 
-function inlines(tokens: Token[] | undefined, base: string): MdInline[] {
+/**
+ * Nesting deeper than this (quotes, lists, emphasis) is shown as its raw
+ * source. Real reports nest a few levels; a hostile one could nest thousands
+ * and overflow the stack while rendering.
+ */
+export const MAX_NESTING = 32;
+
+interface Ctx {
+  /** Resolves relative links. */
+  base: string;
+  depth: number;
+}
+
+function deeper(ctx: Ctx): Ctx {
+  return { base: ctx.base, depth: ctx.depth + 1 };
+}
+
+function rawOf(tokens: Token[] | undefined): string {
+  return (tokens ?? []).map((t) => ("raw" in t ? String(t.raw) : "")).join("");
+}
+
+function inlines(tokens: Token[] | undefined, ctx: Ctx): MdInline[] {
+  if (ctx.depth > MAX_NESTING) return [{ type: "text", text: rawOf(tokens) }];
   const out: MdInline[] = [];
   for (const token of tokens ?? []) {
-    for (const node of inline(token, base)) out.push(node);
+    for (const node of inline(token, ctx)) out.push(node);
   }
   return out;
 }
 
-function inline(token: Token, base: string): MdInline[] {
+function inline(token: Token, ctx: Ctx): MdInline[] {
   switch (token.type) {
     case "text": {
       const t = token as Tokens.Text;
       return t.tokens
-        ? inlines(t.tokens, base)
+        ? inlines(t.tokens, deeper(ctx))
         : [{ type: "text", text: decodeEntities(t.text) }];
     }
     case "escape":
@@ -128,14 +150,14 @@ function inline(token: Token, base: string): MdInline[] {
     case "del":
       return [{
         type: token.type,
-        children: inlines((token as Tokens.Strong).tokens, base),
+        children: inlines((token as Tokens.Strong).tokens, deeper(ctx)),
       }];
     case "br":
       return [{ type: "br" }];
     case "link": {
       const t = token as Tokens.Link;
-      const children = inlines(t.tokens, base);
-      const safe = safeHref(t.href, base);
+      const children = inlines(t.tokens, deeper(ctx));
+      const safe = safeHref(t.href, ctx.base);
       return safe ? [{ type: "link", ...safe, children }] : children;
     }
     case "image": {
@@ -143,7 +165,7 @@ function inline(token: Token, base: string): MdInline[] {
       // host who viewed the report. Show the alt text, linked if safe.
       const t = token as Tokens.Image;
       const text: MdInline = { type: "text", text: t.text || t.href };
-      const safe = safeHref(t.href, base);
+      const safe = safeHref(t.href, ctx.base);
       return safe ? [{ type: "link", ...safe, children: [text] }] : [text];
     }
     case "html":
@@ -155,16 +177,17 @@ function inline(token: Token, base: string): MdInline[] {
   }
 }
 
-function blocks(tokens: Token[], base: string): MdBlock[] {
+function blocks(tokens: Token[], ctx: Ctx): MdBlock[] {
+  if (ctx.depth > MAX_NESTING) return [{ type: "text", text: rawOf(tokens) }];
   const out: MdBlock[] = [];
   for (const token of tokens) {
-    const node = block(token, base);
+    const node = block(token, ctx);
     if (node) out.push(node);
   }
   return out;
 }
 
-function block(token: Token, base: string): MdBlock | null {
+function block(token: Token, ctx: Ctx): MdBlock | null {
   switch (token.type) {
     case "space":
     case "def":
@@ -174,13 +197,13 @@ function block(token: Token, base: string): MdBlock | null {
       return {
         type: "heading",
         depth: t.depth,
-        children: inlines(t.tokens, base),
+        children: inlines(t.tokens, deeper(ctx)),
       };
     }
     case "paragraph":
       return {
         type: "paragraph",
-        children: inlines((token as Tokens.Paragraph).tokens, base),
+        children: inlines((token as Tokens.Paragraph).tokens, deeper(ctx)),
       };
     case "text": {
       // Block-level text, e.g. a tight list item's content.
@@ -188,7 +211,7 @@ function block(token: Token, base: string): MdBlock | null {
       return {
         type: "paragraph",
         children: t.tokens
-          ? inlines(t.tokens, base)
+          ? inlines(t.tokens, deeper(ctx))
           : [{ type: "text", text: decodeEntities(t.text) }],
       };
     }
@@ -205,7 +228,7 @@ function block(token: Token, base: string): MdBlock | null {
         ...(t.ordered && start !== undefined && start !== 1 && { start }),
         items: t.items.map((item) => ({
           ...(item.task && { checked: item.checked ?? false }),
-          children: blocks(item.tokens, base),
+          children: blocks(item.tokens, deeper(ctx)),
         })),
       };
     }
@@ -214,16 +237,16 @@ function block(token: Token, base: string): MdBlock | null {
       return {
         type: "table",
         align: t.align,
-        header: t.header.map((cell) => inlines(cell.tokens, base)),
+        header: t.header.map((cell) => inlines(cell.tokens, deeper(ctx))),
         rows: t.rows.map((row) =>
-          row.map((cell) => inlines(cell.tokens, base))
+          row.map((cell) => inlines(cell.tokens, deeper(ctx)))
         ),
       };
     }
     case "blockquote":
       return {
         type: "blockquote",
-        children: blocks((token as Tokens.Blockquote).tokens, base),
+        children: blocks((token as Tokens.Blockquote).tokens, deeper(ctx)),
       };
     case "hr":
       return { type: "hr" };
@@ -241,5 +264,13 @@ function block(token: Token, base: string): MdBlock | null {
 
 /** Parses markdown into the renderable tree. `base` resolves relative links. */
 export function parseMarkdown(markdown: string, base: string): MdBlock[] {
-  return blocks(Lexer.lex(markdown, { gfm: true }), base);
+  let tokens: Token[];
+  try {
+    tokens = Lexer.lex(markdown, { gfm: true });
+  } catch {
+    // Pathological input (e.g. nesting deep enough to exhaust the stack)
+    // is shown as plain text rather than taking the page down.
+    return [{ type: "text", text: markdown }];
+  }
+  return blocks(tokens, { base, depth: 0 });
 }

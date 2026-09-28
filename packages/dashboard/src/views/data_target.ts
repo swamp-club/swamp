@@ -108,9 +108,8 @@ export function isRequestedReport(
   if (item.tags.type !== "report" || item.tags.reportName !== reportName) {
     return false;
   }
-  return variant === undefined
-    ? item.tags.varySuffix === undefined
-    : item.tags.varySuffix === variant;
+  // An empty suffix means no variant, as in reportDataName and the links.
+  return (item.tags.varySuffix || undefined) === (variant || undefined);
 }
 
 /** The JSON sibling of a report's markdown item, when it is a report. */

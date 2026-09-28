@@ -23,7 +23,7 @@ import { type MdBlock, type MdInline, parseMarkdown } from "./markdown_tree.ts";
 
 /**
  * Renders untrusted markdown (e.g. report output) as React elements. See
- * markdown.ts: no HTML string is ever built, so nothing in the source runs.
+ * markdown_tree.ts: no HTML string is ever built, so nothing in the source runs.
  */
 export function Markdown({ source }: { source: string }) {
   const tree = useMemo(() => parseMarkdown(source, location.href), [source]);

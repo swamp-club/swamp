@@ -261,3 +261,11 @@ Deno.test("contentBytes: decodes base64 and encodes text", () => {
   assertEquals(contentBytes("AAEC", "base64"), new Uint8Array([0, 1, 2]));
   assertEquals(contentBytes("hi", "utf-8"), new Uint8Array([104, 105]));
 });
+
+Deno.test("isRequestedReport: an empty varySuffix counts as no variant", () => {
+  const emptySuffix = item({
+    tags: { type: "report", reportName: SUMMARY, varySuffix: "" },
+  });
+  assertEquals(isRequestedReport(emptySuffix, SUMMARY), true);
+  assertEquals(isRequestedReport(emptySuffix, SUMMARY, "eu"), false);
+});
