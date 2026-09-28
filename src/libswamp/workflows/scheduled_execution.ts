@@ -45,6 +45,31 @@ import { withSpan } from "../../infrastructure/tracing/mod.ts";
 const logger = getSwampLogger(["scheduled-execution"]);
 
 /**
+ * How long a drain waits for fires still claiming their slot. A claim is a
+ * single control-plane write, so this bounds shutdown against a hung store
+ * without depending on the drain timeout, which may be 0.
+ */
+const FIRE_SETTLE_TIMEOUT_MS = 5_000;
+
+/** Resolves when `promise` settles or `timeoutMs` elapses, whichever is first. */
+async function settleWithin(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise.then(() => {}, () => {}),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Events emitted by the scheduled execution service.
  */
 export type ScheduledExecutionEvent =
@@ -168,6 +193,10 @@ export class ScheduledExecutionService {
   }> = [];
   private processing = false;
   private processingPromise: Promise<void> = Promise.resolve();
+  private draining = false;
+  private stopped = false;
+  /** Fires still in handleFire, e.g. waiting on the cron dedup claim. */
+  private readonly inFlightFires = new Set<Promise<void>>();
   private eventHandler: ScheduledExecutionEventHandler | null = null;
   private triggerOverrides: ReadonlyMap<string, TriggerOverride>;
 
@@ -202,9 +231,12 @@ export class ScheduledExecutionService {
     await this.applyTriggerOverrides();
 
     // Start the scheduler — cron jobs begin firing
-    this.scheduler.start((workflowId, fireTime) =>
-      this.handleFire(workflowId, fireTime)
-    );
+    this.scheduler.start((workflowId, fireTime) => {
+      const fire: Promise<void> = this.handleFire(workflowId, fireTime)
+        .finally(() => this.inFlightFires.delete(fire));
+      this.inFlightFires.add(fire);
+      return fire;
+    });
 
     // Start watching for changes
     await this.watcher.start();
@@ -215,9 +247,48 @@ export class ScheduledExecutionService {
   }
 
   /**
+   * Begin shutdown: stop the watcher and scheduler, drop queued runs (their
+   * pending-run entries stay for the next boot to replay), and wait up to
+   * `timeoutMs` for the in-flight run to finish. A timeout of 0 returns at
+   * once. Call {@link stop} afterwards to abort what is left.
+   */
+  async drain(timeoutMs: number): Promise<void> {
+    this.draining = true;
+    await this.watcher.stop();
+    this.scheduler.stop();
+    // Dropped entries' pending-run writes are observed here, since
+    // processQueue will never await them.
+    const dropped = this.runQueue.splice(0);
+    const writes = await Promise.allSettled(
+      dropped.map((entry) => entry.enqueuePromise),
+    );
+    for (const write of writes) {
+      if (write.status === "rejected") {
+        logger.warn("Pending-run write for a queued cron run failed: {error}", {
+          error: write.reason instanceof Error
+            ? write.reason.message
+            : String(write.reason),
+        });
+      }
+    }
+    // A fire that claimed its slot is run by no peer, so shutdown waits for
+    // it to be recorded for replay even when the drain timeout is 0.
+    await Promise.all([
+      settleWithin(
+        Promise.allSettled([...this.inFlightFires]),
+        FIRE_SETTLE_TIMEOUT_MS,
+      ),
+      timeoutMs > 0
+        ? settleWithin(this.processingPromise, timeoutMs)
+        : Promise.resolve(),
+    ]);
+  }
+
+  /**
    * Stops the service: aborts in-flight runs, stops watcher and scheduler.
    */
   async stop(): Promise<void> {
+    this.stopped = true;
     await this.watcher.stop();
     this.scheduler.stop();
 
@@ -317,6 +388,8 @@ export class ScheduledExecutionService {
     pendingRunId: string;
     workflowIdOrName: string;
   }): void {
+    // The pending entry stays in the run tracker for the next boot to replay.
+    if (this.draining) return;
     this.runQueue.push({
       pendingRunId: entry.pendingRunId,
       workflowId: entry.workflowIdOrName as WorkflowId,
@@ -506,6 +579,10 @@ export class ScheduledExecutionService {
       return;
     }
 
+    // A draining service starts no new runs; checked again after the dedup
+    // await, which can span the start of a drain.
+    if (this.draining) return;
+
     // Cross-instance dedup — race to claim this fire slot via the
     // control-plane store. If another instance won, skip silently.
     if (this.deps.cronFireDedup) {
@@ -530,6 +607,13 @@ export class ScheduledExecutionService {
           },
         );
       }
+    }
+    if (this.draining) {
+      // This instance may have claimed the fire slot, so peers skip it.
+      // Record the fire for the next boot to replay instead of dropping it
+      // cluster-wide.
+      await this.recordForReplay(workflowName);
+      return;
     }
 
     this.emit({
@@ -566,6 +650,27 @@ export class ScheduledExecutionService {
     }
   }
 
+  private async recordForReplay(workflowName: string): Promise<void> {
+    if (!this.deps.pendingRunHook) return;
+    try {
+      await this.deps.pendingRunHook.enqueue({
+        id: crypto.randomUUID(),
+        source: "cron",
+        workflowIdOrName: workflowName,
+        createdAt: new Date().toISOString(),
+      });
+      logger.info(
+        "Recorded cron fire for {name} for replay after shutdown",
+        { name: workflowName },
+      );
+    } catch (err: unknown) {
+      logger.warn("Failed to record cron fire for {name}: {error}", {
+        name: workflowName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     this.processing = true;
@@ -574,8 +679,11 @@ export class ScheduledExecutionService {
       while (this.runQueue.length > 0) {
         const { pendingRunId, enqueuePromise, workflowId, workflowName } = this
           .runQueue.shift()!;
+        if (enqueuePromise) await enqueuePromise;
+        // A drain that began while this entry was dequeued leaves it pending
+        // for the next boot to replay rather than starting it now.
+        if (this.draining) break;
         if (pendingRunId && this.deps.pendingRunHook) {
-          if (enqueuePromise) await enqueuePromise;
           await this.deps.pendingRunHook.delete(pendingRunId);
         }
         await this.executeWorkflow(workflowId, workflowName);
@@ -594,6 +702,8 @@ export class ScheduledExecutionService {
     // During this narrow window cancelByRunId() cannot match this run;
     // the window closes as soon as executeWorkflow emits "started".
     this.running.set(workflowId, { controller, runId: "" });
+    // stop() may have swept `running` while this run was still dequeuing.
+    if (this.stopped) controller.abort();
     let runId = "";
 
     try {

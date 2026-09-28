@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   buildWebhookPayload,
   isSensitiveHeader,
@@ -37,6 +38,7 @@ import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts
 import type { RunTrackerStore } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 
 await initializeLogging({});
 
@@ -453,6 +455,57 @@ Deno.test("listEndpoints: includes scheme from each endpoint verifier", async ()
   assertEquals(infos[2].scheme, "generic");
 });
 
+// ── drain (swamp-club#2484) ──────────────────────────────────────────
+
+Deno.test("WebhookService.drain: matched routes get 503 with Retry-After while unmatched stay null", async () => {
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    // deno-lint-ignore no-explicit-any
+    repoContext: {} as any,
+    // deno-lint-ignore no-explicit-any
+    datastoreConfig: {} as any,
+    endpoints: [await parseWebhookFlag("/hooks/gh:deploy:secret")],
+  });
+  const rejections: string[] = [];
+  service.setEventHandler((event) => {
+    if (event.kind === "webhook_rejected") rejections.push(event.reason);
+  });
+
+  await service.drain(0);
+
+  const response = await service.handleRequest(
+    new Request("http://localhost/hooks/gh", { method: "POST", body: "{}" }),
+  );
+  assertEquals(response?.status, 503);
+  assertEquals(response?.headers.get("retry-after"), "5");
+  assertStringIncludes(
+    (await response!.json()).error,
+    "shutting down",
+  );
+  assertEquals(rejections, ["Server shutting down"]);
+
+  const unmatched = await service.handleRequest(
+    new Request("http://localhost/hooks/other", { method: "POST" }),
+  );
+  assertEquals(unmatched, null);
+  await service.stop();
+});
+
+Deno.test("WebhookService.drain: with no in-flight run resolves and stop still succeeds", async () => {
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    // deno-lint-ignore no-explicit-any
+    repoContext: {} as any,
+    // deno-lint-ignore no-explicit-any
+    datastoreConfig: {} as any,
+    endpoints: [],
+  });
+  await service.drain(60_000);
+  await service.stop();
+});
+
 // ── buildWebhookPayload header redaction ─────────────────────────────
 
 Deno.test("buildWebhookPayload: strips authorization header", () => {
@@ -713,6 +766,87 @@ Deno.test("handleRequest: extension respond with enqueue false returns its respo
   assertEquals(pendingRuns.length, 0);
   assertEquals(seenHeaders[TOKEN_HEADER], undefined);
   assertEquals(seenHeaders["x-event"], "update");
+});
+
+Deno.test("handleRequest: a drain starting during the hooks turns the delivery away before it is queued", async () => {
+  const gate = Promise.withResolvers<void>();
+  let transforming = false;
+  const type = registerExtension({
+    transform: async (body) => {
+      transforming = true;
+      await gate.promise;
+      return body;
+    },
+  });
+  const { service, pendingRuns } = extensionService(type);
+
+  const pending = service.handleRequest(extensionRequest("s3cret"));
+  await waitFor(() => transforming, "transform hook to start");
+  await service.drain(0);
+  gate.resolve();
+  const res = await pending;
+
+  assertEquals(res?.status, 503);
+  assertEquals(res?.headers.get("retry-after"), "5");
+  await res?.body?.cancel();
+  assertEquals(pendingRuns.length, 0);
+  await service.stop();
+});
+
+Deno.test("WebhookService.drain: waits for dropped entries' control-plane writes and starts no dequeued run", async () => {
+  const type = registerExtension({});
+  const putGate = Promise.withResolvers<void>();
+  const puts: string[] = [];
+  const remoteDeletes: string[] = [];
+  const localDeletes: string[] = [];
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as unknown as RepositoryContext,
+    datastoreConfig: {} as unknown as DatastoreConfig,
+    endpoints: [{
+      route: "/hooks/ext",
+      workflowIdOrName: "wf",
+      secret: "s3cret",
+      verifier: { scheme: type, config: {} },
+    }],
+    runTracker: {
+      enqueuePendingRun: () => {},
+      deletePendingRun: (id: string) => localDeletes.push(id),
+    } as unknown as RunTrackerStore,
+    controlPlaneStore: {
+      put: (key: string) => {
+        puts.push(key);
+        return putGate.promise;
+      },
+      delete: (key: string) => {
+        remoteDeletes.push(key);
+        return Promise.resolve();
+      },
+    } as unknown as ControlPlaneStore,
+  });
+
+  // The first delivery is dequeued and waits on its put; the second queues
+  // behind it.
+  for (let i = 0; i < 2; i++) {
+    const res = await service.handleRequest(extensionRequest("s3cret"));
+    assertEquals(res?.status, 200);
+    await res?.body?.cancel();
+  }
+  assertEquals(puts.length, 2);
+
+  const order: string[] = [];
+  const drain = service.drain(0).then(() => order.push("drained"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  order.push("released");
+  putGate.resolve();
+  await drain;
+  await service.stop();
+
+  assertEquals(order, ["released", "drained"]);
+  // Neither entry started, so both stay pending for the next boot.
+  assertEquals(localDeletes, []);
+  assertEquals(remoteDeletes, []);
 });
 
 Deno.test("handleRequest: extension hooks never run when verification fails", async () => {

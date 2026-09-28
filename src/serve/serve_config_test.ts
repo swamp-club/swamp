@@ -936,6 +936,49 @@ Deno.test("mergeServeOptions: hydration-timeout defaults to undefined", () => {
   assertEquals(merged.hydrationTimeout, undefined);
 });
 
+Deno.test("mergeServeOptions: shutdown-drain-timeout CLI flag wins over env and config", () => {
+  const config: ServeConfigFile = { "shutdown-drain-timeout": "10m" };
+  const merged = mergeServeOptions(
+    config,
+    { shutdownDrainTimeout: "2m" },
+    new Set(["shutdown-drain-timeout"]),
+    (name) => name === "SWAMP_SHUTDOWN_DRAIN_TIMEOUT" ? "3m" : undefined,
+  );
+  assertEquals(merged.shutdownDrainTimeout, "2m");
+});
+
+Deno.test("mergeServeOptions: shutdown-drain-timeout env var wins over config file", () => {
+  const config: ServeConfigFile = { "shutdown-drain-timeout": "10m" };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_SHUTDOWN_DRAIN_TIMEOUT" ? "3m" : undefined,
+  );
+  assertEquals(merged.shutdownDrainTimeout, "3m");
+});
+
+Deno.test("mergeServeOptions: shutdown-drain-timeout from config file", () => {
+  const config: ServeConfigFile = { "shutdown-drain-timeout": "10m" };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.shutdownDrainTimeout, "10m");
+});
+
+Deno.test("mergeServeOptions: shutdown-drain-timeout defaults to undefined", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.shutdownDrainTimeout, undefined);
+});
+
 Deno.test("mergeServeOptions: datastore-poll-interval CLI flag wins over env and config", () => {
   const merged = mergeServeOptions(
     { "datastore-poll-interval": "10s" },

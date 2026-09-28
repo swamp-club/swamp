@@ -24,6 +24,7 @@ import {
   cancelExecution,
   collectServeExtraArgs,
   parseDatastorePollInterval,
+  parseShutdownDrainTimeout,
   parseTokenGcSettings,
   reapOrphanedWorkflowRuns,
   shouldWarnGroupRefreshIgnored,
@@ -190,6 +191,34 @@ Deno.test("parseTokenGcSettings: caps the interval at the timer ceiling but not 
 });
 
 // --- --datastore-poll-interval parsing ---
+
+Deno.test("parseShutdownDrainTimeout: unset keeps the 30s default", () => {
+  assertEquals(parseShutdownDrainTimeout(undefined), 30_000);
+});
+
+Deno.test("parseShutdownDrainTimeout: zero with or without a unit disables the drain", () => {
+  for (const raw of ["0", "0s", "0ms", " 0m ", "00"]) {
+    assertEquals(parseShutdownDrainTimeout(raw), 0);
+  }
+});
+
+Deno.test("parseShutdownDrainTimeout: accepts seconds and larger units", () => {
+  assertEquals(parseShutdownDrainTimeout("90"), 90_000);
+  assertEquals(parseShutdownDrainTimeout("90s"), 90_000);
+  assertEquals(parseShutdownDrainTimeout("5m"), 300_000);
+});
+
+Deno.test("parseShutdownDrainTimeout: rejects malformed and oversized values", () => {
+  assertThrows(
+    () => parseShutdownDrainTimeout("soon"),
+    UserError,
+  );
+  assertThrows(
+    () => parseShutdownDrainTimeout("1mo"),
+    UserError,
+    "--shutdown-drain-timeout (1mo) exceeds the maximum safe timer duration",
+  );
+});
 
 Deno.test("parseDatastorePollInterval: unset returns undefined", () => {
   assertEquals(parseDatastorePollInterval(undefined), undefined);
@@ -611,6 +640,17 @@ Deno.test("collectServeExtraArgs: forwards --trusted-hosts", () => {
 Deno.test("collectServeExtraArgs: omits --trusted-hosts when not set", () => {
   const args = collectServeExtraArgs({});
   assertEquals(args, []);
+});
+
+Deno.test("collectServeExtraArgs: forwards --shutdown-drain-timeout, including 0", () => {
+  assertEquals(collectServeExtraArgs({ shutdownDrainTimeout: "2m" }), [
+    "--shutdown-drain-timeout",
+    "2m",
+  ]);
+  assertEquals(collectServeExtraArgs({ shutdownDrainTimeout: "0" }), [
+    "--shutdown-drain-timeout",
+    "0",
+  ]);
 });
 
 Deno.test("collectServeExtraArgs: forwards --hot-reload", () => {

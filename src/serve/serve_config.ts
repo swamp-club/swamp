@@ -55,6 +55,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   staleTtl: "SWAMP_STALE_TTL",
   reconciliationInterval: "SWAMP_RECONCILIATION_INTERVAL",
   hydrationTimeout: "SWAMP_HYDRATION_TIMEOUT",
+  shutdownDrainTimeout: "SWAMP_SHUTDOWN_DRAIN_TIMEOUT",
   datastorePollInterval: "SWAMP_DATASTORE_POLL_INTERVAL",
   tokenGcInterval: "SWAMP_TOKEN_GC_INTERVAL",
   tokenGcGracePeriod: "SWAMP_TOKEN_GC_GRACE_PERIOD",
@@ -132,6 +133,7 @@ export interface ServeConfigFile {
   "max-runs-per-principal"?: number;
   "max-run-duration"?: string;
   "hydration-timeout"?: string;
+  "shutdown-drain-timeout"?: string;
   "datastore-poll-interval"?: string;
   "token-gc-interval"?: string;
   "token-gc-grace-period"?: string;
@@ -253,6 +255,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "max-runs-per-principal",
   "max-run-duration",
   "hydration-timeout",
+  "shutdown-drain-timeout",
   "datastore-poll-interval",
   "token-gc-interval",
   "token-gc-grace-period",
@@ -496,6 +499,7 @@ function validateConfigValues(
     ["stale-ttl", raw["stale-ttl"]],
     ["reconciliation-interval", raw["reconciliation-interval"]],
     ["hydration-timeout", raw["hydration-timeout"]],
+    ["shutdown-drain-timeout", raw["shutdown-drain-timeout"]],
     ["datastore-poll-interval", raw["datastore-poll-interval"]],
     ["token-gc-interval", raw["token-gc-interval"]],
     ["token-gc-grace-period", raw["token-gc-grace-period"]],
@@ -878,6 +882,7 @@ export interface MergedServeOptions {
   maxRunsPerPrincipal?: number;
   maxRunDuration?: string;
   hydrationTimeout?: string;
+  shutdownDrainTimeout?: string;
   datastorePollInterval?: string;
   tokenGcInterval?: string;
   tokenGcGracePeriod?: string;
@@ -1218,6 +1223,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const shutdownDrainTimeout = resolveString(
+    "shutdown-drain-timeout",
+    cliOptions.shutdownDrainTimeout as string | undefined,
+    config?.["shutdown-drain-timeout"],
+    undefined,
+  );
+
   const datastorePollInterval = resolveString(
     "datastore-poll-interval",
     cliOptions.datastorePollInterval as string | undefined,
@@ -1330,6 +1342,7 @@ export function mergeServeOptions(
     maxRunsPerPrincipal,
     maxRunDuration,
     hydrationTimeout,
+    shutdownDrainTimeout,
     datastorePollInterval,
     tokenGcInterval,
     tokenGcGracePeriod,

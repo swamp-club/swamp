@@ -24,6 +24,7 @@ import {
   type PendingRunHook,
   type ScheduledExecutionEvent,
   ScheduledExecutionService,
+  type WorkflowExecutor,
 } from "./scheduled_execution.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -349,6 +350,192 @@ Deno.test("ScheduledExecutionService: stop clears schedules", async () => {
 
   await service.stop();
   assertEquals(service.listSchedules().length, 0);
+});
+
+// ── Drain (swamp-club#2484) ──────────────────────────────────────────
+
+/** An executor whose runs stay in flight until released or aborted. */
+function createBlockingExecutor() {
+  const gate = Promise.withResolvers<void>();
+  const signals: AbortSignal[] = [];
+  const executeWorkflow: WorkflowExecutor = (input, signal, onEvent) => {
+    signals.push(signal);
+    onEvent({
+      kind: "started",
+      runId: `run-${signals.length}`,
+      workflowName: input.workflowIdOrName,
+      jobs: [],
+    });
+    return new Promise<void>((resolve) => {
+      gate.promise.then(resolve);
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+  };
+  return { executeWorkflow, signals, release: () => gate.resolve() };
+}
+
+Deno.test("ScheduledExecutionService.drain: waits for the in-flight run to finish without aborting it", async () => {
+  const executor = createBlockingExecutor();
+  // A far-off schedule gives the test a visible sign that the drain has
+  // stopped the scheduler and reached its wait.
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([
+      createTestWorkflow("yearly-wf", "0 0 1 1 *"),
+    ]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  await service.start();
+  service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" });
+  await waitFor(() => executor.signals.length === 1, "run started");
+
+  const order: string[] = [];
+  const drain = service.drain(60_000).then(() => order.push("drained"));
+  await waitFor(() => service.listSchedules().length === 0, "scheduler stop");
+
+  order.push("released");
+  executor.release();
+  await drain;
+  assertEquals(order, ["released", "drained"]);
+  assertEquals(executor.signals[0].aborted, false);
+  await service.stop();
+});
+
+Deno.test("ScheduledExecutionService.drain: returns at the timeout and stop then aborts the run", async () => {
+  const executor = createBlockingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  await service.start();
+  service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" });
+  await waitFor(() => executor.signals.length === 1, "run started");
+
+  await service.drain(1);
+  assertEquals(executor.signals[0].aborted, false);
+
+  await service.stop();
+  assertEquals(executor.signals[0].aborted, true);
+});
+
+Deno.test("ScheduledExecutionService.drain: drops queued runs but keeps their pending entries", async () => {
+  const executor = createBlockingExecutor();
+  const deleted: string[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    pendingRunHook: {
+      enqueue: () => Promise.resolve(),
+      delete: (id) => {
+        deleted.push(id);
+        return Promise.resolve();
+      },
+    },
+  });
+  await service.start();
+  service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf-a" });
+  service.enqueueForReplay({ pendingRunId: "p-2", workflowIdOrName: "wf-b" });
+  await waitFor(() => executor.signals.length === 1, "first run started");
+
+  await service.drain(0);
+  service.enqueueForReplay({ pendingRunId: "p-3", workflowIdOrName: "wf-c" });
+  executor.release();
+  await service.stop();
+
+  assertEquals(executor.signals.length, 1);
+  assertEquals(deleted, ["p-1"]);
+});
+
+Deno.test("ScheduledExecutionService.drain: waits for a fire claimed as the drain starts to be recorded for replay", async () => {
+  // Fires every second, so more than one fire may reach the dedup gate
+  // before the drain stops the scheduler; every one must be recorded.
+  const wf = createTestWorkflow("drain-fire-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+  const dedupGate = Promise.withResolvers<boolean>();
+  const enqueueGate = Promise.withResolvers<void>();
+  const enqueued: string[] = [];
+  const deleted: string[] = [];
+  let dedupCalls = 0;
+  let executions = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executions++;
+      return Promise.resolve();
+    },
+    cronFireDedup: () => {
+      dedupCalls++;
+      return dedupGate.promise;
+    },
+    pendingRunHook: {
+      enqueue: async (entry) => {
+        await enqueueGate.promise;
+        enqueued.push(entry.workflowIdOrName);
+      },
+      delete: (id) => {
+        deleted.push(id);
+        return Promise.resolve();
+      },
+    },
+  });
+  await service.start((e) => events.push(e));
+  await waitFor(() => dedupCalls > 0, "cron fire reached dedup");
+
+  const order: string[] = [];
+  const drain = service.drain(0).then(() => order.push("drained"));
+  dedupGate.resolve(true);
+  await waitFor(() => service.listSchedules().length === 0, "scheduler stop");
+  order.push("released");
+  enqueueGate.resolve();
+  await drain;
+  await service.stop();
+
+  assertEquals(order, ["released", "drained"]);
+  assertGreater(enqueued.length, 0);
+  assertEquals(enqueued.every((name) => name === "drain-fire-wf"), true);
+  assertEquals(deleted, []);
+  assertEquals(executions, 0);
+  assertEquals(events.filter((e) => e.kind === "schedule_fired").length, 0);
+});
+
+Deno.test("ScheduledExecutionService.drain: a run dequeued but not yet started stays pending", async () => {
+  const wf = createTestWorkflow("dequeued-wf", "* * * * * *");
+  const enqueueGate = Promise.withResolvers<void>();
+  let enqueueCalls = 0;
+  const deleted: string[] = [];
+  let executions = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executions++;
+      return Promise.resolve();
+    },
+    pendingRunHook: {
+      enqueue: () => {
+        enqueueCalls++;
+        return enqueueGate.promise;
+      },
+      delete: (id) => {
+        deleted.push(id);
+        return Promise.resolve();
+      },
+    },
+  });
+  await service.start();
+  // processQueue has taken the fire off the queue and waits on its write.
+  await waitFor(() => enqueueCalls > 0, "fire enqueued");
+
+  const drain = service.drain(0);
+  enqueueGate.resolve();
+  await drain;
+  await service.stop();
+
+  assertEquals(executions, 0);
+  assertEquals(deleted, []);
 });
 
 Deno.test("ScheduledExecutionService: cronFireDedup returning true allows execution", async () => {
