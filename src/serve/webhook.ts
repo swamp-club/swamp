@@ -582,20 +582,7 @@ export class WebhookService {
       return null;
     }
 
-    if (this.draining) {
-      this.emit({
-        kind: "webhook_rejected",
-        route: endpoint.route,
-        reason: "Server shutting down",
-      });
-      return Response.json(
-        { error: "Server is shutting down, try again later" },
-        {
-          status: 503,
-          headers: { "retry-after": String(SHUTDOWN_RETRY_AFTER_SECONDS) },
-        },
-      );
-    }
+    if (this.draining) return this.shuttingDownResponse(endpoint);
 
     this.emit({
       kind: "webhook_received",
@@ -701,6 +688,10 @@ export class WebhookService {
 
     if (httpResponse && !customResponse?.enqueue) return httpResponse;
 
+    // Checked again: a drain can start during the awaits above, and a run
+    // queued after it would be acknowledged and then aborted unreplayed.
+    if (this.draining) return this.shuttingDownResponse(endpoint);
+
     // Queue the workflow run (with backpressure)
     if (this.runQueue.length >= MAX_QUEUE_DEPTH) {
       this.emit({
@@ -791,6 +782,21 @@ export class WebhookService {
       });
       return undefined;
     }
+  }
+
+  private shuttingDownResponse(endpoint: WebhookEndpoint): Response {
+    this.emit({
+      kind: "webhook_rejected",
+      route: endpoint.route,
+      reason: "Server shutting down",
+    });
+    return Response.json(
+      { error: "Server is shutting down, try again later" },
+      {
+        status: 503,
+        headers: { "retry-after": String(SHUTDOWN_RETRY_AFTER_SECONDS) },
+      },
+    );
   }
 
   private handlerFailure(endpoint: WebhookEndpoint, reason: string): Response {

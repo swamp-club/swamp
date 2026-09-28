@@ -197,7 +197,7 @@ Deno.test("parseShutdownDrainTimeout: unset keeps the 30s default", () => {
 });
 
 Deno.test("parseShutdownDrainTimeout: zero with or without a unit disables the drain", () => {
-  for (const raw of ["0", "0s", " 0m ", "00"]) {
+  for (const raw of ["0", "0s", "0ms", " 0m ", "00"]) {
     assertEquals(parseShutdownDrainTimeout(raw), 0);
   }
 });
@@ -640,6 +640,17 @@ Deno.test("collectServeExtraArgs: forwards --trusted-hosts", () => {
 Deno.test("collectServeExtraArgs: omits --trusted-hosts when not set", () => {
   const args = collectServeExtraArgs({});
   assertEquals(args, []);
+});
+
+Deno.test("collectServeExtraArgs: forwards --shutdown-drain-timeout, including 0", () => {
+  assertEquals(collectServeExtraArgs({ shutdownDrainTimeout: "2m" }), [
+    "--shutdown-drain-timeout",
+    "2m",
+  ]);
+  assertEquals(collectServeExtraArgs({ shutdownDrainTimeout: "0" }), [
+    "--shutdown-drain-timeout",
+    "0",
+  ]);
 });
 
 Deno.test("collectServeExtraArgs: forwards --hot-reload", () => {

@@ -225,7 +225,21 @@ export class ScheduledExecutionService {
     this.draining = true;
     await this.watcher.stop();
     this.scheduler.stop();
-    this.runQueue.length = 0;
+    // Dropped entries' pending-run writes are observed here, since
+    // processQueue will never await them.
+    const dropped = this.runQueue.splice(0);
+    const writes = await Promise.allSettled(
+      dropped.map((entry) => entry.enqueuePromise),
+    );
+    for (const write of writes) {
+      if (write.status === "rejected") {
+        logger.warn("Pending-run write for a queued cron run failed: {error}", {
+          error: write.reason instanceof Error
+            ? write.reason.message
+            : String(write.reason),
+        });
+      }
+    }
     if (timeoutMs <= 0) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -563,7 +577,13 @@ export class ScheduledExecutionService {
         );
       }
     }
-    if (this.draining) return;
+    if (this.draining) {
+      // This instance may have claimed the fire slot, so peers skip it.
+      // Record the fire for the next boot to replay instead of dropping it
+      // cluster-wide.
+      await this.recordForReplay(workflowName);
+      return;
+    }
 
     this.emit({
       kind: "schedule_fired",
@@ -596,6 +616,27 @@ export class ScheduledExecutionService {
     });
     if (!this.processing) {
       this.processingPromise = this.processQueue();
+    }
+  }
+
+  private async recordForReplay(workflowName: string): Promise<void> {
+    if (!this.deps.pendingRunHook) return;
+    try {
+      await this.deps.pendingRunHook.enqueue({
+        id: crypto.randomUUID(),
+        source: "cron",
+        workflowIdOrName: workflowName,
+        createdAt: new Date().toISOString(),
+      });
+      logger.info(
+        "Recorded cron fire for {name} for replay after shutdown",
+        { name: workflowName },
+      );
+    } catch (err: unknown) {
+      logger.warn("Failed to record cron fire for {name}: {error}", {
+        name: workflowName,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

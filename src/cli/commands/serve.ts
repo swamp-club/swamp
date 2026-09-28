@@ -720,7 +720,7 @@ const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
  */
 export function parseShutdownDrainTimeout(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
-  if (/^0+[smhdw]?$/i.test(raw.trim())) return 0;
+  if (/^0+(ms|mo|[smhdwy])?$/i.test(raw.trim())) return 0;
   return parseTimerDuration(raw, "--shutdown-drain-timeout");
 }
 
@@ -5354,8 +5354,13 @@ export const serveCommand = new Command()
       if (isJson) {
         console.log(JSON.stringify({ status: "stopping" }));
       }
-      logger
-        .info`Shutting down (drain timeout: ${shutdownDrainTimeoutMs}ms)...`;
+      if (shutdownDrainTimeoutMs > 0) {
+        logger.info`Shutting down, draining in-flight runs for up to ${
+          shutdownDrainTimeoutMs / 1000
+        }s...`;
+      } else {
+        logger.info`Shutting down, aborting in-flight runs immediately...`;
+      }
       const remaining = await runShutdownDrain({
         webhookService,
         scheduledExecution,

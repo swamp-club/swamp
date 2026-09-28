@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   buildWebhookPayload,
   isSensitiveHeader,
@@ -764,6 +765,31 @@ Deno.test("handleRequest: extension respond with enqueue false returns its respo
   assertEquals(pendingRuns.length, 0);
   assertEquals(seenHeaders[TOKEN_HEADER], undefined);
   assertEquals(seenHeaders["x-event"], "update");
+});
+
+Deno.test("handleRequest: a drain starting during the hooks turns the delivery away before it is queued", async () => {
+  const gate = Promise.withResolvers<void>();
+  let transforming = false;
+  const type = registerExtension({
+    transform: async (body) => {
+      transforming = true;
+      await gate.promise;
+      return body;
+    },
+  });
+  const { service, pendingRuns } = extensionService(type);
+
+  const pending = service.handleRequest(extensionRequest("s3cret"));
+  await waitFor(() => transforming, "transform hook to start");
+  await service.drain(0);
+  gate.resolve();
+  const res = await pending;
+
+  assertEquals(res?.status, 503);
+  assertEquals(res?.headers.get("retry-after"), "5");
+  await res?.body?.cancel();
+  assertEquals(pendingRuns.length, 0);
+  await service.stop();
 });
 
 Deno.test("handleRequest: extension hooks never run when verification fails", async () => {

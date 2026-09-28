@@ -376,8 +376,12 @@ function createBlockingExecutor() {
 
 Deno.test("ScheduledExecutionService.drain: waits for the in-flight run to finish without aborting it", async () => {
   const executor = createBlockingExecutor();
+  // A far-off schedule gives the test a visible sign that the drain has
+  // stopped the scheduler and reached its wait.
   const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([]),
+    workflowRepo: createMockWorkflowRepo([
+      createTestWorkflow("yearly-wf", "0 0 1 1 *"),
+    ]),
     repoDir: "/tmp/nonexistent-test-repo",
     executeWorkflow: executor.executeWorkflow,
   });
@@ -385,15 +389,14 @@ Deno.test("ScheduledExecutionService.drain: waits for the in-flight run to finis
   service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" });
   await waitFor(() => executor.signals.length === 1, "run started");
 
-  let drained = false;
-  const drain = service.drain(60_000).then(() => {
-    drained = true;
-  });
-  await Promise.resolve();
-  assertEquals(drained, false);
+  const order: string[] = [];
+  const drain = service.drain(60_000).then(() => order.push("drained"));
+  await waitFor(() => service.listSchedules().length === 0, "scheduler stop");
 
+  order.push("released");
   executor.release();
   await drain;
+  assertEquals(order, ["released", "drained"]);
   assertEquals(executor.signals[0].aborted, false);
   await service.stop();
 });
@@ -445,10 +448,12 @@ Deno.test("ScheduledExecutionService.drain: drops queued runs but keeps their pe
   assertEquals(deleted, ["p-1"]);
 });
 
-Deno.test("ScheduledExecutionService.drain: a fire already past the scheduler does not start a run", async () => {
+Deno.test("ScheduledExecutionService.drain: a fire claimed as the drain starts is recorded for replay, not run", async () => {
   const wf = createTestWorkflow("drain-fire-wf", "* * * * * *");
   const events: ScheduledExecutionEvent[] = [];
   const dedupGate = Promise.withResolvers<boolean>();
+  const enqueued: string[] = [];
+  const deleted: string[] = [];
   let dedupCalls = 0;
   let executions = 0;
   const service = new ScheduledExecutionService({
@@ -462,14 +467,27 @@ Deno.test("ScheduledExecutionService.drain: a fire already past the scheduler do
       dedupCalls++;
       return dedupGate.promise;
     },
+    pendingRunHook: {
+      enqueue: (entry) => {
+        enqueued.push(entry.workflowIdOrName);
+        return Promise.resolve();
+      },
+      delete: (id) => {
+        deleted.push(id);
+        return Promise.resolve();
+      },
+    },
   });
   await service.start((e) => events.push(e));
   await waitFor(() => dedupCalls > 0, "cron fire reached dedup");
 
   await service.drain(0);
   dedupGate.resolve(true);
+  await waitFor(() => enqueued.length > 0, "fire recorded for replay");
   await service.stop();
 
+  assertEquals(enqueued, ["drain-fire-wf"]);
+  assertEquals(deleted, []);
   assertEquals(executions, 0);
   assertEquals(events.filter((e) => e.kind === "schedule_fired").length, 0);
 });
