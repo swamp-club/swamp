@@ -72,6 +72,7 @@ import {
   type WorkflowRunData,
 } from "./workflow_run.ts";
 import type { WorkflowExecutionEvent } from "./execution_events.ts";
+import type { MethodExecutionService } from "../models/method_execution_service.ts";
 import { assessRecoveryForRun } from "./recovery_assessment.ts";
 import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
@@ -14488,6 +14489,111 @@ Deno.test("resume: the workflow summary lists the data a step that fails after a
       assertEquals(failureRetrievalCommands(events), [
         "swamp data get failer state",
       ]);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+Deno.test("run(): a failed step that threw a primitive still reports its own error after failure reports persist", async () => {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  const { YamlOutputRepository } = await import(
+    "../../infrastructure/persistence/yaml_output_repository.ts"
+  );
+  const { YamlEvaluatedDefinitionRepository } = await import(
+    "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts"
+  );
+  const { DataQueryService } = await import("../data/data_query_service.ts");
+  const { VaultService } = await import("../vaults/vault_service.ts");
+  const { ExpressionEvaluationService } = await import(
+    "../expressions/expression_evaluation_service.ts"
+  );
+  await initializeLogging({});
+  const modelType = ModelType.create(
+    `@test-2602/primitive-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    resources: {},
+    methods: {
+      run: {
+        description: "never called; the execution service throws",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+
+  await withTempDir(async (tempDir) => {
+    const definitionRepo = new YamlDefinitionRepository(tempDir);
+    await definitionRepo.save(
+      modelType,
+      Definition.create({ name: "primitive", type: modelType.normalized }),
+    );
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const unifiedDataRepo = new FileSystemUnifiedDataRepository(
+        tempDir,
+        undefined,
+        catalogStore,
+      );
+      const executor = new DefaultStepExecutor({
+        definitionRepo,
+        unifiedDataRepo,
+        dataQueryService: new DataQueryService(catalogStore, unifiedDataRepo),
+        outputRepo: new YamlOutputRepository(tempDir),
+        evaluatedDefRepo: new YamlEvaluatedDefinitionRepository(tempDir),
+        // A thrown primitive, which cannot carry artifacts.
+        methodExecutionService: {
+          executeWorkflow: () => Promise.reject("boom"),
+        } as unknown as MethodExecutionService,
+        vaultService: await VaultService.fromRepository(tempDir),
+        expressionEvaluator: new ExpressionEvaluationService(
+          definitionRepo,
+          tempDir,
+        ),
+      });
+
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const workflow = Workflow.create({
+        name: "primitive-failure",
+        jobs: [
+          Job.create({
+            name: "job1",
+            steps: [
+              Step.create({
+                name: "step1",
+                task: StepTask.model("primitive", "run"),
+              }),
+            ],
+          }),
+        ],
+      });
+      await workflowRepo.save(workflow);
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      const { run, events } = await runToCompletion(service, workflow.name);
+
+      // The method-summary report still ran and persisted on the failure path.
+      assertEquals(completedReport(events, "@swamp/method-summary").length, 1);
+      const stepRun = run.getJob("job1")?.getStep("step1");
+      assertEquals(stepRun?.status, "failed");
+      // The step records the thrown value, not a TypeError from attaching
+      // artifacts to it.
+      assertEquals(stepRun?.error, "boom");
     } finally {
       catalogStore.close();
     }

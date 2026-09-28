@@ -2017,8 +2017,11 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Attach saved artifacts to the error so the outer step loop can
-    // record them on the StepRun.
-    if (savedArtifacts.length > 0) {
+    // record them on the StepRun. A thrown primitive cannot carry them, and
+    // assigning to one would replace the real error with a TypeError.
+    if (
+      savedArtifacts.length > 0 && typeof error === "object" && error !== null
+    ) {
       (error as Record<string, unknown>).dataArtifacts = savedArtifacts;
     }
   }
