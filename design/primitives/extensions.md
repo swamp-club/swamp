@@ -759,6 +759,14 @@ exports the static extractor cannot read, such as
 `export const extension = withOptions(definition)`, from warning on every
 catalog rebuild.
 
+The lookup also finds a row written under another spelling of the same file.
+Reaching the repo under a second spelling of its root (`/tmp/r` and
+`/private/tmp/r` on macOS) changes the source-dirs fingerprint and forces a
+cold rebuild. When the exact lookup misses, the loader matches rows outside its
+own spelling of the repo root by symlink-resolved path, in either direction. An
+up-to-date match is moved to the current spelling, leaving one row per file, as
+the next warm scan would.
+
 ## Split Extensions Directory (`--extensions-dir`)
 
 By default, swamp finds local extension sources in `extensions/<kind>/` under
