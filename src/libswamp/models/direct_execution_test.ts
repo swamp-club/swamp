@@ -20,7 +20,9 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
+  AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS,
   autoDefinitionLockKey,
+  createAutoDefinitionLock,
   resolveOrCreateDefinition,
   routeInputsBySchema,
 } from "./direct_execution.ts";
@@ -902,6 +904,17 @@ Deno.test("autoDefinitionLockKey: deeply scoped name flattens all slashes", () =
     autoDefinitionLockKey("@org/nested/deep"),
     ".auto-definition-create/@org--nested--deep.lock",
   );
+});
+
+// ── createAutoDefinitionLock ───────────────────────────────────────────
+
+Deno.test("createAutoDefinitionLock: retries promptly on brief contention", () => {
+  const lock = createAutoDefinitionLock("/unused", "fan-model");
+
+  // The create lock is held for milliseconds, so the first retry must not
+  // sleep through a release. Asserted on configuration, not elapsed time —
+  // wall-clock assertions are banned by the repo's flakiness rules.
+  assertEquals(lock.retryIntervalMs, AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS);
 });
 
 // ── resolveOrCreateDefinition with lockDir ──────────────────────────────

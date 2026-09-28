@@ -1442,8 +1442,11 @@ starts at `retryIntervalMs` (default 1 second), doubles per attempt up to 8
 seconds, and adds ±25% jitter. Each sleep is clamped to the remaining budget, so
 the loop never overshoots `maxWaitMs`. Per-model locks (`createModelLock`) start
 at 25 ms instead: they guard brief local writes, and the 1 second default made
-waiters sleep through a release that came milliseconds later. Backoff still
-doubles, so sustained contention reaches the same pace.
+waiters sleep through a release that came milliseconds later. The auto-definition
+create lock (`createAutoDefinitionLock` in `direct_execution.ts`) starts at 25 ms
+for the same reason, so forEach iterations that race to create one direct-type
+definition do not stall. Backoff still doubles, so sustained contention reaches
+the same pace.
 
 **Contention logging.** A lock taken after one or more retries logs the retry
 count and total wait at info level:
