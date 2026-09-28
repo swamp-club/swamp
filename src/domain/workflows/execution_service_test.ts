@@ -12187,6 +12187,134 @@ Deno.test("resume: --from reruns the work the abort settled beside the entry ste
   });
 });
 
+Deno.test("resume: --from reruns settled work without rerunning a same-named step another job finished", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-from-settled-same-name-wf",
+      jobs: [
+        Job.create({ name: "pre", steps: [modelStep("notify")] }),
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          dependsOn: [{ job: "pre", condition: TriggerCondition.succeeded() }],
+          steps: [
+            modelStep("a"),
+            modelStep("notify"),
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+              dependsOn: [{ step: "a", condition: TriggerCondition.always() }],
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    assertCancelledBeforeStart(run, "main", ["notify"]);
+    assertEquals(executor.count("pre/notify"), 1);
+    // What 'swamp workflow reject' does.
+    const main = run.getJob("main")!;
+    const gate = main.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: false,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.fail("Approval rejected");
+    main.fail();
+    run.complete();
+    await runRepo.save(workflow.id, run);
+
+    await drainResume(service, workflow.name, run.id, { fromStep: "a" });
+
+    const stored = (await runRepo.findById(workflow.id, run.id))!;
+    assertEquals(stored.getJob("main")!.getStep("notify")!.status, "succeeded");
+    assertEquals(executor.count("main/notify"), 1);
+    // pre's notify succeeded before the abort, so it does not run again.
+    assertEquals(stored.getJob("pre")!.status, "succeeded");
+    assertEquals(executor.count("pre/notify"), 1);
+  });
+});
+
+Deno.test("resume: a job the abort ended unknown runs its undecided step once cleanup's gate is approved", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-undecided-job-wf",
+      jobs: [
+        Job.create({
+          name: "provision",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+        Job.create({
+          name: "main",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.always(),
+          }],
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+          ],
+        }),
+      ],
+    });
+    // The abort lands while create's guard is evaluated; on resume the guard
+    // answers "does not exist yet".
+    const executor = new AbortingStepExecutor("__guard_create", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    assertUndecided(run, "provision", ["create"]);
+    assertEquals(run.getJob("provision")!.status, "unknown");
+    const gate = run.getJob("main")!.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    await runRepo.save(workflow.id, run);
+
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(
+      resumed.getJob("provision")!.getStep("create")!.status,
+      "succeeded",
+    );
+    assertEquals(executor.count("provision/create"), 1);
+    assertEquals(resumed.getJob("provision")!.status, "succeeded");
+    assertEquals(resumed.status, "succeeded");
+  });
+});
+
 Deno.test("resume: a step that failed before its suspended run resumed fails the job", async () => {
   for (const allowFailure of [false, true]) {
     await withTempDir(async (tempDir) => {

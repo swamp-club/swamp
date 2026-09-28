@@ -1371,16 +1371,17 @@ function settledFailedRun(wf: Workflow): WorkflowRun {
   return run;
 }
 
-Deno.test("planFailedRunResume: resets and tracks the work the abort settled beside the --from step", () => {
+Deno.test("planFailedRunResume: tracks the work the abort settled beside the --from step, outside the by-name reset set", () => {
   const wf = workflow([
     { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
   ]);
   const plan = planFailedRunResume(wf, settledFailedRun(wf), "a");
-  assertEquals(plan.steps, new Set(["a", "b", "c"]));
+  // b is reopened per record (WorkflowRun.reopenAbortedWork), not by name.
+  assertEquals(plan.steps, new Set(["a", "c"]));
   assertEquals(sortRefs(plan.tracked), ["main/a", "main/b", "main/c"]);
 });
 
-Deno.test("planFailedRunResume: resets settled work whose step was removed without tracking it", () => {
+Deno.test("planFailedRunResume: does not track settled work whose step was removed", () => {
   const before = workflow([
     { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
   ]);
@@ -1388,6 +1389,86 @@ Deno.test("planFailedRunResume: resets settled work whose step was removed witho
     { name: "main", steps: [plain("a"), plain("c", ["a"])] },
   ]);
   const plan = planFailedRunResume(removed, settledFailedRun(before), "a");
-  assertEquals(plan.steps, new Set(["a", "b", "c"]));
+  assertEquals(plan.steps, new Set(["a", "c"]));
   assertEquals(sortRefs(plan.tracked), ["main/a", "main/c"]);
+});
+
+Deno.test("planFailedRunResume: leaves a same-named step another job finished out of the reset set", () => {
+  const wf = workflow([
+    { name: "pre", steps: [plain("b")] },
+    { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
+  ]);
+  const run = WorkflowRun.create(wf);
+  run.start();
+  const pre = run.getJob("pre")!;
+  pre.start();
+  pre.getStep("b")!.succeed();
+  pre.succeed();
+  const main = run.getJob("main")!;
+  main.start();
+  main.getStep("a")!.start();
+  main.getStep("a")!.fail("cancelled");
+  main.cancelPendingSteps(["b"]);
+  main.getStep("c")!.skip({ kind: "dependency" });
+  main.fail();
+  run.complete();
+
+  const plan = planFailedRunResume(wf, run, "a");
+
+  assertEquals(plan.steps, new Set(["a", "c"]));
+  assertEquals(sortRefs(plan.tracked), ["main/a", "main/b", "main/c"]);
+});
+
+/**
+ * A run of `wf` whose job `pre` the abort ended `unknown`: `check` succeeded
+ * and the guard of `create` never decided, so it stays pending. Job `main`
+ * then suspended at its gate, and the gate was approved.
+ */
+function undecidedSuspendedRun(wf: Workflow): WorkflowRun {
+  const run = suspendedRun(wf);
+  const pre = run.getJob("pre")!;
+  pre.start();
+  pre.getStep("check")!.succeed();
+  pre.markUnknown();
+  return run;
+}
+
+function undecidedBefore(): Workflow {
+  return workflow([
+    { name: "pre", steps: [plain("check"), plain("create")] },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+}
+
+Deno.test("checkSuspendedRunResume: accepts an unchanged workflow whose unknown job holds an undecided step", () => {
+  const wf = undecidedBefore();
+  checkSuspendedRunResume(wf, undecidedSuspendedRun(wf));
+});
+
+Deno.test("checkSuspendedRunResume: refuses a step added to an unknown job holding an undecided step, which resume re-enters", () => {
+  const added = workflow([
+    {
+      name: "pre",
+      steps: [plain("check"), plain("create"), plain("lint")],
+    },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(added, undecidedSuspendedRun(undecidedBefore())),
+    `Step "lint" in job "pre" is not in the run.`,
+  );
 });

@@ -391,7 +391,7 @@ export class StepRun {
    * (cancelled, or skipped on its `dependsOn` or its job's), so that cleanup
    * gated on it could run. Persisted: a resume resets such a step to pending
    * and runs it, as it would have run had the abort left it pending (see
-   * {@link WorkflowRun.resetSettledByAbort}).
+   * {@link WorkflowRun.reopenAbortedWork}).
    */
   get settledByAbort(): boolean {
     return this._settledByAbort;
@@ -880,6 +880,18 @@ export class JobRun implements TriggerEvaluationContext {
     } else {
       this.skip();
     }
+  }
+
+  /**
+   * True when the run's abort left work in this job for a resume to run: a
+   * step it settled without starting ({@link StepRun.settledByAbort}), or a
+   * guarded step it left undecided (`pending`) in a job it ended `unknown`.
+   * See {@link WorkflowRun.reopenAbortedWork}.
+   */
+  get holdsAbortedWork(): boolean {
+    return this._steps.some((step) => step.settledByAbort) ||
+      (this._status === "unknown" &&
+        this._steps.some((step) => step.status === "pending"));
   }
 
   /**
@@ -1373,22 +1385,21 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Resets every step the run's abort settled without starting
-   * ({@link StepRun.settledByAbort}) to pending, for a suspended-run resume,
-   * so it runs as it would have had the abort left it pending. A finished job
-   * holding one is reset to pending too, so the resume walks it.
+   * Reopens the work the run's abort left unfinished, for any resume, so it
+   * runs as it would have had the abort left it pending: every step the
+   * abort settled without starting ({@link StepRun.settledByAbort}) is reset
+   * to pending, record by record, and a finished job that
+   * {@link JobRun.holdsAbortedWork} is reset to pending too, so the resume
+   * walks it. Records with the same name in other jobs are left alone.
    */
-  resetSettledByAbort(): void {
+  reopenAbortedWork(): void {
     for (const job of this._jobs) {
-      let reset = false;
+      const reopen = job.holdsAbortedWork;
       for (const step of job.steps) {
-        if (step.settledByAbort) {
-          step.resetToPending();
-          reset = true;
-        }
+        if (step.settledByAbort) step.resetToPending();
       }
       if (
-        reset &&
+        reopen &&
         (job.status === "succeeded" || job.status === "failed" ||
           job.status === "skipped" || job.status === "unknown")
       ) {

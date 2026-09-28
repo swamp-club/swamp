@@ -225,7 +225,7 @@ Deno.test("JobRun: settling a never-started job is decided by its steps and leav
   );
 });
 
-Deno.test("WorkflowRun: resetting settled work reopens exactly the settled records and their finished jobs", () => {
+Deno.test("WorkflowRun: reopening aborted work resets exactly the settled records and reopens the finished jobs holding aborted work", () => {
   // Each step either took a transition, or was settled by the abort.
   const OUTCOMES: ReadonlyArray<(step: StepRun) => void> = [
     ...TRANSITIONS,
@@ -265,11 +265,14 @@ Deno.test("WorkflowRun: resetting settled work reopens exactly the settled recor
         });
         const before = run.jobs.map((job) => job.toData());
 
-        run.resetSettledByAbort();
+        run.reopenAbortedWork();
 
         run.jobs.forEach((job, i) => {
           const was = before[i];
           const settled = was.steps.some((s) => s.settledByAbort === true);
+          // An undecided step the abort left in a job it ended unknown.
+          const undecided = was.status === "unknown" &&
+            was.steps.some((s) => s.status === "pending");
           job.steps.forEach((step, j) => {
             if (was.steps[j].settledByAbort) {
               assertEquals(step.status, "pending");
@@ -282,7 +285,7 @@ Deno.test("WorkflowRun: resetting settled work reopens exactly the settled recor
             .includes(was.status);
           assertEquals(
             job.status,
-            settled && finished ? "pending" : was.status,
+            (settled || undecided) && finished ? "pending" : was.status,
           );
         });
       },

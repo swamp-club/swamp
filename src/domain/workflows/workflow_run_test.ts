@@ -2081,7 +2081,7 @@ Deno.test("JobRun: cancelling and skipping a never-started job marks each step i
   assertEquals(skipped.steps.every((s) => s.settledByAbort), true);
 });
 
-Deno.test("WorkflowRun.resetSettledByAbort: resets settled steps and re-enters their finished jobs", () => {
+Deno.test("WorkflowRun.reopenAbortedWork: resets settled steps and re-enters their finished jobs", () => {
   const workflow = Workflow.create({
     name: "settled-wf",
     jobs: ["done", "failed", "running", "pending", "clean"].map((name) =>
@@ -2121,7 +2121,7 @@ Deno.test("WorkflowRun.resetSettledByAbort: resets settled steps and re-enters t
   clean.fail();
   run.suspend();
 
-  run.resetSettledByAbort();
+  run.reopenAbortedWork();
 
   assertEquals(done.status, "pending");
   assertEquals(done.getStep("x")!.status, "succeeded");
@@ -2139,4 +2139,75 @@ Deno.test("WorkflowRun.resetSettledByAbort: resets settled steps and re-enters t
   for (const job of run.jobs) {
     assertEquals(job.steps.some((s) => s.settledByAbort), false, job.jobName);
   }
+});
+
+Deno.test("WorkflowRun.reopenAbortedWork: re-enters a job the abort ended unknown with an undecided step", () => {
+  const workflow = Workflow.create({
+    name: "undecided-wf",
+    jobs: ["undecided", "interrupted"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "x", task: StepTask.model("m", "run") }),
+          Step.create({ name: "y", task: StepTask.model("m", "run") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  // x succeeded; y's guard never decided, so it stays pending.
+  const undecided = run.getJob("undecided")!;
+  undecided.start();
+  undecided.getStep("x")!.succeed();
+  undecided.markUnknown();
+  // An unknown job with no pending step holds no aborted work.
+  const interrupted = run.getJob("interrupted")!;
+  interrupted.start();
+  interrupted.getStep("x")!.succeed();
+  interrupted.getStep("y")!.markUnknown("interrupted: server_crash");
+  interrupted.markUnknown();
+  run.suspend();
+  assertEquals(undecided.holdsAbortedWork, true);
+  assertEquals(interrupted.holdsAbortedWork, false);
+
+  run.reopenAbortedWork();
+
+  assertEquals(undecided.status, "pending");
+  assertEquals(undecided.getStep("x")!.status, "succeeded");
+  assertEquals(undecided.getStep("y")!.status, "pending");
+  assertEquals(interrupted.status, "unknown");
+  assertEquals(interrupted.getStep("y")!.status, "unknown");
+});
+
+Deno.test("WorkflowRun.reopenAbortedWork: leaves a same-named step in another job alone", () => {
+  const workflow = Workflow.create({
+    name: "same-name-wf",
+    jobs: ["pre", "main"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "notify", task: StepTask.model("m", "run") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const pre = run.getJob("pre")!;
+  pre.start();
+  pre.getStep("notify")!.succeed();
+  pre.succeed();
+  const main = run.getJob("main")!;
+  main.start();
+  main.cancelPendingSteps(["notify"]);
+  main.fail();
+  run.complete();
+
+  run.reopenAbortedWork();
+
+  assertEquals(pre.status, "succeeded");
+  assertEquals(pre.getStep("notify")!.status, "succeeded");
+  assertEquals(main.status, "pending");
+  assertEquals(main.getStep("notify")!.status, "pending");
 });

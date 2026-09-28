@@ -2872,13 +2872,14 @@ export class WorkflowExecutionService {
     // rather than left running with nothing driving it.
     const snapshot = existingRun.toData();
 
+    // Work the run's abort left unfinished runs now, as it would have had the
+    // abort left it pending. Reopened per record before a failed run's reset
+    // set, which resets by name in every job.
+    existingRun.reopenAbortedWork();
     if (reset) {
       existingRun.resetForResumeFrom(reset.steps, reset.tracked);
       existingRun.resumeFromFailed();
     } else {
-      // Work an abort settled without starting runs now, as it would have
-      // had the abort left it pending (a failed run's reset set includes it).
-      existingRun.resetSettledByAbort();
       existingRun.resumeFromSuspended();
     }
 

@@ -1372,7 +1372,9 @@ order:
 - A resume of the run runs the work its abort settled, as it would have run
   the `pending` records. This holds for a plain resume, one after `workflow
   recover` or an approval, and a retry or `--from`. Each settled step is reset
-  to `pending`, and a finished job holding one is walked again. Cleanup that
+  to `pending` record by record, so a step with the same name in another job
+  is left alone, and a finished job holding one is walked again. So is a job
+  the cancellation ended `unknown` with an undecided step. Cleanup that
   already ran for that work is not run again.
 - A step that already failed stays failed on resume. When resume walks its job
   again, the job ends `failed` unless that failure was allowed, so the run
