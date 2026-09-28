@@ -150,6 +150,11 @@ body {
   transition: grid-template-columns 0.2s ease;
 }
 
+.nav-item:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -2px;
+}
+
 .main {
   overflow-y: auto;
   padding: 24px 32px 48px;
