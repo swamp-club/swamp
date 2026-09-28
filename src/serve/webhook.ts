@@ -502,6 +502,7 @@ export class WebhookService {
   private eventHandler: WebhookEventHandler | null = null;
   private readonly running = new Map<string, AbortController>();
   private draining = false;
+  private stopped = false;
   private endpoints: WebhookEndpoint[];
 
   constructor(private readonly deps: WebhookServiceDeps) {
@@ -834,7 +835,10 @@ export class WebhookService {
    */
   async drain(timeoutMs: number): Promise<void> {
     this.draining = true;
-    this.runQueue.length = 0;
+    // A dropped entry's control-plane write is what a replacement instance
+    // replays, so it must land before shutdown moves on.
+    const dropped = this.runQueue.splice(0);
+    await Promise.allSettled(dropped.map((entry) => entry.putPromise));
     if (timeoutMs <= 0) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -853,6 +857,7 @@ export class WebhookService {
    * Gracefully stop: abort in-flight runs and drain the processing promise.
    */
   async stop(): Promise<void> {
+    this.stopped = true;
     this.runQueue.length = 0;
     for (const controller of this.running.values()) {
       controller.abort();
@@ -875,10 +880,13 @@ export class WebhookService {
           traceparent,
           tracestate,
         } = this.runQueue.shift()!;
+        if (putPromise) await putPromise;
+        // A drain that began while this entry was dequeued leaves it pending
+        // for the next boot to replay rather than starting it now.
+        if (this.draining) break;
         if (pendingRunId && this.deps.runTracker) {
           this.deps.runTracker.deletePendingRun(pendingRunId);
           if (this.deps.controlPlaneStore) {
-            if (putPromise) await putPromise;
             await this.deps.controlPlaneStore.delete(
               `pending-runs/${pendingRunId}`,
             ).catch((err: unknown) => {
@@ -915,6 +923,8 @@ export class WebhookService {
     const controller = new AbortController();
     const execId = crypto.randomUUID();
     this.running.set(execId, controller);
+    // stop() may have swept `running` while this run was still dequeuing.
+    if (this.stopped) controller.abort();
     let runId = "";
 
     try {

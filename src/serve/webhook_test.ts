@@ -38,6 +38,7 @@ import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts
 import type { RunTrackerStore } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 
 await initializeLogging({});
 
@@ -790,6 +791,62 @@ Deno.test("handleRequest: a drain starting during the hooks turns the delivery a
   await res?.body?.cancel();
   assertEquals(pendingRuns.length, 0);
   await service.stop();
+});
+
+Deno.test("WebhookService.drain: waits for dropped entries' control-plane writes and starts no dequeued run", async () => {
+  const type = registerExtension({});
+  const putGate = Promise.withResolvers<void>();
+  const puts: string[] = [];
+  const remoteDeletes: string[] = [];
+  const localDeletes: string[] = [];
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as unknown as RepositoryContext,
+    datastoreConfig: {} as unknown as DatastoreConfig,
+    endpoints: [{
+      route: "/hooks/ext",
+      workflowIdOrName: "wf",
+      secret: "s3cret",
+      verifier: { scheme: type, config: {} },
+    }],
+    runTracker: {
+      enqueuePendingRun: () => {},
+      deletePendingRun: (id: string) => localDeletes.push(id),
+    } as unknown as RunTrackerStore,
+    controlPlaneStore: {
+      put: (key: string) => {
+        puts.push(key);
+        return putGate.promise;
+      },
+      delete: (key: string) => {
+        remoteDeletes.push(key);
+        return Promise.resolve();
+      },
+    } as unknown as ControlPlaneStore,
+  });
+
+  // The first delivery is dequeued and waits on its put; the second queues
+  // behind it.
+  for (let i = 0; i < 2; i++) {
+    const res = await service.handleRequest(extensionRequest("s3cret"));
+    assertEquals(res?.status, 200);
+    await res?.body?.cancel();
+  }
+  assertEquals(puts.length, 2);
+
+  const order: string[] = [];
+  const drain = service.drain(0).then(() => order.push("drained"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  order.push("released");
+  putGate.resolve();
+  await drain;
+  await service.stop();
+
+  assertEquals(order, ["released", "drained"]);
+  // Neither entry started, so both stay pending for the next boot.
+  assertEquals(localDeletes, []);
+  assertEquals(remoteDeletes, []);
 });
 
 Deno.test("handleRequest: extension hooks never run when verification fails", async () => {
