@@ -76,6 +76,8 @@ import {
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
 import {
+  CA_CERT_DESCRIPTION,
+  CA_CERT_FLAG,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
@@ -218,6 +220,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .option(
     "--traceparent <value:string>",
     "W3C traceparent for per-invocation trace context (env: TRACEPARENT)",

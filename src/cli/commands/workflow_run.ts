@@ -87,6 +87,8 @@ import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_
 import { isAuthenticated, resolveCliInitiatedBy } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
+  CA_CERT_DESCRIPTION,
+  CA_CERT_FLAG,
   formatCommandTarget,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -214,6 +216,7 @@ export const workflowRunCommand = new Command()
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .option(
     "--traceparent <value:string>",
     "W3C traceparent for per-invocation trace context (env: TRACEPARENT)",
