@@ -17,12 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { type MouseEvent, useEffect, useRef, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import type { View } from "../types.ts";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 
 export type { View };
+
+export const SIDEBAR_ID = "dashboard-sidebar";
 
 const ICONS: Record<string, string> = {
   overview:
@@ -101,9 +104,10 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
         style={{ flexShrink: 0, opacity: active ? 1 : 0.7 }}
         dangerouslySetInnerHTML={{ __html: iconSvg }}
       />
-      {label}
+      <span className="nav-label">{label}</span>
       {badge !== undefined && badge > 0 && (
         <span
+          className="nav-badge"
           style={{
             marginLeft: "auto",
             fontFamily: "'JetBrains Mono', monospace",
@@ -122,12 +126,35 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
   );
 }
 
+interface RailTooltip {
+  label: string;
+  top: number;
+  left: number;
+}
+
+/**
+ * Reads the hovered nav item's visually hidden label. The tooltip is
+ * position: fixed because the nav scrolls, which would clip anything drawn
+ * past its 64px edge.
+ */
+function tooltipFor(e: MouseEvent<HTMLElement>): RailTooltip | null {
+  const item = (e.target as HTMLElement).closest<HTMLElement>(".nav-item");
+  const label = item?.querySelector(".nav-label")?.textContent;
+  if (!item || !label) return null;
+  const rect = item.getBoundingClientRect();
+  return { label, top: rect.top + rect.height / 2, left: rect.right + 10 };
+}
+
 interface SidebarProps {
   activeView: View;
   onNavigate: (view: View) => void;
   health: HealthSnapshot | null;
   approvalCount: number;
   onLogout: () => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  drawerOpen: boolean;
+  onCloseDrawer: () => void;
 }
 
 export function Sidebar({
@@ -136,9 +163,30 @@ export function Sidebar({
   health,
   approvalCount,
   onLogout,
+  collapsed,
+  onToggleCollapsed,
+  drawerOpen,
+  onCloseDrawer,
 }: SidebarProps) {
+  const [tooltip, setTooltip] = useState<RailTooltip | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Drop a tooltip measured before the rail was toggled.
+  useEffect(() => setTooltip(null), [collapsed]);
+
+  // Move focus into the drawer when it opens so keyboard users land in it.
+  useEffect(() => {
+    if (drawerOpen) closeButtonRef.current?.focus();
+  }, [drawerOpen]);
+
   return (
     <nav
+      id={SIDEBAR_ID}
+      className="sidebar"
+      aria-label="Main navigation"
+      onMouseOver={collapsed ? (e) => setTooltip(tooltipFor(e)) : undefined}
+      onMouseLeave={() => setTooltip(null)}
+      onScroll={() => setTooltip(null)}
       style={{
         background: "var(--sidebar-bg)",
         borderRight: "1px solid rgba(255,255,255,0.06)",
@@ -148,8 +196,8 @@ export function Sidebar({
       }}
     >
       <div
+        className="sidebar-header"
         style={{
-          padding: "20px 20px 24px",
           display: "flex",
           alignItems: "center",
           gap: 10,
@@ -157,6 +205,7 @@ export function Sidebar({
       >
         <Logo size="md" />
         <span
+          className="sidebar-brand-text"
           style={{
             fontWeight: 600,
             fontSize: "0.82rem",
@@ -166,6 +215,47 @@ export function Sidebar({
         >
           Swamp
         </span>
+        <button
+          type="button"
+          className="sidebar-icon-button sidebar-collapse-toggle"
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed}
+          aria-controls={SIDEBAR_ID}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d={collapsed ? "M6 3l5 5-5 5" : "M10 3L5 8l5 5"} />
+          </svg>
+        </button>
+        <button
+          type="button"
+          ref={closeButtonRef}
+          className="sidebar-icon-button sidebar-close"
+          onClick={onCloseDrawer}
+          aria-label="Close navigation"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+          >
+            <path d="M4 4l8 8M12 4l-8 8" />
+          </svg>
+        </button>
       </div>
 
       <div style={{ padding: "0 8px", marginBottom: 24 }}>
@@ -260,6 +350,7 @@ export function Sidebar({
       <ThemeToggle />
 
       <div
+        className="sidebar-footer"
         style={{
           marginTop: "auto",
           padding: 16,
@@ -288,9 +379,12 @@ export function Sidebar({
                   flexShrink: 0,
                 }}
               />
-              {health.ready ? "Instance healthy" : "Degraded"}
+              <span className="sidebar-health-text">
+                {health.ready ? "Instance healthy" : "Degraded"}
+              </span>
             </div>
             <div
+              className="sidebar-health-text"
               style={{
                 fontFamily: "'JetBrains Mono', monospace",
                 fontSize: "0.65rem",
@@ -306,10 +400,17 @@ export function Sidebar({
         )}
         <button
           type="button"
+          className="sidebar-logout"
           onClick={onLogout}
+          aria-label="Logout"
+          title="Logout"
           style={{
             marginTop: 12,
             width: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
             padding: "6px 0",
             border: "1px solid rgba(255,255,255,0.1)",
             borderRadius: 5,
@@ -320,9 +421,31 @@ export function Sidebar({
             fontFamily: "inherit",
           }}
         >
-          Logout
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ flexShrink: 0 }}
+          >
+            <path d="M6 2H3v12h3M10 5l3 3-3 3M13 8H6" />
+          </svg>
+          <span className="sidebar-logout-text">Logout</span>
         </button>
       </div>
+      {collapsed && tooltip && (
+        <div
+          className="rail-tooltip"
+          role="presentation"
+          style={{ top: tooltip.top, left: tooltip.left }}
+        >
+          {tooltip.label}
+        </div>
+      )}
     </nav>
   );
 }
@@ -330,6 +453,7 @@ export function Sidebar({
 function SectionLabel({ text }: { text: string }) {
   return (
     <div
+      className="sidebar-section-label"
       style={{
         fontFamily: "'JetBrains Mono', monospace",
         fontSize: "0.6rem",

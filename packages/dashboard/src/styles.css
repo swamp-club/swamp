@@ -147,11 +147,202 @@ body {
   display: grid;
   grid-template-columns: 220px 1fr;
   height: 100vh;
+  transition: grid-template-columns 0.2s ease;
 }
 
 .main {
   overflow-y: auto;
   padding: 24px 32px 48px;
+}
+
+/* ── Sidebar: collapsible rail (desktop) and drawer (mobile) ──
+   Sidebar.tsx styles its elements inline, so these rules only set
+   properties the inline styles leave alone. Keep 768px in sync with
+   MOBILE_BREAKPOINT_PX in components/sidebar_state.ts. */
+
+.sidebar-header {
+  padding: 20px 20px 24px;
+}
+
+.sidebar-icon-button {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sidebar-icon-button:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-active);
+}
+
+.mobile-topbar,
+.sidebar-backdrop,
+.sidebar-close {
+  display: none;
+}
+
+@media (min-width: 769px) {
+  .app.sidebar-collapsed {
+    grid-template-columns: 64px 1fr;
+  }
+
+  .app.sidebar-collapsed .sidebar-brand-text,
+  .app.sidebar-collapsed .sidebar-section-label,
+  .app.sidebar-collapsed .sidebar-health-text,
+  .app.sidebar-collapsed .sidebar-logout-text {
+    display: none;
+  }
+
+  /* Hidden visually but still read by screen readers, so collapsed
+     items keep their accessible name. */
+  .app.sidebar-collapsed .nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .app.sidebar-collapsed .sidebar-header {
+    flex-direction: column;
+    padding: 20px 0 16px;
+  }
+
+  .app.sidebar-collapsed .sidebar-icon-button {
+    margin-left: 0;
+  }
+
+  .app.sidebar-collapsed .nav-item {
+    justify-content: center;
+  }
+
+  .app.sidebar-collapsed .nav-badge {
+    position: absolute;
+    top: 1px;
+    right: 2px;
+    padding: 0 5px !important;
+  }
+
+  .app.sidebar-collapsed .theme-toggle {
+    flex-direction: column;
+  }
+
+  .app.sidebar-collapsed .sidebar-footer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .rail-tooltip {
+    position: fixed;
+    z-index: 60;
+    transform: translateY(-50%);
+    padding: 5px 10px;
+    border-radius: 6px;
+    background: var(--sidebar-active);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--sidebar-text-active);
+    font-size: 0.8rem;
+    font-weight: 500;
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  }
+}
+
+@media (max-width: 768px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .rail-tooltip {
+    display: none;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 50;
+    width: 260px;
+    max-width: 85vw;
+    height: 100dvh;
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 0.2s ease, visibility 0s linear 0.2s;
+  }
+
+  .app.drawer-open .sidebar {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform 0.2s ease, visibility 0s;
+  }
+
+  .sidebar-collapse-toggle {
+    display: none;
+  }
+
+  .sidebar-close {
+    display: flex;
+  }
+
+  .app.drawer-open .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .main {
+    padding: 0 16px 32px;
+  }
+
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    margin: 0 -16px 16px;
+    padding: 10px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .mobile-menu-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-1);
+    cursor: pointer;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app,
+  .sidebar,
+  .app.drawer-open .sidebar {
+    transition: none;
+  }
 }
 
 .page-header {

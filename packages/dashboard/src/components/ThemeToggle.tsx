@@ -45,6 +45,7 @@ export function ThemeToggle() {
 
   return (
     <div
+      className="theme-toggle"
       style={{
         display: "flex",
         background: "rgba(255,255,255,0.06)",
