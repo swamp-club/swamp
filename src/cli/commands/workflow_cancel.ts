@@ -45,6 +45,8 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
+import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -74,6 +76,41 @@ export function buildCancelUrl(server: string, runId: string): string {
     );
   }
   return `${base}/api/v1/cancel/workflow-run/${encodeURIComponent(runId)}`;
+}
+
+/**
+ * How long `--server` waits for the cancel endpoint to answer. Cancelling a
+ * run serve is driving waits up to {@link RUN_CANCEL_GRACE_MS} for it to stop,
+ * then may wait for the sync gate (up to {@link GATE_WAIT_TIMEOUT_MS}) to
+ * cancel a run the resume left suspended, then pushes. The margin covers the
+ * suspended-run lookup and the push.
+ */
+export const SERVER_CANCEL_TIMEOUT_MS = RUN_CANCEL_GRACE_MS +
+  GATE_WAIT_TIMEOUT_MS + 30_000;
+
+/**
+ * The error for a `--server` cancel request that got no answer. A timeout
+ * says the cancel may still complete, because the server keeps working on it
+ * after the client stops waiting.
+ */
+export function serverCancelFailure(
+  server: string,
+  runId: string,
+  error: unknown,
+): UserError {
+  const shown = redactServerUrl(server) ?? "(invalid URL)";
+  if (error instanceof DOMException && error.name === "TimeoutError") {
+    return new UserError(
+      `No answer from ${shown} within ${
+        SERVER_CANCEL_TIMEOUT_MS / 1000
+      }s. The cancel may still complete on the server; check it with 'swamp workflow history get ${runId} --server ${shown}'.`,
+    );
+  }
+  return new UserError(
+    `Could not connect to ${shown}: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  );
 }
 
 export function isServeOwnedRun(run: WorkflowRun): boolean {
@@ -260,7 +297,7 @@ export const workflowCancelCommand = withRemoteOptions(
         const response = await fetch(cancelUrl, {
           method: "POST",
           headers,
-          signal: AbortSignal.timeout(15_000),
+          signal: AbortSignal.timeout(SERVER_CANCEL_TIMEOUT_MS),
         });
         if (!response.ok) {
           const text = await response.text();
@@ -273,11 +310,7 @@ export const workflowCancelCommand = withRemoteOptions(
         body = await response.json();
       } catch (error) {
         if (error instanceof UserError) throw error;
-        throw new UserError(
-          `Could not connect to ${
-            redactServerUrl(server) ?? "(invalid URL)"
-          }: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        throw serverCancelFailure(server, options.run as string, error);
       }
       if (
         body.status !== "cancelled" &&
