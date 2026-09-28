@@ -86,12 +86,16 @@ days are purged at startup. `swamp run gc` removes older records on demand:
 5. **Suspend**: approval gates set `suspended`, which skips stale detection.
 6. **Reactivate**: on resume, the row passes to the resuming process. A
    `suspended`, `failed` or `interrupted` row becomes `running` with that
-   process's pid and hostname, and the heartbeat restarts. `interrupted` is
-   accepted because `workflow recover` sets the run record back to suspended
-   while the row stays interrupted. The row keeps its `instance_id`. Because the
-   live pid is recorded, serve's boot reapers leave a running resume alone. The
-   workflow-run record itself still carries the original process's pid and
-   instance id (swamp-club#2420).
+   process's pid, hostname and `instance_id` (serve's instance id when serve
+   drives the resume, none for a local one), and the heartbeat restarts.
+   `interrupted` is accepted because `workflow recover` sets the run record back
+   to suspended while the row stays interrupted. A row that retention purged is
+   registered again. The workflow-run record passes over too: its first save
+   in the resume records the same pid and instance id. So `workflow cancel`
+   stops the live resume, and serve's boot reapers, with or without a row,
+   leave it alone. A resume that serve drives carries serve's instance id,
+   which a later serve boot treats as another instance's, as it does for a run
+   serve started.
 
 ### Coverage
 

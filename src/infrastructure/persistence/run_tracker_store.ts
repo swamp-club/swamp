@@ -306,15 +306,20 @@ export class RunTrackerStore implements RunTrackerRepository {
     `).run(status, now, reason ?? null, runId);
   }
 
-  reactivate(runId: string, pid: number, hostname: string): void {
+  reactivate(
+    runId: string,
+    pid: number,
+    hostname: string,
+    instanceId?: string,
+  ): boolean {
     const now = new Date().toISOString();
-    // instance_id is kept: resume() has no serve instance id to record.
-    this.db.prepare(`
+    const result = this.db.prepare(`
       UPDATE active_runs
-      SET status = 'running', pid = ?, hostname = ?, heartbeat_at = ?,
-          completed_at = NULL
+      SET status = 'running', pid = ?, hostname = ?, instance_id = ?,
+          heartbeat_at = ?, completed_at = NULL
       WHERE id = ? AND status IN ('suspended', 'failed', 'interrupted')
-    `).run(pid, hostname, now, runId);
+    `).run(pid, hostname, instanceId ?? null, now, runId);
+    return Number(result.changes) > 0;
   }
 
   findById(runId: string): ActiveRun | null {

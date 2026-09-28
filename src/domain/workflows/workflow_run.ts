@@ -934,6 +934,15 @@ export interface StepRunRef {
 }
 
 /**
+ * The process driving a run: its pid, and the serve instance id when serve
+ * drives it. A run with no instance id is owned by a local CLI process.
+ */
+export interface RunOwner {
+  readonly pid: number;
+  readonly instanceId?: string;
+}
+
+/**
  * WorkflowRun is an aggregate root that tracks the execution state of a workflow.
  */
 export class WorkflowRun implements TriggerEvaluationContext {
@@ -1352,16 +1361,33 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Resumes a suspended workflow run without overwriting startedAt.
+   * Resumes a suspended workflow run without overwriting startedAt. The
+   * resuming process becomes the run's owner.
    */
-  resumeFromSuspended(): void {
+  resumeFromSuspended(owner: RunOwner): void {
     this._status = "running";
     this._completedAt = undefined;
+    this.takeOwnership(owner);
   }
 
-  resumeFromFailed(): void {
+  /**
+   * Resumes a failed workflow run without overwriting startedAt. The
+   * resuming process becomes the run's owner.
+   */
+  resumeFromFailed(owner: RunOwner): void {
     this._status = "running";
     this._completedAt = undefined;
+    this.takeOwnership(owner);
+  }
+
+  /**
+   * Records the process that now drives the run. The instance id is replaced,
+   * not merged: a local resume of a run serve started clears it, so cancel
+   * treats the run as local and stops the resuming process.
+   */
+  private takeOwnership(owner: RunOwner): void {
+    this._pid = owner.pid;
+    this._instanceId = owner.instanceId;
   }
 
   /**

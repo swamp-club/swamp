@@ -868,13 +868,19 @@ for (const status of ["suspended", "failed", "interrupted"] as const) {
       store.complete("run-1", status);
       const before = store.findById("run-1")!.heartbeatAt;
 
-      store.reactivate("run-1", 4242, "resuming-host");
+      const reactivated = store.reactivate(
+        "run-1",
+        4242,
+        "resuming-host",
+        "instance-b",
+      );
 
+      assertEquals(reactivated, true);
       const found = store.findById("run-1")!;
       assertEquals(found.status, "running");
       assertEquals(found.pid, 4242);
       assertEquals(found.hostname, "resuming-host");
-      assertEquals(found.instanceId, "instance-a");
+      assertEquals(found.instanceId, "instance-b");
       assertEquals(found.heartbeatAt.getTime() > before.getTime(), true);
       assertEquals(completedAtOf(dbPath, "run-1"), null);
     } finally {
@@ -891,14 +897,39 @@ for (const status of ["running", "completed", "cancelled"] as const) {
       if (status !== "running") store.complete("run-1", status);
       const before = store.findById("run-1")!.toData();
 
-      store.reactivate("run-1", 4242, "resuming-host");
+      const reactivated = store.reactivate("run-1", 4242, "resuming-host");
 
+      assertEquals(reactivated, false);
       assertEquals(store.findById("run-1")!.toData(), before);
     } finally {
       store.close();
     }
   });
 }
+
+Deno.test("RunTrackerStore: reactivate by a local resume clears the serve instance id", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.register(makeWorkflowRow("run-1", 2147483647, "instance-a"));
+    store.complete("run-1", "failed");
+
+    store.reactivate("run-1", 4242, "resuming-host");
+
+    assertEquals(store.findById("run-1")!.instanceId, undefined);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reactivate returns false when the row is missing", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    assertEquals(store.reactivate("run-1", 4242, "resuming-host"), false);
+    assertEquals(store.findById("run-1"), null);
+  } finally {
+    store.close();
+  }
+});
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns skips a row reactivated by a live process", () => {
   const store = new RunTrackerStore(makeTempDbPath());

@@ -1073,12 +1073,62 @@ Deno.test("WorkflowRun.resumeFromFailed: transitions from failed to running", ()
 
   assertEquals(run.status, "failed");
 
-  run.resumeFromFailed();
+  run.resumeFromFailed({ pid: Deno.pid });
 
   assertEquals(run.status, "running");
   assertEquals(run.completedAt, undefined);
   // startedAt preserved (same as resumeFromSuspended)
   assertEquals(run.startedAt !== undefined, true);
+});
+
+Deno.test("WorkflowRun.resumeFromFailed: records the resuming process as owner", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111);
+  run.complete();
+
+  run.resumeFromFailed({ pid: 2222, instanceId: "serve-b" });
+
+  assertEquals(run.pid, 2222);
+  assertEquals(run.instanceId, "serve-b");
+});
+
+Deno.test("WorkflowRun.resumeFromSuspended: records the resuming process as owner", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111);
+  run.suspend();
+
+  run.resumeFromSuspended({ pid: 2222, instanceId: "serve-b" });
+
+  assertEquals(run.status, "running");
+  assertEquals(run.pid, 2222);
+  assertEquals(run.instanceId, "serve-b");
+});
+
+Deno.test("WorkflowRun.resumeFromSuspended: a local resume clears the serve instance id", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111, "serve-a");
+  run.suspend();
+
+  run.resumeFromSuspended({ pid: 2222 });
+
+  assertEquals(run.pid, 2222);
+  assertEquals(run.instanceId, undefined);
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.pid, 2222);
+  assertEquals(restored.instanceId, undefined);
+  assertEquals("instanceId" in run.toData(), false);
+});
+
+Deno.test("WorkflowRun.resumeFromFailed: the new owner round-trips through toData", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111);
+  run.complete();
+
+  run.resumeFromFailed({ pid: 2222, instanceId: "serve-b" });
+
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.pid, 2222);
+  assertEquals(restored.instanceId, "serve-b");
 });
 
 Deno.test("WorkflowRun.resetForResumeFrom: resets target steps and their containing jobs", () => {

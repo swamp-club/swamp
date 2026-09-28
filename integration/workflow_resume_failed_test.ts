@@ -28,6 +28,11 @@
  * shell step's exit code comes from an input the retry overrides. The last
  * section runs the `workflow resume` command in-process against a failed run
  * and checks how it reports a resume that fails (swamp-club#2432).
+ *
+ * Throughout, a resume hands the run to the process driving it: the run
+ * record and the tracker row carry its pid and, when serve drives it, serve's
+ * instance id, so cancel and serve's reapers act on the live resume
+ * (swamp-club#2420).
  */
 
 import { join } from "@std/path";
@@ -56,7 +61,7 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../src/domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { RunTrackerStore } from "../src/infrastructure/persistence/run_tracker_store.ts";
@@ -71,6 +76,9 @@ import { UserError } from "../src/domain/errors.ts";
 import { buildErrorJson } from "../src/presentation/output/error_output.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { handleWorkflowResume } from "../src/serve/handlers/workflow_handlers.ts";
+import { isServeOwnedRun } from "../src/cli/commands/workflow_cancel.ts";
+import { reapOrphanedWorkflowRuns } from "../src/cli/commands/serve.ts";
+import { isProcessDead } from "../src/infrastructure/runtime/process.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
@@ -352,6 +360,118 @@ Deno.test("retry: an evaluation failure after the early save leaves the reloaded
   });
 });
 
+/**
+ * Leaves the failed run as another process would have: its record names a
+ * different pid and serve instance, and retention has purged its tracker row.
+ */
+async function handToAnotherProcess(
+  repoDir: string,
+  workflow: Workflow,
+  runId: string,
+): Promise<void> {
+  const repo = new YamlWorkflowRunRepository(repoDir);
+  const workflowId = createWorkflowId(workflow.id);
+  const run = (await repo.findById(workflowId, createWorkflowRunId(runId)))!;
+  await repo.save(
+    workflowId,
+    WorkflowRun.fromData({
+      ...run.toData(),
+      pid: Deno.pid + 1,
+      instanceId: crypto.randomUUID(),
+    }),
+  );
+  const db = new DatabaseSync(join(swampPath(repoDir), "run_tracker.db"));
+  try {
+    db.prepare("DELETE FROM active_runs WHERE id = ?").run(runId);
+  } finally {
+    db.close();
+  }
+}
+
+for (const instanceId of [undefined, crypto.randomUUID()]) {
+  const driver = instanceId ? "serve" : "a local process";
+  Deno.test(`retry: a resume by ${driver} owns the run record and tracker row while it runs`, async () => {
+    await withRepo(async (repoDir) => {
+      const { workflow, tracker, catalogStore, executor, failed } =
+        await failPipeline(repoDir);
+      try {
+        await handToAnotherProcess(repoDir, workflow, failed.id);
+        assertEquals(tracker.findById(failed.id), null);
+
+        executor.failing.clear();
+        const { service } = freshService(
+          repoDir,
+          executor,
+          tracker,
+          catalogStore,
+        );
+        // Pulling events by hand holds the resume wherever the test stops.
+        const events = service.resume(workflow.name, failed.id, {
+          instanceId,
+        });
+        try {
+          // Hold 1: started follows the save that hands the record over.
+          assertEquals((await events.next()).value?.kind, "started");
+          const record = (await new YamlWorkflowRunRepository(repoDir)
+            .findById(
+              createWorkflowId(workflow.id),
+              createWorkflowRunId(failed.id),
+            ))!;
+          assertEquals(record.status, "running");
+          assertEquals(record.pid, Deno.pid);
+          assertEquals(record.instanceId, instanceId);
+          // A local resume is cancelled locally; a serve resume through serve.
+          assertEquals(isServeOwnedRun(record), instanceId !== undefined);
+          // Serve's reaper with no tracker row falls back to the record and
+          // leaves the live resume alone: a serve that booted while a local
+          // resume runs, or the serve driving the resume.
+          let reaperSaves = 0;
+          const reaped = await reapOrphanedWorkflowRuns(
+            [{ run: record, workflowId: createWorkflowId(workflow.id) }],
+            () => {
+              reaperSaves++;
+              return Promise.resolve();
+            },
+            () => null,
+            isProcessDead,
+            instanceId ?? crypto.randomUUID(),
+          );
+          assertEquals(reaped, { reaped: 0, skipped: 1 });
+          assertEquals(reaperSaves, 0);
+
+          // Hold 2: the first step event follows the tracker hand-off, which
+          // registers the purged row again.
+          assertEquals((await events.next()).done, false);
+          const row = tracker.findById(failed.id);
+          assertEquals(row?.status, "running");
+          assertEquals(row?.pid, Deno.pid);
+          assertEquals(row?.hostname, hostname());
+          assertEquals(row?.instanceId, instanceId);
+
+          let last: IteratorResult<unknown> | undefined;
+          do {
+            last = await events.next();
+          } while (!last.done);
+        } finally {
+          await events.return(undefined);
+        }
+
+        const reloaded = await new YamlWorkflowRunRepository(repoDir).findById(
+          createWorkflowId(workflow.id),
+          createWorkflowRunId(failed.id),
+        );
+        assertEquals(reloaded?.status, "succeeded");
+        assertEquals(reloaded?.pid, Deno.pid);
+        assertEquals(reloaded?.instanceId, instanceId);
+        assertEquals(tracker.findById(failed.id)?.status, "completed");
+      } finally {
+        tracker.close();
+        catalogStore.close();
+      }
+    });
+  });
+}
+
 // ── Serve handler branches on a real repository ─────────────────────────
 
 const modeNone: ServeAuthConfig = {
@@ -439,6 +559,7 @@ async function failOverServe(
     datastoreConfig,
     authConfig: modeNone,
     activeRunRegistry: withRegistry ? new ActiveRunRegistry() : undefined,
+    instanceId: crypto.randomUUID(),
   } as ConnectionContext;
   const run = await stepStatuses(ctx, workflow, runId);
   assertEquals(run, {
@@ -540,6 +661,13 @@ for (const withRegistry of [false, true]) {
             prepare: "succeeded",
             check: "succeeded",
           });
+          // The record names serve as the process that drove the retry.
+          const retried = await ctx.repoContext.workflowRunRepo.findById(
+            createWorkflowId(workflow.id),
+            createWorkflowRunId(runId),
+          );
+          assertEquals(retried?.pid, Deno.pid);
+          assertEquals(retried?.instanceId, ctx.instanceId);
           // prepare succeeded the first time and is not a dependent of check.
           assertEquals(
             await countInRunLog(ctx, workflow, runId, "prepared"),

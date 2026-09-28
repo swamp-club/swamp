@@ -2818,6 +2818,11 @@ export class WorkflowExecutionService {
        * an approval can never start a retry of a failed run.
        */
       suspendedOnly?: boolean;
+      /**
+       * The serve instance driving this resume. Omitted for a local resume,
+       * which clears any instance id the run carried.
+       */
+      instanceId?: string;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -2889,11 +2894,14 @@ export class WorkflowExecutionService {
     // abort left it pending. Reopened per record before a failed run's reset
     // set, which resets by name in every job.
     existingRun.reopenAbortedWork();
+    // This process now drives the run. Recorded before the save below, so
+    // cancel and serve's reapers see the live process from the start.
+    const owner = { pid: Deno.pid, instanceId: options?.instanceId };
     if (reset) {
       existingRun.resetForResumeFrom(reset.steps, reset.tracked);
-      existingRun.resumeFromFailed();
+      existingRun.resumeFromFailed(owner);
     } else {
-      existingRun.resumeFromSuspended();
+      existingRun.resumeFromSuspended(owner);
     }
 
     // Record the key names of any resume-time inputs for audit (never the
@@ -3040,9 +3048,25 @@ export class WorkflowExecutionService {
       };
 
       // Hand the tracker row to this process (suspended, failed, or
-      // interrupted → running) and start heartbeat
+      // interrupted → running) and start heartbeat. A row purged by
+      // retention is registered again so the run is tracked while it runs.
       if (this.runTracker) {
-        this.runTracker.reactivate(existingRun.id, Deno.pid, hostname());
+        const reactivated = this.runTracker.reactivate(
+          existingRun.id,
+          Deno.pid,
+          hostname(),
+          options?.instanceId,
+        );
+        if (!reactivated && !this.runTracker.findById(existingRun.id)) {
+          this.runTracker.register(ActiveRun.createWorkflowRun({
+            id: existingRun.id,
+            workflowName: workflow.name,
+            pid: Deno.pid,
+            hostname: hostname(),
+            initiatedBy: existingRun.initiatedBy,
+            instanceId: options?.instanceId,
+          }));
+        }
         const tracker = this.runTracker;
         const runId = existingRun.id;
         resumeHeartbeatInterval = setInterval(() => {
@@ -4888,6 +4912,7 @@ export class WorkflowExecutionService {
     // Re-enter the executor via the existing resume path
     yield* this.resume(workflowIdOrName, run.id, {
       signal: options?.signal,
+      instanceId: options?.instanceId,
     });
   }
 
