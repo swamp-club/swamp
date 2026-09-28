@@ -374,9 +374,10 @@ started) is not reported; the run is recorded as cancelled instead.
   workflow and model definitions. A failed-run resume refuses a structural
   change it would walk into (the
   [structure check](#resume-from-failed-step---from)): a renamed, moved or
-  added step, or a renamed or added job. It does not detect a changed step body
-  or prove that stored results are still valid. If an input change affects
-  earlier work, use `--from` or start a new run. A suspended resume refuses the
+  added step, a renamed or added job, or a removed job still holding unfinished
+  work. It does not detect a changed step body or prove that stored results are
+  still valid. If an input change affects earlier work, use `--from` or start a
+  new run. A suspended resume refuses the
   same kinds of change, a moved pending step and a removed pending job, and
   leaves the run suspended.
 - **`forEach` collections must stay stable.** Item identity is not kept across
@@ -459,7 +460,11 @@ resume (`--from` or retry) refuses with `Start a new run.` when:
   job. A record selected by `forEachTemplate` must be an iteration of one of
   that job's `forEach` steps. Otherwise the current workflow walks that step in
   another job, and the reset record would stay `pending` while the run reported
-  success.
+  success;
+- (d) a job the workflow no longer has is unfinished, or holds work the run's
+  abort settled without starting. Resume reopens that work but walks only the
+  workflow's jobs, so the job would stay `pending` and the run could never
+  finish.
 
 The check leaves alone records selected only by the legacy `forEach` prefix
 match, which can over-select (for example `deploy-canary-x` when `deploy` is
@@ -469,8 +474,8 @@ iteration names of a `--last-evaluated` run; `forEach` templates with no records
 apart from one that expanded to nothing); job and step names written with an
 expression such as `deploy-${{ inputs.env }}`, which the run stores evaluated
 and the check reads unevaluated, so they cannot be compared; and terminal
-records and jobs the workflow no longer has, so removing a step or job keeps
-working. The check is `planFailedRunResume` in
+records and finished jobs the workflow no longer has, so removing a step or job
+keeps working. The check is `planFailedRunResume` in
 `src/domain/workflows/resume_reset.ts`.
 
 **Suspended runs:** a suspended run has no reset set, so every job whose stored
@@ -1320,9 +1325,11 @@ Model method runs cancel the same way, with
 ### Post-Cancellation Cleanup
 
 When a workflow is cancelled (by `--timeout`, Ctrl+C, or `swamp workflow
-cancel`), steps with `always` or `completed` dependency conditions still run,
-so cleanup branches (notifications, resource teardown, metric reporting) can
-run. The engine evaluates the remaining steps in topological order:
+cancel`) and the cancellation stops an in-flight step or interrupts a level,
+steps with `always`, `completed` or `failed` dependency conditions still run,
+so cleanup branches (notifications, resource teardown, metric reporting,
+rollback) can run. The engine evaluates the remaining steps in topological
+order:
 
 - Steps whose dependency conditions are met run with a fresh 30-second cleanup
   signal. `always` is true unconditionally; `completed` is true when the
@@ -1331,6 +1338,66 @@ run. The engine evaluates the remaining steps in topological order:
   skipped.
 - In-flight steps stopped by the cancellation signal are marked `failed` with
   reason `cancelled`.
+- Steps, `forEach` iterations and jobs that the interrupted level never started
+  (queued behind a `concurrency` limit) are settled at the end of that level as
+  if they had been reached: skipped when their `dependsOn` is not met (reason
+  `dependency` for a step; a skipped job's steps get `job_skipped`), otherwise
+  marked `failed` with reason `cancelled` and no `startedAt`. A `forEach`
+  dependency with a queued iteration therefore aggregates to `failed`, and
+  cleanup gated on it runs. A `failed`-gated rollback can run for work that
+  never started, so it must tolerate having nothing to undo.
+- A never-started step that has a `guard` stays `pending` (undecided): its
+  guard never decided whether the step's work was already done.
+  `succeeded`, `failed`, `completed` and `skipped` are all false for a
+  `pending` step, and a `forEach` with an undecided iteration aggregates to
+  `running`, so neither a `failed`-gated rollback nor a `succeeded`-gated next
+  step runs on it; `always` still does, and so does a `not` condition, which
+  is true on a `pending` step. An undecided step remains `pending` in the
+  cancelled run's record.
+- A step whose guard was being evaluated when the cancellation fired does not
+  start and stays undecided, whatever the guard answers: the level may already
+  have moved on. A step recorded `running` when its run resumes starts as
+  before.
+- A started job left with an undecided step still runs its later levels in
+  cleanup mode. If nothing in it failed, it ends `unknown`: its outcome is
+  ambiguous, so neither a `failed`-gated teardown job nor a `succeeded`-gated
+  next job runs on it (a `not` condition does), and it gets no
+  `job_completed` event. A job that also had a failure ends `failed`, as
+  before. This holds for a job alone in its level; a level holding several
+  jobs does not wait for them after the cancellation, and job-level cleanup
+  marks a job still running `failed` (swamp-club#2549).
+- A never-started job settles its steps in dependency order, each as above.
+  It stays `pending` while any step is undecided, even when another step was
+  cancelled, since nothing in it ran; otherwise it fails when any step failed
+  and is skipped when every step was skipped.
+- Settled steps and jobs get no `step_failed`, `step_skipped`, `job_skipped`
+  or `job_completed` event; the run record carries their outcome, and marks
+  each settled step `settledByAbort`. `workflow resume` settles steps the same
+  way, but not jobs: its job loop has no cleanup mode (swamp-club#2550).
+- A resume of the run runs the work its abort settled, as it would have run
+  the `pending` records. This holds for a plain resume, one after `workflow
+  recover` or an approval, and a retry or `--from`. Each settled step is reset
+  to `pending` record by record, so a step with the same name in another job
+  is left alone, and a finished job holding one is walked again. So is a job
+  the cancellation ended `unknown` with an undecided step. A step or job that
+  cleanup skipped on its `dependsOn` never ran, so it counts as settled too
+  and is evaluated again: a `succeeded`-gated dependent of a cancelled or
+  undecided step runs once that step succeeds. Cleanup that already ran for
+  that work is not run again. A retry still needs every step finished, so a
+  failed run with an undecided step is resumed with `--from`.
+- A step that already failed stays failed on resume. When resume walks its job
+  again, the job ends `failed` unless that failure was allowed, so the run
+  ends `failed` and can be retried. An in-flight step the cancellation stopped
+  is such a step.
+- A level that suspends at an approval gate keeps its queued steps `pending`,
+  so the run can be resumed.
+
+Known limitation: cleanup mode starts only after something in the interrupted
+level failed or was left undecided. When every step of that level finishes
+successfully despite the cancellation (a method that ignores the signal), a
+later level is reached with the cancellation already fired and never enters
+cleanup mode: a level holding one step runs it with the aborted signal, and a
+level holding several starts nothing and leaves them `pending`.
 
 The same applies after a normal step failure without cancellation. Steps with
 `always` or `completed` conditions in later topological levels run instead of

@@ -65,7 +65,12 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
-import { STRANDED_STEP_ERROR, WorkflowRun } from "./workflow_run.ts";
+import {
+  CANCELLED_STEP_ERROR,
+  STRANDED_STEP_ERROR,
+  WorkflowRun,
+  type WorkflowRunData,
+} from "./workflow_run.ts";
 import type { WorkflowExecutionEvent } from "./execution_events.ts";
 import { assessRecoveryForRun } from "./recovery_assessment.ts";
 import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
@@ -8154,6 +8159,7 @@ function modelStep(
     inputs?: Record<string, unknown>;
     guard?: string;
     forEach?: { item: string; in: string };
+    concurrency?: number;
   } = {},
 ): Step {
   return Step.create({
@@ -8162,6 +8168,7 @@ function modelStep(
     dependsOn: opts.dependsOn,
     guard: opts.guard,
     forEach: opts.forEach,
+    concurrency: opts.concurrency,
   });
 }
 
@@ -10841,4 +10848,1805 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
       region: "us-east",
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// An abort settles the work its level never started (swamp-club#2543)
+// ---------------------------------------------------------------------------
+
+/**
+ * Aborts the run from inside the step named `abortAt`, as a `--timeout` or
+ * cancel firing while that step runs. The step then fails with an AbortError,
+ * or succeeds as a method that ignores the signal would. It aborts once: a
+ * later resume runs the step normally. Every guard call (`__guard_<step>`)
+ * that succeeds returns `guardValue` (null, so falsy, by default).
+ */
+class AbortingStepExecutor extends CountingStepExecutor {
+  readonly controller = new AbortController();
+
+  constructor(
+    private readonly abortAt: string,
+    private readonly outcome: "reject" | "succeed" = "reject",
+    private readonly guardValue: unknown = null,
+  ) {
+    super();
+  }
+
+  override async execute(
+    step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    const result = await super.execute(step, ctx);
+    if (ctx.stepName === this.abortAt && !this.controller.signal.aborted) {
+      this.controller.abort();
+      if (this.outcome === "reject") {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+    }
+    return ctx.stepName.startsWith("__guard_") ? this.guardValue : result;
+  }
+}
+
+async function finishedRun(
+  stream: AsyncIterable<WorkflowExecutionEvent>,
+): Promise<{ run: WorkflowRun; events: WorkflowExecutionEvent[] }> {
+  let run: WorkflowRun | undefined;
+  const events: WorkflowExecutionEvent[] = [];
+  for await (const event of stream) {
+    events.push(event);
+    if (
+      event.kind === "cancelled" || event.kind === "completed" ||
+      event.kind === "suspended"
+    ) {
+      run = event.run;
+    }
+  }
+  assert(run !== undefined, "the run did not finish");
+  return { run, events };
+}
+
+async function runUntilAborted(
+  service: WorkflowExecutionService,
+  workflow: Workflow,
+  signal: AbortSignal,
+  inputs?: Record<string, unknown>,
+): Promise<{ run: WorkflowRun; kinds: string[] }> {
+  const { run, events } = await finishedRun(
+    service.run(workflow.name, { signal, inputs }),
+  );
+  return { run, kinds: events.map((e) => e.kind) };
+}
+
+/** Suspends `workflow` at the gate in job main and approves the gate. */
+async function suspendAndApprove(
+  service: WorkflowExecutionService,
+  runRepo: InMemoryWorkflowRunRepository,
+  workflow: Workflow,
+  inputs?: Record<string, unknown>,
+): Promise<WorkflowRun> {
+  const suspended = await service.execute(workflow.name, { inputs });
+  assertEquals(suspended.status, "suspended");
+  const gate = suspended.getJob("main")!.getStep("gate")!;
+  gate.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:test",
+    decidedAt: new Date().toISOString(),
+  });
+  gate.succeed();
+  await runRepo.save(workflow.id, suspended);
+  return suspended;
+}
+
+function assertCancelledBeforeStart(
+  run: WorkflowRun,
+  jobName: string,
+  stepNames: string[],
+): void {
+  for (const name of stepNames) {
+    const step = run.getJob(jobName)!.getStep(name)!;
+    assertEquals(step.status, "failed", name);
+    assertEquals(step.error, CANCELLED_STEP_ERROR, name);
+    assertEquals(step.startedAt, undefined, name);
+    assertEquals(step.settledByAbort, true, name);
+  }
+}
+
+/** A guarded step whose guard never decided stays pending: undecided. */
+function assertUndecided(
+  run: WorkflowRun,
+  jobName: string,
+  stepNames: string[],
+): void {
+  for (const name of stepNames) {
+    const step = run.getJob(jobName)!.getStep(name)!;
+    assertEquals(step.status, "pending", name);
+    assertEquals(step.startedAt, undefined, name);
+    assertEquals(step.error, undefined, name);
+  }
+}
+
+function onStep(step: string, condition: TriggerCondition) {
+  return { dependsOn: [{ step, condition }] };
+}
+
+Deno.test("abort cleanup: iterations queued behind step concurrency are cancelled, so a failed-gated rollback runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("build", { forEach: EACH_TARGET, concurrency: 1 }),
+            modelStep(
+              "rollback",
+              onStep("build", TriggerCondition.failed()),
+            ),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("build-a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+      { targets: ["a", "b", "c"] },
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["build-b", "build-c"]);
+    assertEquals(executor.count("main/build-b"), 0);
+    assertEquals(run.getJob("main")!.getStep("rollback")!.status, "succeeded");
+    assertEquals(executor.count("main/rollback"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a step queued behind job concurrency is cancelled, so completed- and failed-gated cleanup runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-step-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            modelStep("a"),
+            modelStep("b"),
+            modelStep(
+              "on-completed",
+              onStep("b", TriggerCondition.completed()),
+            ),
+            modelStep("on-failed", onStep("b", TriggerCondition.failed())),
+            modelStep(
+              "on-succeeded",
+              onStep("b", TriggerCondition.succeeded()),
+            ),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    assertEquals(executor.count("main/b"), 0);
+    assertEquals(executor.count("main/on-completed"), 1);
+    assertEquals(executor.count("main/on-failed"), 1);
+    assertEquals(executor.count("main/on-succeeded"), 0);
+    assertDependencySkipped(run, ["on-succeeded"]);
+  });
+});
+
+Deno.test("abort cleanup: a job queued behind workflow concurrency is cancelled, so a completed-gated cleanup job runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({ name: "j2", steps: [modelStep("s2")] }),
+        Job.create({
+          name: "cleanup",
+          dependsOn: [{ job: "j2", condition: TriggerCondition.completed() }],
+          steps: [modelStep("c")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("j1")!.status, "failed");
+    assertEquals(run.getJob("j2")!.status, "failed");
+    assertCancelledBeforeStart(run, "j2", ["s2"]);
+    assertEquals(executor.count("j2/s2"), 0);
+    assertEquals(run.getJob("cleanup")!.status, "succeeded");
+    assertEquals(executor.count("cleanup/c"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a queued step whose dependsOn is unmet is skipped, not cancelled", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-unmet-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            modelStep("build"),
+            modelStep(
+              "deploy",
+              onStep("build", TriggerCondition.succeeded()),
+            ),
+            modelStep(
+              "rollback",
+              onStep("build", TriggerCondition.failed()),
+            ),
+            modelStep(
+              "alert",
+              onStep("rollback", TriggerCondition.failed()),
+            ),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("deploy");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, events } = await finishedRun(
+      service.run(workflow.name, { signal: executor.controller.signal }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertDependencySkipped(run, ["rollback", "alert"]);
+    // rollback was queued behind deploy, so the level settled it: runStep,
+    // which yields step_skipped, never reached it.
+    assertEquals(
+      events.some((e) => e.kind === "step_skipped" && e.stepId === "rollback"),
+      false,
+    );
+    assertEquals(executor.count("main/rollback"), 0);
+    assertEquals(executor.count("main/alert"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a step whose guard is evaluated when the abort fires does not start and stays undecided, and its job ends unknown", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "guard-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("check", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_check", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("main/__guard_check"), 1);
+    assertEquals(executor.count("main/check"), 0);
+    assertUndecided(run, "main", ["check"]);
+    assertEquals(run.getJob("main")!.status, "unknown");
+  });
+});
+
+Deno.test("abort cleanup: an always-gated cleanup reached after the abort still runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "after-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("cleanup", onStep("a", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    // `a` finishes despite the abort, so the next level is reached after it
+    // rather than interrupted by it.
+    const executor = new AbortingStepExecutor("a", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("a")!.status, "succeeded");
+    assertEquals(executor.count("main/cleanup"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a level that suspends at an approval gate keeps its queued steps pending", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "suspend-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work1"),
+            modelStep("work2"),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("work1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, kinds } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    // Pins existing behaviour: when the level suspends, the abort is dropped
+    // and the run stays resumable at the gate.
+    assertEquals(run.status, "suspended");
+    assertEquals(kinds.includes("cancelled"), false);
+    const main = run.getJob("main")!;
+    assertEquals(main.getStep("gate")!.status, "waiting_approval");
+    assertEquals(main.getStep("work2")!.status, "pending");
+    assertEquals(executor.count("main/work2"), 0);
+  });
+});
+
+Deno.test("resume: a guarded step recorded running when its suspended run is resumed still runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-running-guarded-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work", {
+              ...onStep("gate", TriggerCondition.succeeded()),
+              guard: "${{ false }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    const { runRepo, executor, service } = await setupRetry(
+      tempDir,
+      workflow,
+    );
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+    const main = suspended.getJob("main")!;
+    const gate = main.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    // A record saved while the step was in flight: the abort landed as its
+    // level suspended, or the process died after a step event was saved.
+    main.getStep("work")!.start();
+    await runRepo.save(workflow.id, suspended);
+
+    const resumed = await drainResume(service, workflow.name, suspended.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.status, "succeeded");
+    assertEquals(resumed.getJob("main")!.getStep("work")!.status, "succeeded");
+    assertEquals(executor.count("main/work"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a guard that answers truthy after the abort leaves its step undecided, so a failed-gated rollback does not run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "guard-skips-after-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep("delete", onStep("create", TriggerCondition.failed())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_create", "succeed", {
+      exists: true,
+    });
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertUndecided(run, "main", ["create"]);
+    assertEquals(executor.count("main/create"), 0);
+    assertDependencySkipped(run, ["delete"]);
+    assertEquals(executor.count("main/delete"), 0);
+    assertEquals(run.getJob("main")!.status, "unknown");
+  });
+});
+
+Deno.test("abort cleanup: a guarded step recorded running on resume still starts when the abort fires during its guard", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-running-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work", {
+              ...onStep("gate", TriggerCondition.succeeded()),
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_work", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    suspended.getJob("main")!.getStep("work")!.start();
+    await runRepo.save(workflow.id, suspended);
+
+    const { run } = await finishedRun(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+    );
+
+    // Not left running: the step starts as it did before the abort check,
+    // and the mock method ignores the signal.
+    assertEquals(run.getJob("main")!.getStep("work")!.status, "succeeded");
+    assertEquals(executor.count("main/work"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a forEach iteration first added on resume is settled when the abort leaves it queued", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-grown-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("build", {
+              ...onStep("gate", TriggerCondition.succeeded()),
+              forEach: EACH_TARGET,
+              concurrency: 1,
+            }),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("build-a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow, {
+      targets: ["a", "b"],
+    });
+
+    const { run } = await finishedRun(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+        inputs: { targets: ["a", "b", "c"] },
+      }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "main", ["build-b", "build-c"]);
+    assertEquals(executor.count("main/rollback"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a guarded step queued behind job concurrency stays undecided, so a failed-gated rollback does not run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-guarded-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            modelStep("a-slow"),
+            modelStep("create-bucket", {
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep(
+              "delete-bucket",
+              onStep("create-bucket", TriggerCondition.failed()),
+            ),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("a-slow");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("main/__guard_create-bucket"), 0);
+    assertUndecided(run, "main", ["create-bucket"]);
+    assertDependencySkipped(run, ["delete-bucket"]);
+    assertEquals(executor.count("main/delete-bucket"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a guard still answering when the abort ends a multi-step level leaves its step undecided", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "inflight-guard-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("create-bucket", {
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep("create-db"),
+            modelStep(
+              "delete-bucket",
+              onStep("create-bucket", TriggerCondition.failed()),
+            ),
+          ],
+        }),
+      ],
+    });
+    // The guard's model method answers only when the test releases it, after
+    // the run has finished: a network call still in flight at the abort.
+    const guardAnswer = Promise.withResolvers<unknown>();
+    class HeldGuardExecutor extends AbortingStepExecutor {
+      override async execute(
+        step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        const result = await super.execute(step, ctx);
+        if (ctx.stepName === "__guard_create-bucket") {
+          return await guardAnswer.promise;
+        }
+        return result;
+      }
+    }
+    const executor = new HeldGuardExecutor("create-db");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    try {
+      const { run } = await runUntilAborted(
+        service,
+        workflow,
+        executor.controller.signal,
+      );
+
+      assertEquals(run.status, "cancelled");
+      assertEquals(executor.count("main/__guard_create-bucket"), 1);
+      assertUndecided(run, "main", ["create-bucket"]);
+      assertEquals(executor.count("main/delete-bucket"), 0);
+      // create-db was interrupted, so the job failed as before this change.
+      assertEquals(run.getJob("main")!.status, "failed");
+    } finally {
+      guardAnswer.resolve({ exists: true });
+    }
+  });
+});
+
+Deno.test("abort cleanup: a never-started job with an undecided guarded step stays pending, so a failed-gated teardown job does not run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-guarded-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+            modelStep("delete", onStep("create", TriggerCondition.failed())),
+            modelStep(
+              "notify",
+              onStep("create", TriggerCondition.succeeded()),
+            ),
+          ],
+        }),
+        Job.create({
+          name: "teardown",
+          dependsOn: [{ job: "j2", condition: TriggerCondition.failed() }],
+          steps: [modelStep("destroy")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("j2")!.status, "pending");
+    assertUndecided(run, "j2", ["create"]);
+    for (const name of ["delete", "notify"]) {
+      const step = run.getJob("j2")!.getStep(name)!;
+      assertEquals(step.status, "skipped", name);
+      assertEquals(step.skipReason?.kind, "dependency", name);
+    }
+    assertEquals(run.getJob("teardown")!.status, "skipped");
+    assertEquals(executor.count("teardown/destroy"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a never-started job with an undecided step stays pending beside a cancelled always-gated step", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-undecided-always-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+            modelStep("notify", onStep("create", TriggerCondition.always())),
+          ],
+        }),
+        Job.create({
+          name: "teardown",
+          dependsOn: [{ job: "j2", condition: TriggerCondition.failed() }],
+          steps: [modelStep("destroy")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertUndecided(run, "j2", ["create"]);
+    assertCancelledBeforeStart(run, "j2", ["notify"]);
+    assertEquals(run.getJob("j2")!.status, "pending");
+    assertEquals(run.getJob("teardown")!.status, "skipped");
+    assertEquals(executor.count("teardown/destroy"), 0);
+  });
+});
+
+Deno.test("abort cleanup: a never-started job settles its steps in dependency order", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-chain-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("build"),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+            modelStep("ship", onStep("build", TriggerCondition.succeeded())),
+          ],
+        }),
+        Job.create({
+          name: "cleanup",
+          dependsOn: [{ job: "j2", condition: TriggerCondition.completed() }],
+          steps: [modelStep("c")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("j2")!.status, "failed");
+    assertCancelledBeforeStart(run, "j2", ["build", "rollback"]);
+    const ship = run.getJob("j2")!.getStep("ship")!;
+    assertEquals(ship.status, "skipped");
+    assertEquals(ship.skipReason?.kind, "dependency");
+    assertEquals(executor.count("cleanup/c"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a guarded forEach with an undecided iteration does not count as succeeded", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "guarded-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("create", {
+              forEach: EACH_TARGET,
+              concurrency: 1,
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep(
+              "configure",
+              onStep("create", TriggerCondition.succeeded()),
+            ),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_create-b", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+      { targets: ["a", "b", "c"] },
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("create-a")!.status, "succeeded");
+    assertUndecided(run, "main", ["create-b", "create-c"]);
+    assertEquals(executor.count("main/create-b"), 0);
+    assertDependencySkipped(run, ["configure"]);
+    assertEquals(executor.count("main/configure"), 0);
+    assertEquals(run.getJob("main")!.status, "unknown");
+  });
+});
+
+Deno.test("abort cleanup: a job left with only an undecided step ends unknown, so neither a succeeded- nor a failed-gated job runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "undecided-job-wf",
+      jobs: [
+        Job.create({
+          name: "provision",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+        Job.create({
+          name: "deploy",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.succeeded(),
+          }],
+          steps: [modelStep("push")],
+        }),
+        Job.create({
+          name: "teardown",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.failed(),
+          }],
+          steps: [modelStep("destroy")],
+        }),
+        Job.create({
+          name: "notify",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.always(),
+          }],
+          steps: [modelStep("send")],
+        }),
+      ],
+    });
+    // The guard answers "already exists" as the abort lands.
+    const executor = new AbortingStepExecutor("__guard_create", "succeed", {
+      exists: true,
+    });
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, events } = await finishedRun(
+      service.run(workflow.name, { signal: executor.controller.signal }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertUndecided(run, "provision", ["create"]);
+    assertEquals(run.getJob("provision")!.status, "unknown");
+    assertEquals(
+      events.some((e) => e.kind === "job_completed" && e.jobId === "provision"),
+      false,
+    );
+    assertEquals(run.getJob("deploy")!.status, "skipped");
+    assertEquals(executor.count("deploy/push"), 0);
+    assertEquals(run.getJob("teardown")!.status, "skipped");
+    assertEquals(executor.count("teardown/destroy"), 0);
+    // Later levels still run in cleanup mode.
+    assertEquals(executor.count("notify/send"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a job queued behind workflow concurrency whose dependsOn is unmet is skipped", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "queued-unmet-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "build", steps: [modelStep("compile")] }),
+        Job.create({
+          name: "deploy",
+          dependsOn: [{
+            job: "build",
+            condition: TriggerCondition.succeeded(),
+          }],
+          steps: [modelStep("push")],
+        }),
+        Job.create({
+          name: "revert",
+          dependsOn: [{ job: "build", condition: TriggerCondition.failed() }],
+          steps: [modelStep("undo")],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("push");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("revert")!.status, "skipped");
+    assertEquals(
+      run.getJob("revert")!.getStep("undo")!.skipReason?.kind,
+      "job_skipped",
+    );
+    assertEquals(executor.count("revert/undo"), 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A resume runs the work an abort settled (swamp-club#2543)
+// ---------------------------------------------------------------------------
+
+/**
+ * What swamp serve leaves on disk for an aborted run, and what
+ * 'swamp workflow recover --acknowledge-unknown' then does: the stored record
+ * (changed by `edit` first, as a crash mid-cleanup would have left it) is
+ * interrupted with `reason`, and its unknown records are reset.
+ */
+async function interruptAndRecover(
+  runRepo: InMemoryWorkflowRunRepository,
+  workflowId: WorkflowId,
+  run: WorkflowRun,
+  reason: string,
+  edit: (data: WorkflowRunData) => WorkflowRunData = (data) => data,
+): Promise<void> {
+  const stored = WorkflowRun.fromData(edit(run.toData()));
+  stored.interrupt(reason);
+  stored.resetUnknownStepsForRecovery();
+  await runRepo.save(workflowId, stored);
+}
+
+Deno.test("resume: a never-started job's cancelled and undecided steps run after serve shutdown and recover", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-queued-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+            modelStep("configure"),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "cancelled");
+    assertUndecided(run, "j2", ["create"]);
+    assertCancelledBeforeStart(run, "j2", ["configure"]);
+
+    await interruptAndRecover(runRepo, workflow.id, run, "server_shutdown");
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.status, "succeeded");
+    const j2 = resumed.getJob("j2")!;
+    assertEquals(j2.getStep("create")!.status, "succeeded");
+    assertEquals(j2.getStep("configure")!.status, "succeeded");
+    assertEquals(executor.count("j2/create"), 1);
+    assertEquals(executor.count("j2/configure"), 1);
+  });
+});
+
+Deno.test("resume: a never-started job's settled steps run in dependency order after recover", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-queued-chain-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("build"),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+            modelStep("ship", onStep("build", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.getJob("j2")!.status, "failed");
+    const settledShip = run.getJob("j2")!.getStep("ship")!;
+    assertEquals(settledShip.status, "skipped");
+    assertEquals(settledShip.settledByAbort, true);
+
+    await interruptAndRecover(runRepo, workflow.id, run, "server_shutdown");
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.status, "succeeded");
+    const j2 = resumed.getJob("j2")!;
+    assertEquals(j2.status, "succeeded");
+    assertEquals(j2.getStep("build")!.status, "succeeded");
+    assertEquals(j2.getStep("ship")!.status, "succeeded");
+    assertEquals(j2.getStep("rollback")!.status, "skipped");
+    assertEquals(executor.count("j2/build"), 1);
+    assertEquals(executor.count("j2/ship"), 1);
+    assertEquals(executor.count("j2/rollback"), 0);
+  });
+});
+
+Deno.test("resume: queued forEach iterations run after serve shutdown and recover, and the rollback that ran for them does not run again", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-queued-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("build", { forEach: EACH_TARGET, concurrency: 1 }),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("build-a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+      { targets: ["a", "b", "c"] },
+    );
+    assertCancelledBeforeStart(run, "main", ["build-b", "build-c"]);
+    assertEquals(executor.count("main/rollback"), 1);
+
+    await interruptAndRecover(runRepo, workflow.id, run, "server_shutdown");
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    const main = resumed.getJob("main")!;
+    assertEquals(main.getStep("build-b")!.status, "succeeded");
+    assertEquals(main.getStep("build-c")!.status, "succeeded");
+    assertEquals(executor.count("main/build-b"), 1);
+    assertEquals(executor.count("main/build-c"), 1);
+    assertEquals(executor.count("main/rollback"), 1);
+    // build-a was cancelled while it ran, so the run fails and can be retried.
+    assertEquals(resumed.status, "failed");
+    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["build-a"]);
+  });
+});
+
+Deno.test("resume: a step queued when a crash hit cleanup runs after server_crash recovery", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-crash-cleanup-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            modelStep("a"),
+            modelStep("b"),
+            modelStep("notify", onStep("b", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    assertEquals(executor.count("main/notify"), 1);
+
+    // The process died while notify ran: the settled record was saved, the
+    // run was never cancelled, and the reaper interrupts it.
+    await interruptAndRecover(
+      runRepo,
+      workflow.id,
+      run,
+      "server_crash",
+      (data) => ({
+        ...data,
+        status: "running",
+        completedAt: undefined,
+        jobs: data.jobs.map((job) => ({
+          ...job,
+          status: "running",
+          completedAt: undefined,
+          steps: job.steps.map((step) =>
+            step.stepName === "notify"
+              ? { ...step, status: "running", completedAt: undefined }
+              : step
+          ),
+        })),
+      }),
+    );
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
+    assertEquals(executor.count("main/b"), 1);
+    assertEquals(executor.count("main/notify"), 2);
+    assertEquals(resumed.status, "failed");
+    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
+  });
+});
+
+/** main: `a` and `b` queued behind it; a gate cleanup reaches after `a`. */
+function gatedCleanupWorkflow(name: string): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        concurrency: 1,
+        steps: [
+          modelStep("a"),
+          modelStep("b"),
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("go?"),
+            dependsOn: [{ step: "a", condition: TriggerCondition.always() }],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("resume: a step queued when --timeout fired runs once cleanup's gate is approved, and the cancelled step fails the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = gatedCleanupWorkflow("resume-timeout-gate-wf");
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    const gate = run.getJob("main")!.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    await runRepo.save(workflow.id, run);
+
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
+    assertEquals(executor.count("main/b"), 1);
+    assertEquals(resumed.status, "failed");
+    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
+  });
+});
+
+Deno.test("resume: --from reruns the work the abort settled beside the entry step", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = gatedCleanupWorkflow("resume-from-settled-wf");
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    // What 'swamp workflow reject' does: the run fails with b still settled.
+    const main = run.getJob("main")!;
+    const gate = main.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: false,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.fail("Approval rejected");
+    main.fail();
+    run.complete();
+    assertEquals(run.status, "failed");
+    await runRepo.save(workflow.id, run);
+
+    await drainResume(service, workflow.name, run.id, { fromStep: "a" });
+
+    const stored = (await runRepo.findById(workflow.id, run.id))!;
+    // a and b ran; the gate after a asks again.
+    assertEquals(stored.status, "suspended");
+    assertEquals(stored.getJob("main")!.getStep("a")!.status, "succeeded");
+    assertEquals(stored.getJob("main")!.getStep("b")!.status, "succeeded");
+    assertEquals(executor.count("main/a"), 2);
+    assertEquals(executor.count("main/b"), 1);
+  });
+});
+
+Deno.test("resume: --from reruns settled work without rerunning a same-named step another job finished", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-from-settled-same-name-wf",
+      jobs: [
+        Job.create({ name: "pre", steps: [modelStep("notify")] }),
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          dependsOn: [{ job: "pre", condition: TriggerCondition.succeeded() }],
+          steps: [
+            modelStep("a"),
+            modelStep("notify"),
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+              dependsOn: [{ step: "a", condition: TriggerCondition.always() }],
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    assertCancelledBeforeStart(run, "main", ["notify"]);
+    assertEquals(executor.count("pre/notify"), 1);
+    // What 'swamp workflow reject' does.
+    const main = run.getJob("main")!;
+    const gate = main.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: false,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.fail("Approval rejected");
+    main.fail();
+    run.complete();
+    await runRepo.save(workflow.id, run);
+
+    await drainResume(service, workflow.name, run.id, { fromStep: "a" });
+
+    const stored = (await runRepo.findById(workflow.id, run.id))!;
+    assertEquals(stored.getJob("main")!.getStep("notify")!.status, "succeeded");
+    assertEquals(executor.count("main/notify"), 1);
+    // pre's notify succeeded before the abort, so it does not run again.
+    assertEquals(stored.getJob("pre")!.status, "succeeded");
+    assertEquals(executor.count("pre/notify"), 1);
+  });
+});
+
+/**
+ * main: `a` and `b` queued behind it. After main, cleanup skips `teardown`
+ * (which needs main to succeed) without starting it, and `approve`'s gate
+ * suspends the run. Without `teardown` when `withTeardown` is false.
+ */
+function removedTeardownWorkflow(
+  withTeardown: boolean,
+  id?: WorkflowId,
+): Workflow {
+  const after = (condition: TriggerCondition) => [{ job: "main", condition }];
+  return Workflow.create({
+    id,
+    name: "resume-from-removed-teardown-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        concurrency: 1,
+        steps: [modelStep("a"), modelStep("b")],
+      }),
+      ...(withTeardown
+        ? [Job.create({
+          name: "teardown",
+          dependsOn: after(TriggerCondition.succeeded()),
+          steps: [modelStep("t")],
+        })]
+        : []),
+      Job.create({
+        name: "approve",
+        dependsOn: after(TriggerCondition.completed()),
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("go?") }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("resume: --from refuses a failed run whose removed job holds work the abort settled, instead of stranding it", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = removedTeardownWorkflow(true);
+    const executor = new AbortingStepExecutor("a");
+    const { workflowRepo, runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    const teardown = run.getJob("teardown")!;
+    assertEquals(teardown.status, "skipped");
+    assertEquals(teardown.getStep("t")!.settledByAbort, true);
+    // What 'swamp workflow reject' does.
+    const approve = run.getJob("approve")!;
+    const gate = approve.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: false,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.fail("Approval rejected");
+    approve.fail();
+    run.complete();
+    assertEquals(run.status, "failed");
+    await runRepo.save(workflow.id, run);
+    await workflowRepo.save(removedTeardownWorkflow(false, workflow.id));
+    const stored = JSON.stringify(
+      (await runRepo.findById(workflow.id, run.id))!.toData(),
+    );
+    const saves = runRepo.saves;
+
+    const error = await assertRejects(
+      () => drainResume(service, workflow.name, run.id, { fromStep: "a" }),
+      UserError,
+      `Job "teardown" is in the run but not in the workflow.`,
+    );
+    assertStringIncludes(error.message, "Start a new run.");
+
+    assertEquals(runRepo.saves, saves);
+    assertEquals(
+      JSON.stringify((await runRepo.findById(workflow.id, run.id))!.toData()),
+      stored,
+    );
+    assertEquals(executor.count("main/a"), 1);
+  });
+});
+
+Deno.test("resume: a job the abort ended unknown runs its undecided step once cleanup's gate is approved", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-undecided-job-wf",
+      jobs: [
+        Job.create({
+          name: "provision",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+        Job.create({
+          name: "main",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.always(),
+          }],
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+          ],
+        }),
+      ],
+    });
+    // The abort lands while create's guard is evaluated; on resume the guard
+    // answers "does not exist yet".
+    const executor = new AbortingStepExecutor("__guard_create", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    assertUndecided(run, "provision", ["create"]);
+    assertEquals(run.getJob("provision")!.status, "unknown");
+    const gate = run.getJob("main")!.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    await runRepo.save(workflow.id, run);
+
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(
+      resumed.getJob("provision")!.getStep("create")!.status,
+      "succeeded",
+    );
+    assertEquals(executor.count("provision/create"), 1);
+    assertEquals(resumed.getJob("provision")!.status, "succeeded");
+    assertEquals(resumed.status, "succeeded");
+  });
+});
+
+/** Approves the gate in job main of a run suspended by its cleanup. */
+async function approveCleanupGate(
+  runRepo: InMemoryWorkflowRunRepository,
+  workflow: Workflow,
+  run: WorkflowRun,
+): Promise<void> {
+  assertEquals(run.status, "suspended");
+  const gate = run.getJob("main")!.getStep("gate")!;
+  gate.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:test",
+    decidedAt: new Date().toISOString(),
+  });
+  gate.succeed();
+  await runRepo.save(workflow.id, run);
+}
+
+Deno.test("resume: a dependent cleanup skipped on an undecided step runs once the step runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-undecided-dependent-wf",
+      jobs: [
+        Job.create({
+          name: "provision",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+            modelStep(
+              "configure",
+              onStep("create", TriggerCondition.succeeded()),
+            ),
+          ],
+        }),
+        Job.create({
+          name: "main",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.always(),
+          }],
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_create", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertUndecided(run, "provision", ["create"]);
+    assertEquals(
+      run.getJob("provision")!.getStep("configure")!.status,
+      "skipped",
+    );
+    await approveCleanupGate(runRepo, workflow, run);
+
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    const provision = resumed.getJob("provision")!;
+    assertEquals(provision.getStep("create")!.status, "succeeded");
+    assertEquals(provision.getStep("configure")!.status, "succeeded");
+    assertEquals(executor.count("provision/configure"), 1);
+    assertEquals(resumed.status, "succeeded");
+  });
+});
+
+Deno.test("resume: a dependent cleanup skipped on a cancelled step runs once the step runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-cancelled-dependent-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            modelStep("a"),
+            modelStep("b"),
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+              dependsOn: [{ step: "a", condition: TriggerCondition.always() }],
+            }),
+            modelStep("ship", onStep("b", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    assertEquals(run.getJob("main")!.getStep("ship")!.status, "skipped");
+    await approveCleanupGate(runRepo, workflow, run);
+
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
+    assertEquals(resumed.getJob("main")!.getStep("ship")!.status, "succeeded");
+    assertEquals(executor.count("main/ship"), 1);
+    // a was cancelled while it ran, so the run fails and can be retried.
+    assertEquals(resumed.status, "failed");
+    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
+  });
+});
+
+Deno.test("resume: a job cleanup skipped on an undecided job runs once that job succeeds", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-undecided-dependent-job-wf",
+      jobs: [
+        Job.create({
+          name: "provision",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+        Job.create({
+          name: "deploy",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.succeeded(),
+          }],
+          steps: [modelStep("push")],
+        }),
+        Job.create({
+          name: "main",
+          dependsOn: [{
+            job: "provision",
+            condition: TriggerCondition.always(),
+          }],
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("__guard_create", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.getJob("provision")!.status, "unknown");
+    assertEquals(run.getJob("deploy")!.status, "skipped");
+    await approveCleanupGate(runRepo, workflow, run);
+
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.getJob("provision")!.status, "succeeded");
+    assertEquals(resumed.getJob("deploy")!.status, "succeeded");
+    assertEquals(executor.count("deploy/push"), 1);
+    assertEquals(resumed.status, "succeeded");
+  });
+});
+
+Deno.test("resume: a step that failed before its suspended run resumed fails the job", async () => {
+  for (const allowFailure of [false, true]) {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "resume-prior-failure-wf",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "gate",
+                task: StepTask.manualApproval("go?"),
+              }),
+              Step.create({
+                name: "side",
+                task: StepTask.model("test-model", "run"),
+                allowFailure,
+              }),
+              modelStep("work", onStep("gate", TriggerCondition.succeeded())),
+            ],
+          }),
+        ],
+      });
+      const { runRepo, executor, service } = await setupRetry(
+        tempDir,
+        workflow,
+      );
+      executor.failing.add("side");
+      const suspended = await suspendAndApprove(service, runRepo, workflow);
+      assertEquals(
+        suspended.getJob("main")!.getStep("side")!.status,
+        "failed",
+      );
+
+      const resumed = await drainResume(service, workflow.name, suspended.id);
+
+      assert(resumed !== undefined, "the resume did not complete");
+      assertEquals(
+        executor.count("main/work"),
+        1,
+        `allowFailure ${allowFailure}`,
+      );
+      assertEquals(
+        resumed.status,
+        allowFailure ? "succeeded" : "failed",
+        `allowFailure ${allowFailure}`,
+      );
+      assertEquals(
+        resumed.getJob("main")!.status,
+        allowFailure ? "succeeded" : "failed",
+      );
+    });
+  }
 });

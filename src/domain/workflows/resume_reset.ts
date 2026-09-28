@@ -35,10 +35,19 @@ import { UserError } from "../errors.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
 import type { Job } from "./job.ts";
 import type { Workflow } from "./workflow.ts";
-import type { JobRun, StepRunRef, WorkflowRun } from "./workflow_run.ts";
+import type {
+  JobRun,
+  StepRun,
+  StepRunRef,
+  WorkflowRun,
+} from "./workflow_run.ts";
 
-/** Why {@link computeStepsToReset} selected a stored step record. */
-type ResetBranch = "name" | "template" | "prefix";
+/**
+ * Why a stored step record was selected for reset: by
+ * {@link computeStepsToReset} (`name`, `template`, `prefix`), or because the
+ * run's abort settled it without starting it (`settled`).
+ */
+type ResetBranch = "name" | "template" | "prefix" | "settled";
 
 interface SelectedRecord {
   readonly jobName: string;
@@ -69,6 +78,23 @@ const FINISHED_STATUSES: ReadonlySet<string> = new Set([
   "skipped",
   "unknown",
 ]);
+
+/**
+ * Whether resume leaves a stored step record alone. A record the run's abort
+ * settled without starting is reset first, so resume walks it.
+ */
+function finishedRecord(record: StepRun): boolean {
+  return FINISHED_STATUSES.has(record.status) && !record.settledByAbort;
+}
+
+/**
+ * Whether resume skips a stored job. A finished job holding work the run's
+ * abort left unfinished is reopened first, so resume walks it (see
+ * `WorkflowRun.reopenAbortedWork`).
+ */
+function finishedJob(jobRun: JobRun): boolean {
+  return FINISHED_STATUSES.has(jobRun.status) && !jobRun.holdsAbortedWork;
+}
 
 /**
  * Validates `fromStep` and returns it plus every template step downstream of
@@ -340,11 +366,11 @@ function movedUnfinishedStep(
 ): string | undefined {
   const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
   for (const jobRun of run.jobs) {
-    if (FINISHED_STATUSES.has(jobRun.status)) continue;
+    if (finishedJob(jobRun)) continue;
     const ownJob = workflow.getJob(jobRun.jobName);
     if (!ownJob && hasEvaluatedJob) continue;
     for (const record of jobRun.steps) {
-      if (FINISHED_STATUSES.has(record.status)) continue;
+      if (finishedRecord(record)) continue;
       const template = record.forEachTemplate;
       const name = template ?? record.stepName;
       const own = ownJob?.getStep(name);
@@ -369,8 +395,9 @@ function movedUnfinishedStep(
 }
 
 /**
- * Rule (d) for a suspended run: resume never walks an unfinished job the
- * workflow no longer has, so the run would end failed with no failed step.
+ * Rule (d): resume never walks an unfinished job the workflow no longer has,
+ * so the run would end failed with no failed step. A finished job holding
+ * aborted work counts as unfinished: it is reopened to pending first.
  */
 function removedUnfinishedJob(
   workflow: Workflow,
@@ -378,7 +405,7 @@ function removedUnfinishedJob(
 ): string | undefined {
   if (workflow.jobs.some((j) => evaluated(j.name))) return undefined;
   const job = run.jobs.find((j) =>
-    !FINISHED_STATUSES.has(j.status) && !workflow.getJob(j.jobName)
+    !finishedJob(j) && !workflow.getJob(j.jobName)
   );
   return job
     ? `Job "${job.jobName}" is in the run but not in the workflow.`
@@ -399,9 +426,13 @@ function suspendedWayOut(workflow: Workflow, run: WorkflowRun): string {
 /**
  * Plans a resume of a failed run: re-entering at `fromStep`, or, without it,
  * retrying the entry template of every failed step (see
- * {@link selectRetryTemplates}). Returns the reset set, or throws a UserError
- * that names the job or step when the run cannot be resumed against the
- * current workflow. Mutates nothing.
+ * {@link selectRetryTemplates}). Either way every record the run's abort
+ * settled without starting (`settledByAbort`) is tracked when its own job
+ * still has the step; it is not in the reset set, which resets by name in
+ * every job, but is reopened record by record (`WorkflowRun.reopenAbortedWork`)
+ * before the reset set is applied. Returns the reset set, or
+ * throws a UserError that names the job or step when the run cannot be
+ * resumed against the current workflow. Mutates nothing.
  *
  * Only for a failed run: a suspended run has no reset set, and its
  * unfinished steps would fail the retry eligibility check. See
@@ -414,14 +445,17 @@ function suspendedWayOut(workflow: Workflow, run: WorkflowRun): string {
  *   whose trigger condition would skip it;
  * - (c) a record selected by name is not a step of its own job in the
  *   current workflow, or a record selected by `forEachTemplate` is not an
- *   iteration of a forEach step of its own job.
+ *   iteration of a forEach step of its own job;
+ * - (d) an unfinished job, or one holding work the abort left unfinished, is
+ *   no longer in the workflow: it would be reopened but never walked, so the
+ *   run could never finish.
  *
  * It leaves alone: records selected only by the legacy forEach prefix,
  * which can over-select; unfinished records that were not reset; forEach
  * templates with no records (an empty expansion removes the template
  * record); job and step names written with an expression, which are stored
  * evaluated and cannot be compared before evaluation; and terminal records
- * and jobs the workflow no longer has.
+ * and finished jobs the workflow no longer has.
  */
 export function planFailedRunResume(
   workflow: Workflow,
@@ -447,15 +481,40 @@ export function planFailedRunResume(
       ? zeroStepsError(fromStep)
       : new UserError(`Retry matched no persisted steps in run ${run.id}.`);
   }
+  // The reset set is by name, so it holds only the records selected above.
   const steps = new Set(selected.map((record) => record.stepName));
+  // Work the run's abort settled without starting runs too, as on a
+  // suspended-run resume: queued siblings of the entry step never ran. It is
+  // reopened per record (WorkflowRun.reopenAbortedWork), so a same-named step
+  // another job finished is not reset with it; it is only tracked here.
+  const reached = new Set(
+    selected.map((record) => `${record.jobName}\0${record.stepName}`),
+  );
+  for (const jobRun of run.jobs) {
+    for (const stepRun of jobRun.steps) {
+      if (
+        stepRun.settledByAbort &&
+        !reached.has(`${jobRun.jobName}\0${stepRun.stepName}`)
+      ) {
+        selected.push({
+          jobName: jobRun.jobName,
+          stepName: stepRun.stepName,
+          forEachTemplate: stepRun.forEachTemplate,
+          branch: "settled",
+        });
+      }
+    }
+  }
 
   const history = `See 'swamp workflow history logs ${run.id}'.`;
   const refuse = (problem: string) =>
     new UserError(`${problem} Start a new run. ${history}`);
   const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
 
-  // (a) Resume looks up a stored record for every job it walks.
-  const noJob = missingJob(workflow, run);
+  // (a) Resume looks up a stored record for every job it walks. (d) It walks
+  // only the workflow's jobs, so a removed job it reopens would stay pending.
+  const noJob = missingJob(workflow, run) ??
+    removedUnfinishedJob(workflow, run);
   if (noJob !== undefined) throw refuse(noJob);
 
   // (c) A record reset by name or template must be walked in its own job.
@@ -467,7 +526,13 @@ export function planFailedRunResume(
     const ownStep = (name: string) => ownJob?.getStep(name);
     const fromTemplate = record.forEachTemplate !== undefined &&
       ownStep(record.forEachTemplate)?.forEach !== undefined;
-    if (record.branch === "name") {
+    if (record.branch === "settled") {
+      // A settled record its job no longer has by name or template (a step
+      // removed since, or an iteration a resume added, which records no
+      // template) is reset but not tracked, as a suspended-run resume
+      // leaves it.
+      if (!ownStep(record.stepName) && !fromTemplate) continue;
+    } else if (record.branch === "name") {
       if (!ownStep(record.stepName) && !fromTemplate) {
         throw refuse(
           movedOrChanged(workflow, record.stepName, record.jobName),
@@ -482,12 +547,12 @@ export function planFailedRunResume(
   }
 
   // (b) resetForResumeFrom resets records by name in every job, so a job is
-  // re-entered when any of its records is.
+  // re-entered when any of its records is, or when it holds aborted work.
   const noStep = missingStep(
     workflow,
     run,
     (jobRun) =>
-      !FINISHED_STATUSES.has(jobRun.status) ||
+      !finishedJob(jobRun) ||
       jobRun.steps.some((s) => steps.has(s.stepName)),
   );
   if (noStep !== undefined) throw refuse(noStep);
@@ -503,7 +568,10 @@ export function planFailedRunResume(
  * command. Mutates nothing.
  *
  * A suspended run has no reset set: resume re-enters every unfinished job.
- * The structure check refuses when:
+ * A record the run's abort settled without starting counts as unfinished,
+ * and so does its job, as does a job the abort ended `unknown` with an
+ * undecided step: resume reopens them first
+ * (`WorkflowRun.reopenAbortedWork`). The structure check refuses when:
  * - (a) a job of the current workflow has no stored record;
  * - (c) an unfinished record of an unfinished job is no longer a step of its
  *   own job (for an iteration, its `forEachTemplate` as a forEach step), and
@@ -534,7 +602,7 @@ export function checkSuspendedRunResume(
     missingStep(
       workflow,
       run,
-      (jobRun) => !FINISHED_STATUSES.has(jobRun.status),
+      (jobRun) => !finishedJob(jobRun),
     );
   if (problem !== undefined) {
     throw new UserError(

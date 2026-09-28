@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  CANCELLED_STEP_ERROR,
   JobRun,
   StepRun,
   StepSkipReasonSchema,
@@ -1944,4 +1945,269 @@ Deno.test("JobRun.replaceExpandedSteps: expands more steps than fit in a spread 
   assertEquals(jobRun.getStep("deploy"), undefined);
   // Edited in place: a steps array read before the call sees the expansion.
   assertEquals(steps.length, count + 2);
+});
+
+Deno.test("JobRun.cancelPendingSteps: fails only the named pending steps as cancelled", () => {
+  const job = JobRun.pending("main", ["a", "b", "c", "d"]);
+  job.start();
+  job.getStep("a")!.start();
+  job.getStep("b")!.succeed();
+
+  const cancelled = job.cancelPendingSteps(["a", "b", "c", "missing"]);
+
+  assertEquals(cancelled.map((s) => s.stepName), ["c"]);
+  const c = job.getStep("c")!;
+  assertEquals(c.status, "failed");
+  assertEquals(c.error, CANCELLED_STEP_ERROR);
+  assertEquals(c.startedAt, undefined);
+  assertEquals(job.getStep("a")!.status, "running");
+  assertEquals(job.getStep("b")!.status, "succeeded");
+  assertEquals(job.getStep("d")!.status, "pending");
+  assertEquals(job.status, "running");
+});
+
+Deno.test("JobRun.cancelPendingSteps: a forEach dependency aggregates to failed once its queued iterations are cancelled", () => {
+  const job = JobRun.pending("main", ["build-1", "build-2", "build-3"]);
+  job.registerForEachExpansion("build", ["build-1", "build-2", "build-3"]);
+  job.getStep("build-1")!.fail(CANCELLED_STEP_ERROR);
+  assertEquals(job.getStatus("build"), "running");
+
+  job.cancelPendingSteps(["build-1", "build-2", "build-3"]);
+
+  assertEquals(job.getStatus("build"), "failed");
+});
+
+Deno.test("JobRun.settleNotStarted: fails a job when any of its steps failed", () => {
+  const job = JobRun.pending("j2", ["create", "delete"]);
+  job.cancelPendingSteps(["create"]);
+  job.getStep("delete")!.skip({ kind: "dependency" });
+
+  job.settleNotStarted();
+
+  assertEquals(job.status, "failed");
+  assertEquals(job.startedAt, undefined);
+});
+
+Deno.test("JobRun.settleNotStarted: skips a job when every step was skipped", () => {
+  const job = JobRun.pending("j2", ["delete"]);
+  job.getStep("delete")!.skip({ kind: "dependency" });
+
+  job.settleNotStarted();
+
+  assertEquals(job.status, "skipped");
+});
+
+Deno.test("JobRun.settleNotStarted: leaves a job pending while a step is undecided", () => {
+  // A guarded step whose guard never ran stays pending, so nothing about the
+  // job can be concluded and no condition on it may fire.
+  const job = JobRun.pending("j2", ["create", "delete"]);
+  job.getStep("delete")!.skip({ kind: "dependency" });
+
+  job.settleNotStarted();
+
+  assertEquals(job.status, "pending");
+  assertEquals(job.getStep("create")!.status, "pending");
+});
+
+Deno.test("JobRun.settleNotStarted: leaves a job that is not pending alone", () => {
+  for (
+    const settle of [
+      (j: JobRun) => j.start(),
+      (j: JobRun) => j.succeed(),
+      (j: JobRun) => j.skip(),
+      (j: JobRun) => j.markUnknown(),
+    ]
+  ) {
+    const job = JobRun.pending("j1", ["s1"]);
+    settle(job);
+    job.getStep("s1")!.fail("boom");
+    const before = job.toData();
+
+    job.settleNotStarted();
+
+    assertEquals(job.toData(), before);
+  }
+});
+
+Deno.test("JobRun.settleNotStarted: keeps a job pending while a step is undecided, even beside a cancelled step", () => {
+  const job = JobRun.pending("j2", ["create", "notify"]);
+  job.cancelPendingSteps(["notify"]);
+
+  job.settleNotStarted();
+
+  assertEquals(job.status, "pending");
+});
+
+Deno.test("StepRun: work an abort settles is marked, persisted, and cleared by a reset", () => {
+  const cancelled = StepRun.pending("a");
+  cancelled.cancelUnstarted();
+  assertEquals(cancelled.status, "failed");
+  assertEquals(cancelled.error, CANCELLED_STEP_ERROR);
+  assertEquals(cancelled.startedAt, undefined);
+  assertEquals(cancelled.settledByAbort, true);
+
+  const skipped = StepRun.pending("b");
+  skipped.skipUnstarted({ kind: "dependency" });
+  assertEquals(skipped.status, "skipped");
+  assertEquals(skipped.skipReason, { kind: "dependency" });
+  assertEquals(skipped.settledByAbort, true);
+
+  assertEquals(StepRun.fromData(cancelled.toData()).settledByAbort, true);
+  assertEquals("settledByAbort" in StepRun.pending("c").toData(), false);
+  // An in-flight step the abort stopped ran, so it is not marked.
+  const inFlight = StepRun.pending("d");
+  inFlight.start();
+  inFlight.fail(CANCELLED_STEP_ERROR);
+  assertEquals(inFlight.settledByAbort, false);
+
+  cancelled.resetToPending();
+  assertEquals(cancelled.settledByAbort, false);
+  assertEquals(cancelled.error, undefined);
+});
+
+Deno.test("JobRun: cancelling and skipping a never-started job marks each step it settles", () => {
+  const cancelled = JobRun.pending("j1", ["a", "b"]);
+  cancelled.getStep("a")!.succeed();
+  cancelled.cancelPendingSteps(["a", "b"]);
+  assertEquals(cancelled.getStep("a")!.settledByAbort, false);
+  assertEquals(cancelled.getStep("b")!.settledByAbort, true);
+
+  const skipped = JobRun.pending("j2", ["c", "d"]);
+  skipped.getStep("c")!.skipUnstarted({ kind: "dependency" });
+  skipped.skipNotStarted();
+  assertEquals(skipped.status, "skipped");
+  assertEquals(skipped.getStep("c")!.skipReason, { kind: "dependency" });
+  assertEquals(skipped.getStep("d")!.skipReason, { kind: "job_skipped" });
+  assertEquals(skipped.steps.every((s) => s.settledByAbort), true);
+});
+
+Deno.test("WorkflowRun.reopenAbortedWork: resets settled steps and re-enters their finished jobs", () => {
+  const workflow = Workflow.create({
+    name: "settled-wf",
+    jobs: ["done", "failed", "running", "pending", "clean"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "x", task: StepTask.model("m", "run") }),
+          Step.create({ name: "y", task: StepTask.model("m", "run") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  // A job whose only settled step was skipped can still have succeeded.
+  const done = run.getJob("done")!;
+  done.start();
+  done.getStep("x")!.succeed();
+  done.getStep("y")!.skipUnstarted({ kind: "dependency" });
+  done.succeed();
+  const failed = run.getJob("failed")!;
+  failed.start();
+  failed.getStep("x")!.start();
+  failed.getStep("x")!.fail(CANCELLED_STEP_ERROR);
+  failed.cancelPendingSteps(["y"]);
+  failed.fail();
+  const running = run.getJob("running")!;
+  running.start();
+  running.getStep("x")!.succeed();
+  running.cancelPendingSteps(["y"]);
+  // Never started: one step cancelled, one guarded step left undecided.
+  run.getJob("pending")!.cancelPendingSteps(["x"]);
+  const clean = run.getJob("clean")!;
+  clean.start();
+  clean.getStep("x")!.fail("boom");
+  clean.getStep("y")!.succeed();
+  clean.fail();
+  run.suspend();
+
+  run.reopenAbortedWork();
+
+  assertEquals(done.status, "pending");
+  assertEquals(done.getStep("x")!.status, "succeeded");
+  assertEquals(done.getStep("y")!.status, "pending");
+  assertEquals(failed.status, "pending");
+  // The in-flight step ran, so it keeps its failure.
+  assertEquals(failed.getStep("x")!.status, "failed");
+  assertEquals(failed.getStep("y")!.status, "pending");
+  assertEquals(running.status, "running");
+  assertEquals(running.getStep("y")!.status, "pending");
+  assertEquals(run.getJob("pending")!.status, "pending");
+  assertEquals(run.getJob("pending")!.getStep("x")!.status, "pending");
+  assertEquals(clean.status, "failed");
+  assertEquals(clean.getStep("x")!.status, "failed");
+  for (const job of run.jobs) {
+    assertEquals(job.steps.some((s) => s.settledByAbort), false, job.jobName);
+  }
+});
+
+Deno.test("WorkflowRun.reopenAbortedWork: re-enters a job the abort ended unknown with an undecided step", () => {
+  const workflow = Workflow.create({
+    name: "undecided-wf",
+    jobs: ["undecided", "interrupted"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "x", task: StepTask.model("m", "run") }),
+          Step.create({ name: "y", task: StepTask.model("m", "run") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  // x succeeded; y's guard never decided, so it stays pending.
+  const undecided = run.getJob("undecided")!;
+  undecided.start();
+  undecided.getStep("x")!.succeed();
+  undecided.markUnknown();
+  // An unknown job with no pending step holds no aborted work.
+  const interrupted = run.getJob("interrupted")!;
+  interrupted.start();
+  interrupted.getStep("x")!.succeed();
+  interrupted.getStep("y")!.markUnknown("interrupted: server_crash");
+  interrupted.markUnknown();
+  run.suspend();
+  assertEquals(undecided.holdsAbortedWork, true);
+  assertEquals(interrupted.holdsAbortedWork, false);
+
+  run.reopenAbortedWork();
+
+  assertEquals(undecided.status, "pending");
+  assertEquals(undecided.getStep("x")!.status, "succeeded");
+  assertEquals(undecided.getStep("y")!.status, "pending");
+  assertEquals(interrupted.status, "unknown");
+  assertEquals(interrupted.getStep("y")!.status, "unknown");
+});
+
+Deno.test("WorkflowRun.reopenAbortedWork: leaves a same-named step in another job alone", () => {
+  const workflow = Workflow.create({
+    name: "same-name-wf",
+    jobs: ["pre", "main"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "notify", task: StepTask.model("m", "run") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const pre = run.getJob("pre")!;
+  pre.start();
+  pre.getStep("notify")!.succeed();
+  pre.succeed();
+  const main = run.getJob("main")!;
+  main.start();
+  main.cancelPendingSteps(["notify"]);
+  main.fail();
+  run.complete();
+
+  run.reopenAbortedWork();
+
+  assertEquals(pre.status, "succeeded");
+  assertEquals(pre.getStep("notify")!.status, "succeeded");
+  assertEquals(main.status, "pending");
+  assertEquals(main.getStep("notify")!.status, "pending");
 });

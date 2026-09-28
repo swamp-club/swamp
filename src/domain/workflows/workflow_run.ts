@@ -111,6 +111,14 @@ export const STRANDED_STEP_ERROR =
   "Not run: the workflow or a forEach collection changed since the run. Start a new run.";
 
 /**
+ * The error a step fails with when the run's signal aborted while it ran, or
+ * before it started in a level the abort interrupted. See
+ * {@link JobRun.cancelPendingSteps}; a resume runs a step that never started
+ * ({@link StepRun.settledByAbort}).
+ */
+export const CANCELLED_STEP_ERROR = "cancelled";
+
+/**
  * Zod schema for step run.
  */
 export const StepRunSchema = z.object({
@@ -137,6 +145,7 @@ export const StepRunSchema = z.object({
   skipReason: StepSkipReasonSchema.optional(),
   resetByResume: z.boolean().optional(),
   failureKind: StepFailureKindSchema.optional(),
+  settledByAbort: z.boolean().optional(),
 });
 
 /**
@@ -254,6 +263,7 @@ export class StepRun {
     private _skipReason: StepSkipReasonData | undefined = undefined,
     private _resetByResume: boolean = false,
     private _failureKind: StepFailureKind | undefined = undefined,
+    private _settledByAbort: boolean = false,
   ) {}
 
   /**
@@ -300,6 +310,7 @@ export class StepRun {
       validated.skipReason,
       validated.resetByResume ?? false,
       validated.failureKind,
+      validated.settledByAbort ?? false,
     );
   }
 
@@ -376,6 +387,18 @@ export class StepRun {
   }
 
   /**
+   * True when the run's abort settled this step without starting it
+   * (cancelled, or skipped on its `dependsOn` or its job's), so that cleanup
+   * gated on it could run, or when the run's cleanup skipped it on its
+   * `dependsOn` or its job's, possibly on work the abort settled. Persisted:
+   * a resume resets such a step to pending and runs it, as it would have run
+   * had the abort left it pending (see {@link WorkflowRun.reopenAbortedWork}).
+   */
+  get settledByAbort(): boolean {
+    return this._settledByAbort;
+  }
+
+  /**
    * Records an approval or rejection decision on this step.
    */
   recordApprovalDecision(decision: ApprovalDecisionData): void {
@@ -414,6 +437,7 @@ export class StepRun {
     this._skipReason = undefined;
     this._resetByResume = false;
     this._failureKind = undefined;
+    this._settledByAbort = false;
   }
 
   /**
@@ -439,6 +463,24 @@ export class StepRun {
     this.fail(STRANDED_STEP_ERROR);
     this._allowedFailure = false;
     this._failureKind = "workflow_changed";
+  }
+
+  /**
+   * Fails a step the run's abort left unstarted with
+   * {@link CANCELLED_STEP_ERROR}, marked {@link settledByAbort}.
+   */
+  cancelUnstarted(): void {
+    this.fail(CANCELLED_STEP_ERROR);
+    this._settledByAbort = true;
+  }
+
+  /**
+   * Skips a step the run's abort left unstarted, or one its cleanup skipped
+   * on its `dependsOn`, marked {@link settledByAbort}.
+   */
+  skipUnstarted(reason: StepSkipReasonData): void {
+    this.skip(reason);
+    this._settledByAbort = true;
   }
 
   /**
@@ -550,6 +592,9 @@ export class StepRun {
     }
     if (this._failureKind) {
       data.failureKind = this._failureKind;
+    }
+    if (this._settledByAbort) {
+      data.settledByAbort = true;
     }
     return data;
   }
@@ -744,8 +789,9 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Marks the job as unknown — the job was in-flight when the process
-   * crashed and its outcome is ambiguous.
+   * Marks the job as unknown — its outcome is ambiguous: the job was
+   * in-flight when the process crashed, or a cancellation left it with only
+   * guarded steps whose guards never decided.
    */
   markUnknown(): void {
     this._status = "unknown";
@@ -780,6 +826,74 @@ export class JobRun implements TriggerEvaluationContext {
       step.failStranded();
     }
     return stranded;
+  }
+
+  /**
+   * Fails each named step that is still `pending` with
+   * {@link CANCELLED_STEP_ERROR}, and returns them. Called for the steps of a
+   * level the run's abort interrupted: a step queued behind a concurrency
+   * limit never started, and would otherwise stay pending, so a `failed` or
+   * `completed` condition on it could never be met. Each is marked
+   * {@link StepRun.settledByAbort}, so a resume runs it. Steps in any other
+   * status are left alone.
+   */
+  cancelPendingSteps(stepNames: Iterable<string>): StepRun[] {
+    const cancelled: StepRun[] = [];
+    for (const name of stepNames) {
+      const step = this.getStep(name);
+      if (step?.status === "pending") {
+        step.cancelUnstarted();
+        cancelled.push(step);
+      }
+    }
+    return cancelled;
+  }
+
+  /**
+   * Skips a job whose `dependsOn` is unmet, the run's abort having left it
+   * unstarted or its cleanup having reached it, as {@link skip} does, but
+   * marks each step it skips {@link StepRun.settledByAbort}, so a resume
+   * walks the job again.
+   */
+  skipNotStarted(): void {
+    for (const step of this._steps) {
+      if (step.status === "pending") {
+        step.skipUnstarted({ kind: "job_skipped" });
+      }
+    }
+    this.skip();
+  }
+
+  /**
+   * Settles a job that never started because the run's abort interrupted its
+   * level, once its steps are settled. While any step is still `pending` (a
+   * guarded step whose guard never decided), the job stays `pending`: nothing
+   * in it ran, so a step cancelled beside it is no evidence of failure, and
+   * neither `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
+   * Otherwise it fails when any step failed and is skipped when every step
+   * was skipped. Its settled steps are marked {@link StepRun.settledByAbort},
+   * so a resume walks the job again. Any other job status is left alone.
+   */
+  settleNotStarted(): void {
+    if (this._status !== "pending") return;
+    if (this._steps.some((step) => step.status === "pending")) return;
+    if (this._steps.some((step) => step.status === "failed")) {
+      this.fail();
+    } else {
+      this.skip();
+    }
+  }
+
+  /**
+   * True when the run's abort left work in this job for a resume to run: a
+   * step it settled without starting ({@link StepRun.settledByAbort}), or a
+   * guarded step it left undecided (`pending`) in a job it ended `unknown`.
+   * See {@link WorkflowRun.reopenAbortedWork}.
+   */
+  get holdsAbortedWork(): boolean {
+    return this._steps.some((step) => step.settledByAbort) ||
+      (this._status === "unknown" &&
+        this._steps.some((step) => step.status === "pending"));
   }
 
   /**
@@ -1269,6 +1383,30 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     for (const ref of tracked) {
       this.getJob(ref.jobName)?.getStep(ref.stepName)?.markResetByResume();
+    }
+  }
+
+  /**
+   * Reopens the work the run's abort left unfinished, for any resume, so it
+   * runs as it would have had the abort left it pending: every step the
+   * abort settled without starting ({@link StepRun.settledByAbort}) is reset
+   * to pending, record by record, and a finished job that
+   * {@link JobRun.holdsAbortedWork} is reset to pending too, so the resume
+   * walks it. Records with the same name in other jobs are left alone.
+   */
+  reopenAbortedWork(): void {
+    for (const job of this._jobs) {
+      const reopen = job.holdsAbortedWork;
+      for (const step of job.steps) {
+        if (step.settledByAbort) step.resetToPending();
+      }
+      if (
+        reopen &&
+        (job.status === "succeeded" || job.status === "failed" ||
+          job.status === "skipped" || job.status === "unknown")
+      ) {
+        job.resetToPending();
+      }
     }
   }
 

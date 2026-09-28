@@ -23,7 +23,13 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { Workflow } from "./workflow.ts";
-import { type StepRun, type StepRunRef, WorkflowRun } from "./workflow_run.ts";
+import {
+  CANCELLED_STEP_ERROR,
+  JobRun,
+  type StepRun,
+  type StepRunRef,
+  WorkflowRun,
+} from "./workflow_run.ts";
 
 // Two jobs that share step names, since tracking is per record.
 const JOBS = ["a", "b"];
@@ -141,5 +147,148 @@ Deno.test("WorkflowRun: resetting a stranded step clears its failure kind", () =
       assertEquals(step.status, "pending");
       assertEquals(step.resetByResume, false);
     }),
+  );
+});
+
+Deno.test("JobRun: cancelling pending steps settles every named pending step and leaves the rest untouched", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.nat({ max: TRANSITIONS.length - 1 }), {
+        minLength: STEPS.length,
+        maxLength: STEPS.length,
+      }),
+      fc.subarray(STEPS),
+      (transitions, names) => {
+        const job = JobRun.pending("a", STEPS);
+        STEPS.forEach((name, i) =>
+          TRANSITIONS[transitions[i]](job.getStep(name)!)
+        );
+        const before = new Map(
+          job.steps.map((s) => [s.stepName, s.toData()] as const),
+        );
+
+        const cancelled = job.cancelPendingSteps(names);
+
+        for (const step of job.steps) {
+          const was = before.get(step.stepName)!;
+          if (names.includes(step.stepName) && was.status === "pending") {
+            assertEquals(step.status, "failed");
+            assertEquals(step.error, CANCELLED_STEP_ERROR);
+            assertEquals(step.settledByAbort, true);
+            assert(cancelled.includes(step));
+          } else {
+            assertEquals(step.toData(), was);
+            assert(!cancelled.includes(step));
+          }
+        }
+      },
+    ),
+  );
+});
+
+Deno.test("JobRun: settling a never-started job is decided by its steps and leaves a started job alone", () => {
+  // A never-started job's steps are pending, cancelled (failed) or skipped.
+  const SETTLED: ReadonlyArray<(step: StepRun) => void> = [
+    () => {},
+    (s) => s.fail(CANCELLED_STEP_ERROR),
+    (s) => s.skip({ kind: "dependency" }),
+  ];
+  fc.assert(
+    fc.property(
+      fc.array(fc.nat({ max: SETTLED.length - 1 }), {
+        minLength: STEPS.length,
+        maxLength: STEPS.length,
+      }),
+      fc.boolean(),
+      (outcomes, started) => {
+        const job = JobRun.pending("a", STEPS);
+        STEPS.forEach((name, i) => SETTLED[outcomes[i]](job.getStep(name)!));
+        if (started) job.start();
+        const before = job.toData();
+        const statuses = job.steps.map((s) => s.status);
+
+        job.settleNotStarted();
+
+        if (started) {
+          assertEquals(job.toData(), before);
+        } else if (statuses.includes("pending")) {
+          assertEquals(job.status, "pending");
+        } else if (statuses.includes("failed")) {
+          assertEquals(job.status, "failed");
+        } else {
+          assertEquals(job.status, "skipped");
+        }
+        // Steps are never changed by settling the job.
+        assertEquals(job.steps.map((s) => s.status), statuses);
+      },
+    ),
+  );
+});
+
+Deno.test("WorkflowRun: reopening aborted work resets exactly the settled records and reopens the finished jobs holding aborted work", () => {
+  // Each step either took a transition, or was settled by the abort.
+  const OUTCOMES: ReadonlyArray<(step: StepRun) => void> = [
+    ...TRANSITIONS,
+    (s) => s.cancelUnstarted(),
+    (s) => s.skipUnstarted({ kind: "dependency" }),
+  ];
+  const JOB_STATUSES: ReadonlyArray<(job: JobRun) => void> = [
+    () => {},
+    (j) => j.start(),
+    (j) => j.succeed(),
+    (j) => j.fail(),
+    (j) => j.skip(),
+    (j) => j.markUnknown(),
+  ];
+  fc.assert(
+    fc.property(
+      fc.array(
+        fc.record({
+          status: fc.nat({ max: JOB_STATUSES.length - 1 }),
+          steps: fc.array(fc.nat({ max: OUTCOMES.length - 1 }), {
+            minLength: STEPS.length,
+            maxLength: STEPS.length,
+          }),
+        }),
+        { minLength: JOBS.length, maxLength: JOBS.length },
+      ),
+      (jobs) => {
+        const run = createFailedRun();
+        run.jobs.forEach((job, i) => {
+          STEPS.forEach((name, j) => {
+            const step = job.getStep(name)!;
+            step.resetToPending();
+            OUTCOMES[jobs[i].steps[j]](step);
+          });
+          job.resetToPending();
+          JOB_STATUSES[jobs[i].status](job);
+        });
+        const before = run.jobs.map((job) => job.toData());
+
+        run.reopenAbortedWork();
+
+        run.jobs.forEach((job, i) => {
+          const was = before[i];
+          const settled = was.steps.some((s) => s.settledByAbort === true);
+          // An undecided step the abort left in a job it ended unknown.
+          const undecided = was.status === "unknown" &&
+            was.steps.some((s) => s.status === "pending");
+          job.steps.forEach((step, j) => {
+            if (was.steps[j].settledByAbort) {
+              assertEquals(step.status, "pending");
+              assertEquals(step.settledByAbort, false);
+            } else {
+              assertEquals(step.toData(), was.steps[j]);
+            }
+          });
+          const finished = ["succeeded", "failed", "skipped", "unknown"]
+            .includes(was.status);
+          assertEquals(
+            job.status,
+            (settled || undecided) && finished ? "pending" : was.status,
+          );
+        });
+      },
+    ),
   );
 });

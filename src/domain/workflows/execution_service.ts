@@ -32,8 +32,14 @@ import { coerceToSuffix } from "./data_suffix.ts";
 import { coerceInputTypes } from "../inputs/input_coercion.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
-// deno-lint-ignore verbatim-module-syntax
-import { JobRun, WorkflowRun, type WorkflowRunData } from "./workflow_run.ts";
+import {
+  CANCELLED_STEP_ERROR,
+  // deno-lint-ignore verbatim-module-syntax
+  JobRun,
+  type StepRun,
+  WorkflowRun,
+  type WorkflowRunData,
+} from "./workflow_run.ts";
 import {
   checkSuspendedRunResume,
   planFailedRunResume,
@@ -2035,6 +2041,19 @@ interface StepOptions {
    * never be copied into durable deferred bindings.
    */
   resumeDerived?: readonly string[];
+  /**
+   * Set on the step levels a job runs in cleanup mode after the run's abort
+   * (see runJob). A step skipped there on its dependsOn never ran, and may
+   * depend on work the abort settled, so it is marked `settledByAbort` and a
+   * resume evaluates it again.
+   */
+  cleanupStepLevel?: boolean;
+  /**
+   * Set on the job levels a run enters in cleanup mode after its abort. A job
+   * skipped there on its dependsOn is skipped as one the abort never started
+   * (`JobRun.skipNotStarted`), so a resume evaluates it again.
+   */
+  cleanupJobLevel?: boolean;
 }
 
 /**
@@ -2490,8 +2509,10 @@ export class WorkflowExecutionService {
           ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
           : options?.signal;
         const levelStepOpts = cleanupMode
-          ? { ...stepOpts, signal: levelSignal }
+          ? { ...stepOpts, signal: levelSignal, cleanupJobLevel: true }
           : stepOpts;
+        // Only a level the abort interrupted settles its never-started jobs.
+        const abortedBeforeLevel = levelSignal?.aborted ?? false;
 
         if (cleanupMode) {
           // Mark any jobs/steps still in "running" status as failed —
@@ -2500,7 +2521,7 @@ export class WorkflowExecutionService {
           for (const jobRun of run.jobs) {
             for (const step of jobRun.steps) {
               if (step.status === "running") {
-                step.fail("cancelled");
+                step.fail(CANCELLED_STEP_ERROR);
               }
             }
             if (jobRun.status === "running") {
@@ -2552,6 +2573,29 @@ export class WorkflowExecutionService {
             anyJobFailed = true;
           }
           yield event;
+        }
+
+        // A job this level never started (queued behind workflow concurrency
+        // when the abort fired) would stay pending, so a failed or completed
+        // condition on it could never be met. Settle it as runJob would have:
+        // skipped when its dependsOn is unmet, otherwise from its steps
+        // (settleNotStartedJob). A suspended run keeps its pending jobs to
+        // resume.
+        if (
+          !abortedBeforeLevel && levelSignal?.aborted &&
+          run.status !== "suspended"
+        ) {
+          for (const jobName of level) {
+            const jobRun = run.getJob(jobName);
+            if (jobRun?.status !== "pending") continue;
+            const job = workflow.getJob(jobName);
+            if (!job) continue;
+            if (!this.shouldJobRun(job, run)) {
+              jobRun.skipNotStarted();
+            } else {
+              this.settleNotStartedJob(job, jobRun);
+            }
+          }
         }
 
         // When the signal aborts mid-level with parallel jobs,
@@ -2841,6 +2885,10 @@ export class WorkflowExecutionService {
     // rather than left running with nothing driving it.
     const snapshot = existingRun.toData();
 
+    // Work the run's abort left unfinished runs now, as it would have had the
+    // abort left it pending. Reopened per record before a failed run's reset
+    // set, which resets by name in every job.
+    existingRun.reopenAbortedWork();
     if (reset) {
       existingRun.resetForResumeFrom(reset.steps, reset.tracked);
       existingRun.resumeFromFailed();
@@ -3214,7 +3262,11 @@ export class WorkflowExecutionService {
       // Check if job's trigger condition is met
       const shouldRun = this.shouldJobRun(job, run);
       if (!shouldRun) {
-        jobRun.skip();
+        if (options.cleanupJobLevel) {
+          jobRun.skipNotStarted();
+        } else {
+          jobRun.skip();
+        }
         jobSpan.setAttribute("job.status", "skipped");
         yield { kind: "job_skipped", jobId: jobName };
         return;
@@ -3291,18 +3343,23 @@ export class WorkflowExecutionService {
 
       // Execute steps level by level
       let jobFailed = false;
+      // Set when an interrupted level leaves a guarded step undecided.
+      let jobUndecided = false;
       for (const level of sortedSteps.levels) {
         // After a step failure with an aborted signal, give subsequent
         // levels a fresh cleanup signal so always/completed dependents
         // can run. shouldStepRun() handles condition-based filtering —
         // steps whose conditions aren't met are skipped naturally.
-        const cleanupMode = jobFailed && (options.signal?.aborted ?? false);
-        const levelSignal = cleanupMode
+        const cleanupMode: boolean = (jobFailed || jobUndecided) &&
+          (options.signal?.aborted ?? false);
+        const levelSignal: AbortSignal | undefined = cleanupMode
           ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
           : options.signal;
         const levelOptions = cleanupMode
-          ? { ...options, signal: levelSignal }
+          ? { ...options, signal: levelSignal, cleanupStepLevel: true }
           : options;
+        // Only a level the abort interrupted settles its never-started steps.
+        const abortedBeforeLevel: boolean = levelSignal?.aborted ?? false;
 
         if (cleanupMode) {
           // Mark any steps still in "running" status as failed — the
@@ -3310,13 +3367,15 @@ export class WorkflowExecutionService {
           // abandoned before they could record the failure.
           for (const step of jobRun.steps) {
             if (step.status === "running") {
-              step.fail("cancelled");
+              step.fail(CANCELLED_STEP_ERROR);
             }
           }
         }
 
         // Merge parallel step generators within each level
         const stepConcurrencies: number[] = [];
+        const levelSteps = new Map<string, Step>();
+        const levelIterations = new Set<string>();
         const stepStreams = level.map((stepName) => {
           // Find the expanded step info if applicable
           let forEachVar: { name: string; value: unknown } | undefined;
@@ -3348,6 +3407,9 @@ export class WorkflowExecutionService {
           if (stepConc && stepConc > 0) {
             stepConcurrencies.push(stepConc);
           }
+          const levelStep = originalStep ?? job.getStep(stepName);
+          if (levelStep) levelSteps.set(stepName, levelStep);
+          if (forEachVar?.name) levelIterations.add(stepName);
 
           return this.runStep(
             workflow,
@@ -3384,6 +3446,26 @@ export class WorkflowExecutionService {
           }
         }
 
+        // A step this level never started (queued behind a concurrency limit
+        // when the abort fired) would stay pending, so a failed or completed
+        // condition on it could never be met. Settle it as runStep would have
+        // on reaching it (settleUnstartedStep). A suspended run keeps its
+        // pending steps to resume.
+        const interrupted: boolean = !abortedBeforeLevel &&
+          (levelSignal?.aborted ?? false) && run.status !== "suspended";
+        if (interrupted) {
+          for (const stepName of level) {
+            // An iteration a resume added to the collection has no record
+            // until runStep creates one, as it would have on reaching it.
+            if (!jobRun.getStep(stepName) && levelIterations.has(stepName)) {
+              jobRun.addExpandedStep(stepName);
+            }
+            const stepRun = jobRun.getStep(stepName);
+            if (stepRun?.status !== "pending") continue;
+            this.settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
+          }
+        }
+
         // When the signal aborts mid-level with parallel steps,
         // mergeWithConcurrency may exit before step_failed events are
         // consumed. Derive jobFailed from model state so cleanup kicks in.
@@ -3392,6 +3474,24 @@ export class WorkflowExecutionService {
             s.status === "running" || s.status === "failed" ||
             s.status === "unknown"
           );
+        }
+        // A step that failed before a resume walked its level emits no
+        // step_failed here, but it still fails the job unless its failure was
+        // allowed, as it did when it failed.
+        if (!jobFailed) {
+          jobFailed = level.some((name) => {
+            const step = jobRun.getStep(name);
+            return step?.status === "failed" && !step.allowedFailure;
+          });
+        }
+        // A guarded step the interrupted level left undecided: the job did
+        // not finish its work, so later levels run in cleanup mode, but its
+        // outcome is ambiguous (see the end of the job).
+        if (
+          interrupted &&
+          level.some((name) => jobRun.getStep(name)?.status === "pending")
+        ) {
+          jobUndecided = true;
         }
 
         if (run.status === "suspended") {
@@ -3434,6 +3534,18 @@ export class WorkflowExecutionService {
             code: SpanStatusCode.ERROR,
             message: "Job failed",
           });
+        } else if (jobUndecided) {
+          // Only undecided guarded steps are left, so the job's outcome is
+          // ambiguous: neither `succeeded`, `failed`, `completed` nor
+          // `skipped` holds for it. Like other work an abort settles, it gets
+          // no event. A job the run's cleanup already failed while this
+          // generator was abandoned (a level holding several jobs,
+          // swamp-club#2549) keeps that status, so the record matches what
+          // later levels saw.
+          if (jobRun.status === "running") jobRun.markUnknown();
+          jobSpan.setAttribute("job.status", jobRun.status);
+          jobSpan.setStatus({ code: SpanStatusCode.OK });
+          return;
         } else {
           jobRun.succeed();
           jobSpan.setStatus({ code: SpanStatusCode.OK });
@@ -3497,7 +3609,8 @@ export class WorkflowExecutionService {
       jobRun.addExpandedStep(stepName);
       stepRun = jobRun.getStep(stepName);
     }
-    // Skip steps that already completed (during resume from suspended state)
+    // Skip steps that already finished (a resumed run). The job counts one
+    // that failed after its level (see runJob).
     if (
       stepRun &&
       (stepRun.status === "succeeded" || stepRun.status === "failed" ||
@@ -3541,7 +3654,11 @@ export class WorkflowExecutionService {
     // Check if step's trigger condition is met. A forEach iteration checks its
     // template's dependsOn, so every iteration is gated as a plain step is.
     if (!this.shouldStepRun(step, jobRun)) {
-      stepRun.skip({ kind: "dependency" });
+      if (options.cleanupStepLevel) {
+        stepRun.skipUnstarted({ kind: "dependency" });
+      } else {
+        stepRun.skip({ kind: "dependency" });
+      }
       stepSpan.setAttribute("step.status", "skipped");
       stepSpan.end();
       yield {
@@ -3609,6 +3726,19 @@ export class WorkflowExecutionService {
         undefined,
         run.id,
       );
+      // When the abort fires while a pending step's guard is evaluated, the
+      // step does not start and stays pending whatever the guard answers:
+      // the level may already have settled and moved on, and a step whose
+      // guard did not decide in time must not look finished. A step reached
+      // after the abort, or recorded running, runs as before.
+      const abortedBeforeGuard = options.signal?.aborted ?? false;
+      const guardedStep = stepRun;
+      const statusBeforeGuard = guardedStep.status;
+      const settledDuringGuard = (): boolean =>
+        guardedStep.status !== statusBeforeGuard;
+      const abortedDuringGuard = (): boolean =>
+        statusBeforeGuard === "pending" && !abortedBeforeGuard &&
+        (options.signal?.aborted ?? false);
       try {
         const celEvaluator = new CelEvaluator();
         const guardContext: Record<string, unknown> = {
@@ -3635,6 +3765,10 @@ export class WorkflowExecutionService {
           guardCel,
           guardContext,
         );
+        if (settledDuringGuard() || abortedDuringGuard()) {
+          stepSpan.end();
+          return;
+        }
         if (guardResult) {
           guardLogger
             .debug`Step ${stepName} guard skipped: ${guardCel} → ${guardResult}`;
@@ -3657,6 +3791,10 @@ export class WorkflowExecutionService {
         guardLogger
           .debug`Step ${stepName} guard passed: ${guardCel} → ${guardResult}`;
       } catch (error) {
+        if (settledDuringGuard() || abortedDuringGuard()) {
+          stepSpan.end();
+          return;
+        }
         stepRun.fail(String(error));
         stepSpan.setAttribute("step.status", "failed");
         stepSpan.end();
@@ -4488,6 +4626,49 @@ export class WorkflowExecutionService {
     }
 
     return true;
+  }
+
+  /**
+   * Settles a job the run's abort left unstarted: its steps in dependency
+   * order, each as {@link settleUnstartedStep} does, then the job from their
+   * outcome ({@link JobRun.settleNotStarted}).
+   */
+  private settleNotStartedJob(job: Job, jobRun: JobRun): void {
+    const sorted = this.sortService.sort(
+      job.steps.map((step) => ({
+        name: step.name,
+        weight: step.weight,
+        dependencies: step.getDependencyNames(),
+      })),
+    );
+    for (const level of sorted.levels) {
+      for (const stepName of level) {
+        const stepRun = jobRun.getStep(stepName);
+        if (stepRun?.status !== "pending") continue;
+        this.settleUnstartedStep(job.getStep(stepName), stepRun, jobRun);
+      }
+    }
+    jobRun.settleNotStarted();
+  }
+
+  /**
+   * Settles a step the run's abort left unstarted as runStep would have on
+   * reaching it: skipped when its dependsOn is unmet, otherwise failed as
+   * cancelled like an in-flight step. Either way it is marked
+   * `settledByAbort`, so a resume runs it. A step with a guard stays pending:
+   * its guard never decided whether the step's work was already done, so
+   * neither `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
+   */
+  private settleUnstartedStep(
+    step: Step | undefined,
+    stepRun: StepRun,
+    jobRun: JobRun,
+  ): void {
+    if (step && !this.shouldStepRun(step, jobRun)) {
+      stepRun.skipUnstarted({ kind: "dependency" });
+    } else if (!step?.guard) {
+      jobRun.cancelPendingSteps([stepRun.stepName]);
+    }
   }
 
   private shouldStepRun(step: Step, jobRun: JobRun): boolean {
