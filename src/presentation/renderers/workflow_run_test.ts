@@ -169,6 +169,38 @@ Deno.test("ConsoleWorkflowRunRenderer: failed run shows Failed with error", asyn
   assertStringIncludes(output, "connection refused");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: failed run with a cert-store error shows the remedy hint", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const runView = makeRunView("failed");
+  runView.jobs[0].steps[0].error =
+    "Failed to load platform certificates: No such file or directory (os error 2)";
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  const errorAt = output.indexOf("Failed to load platform certificates");
+  const hintAt = output.indexOf("Hint:");
+  assertEquals(errorAt >= 0 && hintAt > errorAt, true);
+  assertStringIncludes(output, "DENO_TLS_CA_STORE=mozilla");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: failed run with an unrelated error shows no hint", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(simpleEvents(makeRunView("failed"))),
+      renderer.handlers(),
+    );
+  });
+  assertEquals(lines.join("\n").includes("Hint:"), false);
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: pipe-prefixed output uses job name", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
@@ -704,10 +736,13 @@ Deno.test("JsonWorkflowRunRenderer: completed serializes WorkflowRunView", async
   }
 });
 
-Deno.test("JsonWorkflowRunRenderer: step_skipped guarded includes guard fields", () => {
-  const logs: string[] = [];
+Deno.test("JsonWorkflowRunRenderer: step_skipped guarded writes guard fields to stderr", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
   const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
 
   try {
     const renderer = createWorkflowRunRenderer("json", {
@@ -723,8 +758,9 @@ Deno.test("JsonWorkflowRunRenderer: step_skipped guarded includes guard fields",
         'data.latest("checker", "result").attributes.exitCode == 0',
       guardResult: true,
     });
-    assertEquals(logs.length, 1);
-    const parsed = JSON.parse(logs[0]);
+    assertEquals(stdout.length, 0);
+    assertEquals(stderr.length, 1);
+    const parsed = JSON.parse(stderr[0]);
     assertEquals(parsed.step, "do-work");
     assertEquals(parsed.reason, "guarded");
     assertEquals(
@@ -734,13 +770,16 @@ Deno.test("JsonWorkflowRunRenderer: step_skipped guarded includes guard fields",
     assertEquals(parsed.guardResult, true);
   } finally {
     console.log = originalLog;
+    console.error = originalError;
   }
 });
 
 Deno.test("JsonWorkflowRunRenderer: step_skipped dependency emits no output", () => {
   const logs: string[] = [];
   const originalLog = console.log;
+  const originalError = console.error;
   console.log = (msg: string) => logs.push(msg);
+  console.error = (msg: string) => logs.push(msg);
 
   try {
     const renderer = createWorkflowRunRenderer("json", {
@@ -756,6 +795,47 @@ Deno.test("JsonWorkflowRunRenderer: step_skipped dependency emits no output", ()
     assertEquals(logs.length, 0);
   } finally {
     console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+Deno.test("JsonWorkflowRunRenderer: superseded_runs and vault warning go to stderr", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const handlers = renderer.handlers();
+    handlers.superseded_runs({
+      kind: "superseded_runs",
+      cancelledRunIds: ["run-0"],
+    });
+    handlers.method_event({
+      kind: "method_event",
+      jobId: "main",
+      stepId: "deploy",
+      modelName: "deploy-shell",
+      methodName: "execute",
+      event: { type: "vault_single_quote_warning", message: "use quotes" },
+    });
+    assertEquals(stdout.length, 0);
+    assertEquals(stderr.map((line) => JSON.parse(line)), [
+      { event: "superseded_runs", cancelledRunIds: ["run-0"] },
+      {
+        warning: "vault_single_quote",
+        modelName: "deploy-shell",
+        message: "use quotes",
+      },
+    ]);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
   }
 });
 

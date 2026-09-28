@@ -40,6 +40,12 @@ import {
 } from "../context.ts";
 import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
 import { ManagedConfigUnresolvedError } from "../repo_context.ts";
+import {
+  pushManagedLockfileIfChangedDeferred,
+  snapshotLockfileHash,
+} from "../managed_config_sync.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { isAuthenticated } from "../auth_context.ts";
 import { VERSION } from "./version.ts";
 
@@ -213,6 +219,9 @@ export const repoUpgradeCommand = new Command()
     // The untrusted-collectives check reads the same lockfile the install
     // pass would; when that is unresolved, the check is skipped.
     const lockfilePath = extensionInstallDeps?.lockfilePath ?? null;
+    const lockfileHashBefore = lockfilePath
+      ? await snapshotLockfileHash(lockfilePath)
+      : null;
 
     const renderer = createRepoUpgradeRenderer(cliCtx.outputMode, {
       isAuthenticated: isAuthenticated(),
@@ -229,6 +238,20 @@ export const repoUpgradeCommand = new Command()
       }),
       renderer.handlers(),
     );
+
+    // The install pass may migrate lockfile entries; publish them like the
+    // other extension writers.
+    if (lockfilePath) {
+      const marker = await new RepoMarkerRepository().read(
+        RepoPath.create(repoDir),
+      );
+      await pushManagedLockfileIfChangedDeferred(
+        repoDir,
+        marker,
+        lockfilePath,
+        lockfileHashBefore,
+      );
+    }
 
     cliCtx.logger.debug("Repo upgrade command completed");
   });

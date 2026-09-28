@@ -48,6 +48,8 @@ import { Vaults } from "./views/Vaults";
 import { Extensions } from "./views/Extensions";
 import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
+import { DataDetail } from "./views/DataDetail";
+import { buildPath } from "./routes.ts";
 
 export function App() {
   return (
@@ -84,6 +86,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     openWorkflow,
     openRun,
     closeDetail,
+    goUp,
   } = useRouter();
   const health = useHealthStream();
   const auditStream = useAuditStream();
@@ -131,14 +134,16 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       if (action === "close-drawer") {
         e.preventDefault();
         setDrawerOpen(false);
-      } else if (action === "close-detail") {
+      } else if (action === "leave-detail") {
         e.preventDefault();
-        closeDetail();
+        // Deep-linked items step up to their model or run; other details
+        // close to their list view as before.
+        goUp();
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [drawerOpen, detail, closeDetail]);
+  }, [drawerOpen, detail, goUp]);
 
   const appClass = `app${drawerOpen ? " drawer-open" : ""}${
     collapsed ? " sidebar-collapsed" : ""
@@ -183,7 +188,16 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           </button>
           <Logo size="sm" />
         </div>
-        {detail?.kind === "run"
+        {detail?.kind === "data" || detail?.kind === "report" ||
+            detail?.kind === "runReport"
+          ? (
+            <DataDetail
+              key={buildPath({ view, detail })}
+              detail={detail}
+              onBack={goUp}
+            />
+          )
+          : detail?.kind === "run"
           ? (
             <RunDetail
               workflowName={detail.workflowName}

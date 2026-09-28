@@ -782,9 +782,20 @@ export async function* subscribeServerEvents(
 type AnyCommand = Command<any, any, any, any, any, any, any, any>;
 
 /**
- * Adds `--server` and `--token` options to a Cliffy command. New
- * remote-capable commands should use this instead of duplicating the
- * option definitions from model_method_run.ts / workflow_run.ts.
+ * The `--ca-cert` option. Every command that takes `--server` must declare
+ * it: the TLS UnknownIssuer guidance tells users to pass it, and
+ * `resolveCaCertPath` reads it from `Deno.args` once Cliffy accepts it
+ * (swamp-club#2360).
+ */
+export const CA_CERT_FLAG = "--ca-cert <path:string>";
+export const CA_CERT_DESCRIPTION =
+  "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)";
+
+/**
+ * Adds `--server`, `--token`, `--token-file` and `--ca-cert` options to a
+ * Cliffy command. New remote-capable commands should use this instead of
+ * duplicating the option definitions from model_method_run.ts /
+ * workflow_run.ts.
  */
 export function withRemoteOptions<T extends AnyCommand>(command: T): T {
   return command
@@ -800,10 +811,7 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
       "--token-file <path:string>",
       "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
     )
-    .option(
-      "--ca-cert <path:string>",
-      "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)",
-    ) as T;
+    .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION) as T;
 }
 
 /**
@@ -930,26 +938,35 @@ export function getDefaultHttpClient(): Deno.HttpClient {
 
 let resolvedEnvCaCerts: string[] | undefined;
 
-function resolveCaCertPath(): string | undefined {
-  const envPath = Deno.env.get("SWAMP_CA_CERT");
-  if (envPath) return envPath;
+/**
+ * Precedence: `--ca-cert` flag > `SWAMP_CA_CERT` env. An empty value from
+ * either source counts as unset.
+ */
+export function resolveCaCertPath(
+  args: readonly string[],
+  envPath: string | undefined,
+): string | undefined {
   // Handle both --ca-cert value and --ca-cert=value forms
-  for (let i = 0; i < Deno.args.length; i++) {
-    if (Deno.args[i] === "--ca-cert" && i + 1 < Deno.args.length) {
-      return Deno.args[i + 1];
+  for (let i = 0; i < args.length; i++) {
+    let flagPath: string | undefined;
+    if (args[i] === "--ca-cert" && i + 1 < args.length) {
+      flagPath = args[i + 1];
+    } else if (args[i].startsWith("--ca-cert=")) {
+      flagPath = args[i].slice("--ca-cert=".length);
     }
-    if (Deno.args[i].startsWith("--ca-cert=")) {
-      return Deno.args[i].slice("--ca-cert=".length);
-    }
+    if (flagPath) return flagPath;
   }
-  return undefined;
+  return envPath || undefined;
 }
 
 export function getEnvCaCerts(): string[] | undefined {
   if (resolvedEnvCaCerts !== undefined) {
     return resolvedEnvCaCerts.length > 0 ? resolvedEnvCaCerts : undefined;
   }
-  const certPath = resolveCaCertPath();
+  const certPath = resolveCaCertPath(
+    Deno.args,
+    Deno.env.get("SWAMP_CA_CERT"),
+  );
   if (!certPath) {
     resolvedEnvCaCerts = [];
     return undefined;

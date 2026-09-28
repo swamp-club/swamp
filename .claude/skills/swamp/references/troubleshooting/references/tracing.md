@@ -160,6 +160,38 @@ span status and error message indicate which phase failed.
 If `swamp.lock.acquire` spans are long, another process is holding the lock.
 Check with `swamp datastore lock status` to see the current holder.
 
+### Slow `swamp serve` Requests
+
+Every HTTP request to `swamp serve` gets a root SERVER span named
+`{method} {route}` (for example `POST /auth/device/token`), following the
+OpenTelemetry HTTP conventions rather than the `swamp.` prefix. Attributes are
+`http.request.method`, `http.response.status_code` and, for known routes,
+`http.route`. The request path itself is never recorded, so unknown paths —
+including webhook routes — are named by method alone. Non-standard methods are
+reported as `_OTHER`. Only 5xx responses are ERROR. WebSocket upgrades get no
+request span. A span ends when the response headers are sent, so streamed bodies
+(SSE, bundle downloads) are not counted in its duration.
+
+For a slow `swamp auth server-login`, `POST /auth/device` has one child,
+`swamp.serve.auth.device_start` (the upstream device grant). Then open the
+`POST /auth/device/token` span that returned 200. Its children are:
+
+- `swamp.serve.auth.poll_token` — upstream token poll (`oauth.poll.outcome`;
+  pending polls are not errors)
+- `swamp.serve.auth.userinfo` — upstream userinfo call
+- `swamp.serve.auth.mint`, which contains:
+  - `swamp.serve.sync_gate.wait`
+  - `swamp.serve.auth.mint.vault_put`
+  - `swamp.serve.auth.mint.definition_save`
+  - `swamp.serve.auth.mint.token_write`
+  - `swamp.serve.auth.mint.push` — the datastore's own push span nests under it
+  - `swamp.serve.auth.mint.verify`
+- `swamp.serve.auth.store_access_token`
+
+A long `swamp.serve.sync_gate.wait` means the login queued behind a datastore
+pull or another mutation. `sync_gate.acquired=false` means the 150s wait timed
+out and the unit ran without the gate.
+
 ## Reference
 
 See https://swamp.club/manual/reference/opentelemetry for the full span

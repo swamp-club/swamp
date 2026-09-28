@@ -84,7 +84,7 @@ it the default file is optional.
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
 | `--shutdown-drain-timeout` | `SWAMP_SHUTDOWN_DRAIN_TIMEOUT` | 30 s | How long shutdown waits for in-flight runs; `0` aborts at once; in serve.yaml quote the value (`"0"`) |
-| `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore |
+| `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore or managedConfig |
 | `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
@@ -488,7 +488,7 @@ marks that peer's `running` tracker rows `interrupted` with reason
 `active-runs/` records. Only then does it remove the heartbeat, so a crash
 mid-reconcile leaves the heartbeat for another instance once the claim expires.
 When the datastore manages config, a `ConfigPoller` pulls `.swamp/config/` every
-`--datastore-poll-interval` (default 30 s). The `AccessDataPoller` pulls grants
+`--datastore-poll-interval` (default 30 s) and checks the extension lockfile. The `AccessDataPoller` pulls grants
 and groups at the same interval.
 
 **What does not replicate.** The `ActiveRunRegistry`, its event buffers, the
@@ -500,15 +500,20 @@ Instances may therefore see a grant change up to one poll interval apart (30 s
 by default).
 
 Extension registries are indexed at startup. With `managedConfig` active, the
-config poller pulls extension files (`config/pulled-extensions/`) separately from
-definition files (`config/models/`, `config/vaults/`, etc.). It calls
-`performServeReload` only when extension files changed. Definition-only changes
-(e.g. a model YAML edit) invalidate catalogs but do not reload extension
-registries. Extension sources are not pushed today (each repo keeps them in its
-own pulled root until swamp-club#2429), so a peer's `extension pull` changes
-only the lockfile and does not trigger this reload; each instance runs
-`extension install` for its own sources, then `swamp serve reload` or a restart
-so the new types register (see Known limits).
+config poller runs even without a sync service. After each pull of `config/` it
+hashes the config-tier lockfile and calls `performServeReload` when the hash
+differs from the last one it acted on. The baseline is the hash at boot. So a
+peer's `extension pull`, `update`, `rm` or pin reloads every instance within one
+poll interval. So does a CLI extension write on the same host, or the
+instance's own extension handler. Definition-only changes (e.g. a model YAML
+edit) invalidate catalogs but do not reload extension registries. A reload that
+overlaps another (`Reload already in progress`) is retried on the next poll. A
+failed reload is retried up to three times per lockfile version.
+
+The reload re-bundles from the instance's own pulled root. Extension sources are
+not pushed (each repo keeps them in its own pulled root until swamp-club#2612),
+so a peer's new extension registers only after `extension install` on each
+instance, followed by `swamp serve reload` or a restart (see Known limits).
 
 **Rolling restart.** On SIGTERM an instance stops accepting triggers: `/ready`
 returns 503 `shutting_down`, webhook deliveries get 503 with `Retry-After: 5`,
@@ -568,10 +573,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   from datastore-only state without `kubectl exec`. Without it,
   `swamp serve reload --server` fails and new extensions need a full pod
   restart. The `ConfigPoller` refreshes definitions (models, workflows, vaults)
-  every `--datastore-poll-interval` (default 30 s) and reloads extension type registries only when extension files
-  under `config/pulled-extensions/` change, which peers' extension commands do
-  not do while sources stay in each repo (swamp-club#2429; see
-  [High availability](#high-availability)). SIGHUP (`swamp serve reload`) remains
+  every `--datastore-poll-interval` (default 30 s) and reloads extension type
+  registries when the config-tier lockfile changes. Sources a peer added still
+  need `extension install` on each pod while they stay in each repo
+  (swamp-club#2612; see [High availability](#high-availability)). SIGHUP (`swamp serve reload`) remains
   available for manual reloads. See
   [datastores §Managed Config](../enablers/datastores.md#managed-config-deployment-architecture)
   for the full deployment guide.
@@ -606,10 +611,48 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   schedules, webhooks and system views) from `packages/dashboard/dist`.
   `scripts/compile.ts` embeds it only if pre-built before compile. The SPA uses
   the same WebSocket protocol and logs in through `/auth/info` + device auth.
+  After an unexpected close it reconnects with jittered exponential backoff
+  (0.5 s up to 30 s), and retries `/auth/info` the same way while serve is
+  unreachable. It returns to login on close `4003`, when a failed reconnect's
+  token probe of `/api/v1/health` answers 401 (a browser hides the upgrade's
+  own status), or when serve comes back in a different auth mode. Views
+  refetch once reconnected (`packages/dashboard/src/client/connection.ts`).
   Navigation state is in the URL path (`/dashboard/models/<name>`,
   `/dashboard/workflows/<name>/runs/<runId>`, etc.), so views are linkable. The
   server falls back to `index.html` for any `/dashboard/` sub-path to support
-  client-side routing. On desktop the sidebar collapses to an icon-only rail
+  client-side routing.
+
+  Individual data items and reports have shareable deep links:
+  - `/dashboard/models/<model>/data/<dataName>`: the latest version.
+  - `/dashboard/models/<model>/data/<dataName>/versions/<n>`: the permalink
+    for one version. A step's output, including its method-scope reports,
+    links here through the owning model (`tags.modelName`), since several
+    steps in one run can write the same name.
+  - `/dashboard/models/<model>/reports/<reportName>[/variants/<variant>]`: the
+    latest report, found under the data name the report is persisted as
+    (`report-<sanitised name>[-<variant>]`) and checked against its tags.
+  - `/dashboard/workflows/<wf>/runs/<runId>/reports/<reportName>`: a run's
+    workflow-scope report, fetched at the exact artifact versions the run
+    recorded. The page shows "no longer available" rather than a later run's
+    content.
+
+  Each path segment is percent-encoded with `@` left readable, so `/` in
+  scoped names is `%2F` (`/reports/@swamp%2Fworkflow-summary`). Names
+  containing `..` cannot be deep-linked because the static handler rejects
+  them. A malformed escape lands on the nearest valid parent route. The item
+  page offers "Copy link" and, for a latest view, "Copy permalink" pinned to
+  the version on screen. `index.html` carries only static Open Graph
+  metadata, so link unfurls never disclose data or report names.
+
+  `data.get`, `data.versions`, `data.list` and `workflow.history.get` errors
+  keep their top-level codes (`data_get_failed` etc.) and add
+  `details: { reason, entityType }`. `reason` is one of `not_found`,
+  `validation_failed` or `data_pending`; `entityType` is the fixed label from
+  libswamp's `notFound()` (`Model`, `Workflow`, `Workflow run`, `Data`, …).
+  Identifiers are never included. The dashboard uses these to tell an expired
+  version from a missing model; access denials stay top-level `unauthorized`.
+
+  On desktop the sidebar collapses to an icon-only rail
   (remembered in `localStorage`); at 768px and below it becomes an off-canvas
   drawer opened from a top-bar menu button.
 
@@ -637,14 +680,18 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   reconciliation claims are skipped. Two instances on such a store can fire a
   schedule twice (`src/cli/commands/serve.ts`,
   `src/serve/boot_reconciliation.ts`).
-- The config poller reloads extension type registries only when
-  `config/pulled-extensions/` changes, which peers' extension commands do not
-  do while sources stay in each repo (swamp-club#2429). New or changed
-  extension types need `swamp serve reload` or a restart
+- The config poller reloads extension type registries when the config-tier
+  lockfile changes, but only from the instance's own pulled root: sources stay
+  in each repo (swamp-club#2612), and a removed extension's types are not
+  unregistered. Extension types a peer added need `extension install` on each
+  instance, then `swamp serve reload` or a restart
   (`src/cli/commands/serve.ts`, `ConfigPoller` wiring). After a successful
   `--server` operation, state-modifying extension commands (`pull`, `install`,
   `rm`, `update`) warn that `swamp serve reload` is needed
-  (`src/cli/remote_run.ts`, `warnServerReloadNeeded`).
+  (`src/cli/remote_run.ts`, `warnServerReloadNeeded`). The client cannot tell
+  whether the instance manages config. When it does, the instance's config
+  poller already reloads within one poll interval of the handler's lockfile
+  write, so the manual reload only makes the change take effect sooner.
 - Built-in webhook verification schemes are a closed set; other providers need
   a webhook extension (`src/serve/webhook_verifiers.ts`, #2204). Extension
   handlers are resolved per request, but the endpoint list is fixed at startup.

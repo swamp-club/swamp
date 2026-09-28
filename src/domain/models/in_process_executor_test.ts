@@ -478,7 +478,40 @@ Deno.test("InProcessExecutor: explicit queryData wins over dataQueryService deri
   assertEquals(usedDerived, false);
 });
 
-Deno.test("InProcessExecutor: sets TRACEPARENT env var from traceHeaders during execution", async () => {
+Deno.test("InProcessExecutor: exposes request traceHeaders on the method context", async () => {
+  let captured: MethodContext["traceHeaders"];
+
+  const executor: MethodExecutor = {
+    execute: (_definition, _method, context) => {
+      captured = context.traceHeaders;
+      return Promise.resolve({});
+    },
+  };
+
+  const inProcessExecutor = new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    createMockContext(),
+    "test",
+  );
+
+  const request = createMockRequest();
+  request.traceHeaders = {
+    traceparent: "00-abc123-def456-01",
+    tracestate: "vendor=value",
+  };
+
+  await inProcessExecutor.execute(request);
+
+  assertEquals(captured, {
+    traceparent: "00-abc123-def456-01",
+    tracestate: "vendor=value",
+  });
+});
+
+Deno.test("InProcessExecutor: publishes TRACEPARENT for a lone execution and restores it", async () => {
   let capturedTraceparent: string | undefined;
   const originalTraceparent = Deno.env.get("TRACEPARENT");
 
@@ -540,6 +573,125 @@ Deno.test("InProcessExecutor: restores TRACEPARENT env var after execution error
 
   assertEquals(result.status, "error");
   assertEquals(Deno.env.get("TRACEPARENT"), originalTraceparent);
+});
+
+Deno.test("InProcessExecutor: concurrent executions never see a sibling's TRACEPARENT", async () => {
+  const baseline = Deno.env.get("TRACEPARENT");
+  const spanA = { traceparent: "00-aaaa-a1a1-01" };
+  const spanB = { traceparent: "00-bbbb-b1b1-01" };
+
+  const bStarted = Promise.withResolvers<void>();
+  const aFinished = Promise.withResolvers<void>();
+  const seen: Record<string, unknown> = {};
+
+  // A starts alone, then waits for B to start; B then waits for A to finish.
+  // Each samples the process env and its own context after the await.
+  const executorA: MethodExecutor = {
+    execute: async (_definition, _method, context) => {
+      seen.aEnvAlone = Deno.env.get("TRACEPARENT");
+      await bStarted.promise;
+      seen.aEnvOverlapped = Deno.env.get("TRACEPARENT");
+      seen.aContext = context.traceHeaders;
+      return {};
+    },
+  };
+  const executorB: MethodExecutor = {
+    execute: async (_definition, _method, context) => {
+      seen.bEnvOverlapped = Deno.env.get("TRACEPARENT");
+      bStarted.resolve();
+      await aFinished.promise;
+      seen.bEnvAfterA = Deno.env.get("TRACEPARENT");
+      seen.bContext = context.traceHeaders;
+      return {};
+    },
+  };
+
+  const run = (executor: MethodExecutor, traceHeaders: typeof spanA) => {
+    const request = createMockRequest();
+    request.traceHeaders = traceHeaders;
+    return new InProcessExecutor(
+      executor,
+      testDefinition,
+      testMethod,
+      testModelDef,
+      createMockContext(),
+      "test",
+    ).execute(request);
+  };
+
+  const runA = run(executorA, spanA);
+  const runB = run(executorB, spanB);
+  await runA;
+  aFinished.resolve();
+  await runB;
+
+  // A lone execution still publishes its span for env readers.
+  assertEquals(seen.aEnvAlone, spanA.traceparent);
+  // Once B overlaps, the env holds neither span, before or after A exits.
+  assertEquals(seen.aEnvOverlapped, baseline);
+  assertEquals(seen.bEnvOverlapped, baseline);
+  assertEquals(seen.bEnvAfterA, baseline);
+  // Nothing leaks past the last execution.
+  assertEquals(Deno.env.get("TRACEPARENT"), baseline);
+  // The context always carries each execution's own span.
+  assertEquals(seen.aContext, spanA);
+  assertEquals(seen.bContext, spanB);
+});
+
+Deno.test("InProcessExecutor: a nested runModel execution hands TRACEPARENT back to its caller", async () => {
+  const baseline = Deno.env.get("TRACEPARENT");
+  const parentSpan = { traceparent: "00-aaaa-a1a1-01" };
+  const childSpan = { traceparent: "00-bbbb-b1b1-01" };
+  const seen: Record<string, string | undefined> = {};
+
+  const childExecutor: MethodExecutor = {
+    execute: () => {
+      seen.child = Deno.env.get("TRACEPARENT");
+      return Promise.resolve({});
+    },
+  };
+  const modelInvocationService = {
+    invoke: async () => {
+      const request = createMockRequest();
+      request.traceHeaders = childSpan;
+      await new InProcessExecutor(
+        childExecutor,
+        testDefinition,
+        testMethod,
+        testModelDef,
+        createMockContext(),
+        "test",
+      ).execute(request);
+      return { ok: true as const, resources: [] };
+    },
+  };
+  const parentExecutor: MethodExecutor = {
+    execute: async (_definition, _method, context) => {
+      seen.parentBefore = Deno.env.get("TRACEPARENT");
+      await context.runModel!({ definition: "child", method: "test" });
+      seen.parentAfter = Deno.env.get("TRACEPARENT");
+      return {};
+    },
+  };
+
+  const request = createMockRequest();
+  request.traceHeaders = parentSpan;
+  await new InProcessExecutor(
+    parentExecutor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    createMockContext(),
+    "test",
+    modelInvocationService,
+  ).execute(request);
+
+  assertEquals(seen, {
+    parentBefore: parentSpan.traceparent,
+    child: childSpan.traceparent,
+    parentAfter: parentSpan.traceparent,
+  });
+  assertEquals(Deno.env.get("TRACEPARENT"), baseline);
 });
 
 Deno.test("InProcessExecutor: wires deleteResource onto context", async () => {

@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Data } from "./data.ts";
-import type { ModelType } from "../models/model_type.ts";
+import { getLogger } from "@logtape/logtape";
+import { ModelType } from "../models/model_type.ts";
+import type { DataArtifactRef } from "../models/model_output.ts";
 import type { WorkflowRun } from "../workflows/workflow_run.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -41,6 +43,32 @@ export interface WorkflowDataItem {
   contentPath: string;
 }
 
+const logger = getLogger(["data", "workflow"]);
+
+/** A model that owns data, identified by model type and model id. */
+interface DataOwner {
+  modelType: ModelType;
+  modelId: string;
+}
+
+/**
+ * Picks the item with the requested version, or the highest version when no
+ * version is requested.
+ */
+function selectVersion(
+  items: WorkflowDataItem[],
+  version: number | undefined,
+): WorkflowDataItem | null {
+  if (version !== undefined) {
+    return items.find((item) => item.data.version === version) ?? null;
+  }
+  let best: WorkflowDataItem | null = null;
+  for (const item of items) {
+    if (!best || item.data.version > best.data.version) best = item;
+  }
+  return best;
+}
+
 /**
  * Service for resolving data produced by workflow runs.
  *
@@ -57,32 +85,23 @@ export class WorkflowDataService {
    * Finds all data produced by a workflow run.
    *
    * Walks the run's jobs → steps → dataArtifacts and resolves each
-   * artifact to its Data entity. Gracefully skips GC'd or missing data.
+   * artifact to the exact version the run recorded. Gracefully skips GC'd
+   * or missing data — never substitutes a newer version or another model's
+   * data.
    */
   async findAllForWorkflowRun(
     run: WorkflowRun,
   ): Promise<WorkflowDataItem[]> {
     const results: WorkflowDataItem[] = [];
 
-    // Get all global data once and index by dataId for efficient lookups
+    // The global index holds only the latest version of each data name, so
+    // it is used solely to find which models own data with a given name.
     const allGlobal = await this.dataRepo.findAllGlobal();
-    const dataByName = new Map<
-      string,
-      { data: Data; modelType: ModelType; modelId: string }
-    >();
+    const ownersByName = new Map<string, DataOwner[]>();
     for (const item of allGlobal) {
-      // Key by data name + model ID for uniqueness
-      const key = `${item.modelId}:${item.data.name}`;
-      dataByName.set(key, item);
-    }
-
-    // Also index by dataId for direct lookups
-    const dataById = new Map<
-      string,
-      { data: Data; modelType: ModelType; modelId: string }
-    >();
-    for (const item of allGlobal) {
-      dataById.set(item.data.id, item);
+      const owners = ownersByName.get(item.data.name) ?? [];
+      owners.push({ modelType: item.modelType, modelId: item.modelId });
+      ownersByName.set(item.data.name, owners);
     }
 
     for (const job of run.jobs) {
@@ -92,8 +111,8 @@ export class WorkflowDataService {
         for (const artifact of step.dataArtifacts) {
           const resolved = await this.resolveArtifact(
             artifact,
-            dataById,
-            dataByName,
+            run.id,
+            ownersByName.get(artifact.name) ?? [],
           );
           if (!resolved) continue;
           results.push({
@@ -106,13 +125,16 @@ export class WorkflowDataService {
     }
 
     // Workflow-scope artifacts (e.g. workflow-scope report output) are
-    // tracked on the run aggregate rather than under any single step.
+    // tracked on the run aggregate rather than under any single step, and
+    // are stored under the workflow itself.
+    const workflowOwner: DataOwner = {
+      modelType: ModelType.create("workflow"),
+      modelId: run.workflowId,
+    };
     for (const artifact of run.workflowDataArtifacts) {
-      const resolved = await this.resolveArtifact(
-        artifact,
-        dataById,
-        dataByName,
-      );
+      const resolved = await this.resolveArtifact(artifact, run.id, [
+        workflowOwner,
+      ]);
       if (resolved) {
         results.push(resolved);
       }
@@ -121,48 +143,73 @@ export class WorkflowDataService {
     return results;
   }
 
+  /**
+   * Resolves a run artifact to the version the run recorded.
+   *
+   * Each candidate owner is read at `artifact.version`, and the stored data
+   * is accepted only when it belongs to this run: its id matches the
+   * artifact's `dataId`, or — for exactly one candidate — its owner
+   * provenance names this run. Data ids
+   * can be shared across versions, so the version — not the id — selects
+   * what is read. An id match is preferred over a run-id-only match.
+   */
   private async resolveArtifact(
-    artifact: { dataId: string; name: string },
-    dataById: Map<
-      string,
-      { data: Data; modelType: ModelType; modelId: string }
-    >,
-    dataByName: Map<
-      string,
-      { data: Data; modelType: ModelType; modelId: string }
-    >,
+    artifact: DataArtifactRef,
+    runId: string,
+    owners: DataOwner[],
   ): Promise<Omit<WorkflowDataItem, "jobName" | "stepName"> | null> {
-    // Look up the data by its ID first, then fall back to name matching.
-    // Data IDs change with each version, so older run artifacts may not
-    // match the current data's ID. Name matching resolves this by finding
-    // the data item across all models that shares the same name.
-    let found = dataById.get(artifact.dataId);
-    if (!found) {
-      for (const [, item] of dataByName) {
-        if (item.data.name === artifact.name) {
-          found = item;
-          break;
-        }
+    let found: { data: Data; owner: DataOwner } | undefined;
+    const runMatches: Array<{ data: Data; owner: DataOwner }> = [];
+    for (const owner of owners) {
+      let data: Data | null;
+      try {
+        data = await this.dataRepo.findByName(
+          owner.modelType,
+          owner.modelId,
+          artifact.name,
+          artifact.version,
+        );
+      } catch (error) {
+        // An unreadable version under another model must not fail the whole
+        // run lookup; it cannot be this artifact's data anyway.
+        logger
+          .debug`Skipping unreadable ${artifact.name} v${artifact.version} for model ${owner.modelId}: ${error}`;
+        continue;
       }
+      if (!data) continue;
+      if (data.id === artifact.dataId) {
+        found = { data, owner };
+        break;
+      }
+      if (data.ownerDefinition.workflowRunId === runId) {
+        runMatches.push({ data, owner });
+      }
+    }
+    // A run-id-only match is trusted only when it is unambiguous: several
+    // models can write the same name in one run, and picking one of them
+    // would return another model's data.
+    if (!found && runMatches.length === 1) {
+      found = runMatches[0];
     }
     if (!found) return null;
 
+    const { data, owner } = found;
     const modelName = await this.resolveModelName(
-      found.modelType,
-      found.modelId,
+      owner.modelType,
+      owner.modelId,
     );
 
     const contentPath = this.dataRepo.getContentPath(
-      found.modelType,
-      found.modelId,
-      found.data.name,
-      found.data.version,
+      owner.modelType,
+      owner.modelId,
+      data.name,
+      data.version,
     );
 
     return {
-      data: found.data,
-      modelType: found.modelType,
-      modelId: found.modelId,
+      data,
+      modelType: owner.modelType,
+      modelId: owner.modelId,
       modelName,
       contentPath,
     };
@@ -171,8 +218,8 @@ export class WorkflowDataService {
   /**
    * Finds data by name within a workflow run.
    *
-   * Searches across all steps in the run for a data artifact matching
-   * the given name and optional version.
+   * Searches the run's artifacts for a match on the given name and optional
+   * version. Without a version, the highest version the run recorded wins.
    */
   async findByNameInWorkflowRun(
     run: WorkflowRun,
@@ -182,29 +229,19 @@ export class WorkflowDataService {
     const allItems = await this.findAllForWorkflowRun(run);
 
     // Primary: match by exact data instance name.
-    for (const item of allItems) {
-      if (item.data.name === dataName) {
-        if (version !== undefined && item.data.version !== version) {
-          continue;
-        }
-        return item;
-      }
-    }
+    const byName = selectVersion(
+      allItems.filter((item) => item.data.name === dataName),
+      version,
+    );
+    if (byName) return byName;
 
     // Fallback: match by specName tag. Instance names often differ from
     // spec names (e.g. "classification-main" vs "classification"), and
     // users naturally query by spec name.
-    for (const item of allItems) {
-      const specName = item.data.tags["specName"];
-      if (specName && specName === dataName) {
-        if (version !== undefined && item.data.version !== version) {
-          continue;
-        }
-        return item;
-      }
-    }
-
-    return null;
+    return selectVersion(
+      allItems.filter((item) => item.data.tags["specName"] === dataName),
+      version,
+    );
   }
 
   private async resolveModelName(

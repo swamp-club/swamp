@@ -33,13 +33,36 @@ import { UserError } from "../../domain/errors.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
+/**
+ * Sets `managedConfig: true` in the repo's `.swamp.yaml` when the marker's
+ * datastore does not already have it. Returns whether the marker was written.
+ *
+ * Runs on both the first migration and the already-migrated path: the
+ * migration sentinel lives in the shared datastore, so a second repo joining
+ * an already-migrated datastore still needs its own marker updated.
+ */
+export async function ensureManagedConfig(
+  markerRepo: RepoMarkerRepository,
+  repoPath: RepoPath,
+  marker: RepoMarkerData,
+): Promise<boolean> {
+  if (!marker.datastore || marker.datastore.managedConfig) return false;
+  const updated: RepoMarkerData = {
+    ...marker,
+    datastore: { ...marker.datastore, managedConfig: true },
+  };
+  await markerRepo.write(repoPath, updated);
+  return true;
+}
+
 export const datastoreConfigMigrateCommand = new Command()
   .description(
     "Migrate configuration into the datastore.\n\n" +
       "Copies model definitions, workflow definitions, vault configs,\n" +
       "the extension lockfile, and pulled extensions into the datastore\n" +
       "config tier. Sets managedConfig: true in .swamp.yaml if not already\n" +
-      "set. Idempotent — safe to re-run (sentinel prevents duplicate work).",
+      "set, including when another repo has already migrated the datastore.\n" +
+      "Idempotent — safe to re-run (sentinel prevents duplicate work).",
   )
   .option("--repo-dir <dir:string>", "Path to the swamp repository")
   // deno-lint-ignore no-explicit-any
@@ -99,25 +122,24 @@ export const datastoreConfigMigrateCommand = new Command()
       pulledExtensionsSource,
     );
 
+    const managedConfigSet = await ensureManagedConfig(
+      markerRepo,
+      repoPath,
+      marker,
+    );
+    if (managedConfigSet && ctx.outputMode !== "json") {
+      ctx.logger.info`Set managedConfig: true in .swamp.yaml`;
+    }
+
     if (result.alreadyMigrated) {
       if (ctx.outputMode === "json") {
-        writeOutput(JSON.stringify({ alreadyMigrated: true }));
+        writeOutput(
+          JSON.stringify({ alreadyMigrated: true, managedConfigSet }),
+        );
       } else {
         ctx.logger.info`Config migration already completed`;
       }
       return;
-    }
-
-    const managedConfigSet = !marker.datastore.managedConfig;
-    if (managedConfigSet) {
-      const updated: RepoMarkerData = {
-        ...marker,
-        datastore: { ...marker.datastore, managedConfig: true },
-      };
-      await markerRepo.write(repoPath, updated);
-      if (ctx.outputMode !== "json") {
-        ctx.logger.info`Set managedConfig: true in .swamp.yaml`;
-      }
     }
 
     const copied = [

@@ -21,6 +21,7 @@ import {
   type Attributes,
   context,
   type Span,
+  SpanKind,
   SpanStatusCode,
   trace,
   type Tracer,
@@ -33,6 +34,7 @@ const TRACER_NAME = "swamp";
  * `@opentelemetry/api` dependency.
  */
 export { SpanStatusCode };
+export type { Span };
 
 /**
  * Returns the swamp tracer from the global tracer provider.
@@ -92,6 +94,46 @@ export async function* withGeneratorSpan<T extends { kind: string }>(
   }
 }
 
+/**
+ * Runs an async generator with `span` as the active context, so spans created
+ * while it runs are children of `span`.
+ *
+ * Unlike {@link withGeneratorSpan}, this does not start, end, or set status on
+ * the span — the caller owns its lifecycle. Use it when the generator ends the
+ * span itself (for example on early-exit paths with custom attributes).
+ *
+ * When the consumer stops early, `return()` is forwarded to the inner
+ * generator (inside the span context) so its `finally` blocks still run.
+ */
+export async function* bindGeneratorToSpan<T, TReturn>(
+  span: Span,
+  generator: AsyncGenerator<T, TReturn>,
+): AsyncGenerator<T, TReturn> {
+  const ctx = trace.setSpan(context.active(), span);
+  let done = false;
+  try {
+    while (true) {
+      let result: IteratorResult<T, TReturn>;
+      try {
+        result = await context.with(ctx, () => generator.next());
+      } catch (error) {
+        // The inner generator threw, so it has already finished.
+        done = true;
+        throw error;
+      }
+      if (result.done) {
+        done = true;
+        return result.value;
+      }
+      yield result.value;
+    }
+  } finally {
+    if (!done) {
+      await context.with(ctx, () => generator.return(undefined as TReturn));
+    }
+  }
+}
+
 export function withSpan<T>(
   name: string,
   attributes: Attributes,
@@ -122,4 +164,50 @@ export function withSpan<T>(
       },
     );
   });
+}
+
+/**
+ * Runs `fn` inside a new active SERVER-kind span for one inbound request.
+ *
+ * The span is always the root of its own trace: `swamp serve` runs inside the
+ * `swamp.cli` span, which never ends, so a request must not inherit it. Inbound
+ * `traceparent` headers are deliberately ignored — unauthenticated callers must
+ * not choose the trace a server span joins.
+ *
+ * Unlike {@link withSpan}, success leaves the status unset: the caller maps the
+ * response to a status. A thrown error is recorded as ERROR and rethrown.
+ */
+export function withServerSpan<T>(
+  name: string,
+  attributes: Attributes,
+  fn: (span: Span) => Promise<T>,
+): Promise<T> {
+  const tracer = getTracer();
+  return tracer.startActiveSpan(
+    name,
+    { kind: SpanKind.SERVER, root: true, attributes },
+    (span) => {
+      return fn(span).then(
+        (result) => {
+          span.end();
+          return result;
+        },
+        (error) => {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          if (error instanceof Error) {
+            span.addEvent("exception", {
+              "exception.type": error.name,
+              "exception.message": error.message,
+              "exception.stacktrace": error.stack ?? "",
+            });
+          }
+          span.end();
+          throw error;
+        },
+      );
+    },
+  );
 }

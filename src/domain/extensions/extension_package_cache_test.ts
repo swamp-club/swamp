@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
+  computeFileContentHashIfExists,
   computePackageCacheHash,
   defaultPackageCacheRoot,
   ExtensionPackageCache,
@@ -272,4 +273,21 @@ Deno.test("ExtensionPackageCache: get returns null for corrupt metadata", async 
 Deno.test("defaultPackageCacheRoot: returns canonical path under .swamp", () => {
   const root = defaultPackageCacheRoot("/tmp/repo");
   assertPathEquals(root, "/tmp/repo/.swamp/cache/packages");
+});
+
+Deno.test("computeFileContentHashIfExists: returns null for a missing file and tracks content", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = join(dir, "upstream_extensions.json");
+    assertEquals(await computeFileContentHashIfExists(path), null);
+
+    await Deno.writeTextFile(path, "{}");
+    const first = await computeFileContentHashIfExists(path);
+    assertEquals(await computeFileContentHashIfExists(path), first);
+
+    await Deno.writeTextFile(path, '{"@acme/a":{}}');
+    assertNotEquals(await computeFileContentHashIfExists(path), first);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });

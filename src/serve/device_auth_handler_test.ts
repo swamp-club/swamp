@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   type DeviceAuthDeps,
   handleDeviceAuth,
@@ -27,6 +27,12 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import type { AuditSink } from "../domain/serve_audit/audit_sink.ts";
+import { SpanStatusCode, withSpan } from "../infrastructure/tracing/mod.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
 
 function createCollectingSink(): AuditSink & { events: AuditEvent[] } {
   const sink = {
@@ -697,4 +703,128 @@ Deno.test("handleDeviceAuth: no audit events on pending poll (not a security eve
   assertEquals(result?.status, 202);
   await emitter.flush();
   assertEquals(sink.events.length, 0);
+});
+
+// ── Tracing (swamp-club#2417) ─────────────────────────────────────────
+
+Deno.test("handleDeviceAuth: POST /auth/device/token traces each login phase under one parent", async () => {
+  await withCapturedSpans(async (spans) => {
+    const deps = makeMockDeps();
+    const result = await withSpan("test.request", {}, () =>
+      handleDeviceAuth(
+        postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+        deps,
+      ));
+    assertEquals(result?.status, 200);
+
+    const request = findSpan(spans, "test.request");
+    const poll = findSpan(spans, "swamp.serve.auth.poll_token");
+    const userinfo = findSpan(spans, "swamp.serve.auth.userinfo");
+    const mint = findSpan(spans, "swamp.serve.auth.mint");
+    const store = findSpan(spans, "swamp.serve.auth.store_access_token");
+    for (const span of [poll, userinfo, mint, store]) {
+      assert(isChildOf(span, request), `${span.name} is not under the request`);
+      assertEquals(span.status.code, SpanStatusCode.OK, span.name);
+    }
+    assertEquals(poll.attributes["oauth.poll.outcome"], "granted");
+    assertEquals(mint.attributes["auth.principal.id"], "user:user-1");
+    assertEquals(mint.attributes["token.name"], "oauth-user-1-1234567890");
+    assertEquals(store.attributes["token.name"], "oauth-user-1-1234567890");
+  });
+});
+
+Deno.test("handleDeviceAuth: login spans carry no email, device code or tokens", async () => {
+  await withCapturedSpans(async (spans) => {
+    await handleDeviceAuth(
+      postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+      makeMockDeps(),
+    );
+    assert(spans.length > 0);
+    const secrets = [
+      "user@example.com",
+      "dev-123",
+      "access-token-xyz",
+      "secret-token",
+    ];
+    for (const span of spans) {
+      for (const value of Object.values(span.attributes)) {
+        for (const secret of secrets) {
+          assert(
+            !String(value).includes(secret),
+            `${span.name} attribute leaks ${secret}`,
+          );
+        }
+      }
+    }
+  });
+});
+
+Deno.test("handleDeviceAuth: a pending poll is not an ERROR span and still returns 202", async () => {
+  await withCapturedSpans(async (spans) => {
+    const deps = makeMockDeps({
+      pollForToken: () =>
+        Promise.reject(new DeviceGrantPollError("authorization_pending")),
+    });
+    const result = await handleDeviceAuth(
+      postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+      deps,
+    );
+    assertEquals(result?.status, 202);
+    const poll = findSpan(spans, "swamp.serve.auth.poll_token");
+    assertEquals(poll.status.code, SpanStatusCode.OK);
+    assertEquals(
+      poll.attributes["oauth.poll.outcome"],
+      "authorization_pending",
+    );
+    assertEquals(
+      spans.filter((s) => s.name === "swamp.serve.auth.userinfo").length,
+      0,
+    );
+  });
+});
+
+Deno.test("handleDeviceAuth: an unknown poll error is an ERROR span and still returns 502", async () => {
+  await withCapturedSpans(async (spans) => {
+    const deps = makeMockDeps({
+      pollForToken: () =>
+        Promise.reject(new DeviceGrantPollError("unknown", "invalid_grant")),
+    });
+    const result = await handleDeviceAuth(
+      postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+      deps,
+    );
+    assertEquals(result?.status, 502);
+    const poll = findSpan(spans, "swamp.serve.auth.poll_token");
+    assertEquals(poll.status.code, SpanStatusCode.ERROR);
+    assertEquals(poll.attributes["oauth.poll.outcome"], "unknown");
+  });
+});
+
+Deno.test("handleDeviceAuth: a failed mint marks the mint span ERROR", async () => {
+  await withCapturedSpans(async (spans) => {
+    const deps = makeMockDeps({
+      mintServerToken: () => Promise.reject(new Error("vault unavailable")),
+    });
+    const result = await handleDeviceAuth(
+      postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+      deps,
+    );
+    assertEquals(result?.status, 500);
+    const mint = findSpan(spans, "swamp.serve.auth.mint");
+    assertEquals(mint.status.code, SpanStatusCode.ERROR);
+  });
+});
+
+Deno.test("handleDeviceAuth: POST /auth/device traces the upstream device grant", async () => {
+  await withCapturedSpans(async (spans) => {
+    const result = await handleDeviceAuth(
+      postRequest("/auth/device"),
+      makeMockDeps(),
+    );
+    assertEquals(result?.status, 200);
+    assertEquals(
+      findSpan(spans, "swamp.serve.auth.device_start").status.code,
+      SpanStatusCode.OK,
+    );
+  });
 });

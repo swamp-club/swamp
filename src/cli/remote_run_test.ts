@@ -24,6 +24,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
+import { renderError } from "../presentation/output/error_output.ts";
 import {
   createTlsHttpClient,
   diagnoseTlsMessage,
@@ -32,6 +33,7 @@ import {
   readTokenFile,
   requestServerResponse,
   resetMarkerServerAddress,
+  resolveCaCertPath,
   resolveServerToken,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -94,6 +96,62 @@ function scriptedServer(
     upgradeUrls,
   };
 }
+
+// ── resolveCaCertPath tests ────────────────────────────────────────────
+
+Deno.test("resolveCaCertPath: --ca-cert flag takes precedence over SWAMP_CA_CERT", () => {
+  assertEquals(
+    resolveCaCertPath(
+      ["worker", "connect", "--ca-cert", "./flag.pem"],
+      "/env/ca.pem",
+    ),
+    "./flag.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: --ca-cert=value flag takes precedence over SWAMP_CA_CERT", () => {
+  assertEquals(
+    resolveCaCertPath(["--ca-cert=./flag.pem"], "/env/ca.pem"),
+    "./flag.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: falls back to SWAMP_CA_CERT when the flag is absent", () => {
+  assertEquals(
+    resolveCaCertPath(["worker", "connect"], "/env/ca.pem"),
+    "/env/ca.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: uses the flag when SWAMP_CA_CERT is unset", () => {
+  assertEquals(
+    resolveCaCertPath(["--ca-cert", "./flag.pem"], undefined),
+    "./flag.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: returns undefined when neither is set", () => {
+  assertEquals(resolveCaCertPath(["worker", "connect"], undefined), undefined);
+  assertEquals(resolveCaCertPath([], ""), undefined);
+});
+
+Deno.test("resolveCaCertPath: an empty flag value falls through to SWAMP_CA_CERT", () => {
+  assertEquals(
+    resolveCaCertPath(["--ca-cert="], "/env/ca.pem"),
+    "/env/ca.pem",
+  );
+  assertEquals(
+    resolveCaCertPath(["--ca-cert", ""], "/env/ca.pem"),
+    "/env/ca.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: a trailing --ca-cert with no value falls through to SWAMP_CA_CERT", () => {
+  assertEquals(
+    resolveCaCertPath(["worker", "connect", "--ca-cert"], "/env/ca.pem"),
+    "/env/ca.pem",
+  );
+});
 
 // ── resolveServeUrl tests ──────────────────────────────────────────────
 
@@ -1930,6 +1988,28 @@ Deno.test("createTlsHttpClient: turns a cert-store failure into guidance", () =>
   );
   assertStringIncludes(error.message, "SecTrustSettingsCopyCertificates");
   assertStringIncludes(error.message, "DENO_TLS_CA_STORE=mozilla");
+});
+
+Deno.test("createTlsHttpClient: its guidance renders without a duplicate hint", () => {
+  const error = assertThrows(
+    () =>
+      createTlsHttpClient({}, () => {
+        throw new Error(
+          "Failed to load platform certificates: SecTrustSettingsCopyCertificates failed",
+        );
+      }),
+    UserError,
+  );
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    renderError(error);
+  } finally {
+    console.error = originalError;
+  }
+  assertEquals(logs.length, 1);
+  assertEquals(logs[0].split("DENO_TLS_CA_STORE=mozilla").length, 2);
 });
 
 Deno.test("createTlsHttpClient: returns the client when the store loads", () => {

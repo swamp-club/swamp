@@ -648,6 +648,7 @@ execute: (async (
 | `context.dataRepository`       | Low-level data API                                                                             | For reading non-JSON content                    |
 | `context.modelType`            | `string`                                                                                       | The model type string (e.g. `@myorg/my-model`)  |
 | `context.modelId`              | `string`                                                                                       | The model instance ID                           |
+| `context.traceHeaders`         | `Readonly<Record<string, string>> \| undefined`                                                | This execution's W3C trace headers              |
 
 For the cross-model APIs, see [Cross-Model Access](#cross-model-access).
 Locally, `dataRepository.getContent` and `findAllForModel` also accept a
@@ -656,6 +657,30 @@ prefer `readModelData` for by-name reads.
 
 Type only the fields your method body actually uses — don't declare the full
 interface. See [typing.md](typing.md) for the complete typing guide.
+
+### Propagating Trace Context to Subprocesses
+
+When tracing is enabled, `context.traceHeaders` holds this execution's
+`traceparent` (and `tracestate`, if any). Pass them to any subprocess the method
+spawns so its spans join the trace:
+
+```typescript
+const env: Record<string, string> = {};
+if (context.traceHeaders?.traceparent) {
+  env.TRACEPARENT = context.traceHeaders.traceparent;
+}
+if (context.traceHeaders?.tracestate) {
+  env.TRACESTATE = context.traceHeaders.tracestate;
+}
+await new Deno.Command("my-tool", { args, env }).output();
+```
+
+Prefer this over reading `TRACEPARENT` from `Deno.env`. The process env holds a
+method's trace context only while no unrelated method is running in the same
+process. A method awaiting `context.runModel` still gets its own context back
+once the nested method finishes. When unrelated methods run at the same time,
+such as parallel workflow steps or parallel `runModel` calls, the env falls back
+to the run's inbound context until they have all finished.
 
 ### Arguments Holding Another Service's Template Syntax
 

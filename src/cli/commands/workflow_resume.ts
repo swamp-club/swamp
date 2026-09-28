@@ -63,6 +63,7 @@ import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
 import { GIT_SHA } from "./version.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
+import { abortOnTimeout } from "../abort_on_timeout.ts";
 import {
   deepMerge,
   mergeInputArgs,
@@ -193,10 +194,9 @@ export const workflowResumeCommand = withRemoteOptions(
         : cliInputs;
 
       const abort = new AbortController();
-      if (options.timeout) {
-        const timeoutMs = parseTimerDuration(options.timeout as string);
-        setTimeout(() => abort.abort(), timeoutMs);
-      }
+      const timeoutMs = options.timeout
+        ? parseTimerDuration(options.timeout as string)
+        : undefined;
       const shutdown = registerShutdownHandler({
         handler: () => abort.abort(),
         forceExitOnRepeat: true,
@@ -210,6 +210,9 @@ export const workflowResumeCommand = withRemoteOptions(
           server: options.server as string | undefined,
         }),
       });
+      const disarmTimeout = timeoutMs !== undefined
+        ? abortOnTimeout(abort, timeoutMs)
+        : undefined;
       try {
         await consumeStream(
           resumeWorkflowOverServer({
@@ -234,6 +237,7 @@ export const workflowResumeCommand = withRemoteOptions(
           renderer.handlers(),
         );
       } finally {
+        disarmTimeout?.();
         shutdown.dispose();
       }
       if (renderer.workflowFailed()) {
@@ -434,10 +438,9 @@ export const workflowResumeCommand = withRemoteOptions(
     );
 
     const abort = new AbortController();
-    if (options.timeout) {
-      const timeoutMs = parseTimerDuration(options.timeout as string);
-      setTimeout(() => abort.abort(), timeoutMs);
-    }
+    const timeoutMs = options.timeout
+      ? parseTimerDuration(options.timeout as string)
+      : undefined;
 
     const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
       workflowName,
@@ -499,6 +502,9 @@ export const workflowResumeCommand = withRemoteOptions(
       handler: () => abort.abort(),
       forceExitOnRepeat: true,
     });
+    const disarmTimeout = timeoutMs !== undefined
+      ? abortOnTimeout(abort, timeoutMs)
+      : undefined;
     try {
       try {
         await consumeStream(resumeGenerator(), handlers);
@@ -554,6 +560,7 @@ export const workflowResumeCommand = withRemoteOptions(
         return;
       }
     } finally {
+      disarmTimeout?.();
       if (unlocked.syncService) {
         const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
           ? unlocked.datastoreConfig.namespace

@@ -21,14 +21,22 @@ type ConsoleMethod = (...args: unknown[]) => void;
 
 const CAPTURED_METHODS = ["log", "info", "debug", "warn", "error"] as const;
 
-const REAL_CONSOLE = new Map<string, ConsoleMethod>(
-  CAPTURED_METHODS.map((m) => [m, console[m] as ConsoleMethod]),
-);
+const STDERR_ENCODER = new TextEncoder();
 
-const STDERR_WRITER = new TextEncoder();
+function defaultStderrWriter(line: string): void {
+  Deno.stderr.writeSync(STDERR_ENCODER.encode(line + "\n"));
+}
 
-function writeStderr(line: string): void {
-  Deno.stderr.writeSync(STDERR_WRITER.encode(line + "\n"));
+let writeStderr: (line: string) => void = defaultStderrWriter;
+
+/**
+ * Replaces the sink captured lines are written to. Tests pass a recorder to
+ * count writes; `undefined` restores the default stderr writer.
+ */
+export function setConsoleGuardStderrWriter(
+  writer: ((line: string) => void) | undefined,
+): void {
+  writeStderr = writer ?? defaultStderrWriter;
 }
 
 let _jsonMode = false;
@@ -49,6 +57,30 @@ function formatArg(a: unknown): string {
 
 let activeGuards = 0;
 const allActiveLogs: Set<string[]> = new Set();
+// The console methods in place when the first guard installed, restored when
+// the last guard exits and used by `unguardedConsole` meanwhile.
+const preGuardConsole = new Map<string, ConsoleMethod>();
+
+/**
+ * Console output for swamp's own renderers. While a guard is active the
+ * global console belongs to the guard, so a renderer writing through it would
+ * have its output captured as if the running method had written it. These
+ * methods write through the pre-guard console instead, so renderer output
+ * always reaches its intended stream and never enters a method's logs.
+ * Extension code must keep using the global console.
+ */
+export const unguardedConsole = {
+  log(...args: unknown[]): void {
+    resolveUnguarded("log")(...args);
+  },
+  error(...args: unknown[]): void {
+    resolveUnguarded("error")(...args);
+  },
+};
+
+function resolveUnguarded(method: "log" | "error"): ConsoleMethod {
+  return preGuardConsole.get(method) ?? (console[method] as ConsoleMethod);
+}
 
 export interface ConsoleGuardOptions {
   jsonMode?: boolean;
@@ -56,7 +88,7 @@ export interface ConsoleGuardOptions {
 
 // Redirects console methods to a capture array during fn execution.
 // In JSON mode, captures console output from extension code into `logs`
-// and replays to stderr to prevent stdout pollution. In non-JSON mode,
+// and writes each line to stderr to prevent stdout pollution. In non-JSON mode,
 // console output flows to stdout normally (the renderer is not involved).
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
@@ -72,12 +104,16 @@ export async function withConsoleGuard<T>(
   allActiveLogs.add(logs);
   if (activeGuards === 0) {
     for (const method of CAPTURED_METHODS) {
+      preGuardConsole.set(method, console[method] as ConsoleMethod);
+      // A line cannot be attributed to one of several concurrent methods, so
+      // every active guard records it, but it reaches stderr only once.
       // deno-lint-ignore no-explicit-any
       (console as any)[method] = (...args: unknown[]) => {
         const line = args.map(formatArg).join(" ");
         for (const logArray of allActiveLogs) {
           logArray.push(line);
         }
+        writeStderr(line);
       };
     }
   }
@@ -92,14 +128,9 @@ export async function withConsoleGuard<T>(
     if (activeGuards === 0) {
       for (const method of CAPTURED_METHODS) {
         // deno-lint-ignore no-explicit-any
-        (console as any)[method] = REAL_CONSOLE.get(method)!;
+        (console as any)[method] = preGuardConsole.get(method)!;
       }
-    }
-
-    if (logs.length > 0) {
-      for (const line of logs) {
-        writeStderr(line);
-      }
+      preGuardConsole.clear();
     }
   }
 }

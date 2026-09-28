@@ -627,3 +627,29 @@ Deno.test("handleWorkflowHistoryGet: a principal with no data read sees no outpu
     assertEquals(frame.payload?.data.jobs[0].steps[0].outputs, undefined);
   });
 });
+
+Deno.test("handleWorkflowHistoryGet: forwards reason and entity type for an unknown run", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const frames: Array<{ error?: { code: string; details?: unknown } }> = [];
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send: (data: string) => frames.push(JSON.parse(data)),
+    } as unknown as WebSocket;
+
+    await handleWorkflowHistoryGet(
+      socket,
+      makeHistoryCtx(dir, workflow),
+      "req-history-missing",
+      { workflowIdOrName: "no-such-run" },
+      new AbortController(),
+      null,
+    );
+
+    assertEquals(frames[0].error?.code, "workflow_history_get_failed");
+    assertEquals(frames[0].error?.details, {
+      reason: "not_found",
+      entityType: "Workflow run or workflow",
+    });
+  });
+});

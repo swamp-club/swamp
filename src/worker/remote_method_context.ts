@@ -590,6 +590,7 @@ export function createRemoteMethodContext(
     globalArgs: execution.globalArgs,
     definition: execution.definitionMeta,
     methodName: execution.methodName,
+    traceHeaders: execution.traceHeaders,
     logger: wrapLoggerWithOutput(logger, options.onEvent),
     dataRepository,
     definitionRepository,

@@ -119,9 +119,11 @@ import {
 import {
   authorizeAnyOrReject,
   authorizeOrReject,
+  clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
   filterByAuthorization,
+  LibSwampStreamError,
   lockTimeoutErrorForClient,
   paginate,
   pushChangedToRemote,
@@ -714,7 +716,7 @@ export async function handleWorkflowHistoryGet(
           result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
-          throw new Error(e.error.message);
+          throw new LibSwampStreamError(e.error);
         },
       },
     );
@@ -741,7 +743,13 @@ export async function handleWorkflowHistoryGet(
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "workflow_history_get_failed", message);
+    sendError(
+      socket,
+      requestId,
+      "workflow_history_get_failed",
+      message,
+      clientErrorDetails(error),
+    );
   }
 }
 
@@ -1283,6 +1291,7 @@ export async function handleWorkflowResume(
             signal: controller.signal,
             inputs: resumeInputs,
             fromStep: payload.from,
+            instanceId: ctx.instanceId,
           })
         ) {
           yield mapWorkflowExecutionEvent(event, runRepo);
