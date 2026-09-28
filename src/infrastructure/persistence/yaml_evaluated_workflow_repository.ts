@@ -35,6 +35,10 @@ import {
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  RunSnapshotInfo,
+  RunSnapshotRepository,
+} from "../../domain/workflows/repositories.ts";
 
 export interface EvaluatedWorkflowCache {
   workflow: Workflow;
@@ -77,7 +81,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
  * (or workflow-{uuid}.yaml for legacy/non-filename-safe names).
  * This directory contains workflows with all expressions resolved.
  */
-export class YamlEvaluatedWorkflowRepository {
+export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   private readonly baseDir: string;
   private readonly idToActualPath = new Map<WorkflowId, string>();
 
@@ -361,9 +365,51 @@ export class YamlEvaluatedWorkflowRepository {
     return null;
   }
 
+  async listRunSnapshots(): Promise<RunSnapshotInfo[]> {
+    const runsDir = join(this.baseDir, "runs");
+    const snapshots: RunSnapshotInfo[] = [];
+    try {
+      for await (const entry of Deno.readDir(runsDir)) {
+        if (!entry.isDirectory || entry.name.startsWith(".")) continue;
+        // An unknown mtime counts as fresh, so the orphan age guard never
+        // collects a snapshot whose age it cannot establish.
+        try {
+          const stat = await Deno.stat(
+            join(runsDir, entry.name, "evaluated-workflow.yaml"),
+          );
+          snapshots.push({
+            runId: entry.name,
+            modifiedAt: stat.mtime ?? new Date(),
+            sizeBytes: stat.size,
+          });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+          // The snapshot file is missing (partial write or concurrent
+          // delete) — fall back to the directory itself so the empty
+          // directory is still collectable.
+          try {
+            const dirStat = await Deno.stat(join(runsDir, entry.name));
+            snapshots.push({
+              runId: entry.name,
+              modifiedAt: dirStat.mtime ?? new Date(),
+              sizeBytes: 0,
+            });
+          } catch (dirError) {
+            if (!(dirError instanceof Deno.errors.NotFound)) throw dirError;
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return [];
+      throw error;
+    }
+    return snapshots;
+  }
+
   async deleteForRun(runId: string): Promise<void> {
     const dir = join(this.baseDir, "runs", runId);
     await assertSafePath(dir, this.baseDir);
+    await this.notifyDirty(dir);
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {

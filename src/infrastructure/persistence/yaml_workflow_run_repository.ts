@@ -677,11 +677,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async deleteOlderThan(
     cutoff: Date,
     options?: { dryRun?: boolean },
-  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+  ): Promise<
+    { deleted: number; bytesReclaimed: number; deletedRunIds: string[] }
+  > {
     const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
     const cutoffMs = cutoff.getTime();
     let deleted = 0;
     let bytesReclaimed = 0;
+    const deletedRunIds: string[] = [];
     const affectedDirs = new Set<string>();
 
     try {
@@ -734,6 +737,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 }
                 deleted++;
                 bytesReclaimed += fileBytes;
+                deletedRunIds.push(runIdFromFileName(fileEntry.name));
                 continue;
               }
               if (!TERMINAL_STATUSES.has(data.status)) continue;
@@ -777,6 +781,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
               deleted++;
               bytesReclaimed += fileBytes;
+              deletedRunIds.push(data.id ?? runIdFromFileName(fileEntry.name));
             } catch (error) {
               if (error instanceof Deno.errors.NotFound) continue;
               throw error;
@@ -801,7 +806,38 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
     }
 
-    return { deleted, bytesReclaimed };
+    return { deleted, bytesReclaimed, deletedRunIds };
+  }
+
+  /**
+   * Returns the IDs of every stored run across all workflows, read from the
+   * `workflow-run-{runId}.yaml` filenames without parsing any YAML.
+   */
+  async listRunIds(): Promise<Set<string>> {
+    const ids = new Set<string>();
+    try {
+      for await (const entry of Deno.readDir(this.baseDir)) {
+        if (!entry.isDirectory) continue;
+        try {
+          for await (
+            const fileEntry of Deno.readDir(join(this.baseDir, entry.name))
+          ) {
+            if (
+              fileEntry.isFile &&
+              fileEntry.name.startsWith("workflow-run-") &&
+              fileEntry.name.endsWith(".yaml")
+            ) {
+              ids.add(runIdFromFileName(fileEntry.name));
+            }
+          }
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    return ids;
   }
 
   async findAllSummariesFromIndex(
@@ -958,4 +994,9 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
     const bTime = b.startedAt?.getTime() ?? 0;
     return bTime - aTime;
   });
+}
+
+/** Extracts the run ID from a `workflow-run-{runId}.yaml` filename. */
+function runIdFromFileName(fileName: string): string {
+  return fileName.slice("workflow-run-".length, -".yaml".length);
 }

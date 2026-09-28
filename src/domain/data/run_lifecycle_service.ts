@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { WorkflowRunRepository } from "../workflows/repositories.ts";
+import type {
+  RunSnapshotRepository,
+  WorkflowRunRepository,
+} from "../workflows/repositories.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 
 export const DEFAULT_WORKFLOW_RUN_RETENTION_DAYS = 30;
@@ -28,6 +31,8 @@ export interface RunGcResult {
   workflowRunBytesReclaimed: number;
   outputsDeleted: number;
   outputBytesReclaimed: number;
+  snapshotsDeleted: number;
+  snapshotBytesReclaimed: number;
   dryRun: boolean;
 }
 
@@ -42,6 +47,12 @@ export interface RunLifecycleService {
     dryRun: boolean;
   }): Promise<{ deleted: number; bytesReclaimed: number }>;
 
+  gcRunSnapshots(options: {
+    retentionDays: number;
+    deletedRunIds: readonly string[];
+    dryRun: boolean;
+  }): Promise<{ deleted: number; bytesReclaimed: number }>;
+
   gcAll(options: {
     workflowRunRetentionDays: number;
     outputRetentionDays: number;
@@ -53,16 +64,53 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
   constructor(
     private readonly workflowRunRepo: WorkflowRunRepository,
     private readonly outputRepo: OutputRepository,
+    private readonly runSnapshotRepo: RunSnapshotRepository,
+    private readonly listRunIds: () => Promise<ReadonlySet<string>>,
   ) {}
 
   async gcWorkflowRuns(options: {
     retentionDays: number;
     dryRun: boolean;
-  }): Promise<{ deleted: number; bytesReclaimed: number }> {
+  }): Promise<
+    { deleted: number; bytesReclaimed: number; deletedRunIds?: string[] }
+  > {
     const cutoffMs = Date.now() - options.retentionDays * 86_400_000;
     return await this.workflowRunRepo.deleteOlderThan(new Date(cutoffMs), {
       dryRun: options.dryRun,
     });
+  }
+
+  /**
+   * Collects per-run evaluated-workflow snapshots. A snapshot is collected
+   * when its run was just garbage-collected (`deletedRunIds`), or when no run
+   * record exists for it and it is older than the retention cutoff. The age
+   * guard matters: a snapshot is written before its run record's first save,
+   * so a snapshot with no run record may belong to a run that is starting.
+   */
+  async gcRunSnapshots(options: {
+    retentionDays: number;
+    deletedRunIds: readonly string[];
+    dryRun: boolean;
+  }): Promise<{ deleted: number; bytesReclaimed: number }> {
+    const cutoffMs = Date.now() - options.retentionDays * 86_400_000;
+    const collectedRuns = new Set(options.deletedRunIds);
+    const snapshots = await this.runSnapshotRepo.listRunSnapshots();
+    if (snapshots.length === 0) return { deleted: 0, bytesReclaimed: 0 };
+    const existingRuns = await this.listRunIds();
+
+    let deleted = 0;
+    let bytesReclaimed = 0;
+    for (const snapshot of snapshots) {
+      const orphaned = !existingRuns.has(snapshot.runId) &&
+        snapshot.modifiedAt.getTime() < cutoffMs;
+      if (!collectedRuns.has(snapshot.runId) && !orphaned) continue;
+      if (!options.dryRun) {
+        await this.runSnapshotRepo.deleteForRun(snapshot.runId);
+      }
+      deleted++;
+      bytesReclaimed += snapshot.sizeBytes;
+    }
+    return { deleted, bytesReclaimed };
   }
 
   async gcOutputs(options: {
@@ -80,11 +128,20 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
     outputRetentionDays: number;
     dryRun: boolean;
   }): Promise<RunGcResult> {
-    const [workflowRuns, outputs] = await Promise.all([
-      this.gcWorkflowRuns({
-        retentionDays: options.workflowRunRetentionDays,
-        dryRun: options.dryRun,
-      }),
+    const [[workflowRuns, snapshots], outputs] = await Promise.all([
+      (async () => {
+        const runs = await this.gcWorkflowRuns({
+          retentionDays: options.workflowRunRetentionDays,
+          dryRun: options.dryRun,
+        });
+        // Runs first: the snapshot pass needs the IDs of the runs collected.
+        const snaps = await this.gcRunSnapshots({
+          retentionDays: options.workflowRunRetentionDays,
+          deletedRunIds: runs.deletedRunIds ?? [],
+          dryRun: options.dryRun,
+        });
+        return [runs, snaps] as const;
+      })(),
       this.gcOutputs({
         retentionDays: options.outputRetentionDays,
         dryRun: options.dryRun,
@@ -96,6 +153,8 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
       workflowRunBytesReclaimed: workflowRuns.bytesReclaimed,
       outputsDeleted: outputs.deleted,
       outputBytesReclaimed: outputs.bytesReclaimed,
+      snapshotsDeleted: snapshots.deleted,
+      snapshotBytesReclaimed: snapshots.bytesReclaimed,
       dryRun: options.dryRun,
     };
   }

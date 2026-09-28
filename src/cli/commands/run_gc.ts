@@ -138,7 +138,8 @@ export const runGcCommand = withRemoteOptions(
   ) {
     const preview = await runGcPreview(ctx, deps, gcInput);
     if (
-      preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0
+      preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0 &&
+      preview.evaluatedSnapshotsToDelete === 0
     ) {
       cliCtx.logger.info("Nothing to clean up.");
       return;

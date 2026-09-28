@@ -75,6 +75,8 @@ export interface WorkflowDeleteDeps {
   pathExists: (path: string) => Promise<boolean>;
   countRuns: (workflowId: WorkflowId) => Promise<number>;
   deleteRuns: (workflowId: WorkflowId) => Promise<number>;
+  /** Deletes the per-run evaluated-workflow snapshots of every run. */
+  deleteRunSnapshots: (workflowId: WorkflowId) => Promise<void>;
   deleteEvaluated: (workflowId: WorkflowId) => Promise<void>;
   deleteWorkflow: (workflowId: WorkflowId) => Promise<void>;
 }
@@ -125,6 +127,12 @@ export function createWorkflowDeleteDeps(
     },
     deleteRuns: (workflowId) =>
       workflowRunRepo.deleteAllByWorkflowId(workflowId),
+    deleteRunSnapshots: async (workflowId) => {
+      const runs = await workflowRunRepo.findAllByWorkflowId(workflowId);
+      for (const run of runs) {
+        await evaluatedWorkflowRepo.deleteForRun(run.id);
+      }
+    },
     deleteEvaluated: (workflowId) => evaluatedWorkflowRepo.delete(workflowId),
     deleteWorkflow: (workflowId) => workflowRepo.delete(workflowId),
   };
@@ -195,6 +203,10 @@ export async function* workflowDelete(
       }
 
       const workflowPath = deps.getPath(workflow.id);
+
+      // Delete run snapshots first: the run IDs are gone once the runs are.
+      ctx.logger.debug`Deleting run snapshots`;
+      await deps.deleteRunSnapshots(workflow.id);
 
       // Delete runs
       ctx.logger.debug`Deleting workflow runs`;

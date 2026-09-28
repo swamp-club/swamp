@@ -1348,3 +1348,65 @@ Deno.test("YamlWorkflowRunRepository.findGlobalById: returns null when the disco
     assertEquals(await repo.findGlobalById(run.id), null);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the IDs of the runs it deletes, including on a dry run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.cancel("test");
+    await repo.save(workflow.id, finished);
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+    // An unparseable (empty) run file is deleted too; its ID comes from the
+    // filename.
+    const emptyId = crypto.randomUUID();
+    await Deno.writeTextFile(
+      join(
+        dir,
+        ".swamp",
+        "workflow-runs",
+        workflow.id,
+        `workflow-run-${emptyId}.yaml`,
+      ),
+      "",
+    );
+    const cutoff = new Date(Date.now() + 60_000);
+
+    const preview = await repo.deleteOlderThan(cutoff, { dryRun: true });
+    assertEquals(preview.deletedRunIds.sort(), [finished.id, emptyId].sort());
+    assertEquals((await repo.listRunIds()).size, 3);
+
+    const result = await repo.deleteOlderThan(cutoff);
+    assertEquals(result.deletedRunIds.sort(), [finished.id, emptyId].sort());
+    assertEquals(await repo.listRunIds(), new Set([running.id]));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.listRunIds: lists run IDs across workflows and ignores other files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    assertEquals(await repo.listRunIds(), new Set());
+
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const otherWorkflowId = createWorkflowId(crypto.randomUUID());
+    const otherRunId = crypto.randomUUID();
+    const otherDir = join(dir, ".swamp", "workflow-runs", otherWorkflowId);
+    await ensureDir(otherDir);
+    await Deno.writeTextFile(
+      join(otherDir, `workflow-run-${otherRunId}.yaml`),
+      "",
+    );
+    await Deno.writeTextFile(
+      join(otherDir, `workflow-run-${otherRunId}.log`),
+      "",
+    );
+
+    assertEquals(await repo.listRunIds(), new Set([run.id, otherRunId]));
+  });
+});

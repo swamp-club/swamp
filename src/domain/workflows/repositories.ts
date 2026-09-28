@@ -138,10 +138,40 @@ export interface WorkflowRunRepository {
   /**
    * Deletes all terminal runs (succeeded/failed/cancelled) older than the
    * cutoff. Running and suspended runs are never deleted regardless of age.
-   * Returns the number of runs deleted.
+   * Returns the number of runs deleted and, when the implementation tracks
+   * them, the IDs of the runs deleted (or that would be deleted on a dry run).
    */
   deleteOlderThan(
     cutoff: Date,
     options?: { dryRun?: boolean },
-  ): Promise<{ deleted: number; bytesReclaimed: number }>;
+  ): Promise<
+    { deleted: number; bytesReclaimed: number; deletedRunIds?: string[] }
+  >;
+}
+
+/**
+ * A per-run snapshot of the evaluated workflow, written at run start.
+ */
+export interface RunSnapshotInfo {
+  runId: string;
+  modifiedAt: Date;
+  sizeBytes: number;
+}
+
+/**
+ * Repository interface for per-run evaluated-workflow snapshots.
+ *
+ * A snapshot shares its run's lifetime: it is removed when the run is
+ * garbage-collected or its workflow is deleted.
+ */
+export interface RunSnapshotRepository {
+  /**
+   * Lists every stored per-run snapshot.
+   */
+  listRunSnapshots(): Promise<RunSnapshotInfo[]>;
+
+  /**
+   * Deletes the snapshot for a run. Missing snapshots are ignored.
+   */
+  deleteForRun(runId: string): Promise<void>;
 }

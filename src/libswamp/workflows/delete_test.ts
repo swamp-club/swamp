@@ -43,6 +43,7 @@ function makeDeps(
     pathExists: () => Promise.resolve(true),
     countRuns: () => Promise.resolve(0),
     deleteRuns: () => Promise.resolve(0),
+    deleteRunSnapshots: () => Promise.resolve(),
     deleteEvaluated: () => Promise.resolve(),
     deleteWorkflow: () => Promise.resolve(),
     ...overrides,
@@ -120,6 +121,28 @@ Deno.test("workflowDelete: yields completed after successful deletion", async ()
   assertEquals(completed.data.name, "deploy-workflow");
   assertEquals(completed.data.runsDeleted, 3);
   assertEquals(workflowDeleted, true);
+});
+
+Deno.test("workflowDelete: deletes run snapshots before the runs", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    deleteRunSnapshots: (workflowId) => {
+      calls.push(`snapshots:${workflowId}`);
+      return Promise.resolve();
+    },
+    deleteRuns: () => {
+      calls.push("runs");
+      return Promise.resolve(2);
+    },
+  });
+
+  await collect<WorkflowDeleteEvent>(
+    workflowDelete(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-workflow",
+    }),
+  );
+
+  assertEquals(calls, [`snapshots:${testWorkflow.id}`, "runs"]);
 });
 
 Deno.test("workflowDelete: yields error when workflow not found", async () => {

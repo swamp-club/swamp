@@ -37,10 +37,17 @@ function createMockDeps(result: {
   workflowRunBytesReclaimed: number;
   outputsDeleted: number;
   outputBytesReclaimed: number;
+  snapshotsDeleted?: number;
+  snapshotBytesReclaimed?: number;
   dryRun: boolean;
 }): RunGcDeps {
   return {
-    gcAll: () => Promise.resolve(result),
+    gcAll: () =>
+      Promise.resolve({
+        snapshotsDeleted: 0,
+        snapshotBytesReclaimed: 0,
+        ...result,
+      }),
   };
 }
 
@@ -50,6 +57,8 @@ Deno.test("runGcPreview: returns preview with dryRun=true", async () => {
     workflowRunBytesReclaimed: 5000,
     outputsDeleted: 5,
     outputBytesReclaimed: 2000,
+    snapshotsDeleted: 4,
+    snapshotBytesReclaimed: 400,
     dryRun: true,
   });
 
@@ -63,7 +72,8 @@ Deno.test("runGcPreview: returns preview with dryRun=true", async () => {
   assertEquals(preview.workflowRunBytesReclaimable, 5000);
   assertEquals(preview.outputsToDelete, 5);
   assertEquals(preview.outputBytesReclaimable, 2000);
-  assertEquals(preview.totalBytesReclaimable, 7000);
+  assertEquals(preview.evaluatedSnapshotsToDelete, 4);
+  assertEquals(preview.totalBytesReclaimable, 7400);
 });
 
 Deno.test("runGc: yields collecting then completed events", async () => {
@@ -72,6 +82,8 @@ Deno.test("runGc: yields collecting then completed events", async () => {
     workflowRunBytesReclaimed: 1500,
     outputsDeleted: 2,
     outputBytesReclaimed: 800,
+    snapshotsDeleted: 6,
+    snapshotBytesReclaimed: 600,
     dryRun: false,
   });
 
@@ -92,7 +104,8 @@ Deno.test("runGc: yields collecting then completed events", async () => {
   if (events[1].kind === "completed") {
     assertEquals(events[1].data.workflowRunsDeleted, 3);
     assertEquals(events[1].data.outputsDeleted, 2);
-    assertEquals(events[1].data.totalBytesReclaimed, 2300);
+    assertEquals(events[1].data.evaluatedSnapshotsDeleted, 6);
+    assertEquals(events[1].data.totalBytesReclaimed, 2900);
     assertEquals(events[1].data.dryRun, false);
   }
 });
@@ -107,6 +120,8 @@ Deno.test("runGc: uses default retention when not specified", async () => {
         workflowRunBytesReclaimed: 0,
         outputsDeleted: 0,
         outputBytesReclaimed: 0,
+        snapshotsDeleted: 0,
+        snapshotBytesReclaimed: 0,
         dryRun: true,
       });
     },
