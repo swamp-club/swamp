@@ -23,6 +23,7 @@ import {
   assertOffLoopbackSecurity,
   cancelExecution,
   collectServeExtraArgs,
+  emitHttpCancelAudit,
   parseDatastorePollInterval,
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
@@ -1177,4 +1178,135 @@ Deno.test("cancelExecution: scheduled fallback not checked for method-run type",
   );
   assertEquals(result.status, "not_found");
   assertEquals(scheduledCalled, false);
+});
+
+Deno.test("cancelExecution: falls back to cancelling a persisted suspended run", async () => {
+  const calls: string[] = [];
+  const result = await cancelExecution("workflow-run", "suspended-run", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry: new ActiveRunRegistry(),
+    cancelSuspended: (id) => {
+      calls.push(id);
+      return Promise.resolve({
+        status: "cancelled",
+        runId: id,
+        workflowName: "wf",
+      });
+    },
+  });
+  assertEquals(result.status, "cancelled");
+  assertEquals(calls, ["suspended-run"]);
+});
+
+Deno.test("cancelExecution: tries the suspended fallback only after every registry misses", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  activeRunRegistry.register(makeActiveRun("live", Promise.resolve()));
+  let fallbackCalls = 0;
+  await cancelExecution("workflow-run", "live", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    cancelSuspended: () => {
+      fallbackCalls++;
+      return Promise.resolve({ status: "not_found", message: "x" });
+    },
+  }, 10);
+  await cancelExecution("workflow-run", "scheduled", {
+    cancelRegistry: new RunCancelRegistry(),
+    scheduledCancelByRunId: () => true,
+    cancelSuspended: () => {
+      fallbackCalls++;
+      return Promise.resolve({ status: "not_found", message: "x" });
+    },
+  });
+  assertEquals(fallbackCalls, 0);
+});
+
+Deno.test("cancelExecution: never tries the suspended fallback for a method-run", async () => {
+  let fallbackCalls = 0;
+  const result = await cancelExecution("method-run", "m1", {
+    cancelRegistry: new RunCancelRegistry(),
+    cancelSuspended: () => {
+      fallbackCalls++;
+      return Promise.resolve({ status: "not_found", message: "x" });
+    },
+  });
+  assertEquals(result.status, "not_found");
+  assertEquals(fallbackCalls, 0);
+});
+
+Deno.test("cancelExecution: keeps not_found when the fallback finds nothing", async () => {
+  const result = await cancelExecution("workflow-run", "gone", {
+    cancelRegistry: new RunCancelRegistry(),
+    cancelSuspended: () =>
+      Promise.resolve({ status: "not_found", message: "hidden" }),
+  });
+  assertEquals(result.status, "not_found");
+  assertEquals(
+    result.message,
+    "No active workflow-run with id gone in this serve instance",
+  );
+});
+
+Deno.test("cancelExecution: reports conflict for a busy or no-longer-suspended run", async () => {
+  for (const status of ["busy", "not_suspended"] as const) {
+    const result = await cancelExecution("workflow-run", "r1", {
+      cancelRegistry: new RunCancelRegistry(),
+      cancelSuspended: () => Promise.resolve({ status, message: "why" }),
+    });
+    assertEquals(result.status, "conflict");
+    assertEquals(result.message, "why");
+  }
+});
+
+Deno.test("cancelExecution: cancels a resume that registered after the registry miss", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  const run = makeActiveRun("r1", new Promise<void>(() => {}));
+  const result = await cancelExecution("workflow-run", "r1", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    cancelSuspended: () => {
+      activeRunRegistry.register(run);
+      return Promise.resolve({ status: "active" });
+    },
+  }, 10);
+  assertEquals(run.controller.signal.aborted, true);
+  assertEquals(result.status, "cancellation_requested");
+});
+
+Deno.test("emitHttpCancelAudit: records the cancel outcome and principal", () => {
+  const events: Record<string, unknown>[] = [];
+  const ctx = {
+    instanceId: "inst-1",
+    auditEmitter: { emit: (e: Record<string, unknown>) => events.push(e) },
+  } as unknown as Parameters<typeof emitHttpCancelAudit>[0];
+
+  emitHttpCancelAudit(
+    ctx,
+    { status: "cancelled", executionType: "workflow-run", executionId: "r1" },
+    { kind: "user", id: "alice" },
+    "10.0.0.1",
+  );
+  emitHttpCancelAudit(
+    ctx,
+    {
+      status: "conflict",
+      executionType: "workflow-run",
+      executionId: "r2",
+      message: "busy",
+    },
+    null,
+    "10.0.0.2",
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0].category, "execution");
+  assertEquals(events[0].action, "cancel");
+  assertEquals(events[0].outcome, "success");
+  assertEquals(events[0].resourceKind, "workflow");
+  assertEquals(events[0].resourceName, "r1");
+  assertEquals(events[0].principalId, "alice");
+  assertEquals(events[0].sourceIp, "10.0.0.1");
+  assertEquals(events[1].outcome, "failure");
+  assertEquals(events[1].principalKind, "anonymous");
+  assertEquals(events[1].detail, "busy");
 });

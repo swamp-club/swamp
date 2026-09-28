@@ -27,6 +27,7 @@ import type { Principal } from "../../domain/access/principal.ts";
 import { notFound, validationFailed } from "../../libswamp/mod.ts";
 import {
   authorizeAnyOrReject,
+  authorizeOrReject,
   clientErrorDetails,
   closeConnectionsForPrincipal,
   closeSession,
@@ -34,6 +35,7 @@ import {
   type ConnectionContext,
   emitSystemAuditEvent,
   filterByAuthorization,
+  isAuthorized,
   LibSwampStreamError,
   listTokenSessions,
   MAX_STREAM_SESSIONS_PER_PRINCIPAL,
@@ -1048,4 +1050,177 @@ Deno.test("updateCollectivesForPrincipal: ends that principal's streams so they 
   assertEquals(theirs.closes, []);
   assertEquals(sessionsFor(name), []);
   theirs.unregister();
+});
+
+function recordingSocket(): { socket: WebSocket; frames: string[] } {
+  const frames: string[] = [];
+  const socket = {
+    readyState: 1,
+    OPEN: 1,
+    send: (frame: string) => frames.push(frame),
+  } as unknown as WebSocket;
+  return { socket, frames };
+}
+
+function withAuditLog(ctx: ConnectionContext): AuditEvent[] {
+  const events: AuditEvent[] = [];
+  ctx.auditEmitter = {
+    emit: (event: AuditEvent) => events.push(event),
+  } as unknown as ConnectionContext["auditEmitter"];
+  ctx.instanceId = "test-instance";
+  return events;
+}
+
+const deployWorkflow = {
+  kind: "workflow" as const,
+  name: "deploy",
+  fields: { name: "deploy" },
+};
+
+Deno.test("isAuthorized: allows a scoped grant without sending anything", () => {
+  const { socket, frames } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const ctx = makeCtx([
+    makeGrant({
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "deploy" },
+    }),
+  ]);
+  const audit = withAuditLog(ctx);
+
+  assertEquals(
+    isAuthorized(
+      socket,
+      "req-1",
+      makePrincipal("adam"),
+      "run",
+      deployWorkflow,
+      ctx,
+    ),
+    true,
+  );
+  assertEquals(frames, []);
+  assertEquals(audit, []);
+});
+
+Deno.test("isAuthorized: refuses silently and audits the denial", () => {
+  const { socket, frames } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const ctx = makeCtx([]);
+  const audit = withAuditLog(ctx);
+
+  assertEquals(
+    isAuthorized(
+      socket,
+      "req-1",
+      makePrincipal("adam"),
+      "run",
+      deployWorkflow,
+      ctx,
+    ),
+    false,
+  );
+  assertEquals(frames, []);
+  assertEquals(audit.length, 1);
+  assertEquals(audit[0].outcome, "denied");
+  assertEquals(audit[0].resourceName, "deploy");
+  assertEquals(audit[0].requestId, "req-1");
+});
+
+Deno.test("isAuthorized: refuses silently without a principal or a policy snapshot", () => {
+  const { socket, frames } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const ctx = makeCtx([]);
+  const audit = withAuditLog(ctx);
+
+  assertEquals(
+    isAuthorized(socket, "req-1", null, "run", deployWorkflow, ctx),
+    false,
+  );
+  ctx.policySnapshotLoader = undefined;
+  assertEquals(
+    isAuthorized(
+      socket,
+      "req-2",
+      makePrincipal("adam"),
+      "run",
+      deployWorkflow,
+      ctx,
+    ),
+    false,
+  );
+  assertEquals(frames, []);
+  assertEquals(audit.map((e) => e.detail), [
+    "no_principal",
+    "access_not_configured",
+  ]);
+});
+
+Deno.test("isAuthorized: allows everything when auth mode is none", () => {
+  const { socket, frames } = recordingSocket();
+  const ctx = makeCtx([], "none");
+  assertEquals(
+    isAuthorized(socket, "req-1", null, "run", deployWorkflow, ctx),
+    true,
+  );
+  assertEquals(frames, []);
+});
+
+Deno.test("isAuthorized: decides as authorizeOrReject does", () => {
+  const cases: { name: string; grants: Grant[] }[] = [
+    { name: "no grants", grants: [] },
+    {
+      name: "scoped grant",
+      grants: [makeGrant({
+        actions: ["run"],
+        resource: { kind: "workflow", pattern: "deploy" },
+      })],
+    },
+    {
+      name: "admin fallback",
+      grants: [makeGrant({
+        actions: ["admin"],
+        resource: { kind: "access", pattern: "*" },
+      })],
+    },
+    {
+      name: "admin with explicit deny",
+      grants: [
+        makeGrant({
+          actions: ["admin"],
+          resource: { kind: "access", pattern: "*" },
+        }),
+        makeGrant({
+          effect: "deny",
+          actions: ["run"],
+          resource: { kind: "workflow", pattern: "deploy" },
+        }),
+      ],
+    },
+  ];
+  for (const { name, grants } of cases) {
+    const { socket } = recordingSocket();
+    setConnectionCollectives(socket, [], []);
+    const ctx = makeCtx(grants);
+    const expected = authorizeOrReject(
+      socket,
+      "req-1",
+      makePrincipal("adam"),
+      "run",
+      deployWorkflow,
+      ctx,
+    ).allowed;
+    assertEquals(
+      isAuthorized(
+        socket,
+        "req-2",
+        makePrincipal("adam"),
+        "run",
+        deployWorkflow,
+        ctx,
+      ),
+      expected,
+      name,
+    );
+  }
 });

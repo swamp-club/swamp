@@ -193,6 +193,10 @@ const _identicalPairs: {
     client.WorkflowRejectPayload,
     serve.WorkflowRejectPayload
   >;
+  WorkflowCancelPayload: Identical<
+    client.WorkflowCancelPayload,
+    serve.WorkflowCancelPayload
+  >;
   VaultGetPayload: Identical<client.VaultGetPayload, serve.VaultGetPayload>;
   VaultPutPayload: Identical<client.VaultPutPayload, serve.VaultPutPayload>;
   VaultDeletePayload: Identical<
@@ -346,6 +350,7 @@ const _identicalPairs: {
   WorkflowResumePayload: true,
   WorkflowApprovePayload: true,
   WorkflowRejectPayload: true,
+  WorkflowCancelPayload: true,
   VaultGetPayload: true,
   VaultPutPayload: true,
   VaultDeletePayload: true,

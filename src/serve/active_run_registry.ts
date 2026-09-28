@@ -28,6 +28,7 @@ export type RunKind = "workflow-run" | "workflow-resume" | "method-run";
 
 export type RegistryErrorCode =
   | "already_registered"
+  | "reserved"
   | "global_cap"
   | "principal_cap";
 
@@ -63,6 +64,7 @@ export class ActiveRunRegistry {
   readonly #maxPerPrincipal: number | undefined;
   readonly #maxRunDurationMs: number | undefined;
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #reserved = new Set<string>();
 
   constructor(options?: ActiveRunRegistryOptions) {
     this.#maxConcurrent = Math.max(1, options?.maxConcurrent ?? 100);
@@ -77,6 +79,12 @@ export class ActiveRunRegistry {
       throw new RegistryCapacityError(
         "already_registered",
         `Run ${run.runId} is already registered`,
+      );
+    }
+    if (this.#reserved.has(run.runId)) {
+      throw new RegistryCapacityError(
+        "reserved",
+        `Run ${run.runId} is reserved by another operation`,
       );
     }
     if (this.#runs.size >= this.#maxConcurrent) {
@@ -109,6 +117,27 @@ export class ActiveRunRegistry {
       Deno.unrefTimer(timer);
       this.#timers.set(run.runId, timer);
     }
+  }
+
+  /**
+   * Claims a run id so no run can be registered under it until the returned
+   * release function is called. Serve takes it around every change it makes
+   * to a persisted run it is not driving (cancelling, approving or rejecting
+   * a suspended run), so those changes and a resume never interleave within
+   * this process. Returns null when the id is already registered or
+   * reserved. A reservation is not a run: it is not listed, counted against
+   * the caps, cancelled, or drained, and it does not block rekey. Release is
+   * idempotent; call it from a finally.
+   */
+  reserve(runId: string): (() => void) | null {
+    if (this.#runs.has(runId) || this.#reserved.has(runId)) return null;
+    this.#reserved.add(runId);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#reserved.delete(runId);
+    };
   }
 
   deregister(runId: string): void {

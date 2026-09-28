@@ -76,6 +76,7 @@ import {
 import {
   handleWorkflowApprovals,
   handleWorkflowApprove,
+  handleWorkflowCancel,
   handleWorkflowCreate,
   handleWorkflowDelete,
   handleWorkflowEdit,
@@ -785,6 +786,16 @@ const WorkflowRejectRequestSchema = z.object({
   }),
 });
 
+const WorkflowCancelRequestSchema = z.object({
+  type: z.literal("workflow.cancel"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    runId: z.string().min(1).max(256),
+    workflowIdOrName: z.string().optional(),
+    reason: z.string().max(1024).optional(),
+  }),
+});
+
 const WorkflowResumeRequestSchema = z.object({
   type: z.literal("workflow.resume"),
   id: z.string().min(1).max(256),
@@ -1350,6 +1361,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowApprovalsRequestSchema,
   WorkflowApproveRequestSchema,
   WorkflowRejectRequestSchema,
+  WorkflowCancelRequestSchema,
   WorkflowResumeRequestSchema,
   VaultDescribeRequestSchema,
   VaultInspectRequestSchema,
@@ -2907,6 +2919,20 @@ export function handleMessage(
       task = audited(
         withSyncGate(ctx.syncGate, () =>
           handleWorkflowReject(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
+        auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
+      );
+      break;
+    case "workflow.cancel":
+      task = audited(
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkflowCancel(
             socket,
             ctx,
             request.id,

@@ -840,7 +840,8 @@ swamp workflow approvals  # list all pending approvals with run IDs
 Editing the workflow while a run is suspended can make its resume refuse (a step
 added or moved, or a job added, renamed or removed); the run stays suspended
 until `swamp workflow cancel <wf> --run <id>`, or, for a run `swamp serve`
-started, until the change is reverted and the run resumed. See
+started, `swamp workflow cancel --run <id> --server <url>`. The serve cancel
+also clears a serve-started run whose approval gate has timed out. See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 **Auto-resume (serve only):** set `autoResume: true` at the top level of the

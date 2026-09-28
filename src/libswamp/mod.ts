@@ -331,6 +331,17 @@ export {
   type WorkflowRejectInput,
 } from "./workflows/reject.ts";
 export {
+  CANCEL_SUSPENDED_NOT_FOUND,
+  CANCEL_SUSPENDED_NOT_SUSPENDED,
+  type CancelTargetWorkflow,
+  createWorkflowCancelSuspendedDeps,
+  workflowCancelSuspended,
+  type WorkflowCancelSuspendedData,
+  type WorkflowCancelSuspendedDeps,
+  type WorkflowCancelSuspendedEvent,
+  type WorkflowCancelSuspendedInput,
+} from "./workflows/cancel_suspended.ts";
+export {
   createWorkflowApprovalsDeps,
   type PendingApproval,
   workflowApprovals,

@@ -523,7 +523,7 @@ for (
       if (!result.ok) {
         assertEquals(result.code, "workflow_resume_failed");
         const wayOut = serveOwned
-          ? "Revert the change to resume it: a suspended run started by swamp serve cannot be cancelled yet."
+          ? `To cancel it: 'swamp workflow cancel --run ${run.id} --server <url>'.`
           : `To cancel it: 'swamp workflow cancel gated --run ${run.id}'.`;
         assertEquals(
           result.message,

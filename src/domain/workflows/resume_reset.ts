@@ -413,13 +413,12 @@ function removedUnfinishedJob(
 }
 
 /**
- * How to clear a suspended run a resume refused. `swamp serve` cancels only
- * runs it is driving, and a local cancel refuses a run serve started, so for
- * such a run the way out is to revert the edit and resume.
+ * How to clear a suspended run a resume refused. A local cancel refuses a run
+ * serve started, so such a run is cancelled through serve instead.
  */
 function suspendedWayOut(workflow: Workflow, run: WorkflowRun): string {
   return run.instanceId !== undefined
-    ? "Revert the change to resume it: a suspended run started by swamp serve cannot be cancelled yet."
+    ? `To cancel it: 'swamp workflow cancel --run ${run.id} --server <url>'.`
     : `To cancel it: 'swamp workflow cancel ${workflow.name} --run ${run.id}'.`;
 }
 

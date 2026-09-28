@@ -136,7 +136,8 @@ steps:
   `src/libswamp/workflows/approve.ts` and `reject.ts`). Once it expires,
   approve and reject are both refused and the run is left out of
   `swamp workflow approvals` (`src/libswamp/workflows/approvals.ts`). The run
-  stays `suspended`; cancel it to clear it.
+  stays `suspended`; cancel it to clear it (for a run `swamp serve` started,
+  `swamp workflow cancel --run <id> --server <url>`).
 
 **Lifecycle: suspend → approve → resume**
 
@@ -151,7 +152,8 @@ steps:
    workflow whose resolved inputs deep-equal the new run's. They are cancelled
    with reason "Superseded by new run with matching inputs". Runs with
    different inputs are separate intents and are left alone, as are
-   serve-owned runs (cancel those through the serve API). `--no-supersede`
+   serve-owned runs (cancel those through serve:
+   `swamp workflow cancel --run <id> --server <url>`). `--no-supersede`
    opts out. The CLI exits once the new run suspends.
 2. `swamp workflow approve <workflow> <step> --run <id>` marks the step
    succeeded in the saved record; nothing executes. The local command does no
@@ -513,11 +515,10 @@ The refusal leaves the run suspended. It starts with the way out, so serve's
 The workflow changed shape since the run started. To cancel it: 'swamp workflow cancel <wf> --run <id>'. Step "lint" in job "main" is not in the run.
 ```
 
-A run started by `swamp serve` (it records an
-`instanceId`) cannot be cancelled while suspended: a local cancel refuses a
-serve-owned run, serve's cancel finds only runs it is driving, and supersede
-skips serve-owned runs. For such a run the refusal says to revert the change to
-resume it instead. The check runs in `resolveResumableRun` (the CLI, serve's
+A run started by `swamp serve` (it records an `instanceId`) is refused by a
+local cancel and skipped by supersede, so for such a run the refusal names the
+serve cancel instead: `swamp workflow cancel --run <id> --server <url>`.
+The check runs in `resolveResumableRun` (the CLI, serve's
 `workflow.resume` and auto-resume, before the run is registered or charged) and
 again in `resume()`. It is `checkSuspendedRunResume` in
 `src/domain/workflows/resume_reset.ts`. `approve` and `reject` resolve through
@@ -1336,6 +1337,44 @@ with `interrupt_reason: server_crash`. Interrupted runs are recoverable; see
 A `RunCancelRegistry` in the serve layer tracks AbortControllers for every
 execution path (scheduled, WebSocket ad-hoc, webhook). The cancel API checks
 both the registry and the `ScheduledExecutionService` running map.
+
+**Suspended runs.** A suspended run has no process driving it, so it is in
+none of those registries. When they all miss, the cancel API falls back to a
+persisted run: it finds the run by id alone among suspended runs, cancels it,
+and saves (`cancelExecution` in `src/cli/commands/serve.ts`,
+`cancelSuspendedRunInServe` in `src/serve/suspended_run_cancel.ts`, and
+`workflowCancelSuspended` in `src/libswamp/workflows/cancel_suspended.ts`).
+This is how a run `swamp serve` started is cleared once it suspends. That
+includes a run with an expired gate and one whose resume refuses a changed
+workflow. A local cancel refuses such a run, and supersede skips it. Any serve
+instance can cancel it, not only the one that started it, because each serve
+start records a fresh `instanceId`. The endpoint's admin check still applies,
+the change runs under the sync gate and is pushed like any handler mutation,
+and each single-run HTTP cancel is audited (category `execution`, action
+`cancel`). A run found but no longer suspended, or one another operation holds,
+gets `409`.
+
+Over WebSocket, the `workflow.cancel` request (`runId`, optional
+`workflowIdOrName` and `reason`) does the same for a run this instance is
+driving or a persisted suspended run. It authorizes the `run` action on the
+workflow the run belongs to, as the server knows it, never the payload's name.
+It checks without replying (`isAuthorized` in `src/serve/handlers/shared.ts`).
+A refused caller, a missing run, and a run of another workflow than the
+payload names all get the same `No cancellable run with id <id>` error, so a
+run id reveals nothing. The bare `cancel` message is unchanged: it aborts an
+in-flight request on the same connection and sends no reply.
+
+Within one serve process, the cancel serializes with a resume, approve or
+reject of the same run through `ActiveRunRegistry.reserve`. That is a claim on
+the run id that makes `register` refuse it until released; it is released in
+a `finally`. The cancel reserves before it loads the run, so it never saves
+over a resume. A resume that registered first is aborted through the registry
+instead. A resume that read the run before the cancel re-reads it, finds it
+cancelled, and refuses. Approve and reject reserve the run they resolved, so
+an approval cannot put a cancelled run back to `suspended` and auto-resume it.
+An operation refused by a reservation gets "Another operation on this run is
+in progress; try again". A local CLI resume or approve, or a second serve
+instance on a shared datastore, is not covered by the reservation.
 
 Model method runs cancel the same way, with
 `swamp model cancel <model> [--all] [--reason <reason>]`.

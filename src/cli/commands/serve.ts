@@ -37,6 +37,12 @@ import {
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import {
+  cancelSuspendedRunInServe,
+  type SuspendedRunCancelResult,
+} from "../../serve/suspended_run_cancel.ts";
+import { withSyncGate } from "../../serve/sync_gate.ts";
+import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
+import {
   collectClusterInstances,
   redactServeOptions,
 } from "../../serve/handlers/admin_handlers.ts";
@@ -44,6 +50,7 @@ import {
   closeConnectionsForPrincipal,
   emitSystemAuditEvent,
   listTokenSessions,
+  pushChangedToRemote,
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
@@ -81,7 +88,10 @@ import {
   clearRateLimit,
   rateLimitKey,
 } from "../../serve/rate_limiter.ts";
-import { parsePrincipal } from "../../domain/access/principal.ts";
+import {
+  parsePrincipal,
+  principalToString,
+} from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { getActiveTelemetryContext } from "../telemetry_integration.ts";
@@ -363,7 +373,11 @@ const logger = getSwampLogger(["serve"]);
 
 export const CANCEL_GRACE_MS = 5_000;
 
-export type CancelStatus = "cancelled" | "cancellation_requested" | "not_found";
+export type CancelStatus =
+  | "cancelled"
+  | "cancellation_requested"
+  | "not_found"
+  | "conflict";
 
 export interface CancelResult {
   status: CancelStatus;
@@ -376,6 +390,11 @@ export interface CancelDeps {
   cancelRegistry: RunCancelRegistry;
   activeRunRegistry?: ActiveRunRegistry;
   scheduledCancelByRunId?: (id: string) => boolean;
+  /**
+   * Cancels a persisted suspended workflow run no process here is driving.
+   * Tried only for a workflow-run that no registry holds.
+   */
+  cancelSuspended?: (id: string) => Promise<SuspendedRunCancelResult>;
 }
 
 const CHAIN_RECONSTRUCT_LOOKBACK_DAYS = 14;
@@ -450,6 +469,29 @@ export async function cancelExecution(
     found = deps.scheduledCancelByRunId(executionId);
     foundViaScheduled = found;
   }
+  if (
+    !found && executionType === "workflow-run" && deps.cancelSuspended
+  ) {
+    const suspended = await deps.cancelSuspended(executionId);
+    switch (suspended.status) {
+      case "cancelled":
+        return { status: "cancelled", executionType, executionId };
+      case "active":
+        // A resume registered the run after the registry miss above.
+        found = deps.activeRunRegistry?.cancel(executionId) ?? false;
+        break;
+      case "busy":
+      case "not_suspended":
+        return {
+          status: "conflict",
+          executionType,
+          executionId,
+          message: suspended.message,
+        };
+      case "not_found":
+        break;
+    }
+  }
   if (!found) {
     return {
       status: "not_found",
@@ -476,6 +518,36 @@ export async function cancelExecution(
     return { status: "cancellation_requested", executionType, executionId };
   }
   return { status: "cancelled", executionType, executionId };
+}
+
+/**
+ * Audits a single-execution cancel over HTTP. The bulk cancel and the
+ * WebSocket request abort are not audited here.
+ */
+export function emitHttpCancelAudit(
+  ctx: import("../../serve/connection.ts").ConnectionContext,
+  result: CancelResult,
+  principal: ReturnType<typeof parsePrincipal> | null,
+  sourceIp: string,
+): void {
+  if (!ctx.auditEmitter) return;
+  const succeeded = result.status === "cancelled" ||
+    result.status === "cancellation_requested";
+  ctx.auditEmitter.emit(buildAuditEvent({
+    instanceId: ctx.instanceId ?? "unknown",
+    category: "execution",
+    stage: "response",
+    outcome: succeeded ? "success" : "failure",
+    action: "cancel",
+    resourceKind: result.executionType === "method-run" ? "model" : "workflow",
+    resourceName: result.executionId,
+    principalKind: principal?.kind ?? "anonymous",
+    principalId: principal?.id ?? "anonymous",
+    initiatedBy: principal ? principalToString(principal) : "ghost",
+    sourceIp,
+    requestId: crypto.randomUUID(),
+    detail: succeeded ? result.status : result.message,
+  }));
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -4872,6 +4944,8 @@ export const serveCommand = new Command()
             /^\/api\/v1\/cancel\/(workflow-run|method-run)\/([^/]+)$/,
           );
           const isBulkCancel = url.pathname === "/api/v1/cancel";
+          let cancelAuditPrincipal: ReturnType<typeof parsePrincipal> | null =
+            null;
           if (cancelMatch || isBulkCancel) {
             if (authConfig.mode !== "none") {
               const cancelRemoteAddr = trustProxy
@@ -4927,6 +5001,7 @@ export const serveCommand = new Command()
               clearRateLimit(cancelRlKey);
 
               const cancelPrincipal = parsePrincipal(authResult.principalId);
+              cancelAuditPrincipal = cancelPrincipal;
               if (!policySnapshotLoader) {
                 return Response.json({
                   status: "error",
@@ -4966,13 +5041,42 @@ export const serveCommand = new Command()
                 scheduledCancelByRunId: scheduledExecution
                   ? (id) => scheduledExecution.cancelByRunId(id)
                   : undefined,
+                // The endpoint already required admin on every resource, so
+                // the run's own workflow needs no further check.
+                cancelSuspended: (id) =>
+                  withSyncGate(connectionCtx.syncGate, async () => {
+                    try {
+                      return await cancelSuspendedRunInServe(
+                        connectionCtx,
+                        { runId: id, reason: "cancelled via serve API" },
+                        () => true,
+                      );
+                    } finally {
+                      await pushChangedToRemote(connectionCtx);
+                    }
+                  }),
               },
+            );
+            emitHttpCancelAudit(
+              connectionCtx,
+              result,
+              cancelAuditPrincipal,
+              trustProxy
+                ? (req.headers.get("x-forwarded-for")?.split(",")[0]
+                  ?.trim() ?? info.remoteAddr.hostname)
+                : info.remoteAddr.hostname,
             );
             if (result.status === "not_found") {
               return Response.json({
                 status: result.status,
                 message: result.message,
               }, { status: 404 });
+            }
+            if (result.status === "conflict") {
+              return Response.json({
+                status: result.status,
+                message: result.message,
+              }, { status: 409 });
             }
             return Response.json({
               status: result.status,
