@@ -32,6 +32,7 @@ import {
   readTokenFile,
   requestServerResponse,
   resetMarkerServerAddress,
+  resolveCaCertPath,
   resolveServerToken,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -94,6 +95,62 @@ function scriptedServer(
     upgradeUrls,
   };
 }
+
+// ── resolveCaCertPath tests ────────────────────────────────────────────
+
+Deno.test("resolveCaCertPath: --ca-cert flag takes precedence over SWAMP_CA_CERT", () => {
+  assertEquals(
+    resolveCaCertPath(
+      ["worker", "connect", "--ca-cert", "./flag.pem"],
+      "/env/ca.pem",
+    ),
+    "./flag.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: --ca-cert=value flag takes precedence over SWAMP_CA_CERT", () => {
+  assertEquals(
+    resolveCaCertPath(["--ca-cert=./flag.pem"], "/env/ca.pem"),
+    "./flag.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: falls back to SWAMP_CA_CERT when the flag is absent", () => {
+  assertEquals(
+    resolveCaCertPath(["worker", "connect"], "/env/ca.pem"),
+    "/env/ca.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: uses the flag when SWAMP_CA_CERT is unset", () => {
+  assertEquals(
+    resolveCaCertPath(["--ca-cert", "./flag.pem"], undefined),
+    "./flag.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: returns undefined when neither is set", () => {
+  assertEquals(resolveCaCertPath(["worker", "connect"], undefined), undefined);
+  assertEquals(resolveCaCertPath([], ""), undefined);
+});
+
+Deno.test("resolveCaCertPath: an empty flag value falls through to SWAMP_CA_CERT", () => {
+  assertEquals(
+    resolveCaCertPath(["--ca-cert="], "/env/ca.pem"),
+    "/env/ca.pem",
+  );
+  assertEquals(
+    resolveCaCertPath(["--ca-cert", ""], "/env/ca.pem"),
+    "/env/ca.pem",
+  );
+});
+
+Deno.test("resolveCaCertPath: a trailing --ca-cert with no value falls through to SWAMP_CA_CERT", () => {
+  assertEquals(
+    resolveCaCertPath(["worker", "connect", "--ca-cert"], "/env/ca.pem"),
+    "/env/ca.pem",
+  );
+});
 
 // ── resolveServeUrl tests ──────────────────────────────────────────────
 
