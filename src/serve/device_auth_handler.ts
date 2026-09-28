@@ -22,6 +22,7 @@ import { checkAdmission } from "../domain/access/admission.ts";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type {
   AuditEvent,
@@ -185,10 +186,15 @@ async function handleStartDeviceGrant(
 ): Promise<Response> {
   try {
     const signal = AbortSignal.timeout(30_000);
-    const grant = await deps.startDeviceGrant(
-      deps.authConfig.oauthProvider,
-      deps.authConfig.oauthClientId,
-      signal,
+    const grant = await withSpan(
+      "swamp.serve.auth.device_start",
+      {},
+      () =>
+        deps.startDeviceGrant(
+          deps.authConfig.oauthProvider,
+          deps.authConfig.oauthClientId,
+          signal,
+        ),
     );
     logger.info("Device grant started for provider {provider}", {
       provider: deps.authConfig.oauthProvider,
@@ -230,19 +236,45 @@ async function handleDeviceToken(
 
   try {
     const signal = AbortSignal.timeout(30_000);
-    const tokenResponse = await deps.pollForToken(
-      deps.authConfig.oauthProvider,
-      deps.authConfig.oauthClientId,
-      deps.clientSecret,
-      deviceCode,
-      signal,
+    const polled = await withSpan(
+      "swamp.serve.auth.poll_token",
+      {},
+      async (span) => {
+        try {
+          const tokenResponse = await deps.pollForToken(
+            deps.authConfig.oauthProvider,
+            deps.authConfig.oauthClientId,
+            deps.clientSecret,
+            deviceCode,
+            signal,
+          );
+          span.setAttribute("oauth.poll.outcome", "granted");
+          return { tokenResponse };
+        } catch (err) {
+          if (!(err instanceof DeviceGrantPollError)) throw err;
+          span.setAttribute("oauth.poll.outcome", err.code);
+          // Pending, slow_down, expired and denied are the normal outcomes of
+          // polling a device grant, so they must not mark the span ERROR — a
+          // login polls pending every few seconds. The error is handed out
+          // and rethrown below, after the span has ended.
+          if (err.code === "unknown") throw err;
+          return { pollError: err };
+        }
+      },
     );
+    if ("pollError" in polled) throw polled.pollError;
+    const { tokenResponse } = polled;
 
-    const userInfo = await deps.getUserInfo(
-      deps.authConfig.oauthProvider,
-      tokenResponse.accessToken,
-      deps.authConfig.groupsField,
-      signal,
+    const userInfo = await withSpan(
+      "swamp.serve.auth.userinfo",
+      {},
+      () =>
+        deps.getUserInfo(
+          deps.authConfig.oauthProvider,
+          tokenResponse.accessToken,
+          deps.authConfig.groupsField,
+          signal,
+        ),
     );
 
     const admissionResult = deps.checkAdmission(
@@ -271,17 +303,29 @@ async function handleDeviceToken(
     }
 
     const principalId = `user:${userInfo.sub}`;
-    const token = await deps.mintServerToken(
-      principalId,
-      userInfo.email,
-      [...userInfo.collectives],
-      [...userInfo.groups],
-      deps.repoDir,
-      deps.repoContext,
+    const token = await withSpan(
+      "swamp.serve.auth.mint",
+      { "auth.principal.id": principalId },
+      async (span) => {
+        const minted = await deps.mintServerToken(
+          principalId,
+          userInfo.email,
+          [...userInfo.collectives],
+          [...userInfo.groups],
+          deps.repoDir,
+          deps.repoContext,
+        );
+        span.setAttribute("token.name", minted.split(".")[0]);
+        return minted;
+      },
     );
 
     const tokenName = token.split(".")[0];
-    await deps.storeAccessToken(tokenName, tokenResponse.accessToken);
+    await withSpan(
+      "swamp.serve.auth.store_access_token",
+      { "token.name": tokenName },
+      () => deps.storeAccessToken(tokenName, tokenResponse.accessToken),
+    );
     logger.info("Stored OAuth access token for {name}", {
       name: tokenName,
     });
@@ -359,34 +403,49 @@ async function mintServerTokenImpl(
   const secretKey = serverTokenSecretKey(tokenName);
   const plaintext = generateOpaqueToken();
 
-  const vaultService = await VaultService.fromRepository(
-    repoDir,
-    { defaultVaultName: defaultVault },
-  );
   const vaultName = TOKEN_SECRETS_VAULT_NAME;
-  await vaultService.put(vaultName, secretKey, plaintext);
-
-  const defRepo = repoContext.definitionRepo;
-  let def = await defRepo.findByName(SERVER_TOKEN_MODEL_TYPE, tokenName);
-  let savedDefinitionPath: string | undefined;
-  if (!def) {
-    def = Definition.create({
-      type: SERVER_TOKEN_MODEL_TYPE.normalized,
-      name: tokenName,
-      // Creation owns typeVersion now that the repository no longer stamps it
-      // (swamp-club#900).
-      typeVersion: serverTokenModel.version,
-    });
-    const autoDefRepo = new YamlDefinitionRepository(
+  await withSpan("swamp.serve.auth.mint.vault_put", {}, async () => {
+    const vaultService = await VaultService.fromRepository(
       repoDir,
-      repoContext.eventBus,
-      repoContext.autoDefinitionsDir,
-      false,
-      repoContext.markDirty,
+      { defaultVaultName: defaultVault },
     );
-    await autoDefRepo.save(SERVER_TOKEN_MODEL_TYPE, def);
-    savedDefinitionPath = autoDefRepo.getPath(SERVER_TOKEN_MODEL_TYPE, def.id);
-  }
+    await vaultService.put(vaultName, secretKey, plaintext);
+  });
+
+  const { def, savedDefinitionPath } = await withSpan(
+    "swamp.serve.auth.mint.definition_save",
+    {},
+    async () => {
+      const defRepo = repoContext.definitionRepo;
+      const existing = await defRepo.findByName(
+        SERVER_TOKEN_MODEL_TYPE,
+        tokenName,
+      );
+      if (existing) return { def: existing, savedDefinitionPath: undefined };
+      const created = Definition.create({
+        type: SERVER_TOKEN_MODEL_TYPE.normalized,
+        name: tokenName,
+        // Creation owns typeVersion now that the repository no longer stamps
+        // it (swamp-club#900).
+        typeVersion: serverTokenModel.version,
+      });
+      const autoDefRepo = new YamlDefinitionRepository(
+        repoDir,
+        repoContext.eventBus,
+        repoContext.autoDefinitionsDir,
+        false,
+        repoContext.markDirty,
+      );
+      await autoDefRepo.save(SERVER_TOKEN_MODEL_TYPE, created);
+      return {
+        def: created,
+        savedDefinitionPath: autoDefRepo.getPath(
+          SERVER_TOKEN_MODEL_TYPE,
+          created.id,
+        ),
+      };
+    },
+  );
 
   const now = Date.now();
   const tokenData = {
@@ -402,53 +461,62 @@ async function mintServerTokenImpl(
     secretKey,
   };
 
-  const { writeResource } = createResourceWriter(
-    repoContext.unifiedDataRepo,
-    SERVER_TOKEN_MODEL_TYPE,
-    def.id,
-    serverTokenModel.resources!,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    tokenName,
-  );
-  await writeResource(
-    "token",
-    TOKEN_DATA_NAME,
-    tokenData as unknown as Record<string, unknown>,
-  );
-
-  if (syncService) {
-    // The repositories mark each path dirty before writing it. An ungated
-    // push (post-run, post-resume) that lands in between takes the path as
-    // a delete and clears the mark, so mark the token's paths again now
-    // that both writes are done. Per path, not bare: a bare markDirty()
-    // sets bulkInvalidated and turns every login's push into a walk of the
-    // whole cache (swamp-club#2408).
-    if (savedDefinitionPath) {
-      await repoContext.markDirty?.(savedDefinitionPath);
-    }
-    await repoContext.markDirty?.(
-      repoContext.unifiedDataRepo.getDataNameDir(
-        SERVER_TOKEN_MODEL_TYPE,
-        def.id,
-        TOKEN_DATA_NAME,
-      ),
-    );
-    await syncService.pushChanged({ namespace });
-
-    repoContext.catalogStore.invalidate();
-    const verifyResult = await findDefinitionByIdOrName(
-      repoContext.definitionRepo,
+  await withSpan("swamp.serve.auth.mint.token_write", {}, async () => {
+    const { writeResource } = createResourceWriter(
+      repoContext.unifiedDataRepo,
+      SERVER_TOKEN_MODEL_TYPE,
+      def.id,
+      serverTokenModel.resources!,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
       tokenName,
     );
-    if (!verifyResult) {
-      logger.warn(
-        "OAuth server token {name} was minted but its definition could not be read back — it may not survive a pod restart",
-        { name: tokenName },
+    await writeResource(
+      "token",
+      TOKEN_DATA_NAME,
+      tokenData as unknown as Record<string, unknown>,
+    );
+  });
+
+  if (syncService) {
+    // The push runs inside this active span, so the datastore's own push
+    // span is parented to the login rather than starting a root trace
+    // (swamp-club#2417).
+    await withSpan("swamp.serve.auth.mint.push", {}, async () => {
+      // The repositories mark each path dirty before writing it. An ungated
+      // push (post-run, post-resume) that lands in between takes the path as
+      // a delete and clears the mark, so mark the token's paths again now
+      // that both writes are done. Per path, not bare: a bare markDirty()
+      // sets bulkInvalidated and turns every login's push into a walk of the
+      // whole cache (swamp-club#2408).
+      if (savedDefinitionPath) {
+        await repoContext.markDirty?.(savedDefinitionPath);
+      }
+      await repoContext.markDirty?.(
+        repoContext.unifiedDataRepo.getDataNameDir(
+          SERVER_TOKEN_MODEL_TYPE,
+          def.id,
+          TOKEN_DATA_NAME,
+        ),
       );
-    }
+      await syncService.pushChanged({ namespace });
+    });
+
+    await withSpan("swamp.serve.auth.mint.verify", {}, async () => {
+      repoContext.catalogStore.invalidate();
+      const verifyResult = await findDefinitionByIdOrName(
+        repoContext.definitionRepo,
+        tokenName,
+      );
+      if (!verifyResult) {
+        logger.warn(
+          "OAuth server token {name} was minted but its definition could not be read back — it may not survive a pod restart",
+          { name: tokenName },
+        );
+      }
+    });
   }
 
   logger.info("Minted OAuth server token {name} for {principal}", {
