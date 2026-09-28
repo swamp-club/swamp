@@ -89,7 +89,7 @@ Deno.test("traceHttpRequests: names the span by method and route with status", a
     assertEquals(span.parentSpanId, undefined);
     assertEquals(span.attributes["http.request.method"], "POST");
     assertEquals(span.attributes["http.route"], "/auth/device/token");
-    assertEquals(span.attributes["url.path"], "/auth/device/token");
+    assertEquals(span.attributes["url.path"], undefined);
     assertEquals(span.attributes["http.response.status_code"], 202);
     assertEquals(span.status.code, SpanStatusCode.UNSET);
   });
@@ -103,6 +103,30 @@ Deno.test("traceHttpRequests: records no path or route for an unknown path", asy
     assertEquals(span.attributes["http.route"], undefined);
     assertEquals(span.attributes["url.path"], undefined);
     assertEquals(span.attributes["http.response.status_code"], 200);
+  });
+});
+
+Deno.test("traceHttpRequests: never records the path under a templated route", async () => {
+  await withCapturedSpans(async (spans) => {
+    // A webhook route can sit under a templated prefix and hold a secret.
+    const handler = traceHttpRequests(() => new Response("ok"));
+    await handler(request("/dashboard/s3cr3t-token", { method: "POST" }), INFO);
+    const span = findSpan(spans, "POST /dashboard/*");
+    for (const value of Object.values(span.attributes)) {
+      assert(!String(value).includes("s3cr3t-token"));
+    }
+  });
+});
+
+Deno.test("traceHttpRequests: reports a non-standard method as _OTHER", async () => {
+  await withCapturedSpans(async (spans) => {
+    const handler = traceHttpRequests(() =>
+      new Response("nope", { status: 405 })
+    );
+    await handler(request("/ready", { method: "FOO1" }), INFO);
+    const span = findSpan(spans, "_OTHER /ready");
+    assertEquals(span.attributes["http.request.method"], "_OTHER");
+    assertEquals(span.attributes["http.request.method_original"], "FOO1");
   });
 });
 

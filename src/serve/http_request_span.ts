@@ -60,6 +60,21 @@ export function resolveHttpRoute(pathname: string): string | undefined {
   return undefined;
 }
 
+// The methods OpenTelemetry's HTTP conventions name as known. Any other
+// method is reported as _OTHER so arbitrary tokens from scanners cannot
+// multiply span names.
+const KNOWN_METHODS: ReadonlySet<string> = new Set([
+  "CONNECT",
+  "DELETE",
+  "GET",
+  "HEAD",
+  "OPTIONS",
+  "PATCH",
+  "POST",
+  "PUT",
+  "TRACE",
+]);
+
 function isWebSocketUpgrade(req: Request): boolean {
   return (req.headers.get("upgrade") ?? "").toLowerCase() === "websocket";
 }
@@ -73,9 +88,11 @@ function isWebSocketUpgrade(req: Request): boolean {
  * WebSocket upgrades pass through untraced: the connection outlives the
  * upgrade, and every message on it would otherwise join one trace.
  *
- * Only a 5xx response or a thrown error marks the span ERROR. No query
- * string, header or body is recorded, and the path is recorded only for a
- * known route. The span ends when the handler returns its Response, so a
+ * Only a 5xx response or a thrown error marks the span ERROR. The request
+ * path, query string, headers and body are never recorded — only the route
+ * template. An operator's webhook route may hold a secret segment and can sit
+ * under a templated prefix such as /dashboard/, and data-plane paths carry
+ * data names. The span ends when the handler returns its Response, so a
  * streamed body is not included in its duration.
  */
 export function traceHttpRequests<A extends Deno.Addr = Deno.Addr>(
@@ -84,16 +101,16 @@ export function traceHttpRequests<A extends Deno.Addr = Deno.Addr>(
   return (req, info) => {
     if (isWebSocketUpgrade(req)) return handler(req, info);
 
-    const pathname = new URL(req.url).pathname;
-    const route = resolveHttpRoute(pathname);
-    const name = route ? `${req.method} ${route}` : req.method;
+    const route = resolveHttpRoute(new URL(req.url).pathname);
+    const method = KNOWN_METHODS.has(req.method) ? req.method : "_OTHER";
+    const name = route ? `${method} ${route}` : method;
     const attributes: Record<string, string> = {
-      "http.request.method": req.method,
+      "http.request.method": method,
     };
-    if (route) {
-      attributes["http.route"] = route;
-      attributes["url.path"] = pathname;
+    if (method !== req.method) {
+      attributes["http.request.method_original"] = req.method;
     }
+    if (route) attributes["http.route"] = route;
 
     return withServerSpan(name, attributes, async (span) => {
       const response = await handler(req, info);
