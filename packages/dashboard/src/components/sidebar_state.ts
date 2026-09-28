@@ -29,10 +29,10 @@ export function parseCollapsed(raw: string | null): boolean {
   return raw === "true";
 }
 
-export type EscapeAction = "close-drawer" | "close-detail" | "none";
+export type EscapeAction = "close-drawer" | "leave-detail" | "none";
 
 /**
- * Decides what Escape closes. The open drawer sits on top of the detail
+ * Decides what Escape does. The open drawer sits on top of the detail
  * view, so it closes first. Callers pass `drawerOpen` as true only while
  * the mobile media query matches, so a drawer left open before the window
  * was widened cannot swallow Escape on desktop.
@@ -42,6 +42,6 @@ export function resolveEscape(
   hasDetail: boolean,
 ): EscapeAction {
   if (drawerOpen) return "close-drawer";
-  if (hasDetail) return "close-detail";
+  if (hasDetail) return "leave-detail";
   return "none";
 }

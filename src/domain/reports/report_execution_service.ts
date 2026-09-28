@@ -31,6 +31,9 @@ import {
   redactSensitiveValues,
 } from "../models/sensitive_field_extractor.ts";
 import { buildReportErrorResult } from "./builtin/report_error_report.ts";
+import { sanitizeReportNameForData } from "./report_data_name.ts";
+
+export { sanitizeReportNameForData };
 
 /**
  * Options for filtering which reports to execute.
@@ -182,21 +185,6 @@ export function filterReports(
 
     return true;
   });
-}
-
-/**
- * Sanitizes a report name for use as a data name component.
- *
- * Report names use the `@collective/name` scoped pattern, but data names
- * reject `/`, `\`, `..`, and null bytes as path traversal risks.
- * Follows the same pattern as `sanitizeVaultKey` in `data_writer.ts`.
- */
-export function sanitizeReportNameForData(reportName: string): string {
-  return reportName
-    .replace(/@/g, "")
-    .replace(/[/\\]/g, "-")
-    .replace(/\.\./g, ".")
-    .replace(/\0/g, "");
 }
 
 /**

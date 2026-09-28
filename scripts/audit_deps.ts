@@ -336,7 +336,10 @@ async function main(): Promise<void> {
   const { packages, directNames } = parseNpmPackages(lockData);
 
   // Also scan npm lockfiles (e.g. evals/promptfoo/package-lock.json)
-  const npmLockfiles = ["evals/promptfoo/package-lock.json"];
+  const npmLockfiles = [
+    "evals/promptfoo/package-lock.json",
+    "packages/dashboard/package-lock.json",
+  ];
   for (const lockPath of npmLockfiles) {
     try {
       const content = await Deno.readTextFile(lockPath);

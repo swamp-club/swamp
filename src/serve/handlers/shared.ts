@@ -55,7 +55,10 @@ import type {
   AccessResource,
 } from "../../domain/access/access_decision_service.ts";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
-import type { ScheduledExecutionService } from "../../libswamp/mod.ts";
+import type {
+  ScheduledExecutionService,
+  SwampError,
+} from "../../libswamp/mod.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
@@ -149,6 +152,66 @@ export function lockTimeoutErrorForClient(
     code: "lock_timeout",
     message,
     details: { retryable: true, exceptionType: "LockTimeoutError" },
+  };
+}
+
+/**
+ * Carries a libswamp stream error out of a `consumeStream` callback so the
+ * handler's catch block can forward its reason alongside the handler's own
+ * error code.
+ */
+export class LibSwampStreamError extends Error {
+  constructor(readonly swampError: SwampError) {
+    super(swampError.message);
+    this.name = "LibSwampStreamError";
+  }
+}
+
+/** Machine-readable reasons a client may branch on (e.g. an expired version). */
+export type ClientErrorReason =
+  | "not_found"
+  | "validation_failed"
+  | "data_pending";
+
+const CLIENT_ERROR_REASONS: ReadonlySet<string> = new Set<ClientErrorReason>([
+  "not_found",
+  "validation_failed",
+  "data_pending",
+]);
+
+// Fixed entity labels passed to libswamp's notFound(); never user data.
+const CLIENT_ENTITY_TYPES: ReadonlySet<string> = new Set([
+  "Model",
+  "Workflow",
+  "Workflow run",
+  "Workflow run or workflow",
+  "Data",
+]);
+
+export interface ClientErrorDetails {
+  reason: ClientErrorReason;
+  entityType?: string;
+}
+
+/**
+ * Extracts the allow-listed reason and entity type from a libswamp stream
+ * error. Returns undefined for anything else, so identifiers and message
+ * fragments never reach the client through `details`.
+ */
+export function clientErrorDetails(
+  error: unknown,
+): ClientErrorDetails | undefined {
+  if (!(error instanceof LibSwampStreamError)) return undefined;
+  const { code, details } = error.swampError;
+  if (!CLIENT_ERROR_REASONS.has(code)) return undefined;
+  const entityType = details !== null && typeof details === "object" &&
+      "entityType" in details && typeof details.entityType === "string" &&
+      CLIENT_ENTITY_TYPES.has(details.entityType)
+    ? details.entityType
+    : undefined;
+  return {
+    reason: code as ClientErrorReason,
+    ...(entityType !== undefined && { entityType }),
   };
 }
 
