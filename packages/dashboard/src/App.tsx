@@ -17,13 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
 import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
 import { extractArray } from "./client/extract";
-import { Sidebar } from "./components/Sidebar";
+import { Logo } from "./components/Logo";
+import { Sidebar, SIDEBAR_ID, type View } from "./components/Sidebar";
+import {
+  MOBILE_MEDIA_QUERY,
+  parseCollapsed,
+  resolveEscape,
+  SIDEBAR_COLLAPSED_KEY,
+} from "./components/sidebar_state.ts";
 import { useRouter } from "./hooks/useRouter";
 import { Login } from "./views/Login";
 import { Overview } from "./views/Overview";
@@ -86,27 +93,80 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   );
   const approvalCount = extractArray(approvalsData).length;
 
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+
+  const toggleCollapsed = useCallback(() => {
+    const next = !collapsed;
+    writeCollapsed(next);
+    setCollapsed(next);
+  }, [collapsed]);
+
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+
+  const navigateAndClose = useCallback((next: View) => {
+    setDrawerOpen(false);
+    navigate(next);
+  }, [navigate]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && detail) {
+      if (e.key !== "Escape") return;
+      const isMobile = globalThis.matchMedia(MOBILE_MEDIA_QUERY).matches;
+      const action = resolveEscape(drawerOpen && isMobile, detail !== null);
+      if (action === "close-drawer") {
+        e.preventDefault();
+        setDrawerOpen(false);
+      } else if (action === "close-detail") {
         e.preventDefault();
         closeDetail();
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [detail, closeDetail]);
+  }, [drawerOpen, detail, closeDetail]);
+
+  const appClass = `app${drawerOpen ? " drawer-open" : ""}${
+    collapsed ? " sidebar-collapsed" : ""
+  }`;
 
   return (
-    <div className="app">
+    <div className={appClass}>
       <Sidebar
         activeView={view}
-        onNavigate={navigate}
+        onNavigate={navigateAndClose}
         health={health}
         approvalCount={approvalCount}
         onLogout={onLogout}
+        collapsed={collapsed}
+        onToggleCollapsed={toggleCollapsed}
+        onCloseDrawer={closeDrawer}
       />
+      <div className="sidebar-backdrop" onClick={closeDrawer} />
       <main className="main">
+        <div className="mobile-topbar">
+          <button
+            type="button"
+            className="mobile-menu-button"
+            aria-label="Open navigation"
+            aria-expanded={drawerOpen}
+            aria-controls={SIDEBAR_ID}
+            onClick={() => setDrawerOpen(true)}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            >
+              <path d="M3 5h14M3 10h14M3 15h14" />
+            </svg>
+          </button>
+          <Logo size="sm" />
+        </div>
         {detail?.kind === "run"
           ? (
             <RunDetail
@@ -159,4 +219,20 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       </main>
     </div>
   );
+}
+
+function readCollapsed(): boolean {
+  try {
+    return parseCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY));
+  } catch {
+    return false;
+  }
+}
+
+function writeCollapsed(value: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(value));
+  } catch {
+    // Storage blocked: the preference lasts for this page load only.
+  }
 }

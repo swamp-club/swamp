@@ -598,7 +598,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   Navigation state is in the URL path (`/dashboard/models/<name>`,
   `/dashboard/workflows/<name>/runs/<runId>`, etc.), so views are linkable. The
   server falls back to `index.html` for any `/dashboard/` sub-path to support
-  client-side routing.
+  client-side routing. On desktop the sidebar collapses to an icon-only rail
+  (remembered in `localStorage`); at 768px and below it becomes an off-canvas
+  drawer opened from a top-bar menu button.
 
   The dashboard is a complete approval surface. Approve and reject address the
   gate's run by `runId`. An approved but still suspended run (`awaitingResume`
