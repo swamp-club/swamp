@@ -60,6 +60,8 @@ import {
 import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
+  CA_CERT_DESCRIPTION,
+  CA_CERT_FLAG,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -140,6 +142,7 @@ const accessGrantCreateCommand = new Command()
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {
     if (!options.allow && !options.deny) {
       throw new UserError("Either --allow or --deny must be specified");
@@ -359,6 +362,7 @@ const accessGrantListCommand = new Command()
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
 
@@ -460,6 +464,7 @@ const accessGrantRevokeCommand = new Command()
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions, grantId: string) {
     const server = resolveServeUrl(options.server as string | undefined);
 

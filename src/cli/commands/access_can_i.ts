@@ -21,6 +21,8 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
+  CA_CERT_DESCRIPTION,
+  CA_CERT_FLAG,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -59,6 +61,7 @@ export const accessCanICommand = new Command()
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .option(
     "--action <action:string>",
     "Action to check (run, read, write, approve, admin)",

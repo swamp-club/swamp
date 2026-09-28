@@ -240,6 +240,8 @@ import {
   performServeReload,
 } from "../../serve/extension_reload.ts";
 import {
+  CA_CERT_DESCRIPTION,
+  CA_CERT_FLAG,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -1225,6 +1227,7 @@ const reloadCommand = new Command()
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
 

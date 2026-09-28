@@ -782,9 +782,20 @@ export async function* subscribeServerEvents(
 type AnyCommand = Command<any, any, any, any, any, any, any, any>;
 
 /**
- * Adds `--server` and `--token` options to a Cliffy command. New
- * remote-capable commands should use this instead of duplicating the
- * option definitions from model_method_run.ts / workflow_run.ts.
+ * The `--ca-cert` option. Every command that takes `--server` must declare
+ * it: the TLS UnknownIssuer guidance tells users to pass it, and
+ * `resolveCaCertPath` reads it from `Deno.args` once Cliffy accepts it
+ * (swamp-club#2360).
+ */
+export const CA_CERT_FLAG = "--ca-cert <path:string>";
+export const CA_CERT_DESCRIPTION =
+  "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)";
+
+/**
+ * Adds `--server`, `--token`, `--token-file` and `--ca-cert` options to a
+ * Cliffy command. New remote-capable commands should use this instead of
+ * duplicating the option definitions from model_method_run.ts /
+ * workflow_run.ts.
  */
 export function withRemoteOptions<T extends AnyCommand>(command: T): T {
   return command
@@ -800,10 +811,7 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
       "--token-file <path:string>",
       "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
     )
-    .option(
-      "--ca-cert <path:string>",
-      "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)",
-    ) as T;
+    .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION) as T;
 }
 
 /**
