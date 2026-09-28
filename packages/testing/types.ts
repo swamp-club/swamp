@@ -201,6 +201,15 @@ export interface MethodContext<TGlobalArgs = Record<string, unknown>> {
   definition: DefinitionInfo;
   /** The name of the method being executed. */
   methodName: string;
+  /**
+   * W3C Trace Context headers (`traceparent`, `tracestate`) for this method
+   * execution. Pass them to any subprocess you spawn (as the
+   * `TRACEPARENT`/`TRACESTATE` env vars) or outbound request to continue the
+   * trace. Unlike the process env, this is always this execution's own
+   * context, even when other methods run concurrently in the same process.
+   * Absent or empty when tracing is disabled.
+   */
+  traceHeaders?: Readonly<Record<string, string>>;
   /** Logger for emitting log messages. */
   logger: Logger;
   /** Write a resource — validates against schema, serializes JSON, returns handle. */

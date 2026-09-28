@@ -77,6 +77,8 @@ export interface ModelTestContextOptions {
    * for inspection via getEvents().
    */
   onEvent?: (event: MethodExecutionEvent) => void;
+  /** W3C trace headers to expose as context.traceHeaders (default: unset). */
+  traceHeaders?: Record<string, string>;
 }
 
 /** The return value from createModelTestContext. */
@@ -307,6 +309,7 @@ export function createModelTestContext(
     globalArgs: options?.globalArgs ?? {},
     definition,
     methodName: options?.methodName ?? "run",
+    traceHeaders: options?.traceHeaders,
     logger,
     writeResource,
     readResource,

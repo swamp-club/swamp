@@ -701,6 +701,45 @@ posixOnlyTest(
   },
 );
 
+posixOnlyTest(
+  "shellModel.methods.execute passes the context's trace headers to the child env",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: "echo TP=$TRACEPARENT && echo TS=$TRACESTATE",
+    };
+
+    const { context, getResults } = createTestContext({
+      traceHeaders: {
+        traceparent: "00-abc123-def456-01",
+        tracestate: "vendor=value",
+      },
+    });
+    await shellModel.methods.execute.execute(args, context);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "TP=00-abc123-def456-01");
+    assertStringIncludes(logContent, "TS=vendor=value");
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute lets user env override the trace headers",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: "echo TP=$TRACEPARENT",
+      env: { TRACEPARENT: "00-user-value-01" },
+    };
+
+    const { context, getResults } = createTestContext({
+      traceHeaders: { traceparent: "00-abc123-def456-01" },
+    });
+    await shellModel.methods.execute.execute(args, context);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "TP=00-user-value-01");
+  },
+);
+
 posixOnlyTest("shellModel.methods.execute handles pipes", async () => {
   const args: ShellInputAttributes = { run: "echo 'hello world' | tr 'h' 'H'" };
 
