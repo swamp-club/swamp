@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { buildPath, parseRoute, type RouteState } from "./routes.ts";
+import {
+  buildPath,
+  type ClickLike,
+  isPlainLeftClick,
+  parseRoute,
+  type RouteState,
+} from "./routes.ts";
 
 // ── parseRoute ──────────────────────────────────────────────────────────
 
@@ -217,4 +223,37 @@ Deno.test("round-trip: model with special characters", () => {
     detail: { kind: "model", modelName: "org/model name (v2)" },
   };
   assertEquals(parseRoute(buildPath(state)), state);
+});
+
+// ── isPlainLeftClick ────────────────────────────────────────────────────
+
+const PLAIN_CLICK: ClickLike = {
+  button: 0,
+  metaKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  altKey: false,
+  defaultPrevented: false,
+};
+
+Deno.test("isPlainLeftClick: unmodified primary click is plain", () => {
+  assertEquals(isPlainLeftClick(PLAIN_CLICK), true);
+});
+
+Deno.test("isPlainLeftClick: any modifier key is not plain", () => {
+  for (const key of ["metaKey", "ctrlKey", "shiftKey", "altKey"] as const) {
+    assertEquals(isPlainLeftClick({ ...PLAIN_CLICK, [key]: true }), false, key);
+  }
+});
+
+Deno.test("isPlainLeftClick: non-primary buttons are not plain", () => {
+  assertEquals(isPlainLeftClick({ ...PLAIN_CLICK, button: 1 }), false);
+  assertEquals(isPlainLeftClick({ ...PLAIN_CLICK, button: 2 }), false);
+});
+
+Deno.test("isPlainLeftClick: an already-handled click is not plain", () => {
+  assertEquals(
+    isPlainLeftClick({ ...PLAIN_CLICK, defaultPrevented: true }),
+    false,
+  );
 });

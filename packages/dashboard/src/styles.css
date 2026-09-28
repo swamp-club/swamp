@@ -149,6 +149,11 @@ body {
   height: 100vh;
 }
 
+.nav-item:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -2px;
+}
+
 .main {
   overflow-y: auto;
   padding: 24px 32px 48px;

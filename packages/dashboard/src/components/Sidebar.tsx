@@ -19,6 +19,7 @@
 
 import type { HealthSnapshot } from "../client/useHealthStream";
 import type { View } from "../types.ts";
+import { buildPath, isPlainLeftClick } from "../routes.ts";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -58,9 +59,15 @@ interface NavItemProps {
 function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
   const iconSvg = ICONS[view] ?? "";
   return (
-    <div
+    <a
+      href={buildPath({ view, detail: null })}
       className={`nav-item${active ? " active" : ""}`}
-      onClick={() => onClick(view)}
+      aria-current={active ? "page" : undefined}
+      onClick={(e) => {
+        if (!isPlainLeftClick(e)) return;
+        e.preventDefault();
+        onClick(view);
+      }}
       style={{
         display: "flex",
         alignItems: "center",
@@ -70,6 +77,7 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
         color: active ? "var(--sidebar-text-active)" : "var(--sidebar-text)",
         background: active ? "var(--sidebar-active)" : "transparent",
         cursor: "pointer",
+        textDecoration: "none",
         fontSize: "0.88rem",
         fontWeight: 500,
         position: "relative",
@@ -98,6 +106,7 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
         fill="none"
         stroke="currentColor"
         strokeWidth="1.5"
+        aria-hidden="true"
         style={{ flexShrink: 0, opacity: active ? 1 : 0.7 }}
         dangerouslySetInnerHTML={{ __html: iconSvg }}
       />
@@ -118,7 +127,7 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
           {badge}
         </span>
       )}
-    </div>
+    </a>
   );
 }
 

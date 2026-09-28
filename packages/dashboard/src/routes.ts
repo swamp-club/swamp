@@ -118,3 +118,23 @@ export function buildPath(state: RouteState): string {
   if (state.view === "overview") return BASE;
   return `${BASE}/${state.view}`;
 }
+
+/** The pointer-event fields needed to tell a plain click from a modified one. */
+export interface ClickLike {
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  defaultPrevented: boolean;
+}
+
+/**
+ * True for an unmodified primary-button click — the only click a nav link
+ * should turn into in-app navigation. Modified or middle clicks are left to
+ * the browser so they open the link in a new tab or window.
+ */
+export function isPlainLeftClick(event: ClickLike): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey &&
+    !event.shiftKey && !event.altKey && !event.defaultPrevented;
+}
