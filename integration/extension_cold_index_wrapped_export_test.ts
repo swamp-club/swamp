@@ -242,3 +242,179 @@ Deno.test("cold buildIndex still warns for a wrapped export nothing has indexed"
     );
   });
 });
+
+// A repo reached under a second spelling of its root — `/tmp/r` and
+// `/private/tmp/r` on macOS — changes the source-dirs fingerprint and forces
+// a cold rebuild. That rebuild must find the rows written under the other
+// spelling instead of warning, and move them to the current one
+// (swamp-club#2570).
+
+type Repo = Parameters<Parameters<typeof withRepo>[1]>[0];
+
+/** Runs `fn` with the repo's real path and a directory symlink to it. */
+async function withSpellings(
+  repo: Repo,
+  fn: (spellings: { real: string; alias: string }) => Promise<void>,
+): Promise<void> {
+  const real = Deno.realPathSync(repo.repoDir);
+  const alias = `${real}-alias`;
+  await Deno.symlink(real, alias, { type: "dir" });
+  try {
+    await fn({ real, alias });
+  } finally {
+    await Deno.remove(alias);
+  }
+}
+
+function repositoryUnder(repo: Repo, root: string): ExtensionRepository {
+  return new ExtensionRepository({
+    catalog: repo.catalog,
+    lockfileRepository: repo.lockfileRepository,
+    repoRoot: root,
+  });
+}
+
+async function reconcileUnder(repo: Repo, root: string): Promise<void> {
+  await new ReconcileFromDiskService({
+    denoRuntime: testDenoRuntime,
+    repository: repositoryUnder(repo, root),
+    lockfileRepository: repo.lockfileRepository,
+    repoDir: root,
+  }).execute();
+}
+
+async function buildIndexUnder(repo: Repo, root: string): Promise<void> {
+  const loader = new ExtensionLoader(
+    testDenoRuntime,
+    modelKindAdapter,
+    root,
+    undefined,
+    repositoryUnder(repo, root),
+  );
+  await loader.buildIndex(join(root, "extensions", "models"), {
+    indexOnly: true,
+  });
+}
+
+function extractionWarnings() {
+  return getExtensionLoadWarnings().filter((w) =>
+    w.category === "TypeExtractionFailed"
+  );
+}
+
+const EXT_RELATIVE = join("extensions", "models", "wrapped_ext.ts");
+
+for (const direction of ["real-to-alias", "alias-to-real"] as const) {
+  Deno.test({
+    name:
+      `cold buildIndex under another spelling of the repo root moves the indexed row without warning (${direction})`,
+    // Creating a directory symlink needs extra privileges on Windows.
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      await withRepo(false, async (repo) => {
+        await withSpellings(repo, async ({ real, alias }) => {
+          const [from, to] = direction === "real-to-alias"
+            ? [real, alias]
+            : [alias, real];
+          await reconcileUnder(repo, from);
+          const indexed = repo.catalog.findBySourcePath(
+            join(from, EXT_RELATIVE),
+          );
+          assertEquals(indexed?.kind, "extension");
+
+          await buildIndexUnder(repo, to);
+
+          assertEquals(extractionWarnings(), []);
+          const moved = repo.catalog.findBySourcePath(join(to, EXT_RELATIVE));
+          assertEquals(moved?.extends_type, indexed!.extends_type);
+          assertEquals(moved?.type_normalized, indexed!.type_normalized);
+          assertEquals(
+            repo.catalog.findBySourcePath(join(from, EXT_RELATIVE)),
+            undefined,
+          );
+        });
+      });
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "cold buildIndex does not warn for a wrapped export whose row under another spelling is stale",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(false, async (repo) => {
+      await withSpellings(repo, async ({ real, alias }) => {
+        await reconcileUnder(repo, real);
+        await Deno.writeTextFile(
+          repo.extPath,
+          (await Deno.readTextFile(repo.extPath)) + "\n// edited\n",
+        );
+
+        await buildIndexUnder(repo, alias);
+
+        assertEquals(extractionWarnings(), []);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "cold buildIndex under another spelling keeps one row per file for wrapped models and plain files",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(false, async (repo) => {
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const model = (type: string, wrapped: boolean) => `
+import { z } from "npm:zod@4";
+
+function withDefaults<T>(definition: T): T {
+  return definition;
+}
+
+const definition = {
+  type: "${type}",
+  version: "2026.01.01.1",
+  methods: {
+    get: {
+      description: "get",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+
+export const model = ${wrapped ? "withDefaults(definition)" : "definition"};
+`;
+      const files = {
+        [join("extensions", "models", "wrapped_model.ts")]:
+          `@test/wrapped-model-${suffix}`,
+        [join("extensions", "models", "plain_model.ts")]:
+          `@test/plain-model-${suffix}`,
+      };
+      for (const [relative, type] of Object.entries(files)) {
+        await Deno.writeTextFile(
+          join(repo.repoDir, relative),
+          model(type, relative.includes("wrapped")),
+        );
+      }
+
+      await withSpellings(repo, async ({ real, alias }) => {
+        await reconcileUnder(repo, real);
+        await buildIndexUnder(repo, alias);
+
+        assertEquals(extractionWarnings(), []);
+        for (const [relative, type] of Object.entries(files)) {
+          const rows = repo.catalog.findAll().filter((row) =>
+            row.source_path.endsWith(relative)
+          );
+          assertEquals(rows.map((row) => row.source_path), [
+            join(alias, relative),
+          ]);
+          assertEquals(rows[0].type_normalized, type);
+        }
+      });
+    });
+  },
+});

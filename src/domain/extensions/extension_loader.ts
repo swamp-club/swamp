@@ -39,6 +39,7 @@ import {
 import {
   BUNDLE_LAYOUT_VERSION,
   type ExtensionCatalogStore,
+  type ExtensionTypeRow,
   sourceDirsFingerprint,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -114,6 +115,21 @@ function realCanonicalPath(path: string): string {
   } catch {
     return path;
   }
+}
+
+/** A row that holds a usable type for its source. */
+function isIndexedRow(row: ExtensionTypeRow): boolean {
+  return (row.state ?? "Indexed") !== "Tombstoned" &&
+    row.type_normalized.length > 0;
+}
+
+/**
+ * Indexed catalog rows whose source path is outside the loader's spelling
+ * of the repo root, keyed by symlink-resolved path. Built on the first
+ * lookup of a cold catalog pass and shared across its directories.
+ */
+interface OtherSpellingRows {
+  rows?: Map<string, ExtensionTypeRow>;
 }
 
 export function extractExtensionNameFromPath(
@@ -1074,6 +1090,7 @@ export class ExtensionLoader {
     const bundleBaseDir = this.resolveBundlePath();
     const cache = createFreshnessCache();
     const additionalSet = new Set(additionalDirs ?? []);
+    const otherSpellings: OtherSpellingRows = {};
 
     const dirs = [dir, ...additionalSet];
     for (const d of dirs) {
@@ -1083,6 +1100,7 @@ export class ExtensionLoader {
           bundleBaseDir,
           catalog,
           cache,
+          otherSpellings,
           additionalSet.has(d),
         );
       } catch {
@@ -1096,6 +1114,7 @@ export class ExtensionLoader {
     bundleBaseDir: string,
     catalog: ExtensionCatalogStore,
     cache: FreshnessCache,
+    otherSpellings: OtherSpellingRows,
     includeTestFiles = false,
   ): Promise<void> {
     const files = this.discoverFilesSync(dir, "", includeTestFiles);
@@ -1129,16 +1148,34 @@ export class ExtensionLoader {
         // `export const extension = withOptions(definition)`. Keep an
         // up-to-date row's type instead of re-deriving it from source text
         // (swamp-club#2562). The bundle location can still have moved (a
-        // layout or datastore change), so refresh that.
-        const existing = catalog.findBySourcePath(absolutePath);
-        const indexed = existing !== undefined &&
-          (existing.state ?? "Indexed") !== "Tombstoned" &&
-          existing.type_normalized.length > 0;
+        // layout or datastore change), so refresh that. The row may have
+        // been written under another spelling of the repo root (`/tmp/r`
+        // vs `/private/tmp/r` on macOS), which changes the source-dirs
+        // fingerprint and forces this rebuild (swamp-club#2570).
+        const sourcePath = canonicalizePath(absolutePath);
+        const existing = catalog.findBySourcePath(absolutePath) ??
+          this.findRowUnderOtherSpelling(catalog, sourcePath, otherSpellings);
+        const indexed = existing !== undefined && isIndexedRow(existing);
         if (
           indexed && sourceFingerprint !== undefined &&
           existing.source_fingerprint === sourceFingerprint
         ) {
-          if (existing.bundle_path !== bundlePath) {
+          if (existing.source_path !== sourcePath) {
+            // Move the row to this spelling, as the next warm scan would
+            // when it drops rows for paths it no longer sees. Moving it
+            // keeps one row per file, so no second row claims its type.
+            catalog.runInTransaction(() => {
+              catalog.removeByRawSourcePath(existing.source_path);
+              catalog.upsertWithIdentity({
+                ...existing,
+                source_path: sourcePath,
+                bundle_path: bundlePath,
+                source_mtime: sourceStat.mtime?.toISOString() ?? "",
+                extension_name: existing.extension_name ?? "",
+                extension_version: existing.extension_version ?? "",
+              });
+            });
+          } else if (existing.bundle_path !== bundlePath) {
             catalog.upsert({
               ...existing,
               bundle_path: bundlePath,
@@ -1165,7 +1202,7 @@ export class ExtensionLoader {
           type_normalized: extracted.typeNormalized,
           kind: extracted.kind,
           bundle_path: bundlePath,
-          source_path: canonicalizePath(absolutePath),
+          source_path: sourcePath,
           version: extracted.version,
           description: "",
           extends_type: extracted.extendsType,
@@ -1176,6 +1213,35 @@ export class ExtensionLoader {
         // Skip files that can't be read or don't have bundles
       }
     }
+  }
+
+  /**
+   * The indexed row for `sourcePath` written under another spelling of the
+   * same file, matched on the symlink-resolved path in either direction.
+   * Rows under the loader's own spelling of the repo root are left out:
+   * the exact lookup already covers them, so a catalog with no other
+   * spelling costs no realpath calls.
+   */
+  private findRowUnderOtherSpelling(
+    catalog: ExtensionCatalogStore,
+    sourcePath: string,
+    otherSpellings: OtherSpellingRows,
+  ): ExtensionTypeRow | undefined {
+    if (!this.repoDir) return undefined;
+    if (!otherSpellings.rows) {
+      const root = canonicalizePath(resolve(this.repoDir));
+      const prefix = root.endsWith("/") ? root : root + "/";
+      const kinds = new Set<string>(this.adapter.catalogKinds);
+      otherSpellings.rows = new Map();
+      for (const row of catalog.findAll()) {
+        if (!kinds.has(row.kind) || !isIndexedRow(row)) continue;
+        const canonical = canonicalizePath(row.source_path);
+        if (canonical.startsWith(prefix)) continue;
+        otherSpellings.rows.set(realCanonicalPath(canonical), row);
+      }
+    }
+    if (otherSpellings.rows.size === 0) return undefined;
+    return otherSpellings.rows.get(realCanonicalPath(sourcePath));
   }
 
   private async rebundleAndUpdateCatalog(
