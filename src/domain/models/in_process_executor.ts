@@ -277,16 +277,18 @@ export class InProcessExecutor {
     }
 
     try {
-      processTraceEnv.enter(request.traceHeaders);
-
-      const result = await withConsoleGuard(
+      const result = await processTraceEnv.run(
+        request.traceHeaders,
         () =>
-          this.executor.execute(
-            this.definition,
-            this.method,
-            this.contextWithWriters!,
+          withConsoleGuard(
+            () =>
+              this.executor.execute(
+                this.definition,
+                this.method,
+                this.contextWithWriters!,
+              ),
+            logs,
           ),
-        logs,
       );
 
       const durationMs = performance.now() - start;
@@ -356,8 +358,6 @@ export class InProcessExecutor {
         logs,
         durationMs,
       };
-    } finally {
-      processTraceEnv.exit();
     }
   }
 }

@@ -676,9 +676,11 @@ await new Deno.Command("my-tool", { args, env }).output();
 ```
 
 Prefer this over reading `TRACEPARENT` from `Deno.env`. The process env holds a
-method's trace context only while it is the only method running in the process.
-When other methods run at the same time, for example parallel workflow steps, it
-falls back to the run's inbound context.
+method's trace context only while no unrelated method is running in the same
+process. A method awaiting `context.runModel` still gets its own context back
+once the nested method finishes. When unrelated methods run at the same time,
+such as parallel workflow steps or parallel `runModel` calls, the env falls back
+to the run's inbound context until they have all finished.
 
 ### Arguments Holding Another Service's Template Syntax
 

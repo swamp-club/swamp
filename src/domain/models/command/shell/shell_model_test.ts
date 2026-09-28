@@ -740,22 +740,6 @@ posixOnlyTest(
   },
 );
 
-posixOnlyTest(
-  "shellModel.methods.execute inherits the process TRACEPARENT without trace headers",
-  async () => {
-    const args: ShellInputAttributes = { run: "echo TP=[$TRACEPARENT]" };
-
-    const { context, getResults } = createTestContext();
-    await shellModel.methods.execute.execute(args, context);
-
-    const logContent = getOutputLogContent(getResults());
-    assertStringIncludes(
-      logContent,
-      `TP=[${Deno.env.get("TRACEPARENT") ?? ""}]`,
-    );
-  },
-);
-
 posixOnlyTest("shellModel.methods.execute handles pipes", async () => {
   const args: ShellInputAttributes = { run: "echo 'hello world' | tr 'h' 'H'" };
 

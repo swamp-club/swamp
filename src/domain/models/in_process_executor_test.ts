@@ -638,6 +638,62 @@ Deno.test("InProcessExecutor: concurrent executions never see a sibling's TRACEP
   assertEquals(seen.bContext, spanB);
 });
 
+Deno.test("InProcessExecutor: a nested runModel execution hands TRACEPARENT back to its caller", async () => {
+  const baseline = Deno.env.get("TRACEPARENT");
+  const parentSpan = { traceparent: "00-aaaa-a1a1-01" };
+  const childSpan = { traceparent: "00-bbbb-b1b1-01" };
+  const seen: Record<string, string | undefined> = {};
+
+  const childExecutor: MethodExecutor = {
+    execute: () => {
+      seen.child = Deno.env.get("TRACEPARENT");
+      return Promise.resolve({});
+    },
+  };
+  const modelInvocationService = {
+    invoke: async () => {
+      const request = createMockRequest();
+      request.traceHeaders = childSpan;
+      await new InProcessExecutor(
+        childExecutor,
+        testDefinition,
+        testMethod,
+        testModelDef,
+        createMockContext(),
+        "test",
+      ).execute(request);
+      return { ok: true as const, resources: [] };
+    },
+  };
+  const parentExecutor: MethodExecutor = {
+    execute: async (_definition, _method, context) => {
+      seen.parentBefore = Deno.env.get("TRACEPARENT");
+      await context.runModel!({ definition: "child", method: "test" });
+      seen.parentAfter = Deno.env.get("TRACEPARENT");
+      return {};
+    },
+  };
+
+  const request = createMockRequest();
+  request.traceHeaders = parentSpan;
+  await new InProcessExecutor(
+    parentExecutor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    createMockContext(),
+    "test",
+    modelInvocationService,
+  ).execute(request);
+
+  assertEquals(seen, {
+    parentBefore: parentSpan.traceparent,
+    child: childSpan.traceparent,
+    parentAfter: parentSpan.traceparent,
+  });
+  assertEquals(Deno.env.get("TRACEPARENT"), baseline);
+});
+
 Deno.test("InProcessExecutor: wires deleteResource onto context", async () => {
   let deletedName: string | undefined;
   const mockDataRepo = {

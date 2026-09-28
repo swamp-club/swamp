@@ -88,7 +88,7 @@ Deno.test("overlayEnvironment: returns a merged record without mutating the base
 });
 
 Deno.test("overlayEnvironment: trace headers overlay on top of snapshot", () => {
-  const base = Deno.env.toObject();
+  const base = { HOME: "/root", PATH: "/usr/bin" };
   const snapshot = { API_KEY: "secret" };
   let env = overlayEnvironment(base, snapshot);
   assertEquals(env["API_KEY"], "secret");
@@ -103,7 +103,7 @@ Deno.test("overlayEnvironment: trace headers overlay on top of snapshot", () => 
   assertEquals(env["TRACEPARENT"], "00-abc123-def456-01");
   assertEquals(env["API_KEY"], "secret");
   // Only W3C trace headers reach the spawn env; other keys are dropped.
-  assertEquals(env["LD_PRELOAD"], base["LD_PRELOAD"]);
+  assertEquals("LD_PRELOAD" in env, false);
 });
 
 Deno.test("registerDispatchHandler: draining rejects with worker_draining", async () => {
