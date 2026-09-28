@@ -364,7 +364,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
     });
 
     const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
-    const lockfileHashBefore = repair && !rescanSkipped
+    const lockfileHashBefore = repair && !rescanSkipped && !dryRun
       ? await snapshotLockfileHash(lockfilePath)
       : null;
     await consumeStream(

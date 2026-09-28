@@ -200,6 +200,7 @@ export async function pushManagedLockfileIfChangedDeferred(
   marker: RepoMarkerData | null,
   lockfilePath: string,
   hashBefore: string | null,
+  push: typeof pushManagedConfigPathsDeferred = pushManagedConfigPathsDeferred,
 ): Promise<void> {
   if (marker?.datastore?.managedConfig !== true) return;
   let hashAfter: string | null;
@@ -212,7 +213,7 @@ export async function pushManagedLockfileIfChangedDeferred(
     return;
   }
   if (hashAfter === hashBefore) return;
-  await pushManagedConfigPathsDeferred(repoDir, marker, [lockfilePath]);
+  await push(repoDir, marker, [lockfilePath]);
 }
 
 export interface PullManagedConfigAtBootDeps {

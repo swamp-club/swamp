@@ -639,7 +639,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   (`src/cli/commands/serve.ts`, `ConfigPoller` wiring). After a successful
   `--server` operation, state-modifying extension commands (`pull`, `install`,
   `rm`, `update`) warn that `swamp serve reload` is needed
-  (`src/cli/remote_run.ts`, `warnServerReloadNeeded`).
+  (`src/cli/remote_run.ts`, `warnServerReloadNeeded`). The client cannot tell
+  whether the instance manages config. When it does, the instance's config
+  poller already reloads within one poll interval of the handler's lockfile
+  write, so the manual reload only makes the change take effect sooner.
 - Built-in webhook verification schemes are a closed set; other providers need
   a webhook extension (`src/serve/webhook_verifiers.ts`, #2204). Extension
   handlers are resolved per request, but the endpoint list is fixed at startup.

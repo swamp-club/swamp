@@ -1664,9 +1664,10 @@ export const serveCommand = new Command()
   )
   .option(
     "--datastore-poll-interval <duration:string>",
-    "How often to pull config, access data and runtime data from the remote datastore. " +
+    "How often to pull config, access data and runtime data from the remote datastore, " +
+      "and to check the managedConfig extension lockfile for changes. " +
       "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. Minimum: 1s. " +
-      "Only effective with a remote datastore or managedConfig, whose extension lockfile is checked at this interval (env: SWAMP_DATASTORE_POLL_INTERVAL)",
+      "Only effective with a remote datastore or managedConfig (env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
     "--token-gc-interval <duration:string>",
@@ -2274,7 +2275,7 @@ export const serveCommand = new Command()
       datastorePollIntervalMs !== undefined
     ) {
       logger.warn(
-        "--datastore-poll-interval has no effect without a remote datastore",
+        "--datastore-poll-interval has no effect without a remote datastore or managedConfig",
       );
     }
 
@@ -2461,12 +2462,18 @@ export const serveCommand = new Command()
             );
           }
           const status = serveReloadStatus(result);
-          if (status !== "busy") {
+          // A successful reload's errors are soft (one discoverer failed)
+          // and logged here. A failed reload's go to the poller, which
+          // warns only on its first and last attempt.
+          if (status === "ok") {
             for (const err of result.errors) {
               logger.warn`Config poller extension reload: ${err}`;
             }
           }
-          return status;
+          return {
+            status,
+            errors: status === "failed" ? result.errors : [],
+          };
         },
         namespace: serveNamespace,
       });

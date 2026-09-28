@@ -379,6 +379,15 @@ export const RELOAD_IN_PROGRESS_ERROR = "Reload already in progress";
  */
 export type ExtensionReloadStatus = "ok" | "failed" | "busy";
 
+/**
+ * What an extension reloader reports to the config poller. `errors` carries a
+ * failed reload's messages so the poller decides how loudly to log them.
+ */
+export interface ExtensionReloadResult {
+  status: ExtensionReloadStatus;
+  errors: readonly string[];
+}
+
 /** Maps a {@link performServeReload} result to an {@link ExtensionReloadStatus}. */
 export function serveReloadStatus(
   result: ServeReloadResponse,

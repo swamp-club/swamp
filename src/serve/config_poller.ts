@@ -19,7 +19,10 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
-import type { ExtensionReloadStatus } from "./extension_reload.ts";
+import type {
+  ExtensionReloadResult,
+  ExtensionReloadStatus,
+} from "./extension_reload.ts";
 import {
   gatedPull,
   type PollerGateState,
@@ -46,8 +49,12 @@ export interface ConfigPollerOptions {
   syncService?: DatastoreSyncService;
   syncGate?: SyncGate;
   catalogInvalidate: () => void;
-  /** Runs when the lockfile changes, and again while its result is pending. */
-  extensionReloader: () => Promise<ExtensionReloadStatus>;
+  /**
+   * Runs when the lockfile changes, and again while its result is pending.
+   * A failed result's errors are logged by the poller, so the reloader
+   * should not log them itself.
+   */
+  extensionReloader: () => Promise<ExtensionReloadResult>;
   /** Hash of the managedConfig tier lockfile, or `null` when it is missing. */
   lockfileHash: () => Promise<string | null>;
   /**
@@ -71,7 +78,7 @@ export class ConfigPoller {
   readonly #syncService?: DatastoreSyncService;
   readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
-  readonly #extensionReloader: () => Promise<ExtensionReloadStatus>;
+  readonly #extensionReloader: () => Promise<ExtensionReloadResult>;
   readonly #lockfileHash: () => Promise<string | null>;
   readonly #pollIntervalMs: number;
   readonly #namespace?: string;
@@ -213,14 +220,12 @@ export class ConfigPoller {
     if (!this.#reloadPending) return;
 
     let status: ExtensionReloadStatus;
+    let errors: readonly string[];
     try {
-      status = await this.#extensionReloader();
+      ({ status, errors } = await this.#extensionReloader());
     } catch (error) {
       status = "failed";
-      logger
-        .warn`Config poller extension reload threw: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      errors = [error instanceof Error ? error.message : String(error)];
     }
 
     if (status === "ok") {
@@ -238,6 +243,14 @@ export class ConfigPoller {
     // first and last are warnings, so a broken extension does not flood logs.
     this.#failedReloads++;
     const attempts = this.#failedReloads;
+    const loud = attempts === 1 || attempts >= MAX_FAILED_RELOAD_ATTEMPTS;
+    for (const err of errors) {
+      if (loud) {
+        logger.warn`Config poller extension reload: ${err}`;
+      } else {
+        logger.debug`Config poller extension reload: ${err}`;
+      }
+    }
     if (attempts >= MAX_FAILED_RELOAD_ATTEMPTS) {
       this.#reloadPending = false;
       logger

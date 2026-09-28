@@ -1989,8 +1989,9 @@ workflow YAML edits) invalidate catalogs without reloading the registries.
 The reloader reports `ok`, `failed` or `busy`. `busy` means another reload was
 running, and serve's `Reload already in progress` response maps to it. A busy
 reload stays pending and is retried on the next poll. A failed reload is retried
-up to three times per lockfile version, then waits for the next change. Only
-the first and last failures are warnings.
+up to three times per lockfile version, then waits for the next change. The
+poller logs a failed reload's errors itself: as warnings on the first and last
+attempt, and at debug level in between.
 
 The reload re-bundles from the pod's own pulled root. Extension sources are not
 pushed (they stay in each repo's pulled root until swamp-club#2612), so a peer's

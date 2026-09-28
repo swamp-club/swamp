@@ -19,7 +19,10 @@
 
 import { assertEquals, assertGreater } from "@std/assert";
 import { ConfigPoller, MAX_FAILED_RELOAD_ATTEMPTS } from "./config_poller.ts";
-import type { ExtensionReloadStatus } from "./extension_reload.ts";
+import type {
+  ExtensionReloadResult,
+  ExtensionReloadStatus,
+} from "./extension_reload.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
   DatastoreSyncOptions,
@@ -81,9 +84,9 @@ function createCallbackTrackers() {
     catalogInvalidate: () => {
       state.catalogInvalidateCalls++;
     },
-    extensionReloader: (): Promise<ExtensionReloadStatus> => {
+    extensionReloader: (): Promise<ExtensionReloadResult> => {
       state.extensionReloaderCalls++;
-      return Promise.resolve("ok");
+      return Promise.resolve({ status: "ok", errors: [] });
     },
   };
 }
@@ -660,7 +663,8 @@ Deno.test("ConfigPoller: a busy reload stays pending and is retried until it suc
 
   const poller = new ConfigPoller({
     catalogInvalidate: () => {},
-    extensionReloader: () => Promise.resolve(statuses[calls++] ?? "ok"),
+    extensionReloader: () =>
+      Promise.resolve({ status: statuses[calls++] ?? "ok", errors: [] }),
     lockfileHash: lockfile.lockfileHash,
     baselineLockfileHash: "hash-a",
     pollIntervalMs: 10,
@@ -684,7 +688,7 @@ Deno.test("ConfigPoller: a failed reload is retried up to the cap, then waits fo
     catalogInvalidate: () => {},
     extensionReloader: () => {
       calls++;
-      return Promise.resolve("failed");
+      return Promise.resolve({ status: "failed", errors: ["boom"] });
     },
     lockfileHash: lockfile.lockfileHash,
     baselineLockfileHash: "hash-a",
@@ -741,7 +745,7 @@ Deno.test("ConfigPoller: a lockfile change landing during a reload triggers anot
     extensionReloader: () => {
       calls++;
       if (calls === 1) lockfile.hash = "hash-c";
-      return Promise.resolve("ok");
+      return Promise.resolve({ status: "ok", errors: [] });
     },
     lockfileHash: lockfile.lockfileHash,
     baselineLockfileHash: "hash-a",
@@ -762,7 +766,7 @@ Deno.test("ConfigPoller: survives the lockfile hash read throwing", async () => 
   let reads = 0;
   const poller = new ConfigPoller({
     catalogInvalidate: () => {},
-    extensionReloader: () => Promise.resolve("ok"),
+    extensionReloader: () => Promise.resolve({ status: "ok", errors: [] }),
     lockfileHash: () => {
       reads++;
       return Promise.reject(new Error("permission denied"));

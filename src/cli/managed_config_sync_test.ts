@@ -25,6 +25,7 @@ import {
   pullManagedConfigAtBoot,
   pushManagedConfigChanges,
   pushManagedConfigPaths,
+  pushManagedLockfileIfChangedDeferred,
   snapshotLockfileHash,
 } from "./managed_config_sync.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
@@ -317,6 +318,73 @@ Deno.test("snapshotLockfileHash: null for a missing lockfile, stable for unchang
     await Deno.writeTextFile(path, "{}");
     const hash = await snapshotLockfileHash(path);
     assertEquals(await snapshotLockfileHash(path), hash);
+  });
+});
+
+function createRecordingPush() {
+  const calls: Array<{ repoDir: string; paths: readonly string[] }> = [];
+  const push = (
+    repoDir: string,
+    _marker: RepoMarkerData | null,
+    paths: readonly string[],
+  ) => {
+    calls.push({ repoDir, paths });
+    return Promise.resolve();
+  };
+  return { calls, push };
+}
+
+Deno.test("pushManagedLockfileIfChangedDeferred: pushes the lockfile only when its content changed", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(path, "{}");
+    const before = await snapshotLockfileHash(path);
+    const marker = makeMarker({ managedConfig: true });
+    const { calls, push } = createRecordingPush();
+
+    await pushManagedLockfileIfChangedDeferred(dir, marker, path, before, push);
+    assertEquals(calls, []);
+
+    await Deno.writeTextFile(path, '{"@acme/a":{}}');
+    await pushManagedLockfileIfChangedDeferred(dir, marker, path, before, push);
+    assertEquals(calls, [{ repoDir: dir, paths: [path] }]);
+  });
+});
+
+Deno.test("pushManagedLockfileIfChangedDeferred: a lockfile the command created counts as changed", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const before = await snapshotLockfileHash(path);
+    await Deno.writeTextFile(path, "{}");
+    const { calls, push } = createRecordingPush();
+
+    await pushManagedLockfileIfChangedDeferred(
+      dir,
+      makeMarker({ managedConfig: true }),
+      path,
+      before,
+      push,
+    );
+
+    assertEquals(calls, [{ repoDir: dir, paths: [path] }]);
+  });
+});
+
+Deno.test("pushManagedLockfileIfChangedDeferred: no-op without managedConfig", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(path, "{}");
+    const { calls, push } = createRecordingPush();
+
+    await pushManagedLockfileIfChangedDeferred(
+      dir,
+      makeMarker({ managedConfig: false }),
+      path,
+      null,
+      push,
+    );
+
+    assertEquals(calls, []);
   });
 });
 
