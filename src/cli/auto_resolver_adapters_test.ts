@@ -1273,3 +1273,74 @@ Deno.test("auto_resolver_adapters: install retries past a skill dir another exte
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("auto_resolver_adapters: install re-installs a pinned beta entry on its channel", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const id = crypto.randomUUID().slice(0, 8);
+    const name = `@t/beta-${id}`;
+    const version = "2026.01.01.1";
+    const lockfilePath = await seedLockfile(repoDir, {});
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        [name]: {
+          version,
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [`.swamp/pulled-extensions/${name}/manifest.yaml`],
+          channel: "beta",
+        },
+      }),
+    );
+
+    const archiveDir = await Deno.makeTempDir({ prefix: "swamp_test_arc_" });
+    let archive: Uint8Array;
+    try {
+      const extDir = join(archiveDir, "extension");
+      await ensureDir(join(extDir, "skills", `beta-${id}`));
+      await Deno.writeTextFile(
+        join(extDir, "manifest.yaml"),
+        `manifestVersion: 1\nname: "${name}"\nversion: "${version}"\n` +
+          `skills:\n  - beta-${id}\n`,
+      );
+      await Deno.writeTextFile(
+        join(extDir, "skills", `beta-${id}`, "SKILL.md"),
+        "x",
+      );
+      await createTarGz(extDir, join(archiveDir, "a.tar.gz"));
+      archive = await Deno.readFile(join(archiveDir, "a.tar.gz"));
+    } finally {
+      await Deno.remove(archiveDir, { recursive: true }).catch(() => {});
+    }
+
+    const channels: Array<string | undefined> = [];
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: () =>
+        Promise.resolve({
+          name,
+          description: "",
+          latestVersion: null,
+          latestBeta: version,
+        }),
+      downloadArchive: (_name, _version, channel) => {
+        channels.push(channel);
+        return Promise.resolve(archive);
+      },
+      getChecksum: (_name, _version, channel) => {
+        channels.push(channel);
+        return Promise.resolve(null);
+      },
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+    });
+    const result = await adapter.install(name);
+
+    assertEquals(result?.version, version);
+    assertEquals(channels, ["beta", "beta"]);
+    const recorded = await LockfileRepository.create(lockfilePath);
+    assertEquals(recorded.getEntry(name)?.channel, "beta");
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});

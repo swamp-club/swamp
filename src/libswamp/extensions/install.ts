@@ -247,6 +247,11 @@ export async function* extensionInstall(
           if (entry.checksum) {
             installCtx.expectedChecksum = entry.checksum;
           }
+          // Restore on the entry's release channel so the registry is
+          // queried for it and the rewritten entry keeps it.
+          if (entry.channel) {
+            installCtx.channel = entry.channel;
+          }
           const ref = parseExtensionRef(`${name}@${version}`);
           const install = deps.installExtensionFn ?? installExtension;
           const result = await install(ref, installCtx);

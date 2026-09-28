@@ -40,6 +40,7 @@ import {
 import { createLibSwampContext } from "../context.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { UserError } from "../../domain/errors.ts";
+import { computeChecksum } from "../../domain/models/checksum.ts";
 
 Deno.test("parseExtensionRef: parses name without version", () => {
   const ref = parseExtensionRef("@myorg/my-ext");
@@ -1032,6 +1033,135 @@ Deno.test(
         created.includes(relative(repoDir, join(userSkill, "extra.md"))),
         true,
       );
+    });
+  },
+);
+
+// ===== Lockfile restore anchors (swamp-club#2639) =====
+//
+// A restore passes the lockfile entry's checksum and channel on the
+// install context. The checksum anchors that entry's archive only, and
+// the channel reaches the registry and the rewritten entry.
+
+async function buildParentWithDependency(): Promise<{
+  parent: string;
+  dep: string;
+  archives: Record<string, Uint8Array>;
+}> {
+  const parent = uniqueExtName();
+  const dep = uniqueExtName();
+  const archives = {
+    [parent]: await buildSkillArchive({
+      name: parent,
+      skills: { parent: { "SKILL.md": "parent" } },
+      dependencies: [dep],
+    }),
+    [dep]: await buildSkillArchive({
+      name: dep,
+      skills: { dep: { "SKILL.md": "dep" } },
+    }),
+  };
+  return { parent, dep, archives };
+}
+
+Deno.test(
+  "installExtension: a dependency is not checked against its parent's expectedChecksum",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const { parent, dep, archives } = await buildParentWithDependency();
+      const result = await installExtension(
+        { name: parent, version: SKILL_VERSION },
+        {
+          ...skillInstallContext(repoDir, lockfile, archives),
+          expectedChecksum: await computeChecksum(archives[parent]),
+        },
+      );
+      assertEquals(result?.integrityStatus, "verified");
+      assertEquals(result?.dependencyResults.length, 1);
+      assertEquals(lockfile.getEntry(parent)?.version, SKILL_VERSION);
+      assertEquals(lockfile.getEntry(dep)?.version, SKILL_VERSION);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a parent's own expectedChecksum is still enforced",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const { parent, archives } = await buildParentWithDependency();
+      const error = await assertRejects(
+        () =>
+          installExtension(
+            { name: parent, version: SKILL_VERSION },
+            {
+              ...skillInstallContext(repoDir, lockfile, archives),
+              expectedChecksum: "0".repeat(64),
+            },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, `Checksum mismatch for ${parent}@`);
+      assertEquals(lockfile.getEntry(parent), null);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a dependency's server checksum is still verified",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const { parent, dep, archives } = await buildParentWithDependency();
+      const parentChecksum = await computeChecksum(archives[parent]);
+      const wrongDepChecksum = "f".repeat(64);
+      const error = await assertRejects(
+        () =>
+          installExtension(
+            { name: parent, version: SKILL_VERSION },
+            {
+              ...skillInstallContext(repoDir, lockfile, archives),
+              getChecksum: (name) =>
+                Promise.resolve(
+                  name === dep ? wrongDepChecksum : parentChecksum,
+                ),
+              expectedChecksum: parentChecksum,
+            },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Checksum verification failed");
+      assertStringIncludes(error.message, wrongDepChecksum);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: the context channel reaches the registry and the lockfile entry",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive({
+        name,
+        skills: { beta: { "SKILL.md": "beta" } },
+      });
+      const channels: Array<string | undefined> = [];
+      const base = skillInstallContext(repoDir, lockfile, { [name]: archive });
+      await installExtension(
+        { name, version: SKILL_VERSION },
+        {
+          ...base,
+          downloadArchive: (n, v, channel) => {
+            channels.push(channel);
+            return base.downloadArchive(n, v, channel);
+          },
+          getChecksum: (_n, _v, channel) => {
+            channels.push(channel);
+            return Promise.resolve(null);
+          },
+          channel: "beta",
+        },
+      );
+      assertEquals(channels, ["beta", "beta"]);
+      assertEquals(lockfile.getEntry(name)?.channel, "beta");
     });
   },
 );
