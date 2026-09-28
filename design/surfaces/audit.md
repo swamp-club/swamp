@@ -36,9 +36,10 @@ actions to swamp workflow runs.
 - **`swamp audit record --from-hook --tool <tool>`**
   (`src/cli/commands/audit.ts`): the command the AI tools' hook configs call.
   It reads the raw payload from stdin (or the `USER_PROMPT` env var for Kiro
-  IDE) and appends a row. The row goes to the first initialized repository
-  (one with a `.swamp.yaml` marker) found from, in order: an explicit
-  `--repo-dir`, the payload's `cwd` walked up to the nearest marker,
+  IDE) and appends a row. An explicit `--repo-dir` is used as given, as for
+  every other command: if it has no `.swamp.yaml` marker the row is dropped.
+  Otherwise the row goes to the first initialized repository found from, in
+  order: the payload's `cwd` walked up to the nearest marker,
   `SWAMP_REPO_DIR`, then the process cwd walked up the same way. When none of
   them is an initialized repository the row is dropped — the hook never
   creates a `.swamp/` directory, so a hook firing in a git worktree or other

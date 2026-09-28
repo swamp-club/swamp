@@ -141,7 +141,7 @@ Deno.test("resolveAuditRepoDir: ignores SWAMP_REPO_DIR without a marker", async 
   });
 });
 
-Deno.test("resolveAuditRepoDir: rejects an explicit repo dir without a marker", async () => {
+Deno.test("resolveAuditRepoDir: returns null for an explicit repo dir without a marker", async () => {
   await withTempDir(async (root) => {
     const repo = await makeRepo(join(root, "repo"));
     const notRepo = join(root, "not-repo");
@@ -154,7 +154,7 @@ Deno.test("resolveAuditRepoDir: rejects an explicit repo dir without a marker", 
       findRepo: findRepoWithin(root),
     });
 
-    assertPathEquals(result!, repo);
+    assertEquals(result, null);
   });
 });
 
@@ -200,7 +200,7 @@ Deno.test("recordHookEntry: writes nothing outside an initialized repo", async (
       hookCwd: worktree,
       processCwd: worktree,
       findRepo: findRepoWithin(root),
-    });
+    }, { cleanup: false });
 
     assertEquals(recorded, false);
     assertEquals(await exists(join(worktree, ".swamp")), false);
@@ -218,7 +218,7 @@ Deno.test("recordHookEntry: records a subdirectory command in the repo root's au
       hookCwd: sub,
       processCwd: root,
       findRepo: findRepoWithin(root),
-    });
+    }, { cleanup: false });
 
     assertEquals(recorded, true);
     const logPath = auditFilePathForTimestamp(
@@ -229,5 +229,24 @@ Deno.test("recordHookEntry: records a subdirectory command in the repo root's au
     assertEquals(lines.length, 1);
     assertEquals(JSON.parse(lines[0]).command, "ls");
     assertEquals(await exists(join(sub, ".swamp")), false);
+  });
+});
+
+Deno.test("resolveAuditRepoDir: uses a hook cwd holding a marker without walking up", async () => {
+  await withTempDir(async (root) => {
+    const repo = await makeRepo(join(root, "repo"));
+    let walked = false;
+
+    const result = resolveAuditRepoDir({
+      hookCwd: repo,
+      processCwd: root,
+      findRepo: () => {
+        walked = true;
+        return null;
+      },
+    });
+
+    assertPathEquals(result!, repo);
+    assertEquals(walked, false);
   });
 });

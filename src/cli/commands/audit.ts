@@ -123,10 +123,12 @@ function hasRepoMarker(dir: string): boolean {
 /**
  * Resolves the initialized swamp repository an audit hook row belongs to.
  *
- * Tried in order: an explicit `--repo-dir`, the hook payload cwd walked up to
- * the nearest `.swamp.yaml`, `SWAMP_REPO_DIR`, then the process cwd walked up
- * the same way. Returns `null` when none of them is an initialized repo, so
- * the hook never creates a `.swamp/` directory outside a repository.
+ * An explicit `--repo-dir` is used as given, like every other command: if it
+ * is not an initialized repo the result is `null`. Otherwise these are tried in
+ * order: the hook payload cwd walked up to the nearest `.swamp.yaml`,
+ * `SWAMP_REPO_DIR`, then the process cwd walked up the same way. Returns
+ * `null` when none of them is an initialized repo, so the hook never creates a
+ * `.swamp/` directory outside a repository.
  *
  * @internal Exported for testing
  */
@@ -135,10 +137,13 @@ export function resolveAuditRepoDir(target: AuditHookTarget): string | null {
 
   if (target.explicitRepoDir !== undefined) {
     const dir = resolve(target.explicitRepoDir);
-    if (hasRepoMarker(dir)) return dir;
+    return hasRepoMarker(dir) ? dir : null;
   }
 
   if (target.hookCwd && isAbsolute(target.hookCwd)) {
+    // Check the cwd itself first: the ancestor walk spawns git, and the
+    // agent usually runs from the repo root.
+    if (hasRepoMarker(target.hookCwd)) return resolve(target.hookCwd);
     const dir = findRepo(target.hookCwd);
     if (dir !== null) return dir;
   }
@@ -156,12 +161,15 @@ export function resolveAuditRepoDir(target: AuditHookTarget): string | null {
  * {@link resolveAuditRepoDir} picks. Writes nothing when no initialized
  * repository is found.
  *
+ * @param options.cleanup Start old-data cleanup after the append (default
+ *   `true`). Tests pass `false` so no unawaited directory scan outlives them.
  * @returns Whether the entry was recorded.
  * @internal Exported for testing
  */
 export async function recordHookEntry(
   entry: BashCommandEntry,
   target: AuditHookTarget,
+  options: { cleanup?: boolean } = {},
 ): Promise<boolean> {
   const repoDir = resolveAuditRepoDir(target);
   if (repoDir === null) {
@@ -171,9 +179,11 @@ export async function recordHookEntry(
   const repository = new JsonlAuditRepository(repoDir);
   await repository.append(entry);
 
-  // Fire-and-forget cleanup of old audit data
-  const service = new AuditService(repository);
-  service.cleanupOldAuditData();
+  if (options.cleanup ?? true) {
+    // Fire-and-forget cleanup of old audit data
+    const service = new AuditService(repository);
+    service.cleanupOldAuditData();
+  }
   return true;
 }
 
