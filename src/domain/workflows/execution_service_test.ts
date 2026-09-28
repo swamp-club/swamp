@@ -14221,3 +14221,275 @@ Deno.test("resume cleanup: a job that failed before the suspension enters cleanu
     assertEquals(executor.count("cleanup/c"), 1);
   });
 });
+
+// --- Failed-step reports and recovered data (swamp-club#2602) ---
+
+/**
+ * Registers a per-run model type whose `run` method writes a `state`
+ * resource and then throws, the way a model that persists output before
+ * failing (e.g. `command/shell` on a non-zero exit) behaves.
+ */
+async function registerWriteThenThrowModel(): Promise<ModelType> {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+  const modelType = ModelType.create(
+    `@test-2602/write-then-throw-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    resources: {
+      state: {
+        description: "state written before the failure",
+        schema: z.object({ value: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+    },
+    methods: {
+      run: {
+        description: "writes state, then fails",
+        arguments: z.object({}),
+        execute: async (_args, context) => {
+          await context.writeResource!("state", "state", { value: "partial" });
+          throw new Error("deploy blew up");
+        },
+      },
+    },
+  });
+  return modelType;
+}
+
+async function runToCompletion(
+  service: WorkflowExecutionService,
+  workflowName: string,
+  inputs?: Record<string, unknown>,
+): Promise<{ run: WorkflowRun; events: WorkflowExecutionEvent[] }> {
+  const events: WorkflowExecutionEvent[] = [];
+  let run: WorkflowRun | undefined;
+  for await (const event of service.run(workflowName, { inputs })) {
+    events.push(event);
+    if (event.kind === "completed") run = event.run;
+  }
+  assert(run, "expected a completed run");
+  return { run, events };
+}
+
+function failureRetrievalCommands(
+  events: WorkflowExecutionEvent[],
+): string[] | undefined {
+  const [summary] = completedReport(events, "@swamp/workflow-summary");
+  const failures = summary?.json.failures as
+    | Array<{ retrievalCommands: string[] }>
+    | undefined;
+  return failures?.[0]?.retrievalCommands;
+}
+
+function completedReport(
+  events: WorkflowExecutionEvent[],
+  reportName: string,
+): Extract<WorkflowExecutionEvent, { kind: "report_completed" }>[] {
+  return events.filter((
+    e,
+  ): e is Extract<WorkflowExecutionEvent, { kind: "report_completed" }> =>
+    e.kind === "report_completed" && e.reportName === reportName
+  );
+}
+
+Deno.test("run(): a failed model-method step records its report artifacts and both summaries list the data it wrote", async () => {
+  const modelType = await registerWriteThenThrowModel();
+  await withTempDir(async (tempDir) => {
+    const definition = Definition.create({
+      name: "failer",
+      type: modelType.normalized,
+    });
+    await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: "failed-step-reports",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "fail-step",
+              task: StepTask.model("failer", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        new DefaultStepExecutor(),
+        undefined,
+        catalogStore,
+      );
+      const { run, events } = await runToCompletion(service, workflow.name);
+
+      const stepRun = run.getJob("job1")?.getStep("fail-step");
+      assertEquals(stepRun?.status, "failed");
+      const names = stepRun!.dataArtifacts.map((a) => a.name).sort();
+      assertEquals(names, [
+        "report-swamp-method-summary",
+        "report-swamp-method-summary-json",
+        "state",
+      ]);
+
+      const [methodSummary] = completedReport(events, "@swamp/method-summary");
+      assertStringIncludes(methodSummary.markdown, "state");
+      assertEquals(methodSummary.markdown.includes("No data output."), false);
+
+      // The workflow summary points at the same data for the failed step.
+      assertEquals(failureRetrievalCommands(events), [
+        "swamp data get failer state",
+      ]);
+      const [workflowSummary] = completedReport(
+        events,
+        "@swamp/workflow-summary",
+      );
+      assertEquals(workflowSummary.markdown.includes("No data output."), false);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+Deno.test("run(): failed forEach iterations record their own vary-suffixed report artifacts", async () => {
+  const modelType = await registerWriteThenThrowModel();
+  await withTempDir(async (tempDir) => {
+    const definition = Definition.create({
+      name: "failer",
+      type: modelType.normalized,
+    });
+    await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: "failed-foreach-reports",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "deploy-${{ self.env }}",
+              task: StepTask.model("failer", "run"),
+              forEach: { item: "env", in: "${{ inputs.envs }}" },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        new DefaultStepExecutor(),
+        undefined,
+        catalogStore,
+      );
+      const { run } = await runToCompletion(service, workflow.name, {
+        envs: ["dev", "prod"],
+      });
+
+      for (const env of ["dev", "prod"]) {
+        const stepRun = run.getJob("job1")?.getStep(`deploy-${env}`);
+        assertEquals(stepRun?.status, "failed");
+        const reports = stepRun!.dataArtifacts.filter((a) =>
+          a.name.startsWith("report-")
+        );
+        assertEquals(reports.map((a) => a.name).sort(), [
+          `report-swamp-method-summary-${env}`,
+          `report-swamp-method-summary-${env}-json`,
+        ]);
+        assertEquals(reports[0].tags.varySuffix, env);
+      }
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+Deno.test("resume: the workflow summary lists the data a step that fails after approval wrote", async () => {
+  const modelType = await registerWriteThenThrowModel();
+  await withTempDir(async (tempDir) => {
+    const definition = Definition.create({
+      name: "failer",
+      type: modelType.normalized,
+    });
+    await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: "resume-failure-data",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+            Step.create({
+              name: "after-gate",
+              task: StepTask.model("failer", "run"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        new DefaultStepExecutor(),
+        undefined,
+        catalogStore,
+      );
+
+      const suspended = await service.execute(workflow.name);
+      assertEquals(suspended.status, "suspended");
+      const toApprove = await runRepo.findById(workflow.id, suspended.id);
+      const waiting = toApprove!.findWaitingApprovalStep()!;
+      toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+      await runRepo.save(workflow.id, toApprove!);
+
+      const events: WorkflowExecutionEvent[] = [];
+      for await (const event of service.resume(workflow.name, suspended.id)) {
+        events.push(event);
+      }
+
+      assertEquals(failureRetrievalCommands(events), [
+        "swamp data get failer state",
+      ]);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});

@@ -24,7 +24,10 @@ import {
 } from "../remote/remote_dispatch.ts";
 import { fromResourceHandle } from "../data/data_record_mapper.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
-import { DefaultMethodExecutionService } from "./method_execution_service.ts";
+import {
+  DefaultMethodExecutionService,
+  recoveredDataHandles,
+} from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
 import type {
@@ -4076,4 +4079,23 @@ Deno.test("executeWorkflow - fails a run whose definition records a malformed ty
     '"1.0"',
   );
   assertEquals((error as UserError).code, MALFORMED_TYPE_VERSION_CODE);
+});
+
+Deno.test("recoveredDataHandles: returns the handles attached to a failed method's error", () => {
+  const handles = [{ name: "state", dataId: "d-1", version: 1 }];
+  const error = Object.assign(new Error("boom"), { dataHandles: handles });
+
+  assertEquals(recoveredDataHandles(error), handles);
+});
+
+Deno.test("recoveredDataHandles: returns [] when nothing usable is attached", () => {
+  assertEquals(recoveredDataHandles(new Error("boom")), []);
+  assertEquals(
+    recoveredDataHandles(
+      Object.assign(new Error("boom"), { dataHandles: "not-a-list" }),
+    ),
+    [],
+  );
+  assertEquals(recoveredDataHandles("boom"), []);
+  assertEquals(recoveredDataHandles(null), []);
 });

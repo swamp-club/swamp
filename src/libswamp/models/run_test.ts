@@ -341,6 +341,48 @@ Deno.test("modelMethodRun yields error on execution failure", async () => {
   }
 });
 
+Deno.test("modelMethodRun: the failed method summary lists data the method wrote before failing", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const error = new Error("execution boom") as Error & {
+    dataHandles?: DataHandle[];
+  };
+  error.dataHandles = [
+    {
+      dataId: generateDataId(),
+      name: "partial-state",
+      specName: "state",
+      kind: "resource" as const,
+      version: 1,
+      size: 42,
+      tags: {},
+      metadata: { contentType: "application/json" },
+    } as DataHandle,
+  ];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createExecutionService: () => createFailingExecutionService(error),
+    outputRepo: createFakeOutputRepo(),
+  };
+  const events = await collect<ModelMethodRunEvent>(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("test-model", "run"),
+    ),
+  );
+
+  const summary = events.find((e) =>
+    e.kind === "report_completed" && e.reportName === "@swamp/method-summary"
+  );
+  if (summary?.kind !== "report_completed") {
+    throw new Error("expected a completed method-summary report");
+  }
+  assertStringIncludes(summary.markdown, "partial-state");
+  assertEquals(summary.markdown.includes("No data output."), false);
+  assertEquals(events[events.length - 1].kind, "error");
+});
+
 Deno.test("modelMethodRun marks output cancelled on abort", async () => {
   const definition = createTestDefinition("test-model", "run");
   const modelDef = createTestModelDef("run");

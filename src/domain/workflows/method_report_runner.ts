@@ -40,15 +40,18 @@ import type { WorkflowExecutionEvent } from "./execution_events.ts";
  * Inputs for running per-step reports after a method execution.
  *
  * The runner uses `status` to discriminate between the success path
- * (method + model scope reports, returns produced artifacts) and the
- * failure path (method scope only, errors swallowed, returns []).
+ * (method + model scope reports) and the failure path (method scope
+ * only, errors swallowed). Both return the artifacts the reports produced.
  */
 export interface MethodReportArgs {
   /** Whether the method execution succeeded or failed. */
   status: "succeeded" | "failed";
   /** Error message; required when status === "failed". */
   errorMessage?: string;
-  /** Data handles produced by the method; empty array on failure. */
+  /**
+   * Data handles produced by the method. On failure, the handles the
+   * method persisted before it threw (empty when it wrote nothing).
+   */
   dataHandles: DataHandle[];
 
   // --- Identity ---
@@ -88,7 +91,8 @@ export interface MethodReportArgs {
  *   output / savedArtifacts state.
  * - status="failed": runs method-scope reports only so consumers see a
  *   structured error. Internal try/catch ensures report errors do NOT
- *   mask the original execution error. Returns [].
+ *   mask the original execution error. Returns the artifacts persisted
+ *   before any such error, so the caller records them on the failed step.
  *
  * Imperative call site (not event-driven) preserves event ordering
  * relative to step_completed / step_failed.
@@ -108,57 +112,7 @@ export class MethodReportRunner {
     args: MethodReportArgs,
   ): Promise<DataArtifactRef[]> {
     const collected: DataArtifactRef[] = [];
-
-    const callbacks: ReportEventCallback = {
-      onReportStarted: (name, scope) => {
-        args.emitEvent?.({
-          kind: "report_started",
-          reportName: name,
-          scope,
-          jobId: args.jobName,
-          stepId: args.stepName,
-        });
-      },
-      onReportCompleted: (name, scope, markdown, json, reportDataHandles) => {
-        args.emitEvent?.({
-          kind: "report_completed",
-          reportName: name,
-          scope,
-          markdown,
-          json,
-          jobId: args.jobName,
-          stepId: args.stepName,
-        });
-        for (const handle of reportDataHandles) {
-          collected.push({
-            dataId: handle.dataId,
-            name: handle.name,
-            version: handle.version,
-            tags: handle.tags,
-          });
-        }
-      },
-      onReportFailed: (name, scope, error, dataHandles) => {
-        args.emitEvent?.({
-          kind: "report_failed",
-          reportName: name,
-          scope,
-          error,
-          jobId: args.jobName,
-          stepId: args.stepName,
-        });
-        if (dataHandles) {
-          for (const handle of dataHandles) {
-            collected.push({
-              dataId: handle.dataId,
-              name: handle.name,
-              version: handle.version,
-              tags: handle.tags,
-            });
-          }
-        }
-      },
-    };
+    const callbacks = collectingCallbacks(args, collected);
 
     await modelRegistry.ensureTypeLoaded(args.modelType);
     const stepModelDef = modelRegistry.get(args.modelType);
@@ -231,42 +185,12 @@ export class MethodReportRunner {
   private async runFailed(
     args: MethodReportArgs,
   ): Promise<DataArtifactRef[]> {
+    const collected: DataArtifactRef[] = [];
     // Wrap in try/catch: caller is already inside its own catch block,
     // so throwing here would replace the real execution error with a
     // report error.
     try {
-      const callbacks: ReportEventCallback = {
-        onReportStarted: (name, scope) => {
-          args.emitEvent?.({
-            kind: "report_started",
-            reportName: name,
-            scope,
-            jobId: args.jobName,
-            stepId: args.stepName,
-          });
-        },
-        onReportCompleted: (name, scope, markdown, json) => {
-          args.emitEvent?.({
-            kind: "report_completed",
-            reportName: name,
-            scope,
-            markdown,
-            json,
-            jobId: args.jobName,
-            stepId: args.stepName,
-          });
-        },
-        onReportFailed: (name, scope, reportError, _dataHandles) => {
-          args.emitEvent?.({
-            kind: "report_failed",
-            reportName: name,
-            scope,
-            error: reportError,
-            jobId: args.jobName,
-            stepId: args.stepName,
-          });
-        },
-      };
+      const callbacks = collectingCallbacks(args, collected);
 
       await modelRegistry.ensureTypeLoaded(args.modelType);
       const stepModelDef = modelRegistry.get(args.modelType);
@@ -297,7 +221,7 @@ export class MethodReportRunner {
           methodName: args.methodName,
           executionStatus: "failed",
           errorMessage: args.errorMessage,
-          dataHandles: [],
+          dataHandles: args.dataHandles,
           outputSpecs: buildOutputSpecs(args.modelDef),
           extensionFilesRoot: args.modelDef.extensionFilesRoot,
         },
@@ -314,6 +238,7 @@ export class MethodReportRunner {
         callbacks,
         args.methodName,
         stepModelTypeReports,
+        args.reportVarySuffix,
       );
     } catch (reportError) {
       // Swallowed so a broken report cannot replace the real execution
@@ -328,6 +253,61 @@ export class MethodReportRunner {
         },
       );
     }
-    return [];
+    return collected;
   }
+}
+
+/**
+ * Builds report callbacks that forward report lifecycle events and
+ * collect the data artifacts each report persisted — including the
+ * fallback error artifacts of a report that failed — into `collected`.
+ */
+function collectingCallbacks(
+  args: MethodReportArgs,
+  collected: DataArtifactRef[],
+): ReportEventCallback {
+  const collect = (handles: DataHandle[]) => {
+    for (const handle of handles) {
+      collected.push({
+        dataId: handle.dataId,
+        name: handle.name,
+        version: handle.version,
+        tags: handle.tags,
+      });
+    }
+  };
+  return {
+    onReportStarted: (name, scope) => {
+      args.emitEvent?.({
+        kind: "report_started",
+        reportName: name,
+        scope,
+        jobId: args.jobName,
+        stepId: args.stepName,
+      });
+    },
+    onReportCompleted: (name, scope, markdown, json, reportDataHandles) => {
+      args.emitEvent?.({
+        kind: "report_completed",
+        reportName: name,
+        scope,
+        markdown,
+        json,
+        jobId: args.jobName,
+        stepId: args.stepName,
+      });
+      collect(reportDataHandles);
+    },
+    onReportFailed: (name, scope, error, dataHandles) => {
+      args.emitEvent?.({
+        kind: "report_failed",
+        reportName: name,
+        scope,
+        error,
+        jobId: args.jobName,
+        stepId: args.stepName,
+      });
+      if (dataHandles) collect(dataHandles);
+    },
+  };
 }
