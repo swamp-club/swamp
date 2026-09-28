@@ -193,6 +193,7 @@ export async function startDetachedResume(
             inputs: request.inputs ?? {},
             fromStep: request.from,
             suspendedOnly: request.suspendedOnly,
+            instanceId: ctx.instanceId,
           })
         ) {
           const mapped = mapWorkflowExecutionEvent(event, runRepo);

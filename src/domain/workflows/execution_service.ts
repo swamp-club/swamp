@@ -2812,6 +2812,11 @@ export class WorkflowExecutionService {
        * an approval can never start a retry of a failed run.
        */
       suspendedOnly?: boolean;
+      /**
+       * The serve instance driving this resume. Omitted for a local resume,
+       * which clears any instance id the run carried.
+       */
+      instanceId?: string;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -2883,11 +2888,14 @@ export class WorkflowExecutionService {
     // abort left it pending. Reopened per record before a failed run's reset
     // set, which resets by name in every job.
     existingRun.reopenAbortedWork();
+    // This process now drives the run. Recorded before the save below, so
+    // cancel sees the live process from the start.
+    const owner = { pid: Deno.pid, instanceId: options?.instanceId };
     if (reset) {
       existingRun.resetForResumeFrom(reset.steps, reset.tracked);
-      existingRun.resumeFromFailed();
+      existingRun.resumeFromFailed(owner);
     } else {
-      existingRun.resumeFromSuspended();
+      existingRun.resumeFromSuspended(owner);
     }
 
     // Record the key names of any resume-time inputs for audit (never the
@@ -2899,6 +2907,26 @@ export class WorkflowExecutionService {
     // The running status saved here also stops a second resume of this run
     // from starting while this one prepares.
     await this.saveRun(workflow.id, existingRun);
+    // The tracker row follows at once: a serve boot that found the record
+    // running beside a stale row would otherwise interrupt this resume.
+    const handBackTrackerRow = this.handOverTrackerRow(
+      existingRun,
+      workflow.name,
+      snapshot.status === "suspended" ? "suspended" : "failed",
+      options?.instanceId,
+    );
+    // The heartbeat starts with the hand-over, so a slow preparation does not
+    // leave the row stale. The finally at the end of this method clears it,
+    // as does the hand-back of a resume that fails before execution.
+    const resumeHeartbeatInterval = this.startResumeHeartbeat(existingRun.id);
+    const restore = {
+      workflowId: workflow.id,
+      snapshot,
+      handBackTrackerRow: () => {
+        if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
+        handBackTrackerRow();
+      },
+    };
 
     const {
       expressionContext,
@@ -2907,7 +2935,7 @@ export class WorkflowExecutionService {
       resolvedWorkflow,
       workflowLogPath,
       workflowLogHandle,
-    } = await this.restoreRunOnFailure(workflow.id, snapshot, async () => {
+    } = await this.restoreRunOnFailure(restore, async () => {
       const expressionContext = await this.buildRunContext(
         workflow,
         false,
@@ -2998,12 +3026,10 @@ export class WorkflowExecutionService {
       };
     });
 
-    // Declared before the try so the finally at the end of this method can
-    // clear it. The try opens immediately after register() — before the
-    // "started" yield — so early consumer abandonment (a client that receives
-    // "started" then disconnects) still unwinds the finally and releases the
-    // log sink.
-    let resumeHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
+    // The try opens immediately after register() — before the "started"
+    // yield — so early consumer abandonment (a client that receives
+    // "started" then disconnects) still unwinds the finally, which stops the
+    // heartbeat and releases the log sink.
     try {
       yield {
         kind: "started",
@@ -3032,21 +3058,6 @@ export class WorkflowExecutionService {
         swampSha: options?.swampSha,
         assertFailOnSeverity: options?.assertFailOnSeverity,
       };
-
-      // Hand the tracker row to this process (suspended, failed, or
-      // interrupted → running) and start heartbeat
-      if (this.runTracker) {
-        this.runTracker.reactivate(existingRun.id, Deno.pid, hostname());
-        const tracker = this.runTracker;
-        const runId = existingRun.id;
-        resumeHeartbeatInterval = setInterval(() => {
-          try {
-            tracker.heartbeat(runId);
-          } catch {
-            // Heartbeat failure is non-fatal
-          }
-        }, 30_000);
-      }
 
       const jobNodes: GraphNode[] = resolvedWorkflow.jobs.map((job) => ({
         name: job.name,
@@ -5019,6 +5030,7 @@ export class WorkflowExecutionService {
     // Re-enter the executor via the existing resume path
     yield* this.resume(workflowIdOrName, run.id, {
       signal: options?.signal,
+      instanceId: options?.instanceId,
     });
   }
 
@@ -5030,12 +5042,16 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Runs `prepare`; if it throws, saves the run back as `snapshot` and
-   * rethrows. A failed restore is logged and the original error still wins.
+   * Runs `prepare`; if it throws, saves the run back as `snapshot`, hands its
+   * tracker row back, and rethrows. A failed restore is logged and the
+   * original error still wins.
    */
   private async restoreRunOnFailure<T>(
-    workflowId: WorkflowId,
-    snapshot: WorkflowRunData,
+    { workflowId, snapshot, handBackTrackerRow }: {
+      workflowId: WorkflowId;
+      snapshot: WorkflowRunData;
+      handBackTrackerRow: () => void;
+    },
     prepare: () => Promise<T>,
   ): Promise<T> {
     try {
@@ -5054,7 +5070,86 @@ export class WorkflowExecutionService {
           },
         );
       }
+      try {
+        handBackTrackerRow();
+      } catch (restoreError) {
+        getSwampLogger(["workflow", "resume"]).warn(
+          "Could not restore the tracker row of run {runId} after a failed resume: {error}",
+          {
+            runId: snapshot.id,
+            error: restoreError instanceof Error
+              ? restoreError.message
+              : String(restoreError),
+          },
+        );
+      }
       throw error;
+    }
+  }
+
+  /**
+   * Heartbeats the run's tracker row every 30 seconds, when there is a
+   * tracker. The caller clears the returned interval.
+   */
+  private startResumeHeartbeat(
+    runId: string,
+  ): ReturnType<typeof setInterval> | undefined {
+    const tracker = this.runTracker;
+    if (!tracker) return undefined;
+    return setInterval(() => {
+      try {
+        tracker.heartbeat(runId);
+      } catch {
+        // Heartbeat failure is non-fatal
+      }
+    }, 30_000);
+  }
+
+  /**
+   * Hands the run's tracker row to this process: a suspended, failed or
+   * interrupted row becomes running under this pid and `instanceId`, and a
+   * row that retention purged is registered again. A row in any other status
+   * is left alone. Returns a function that puts the row back to its prior
+   * status (`priorStatus` for a row this call registered), for a resume that
+   * fails before execution starts.
+   *
+   * Never throws: it runs after the run is saved as running and before the
+   * restore that would undo that save, and tracker bookkeeping is
+   * best-effort, so a tracker failure is logged and the resume goes on.
+   */
+  private handOverTrackerRow(
+    run: WorkflowRun,
+    workflowName: string,
+    priorStatus: ActiveRunStatus,
+    instanceId: string | undefined,
+  ): () => void {
+    const tracker = this.runTracker;
+    if (!tracker) return () => {};
+    try {
+      const prior = tracker.findById(run.id);
+      if (tracker.reactivate(run.id, Deno.pid, hostname(), instanceId)) {
+        const status = prior?.status ?? priorStatus;
+        return () => tracker.complete(run.id, status);
+      }
+      if (prior) return () => {};
+      tracker.register(ActiveRun.createWorkflowRun({
+        id: run.id,
+        workflowName,
+        pid: Deno.pid,
+        hostname: hostname(),
+        initiatedBy: run.initiatedBy,
+        instanceId,
+      }));
+      return () => tracker.complete(run.id, priorStatus);
+    } catch (error) {
+      getSwampLogger(["workflow", "resume"]).warn(
+        "Could not hand the tracker row of run {runId} to this resume: {error}",
+        {
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return () => {};
     }
   }
 

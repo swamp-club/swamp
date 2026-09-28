@@ -1291,6 +1291,7 @@ export async function handleWorkflowResume(
             signal: controller.signal,
             inputs: resumeInputs,
             fromStep: payload.from,
+            instanceId: ctx.instanceId,
           })
         ) {
           yield mapWorkflowExecutionEvent(event, runRepo);

@@ -371,7 +371,12 @@ unchanged, with its message, any next-command hint and any code it carries. An
 error while an interrupted resume unwinds (Ctrl-C or `--timeout` after the run
 started) is not reported; the run is recorded as cancelled instead.
 
-**Run tracker:** the tracker row follows the resuming process. See
+**Run ownership:** the run record and the tracker row follow the resuming
+process. Before any step runs, the resume records its pid, and serve's instance
+id when serve drives it, so `workflow cancel` stops the resume rather than the
+process that started the run. When the run leaves `running` again, the record
+names its original owner once more: a run that suspends at a later gate is
+cancelled and superseded as the run of whoever started it. See
 [run tracker](../enablers/run-tracker.md).
 
 **Limits:** these are part of the operator contract.
@@ -402,10 +407,6 @@ started) is not reported; the run is recorded as cancelled instead.
 - **Approvals are never reused silently.** Retry refuses a rejected approval. A
   gate in the reset set loses its decision and asks again. The `run` grant and
   `approveRequiresExplicitGrant` still govern every gate.
-- **The run record keeps the original process identity.** During a resume, the
-  run record still carries the pid and instance id of the process that started
-  the run. `workflow cancel` may therefore not stop the resume
-  (swamp-club#2420).
 - **Interrupted, cancelled and running runs are out of scope.** Interrupted
   runs still use `recover`. Retry adds no crash-recovery guarantee.
 

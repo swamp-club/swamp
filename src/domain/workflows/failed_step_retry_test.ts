@@ -415,7 +415,7 @@ Deno.test("selectRetryTemplates: refuses a step stranded by a workflow change", 
   run.resetForResumeFrom(new Set(["compile"]), [
     { jobName: "build", stepName: "compile" },
   ]);
-  run.resumeFromFailed();
+  run.resumeFromFailed({ pid: Deno.pid });
   const build = run.getJob("build")!;
   build.failStrandedResetSteps();
   build.fail();

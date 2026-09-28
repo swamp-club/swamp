@@ -75,7 +75,7 @@ import type { WorkflowExecutionEvent } from "./execution_events.ts";
 import { assessRecoveryForRun } from "./recovery_assessment.ts";
 import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
-import type { ActiveRun, ActiveRunStatus } from "../models/active_run.ts";
+import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import type { ExportResult } from "@opentelemetry/core";
 
@@ -7424,7 +7424,24 @@ for (const target of ["name", "id", "direct"]) {
 class RecordingRunTracker implements RunTrackerRepository {
   readonly completions: { runId: string; status: ActiveRunStatus }[] = [];
 
-  register(_run: ActiveRun): void {}
+  readonly registrations: ActiveRun[] = [];
+
+  /** What reactivate reports; false models a missing or finished row. */
+  reactivateResult = true;
+
+  /** The row findById returns. */
+  existingRow: ActiveRun | null = null;
+
+  /** Thrown by register when set, as a busy or locked database would. */
+  registerError: Error | undefined;
+
+  /** Thrown by reactivate when set. */
+  reactivateError: Error | undefined;
+
+  register(run: ActiveRun): void {
+    if (this.registerError) throw this.registerError;
+    this.registrations.push(run);
+  }
 
   heartbeat(_runId: string): void {}
 
@@ -7432,15 +7449,26 @@ class RecordingRunTracker implements RunTrackerRepository {
     this.completions.push({ runId, status });
   }
 
-  readonly reactivations: { runId: string; pid: number; hostname: string }[] =
-    [];
+  readonly reactivations: {
+    runId: string;
+    pid: number;
+    hostname: string;
+    instanceId?: string;
+  }[] = [];
 
-  reactivate(runId: string, pid: number, hostname: string): void {
-    this.reactivations.push({ runId, pid, hostname });
+  reactivate(
+    runId: string,
+    pid: number,
+    hostname: string,
+    instanceId?: string,
+  ): boolean {
+    if (this.reactivateError) throw this.reactivateError;
+    this.reactivations.push({ runId, pid, hostname, instanceId });
+    return this.reactivateResult;
   }
 
   findById(_runId: string): ActiveRun | null {
-    return null;
+    return this.existingRow;
   }
 
   findAllRunning(): ActiveRun[] {
@@ -8142,9 +8170,12 @@ class CountingStepExecutor implements StepExecutor {
 class SpyWorkflowRunRepository extends InMemoryWorkflowRunRepository {
   saves = 0;
   allowSaves = Infinity;
+  /** The record as each save persisted it, in order. */
+  readonly saved: WorkflowRunData[] = [];
 
   override save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     this.saves++;
+    this.saved.push(run.toData());
     if (this.saves > this.allowSaves) {
       return Promise.reject(new Error("datastore unavailable"));
     }
@@ -8696,16 +8727,389 @@ Deno.test("resume: hands the tracker row to the resuming process", async () => {
     executor.failing.add("compile");
     const failed = await service.execute(workflow.name);
 
+    const registered = tracker.registrations.length;
+
     executor.failing.clear();
     await drainResume(service, workflow.name, failed.id);
 
     assertEquals(tracker.reactivations, [
-      { runId: failed.id, pid: Deno.pid, hostname: hostname() },
+      {
+        runId: failed.id,
+        pid: Deno.pid,
+        hostname: hostname(),
+        instanceId: undefined,
+      },
     ]);
+    assertEquals(tracker.registrations.length, registered);
     assertEquals(tracker.completions, [
       { runId: failed.id, status: "failed" },
       { runId: failed.id, status: "completed" },
     ]);
+  });
+});
+
+/**
+ * Replaces the stored failed run with one another process left behind: a
+ * different pid, and a serve instance id when given.
+ */
+async function seedForeignOwner(
+  runRepo: WorkflowRunRepository,
+  workflow: Workflow,
+  run: WorkflowRun,
+  instanceId?: string,
+): Promise<void> {
+  const data = { ...run.toData(), pid: Deno.pid + 1 };
+  if (instanceId) data.instanceId = instanceId;
+  await runRepo.save(workflow.id, WorkflowRun.fromData(data));
+}
+
+Deno.test("resume: the first save names the resuming process as owner", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    await seedForeignOwner(runRepo, workflow, failed, "serve-a");
+    const saves = runRepo.saved.length;
+
+    executor.failing.clear();
+    await drainResume(service, workflow.name, failed.id);
+
+    const first = runRepo.saved[saves];
+    assertEquals(first.status, "running");
+    assertEquals(first.pid, Deno.pid);
+    // A local resume of a run serve started clears serve's instance id.
+    assertEquals(first.instanceId, undefined);
+    assertEquals(first.ownerBeforeResume, {
+      pid: Deno.pid + 1,
+      instanceId: "serve-a",
+    });
+    // Once the resume ends, the run names its owner again.
+    const stored = (await runRepo.findById(workflow.id, failed.id))!.toData();
+    assertEquals(stored.status, "succeeded");
+    assertEquals(stored.pid, Deno.pid + 1);
+    assertEquals(stored.instanceId, "serve-a");
+    assertEquals(stored.ownerBeforeResume, undefined);
+  });
+});
+
+Deno.test("resume: records the serve instance id driving the resume", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(true);
+    const { runRepo, service } = await setupRetry(tempDir, workflow);
+    const suspended = await service.execute(workflow.name, {
+      inputs: { n: 1 },
+    });
+    assertEquals(suspended.status, "suspended");
+    suspended.getJob("main")!.getStep("gate")!.succeed();
+    await seedForeignOwner(runRepo, workflow, suspended);
+    const saves = runRepo.saved.length;
+
+    await drainResume(service, workflow.name, suspended.id, {
+      instanceId: "serve-b",
+    });
+
+    const first = runRepo.saved[saves];
+    assertEquals(first.status, "running");
+    assertEquals(first.pid, Deno.pid);
+    assertEquals(first.instanceId, "serve-b");
+  });
+});
+
+Deno.test("resume: a failed resume restores the original owner", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(false);
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compute");
+    const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
+    await seedForeignOwner(runRepo, workflow, failed, "serve-a");
+
+    executor.failing.clear();
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, failed.id, {
+          inputs: { n: "x" },
+          instanceId: "serve-b",
+        }),
+      Error,
+      "no such overload",
+    );
+
+    const stored = await runRepo.findById(workflow.id, failed.id);
+    assertEquals(stored?.status, "failed");
+    assertEquals(stored?.pid, Deno.pid + 1);
+    assertEquals(stored?.instanceId, "serve-a");
+  });
+});
+
+Deno.test("resume: passes the serve instance id to the tracker hand-off", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createRetryWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    const registered = tracker.registrations.length;
+
+    executor.failing.clear();
+    await drainResume(service, workflow.name, failed.id, {
+      instanceId: "serve-b",
+    });
+
+    assertEquals(tracker.reactivations.map((r) => r.instanceId), [
+      "serve-b",
+    ]);
+    assertEquals(tracker.registrations.length, registered);
+  });
+});
+
+Deno.test("resume: registers a tracker row that retention purged", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createRetryWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    tracker.reactivateResult = false;
+    const registered = tracker.registrations.length;
+
+    executor.failing.clear();
+    await drainResume(service, workflow.name, failed.id, {
+      instanceId: "serve-b",
+    });
+
+    assertEquals(tracker.registrations.length, registered + 1);
+    const row = tracker.registrations[registered];
+    assertEquals(row.id, failed.id);
+    assertEquals(row.runKind, "workflow");
+    assertEquals(row.workflowName, workflow.name);
+    assertEquals(row.pid, Deno.pid);
+    assertEquals(row.hostname, hostname());
+    assertEquals(row.status, "running");
+    assertEquals(row.instanceId, "serve-b");
+  });
+});
+
+Deno.test("resume: leaves an existing tracker row it cannot hand over", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createRetryWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    tracker.reactivateResult = false;
+    tracker.existingRow = ActiveRun.createWorkflowRun({
+      id: failed.id,
+      workflowName: workflow.name,
+      pid: 1234,
+      hostname: "other-host",
+    });
+    const registered = tracker.registrations.length;
+
+    executor.failing.clear();
+    await drainResume(service, workflow.name, failed.id);
+
+    assertEquals(tracker.registrations.length, registered);
+  });
+});
+
+Deno.test("resume: hands the tracker row over before it yields started", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createRetryWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+
+    executor.failing.clear();
+    const events = service.resume(workflow.name, failed.id);
+    try {
+      assertEquals((await events.next()).value?.kind, "started");
+      assertEquals(tracker.reactivations.length, 1);
+    } finally {
+      await events.return(undefined);
+    }
+  });
+});
+
+for (const failing of ["reactivate", "register"] as const) {
+  Deno.test(`resume: a tracker ${failing} failure does not fail the resume`, async () => {
+    await withTempDir(async (tempDir) => {
+      const tracker = new RecordingRunTracker();
+      const workflow = createRetryWorkflow();
+      const { runRepo, executor, service } = await setupRetry(
+        tempDir,
+        workflow,
+        tracker,
+      );
+      executor.failing.add("compile");
+      const failed = await service.execute(workflow.name);
+      const error = new Error("database is locked");
+      if (failing === "reactivate") tracker.reactivateError = error;
+      else {
+        tracker.reactivateResult = false;
+        tracker.registerError = error;
+      }
+
+      executor.failing.clear();
+      const completed = await drainResume(service, workflow.name, failed.id);
+
+      assertEquals(completed?.status, "succeeded");
+      const stored = await runRepo.findById(workflow.id, failed.id);
+      assertEquals(stored?.status, "succeeded");
+    });
+  });
+}
+
+for (const purged of [false, true]) {
+  const row = purged ? "a row it registered" : "the row it took over";
+  Deno.test(`resume: a failed resume hands back ${row} as failed`, async () => {
+    await withTempDir(async (tempDir) => {
+      const tracker = new RecordingRunTracker();
+      const workflow = createArithmeticWorkflow(false);
+      const { executor, service } = await setupRetry(
+        tempDir,
+        workflow,
+        tracker,
+      );
+      executor.failing.add("compute");
+      const failed = await service.execute(workflow.name, {
+        inputs: { n: 1 },
+      });
+      tracker.reactivateResult = !purged;
+      tracker.existingRow = purged ? null : ActiveRun.fromData({
+        ...ActiveRun.createWorkflowRun({
+          id: failed.id,
+          workflowName: workflow.name,
+          pid: 1234,
+          hostname: "other-host",
+        }).toData(),
+        status: "failed",
+      });
+      const completions = tracker.completions.length;
+
+      executor.failing.clear();
+      await assertRejects(
+        () =>
+          drainResume(service, workflow.name, failed.id, {
+            inputs: { n: "x" },
+          }),
+        Error,
+        "no such overload",
+      );
+
+      assertEquals(tracker.completions.slice(completions), [
+        { runId: failed.id, status: "failed" },
+      ]);
+    });
+  });
+}
+
+Deno.test("resume: a failed resume of a suspended run hands a registered row back as suspended", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createArithmeticWorkflow(true);
+    const { runRepo, service } = await setupRetry(tempDir, workflow, tracker);
+    const suspended = await service.execute(workflow.name, {
+      inputs: { n: 1 },
+    });
+    suspended.getJob("main")!.getStep("gate")!.succeed();
+    await runRepo.save(workflow.id, suspended);
+    tracker.reactivateResult = false;
+    const completions = tracker.completions.length;
+
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, suspended.id, {
+          inputs: { n: "x" },
+        }),
+      Error,
+      "no such overload",
+    );
+
+    assertEquals(tracker.completions.slice(completions), [
+      { runId: suspended.id, status: "suspended" },
+    ]);
+  });
+});
+
+/**
+ * Runs `fn` while recording the 30-second intervals it starts and clears, so a
+ * test can see whether the resume heartbeat is running. Test files run in
+ * their own workers and tests in a file run in turn, so the wrap is local.
+ */
+async function withHeartbeatWatch(
+  fn: (running: () => number) => Promise<void>,
+): Promise<void> {
+  type IntervalId = ReturnType<typeof setInterval>;
+  const active = new Set<IntervalId>();
+  const set = globalThis.setInterval;
+  const clear = globalThis.clearInterval;
+  const watchedSet = (handler: () => void, timeout?: number): IntervalId => {
+    const id = set(handler, timeout);
+    if (timeout === 30_000) active.add(id);
+    return id;
+  };
+  const watchedClear = (id?: IntervalId): void => {
+    if (id !== undefined) active.delete(id);
+    clear(id);
+  };
+  globalThis.setInterval = watchedSet as unknown as typeof setInterval;
+  globalThis.clearInterval = watchedClear as typeof clearInterval;
+  try {
+    await fn(() => active.size);
+  } finally {
+    globalThis.setInterval = set;
+    globalThis.clearInterval = clear;
+    for (const id of active) clear(id);
+  }
+}
+
+Deno.test("resume: the heartbeat runs from the tracker hand-over and stops when the resume ends", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(false);
+    const tracker = new RecordingRunTracker();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compute");
+    const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
+    executor.failing.clear();
+
+    await withHeartbeatWatch(async (running) => {
+      const events = service.resume(workflow.name, failed.id);
+      try {
+        assertEquals((await events.next()).value?.kind, "started");
+        assertEquals(running(), 1);
+        let next: IteratorResult<unknown>;
+        do {
+          next = await events.next();
+        } while (!next.done);
+      } finally {
+        await events.return(undefined);
+      }
+      assertEquals(running(), 0);
+    });
+  });
+});
+
+Deno.test("resume: a resume that fails before execution stops the heartbeat", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(false);
+    const tracker = new RecordingRunTracker();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compute");
+    const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
+
+    await withHeartbeatWatch(async (running) => {
+      await assertRejects(
+        () =>
+          drainResume(service, workflow.name, failed.id, {
+            inputs: { n: "x" },
+          }),
+        Error,
+        "no such overload",
+      );
+      assertEquals(running(), 0);
+    });
   });
 });
 

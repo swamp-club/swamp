@@ -28,12 +28,19 @@ export interface RunTrackerRepository {
 
   /**
    * Hands a run's row to the process resuming it: a suspended, failed, or
-   * interrupted row becomes running with the resuming pid and hostname and a
-   * fresh heartbeat. Running, succeeded, and cancelled rows are left alone.
-   * Interrupted is accepted because `workflow recover` sets the run record
-   * back to suspended while its row stays interrupted.
+   * interrupted row becomes running with the resuming pid, hostname and serve
+   * instance id (none for a local resume) and a fresh heartbeat. Running,
+   * succeeded, and cancelled rows are left alone. Interrupted is accepted
+   * because `workflow recover` sets the run record back to suspended while
+   * its row stays interrupted. Returns whether a row was handed over; false
+   * when the row is missing, for example purged after retention.
    */
-  reactivate(runId: string, pid: number, hostname: string): void;
+  reactivate(
+    runId: string,
+    pid: number,
+    hostname: string,
+    instanceId?: string,
+  ): boolean;
 
   findById(runId: string): ActiveRun | null;
 
