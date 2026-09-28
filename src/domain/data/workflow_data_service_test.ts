@@ -834,3 +834,52 @@ Deno.test("WorkflowDataService.findByNameInWorkflowRun: without a version, the r
   assertEquals(found?.data.version, 2);
   assertEquals(found?.stepName, "second");
 });
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun: an ambiguous run-id-only match is not returned", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  // Two models wrote "result" v1 in the same run; the step's own v1 is gone.
+  const ours = await createRunData("result", TEST_RUN_ID, 1);
+  const theirs = await createRunData("result", TEST_RUN_ID, 1);
+  const alsoTheirs = await createRunData("result", TEST_RUN_ID, 1);
+  const global = [
+    { data: theirs, modelType, modelId: OTHER_MODEL_ID },
+    { data: alsoTheirs, modelType, modelId: TEST_WORKFLOW_ID },
+  ];
+
+  const run = createTestRun([{
+    stepName: "create",
+    artifacts: [refFor(ours)],
+  }]);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(global),
+  );
+
+  assertEquals((await service.findAllForWorkflowRun(run)).length, 0);
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun: an unreadable candidate in another model is skipped", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const ours = await createRunData("result", TEST_RUN_ID, 1);
+  const theirs = await createRunData("result", OTHER_RUN_ID, 1);
+  const global = [
+    { data: theirs, modelType, modelId: OTHER_MODEL_ID },
+    { data: ours, modelType, modelId: TEST_MODEL_ID },
+  ];
+  const repo = createMockDataRepo(global);
+  const findByName = repo.findByName.bind(repo);
+  repo.findByName = (type, modelId, name, version) =>
+    modelId === OTHER_MODEL_ID
+      ? Promise.reject(new SyntaxError("corrupt metadata"))
+      : findByName(type, modelId, name, version);
+
+  const run = createTestRun([{
+    stepName: "create",
+    artifacts: [refFor(ours)],
+  }]);
+  const service = new WorkflowDataService(createMockDefinitionRepo(), repo);
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 1);
+  assertEquals(result[0].modelId, TEST_MODEL_ID);
+});

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Data } from "./data.ts";
+import { getLogger } from "@logtape/logtape";
 import { ModelType } from "../models/model_type.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 import type { WorkflowRun } from "../workflows/workflow_run.ts";
@@ -41,6 +42,8 @@ export interface WorkflowDataItem {
   stepName?: string;
   contentPath: string;
 }
+
+const logger = getLogger(["data", "workflow"]);
 
 /** A model that owns data, identified by model type and model id. */
 interface DataOwner {
@@ -145,7 +148,8 @@ export class WorkflowDataService {
    *
    * Each candidate owner is read at `artifact.version`, and the stored data
    * is accepted only when it belongs to this run: its id matches the
-   * artifact's `dataId`, or its owner provenance names this run. Data ids
+   * artifact's `dataId`, or — for exactly one candidate — its owner
+   * provenance names this run. Data ids
    * can be shared across versions, so the version — not the id — selects
    * what is read. An id match is preferred over a run-id-only match.
    */
@@ -155,21 +159,37 @@ export class WorkflowDataService {
     owners: DataOwner[],
   ): Promise<Omit<WorkflowDataItem, "jobName" | "stepName"> | null> {
     let found: { data: Data; owner: DataOwner } | undefined;
+    const runMatches: Array<{ data: Data; owner: DataOwner }> = [];
     for (const owner of owners) {
-      const data = await this.dataRepo.findByName(
-        owner.modelType,
-        owner.modelId,
-        artifact.name,
-        artifact.version,
-      );
+      let data: Data | null;
+      try {
+        data = await this.dataRepo.findByName(
+          owner.modelType,
+          owner.modelId,
+          artifact.name,
+          artifact.version,
+        );
+      } catch (error) {
+        // An unreadable version under another model must not fail the whole
+        // run lookup; it cannot be this artifact's data anyway.
+        logger
+          .debug`Skipping unreadable ${artifact.name} v${artifact.version} for model ${owner.modelId}: ${error}`;
+        continue;
+      }
       if (!data) continue;
       if (data.id === artifact.dataId) {
         found = { data, owner };
         break;
       }
-      if (!found && data.ownerDefinition.workflowRunId === runId) {
-        found = { data, owner };
+      if (data.ownerDefinition.workflowRunId === runId) {
+        runMatches.push({ data, owner });
       }
+    }
+    // A run-id-only match is trusted only when it is unambiguous: several
+    // models can write the same name in one run, and picking one of them
+    // would return another model's data.
+    if (!found && runMatches.length === 1) {
+      found = runMatches[0];
     }
     if (!found) return null;
 
