@@ -10859,7 +10859,8 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
  * cancel firing while that step runs. The step then fails with an AbortError,
  * or succeeds as a method that ignores the signal would. It aborts once: a
  * later resume runs the step normally. Every guard call (`__guard_<step>`)
- * that succeeds returns `guardValue` (null, so falsy, by default).
+ * that succeeds returns `guardValue` (null, so falsy, by default). The abort
+ * carries `abortReason`, or the default AbortError when it is undefined.
  */
 class AbortingStepExecutor extends CountingStepExecutor {
   readonly controller = new AbortController();
@@ -10868,6 +10869,7 @@ class AbortingStepExecutor extends CountingStepExecutor {
     private readonly abortAt: string,
     private readonly outcome: "reject" | "succeed" = "reject",
     private readonly guardValue: unknown = null,
+    private readonly abortReason?: unknown,
   ) {
     super();
   }
@@ -10878,7 +10880,7 @@ class AbortingStepExecutor extends CountingStepExecutor {
   ): Promise<unknown> {
     const result = await super.execute(step, ctx);
     if (ctx.stepName === this.abortAt && !this.controller.signal.aborted) {
-      this.controller.abort();
+      this.controller.abort(this.abortReason);
       if (this.outcome === "reject") {
         throw new DOMException("The operation was aborted.", "AbortError");
       }
@@ -12142,6 +12144,54 @@ Deno.test("resume: a step queued when --timeout fired runs once cleanup's gate i
     assertEquals(executor.count("main/b"), 1);
     assertEquals(resumed.status, "failed");
     assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
+  });
+});
+
+Deno.test("resume: a --timeout abort records the timeout as the run's cancel_reason (swamp-club#2594)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-timeout-reason-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            modelStep("work", onStep("gate", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor(
+      "work",
+      "reject",
+      null,
+      new DOMException(
+        "The operation was aborted due to timeout",
+        "TimeoutError",
+      ),
+    );
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const { run } = await finishedRun(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(
+      run.tags.cancel_reason,
+      "The operation was aborted due to timeout",
+    );
   });
 });
 

@@ -68,6 +68,7 @@ import {
 } from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
+import { abortOnTimeout } from "../abort_on_timeout.ts";
 import { GIT_SHA } from "./version.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -648,10 +649,9 @@ async function runWorkflowViaServer(
     : undefined;
 
   const abort = new AbortController();
-  if (options.timeout) {
-    const timeoutMs = parseTimerDuration(options.timeout as string);
-    setTimeout(() => abort.abort(), timeoutMs);
-  }
+  const timeoutMs = options.timeout
+    ? parseTimerDuration(options.timeout as string)
+    : undefined;
   const shutdown = registerShutdownHandler({
     handler: () => abort.abort(),
     forceExitOnRepeat: true,
@@ -668,6 +668,9 @@ async function runWorkflowViaServer(
     options,
   );
 
+  const disarmTimeout = timeoutMs !== undefined
+    ? abortOnTimeout(abort, timeoutMs)
+    : undefined;
   try {
     for (let i = 0; i < inputSets.length; i++) {
       if (inputSets.length > 1) {
@@ -728,6 +731,7 @@ async function runWorkflowViaServer(
       }
     }
   } finally {
+    disarmTimeout?.();
     shutdown.dispose();
   }
 }
