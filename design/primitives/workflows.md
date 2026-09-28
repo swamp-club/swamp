@@ -374,9 +374,10 @@ started) is not reported; the run is recorded as cancelled instead.
   workflow and model definitions. A failed-run resume refuses a structural
   change it would walk into (the
   [structure check](#resume-from-failed-step---from)): a renamed, moved or
-  added step, or a renamed or added job. It does not detect a changed step body
-  or prove that stored results are still valid. If an input change affects
-  earlier work, use `--from` or start a new run. A suspended resume refuses the
+  added step, a renamed or added job, or a removed job still holding unfinished
+  work. It does not detect a changed step body or prove that stored results are
+  still valid. If an input change affects earlier work, use `--from` or start a
+  new run. A suspended resume refuses the
   same kinds of change, a moved pending step and a removed pending job, and
   leaves the run suspended.
 - **`forEach` collections must stay stable.** Item identity is not kept across
@@ -459,7 +460,11 @@ resume (`--from` or retry) refuses with `Start a new run.` when:
   job. A record selected by `forEachTemplate` must be an iteration of one of
   that job's `forEach` steps. Otherwise the current workflow walks that step in
   another job, and the reset record would stay `pending` while the run reported
-  success.
+  success;
+- (d) a job the workflow no longer has is unfinished, or holds work the run's
+  abort settled without starting. Resume reopens that work but walks only the
+  workflow's jobs, so the job would stay `pending` and the run could never
+  finish.
 
 The check leaves alone records selected only by the legacy `forEach` prefix
 match, which can over-select (for example `deploy-canary-x` when `deploy` is
@@ -469,8 +474,8 @@ iteration names of a `--last-evaluated` run; `forEach` templates with no records
 apart from one that expanded to nothing); job and step names written with an
 expression such as `deploy-${{ inputs.env }}`, which the run stores evaluated
 and the check reads unevaluated, so they cannot be compared; and terminal
-records and jobs the workflow no longer has, so removing a step or job keeps
-working. The check is `planFailedRunResume` in
+records and finished jobs the workflow no longer has, so removing a step or job
+keeps working. The check is `planFailedRunResume` in
 `src/domain/workflows/resume_reset.ts`.
 
 **Suspended runs:** a suspended run has no reset set, so every job whose stored

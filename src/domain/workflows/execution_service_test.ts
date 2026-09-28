@@ -12248,6 +12248,97 @@ Deno.test("resume: --from reruns settled work without rerunning a same-named ste
   });
 });
 
+/**
+ * main: `a` and `b` queued behind it. After main, cleanup skips `teardown`
+ * (which needs main to succeed) without starting it, and `approve`'s gate
+ * suspends the run. Without `teardown` when `withTeardown` is false.
+ */
+function removedTeardownWorkflow(
+  withTeardown: boolean,
+  id?: WorkflowId,
+): Workflow {
+  const after = (condition: TriggerCondition) => [{ job: "main", condition }];
+  return Workflow.create({
+    id,
+    name: "resume-from-removed-teardown-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        concurrency: 1,
+        steps: [modelStep("a"), modelStep("b")],
+      }),
+      ...(withTeardown
+        ? [Job.create({
+          name: "teardown",
+          dependsOn: after(TriggerCondition.succeeded()),
+          steps: [modelStep("t")],
+        })]
+        : []),
+      Job.create({
+        name: "approve",
+        dependsOn: after(TriggerCondition.completed()),
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("go?") }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("resume: --from refuses a failed run whose removed job holds work the abort settled, instead of stranding it", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = removedTeardownWorkflow(true);
+    const executor = new AbortingStepExecutor("a");
+    const { workflowRepo, runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    const teardown = run.getJob("teardown")!;
+    assertEquals(teardown.status, "skipped");
+    assertEquals(teardown.getStep("t")!.settledByAbort, true);
+    // What 'swamp workflow reject' does.
+    const approve = run.getJob("approve")!;
+    const gate = approve.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: false,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.fail("Approval rejected");
+    approve.fail();
+    run.complete();
+    assertEquals(run.status, "failed");
+    await runRepo.save(workflow.id, run);
+    await workflowRepo.save(removedTeardownWorkflow(false, workflow.id));
+    const stored = JSON.stringify(
+      (await runRepo.findById(workflow.id, run.id))!.toData(),
+    );
+    const saves = runRepo.saves;
+
+    const error = await assertRejects(
+      () => drainResume(service, workflow.name, run.id, { fromStep: "a" }),
+      UserError,
+      `Job "teardown" is in the run but not in the workflow.`,
+    );
+    assertStringIncludes(error.message, "Start a new run.");
+
+    assertEquals(runRepo.saves, saves);
+    assertEquals(
+      JSON.stringify((await runRepo.findById(workflow.id, run.id))!.toData()),
+      stored,
+    );
+    assertEquals(executor.count("main/a"), 1);
+  });
+});
+
 Deno.test("resume: a job the abort ended unknown runs its undecided step once cleanup's gate is approved", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({

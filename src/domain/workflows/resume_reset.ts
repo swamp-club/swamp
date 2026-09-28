@@ -395,8 +395,9 @@ function movedUnfinishedStep(
 }
 
 /**
- * Rule (d) for a suspended run: resume never walks an unfinished job the
- * workflow no longer has, so the run would end failed with no failed step.
+ * Rule (d): resume never walks an unfinished job the workflow no longer has,
+ * so the run would end failed with no failed step. A finished job holding
+ * aborted work counts as unfinished: it is reopened to pending first.
  */
 function removedUnfinishedJob(
   workflow: Workflow,
@@ -444,14 +445,17 @@ function suspendedWayOut(workflow: Workflow, run: WorkflowRun): string {
  *   whose trigger condition would skip it;
  * - (c) a record selected by name is not a step of its own job in the
  *   current workflow, or a record selected by `forEachTemplate` is not an
- *   iteration of a forEach step of its own job.
+ *   iteration of a forEach step of its own job;
+ * - (d) an unfinished job, or one holding work the abort left unfinished, is
+ *   no longer in the workflow: it would be reopened but never walked, so the
+ *   run could never finish.
  *
  * It leaves alone: records selected only by the legacy forEach prefix,
  * which can over-select; unfinished records that were not reset; forEach
  * templates with no records (an empty expansion removes the template
  * record); job and step names written with an expression, which are stored
  * evaluated and cannot be compared before evaluation; and terminal records
- * and jobs the workflow no longer has.
+ * and finished jobs the workflow no longer has.
  */
 export function planFailedRunResume(
   workflow: Workflow,
@@ -507,8 +511,10 @@ export function planFailedRunResume(
     new UserError(`${problem} Start a new run. ${history}`);
   const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
 
-  // (a) Resume looks up a stored record for every job it walks.
-  const noJob = missingJob(workflow, run);
+  // (a) Resume looks up a stored record for every job it walks. (d) It walks
+  // only the workflow's jobs, so a removed job it reopens would stay pending.
+  const noJob = missingJob(workflow, run) ??
+    removedUnfinishedJob(workflow, run);
   if (noJob !== undefined) throw refuse(noJob);
 
   // (c) A record reset by name or template must be walked in its own job.

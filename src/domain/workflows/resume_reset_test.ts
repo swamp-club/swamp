@@ -1393,6 +1393,62 @@ Deno.test("planFailedRunResume: does not track settled work whose step was remov
   assertEquals(sortRefs(plan.tracked), ["main/a", "main/c"]);
 });
 
+/**
+ * `settledFailedRun`, plus a `teardown` job its cleanup skipped without
+ * starting, so its step is settled by the abort.
+ */
+function settledTeardownRun(wf: Workflow): WorkflowRun {
+  const run = settledFailedRun(wf);
+  run.getJob("teardown")!.skipNotStarted();
+  return run;
+}
+
+function settledTeardownBefore(): Workflow {
+  return workflow([
+    { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
+    { name: "teardown", steps: [plain("t")] },
+  ]);
+}
+
+Deno.test("planFailedRunResume: refuses a removed job holding settled work, which would be reopened and never walked", () => {
+  const removed = workflow([
+    { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
+  ]);
+  const run = settledTeardownRun(settledTeardownBefore());
+  for (const fromStep of ["a", undefined]) {
+    assertStringIncludes(
+      refusal(removed, run, fromStep),
+      `Job "teardown" is in the run but not in the workflow.`,
+    );
+  }
+});
+
+Deno.test("planFailedRunResume: tracks the settled work of a kept job the cleanup skipped", () => {
+  const wf = settledTeardownBefore();
+  const plan = planFailedRunResume(wf, settledTeardownRun(wf), "a");
+  assertEquals(plan.steps, new Set(["a", "c"]));
+  assertEquals(sortRefs(plan.tracked), [
+    "main/a",
+    "main/b",
+    "main/c",
+    "teardown/t",
+  ]);
+});
+
+Deno.test("planFailedRunResume: allows removing a finished job that holds no settled work", () => {
+  const before = settledTeardownBefore();
+  const run = settledFailedRun(before);
+  const teardown = run.getJob("teardown")!;
+  teardown.start();
+  teardown.getStep("t")!.succeed();
+  teardown.succeed();
+  const removed = workflow([
+    { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
+  ]);
+  const plan = planFailedRunResume(removed, run, "a");
+  assertEquals(plan.steps, new Set(["a", "c"]));
+});
+
 Deno.test("planFailedRunResume: leaves a same-named step another job finished out of the reset set", () => {
   const wf = workflow([
     { name: "pre", steps: [plain("b")] },
