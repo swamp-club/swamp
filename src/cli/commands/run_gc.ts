@@ -106,7 +106,7 @@ export const runGcCommand = withRemoteOptions(
     const renderer = createRunGcRenderer(cliCtx.outputMode);
     renderer.handlers().completed({
       kind: "completed",
-      data: response.data as unknown as RunGcData,
+      data: runGcDataFromServer(response.data),
     });
     return;
   }
@@ -161,3 +161,16 @@ export const runGcCommand = withRemoteOptions(
     renderer.handlers(),
   );
 });
+
+/**
+ * Reads a `run.gc` server response as RunGcData. A server older than the
+ * CLI omits fields added since (such as `evaluatedSnapshotsDeleted`); they
+ * default to 0 so the renderer never prints `undefined` or `NaN`.
+ */
+export function runGcDataFromServer(data: Record<string, unknown>): RunGcData {
+  const result = data as unknown as RunGcData;
+  return {
+    ...result,
+    evaluatedSnapshotsDeleted: result.evaluatedSnapshotsDeleted ?? 0,
+  };
+}
