@@ -19,14 +19,16 @@
 
 // Test-only helpers for asserting on the spans code under test produces.
 
-import { context, SpanKind, trace } from "@opentelemetry/api";
+import { type Context, context, SpanKind, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import {
   BasicTracerProvider,
   type ReadableSpan,
   SimpleSpanProcessor,
+  type Span as SdkSpan,
   type SpanExporter,
+  type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 
 export { SpanKind };
@@ -97,4 +99,62 @@ export function findSpan(
 export function isChildOf(child: ReadableSpan, parent: ReadableSpan): boolean {
   return child.parentSpanId === parent.spanContext().spanId &&
     child.spanContext().traceId === parent.spanContext().traceId;
+}
+
+/**
+ * Records every span the SDK starts and every span it ends, synchronously, so
+ * a test can assert that no started span was left open.
+ */
+export class SpanRecorder implements SpanProcessor {
+  readonly started: ReadableSpan[] = [];
+  readonly ended: ReadableSpan[] = [];
+  onStart(span: SdkSpan, _parentContext: Context): void {
+    this.started.push(span);
+  }
+  onEnd(span: ReadableSpan): void {
+    this.ended.push(span);
+  }
+  forceFlush(): Promise<void> {
+    return Promise.resolve();
+  }
+  shutdown(): Promise<void> {
+    return Promise.resolve();
+  }
+  /** Ended spans named `name`. */
+  named(name: string): ReadableSpan[] {
+    return this.ended.filter((s) => s.name === name);
+  }
+  /** The one ended span named `name` whose `key` attribute is `value`. */
+  find(name: string, key: string, value: string): ReadableSpan {
+    return findSpan(
+      this.named(name).filter((s) => s.attributes[key] === value),
+      name,
+    );
+  }
+  /** True when every started span has been ended. */
+  allEnded(): boolean {
+    return this.started.every((s) => this.ended.includes(s));
+  }
+}
+
+/**
+ * Like {@link withCapturedSpans}, but hands `fn` a {@link SpanRecorder} that
+ * also sees spans when they start.
+ */
+export async function withRecordedSpans(
+  fn: (recorder: SpanRecorder) => Promise<void>,
+): Promise<void> {
+  const recorder = new SpanRecorder();
+  const provider = new BasicTracerProvider();
+  provider.addSpanProcessor(recorder);
+  const contextManager = new AsyncLocalStorageContextManager();
+  context.setGlobalContextManager(contextManager.enable());
+  provider.register();
+  try {
+    await fn(recorder);
+  } finally {
+    await provider.shutdown();
+    trace.disable();
+    context.disable();
+  }
 }

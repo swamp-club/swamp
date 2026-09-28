@@ -165,7 +165,12 @@ import {
 import { mergeWithConcurrency } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
-import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
+import {
+  bindGeneratorToSpan,
+  getTracer,
+  type Span,
+  SpanStatusCode,
+} from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
 import { minOf } from "../array_extrema.ts";
@@ -2230,10 +2235,25 @@ export class WorkflowExecutionService {
       references?: Record<string, string>;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    const tracer = getTracer();
-    const runSpan = tracer.startSpan("swamp.workflow.run", {
+    const runSpan = getTracer().startSpan("swamp.workflow.run", {
       attributes: { "workflow.name": idOrName },
     });
+    yield* bindGeneratorToSpan(
+      runSpan,
+      this.runInSpan(runSpan, idOrName, options),
+    );
+  }
+
+  /**
+   * Body of {@link run}, executed with `runSpan` as the active span so job
+   * spans (and everything under them) nest beneath it. Ends `runSpan`.
+   */
+  private async *runInSpan(
+    runSpan: Span,
+    idOrName: string,
+    options?: Parameters<WorkflowExecutionService["run"]>[1],
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    const tracer = getTracer();
 
     let workflowRun: WorkflowRun | undefined;
     let workflowAffinityKey: string | undefined;
@@ -3284,11 +3304,34 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    const tracer = getTracer();
-    const jobSpan = tracer.startSpan("swamp.workflow.job", {
+    const jobSpan = getTracer().startSpan("swamp.workflow.job", {
       attributes: { "job.name": jobName },
     });
+    yield* bindGeneratorToSpan(
+      jobSpan,
+      this.runJobInSpan(
+        jobSpan,
+        workflow,
+        run,
+        jobName,
+        expressionContext,
+        options,
+      ),
+    );
+  }
 
+  /**
+   * Body of {@link runJob}, executed with `jobSpan` as the active span so step
+   * spans nest beneath it. Ends `jobSpan`.
+   */
+  private async *runJobInSpan(
+    jobSpan: Span,
+    workflow: Workflow,
+    run: WorkflowRun,
+    jobName: string,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     try {
       const job = workflow.getJob(jobName);
       if (!job) {
@@ -3636,7 +3679,44 @@ export class WorkflowExecutionService {
         "job.name": job.name,
       },
     });
+    yield* bindGeneratorToSpan(
+      stepSpan,
+      this.runStepInSpan(
+        stepSpan,
+        workflow,
+        run,
+        job,
+        jobRun,
+        stepName,
+        originalStep,
+        forEachVar,
+        expressionContext,
+        options,
+        forEachIndex,
+        forEachTemplate,
+      ),
+    );
+  }
 
+  /**
+   * Body of {@link runStep}, executed with `stepSpan` as the active span so
+   * the model method span (and the traceparent handed to it) nests beneath
+   * it. Ends `stepSpan`.
+   */
+  private async *runStepInSpan(
+    stepSpan: Span,
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    jobRun: JobRun,
+    stepName: string,
+    originalStep: Step | undefined,
+    forEachVar: { name: string; value: unknown } | undefined,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+    forEachIndex?: number,
+    forEachTemplate?: string,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
     if (!step) {
@@ -3855,19 +3935,22 @@ export class WorkflowExecutionService {
 
     // Start step
     stepRun.start();
-    yield {
-      kind: "step_started",
-      jobId: job.name,
-      stepId: stepName,
-      forEachTemplate,
-      forEachIndex,
-    };
 
     // This step's `steps.<name>.outputs`, taken from the full output before
     // it is stripped for the run record. Declared here so the finally below
     // sees it for both model_method and workflow steps.
     let liveOutputs: Record<string, unknown> | undefined;
     try {
+      // Yielded inside the try so a consumer that stops here still ends the
+      // step span in the finally below.
+      yield {
+        kind: "step_started",
+        jobId: job.name,
+        stepId: stepName,
+        forEachTemplate,
+        forEachIndex,
+      };
+
       const task = step.task.data;
 
       // Handle manual approval tasks — suspend the workflow
