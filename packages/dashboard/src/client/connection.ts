@@ -64,7 +64,10 @@ export interface ConnectionDeps<S extends SocketLike> extends Timers {
   onMessage(socket: S, text: string): void;
   /** The live socket closed; any requests on it are lost. */
   onDisconnect(): void;
-  /** Serve no longer accepts the token. The controller has stopped. */
+  /**
+   * Serve no longer accepts the token. The controller has stopped, and has
+   * already reported a changed auth mode through onAuthModeChanged.
+   */
   onReauth(): void;
   /** Serve came back in a different auth mode. The controller has stopped. */
   onAuthModeChanged(info: AuthInfo): void;
@@ -182,8 +185,19 @@ export function createConnection<S extends SocketLike>(
         scheduleRetry();
         return;
       case "reauth":
-        halt();
-        deps.onReauth();
+        // Serve may have come back in another token-based mode; re-read it
+        // so login shows the right flow.
+        check<AuthInfo | null>(
+          (signal) => deps.fetchAuthInfo(signal),
+          null,
+          (info) => {
+            halt();
+            if (info !== null && info.mode !== authMode) {
+              deps.onAuthModeChanged(info);
+            }
+            deps.onReauth();
+          },
+        );
         return;
       case "probe": {
         const presented = token;
@@ -290,6 +304,11 @@ export async function requestAuthInfo(
  * Asks serve whether it accepts `token`. `/api/v1/health` authenticates with
  * the same check as the WebSocket upgrade and answers 401 only for a
  * rejected token.
+ *
+ * It is heavier than the question needs: an admin token also runs a full
+ * health collection, and every probe records an auth audit event. Probes only
+ * follow a failed reconnect and are spaced by backoff; switch to a
+ * lightweight token-check endpoint if serve gains one.
  */
 export async function requestTokenProbe(
   fetchFn: FetchFn,

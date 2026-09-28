@@ -31,6 +31,8 @@ import {
 } from "./connection.ts";
 import type { ProbeResult } from "./reconnect.ts";
 
+// Fake timers tell check timeouts from retries by this duration. Retries are
+// capped at MAX_DELAY_MS (30s), so no retry can ever share it.
 const CHECK_TIMEOUT = 99_999;
 
 class FakeSocket {
@@ -173,14 +175,53 @@ Deno.test("createConnection: backoff grows across failed reconnects", async () =
   assertEquals(delays, [500, 1000, 2000, 4000]);
 });
 
-Deno.test("createConnection: a revoked principal reauths once and stops", () => {
+Deno.test("createConnection: a revoked principal reauths once and stops", async () => {
   const h = harness();
   h.connection.start({ token: "t", authMode: "token" });
   h.latest().handlers.onOpen();
   h.latest().handlers.onClose(4003);
+  // The auth mode is re-read before going to login.
+  assertEquals(h.authChecks.length, 1);
+  h.authChecks[0].reply({ mode: "token" });
+  await settle();
   assertEquals(h.events, ["open:0", "disconnect", "reauth"]);
   assertEquals(h.timers.retries(), []);
+  assertEquals(h.timers.checkTimeouts(), 0);
   assertEquals(h.sockets.length, 1);
+});
+
+Deno.test("createConnection: reauth reports a changed token-based mode first", async () => {
+  const h = harness();
+  h.connection.start({ token: "t", authMode: "token" });
+  h.latest().handlers.onClose(1006);
+  h.probes[0].reply(401);
+  await settle();
+  h.authChecks[0].reply({ mode: "oauth", verificationBaseUri: "https://x" });
+  await settle();
+  assertEquals(h.events, ["disconnect", "mode:oauth", "reauth"]);
+  assertEquals(h.timers.retries(), []);
+});
+
+Deno.test("createConnection: reauth still happens when the auth mode cannot be read", () => {
+  const h = harness();
+  h.connection.start({ token: "t", authMode: "token" });
+  h.latest().handlers.onOpen();
+  h.latest().handlers.onClose(4003);
+  h.timers.fireCheckTimeout();
+  assertEquals(h.authChecks[0].signal.aborted, true);
+  assertEquals(h.events, ["open:0", "disconnect", "reauth"]);
+  assertEquals(h.timers.retries(), []);
+});
+
+Deno.test("createConnection: stop during the reauth mode check cancels it", async () => {
+  const h = harness();
+  h.connection.start({ token: "t", authMode: "token" });
+  h.latest().handlers.onOpen();
+  h.latest().handlers.onClose(4003);
+  h.connection.stop();
+  h.authChecks[0].reply({ mode: "oauth" });
+  await settle();
+  assertEquals(h.events, ["open:0", "disconnect"]);
 });
 
 Deno.test("createConnection: a failed upgrade with a token probes it", async () => {
@@ -200,6 +241,10 @@ Deno.test("createConnection: a failed upgrade with a token probes it", async () 
     assertEquals(h.timers.retries(), []);
     h.probes[0].reply(result);
     await settle();
+    if (expected === "reauth") {
+      h.authChecks[0].reply({ mode: "token" });
+      await settle();
+    }
     assertEquals(
       h.events.includes("reauth"),
       expected === "reauth",
