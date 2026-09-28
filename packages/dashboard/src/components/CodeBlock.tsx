@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { escapeHtml, highlightJson } from "./json_highlight.ts";
+
 interface CodeBlockProps {
   code: string;
   language?: "json" | "yaml";
@@ -32,28 +34,6 @@ export function CodeBlock({ code, language = "json" }: CodeBlockProps) {
       className="code-block"
       dangerouslySetInnerHTML={{ __html: highlighted }}
     />
-  );
-}
-
-function highlightJson(raw: string): string {
-  // escapeHtml neutralizes <, >, & for XSS safety. Quotes stay as
-  // literal " so the regexes below match them directly.
-  const safe = escapeHtml(raw);
-  return safe.replace(
-    /("(?:[^"\\]|\\.)*")\s*:/g,
-    '<span class="code-key">$1</span>:',
-  ).replace(
-    /:\s*("(?:[^"\\]|\\.)*")/g,
-    ': <span class="code-string">$1</span>',
-  ).replace(
-    /:\s*(\d+(?:\.\d+)?)\b/g,
-    ': <span class="code-number">$1</span>',
-  ).replace(
-    /:\s*(true|false)\b/g,
-    ': <span class="code-boolean">$1</span>',
-  ).replace(
-    /:\s*(null)\b/g,
-    ': <span class="code-null">$1</span>',
   );
 }
 
@@ -89,8 +69,4 @@ function highlightYaml(raw: string): string {
         ': <span class="code-null">$1</span>',
       );
   }).join("\n");
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
