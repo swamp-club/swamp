@@ -1374,8 +1374,12 @@ order:
   recover` or an approval, and a retry or `--from`. Each settled step is reset
   to `pending` record by record, so a step with the same name in another job
   is left alone, and a finished job holding one is walked again. So is a job
-  the cancellation ended `unknown` with an undecided step. Cleanup that
-  already ran for that work is not run again.
+  the cancellation ended `unknown` with an undecided step. A step or job that
+  cleanup skipped on its `dependsOn` never ran, so it counts as settled too
+  and is evaluated again: a `succeeded`-gated dependent of a cancelled or
+  undecided step runs once that step succeeds. Cleanup that already ran for
+  that work is not run again. A retry still needs every step finished, so a
+  failed run with an undecided step is resumed with `--from`.
 - A step that already failed stays failed on resume. When resume walks its job
   again, the job ends `failed` unless that failure was allowed, so the run
   ends `failed` and can be retried. An in-flight step the cancellation stopped

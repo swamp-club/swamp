@@ -389,9 +389,10 @@ export class StepRun {
   /**
    * True when the run's abort settled this step without starting it
    * (cancelled, or skipped on its `dependsOn` or its job's), so that cleanup
-   * gated on it could run. Persisted: a resume resets such a step to pending
-   * and runs it, as it would have run had the abort left it pending (see
-   * {@link WorkflowRun.reopenAbortedWork}).
+   * gated on it could run, or when the run's cleanup skipped it on its
+   * `dependsOn` or its job's, possibly on work the abort settled. Persisted:
+   * a resume resets such a step to pending and runs it, as it would have run
+   * had the abort left it pending (see {@link WorkflowRun.reopenAbortedWork}).
    */
   get settledByAbort(): boolean {
     return this._settledByAbort;
@@ -474,8 +475,8 @@ export class StepRun {
   }
 
   /**
-   * Skips a step the run's abort left unstarted, marked
-   * {@link settledByAbort}.
+   * Skips a step the run's abort left unstarted, or one its cleanup skipped
+   * on its `dependsOn`, marked {@link settledByAbort}.
    */
   skipUnstarted(reason: StepSkipReasonData): void {
     this.skip(reason);
@@ -849,9 +850,10 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Skips a job the run's abort left unstarted whose `dependsOn` is unmet,
-   * as {@link skip} does, but marks each step it skips
-   * {@link StepRun.settledByAbort}, so a resume walks the job again.
+   * Skips a job whose `dependsOn` is unmet, the run's abort having left it
+   * unstarted or its cleanup having reached it, as {@link skip} does, but
+   * marks each step it skips {@link StepRun.settledByAbort}, so a resume
+   * walks the job again.
    */
   skipNotStarted(): void {
     for (const step of this._steps) {

@@ -564,7 +564,8 @@ export function planFailedRunResume(
  * A suspended run has no reset set: resume re-enters every unfinished job.
  * A record the run's abort settled without starting counts as unfinished,
  * and so does its job, as does a job the abort ended `unknown` with an
- * undecided step: resume reopens them first (`WorkflowRun.reopenAbortedWork`). The structure check refuses when:
+ * undecided step: resume reopens them first
+ * (`WorkflowRun.reopenAbortedWork`). The structure check refuses when:
  * - (a) a job of the current workflow has no stored record;
  * - (c) an unfinished record of an unfinished job is no longer a step of its
  *   own job (for an iteration, its `forEachTemplate` as a forEach step), and

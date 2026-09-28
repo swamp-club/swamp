@@ -2041,6 +2041,19 @@ interface StepOptions {
    * never be copied into durable deferred bindings.
    */
   resumeDerived?: readonly string[];
+  /**
+   * Set on the step levels a job runs in cleanup mode after the run's abort
+   * (see runJob). A step skipped there on its dependsOn never ran, and may
+   * depend on work the abort settled, so it is marked `settledByAbort` and a
+   * resume evaluates it again.
+   */
+  cleanupStepLevel?: boolean;
+  /**
+   * Set on the job levels a run enters in cleanup mode after its abort. A job
+   * skipped there on its dependsOn is skipped as one the abort never started
+   * (`JobRun.skipNotStarted`), so a resume evaluates it again.
+   */
+  cleanupJobLevel?: boolean;
 }
 
 /**
@@ -2496,7 +2509,7 @@ export class WorkflowExecutionService {
           ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
           : options?.signal;
         const levelStepOpts = cleanupMode
-          ? { ...stepOpts, signal: levelSignal }
+          ? { ...stepOpts, signal: levelSignal, cleanupJobLevel: true }
           : stepOpts;
         // Only a level the abort interrupted settles its never-started jobs.
         const abortedBeforeLevel = levelSignal?.aborted ?? false;
@@ -3249,7 +3262,11 @@ export class WorkflowExecutionService {
       // Check if job's trigger condition is met
       const shouldRun = this.shouldJobRun(job, run);
       if (!shouldRun) {
-        jobRun.skip();
+        if (options.cleanupJobLevel) {
+          jobRun.skipNotStarted();
+        } else {
+          jobRun.skip();
+        }
         jobSpan.setAttribute("job.status", "skipped");
         yield { kind: "job_skipped", jobId: jobName };
         return;
@@ -3339,7 +3356,7 @@ export class WorkflowExecutionService {
           ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
           : options.signal;
         const levelOptions = cleanupMode
-          ? { ...options, signal: levelSignal }
+          ? { ...options, signal: levelSignal, cleanupStepLevel: true }
           : options;
         // Only a level the abort interrupted settles its never-started steps.
         const abortedBeforeLevel: boolean = levelSignal?.aborted ?? false;
@@ -3637,7 +3654,11 @@ export class WorkflowExecutionService {
     // Check if step's trigger condition is met. A forEach iteration checks its
     // template's dependsOn, so every iteration is gated as a plain step is.
     if (!this.shouldStepRun(step, jobRun)) {
-      stepRun.skip({ kind: "dependency" });
+      if (options.cleanupStepLevel) {
+        stepRun.skipUnstarted({ kind: "dependency" });
+      } else {
+        stepRun.skip({ kind: "dependency" });
+      }
       stepSpan.setAttribute("step.status", "skipped");
       stepSpan.end();
       yield {
