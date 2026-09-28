@@ -459,6 +459,20 @@ Deno.test("exitCodeForError: returns 75 for UserError with lock_timeout code", (
   assertEquals(exitCodeForError(err), 75);
 });
 
+Deno.test("exitCodeForError: returns 75 for an extension LOCK_TIMEOUT error", () => {
+  const err = Object.assign(new Error("Lock timed out"), {
+    code: "LOCK_TIMEOUT",
+  });
+  assertEquals(exitCodeForError(err), 75);
+});
+
+Deno.test("buildErrorJson: reports an extension LOCK_TIMEOUT code as lock_timeout", () => {
+  const err = Object.assign(new Error("Lock timed out"), {
+    code: "LOCK_TIMEOUT",
+  });
+  assertEquals(buildErrorJson(err).code, "lock_timeout");
+});
+
 Deno.test("exitCodeForError: returns 1 for UserError without code", () => {
   const err = new UserError("something broke");
   assertEquals(exitCodeForError(err), 1);

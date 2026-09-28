@@ -525,9 +525,19 @@ deduplicated. With `twoPhaseSync`, the push splits into `preparePush` (outside
 the global lock) and `commitPush` (under it); see "Two-Phase Sync" below.
 
 **Catalog rebuild invariant.** `synced = true` is set after `pullChanged()`
-succeeds, on both scoped and full paths. It is returned in `{ flush, synced }`
-and checked at every call site in `src/cli` and `src/serve` (21 at last count)
-to trigger `catalogStore.invalidate()`. It must never be skipped or moved.
+succeeds on both scoped and full paths, unless it resolved to `0`. It is
+returned in `{ flush, synced }` and checked at every call site in `src/cli` and
+`src/serve` (21 at last count) to trigger `catalogStore.invalidate()`. It must
+never be skipped or moved.
+
+A pull that resolves to `0` changed nothing in the local cache, so the catalog
+is still accurate. Skipping the invalidation then avoids a full catalog
+backfill, which on a large repo would otherwise run while the per-model lock is
+held (swamp-club#2553). That makes the `pullChanged` return value part of the
+sync contract: the number of local cache files written or removed, `0` only
+when nothing changed, and `void` when unknown (treated as changed). The S3 and
+GCS extensions return the downloaded count, and neither removes local files
+during a pull.
 
 ### Namespace-Scoped Sync
 
@@ -1436,6 +1446,20 @@ Every lock creation site gets the resolved timeout: per-model locks
 (`createModelLock`), global datastore locks (`createDatastoreLock`), and inline
 locks in `requireInitializedRepo` and the flush paths. Custom providers receive
 `maxWaitMs` in `LockOptions`; honouring it is up to them.
+
+**Extension lock timeouts.** Extensions cannot import core's
+`LockTimeoutError`, so they throw their own error. The S3 and GCS datastores use
+`code: "LOCK_TIMEOUT"`. `datastoreKindAdapter` wraps each extension's
+`createProvider`, so every lock its providers create passes through
+`withCoreLockErrors` (`distributed_lock.ts`). That translates any rejection
+whose `code` is `lock_timeout` in any case into the core `LockTimeoutError`.
+
+As a result, a lock timeout on an extension datastore gets the same treatment
+as a filesystem one: exit code 75, `"code": "lock_timeout"` in `--json`
+output, no stack trace, and serve's `lock_timeout` client error. The
+translation needs `lockKey` and `waitedMs` on the error, and
+`assertLockTimeoutConformance` in `@swamp-club/swamp-testing` holds extension
+locks to that shape (swamp-club#2553).
 
 **Retry backoff.** `FileLock.acquire` uses jittered exponential backoff. It
 starts at `retryIntervalMs` (default 1 second), doubles per attempt up to 8

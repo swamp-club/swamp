@@ -139,7 +139,9 @@ The "code" field is a stable, machine-readable identifier. Callers should match 
     not_authenticated        Not signed in (run 'swamp auth login')
     cancelled                Operation was cancelled (e.g. Ctrl+C)
 
-Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — retry with backoff).`,
+Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — retry with backoff).
+
+The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment variable (milliseconds) to wait longer.`,
   )
   .arguments(
     "<model_or_type:model_name> <method_name:string> [definition_name:string]",

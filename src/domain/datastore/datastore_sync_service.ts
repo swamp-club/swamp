@@ -184,6 +184,12 @@ export interface DatastoreSyncService {
    * 3. **Bounded internal indexes.** If the implementation maintains an
    *    in-memory index of remote entries, prefer writing it to disk
    *    after each pull rather than growing it across calls.
+   *
+   * **Return value.** Resolve to the number of files written to or removed
+   * from the local cache. Resolve to `0` only when the local cache is
+   * unchanged: core then skips invalidating the data catalog, so a `0`
+   * after writing files leaves queries stale. Resolve to `void` when the
+   * count is unknown; core treats it as changed.
    */
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   /** Push changed files from the local cache to the remote datastore. */
