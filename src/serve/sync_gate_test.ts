@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater, assertLess } from "@std/assert";
+import { assert, assertEquals, assertGreater, assertLess } from "@std/assert";
 import {
   createSyncGate,
   GATE_WAIT_TIMEOUT_MS,
@@ -33,6 +33,12 @@ import {
 } from "./sync_gate.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { SpanStatusCode, withSpan } from "../infrastructure/tracing/mod.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
 
 /** Yields to the event loop so a concurrent unit can make progress. */
 function tick(ms: number): Promise<void> {
@@ -70,6 +76,55 @@ Deno.test("withSyncGate: releases the gate when the unit throws", async () => {
 
   // A leaked permit would leave this pending forever.
   assertEquals(await withSyncGate(gate, () => Promise.resolve("ran")), "ran");
+});
+
+Deno.test("withSyncGate: traces the gate wait as a sibling of the unit's work", async () => {
+  await withCapturedSpans(async (spans) => {
+    const gate = createSyncGate();
+    await withSpan("test.parent", {}, () =>
+      withSyncGate(
+        gate,
+        () => withSpan("test.unit", {}, () => Promise.resolve()),
+      ));
+    const parent = findSpan(spans, "test.parent");
+    const wait = findSpan(spans, "swamp.serve.sync_gate.wait");
+    const unit = findSpan(spans, "test.unit");
+    assert(isChildOf(wait, parent));
+    assert(
+      isChildOf(unit, parent),
+      "the unit must not run under the wait span",
+    );
+    assertEquals(wait.attributes["sync_gate.mode"], "exclusive");
+    assertEquals(wait.attributes["sync_gate.acquired"], true);
+    assertEquals(wait.status.code, SpanStatusCode.OK);
+  });
+});
+
+Deno.test("withSharedSyncGate: records shared mode on the gate wait span", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withSharedSyncGate(createSyncGate(), () => Promise.resolve());
+    const wait = findSpan(spans, "swamp.serve.sync_gate.wait");
+    assertEquals(wait.attributes["sync_gate.mode"], "shared");
+  });
+});
+
+Deno.test("withSyncGate: a gate wait that is not acquired is an ERROR span and the unit still runs", async () => {
+  await withCapturedSpans(async (spans) => {
+    const gate = createSyncGate();
+    // Stands in for the GATE_WAIT_TIMEOUT_MS abort without waiting 150s.
+    gate.acquire = () => Promise.reject(new Error("aborted"));
+    assertEquals(await withSyncGate(gate, () => Promise.resolve("ran")), "ran");
+    const wait = findSpan(spans, "swamp.serve.sync_gate.wait");
+    assertEquals(wait.attributes["sync_gate.acquired"], false);
+    assertEquals(wait.status.code, SpanStatusCode.ERROR);
+  });
+});
+
+Deno.test("withSyncGate: without a gate creates no wait span", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withSyncGate(undefined, () => Promise.resolve());
+    assertEquals(spans.length, 0);
+  });
 });
 
 Deno.test("withSyncGate: without a gate returns the same promise", () => {

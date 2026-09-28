@@ -17,8 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
-import { getTracer, withGeneratorSpan, withSpan } from "./tracer.ts";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import { SpanKind } from "@opentelemetry/api";
+import {
+  getTracer,
+  SpanStatusCode,
+  withGeneratorSpan,
+  withServerSpan,
+  withSpan,
+} from "./tracer.ts";
+import { findSpan, isChildOf, withCapturedSpans } from "./span_test_helpers.ts";
 
 Deno.test("getTracer: returns a tracer instance", () => {
   const tracer = getTracer();
@@ -102,4 +110,76 @@ Deno.test("withGeneratorSpan: propagates error kind events without throwing", as
   );
   assertEquals(events.length, 1);
   assertEquals(events[0].kind, "error");
+});
+
+// ── withServerSpan tests ────────────────────────────────────────────
+
+Deno.test("withServerSpan: starts a SERVER span with the given attributes", async () => {
+  await withCapturedSpans(async (spans) => {
+    const result = await withServerSpan(
+      "GET /ready",
+      { "http.request.method": "GET" },
+      () => Promise.resolve("ok"),
+    );
+    assertEquals(result, "ok");
+    const span = findSpan(spans, "GET /ready");
+    assertEquals(span.kind, SpanKind.SERVER);
+    assertEquals(span.attributes["http.request.method"], "GET");
+  });
+});
+
+Deno.test("withServerSpan: leaves status unset on success", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withServerSpan("GET /ready", {}, () => Promise.resolve());
+    assertEquals(
+      findSpan(spans, "GET /ready").status.code,
+      SpanStatusCode.UNSET,
+    );
+  });
+});
+
+Deno.test("withServerSpan: is a root span even inside an active parent span", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withSpan("swamp.cli", {}, async () => {
+      await withServerSpan("GET /ready", {}, () => Promise.resolve());
+    });
+    const cli = findSpan(spans, "swamp.cli");
+    const server = findSpan(spans, "GET /ready");
+    assertEquals(server.parentSpanId, undefined);
+    assert(server.spanContext().traceId !== cli.spanContext().traceId);
+  });
+});
+
+Deno.test("withServerSpan: is the active parent for spans started inside it", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withServerSpan("POST /auth/device/token", {}, async () => {
+      await Promise.resolve();
+      await withSpan("child", {}, () => Promise.resolve());
+    });
+    assert(
+      isChildOf(
+        findSpan(spans, "child"),
+        findSpan(spans, "POST /auth/device/token"),
+      ),
+    );
+  });
+});
+
+Deno.test("withServerSpan: records a thrown error as ERROR and rethrows", async () => {
+  await withCapturedSpans(async (spans) => {
+    await assertRejects(
+      () =>
+        withServerSpan(
+          "GET /ready",
+          {},
+          () => Promise.reject(new Error("boom")),
+        ),
+      Error,
+      "boom",
+    );
+    const span = findSpan(spans, "GET /ready");
+    assertEquals(span.status.code, SpanStatusCode.ERROR);
+    assertEquals(span.status.message, "boom");
+    assertEquals(span.events[0].name, "exception");
+  });
 });

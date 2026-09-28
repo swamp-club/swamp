@@ -61,6 +61,7 @@ import {
   createDeviceAuthDeps,
   handleDeviceAuth,
 } from "../../serve/device_auth_handler.ts";
+import { traceHttpRequests } from "../../serve/http_request_span.ts";
 import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import {
@@ -4619,7 +4620,7 @@ export const serveCommand = new Command()
           }
         },
       },
-      async (req, info) => {
+      traceHttpRequests(async (req, info) => {
         // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
         if (upgrade.toLowerCase() === "websocket") {
@@ -5219,7 +5220,7 @@ export const serveCommand = new Command()
         }
 
         return new Response("Not found", { status: 404 });
-      },
+      }),
     );
 
     // Hot-reload: PID file + SIGHUP handler

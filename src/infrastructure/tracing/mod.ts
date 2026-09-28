@@ -31,6 +31,7 @@ export {
   getTracer,
   SpanStatusCode,
   withGeneratorSpan,
+  withServerSpan,
   withSpan,
 } from "./tracer.ts";
 export { extractTraceContext, injectTraceContext } from "./propagation.ts";
