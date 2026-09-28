@@ -51,7 +51,7 @@ export function Schedules(
         {state !== "ready"
           ? <HealthUnavailable state={state} subject="schedules" />
           : schedules.length === 0
-          ? <div className="loading">No schedules configured</div>
+          ? <div className="loading">No schedules visible to this token</div>
           : (
             <div className="table-wrap">
               <table className="data-table">

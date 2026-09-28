@@ -235,6 +235,14 @@ export function System(
                   )}
                 </span>
               </div>
+              {(!health.components || health.components.length === 0) && (
+                <div className="sys-row" style={{ padding: "8px 18px" }}>
+                  <span className="sys-key">components</span>
+                  <span className="sys-val">
+                    none visible to this token (admins see component health)
+                  </span>
+                </div>
+              )}
               {health.components && health.components.length > 0 &&
                 health.components.map((c) => (
                   <div

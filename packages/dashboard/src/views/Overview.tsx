@@ -323,7 +323,7 @@ export function Overview(
             )}
             {healthState === "ready" &&
               !health?.scheduling?.schedules?.length && (
-              <div className="loading">No schedules configured</div>
+              <div className="loading">No schedules visible to this token</div>
             )}
             {(health?.scheduling?.schedules ?? []).map((s) => (
               <div className="schedule-row" key={s.workflowId}>

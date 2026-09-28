@@ -51,7 +51,7 @@ export function Webhooks(
         {state !== "ready"
           ? <HealthUnavailable state={state} subject="webhooks" />
           : webhooks.length === 0
-          ? <div className="loading">No webhooks configured</div>
+          ? <div className="loading">No webhooks visible to this token</div>
           : (
             <div className="table-wrap">
               <table className="data-table">
