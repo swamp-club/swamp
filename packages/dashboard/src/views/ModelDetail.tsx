@@ -64,20 +64,7 @@ export function ModelDetail({ modelName, onBack }: ModelDetailProps) {
     <>
       <div className="page-header">
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button
-            type="button"
-            onClick={onBack}
-            style={{
-              border: "1px solid var(--border)",
-              background: "var(--surface)",
-              borderRadius: 6,
-              padding: "4px 10px",
-              cursor: "pointer",
-              color: "var(--text-2)",
-              fontFamily: "inherit",
-              fontSize: "0.82rem",
-            }}
-          >
+          <button type="button" className="back-button" onClick={onBack}>
             &larr; Back
           </button>
           <h1>{modelName}</h1>

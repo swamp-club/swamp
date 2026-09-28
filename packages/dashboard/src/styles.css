@@ -1223,7 +1223,7 @@ body {
   color: #6c7086;
 }
 
-/* Data item / report detail (deep links) */
+/* Back button shared by every detail view */
 .back-button {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -1233,8 +1233,11 @@ body {
   color: var(--text-2);
   font-family: inherit;
   font-size: 0.82rem;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
+/* Data item / report detail (deep links) */
 .item-title {
   overflow-wrap: anywhere;
 }
