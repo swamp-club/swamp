@@ -59,7 +59,11 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
   }
   const maybeCode = (err as { code?: unknown }).code;
   if (typeof maybeCode === "string" && maybeCode.length > 0) {
-    data.code = maybeCode;
+    // Report lock timeouts under the documented lowercase code whatever case
+    // the extension used, matching the exit code 75 from exitCodeForError.
+    data.code = maybeCode.toLowerCase() === "lock_timeout"
+      ? "lock_timeout"
+      : maybeCode;
   }
   if (err instanceof DuplicateTypeUserError) {
     data.duplicateType = {

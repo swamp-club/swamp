@@ -64,7 +64,10 @@ import type {
   PushManifest,
 } from "../domain/datastore/datastore_sync_service.ts";
 import { CatalogStore } from "../infrastructure/persistence/catalog_store.ts";
-import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
+import {
+  type LockInfo,
+  LockTimeoutError,
+} from "../domain/datastore/distributed_lock.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
 import { UserError } from "../domain/errors.ts";
@@ -2308,6 +2311,109 @@ for (
     }
   });
 }
+
+Deno.test("acquireModelLocks - synced survives the global-lock retry after an earlier pull changed the cache", async () => {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+
+  const typeName = `test-synced-retry-${crypto.randomUUID().slice(0, 8)}`;
+  // A structural command takes the global lock right after model A's pull,
+  // so the re-check after model B's lock sees it and the whole acquisition
+  // restarts. It is reported once; the wait loop and the retry see it gone.
+  const structuralHolder: LockInfo = {
+    holder: "structural@host",
+    hostname: "host",
+    pid: 1,
+    acquiredAt: new Date().toISOString(),
+    ttlMs: 30_000,
+  };
+  let structuralReported = false;
+  // Model A's first pull writes files; every pull in the retry finds none.
+  const pullResults = [5];
+  let pullCount = 0;
+
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test synced retry",
+    description: "Test extension for the synced flag across the retry",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: (_path: string, options?: { lockKey?: string }) => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => {
+          if (
+            // Without a namespace the global lock carries no lockKey;
+            // per-model locks always do.
+            options?.lockKey === undefined && pullCount === 1 &&
+            !structuralReported
+          ) {
+            structuralReported = true;
+            return Promise.resolve(structuralHolder);
+          }
+          return Promise.resolve(null);
+        },
+        forceRelease: () => Promise.resolve(true),
+      }),
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: () => {
+          pullCount++;
+          return Promise.resolve(pullResults.shift() ?? 0);
+        },
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+        capabilities: () => ({ scopedSync: true }),
+      }),
+    }),
+  });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+
+      const markerPath = join(dir, ".swamp.yaml");
+      const existing = await Deno.readTextFile(markerPath);
+      await Deno.writeTextFile(
+        markerPath,
+        existing.trimEnd() + "\n" + [
+          "datastore:",
+          `  type: '${typeName}'`,
+          "  config:",
+          "    bucket: test-bucket",
+        ].join("\n") + "\n",
+      );
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(datastoreConfig, [
+        { modelType: "aws-ec2", modelId: "a" },
+        { modelType: "aws-ec2", modelId: "b" },
+      ], dir);
+      try {
+        // A, then the retry's A and B: the retry really ran.
+        assertEquals(structuralReported, true);
+        assertEquals(pullCount, 3);
+        assertEquals(lockResult.synced, true);
+      } finally {
+        await lockResult.flush();
+      }
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
+});
 
 // ── Two-Phase Sync Tests ─────────────────────────────────────────────────────
 

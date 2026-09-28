@@ -1504,8 +1504,10 @@ export async function acquireModelLocks(
 
       // Restart the entire per-model lock acquisition from scratch —
       // propagate the shared sync service so the retry keeps single-instance
-      // semantics.
-      return acquireModelLocks(
+      // semantics. Pulls made before the restart already wrote to the local
+      // cache, and the retry's pulls of the same models report 0, so carry
+      // `synced` forward or the caller would skip catalog invalidation.
+      const retried = await acquireModelLocks(
         config,
         models,
         repoDir,
@@ -1514,6 +1516,7 @@ export async function acquireModelLocks(
         progressWriter,
         options,
       );
+      return { ...retried, synced: synced || retried.synced };
     }
 
     // For custom sync-capable datastores: pull after acquiring per-model lock

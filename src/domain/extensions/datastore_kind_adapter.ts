@@ -51,21 +51,24 @@ const UserDatastoreSchema = z.object({
  * code 75, `lock_timeout`) without knowing the backend (swamp-club#2553).
  *
  * The provider is proxied rather than copied: extension providers may be
- * class instances, and a spread would drop their prototype methods.
+ * class instances, and a spread would drop their prototype methods. The
+ * proxy target is an empty object inheriting from the provider, not the
+ * provider itself. Proxy invariants forbid returning a different value for a
+ * frozen own property, so proxying a frozen provider directly would throw.
  */
 function wrapExtensionProvider(
   createProvider: (config: Record<string, unknown>) => DatastoreProvider,
 ): (config: Record<string, unknown>) => DatastoreProvider {
   return (config) => {
     const provider = createProvider(config);
-    return new Proxy(provider, {
-      get(target, prop) {
+    return new Proxy(Object.create(provider) as DatastoreProvider, {
+      get(_target, prop) {
         if (prop === "createLock") {
           return (...args: Parameters<DatastoreProvider["createLock"]>) =>
-            withCoreLockErrors(target.createLock(...args));
+            withCoreLockErrors(provider.createLock(...args));
         }
-        const value = Reflect.get(target, prop, target);
-        return typeof value === "function" ? value.bind(target) : value;
+        const value = Reflect.get(provider, prop, provider);
+        return typeof value === "function" ? value.bind(provider) : value;
       },
     });
   };

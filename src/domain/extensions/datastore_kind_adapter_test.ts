@@ -179,3 +179,44 @@ Deno.test("datastoreKindAdapter.register: other provider members still reach the
     datastoreTypeRegistry.invalidateType(type);
   }
 });
+
+Deno.test("datastoreKindAdapter.register: wraps a frozen provider with own methods", async () => {
+  const type = uniqueType();
+  try {
+    datastoreKindAdapter.register(
+      type,
+      {
+        type,
+        name: "Frozen",
+        description: "Frozen object-literal provider",
+        createProvider: () =>
+          Object.freeze({
+            createLock: (_path: string, options?: LockOptions) => ({
+              acquire: () =>
+                Promise.reject(
+                  new ExtensionLockTimeoutError(options?.lockKey ?? "k", 10),
+                ),
+              release: () => Promise.resolve(),
+              withLock: <T>(fn: () => Promise<T>) => fn(),
+              inspect: () => Promise.resolve(null),
+              forceRelease: () => Promise.resolve(false),
+            }),
+            createVerifier: () => new FakeClassProvider("x").createVerifier(),
+            resolveDatastorePath: (repoDir: string) => `${repoDir}/frozen`,
+          }),
+      },
+      {},
+      context,
+    );
+    const provider = datastoreTypeRegistry.get(type)?.createProvider?.({});
+    assertExists(provider);
+
+    assertEquals(provider.resolveDatastorePath("/r"), "/r/frozen");
+    await assertRejects(
+      () => provider.createLock("/ds", { lockKey: "f" }).acquire(),
+      LockTimeoutError,
+    );
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
