@@ -195,6 +195,12 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/infrastructure/persistence/datastore_sync_coordinator_test.ts",
   // git adapter test: the unit under test wraps the real git binary.
   "src/infrastructure/persistence/git_worktree_test.ts",
+  // Process adapter test: terminating real process trees (groups, taskkill
+  // /T) is the behaviour under test.
+  "src/infrastructure/process/process_executor_test.ts",
+  // Process adapter test: signalling real child process groups is the
+  // behaviour under test.
+  "src/infrastructure/process/process_kill_test.ts",
   // Spawns a deno child to deliver real OS signals to shutdown handlers.
   "src/infrastructure/process/shutdown_handlers_test.ts",
   // Runtime adapter test: spawning deno is the behaviour under test.
