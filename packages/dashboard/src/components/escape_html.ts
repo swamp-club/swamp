@@ -17,23 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { highlightJson } from "./json_highlight.ts";
-import { highlightYaml } from "./yaml_highlight.ts";
-
-interface CodeBlockProps {
-  code: string;
-  language?: "json" | "yaml";
-}
-
-export function CodeBlock({ code, language = "json" }: CodeBlockProps) {
-  const highlighted = language === "json"
-    ? highlightJson(code)
-    : highlightYaml(code);
-
-  return (
-    <pre
-      className="code-block"
-      dangerouslySetInnerHTML={{ __html: highlighted }}
-    />
-  );
+/** Neutralizes <, > and & so the output is safe for innerHTML. */
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

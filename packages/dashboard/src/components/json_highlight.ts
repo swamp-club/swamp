@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { escapeHtml } from "./escape_html.ts";
+
 // One token per match: a string literal, a number, or a keyword. The string
 // alternative consumes a whole literal before the others are tried, so
 // numbers and keywords only ever match outside strings. The lookarounds keep
@@ -53,9 +55,4 @@ export function highlightJson(raw: string): string {
     last = end;
   }
   return out + escapeHtml(raw.slice(last));
-}
-
-/** Neutralizes <, > and & so the output is safe for innerHTML. */
-export function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
