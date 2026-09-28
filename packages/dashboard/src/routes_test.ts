@@ -319,6 +319,27 @@ Deno.test("parseRoute: run report", () => {
   );
 });
 
+Deno.test("parseRoute: a run report name keeps its '/' whether or not it was encoded", () => {
+  const expected: RouteState = {
+    view: "workflows",
+    detail: {
+      kind: "runReport",
+      workflowName: "wf",
+      runId: "r-1",
+      reportName: "@swamp/workflow-summary",
+    },
+  };
+  for (
+    const path of [
+      "/dashboard/workflows/wf/runs/r-1/reports/@swamp/workflow-summary",
+      "/dashboard/workflows/wf/runs/r-1/reports/%40swamp/workflow-summary",
+      "/dashboard/workflows/wf/runs/r-1/reports/%40swamp%2Fworkflow-summary",
+    ]
+  ) {
+    assertEquals(parseRoute(path), expected, path);
+  }
+});
+
 Deno.test("parseRoute: an unknown segment after a run stays on the run", () => {
   assertEquals(parseRoute("/dashboard/workflows/wf/runs/r-1/other/x"), {
     view: "workflows",
@@ -349,7 +370,7 @@ Deno.test("buildPath: data, run data and run report encode every segment", () =>
         reportName: "@swamp/method-summary",
       },
     }),
-    "/dashboard/workflows/wf/runs/r%201/reports/%40swamp%2Fmethod-summary",
+    "/dashboard/workflows/wf/runs/r%201/reports/%40swamp/method-summary",
   );
 });
 

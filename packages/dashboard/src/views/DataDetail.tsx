@@ -447,15 +447,15 @@ function LoadError({ error, source }: { error: string; source: DataSource }) {
     : `run ${source.runId}`;
   if (isDataNotFound(error)) {
     return (
-      <div className="panel loading">
+      <Notice>
         This data is no longer available. It may have expired or been
         garbage-collected. Open the{" "}
         <DetailLink to={parent}>{parentLabel}</DetailLink>.
-      </div>
+      </Notice>
     );
   }
   return (
-    <div className="panel loading" style={{ color: "var(--danger)" }}>
+    <Notice danger>
       {error}
       {source.kind === "run" && isUnauthorized(error) && (
         <div style={{ color: "var(--text-2)", marginTop: 8 }}>
@@ -463,7 +463,7 @@ function LoadError({ error, source }: { error: string; source: DataSource }) {
           model's data, open it from that model instead.
         </div>
       )}
-    </div>
+    </Notice>
   );
 }
 
@@ -495,9 +495,7 @@ function RunReportDetail(
     return (
       <>
         <DetailHeader title={target.reportName} onBack={onBack} />
-        <div className="panel loading" style={{ color: "var(--danger)" }}>
-          {error ?? "Run not found"}
-        </div>
+        <Notice danger>{error ?? "Run not found"}</Notice>
       </>
     );
   }
@@ -523,7 +521,7 @@ function RunReportDetail(
   return (
     <>
       <DetailHeader title={target.reportName} onBack={onBack} />
-      <div className="panel loading">
+      <Notice>
         {resolution.kind === "notFound"
           ? (
             <>
@@ -558,8 +556,25 @@ function RunReportDetail(
               </ul>
             </>
           )}
-      </div>
+      </Notice>
     </>
+  );
+}
+
+/**
+ * A message panel. `.loading` is a flex container, so the content sits in one
+ * inner element to keep inline text and links flowing (with their spaces).
+ */
+function Notice(
+  { children, danger }: { children: ReactNode; danger?: boolean },
+) {
+  return (
+    <div
+      className="panel loading"
+      style={danger ? { color: "var(--danger)" } : undefined}
+    >
+      <div style={{ maxWidth: 640, textAlign: "center" }}>{children}</div>
+    </div>
   );
 }
 

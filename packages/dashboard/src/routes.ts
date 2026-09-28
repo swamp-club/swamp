@@ -137,7 +137,10 @@ export function parseRoute(pathname: string): RouteState {
           kind: "runReport",
           workflowName,
           runId,
-          reportName: decodeURIComponent(segments[5]),
+          // Report names are usually scoped (`@swamp/method-summary`), and
+          // links pasted through chat or terminals often arrive with the
+          // `%2F` decoded, so the name is everything after `reports/`.
+          reportName: segments.slice(5).map(decodeURIComponent).join("/"),
         },
       };
     }
@@ -204,7 +207,7 @@ export function buildPath(state: RouteState): string {
         return `${BASE}/workflows/${
           encodeURIComponent(state.detail.workflowName)
         }/runs/${encodeURIComponent(state.detail.runId)}/reports/${
-          encodeURIComponent(state.detail.reportName)
+          state.detail.reportName.split("/").map(encodeURIComponent).join("/")
         }`;
     }
   }
