@@ -589,7 +589,8 @@ Deno.test({
             executeProcess({
               command: "sh",
               args: grandchildScript(pidFile),
-              timeoutMs: 1000,
+              // Long enough that sh has recorded the pid under load.
+              timeoutMs: 2000,
               terminateProcessTree: true,
             }),
           Error,
@@ -719,6 +720,53 @@ Deno.test({
       })
     ),
 });
+
+for (
+  const [label, timeoutMs] of [["timeout", 20_000], [
+    "streaming",
+    undefined,
+  ]] as const
+) {
+  Deno.test({
+    name:
+      `executeProcess: an abort after the command exited spares what it backgrounded (${label} mode)`,
+    ignore: Deno.build.os === "windows",
+    fn: () =>
+      withIsolatedGroups(() =>
+        withPidFile(async (pidFile, readPid) => {
+          const shPidFile = `${pidFile}.sh`;
+          try {
+            const controller = new AbortController();
+            // The backgrounded sleep keeps stdout open, so the executor is
+            // still draining pipes after sh exits.
+            const run = executeProcess({
+              command: "sh",
+              args: [
+                "-c",
+                `sleep 30 & echo $! > '${pidFile}'; echo $$ > '${shPidFile}'; exit 0`,
+              ],
+              logger: silentLogger,
+              signal: controller.signal,
+              timeoutMs,
+              terminateProcessTree: true,
+            });
+            await waitFor(() => pidWritten(readPid), "grandchild pid file");
+            const shPid = Number((await Deno.readTextFile(shPidFile)).trim());
+            await waitFor(() => !isProcessAlive(shPid), "sh to exit");
+            controller.abort();
+
+            await run.catch(() => {});
+            assert(
+              isProcessAlive(await readPid()),
+              "a command that exited on its own must not have its group signalled",
+            );
+          } finally {
+            await Deno.remove(shPidFile).catch(() => {});
+          }
+        })
+      ),
+  });
+}
 
 Deno.test({
   name: "killLiveProcessGroups: SIGKILLs the groups of commands still running",

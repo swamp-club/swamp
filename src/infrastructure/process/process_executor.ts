@@ -194,11 +194,15 @@ function trackProcessGroup(pgid: number): void {
 
 /**
  * Terminates the process, at most once however many triggers (timeout,
- * abort) fire. `settled()` resolves once a started termination finishes, or
- * immediately if none was started.
+ * abort) fire, and never once the direct child has exited on its own: a
+ * late abort (say, while pipes drain) must not reach what it backgrounded.
  */
 interface Terminator {
+  /** The child's status. Every path awaits this instead of `child.status`,
+   *  so the terminator learns when the child exits. */
+  status: Promise<Deno.CommandStatus>;
   terminate(): void;
+  /** Resolves once a started termination finishes, or at once if none. */
   settled(): Promise<void>;
 }
 
@@ -208,8 +212,16 @@ function createTerminator(
   graceMs: number,
 ): Terminator {
   let running: Promise<void> | undefined;
+  let exited = false;
   return {
+    status: child.status.then((status) => {
+      exited = true;
+      // Exited on its own: what it backgrounded is not the exit sweep's.
+      if (!running) liveProcessGroups.delete(child.pid);
+      return status;
+    }),
     terminate: () => {
+      if (exited) return;
       running ??= terminateProcess(child, mode, graceMs);
     },
     settled: () => running ?? Promise.resolve(),
@@ -382,16 +394,15 @@ export async function executeProcess(
     if (isolated) trackProcessGroup(child.pid);
     return child;
   };
-  // Waits out any termination, then stops tracking the group: a command
-  // that exited on its own leaves what it backgrounded running. A path that
-  // did not complete (a throwing output callback) abandons the process, so
-  // it is terminated rather than left running untracked.
+  // Waits out any termination, then stops tracking the group. A path that
+  // ends while the child still runs (a throwing output callback) abandons
+  // it, so it is terminated rather than left running untracked; a child
+  // that already exited is left alone.
   const release = async (
     child: Deno.ChildProcess,
     terminator: Terminator,
-    completed: boolean,
   ): Promise<void> => {
-    if (!completed) terminator.terminate();
+    terminator.terminate();
     await terminator.settled();
     liveProcessGroups.delete(child.pid);
   };
@@ -455,13 +466,11 @@ export async function executeProcess(
     // Kill subprocess when abort signal fires
     const detachAbort = onSignalAbort(options.signal, stop);
 
-    let completed = false;
     try {
       // Wait for the direct child to exit — process.status resolves
       // independently of pipe closure, so orphaned children holding pipes
       // open do not block this.
-      const status = await process.status;
-      completed = true;
+      const status = await terminator.status;
       clearTimeout(timeoutId);
 
       if (timedOut) {
@@ -499,7 +508,7 @@ export async function executeProcess(
     } finally {
       clearTimeout(timeoutId);
       detachAbort();
-      await release(process, terminator, completed);
+      await release(process, terminator);
     }
   } else if (options.logger) {
     // Streaming mode without timeout
@@ -513,7 +522,6 @@ export async function executeProcess(
       pipeAbort.abort();
     });
 
-    let completed = false;
     try {
       const logger = options.logger;
       const redact = (line: string) =>
@@ -530,16 +538,15 @@ export async function executeProcess(
           if (onOutput) onOutput(redacted, "stderr");
           logger.warn(escapeLogTemplate(redacted));
         }, pipeAbort.signal),
-        process.status,
+        terminator.status,
       ]);
 
-      completed = true;
       stdout = stdoutResult;
       stderr = stderrResult;
       exitCode = status.code;
     } finally {
       detachAbort();
-      await release(process, terminator, completed);
+      await release(process, terminator);
     }
 
     // Re-throw as AbortError if signal was responsible for the kill
@@ -557,20 +564,18 @@ export async function executeProcess(
       pipeAbort.abort();
     });
 
-    let completed = false;
     try {
       const [stdoutResult, stderrResult, status] = await Promise.all([
         streamLines(process.stdout, undefined, pipeAbort.signal),
         streamLines(process.stderr, undefined, pipeAbort.signal),
-        process.status,
+        terminator.status,
       ]);
-      completed = true;
       stdout = stdoutResult;
       stderr = stderrResult;
       exitCode = status.code;
     } finally {
       detachAbort();
-      await release(process, terminator, completed);
+      await release(process, terminator);
     }
 
     if (options.signal?.aborted) {
