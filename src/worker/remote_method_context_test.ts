@@ -220,6 +220,18 @@ async function withScratch(
   }
 }
 
+Deno.test("remote context: exposes the dispatch's traceHeaders", async () => {
+  await withScratch((dir) => {
+    const traced = dispatch();
+    traced.execution.traceHeaders = { traceparent: "00-abc123-def456-01" };
+    const h = harness(dir, undefined, undefined, traced);
+    assertEquals(h.context.traceHeaders, {
+      traceparent: "00-abc123-def456-01",
+    });
+    return Promise.resolve();
+  });
+});
+
 Deno.test("remote context: readResource resolves metadata then fetches bytes", async () => {
   await withScratch(async (dir) => {
     const h = harness(dir);

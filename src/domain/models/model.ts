@@ -188,6 +188,16 @@ export interface MethodContext {
   methodName: string;
 
   /**
+   * W3C Trace Context headers (`traceparent`, `tracestate`) for this method
+   * execution. Pass them to any subprocess the method spawns (as the
+   * `TRACEPARENT`/`TRACESTATE` env vars) or outbound request to continue the
+   * trace. Unlike the process env, this is always this execution's own
+   * context, even when other methods run concurrently in the same process.
+   * Absent or empty when tracing is disabled.
+   */
+  traceHeaders?: Readonly<Record<string, string>>;
+
+  /**
    * Optional factory for CloudControl clients (for testing).
    */
   cloudControlClientFactory?: () => CloudControlClient;

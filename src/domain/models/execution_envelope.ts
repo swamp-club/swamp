@@ -93,3 +93,31 @@ export interface ExecutionResult {
   /** Follow-up actions from the method result (in-process execution only). */
   followUpActions?: unknown[];
 }
+
+const TRACE_HEADER_ENV_NAMES: ReadonlyMap<string, string> = new Map([
+  ["traceparent", "TRACEPARENT"],
+  ["tracestate", "TRACESTATE"],
+]);
+
+/**
+ * Maps W3C Trace Context headers to the environment variables a child process
+ * reads them from (`traceparent` → `TRACEPARENT`, `tracestate` → `TRACESTATE`).
+ *
+ * Only those two headers are mapped; any other key is dropped, so a header
+ * record can never name an arbitrary variable in a child's environment.
+ */
+export function traceHeadersToEnv(
+  headers: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (!headers) {
+    return env;
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    const envName = TRACE_HEADER_ENV_NAMES.get(key.toLowerCase());
+    if (envName) {
+      env[envName] = value;
+    }
+  }
+  return env;
+}
