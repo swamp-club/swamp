@@ -595,6 +595,12 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   schedules, webhooks and system views) from `packages/dashboard/dist`.
   `scripts/compile.ts` embeds it only if pre-built before compile. The SPA uses
   the same WebSocket protocol and logs in through `/auth/info` + device auth.
+  After an unexpected close it reconnects with jittered exponential backoff
+  (0.5 s up to 30 s), and retries `/auth/info` the same way while serve is
+  unreachable. It returns to login on close `4003`, when a failed reconnect's
+  token probe of `/api/v1/health` answers 401 (a browser hides the upgrade's
+  own status), or when serve comes back in a different auth mode. Views
+  refetch once reconnected (`packages/dashboard/src/client/connection.ts`).
   Navigation state is in the URL path (`/dashboard/models/<name>`,
   `/dashboard/workflows/<name>/runs/<runId>`, etc.), so views are linkable. The
   server falls back to `index.html` for any `/dashboard/` sub-path to support

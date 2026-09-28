@@ -27,17 +27,21 @@ import {
   useState,
 } from "react";
 import {
+  type AuthInfo,
+  type Connection,
+  createConnection,
+  loadAuthInfo,
+  requestAuthInfo,
+  requestTokenProbe,
+  type SocketHandlers,
+} from "./connection.ts";
+import {
   detachFrame,
   RequestError,
   settleDetached,
   settleRequest,
   type WireFrame,
 } from "./stream";
-
-interface AuthInfo {
-  mode: "none" | "token" | "oauth";
-  verificationBaseUri?: string;
-}
 
 interface SwampContextValue {
   connected: boolean;
@@ -71,6 +75,14 @@ function getWsUrl(): string {
   return `${proto}//${location.host}/?compress=gzip`;
 }
 
+const timers = {
+  setTimer: (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms),
+  clearTimer: (id: number) => globalThis.clearTimeout(id),
+};
+
+const fetchAuthInfo = (signal: AbortSignal) =>
+  requestAuthInfo(globalThis.fetch, signal);
+
 async function gunzipFrame(data: ArrayBuffer): Promise<string> {
   const stream = new Blob([data]).stream().pipeThrough(
     new DecompressionStream("gzip"),
@@ -99,31 +111,25 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     >
   >(new Map());
 
-  useEffect(() => {
-    fetch("/auth/info")
-      .then((r) => r.json())
-      .then((info: AuthInfo) => {
-        setAuthMode(info.mode);
-        setVerificationBaseUri(info.verificationBaseUri ?? null);
-      })
-      .catch(() => setAuthMode("none"));
+  const applyAuthInfo = useCallback((info: AuthInfo) => {
+    setAuthMode(info.mode);
+    setVerificationBaseUri(info.verificationBaseUri ?? null);
   }, []);
 
-  const connect = useCallback((authToken: string | null) => {
-    if (socketRef.current) {
-      socketRef.current.close();
-    }
+  // Serve may be down when the page loads; keep asking rather than guess a
+  // mode, which would connect without a token and never show login.
+  useEffect(() => loadAuthInfo({ ...timers, fetchAuthInfo }, applyAuthInfo), [
+    applyAuthInfo,
+  ]);
 
-    const protocols = authToken ? [`bearer.${authToken}`] : undefined;
-    const ws = new WebSocket(getWsUrl(), protocols);
-    ws.binaryType = "arraybuffer";
+  const clearToken = useCallback(() => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    setToken(null);
+  }, []);
 
-    ws.onopen = () => {
-      socketRef.current = ws;
-      setConnected(true);
-    };
-
-    const handleFrame = (text: string) => {
+  const connectionRef = useRef<Connection | null>(null);
+  if (connectionRef.current === null) {
+    const handleFrame = (ws: WebSocket, text: string) => {
       let msg: WireFrame;
       try {
         msg = JSON.parse(text);
@@ -152,48 +158,68 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       pending.resolve(outcome.value);
     };
 
-    // Every frame goes through one chain so a text frame never overtakes an
-    // earlier compressed frame that is still being decoded.
-    let frameChain: Promise<void> = Promise.resolve();
-    ws.onmessage = (event) => {
-      const data: unknown = event.data;
-      frameChain = frameChain
-        .then(async () => {
-          handleFrame(
-            typeof data === "string"
-              ? data
-              : await gunzipFrame(data as ArrayBuffer),
-          );
-        })
-        .catch((err: unknown) => {
-          console.error("swamp: dropped an undecodable frame", err);
-        });
+    const createSocket = (
+      protocols: string[] | undefined,
+      handlers: SocketHandlers,
+    ): WebSocket => {
+      const ws = new WebSocket(getWsUrl(), protocols);
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => handlers.onOpen();
+      // Every frame goes through one chain so a text frame never overtakes an
+      // earlier compressed frame that is still being decoded.
+      let frameChain: Promise<void> = Promise.resolve();
+      ws.onmessage = (event) => {
+        const data: unknown = event.data;
+        frameChain = frameChain
+          .then(async () => {
+            handlers.onMessage(
+              typeof data === "string"
+                ? data
+                : await gunzipFrame(data as ArrayBuffer),
+            );
+          })
+          .catch((err: unknown) => {
+            console.error("swamp: dropped an undecodable frame", err);
+          });
+      };
+      ws.onclose = (event) => handlers.onClose(event.code);
+      return ws;
     };
 
-    ws.onclose = () => {
-      socketRef.current = null;
-      setConnected(false);
-      for (const [id, p] of pendingRef.current) {
-        p.reject(new Error("WebSocket closed"));
-        pendingRef.current.delete(id);
-      }
-    };
-
-    ws.onerror = () => {
-      setConnected(false);
-    };
-  }, []);
+    connectionRef.current = createConnection<WebSocket>({
+      ...timers,
+      createSocket,
+      probe: (authToken, signal) =>
+        requestTokenProbe(globalThis.fetch, authToken, signal),
+      fetchAuthInfo,
+      onOpen: (ws) => {
+        socketRef.current = ws;
+        setConnected(true);
+      },
+      onMessage: handleFrame,
+      onDisconnect: () => {
+        socketRef.current = null;
+        setConnected(false);
+        for (const [id, p] of pendingRef.current) {
+          p.reject(new Error("WebSocket closed"));
+          pendingRef.current.delete(id);
+        }
+      },
+      onReauth: clearToken,
+      onAuthModeChanged: applyAuthInfo,
+    });
+  }
 
   useEffect(() => {
+    const connection = connectionRef.current;
+    if (!connection) return;
     if (authMode === "none") {
-      connect(null);
-    } else if (token) {
-      connect(token);
+      connection.start({ token: null, authMode });
+    } else if (authMode !== null && token) {
+      connection.start({ token, authMode });
     }
-    return () => {
-      socketRef.current?.close();
-    };
-  }, [token, authMode, connect]);
+    return () => connection.stop();
+  }, [token, authMode]);
 
   const login = useCallback((newToken: string) => {
     sessionStorage.setItem(TOKEN_KEY, newToken);
@@ -201,10 +227,9 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
-    sessionStorage.removeItem(TOKEN_KEY);
-    setToken(null);
-    socketRef.current?.close();
-  }, []);
+    connectionRef.current?.stop();
+    clearToken();
+  }, [clearToken]);
 
   const send = useCallback(
     (
