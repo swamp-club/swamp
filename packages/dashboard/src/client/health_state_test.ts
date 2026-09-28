@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { healthStreamOutcome, healthViewState } from "./health_state.ts";
+import {
+  HEALTH_RETRY_MS,
+  healthRetryDelayMs,
+  healthStreamOutcome,
+  healthViewState,
+} from "./health_state.ts";
 
 Deno.test("healthStreamOutcome: reads a 2xx stream", () => {
   assertEquals(healthStreamOutcome(200), "ok");
@@ -43,4 +48,22 @@ Deno.test("healthViewState: a refused stream is denied, never empty", () => {
 Deno.test("healthViewState: no snapshot yet is loading; a snapshot is ready", () => {
   assertEquals(healthViewState(null, false), "loading");
   assertEquals(healthViewState({}, false), "ready");
+});
+
+Deno.test("healthRetryDelayMs: waits as long as Retry-After asks", () => {
+  assertEquals(healthRetryDelayMs("30"), 30_000);
+});
+
+Deno.test("healthRetryDelayMs: falls back to the default without a usable header", () => {
+  assertEquals(healthRetryDelayMs(null), HEALTH_RETRY_MS);
+  assertEquals(healthRetryDelayMs(""), HEALTH_RETRY_MS);
+  assertEquals(
+    healthRetryDelayMs("Wed, 21 Oct 2026 07:28:00 GMT"),
+    HEALTH_RETRY_MS,
+  );
+});
+
+Deno.test("healthRetryDelayMs: stays between the default and two minutes", () => {
+  assertEquals(healthRetryDelayMs("0"), HEALTH_RETRY_MS);
+  assertEquals(healthRetryDelayMs("3600"), 120_000);
 });

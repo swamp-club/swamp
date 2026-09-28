@@ -142,7 +142,8 @@ Actions:
   `invalid` (the record no longer parses). `initiatedBy` is the admin who
   revoked or rotated the token, or `system` when the periodic revalidation
   found it. `sourceIp` is the closed session's address. One event is written
-  per closed session, before it closes
+  per session closed this way, before it closes; deprovisioning closes a
+  principal's sessions and streams without one
 
 `DeviceAuthDeps` carries the `AuditEmitter` and `instanceId`. The serve HTTP
 handler resolves `sourceIp` (honouring `trustProxy` / `X-Forwarded-For`) and

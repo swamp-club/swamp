@@ -42,3 +42,20 @@ export function healthViewState(
   if (denied) return "denied";
   return health === null ? "loading" : "ready";
 }
+
+export const HEALTH_RETRY_MS = 5000;
+const MAX_RETRY_MS = 120_000;
+
+/**
+ * How long to wait before reconnecting after a retryable answer: the server's
+ * `Retry-After` in seconds when it sent one (as it does at the per-token
+ * stream cap), bounded to 5 s–2 min, otherwise 5 s.
+ */
+export function healthRetryDelayMs(retryAfter: string | null): number {
+  if (retryAfter === null) return HEALTH_RETRY_MS;
+  const seconds = Number(retryAfter.trim());
+  if (!Number.isFinite(seconds) || retryAfter.trim() === "") {
+    return HEALTH_RETRY_MS;
+  }
+  return Math.min(MAX_RETRY_MS, Math.max(HEALTH_RETRY_MS, seconds * 1000));
+}

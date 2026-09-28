@@ -632,8 +632,9 @@ export function listTokenSessions(): {
 
 /**
  * Ends the open sessions of a server token, WebSockets and token-bound
- * streams alike, auditing each one before it closes. This is the single path the server uses to cut off a token
- * whose authority has ended. Returns the number of sessions closed.
+ * streams alike, auditing each one before it closes. This is the single path
+ * the server uses to cut off a token whose authority has ended. Returns the
+ * number of sessions closed.
  */
 export function terminateTokenSessions(
   name: string,

@@ -19,8 +19,8 @@
 
 /**
  * Wires a real minted server token through the HTTP auth guards the health
- * endpoints use: any valid token reads health, while admin routes still need
- * admin on access:* (swamp-club#2504).
+ * endpoints use: any valid token reads health, narrowed to what it may read,
+ * while admin routes still need admin on access:* (swamp-club#2504).
  */
 
 import { assertEquals, assertExists } from "@std/assert";
@@ -42,7 +42,10 @@ import {
   type AdminAuthDeps,
   authenticateAdmin,
   authenticateToken,
+  createReadAuthorizer,
 } from "../src/serve/admin_auth.ts";
+import type { HealthSnapshot } from "../src/serve/health_collector.ts";
+import { healthSnapshotFor } from "../src/serve/health_snapshot_view.ts";
 import { readServerTokenRecord } from "../src/serve/token_auth.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import "../src/domain/models/models.ts";
@@ -59,7 +62,7 @@ function denyAll(): PolicySnapshotLoader {
   return { decisionService: service } as unknown as PolicySnapshotLoader;
 }
 
-Deno.test("health endpoint auth: a valid token without admin reads health but not admin routes", async () => {
+Deno.test("health endpoint auth: a valid token without grants reads health with nothing it may not read, and no admin routes", async () => {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-health-auth-" });
   const repoContext = createRepositoryContext({ repoDir });
   try {
@@ -134,6 +137,54 @@ Deno.test("health endpoint auth: a valid token without admin reads health but no
       createdAt: (await readServerTokenRecord(repoContext, name)).createdAt,
     });
     assertEquals(health.clientAddr, "192.0.2.30");
+
+    const view = healthSnapshotFor(
+      {
+        instanceId: "instance-1",
+        deploymentMode: "local",
+        remoteOnly: false,
+        uptimeMs: 1,
+        ready: true,
+        activeRuns: [{
+          runId: "r1",
+          kind: "workflow-run",
+          resourceName: "nightly",
+          durationMs: 1,
+          principalId: "user:admin",
+        }],
+        metrics: {
+          windowMs: 1,
+          completions: 0,
+          failures: 0,
+          cancellations: 0,
+          throughputPerMinute: 0,
+          latency: null,
+        },
+        workers: [],
+        scheduling: {
+          enabled: true,
+          schedules: [{
+            workflowId: "1",
+            workflowName: "nightly",
+            cronExpression: "0 3 * * *",
+            nextRun: null,
+            running: false,
+          }],
+        },
+        webhooks: [{ route: "/hooks/n", workflow: "nightly", scheme: "hmac" }],
+        components: [{
+          name: "datastore",
+          healthy: true,
+          message: "ok",
+          latencyMs: 1,
+        }],
+      } satisfies HealthSnapshot,
+      createReadAuthorizer(health.authResult, deps),
+    );
+    assertEquals(view.activeRuns, []);
+    assertEquals(view.scheduling.schedules, []);
+    assertEquals(view.webhooks, []);
+    assertEquals(view.components, []);
 
     const admin = await authenticateAdmin(
       request("/api/v1/serve/config"),

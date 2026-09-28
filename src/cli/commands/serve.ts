@@ -219,10 +219,12 @@ import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
 import { createHealthStreamResponse } from "../../serve/health_stream.ts";
+import { healthSnapshotFor } from "../../serve/health_snapshot_view.ts";
 import {
   type AdminAuthDeps,
   authenticateAdmin,
   authenticateToken,
+  createReadAuthorizer,
 } from "../../serve/admin_auth.ts";
 import {
   deleteActiveRun,
@@ -4943,7 +4945,8 @@ export const serveCommand = new Command()
           }
         }
 
-        // Health snapshot endpoints (any valid token)
+        // Health snapshot endpoints (any valid token; the snapshot is
+        // narrowed to what the token may read)
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/api/v1/health") {
@@ -4953,8 +4956,9 @@ export const serveCommand = new Command()
               adminAuthDeps,
             );
             if (!auth.ok) return auth.response;
+            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
             const snapshot = await healthCollector.collect(ac.signal);
-            return Response.json(snapshot);
+            return Response.json(healthSnapshotFor(snapshot, reader));
           }
 
           // SSE health stream, bound to its token session so revoking,
@@ -4967,9 +4971,14 @@ export const serveCommand = new Command()
             );
             if (!auth.ok) return auth.response;
             const token = auth.token;
+            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
 
             return createHealthStreamResponse({
-              collect: (signal) => healthCollector.collect(signal),
+              collect: async (signal) =>
+                healthSnapshotFor(
+                  await healthCollector.collect(signal),
+                  reader,
+                ),
               intervalParam: url.searchParams.get("interval"),
               lastEventId: req.headers.get("Last-Event-ID"),
               serverSignal: ac.signal,

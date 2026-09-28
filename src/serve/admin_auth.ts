@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import type { PolicySnapshotLoader } from "../domain/access/mod.ts";
+import type {
+  AccessResource,
+  PolicySnapshotLoader,
+} from "../domain/access/mod.ts";
 import {
   authenticateServerToken,
   type ServerTokenAuthResult,
@@ -208,4 +211,54 @@ export async function authenticateAdmin(
   }
 
   return { ok: true, authResult };
+}
+
+/**
+ * Read decisions for one authenticated request, with the rules
+ * `filterByAuthorization` applies over WebSocket: an explicit allow or deny
+ * wins, and a resource no grant covers is readable only by an admin. Each call
+ * consults the current policy snapshot, so a long-lived stream follows grant
+ * changes.
+ */
+export interface ReadAuthorizer {
+  isAdmin(): boolean;
+  canRead(resource: AccessResource): boolean;
+}
+
+export function createReadAuthorizer(
+  principal: AuthenticatedPrincipal,
+  deps: Pick<AdminAuthDeps, "authMode" | "policySnapshotLoader">,
+): ReadAuthorizer {
+  if (deps.authMode === "none") {
+    return { isAdmin: () => true, canRead: () => true };
+  }
+  const loader = deps.policySnapshotLoader;
+  if (!loader) {
+    return { isAdmin: () => false, canRead: () => false };
+  }
+  const accessPrincipal = {
+    principal: parsePrincipal(principal.principalId),
+    collectives: [...principal.collectives],
+    groups: [...principal.groups],
+  };
+  const isAdmin = () => {
+    const decision = loader.decisionService.decide(
+      accessPrincipal,
+      "admin",
+      { kind: "access", name: "*", fields: {} },
+    );
+    return decision !== null && decision.effect === "allow";
+  };
+  return {
+    isAdmin,
+    canRead(resource) {
+      const decision = loader.decisionService.decide(
+        accessPrincipal,
+        "read",
+        resource,
+      );
+      if (decision) return decision.effect === "allow";
+      return isAdmin();
+    },
+  };
 }

@@ -19,7 +19,11 @@
 
 import { useEffect, useState } from "react";
 import { useSwamp } from "./SwampProvider";
-import { healthStreamOutcome } from "./health_state";
+import {
+  HEALTH_RETRY_MS,
+  healthRetryDelayMs,
+  healthStreamOutcome,
+} from "./health_state";
 
 interface ActiveRun {
   runId: string;
@@ -100,6 +104,7 @@ export function useHealthStream(intervalMs = 5000): HealthStream {
     setDenied(false);
 
     async function connect() {
+      let retryMs = HEALTH_RETRY_MS;
       try {
         const headers: Record<string, string> = {};
         if (token) {
@@ -155,6 +160,7 @@ export function useHealthStream(intervalMs = 5000): HealthStream {
             }
           }
         } else {
+          retryMs = healthRetryDelayMs(resp.headers.get("Retry-After"));
           await resp.body?.cancel();
         }
       } catch {
@@ -162,7 +168,7 @@ export function useHealthStream(intervalMs = 5000): HealthStream {
       }
 
       if (!cancelled) {
-        retryTimeout = setTimeout(connect, 5000);
+        retryTimeout = setTimeout(connect, retryMs);
       }
     }
 
