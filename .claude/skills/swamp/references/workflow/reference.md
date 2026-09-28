@@ -466,6 +466,49 @@ steps:
         environment: ${{ inputs.environment }}
 ```
 
+### Inputs Are Inert and Recorded — Never Pass Secrets
+
+Workflow input values are never evaluated as expressions: a `${{ ... }}` passed
+with `--input` stays literal text. They are also **recorded** (after type
+coercion and schema defaults) in the run record, the history index that
+`workflow history search --input` filters on, any child workflow run they are
+forwarded to, evaluated model definitions, and the data of any model that
+records its arguments. This holds for `workflow resume --input`, `--input-file`,
+and `--stdin` too; the run record's `resumeInputs` lists only the key names, but
+the merged values persist everywhere else.
+
+Pass the vault name and key instead, and resolve the secret in the step (see
+[Working with Vaults](#working-with-vaults)):
+
+```bash
+# WRONG — the shell expands the variable; the secret is stored in cleartext
+swamp workflow run deploy --input apiKey="<value of API_KEY env var>"
+
+# RIGHT — only the reference is recorded; the step resolves and redacts it
+swamp workflow run deploy --input vaultName=prod-secrets --input secretKey=API_KEY
+```
+
+```yaml
+apiKey: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
+```
+
+- Workflow inputs have no `sensitive` flag. A `sensitive: true` key in the input
+  schema is accepted and ignored.
+- `${{ env.X }}` holding the secret is not a secret channel either: env values
+  are substituted as plain text and are not redacted in step data. Env may
+  supply a vault or key name:
+  `${{ vault.get(prod-secrets, env.API_KEY_NAME) }}`.
+- A secret minted at a `manual_approval` gate: while the run is suspended,
+  `swamp vault put <vault> <key>`, then resume with the key name
+  (`--input secretKey=<key>`) or a fixed key; delete it afterwards with
+  `swamp vault delete <vault> <key>`. An input used only inside `vault.get`
+  needs no placeholder default.
+- If a secret was already passed as an input: rotate it, then remove the runs
+  (`swamp run gc --older-than` for finished runs, or `swamp workflow delete`)
+  and the affected `.swamp/definitions-evaluated/` files and model data
+  (`swamp data delete <model> <data_name>`), which neither command removes.
+  Suspended and running runs are never removed by `run gc`.
+
 ## Evaluate Workflows
 
 Evaluate expressions without executing. CEL expressions are resolved; vault

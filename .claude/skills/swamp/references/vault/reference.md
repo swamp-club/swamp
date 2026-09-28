@@ -311,6 +311,46 @@ swamp model create ... --global-arg "token=$TOKEN"
 swamp model create ... --global-arg 'token=${{ vault.get(my-vault, AUTH_TOKEN) }}'
 ```
 
+The same applies to workflow inputs. `swamp workflow run --input` and
+`swamp workflow resume --input` / `--input-file` / `--stdin` values are recorded
+in cleartext (run record, history index, child runs, evaluated definitions, step
+data). Pass the vault name and key and resolve with
+`vault.get(inputs.vaultName, inputs.secretKey)` — see the workflow reference,
+"Inputs Are Inert and Recorded". If a secret already went through an input,
+rotate it first, then remove the recorded copies.
+
+Pass a vault **reference**, never the secret value:
+
+| Carrying                                                                               | Safe?                                                         |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `${{ vault.get(v, k) }}` via `model method run` `--input` / `--input-file` / `--stdin` | Yes — resolved at run, redacted, only the expression recorded |
+| `${{ vault.get(v, env.KEY) }}` (env holds the key name)                                | Yes                                                           |
+| `${{ env.SECRET }}` (env holds the secret)                                             | No — resolved but not redacted in step data                   |
+| `${{ vault.get(...) }}` via `workflow run/resume` input                                | No effect — inert, stays literal text                         |
+| The secret value via any `--input` / `--stdin`                                         | No — recorded in cleartext                                    |
+
+In a `command/shell` run string, do not wrap a vault expression in single
+quotes: the secret is injected as an environment variable reference, which
+single quotes keep literal.
+
+### Trust Boundary: Which Inputs Are Evaluated
+
+`swamp model method run --input` (and `--input-file`, `--stdin`) values are
+treated as operator-written and **evaluated**: a `${{ vault.get(...) }}` or
+`${{ env.X }}` inside them resolves and reaches the method in plaintext (vault
+values are redacted in stored output; env values are not). Never put untrusted
+text — issue bodies, tickets, scraped pages — into a model method run input.
+Route it through a workflow input or model data, which are inert (left literal,
+with a warning), or neutralise `${{` first.
+
+| Source                                   | Expressions     |
+| ---------------------------------------- | --------------- |
+| Model definitions, workflow YAML         | evaluated       |
+| `swamp model method run --input`         | evaluated       |
+| `swamp workflow run/resume --input`      | inert (literal) |
+| Data content (`data.latest(...)` etc.)   | inert (literal) |
+| `forEach` items, webhook/trigger payload | inert (literal) |
+
 ## Using Vaults in Workflows
 
 For detailed workflow integration including the `swamp/lets-get-sensitive`

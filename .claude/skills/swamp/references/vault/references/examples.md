@@ -407,31 +407,39 @@ swamp model evaluate model-2 --json
 ### Rotation Workflow
 
 For complex rotation that requires coordination (update secret, then redeploy
-services), create a workflow:
+services), store the new value in the vault first, then run a workflow that
+takes only the vault name and key. Never pass the secret value itself as a
+workflow input: input values are recorded in the run record, the history index,
+and step data.
+
+```bash
+swamp vault put prod-secrets API_KEY   # prompts for the value
+swamp workflow run rotate-secrets --input vaultName=prod-secrets --input secretKey=API_KEY
+```
 
 ```yaml
 # workflows/rotate-secrets/workflow.yaml
 name: rotate-secrets
 version: 1
-description: Rotate secrets and redeploy services
+description: Push a rotated secret to its consumer and redeploy services
 inputs:
   properties:
-    secretName:
+    vaultName:
       type: string
-    newValue:
+    secretKey:
       type: string
-  required: ["secretName", "newValue"]
+  required: ["vaultName", "secretKey"]
 jobs:
   - name: update-secret
     steps:
-      - name: store-new-secret
+      - name: push-new-secret
         task:
           type: model_method
           modelIdOrName: secret-updater
           methodName: update
           inputs:
-            key: ${{ inputs.secretName }}
-            value: ${{ inputs.newValue }}
+            key: ${{ inputs.secretKey }}
+            value: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
   - name: redeploy
     dependsOn:
       - job: update-secret
