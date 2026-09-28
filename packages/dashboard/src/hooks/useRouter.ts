@@ -22,7 +22,9 @@ import type { View } from "../types.ts";
 import {
   buildPath,
   type DetailView,
+  parentDetail,
   parseRoute,
+  routeForDetail,
   type RouteState,
 } from "../routes.ts";
 
@@ -51,6 +53,11 @@ function pushState(next: RouteState) {
   notify();
 }
 
+/** Navigates to `next`, pushing a history entry when the path changes. */
+export function navigateTo(next: RouteState): void {
+  pushState(next);
+}
+
 function onPopState() {
   currentState = parseRoute(location.pathname);
   notify();
@@ -65,6 +72,7 @@ export interface Router {
   openModel: (modelName: string) => void;
   openWorkflow: (workflowName: string) => void;
   openRun: (workflowName: string, runId?: string) => void;
+  openDetail: (detail: NonNullable<DetailView>) => void;
   closeDetail: () => void;
 }
 
@@ -96,9 +104,16 @@ export function useRouter(): Router {
     [],
   );
 
+  const openDetail = useCallback((detail: NonNullable<DetailView>) => {
+    pushState(routeForDetail(detail));
+  }, []);
+
   const closeDetail = useCallback(() => {
-    pushState({ view: state.view, detail: null });
-  }, [state.view]);
+    const parent = state.detail ? parentDetail(state.detail) : null;
+    pushState(
+      parent ? routeForDetail(parent) : { view: state.view, detail: null },
+    );
+  }, [state.view, state.detail]);
 
   return {
     view: state.view,
@@ -107,6 +122,7 @@ export function useRouter(): Router {
     openModel,
     openWorkflow,
     openRun,
+    openDetail,
     closeDetail,
   };
 }

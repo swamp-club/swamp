@@ -60,12 +60,32 @@ async function createTestData(
 
 /**
  * Creates a mock FileSystemUnifiedDataRepository.
+ *
+ * `globalData` is the latest version of each item (what `findAllGlobal`
+ * returns). `olderVersions` adds versions that only `findByName` can reach.
  */
 function createMockDataRepo(
   globalData: Array<{ data: Data; modelType: ModelType; modelId: string }>,
+  olderVersions: Array<{ data: Data; modelType: ModelType; modelId: string }> =
+    [],
 ): FileSystemUnifiedDataRepository {
+  const stored = [...globalData, ...olderVersions];
   return {
     findAllGlobal: () => Promise.resolve(globalData),
+    findByName: (
+      type: ModelType,
+      modelId: string,
+      dataName: string,
+      version?: number,
+    ) => {
+      const matches = stored.filter((s) =>
+        s.modelType.normalized === type.normalized &&
+        s.modelId === modelId && s.data.name === dataName &&
+        (version === undefined || s.data.version === version)
+      );
+      matches.sort((a, b) => b.data.version - a.data.version);
+      return Promise.resolve(matches[0]?.data ?? null);
+    },
     getContentPath: (
       type: ModelType,
       modelId: string,
@@ -571,4 +591,259 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun returns both step and workf
   if (!wfItem) throw new Error("expected workflow-scope artifact");
   assertEquals(wfItem.jobName, undefined);
   assertEquals(wfItem.stepName, undefined);
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun resolves the version the run recorded, not the latest", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const v1 = await createTestData("vpc-state");
+  const v2 = v1.withNewVersion({ version: 2 });
+  const v3 = v1.withNewVersion({ version: 3 });
+
+  const run = createTestRun([{
+    stepName: "create",
+    artifacts: [{
+      dataId: v1.id,
+      name: "vpc-state",
+      version: 1,
+      tags: { type: "resource" },
+    }],
+  }]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(
+      [{ data: v3, modelType, modelId: TEST_MODEL_ID }],
+      [
+        { data: v1, modelType, modelId: TEST_MODEL_ID },
+        { data: v2, modelType, modelId: TEST_MODEL_ID },
+      ],
+    ),
+  );
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 1);
+  assertEquals(result[0].data.version, 1);
+  assertEquals(
+    result[0].contentPath,
+    `.swamp/data/aws/ec2/vpc/${TEST_MODEL_ID}/vpc-state/1/raw`,
+  );
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun resolves workflow-scope artifacts at their recorded version", async () => {
+  const workflowModelType = ModelType.create("workflow");
+  const tags = {
+    type: "report",
+    reportName: "@swamp/workflow-summary",
+    reportScope: "workflow",
+  };
+  const v1 = await createTestData("report-swamp-workflow-summary", tags);
+  const v2 = v1.withNewVersion({ version: 2 });
+
+  const run = WorkflowRun.fromData({
+    id: TEST_RUN_ID,
+    workflowId: TEST_WORKFLOW_ID,
+    workflowName: "test-workflow",
+    status: "succeeded",
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    jobs: [{
+      jobName: "main",
+      status: "succeeded",
+      steps: [{ stepName: "noop", status: "succeeded" }],
+    }],
+    workflowDataArtifacts: [{
+      dataId: v1.id,
+      name: "report-swamp-workflow-summary",
+      version: 1,
+      tags,
+    }],
+  });
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(
+      [{ data: v2, modelType: workflowModelType, modelId: TEST_WORKFLOW_ID }],
+      [{ data: v1, modelType: workflowModelType, modelId: TEST_WORKFLOW_ID }],
+    ),
+  );
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 1);
+  assertEquals(result[0].data.version, 1);
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun skips a recorded version that was GC'd instead of substituting the latest", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const v1 = await createTestData("vpc-state");
+  const v2 = v1.withNewVersion({ version: 2 });
+
+  const run = createTestRun([{
+    stepName: "create",
+    artifacts: [{
+      dataId: v1.id,
+      name: "vpc-state",
+      version: 1,
+      tags: { type: "resource" },
+    }],
+  }]);
+
+  // Only v2 remains on disk.
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo([{ data: v2, modelType, modelId: TEST_MODEL_ID }]),
+  );
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 0);
+});
+
+Deno.test("WorkflowDataService.findByNameInWorkflowRun: a run that wrote a name twice resolves each version when asked", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const v1 = await createTestData("vpc-state");
+  const v2 = v1.withNewVersion({ version: 2 });
+  const v3 = v1.withNewVersion({ version: 3 });
+  const v4 = v1.withNewVersion({ version: 4 });
+
+  const run = createTestRun([
+    {
+      stepName: "create-a",
+      artifacts: [{
+        dataId: v1.id,
+        name: "vpc-state",
+        version: 2,
+        tags: { type: "resource" },
+      }],
+    },
+    {
+      stepName: "create-b",
+      artifacts: [{
+        dataId: v1.id,
+        name: "vpc-state",
+        version: 3,
+        tags: { type: "resource" },
+      }],
+    },
+  ]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(
+      [{ data: v4, modelType, modelId: TEST_MODEL_ID }],
+      [
+        { data: v1, modelType, modelId: TEST_MODEL_ID },
+        { data: v2, modelType, modelId: TEST_MODEL_ID },
+        { data: v3, modelType, modelId: TEST_MODEL_ID },
+      ],
+    ),
+  );
+
+  const second = await service.findByNameInWorkflowRun(run, "vpc-state", 2);
+  assertEquals(second?.data.version, 2);
+  assertEquals(second?.stepName, "create-a");
+
+  const third = await service.findByNameInWorkflowRun(run, "vpc-state", 3);
+  assertEquals(third?.data.version, 3);
+  assertEquals(third?.stepName, "create-b");
+
+  // Version 4 was written by a later run, not this one.
+  const later = await service.findByNameInWorkflowRun(run, "vpc-state", 4);
+  assertEquals(later, null);
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun: name fallback loads the recorded version from the single owner with that name", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  // The run recorded an id that no longer matches any stored item.
+  const recreated = await createTestData("vpc-state");
+  const recreatedV2 = recreated.withNewVersion({ version: 2 });
+
+  const run = createTestRun([{
+    stepName: "create",
+    artifacts: [{
+      dataId: TEST_GC_DATA_ID,
+      name: "vpc-state",
+      version: 1,
+      tags: { type: "resource" },
+    }],
+  }]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(
+      [{ data: recreatedV2, modelType, modelId: TEST_MODEL_ID }],
+      [{ data: recreated, modelType, modelId: TEST_MODEL_ID }],
+    ),
+  );
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 1);
+  assertEquals(result[0].data.version, 1);
+  assertEquals(result[0].modelId, TEST_MODEL_ID);
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun: name fallback skips a name that several models hold rather than guessing", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const otherModelId = "550e8400-e29b-41d4-a716-446655440004";
+  const mine = await createTestData("report-swamp-method-summary");
+  const theirs = await createTestData("report-swamp-method-summary");
+
+  const run = createTestRun([{
+    stepName: "create",
+    artifacts: [{
+      dataId: TEST_GC_DATA_ID,
+      name: "report-swamp-method-summary",
+      version: 1,
+      tags: { type: "report" },
+    }],
+  }]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo([
+      { data: theirs, modelType, modelId: otherModelId },
+      { data: mine, modelType, modelId: TEST_MODEL_ID },
+    ]),
+  );
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 0);
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun: data renamed after the run still resolves the historical version under its old name", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const otherModelId = "550e8400-e29b-41d4-a716-446655440004";
+  const v1 = await createTestData("vpc-state");
+  // A rename saves the data under the new name with a new id, and the
+  // latest projection follows the rename, so the run's id is no longer
+  // indexed.
+  const renamed = await createTestData("vpc-main");
+  // Another model holds an unrelated item with the old name and version.
+  const unrelated = await createTestData("vpc-state");
+
+  const run = createTestRun([{
+    stepName: "create",
+    artifacts: [{
+      dataId: v1.id,
+      name: "vpc-state",
+      version: 1,
+      tags: { type: "resource" },
+    }],
+  }]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(
+      [
+        { data: renamed, modelType, modelId: TEST_MODEL_ID },
+        { data: unrelated, modelType, modelId: otherModelId },
+      ],
+      [{ data: v1, modelType, modelId: TEST_MODEL_ID }],
+    ),
+  );
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 1);
+  assertEquals(result[0].data.id, v1.id);
+  assertEquals(result[0].data.name, "vpc-state");
+  assertEquals(result[0].data.version, 1);
+  assertEquals(result[0].modelId, TEST_MODEL_ID);
 });

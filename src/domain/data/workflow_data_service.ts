@@ -41,6 +41,12 @@ export interface WorkflowDataItem {
   contentPath: string;
 }
 
+/** The model (or workflow) that owns a data item. */
+interface DataOwner {
+  modelType: ModelType;
+  modelId: string;
+}
+
 /**
  * Service for resolving data produced by workflow runs.
  *
@@ -64,37 +70,25 @@ export class WorkflowDataService {
   ): Promise<WorkflowDataItem[]> {
     const results: WorkflowDataItem[] = [];
 
-    // Get all global data once and index by dataId for efficient lookups
+    // Index owners once. Data ids are stable across versions, so the id
+    // index finds an artifact's owner even after later runs wrote newer
+    // versions; the version itself always comes from the artifact ref.
     const allGlobal = await this.dataRepo.findAllGlobal();
-    const dataByName = new Map<
-      string,
-      { data: Data; modelType: ModelType; modelId: string }
-    >();
+    const ownerById = new Map<string, DataOwner>();
+    const owners = new Map<string, DataOwner>();
     for (const item of allGlobal) {
-      // Key by data name + model ID for uniqueness
-      const key = `${item.modelId}:${item.data.name}`;
-      dataByName.set(key, item);
+      const owner = { modelType: item.modelType, modelId: item.modelId };
+      ownerById.set(item.data.id, owner);
+      owners.set(`${item.modelType.normalized}:${item.modelId}`, owner);
     }
-
-    // Also index by dataId for direct lookups
-    const dataById = new Map<
-      string,
-      { data: Data; modelType: ModelType; modelId: string }
-    >();
-    for (const item of allGlobal) {
-      dataById.set(item.data.id, item);
-    }
+    const index = { ownerById, owners: [...owners.values()] };
 
     for (const job of run.jobs) {
       for (const step of job.steps) {
         if (step.dataArtifacts.length === 0) continue;
 
         for (const artifact of step.dataArtifacts) {
-          const resolved = await this.resolveArtifact(
-            artifact,
-            dataById,
-            dataByName,
-          );
+          const resolved = await this.resolveArtifact(artifact, index);
           if (!resolved) continue;
           results.push({
             ...resolved,
@@ -108,11 +102,7 @@ export class WorkflowDataService {
     // Workflow-scope artifacts (e.g. workflow-scope report output) are
     // tracked on the run aggregate rather than under any single step.
     for (const artifact of run.workflowDataArtifacts) {
-      const resolved = await this.resolveArtifact(
-        artifact,
-        dataById,
-        dataByName,
-      );
+      const resolved = await this.resolveArtifact(artifact, index);
       if (resolved) {
         results.push(resolved);
       }
@@ -121,28 +111,47 @@ export class WorkflowDataService {
     return results;
   }
 
+  /**
+   * Resolves an artifact ref to the exact version the run recorded.
+   *
+   * The owner comes from the id index. When the id is not indexed (the
+   * item was renamed after the run, so the latest projection shows it under
+   * a new id and name), each owner is asked for the recorded name and
+   * version, preferring the one whose id matches. A name-only match is used
+   * only when exactly one owner holds it; several are skipped rather than
+   * guessed. A recorded version that was garbage-collected resolves to
+   * null, never to a newer version.
+   */
   private async resolveArtifact(
-    artifact: { dataId: string; name: string },
-    dataById: Map<
-      string,
-      { data: Data; modelType: ModelType; modelId: string }
-    >,
-    dataByName: Map<
-      string,
-      { data: Data; modelType: ModelType; modelId: string }
-    >,
+    artifact: { dataId: string; name: string; version: number },
+    index: { ownerById: Map<string, DataOwner>; owners: DataOwner[] },
   ): Promise<Omit<WorkflowDataItem, "jobName" | "stepName"> | null> {
-    // Look up the data by its ID first, then fall back to name matching.
-    // Data IDs change with each version, so older run artifacts may not
-    // match the current data's ID. Name matching resolves this by finding
-    // the data item across all models that shares the same name.
-    let found = dataById.get(artifact.dataId);
-    if (!found) {
-      for (const [, item] of dataByName) {
-        if (item.data.name === artifact.name) {
-          found = item;
-          break;
-        }
+    let found: (DataOwner & { data: Data }) | null = null;
+
+    const indexedOwner = index.ownerById.get(artifact.dataId);
+    if (indexedOwner) {
+      const data = await this.dataRepo.findByName(
+        indexedOwner.modelType,
+        indexedOwner.modelId,
+        artifact.name,
+        artifact.version,
+      );
+      if (data) found = { ...indexedOwner, data };
+    } else {
+      const candidates: Array<DataOwner & { data: Data }> = [];
+      for (const owner of index.owners) {
+        const data = await this.dataRepo.findByName(
+          owner.modelType,
+          owner.modelId,
+          artifact.name,
+          artifact.version,
+        );
+        if (data) candidates.push({ ...owner, data });
+      }
+      const byId = candidates.filter((c) => c.data.id === artifact.dataId);
+      if (byId.length === 1) found = byId[0];
+      else if (byId.length === 0 && candidates.length === 1) {
+        found = candidates[0];
       }
     }
     if (!found) return null;

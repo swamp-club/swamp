@@ -21,8 +21,11 @@ import { assertEquals } from "@std/assert";
 import {
   buildPath,
   type ClickLike,
+  type DetailView,
   isPlainLeftClick,
+  parentDetail,
   parseRoute,
+  routeForDetail,
   type RouteState,
 } from "./routes.ts";
 
@@ -223,6 +226,227 @@ Deno.test("round-trip: model with special characters", () => {
     detail: { kind: "model", modelName: "org/model name (v2)" },
   };
   assertEquals(parseRoute(buildPath(state)), state);
+});
+
+// ── data and run deep links ─────────────────────────────────────────────
+
+Deno.test("parseRoute: model data item (latest)", () => {
+  assertEquals(parseRoute("/dashboard/models/ops/data/incident-state"), {
+    view: "models",
+    detail: { kind: "data", modelName: "ops", dataName: "incident-state" },
+  });
+});
+
+Deno.test("parseRoute: model data item at a version", () => {
+  assertEquals(
+    parseRoute("/dashboard/models/ops/data/report-summary/versions/3"),
+    {
+      view: "models",
+      detail: {
+        kind: "data",
+        modelName: "ops",
+        dataName: "report-summary",
+        version: 3,
+      },
+    },
+  );
+});
+
+Deno.test("parseRoute: an invalid version segment means latest", () => {
+  for (const bad of ["0", "-1", "1.5", "abc", "01", ""]) {
+    assertEquals(
+      parseRoute(`/dashboard/models/ops/data/state/versions/${bad}`),
+      {
+        view: "models",
+        detail: { kind: "data", modelName: "ops", dataName: "state" },
+      },
+      `version segment ${JSON.stringify(bad)}`,
+    );
+  }
+});
+
+Deno.test("parseRoute: models/<name>/data without a data name stays on the model", () => {
+  assertEquals(parseRoute("/dashboard/models/ops/data"), {
+    view: "models",
+    detail: { kind: "model", modelName: "ops" },
+  });
+});
+
+Deno.test("parseRoute: run data item, with and without a version", () => {
+  assertEquals(
+    parseRoute("/dashboard/workflows/investigate/runs/r-1/data/result-main"),
+    {
+      view: "workflows",
+      detail: {
+        kind: "runData",
+        workflowName: "investigate",
+        runId: "r-1",
+        dataName: "result-main",
+      },
+    },
+  );
+  assertEquals(
+    parseRoute(
+      "/dashboard/workflows/investigate/runs/r-1/data/result-main/versions/2",
+    ),
+    {
+      view: "workflows",
+      detail: {
+        kind: "runData",
+        workflowName: "investigate",
+        runId: "r-1",
+        dataName: "result-main",
+        version: 2,
+      },
+    },
+  );
+});
+
+Deno.test("parseRoute: run report", () => {
+  assertEquals(
+    parseRoute(
+      "/dashboard/workflows/investigate/runs/r-1/reports/%40swamp%2Fworkflow-summary",
+    ),
+    {
+      view: "workflows",
+      detail: {
+        kind: "runReport",
+        workflowName: "investigate",
+        runId: "r-1",
+        reportName: "@swamp/workflow-summary",
+      },
+    },
+  );
+});
+
+Deno.test("parseRoute: an unknown segment after a run stays on the run", () => {
+  assertEquals(parseRoute("/dashboard/workflows/wf/runs/r-1/other/x"), {
+    view: "workflows",
+    detail: { kind: "run", workflowName: "wf", runId: "r-1" },
+  });
+});
+
+Deno.test("buildPath: data, run data and run report encode every segment", () => {
+  assertEquals(
+    buildPath({
+      view: "models",
+      detail: {
+        kind: "data",
+        modelName: "org/model",
+        dataName: "a/b",
+        version: 4,
+      },
+    }),
+    "/dashboard/models/org%2Fmodel/data/a%2Fb/versions/4",
+  );
+  assertEquals(
+    buildPath({
+      view: "workflows",
+      detail: {
+        kind: "runReport",
+        workflowName: "wf",
+        runId: "r 1",
+        reportName: "@swamp/method-summary",
+      },
+    }),
+    "/dashboard/workflows/wf/runs/r%201/reports/%40swamp%2Fmethod-summary",
+  );
+});
+
+Deno.test("round-trip: data, run data and run report", () => {
+  const states: RouteState[] = [
+    {
+      view: "models",
+      detail: { kind: "data", modelName: "org/m (v2)", dataName: "x/y" },
+    },
+    {
+      view: "models",
+      detail: { kind: "data", modelName: "m", dataName: "d", version: 12 },
+    },
+    {
+      view: "workflows",
+      detail: {
+        kind: "runData",
+        workflowName: "org/wf",
+        runId: "r-1",
+        dataName: "report-swamp-workflow-summary",
+      },
+    },
+    {
+      view: "workflows",
+      detail: {
+        kind: "runData",
+        workflowName: "wf",
+        runId: "r-1",
+        dataName: "d",
+        version: 3,
+      },
+    },
+    {
+      view: "workflows",
+      detail: {
+        kind: "runReport",
+        workflowName: "wf",
+        runId: "r-1",
+        reportName: "@acme/cost report",
+      },
+    },
+  ];
+  for (const state of states) {
+    assertEquals(parseRoute(buildPath(state)), state);
+  }
+});
+
+Deno.test("routeForDetail: data belongs to models, run data and reports to workflows", () => {
+  assertEquals(
+    routeForDetail({ kind: "data", modelName: "m", dataName: "d" }).view,
+    "models",
+  );
+  assertEquals(
+    routeForDetail({
+      kind: "runData",
+      workflowName: "wf",
+      runId: "r",
+      dataName: "d",
+    }).view,
+    "workflows",
+  );
+  assertEquals(
+    routeForDetail({
+      kind: "runReport",
+      workflowName: "wf",
+      runId: "r",
+      reportName: "x",
+    }).view,
+    "workflows",
+  );
+});
+
+Deno.test("parentDetail: data returns to its model, run data and reports to the run", () => {
+  assertEquals(
+    parentDetail({ kind: "data", modelName: "m", dataName: "d", version: 2 }),
+    { kind: "model", modelName: "m" },
+  );
+  const run: DetailView = { kind: "run", workflowName: "wf", runId: "r" };
+  assertEquals(
+    parentDetail({
+      kind: "runData",
+      workflowName: "wf",
+      runId: "r",
+      dataName: "d",
+    }),
+    run,
+  );
+  assertEquals(
+    parentDetail({
+      kind: "runReport",
+      workflowName: "wf",
+      runId: "r",
+      reportName: "x",
+    }),
+    run,
+  );
+  assertEquals(parentDetail({ kind: "model", modelName: "m" }), null);
 });
 
 // ── isPlainLeftClick ────────────────────────────────────────────────────

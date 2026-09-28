@@ -11,7 +11,9 @@
   "dependencies": {
     "js-yaml": "^5.3.0",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

@@ -1222,3 +1222,138 @@ body {
 [data-theme="dark"] .code-comment {
   color: #6c7086;
 }
+
+/* Rendered Markdown (report outputs) */
+.markdown {
+  padding: 18px;
+  font-size: 0.88rem;
+  line-height: 1.65;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 1.4em 0 0.5em;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.markdown h1 {
+  font-size: 1.3rem;
+}
+
+.markdown h2 {
+  font-size: 1.12rem;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.markdown h3 {
+  font-size: 0.98rem;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre,
+.markdown table {
+  margin: 0 0 0.9em;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.5em;
+}
+
+.markdown a {
+  color: var(--accent);
+}
+
+.markdown code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.82em;
+  background: var(--surface-inset);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.markdown pre {
+  background: var(--surface-inset);
+  padding: 12px 14px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown blockquote {
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-2);
+}
+
+.markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown th {
+  background: var(--surface-inset);
+  font-weight: 600;
+}
+
+/* Deep links to data items, versions and reports */
+a.detail-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a.detail-link:hover {
+  text-decoration: underline;
+}
+
+a.cron-badge.detail-link {
+  color: var(--accent);
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  padding: 14px 18px;
+  font-size: 0.82rem;
+}
+
+.meta-grid dt {
+  color: var(--text-3);
+}
+
+.meta-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

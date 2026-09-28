@@ -48,6 +48,7 @@ import { Vaults } from "./views/Vaults";
 import { Extensions } from "./views/Extensions";
 import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
+import { DataDetail } from "./views/DataDetail";
 
 export function App() {
   return (
@@ -203,6 +204,15 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           ? (
             <ModelDetail
               modelName={detail.modelName}
+              onBack={closeDetail}
+            />
+          )
+          : detail?.kind === "data" || detail?.kind === "runData" ||
+              detail?.kind === "runReport"
+          ? (
+            <DataDetail
+              key={JSON.stringify(detail)}
+              target={detail}
               onBack={closeDetail}
             />
           )

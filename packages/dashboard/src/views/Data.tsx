@@ -20,10 +20,12 @@
 import { useState } from "react";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
+import { DetailLink } from "../components/DetailLink";
 
 interface DataItem {
   name: string;
   modelName?: string;
+  modelType?: string;
   type?: string;
   version?: number;
   tags?: Record<string, string>;
@@ -104,7 +106,24 @@ export function Data() {
                   <tbody>
                     {items.map((item, i) => (
                       <tr key={`${item.name}-${item.modelName}-${page}-${i}`}>
-                        <td style={{ fontWeight: 500 }}>{item.name}</td>
+                        <td style={{ fontWeight: 500 }}>
+                          {item.modelName && item.modelType !== "workflow"
+                            ? (
+                              <DetailLink
+                                to={{
+                                  kind: "data",
+                                  modelName: item.modelName,
+                                  dataName: item.name,
+                                  ...(item.version !== undefined
+                                    ? { version: item.version }
+                                    : {}),
+                                }}
+                              >
+                                {item.name}
+                              </DetailLink>
+                            )
+                            : item.name}
+                        </td>
                         <td
                           className="mono"
                           style={{

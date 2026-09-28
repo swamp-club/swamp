@@ -209,6 +209,49 @@ Deno.test("dataGet yields not_found when workflow run is succeeded and data not 
   assertEquals(last.error.code, "not_found");
 });
 
+Deno.test("dataGet: workflow-scoped get forwards runId and version and reads content at the run's version", async () => {
+  const modelType = makeModelType();
+  const definition = makeDefinition();
+  const runVersion = { ...makeDataItem(), version: 2 };
+  const calls: Array<{ runId?: string; version?: number }> = [];
+  const contentVersions: number[] = [];
+  const deps = makeDeps({
+    findWorkflowRun: (_workflowId, runId) =>
+      Promise.resolve({ id: runId ?? "latest", status: "succeeded" }),
+    findDataInWorkflowRun: (run, _dataName, version) => {
+      calls.push({ runId: run.id, version });
+      return Promise.resolve({
+        data: runVersion,
+        modelType,
+        modelId: definition.id,
+        modelName: definition.name,
+        contentPath: "/abs/path/to/data",
+      });
+    },
+    getContent: (_type, _modelId, _name, version) => {
+      contentVersions.push(version);
+      return Promise.resolve(new TextEncoder().encode("{}"));
+    },
+  });
+
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      workflowName: "wf",
+      runId: "run-7",
+      dataName: "result",
+      version: 2,
+      includeContent: true,
+      repoDir: ".",
+    }),
+  );
+
+  const completed = events[1] as Extract<DataGetEvent, { kind: "completed" }>;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.version, 2);
+  assertEquals(calls, [{ runId: "run-7", version: 2 }]);
+  assertEquals(contentVersions, [2]);
+});
+
 Deno.test(
   "createDataGetDeps: uses injectedDefinitionRepo for lookups",
   async () => {

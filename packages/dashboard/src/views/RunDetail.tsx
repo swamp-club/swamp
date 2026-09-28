@@ -23,6 +23,15 @@ import { type ResumableRun, resumeStateFor } from "../client/resume_state";
 import { StatusPill } from "../components/StatusPill";
 import { ResumeAction } from "../components/ResumeAction";
 import { StatusDot } from "../components/StatusDot";
+import { DetailLink } from "../components/DetailLink";
+import {
+  isReportOutput,
+  resolveRunReport,
+  type RunArtifact,
+  type RunArtifactRef,
+  runArtifacts,
+} from "../client/run_report.ts";
+import type { DetailView } from "../routes.ts";
 
 interface LogsData {
   path?: string;
@@ -53,11 +62,7 @@ interface StepRun {
   allowedFailure?: boolean;
   approval?: ApprovalInfo;
   outputs?: Record<string, unknown>;
-  dataArtifacts?: Array<{
-    dataId: string;
-    name: string;
-    version: number;
-  }>;
+  dataArtifacts?: RunArtifactRef[];
 }
 
 interface JobRun {
@@ -78,6 +83,7 @@ interface WorkflowRun {
   completedAt?: string;
   duration?: number;
   jobs: JobRun[];
+  workflowDataArtifacts?: RunArtifactRef[];
 }
 
 interface RunDetailProps {
@@ -361,9 +367,11 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
                           }}
                         >
                           {step.dataArtifacts.map((da) => (
-                            <span className="cron-badge" key={da.dataId}>
-                              {da.name} v{da.version}
-                            </span>
+                            <ArtifactBadge
+                              key={`${da.dataId}-${da.version}`}
+                              run={run}
+                              artifact={{ ref: da, stepName: step.name }}
+                            />
                           ))}
                         </div>
                       )}
@@ -384,6 +392,36 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
               </div>
             </div>
           ))}
+
+          {run.workflowDataArtifacts &&
+            run.workflowDataArtifacts.length > 0 && (
+            <div className="panel" style={{ marginBottom: 16 }}>
+              <div className="panel-header">
+                <div className="panel-title">
+                  Outputs{" "}
+                  <span className="panel-count">
+                    {run.workflowDataArtifacts.length}
+                  </span>
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 6,
+                  flexWrap: "wrap",
+                  padding: "12px 18px",
+                }}
+              >
+                {run.workflowDataArtifacts.map((da) => (
+                  <ArtifactBadge
+                    key={`${da.dataId}-${da.version}`}
+                    run={run}
+                    artifact={{ ref: da }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
           {logs?.lines && logs.lines.length > 0 && (
             <div className="panel">
@@ -429,6 +467,45 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * A badge for a data artifact the run recorded, linking to the exact version
+ * the run wrote. A report output that appears once in the run links to the
+ * shareable report URL instead, which resolves to the same version.
+ */
+function ArtifactBadge(
+  { run, artifact }: { run: WorkflowRun; artifact: RunArtifact },
+) {
+  const { ref } = artifact;
+  const all = runArtifacts(run);
+  const reportName = ref.tags?.reportName;
+  let to: NonNullable<DetailView> = {
+    kind: "runData",
+    workflowName: run.workflowName,
+    runId: run.id,
+    dataName: ref.name,
+    version: ref.version,
+  };
+  if (reportName && isReportOutput(artifact, all)) {
+    const resolved = resolveRunReport(run, reportName);
+    if (
+      resolved.kind === "found" && resolved.artifact.ref.name === ref.name &&
+      resolved.artifact.ref.version === ref.version
+    ) {
+      to = {
+        kind: "runReport",
+        workflowName: run.workflowName,
+        runId: run.id,
+        reportName,
+      };
+    }
+  }
+  return (
+    <DetailLink to={to} className="cron-badge">
+      {ref.name} v{ref.version}
+    </DetailLink>
   );
 }
 

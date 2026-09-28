@@ -25,6 +25,20 @@ export type DetailView =
   | { kind: "run"; workflowName: string; runId?: string }
   | { kind: "workflow"; workflowName: string }
   | { kind: "model"; modelName: string }
+  | { kind: "data"; modelName: string; dataName: string; version?: number }
+  | {
+    kind: "runData";
+    workflowName: string;
+    runId: string;
+    dataName: string;
+    version?: number;
+  }
+  | {
+    kind: "runReport";
+    workflowName: string;
+    runId: string;
+    reportName: string;
+  }
   | null;
 
 export interface RouteState {
@@ -47,6 +61,24 @@ const VIEWS: ReadonlySet<string> = new Set<View>([
   "system",
 ]);
 
+/**
+ * Parses the optional `versions/<n>` suffix starting at `index`. Anything
+ * other than a positive integer means "latest" rather than a different view.
+ */
+function parseVersion(
+  segments: string[],
+  index: number,
+): number | undefined {
+  if (segments[index] !== "versions") return undefined;
+  const raw = segments[index + 1];
+  if (raw === undefined || !/^[1-9][0-9]*$/.test(raw)) return undefined;
+  return Number(raw);
+}
+
+function versionSuffix(version: number | undefined): string {
+  return version === undefined ? "" : `/versions/${version}`;
+}
+
 export function parseRoute(pathname: string): RouteState {
   const raw = pathname.startsWith(BASE)
     ? pathname.slice(BASE.length)
@@ -60,11 +92,55 @@ export function parseRoute(pathname: string): RouteState {
 
   const first = segments[0];
 
+  if (first === "models" && segments.length >= 4 && segments[2] === "data") {
+    const version = parseVersion(segments, 4);
+    return {
+      view: "models",
+      detail: {
+        kind: "data",
+        modelName: decodeURIComponent(segments[1]),
+        dataName: decodeURIComponent(segments[3]),
+        ...(version !== undefined ? { version } : {}),
+      },
+    };
+  }
+
   if (first === "models" && segments.length >= 2) {
     return {
       view: "models",
       detail: { kind: "model", modelName: decodeURIComponent(segments[1]) },
     };
+  }
+
+  if (
+    first === "workflows" && segments.length >= 6 && segments[2] === "runs"
+  ) {
+    const workflowName = decodeURIComponent(segments[1]);
+    const runId = decodeURIComponent(segments[3]);
+    if (segments[4] === "data") {
+      const version = parseVersion(segments, 6);
+      return {
+        view: "workflows",
+        detail: {
+          kind: "runData",
+          workflowName,
+          runId,
+          dataName: decodeURIComponent(segments[5]),
+          ...(version !== undefined ? { version } : {}),
+        },
+      };
+    }
+    if (segments[4] === "reports") {
+      return {
+        view: "workflows",
+        detail: {
+          kind: "runReport",
+          workflowName,
+          runId,
+          reportName: decodeURIComponent(segments[5]),
+        },
+      };
+    }
   }
 
   if (first === "workflows" && segments.length >= 4 && segments[2] === "runs") {
@@ -112,11 +188,57 @@ export function buildPath(state: RouteState): string {
           ? `${base}/runs/${encodeURIComponent(state.detail.runId)}`
           : base;
       }
+      case "data":
+        return `${BASE}/models/${
+          encodeURIComponent(state.detail.modelName)
+        }/data/${encodeURIComponent(state.detail.dataName)}${
+          versionSuffix(state.detail.version)
+        }`;
+      case "runData":
+        return `${BASE}/workflows/${
+          encodeURIComponent(state.detail.workflowName)
+        }/runs/${encodeURIComponent(state.detail.runId)}/data/${
+          encodeURIComponent(state.detail.dataName)
+        }${versionSuffix(state.detail.version)}`;
+      case "runReport":
+        return `${BASE}/workflows/${
+          encodeURIComponent(state.detail.workflowName)
+        }/runs/${encodeURIComponent(state.detail.runId)}/reports/${
+          encodeURIComponent(state.detail.reportName)
+        }`;
     }
   }
 
   if (state.view === "overview") return BASE;
   return `${BASE}/${state.view}`;
+}
+
+/** The route state that shows `detail`, with the sidebar view it belongs to. */
+export function routeForDetail(detail: NonNullable<DetailView>): RouteState {
+  const view: View = detail.kind === "model" || detail.kind === "data"
+    ? "models"
+    : "workflows";
+  return { view, detail };
+}
+
+/**
+ * Where "Back" goes from a detail view: a data item returns to its model, a
+ * run's data or report returns to the run. Other details close to their list.
+ */
+export function parentDetail(detail: NonNullable<DetailView>): DetailView {
+  switch (detail.kind) {
+    case "data":
+      return { kind: "model", modelName: detail.modelName };
+    case "runData":
+    case "runReport":
+      return {
+        kind: "run",
+        workflowName: detail.workflowName,
+        runId: detail.runId,
+      };
+    default:
+      return null;
+  }
 }
 
 /** The pointer-event fields needed to tell a plain click from a modified one. */
