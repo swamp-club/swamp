@@ -534,6 +534,23 @@ const MAX_WORKFLOW_NESTING_DEPTH = 10;
 const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
 
 /**
+ * Fails the job's steps still `running` with {@link CANCELLED_STEP_ERROR} and
+ * reports whether there were any. A level of several steps does not wait for
+ * them once the abort fires, so their generators end without recording an
+ * outcome.
+ */
+function failAbandonedSteps(jobRun: JobRun): boolean {
+  let failed = false;
+  for (const step of jobRun.steps) {
+    if (step.status === "running") {
+      step.fail(CANCELLED_STEP_ERROR);
+      failed = true;
+    }
+  }
+  return failed;
+}
+
+/**
  * Decode the step-name segment of a `${jobId}:${stepName}` composite key.
  *
  * Splits on the FIRST colon only, so step names that themselves contain
@@ -2542,6 +2559,9 @@ export class WorkflowExecutionService {
             jobStreams,
             jobConcurrency,
             levelSignal,
+            // Each started job runs on to its own cleanup and completion, as
+            // a job alone in its level does.
+            { finishStartedOnAbort: true },
           )
         ) {
           if (event.kind === "model_resolved") {
@@ -3095,6 +3115,7 @@ export class WorkflowExecutionService {
             jobStreams,
             jobConcurrency,
             levelSignal,
+            { finishStartedOnAbort: true },
           )
         ) {
           if (event.kind === "model_resolved") {
@@ -3374,11 +3395,7 @@ export class WorkflowExecutionService {
           // Mark any steps still in "running" status as failed — the
           // signal aborted their execution but the generators were
           // abandoned before they could record the failure.
-          for (const step of jobRun.steps) {
-            if (step.status === "running") {
-              step.fail(CANCELLED_STEP_ERROR);
-            }
-          }
+          failAbandonedSteps(jobRun);
         }
 
         // Merge parallel step generators within each level
@@ -3508,6 +3525,15 @@ export class WorkflowExecutionService {
         }
       }
 
+      // The same for steps the abort left running in the job's last level,
+      // which no later cleanup level marks.
+      if (
+        run.status !== "suspended" && options.signal?.aborted &&
+        failAbandonedSteps(jobRun)
+      ) {
+        jobFailed = true;
+      }
+
       // A step a failed-run resume reset that this walk never reached was
       // stranded by a workflow change (for example, an iteration dropped from
       // a smaller forEach collection). Fail it rather than report the job
@@ -3547,10 +3573,7 @@ export class WorkflowExecutionService {
           // Only undecided guarded steps are left, so the job's outcome is
           // ambiguous: neither `succeeded`, `failed`, `completed` nor
           // `skipped` holds for it. Like other work an abort settles, it gets
-          // no event. A job the run's cleanup already failed while this
-          // generator was abandoned (a level holding several jobs,
-          // swamp-club#2549) keeps that status, so the record matches what
-          // later levels saw.
+          // no event. A job no longer running keeps its status.
           if (jobRun.status === "running") jobRun.markUnknown();
           jobSpan.setAttribute("job.status", jobRun.status);
           jobSpan.setStatus({ code: SpanStatusCode.OK });
@@ -4653,11 +4676,7 @@ export class WorkflowExecutionService {
     if (cleanupMode) {
       for (const jobRun of run.jobs) {
         if (!started.has(jobRun.jobName)) continue;
-        for (const step of jobRun.steps) {
-          if (step.status === "running") {
-            step.fail(CANCELLED_STEP_ERROR);
-          }
-        }
+        failAbandonedSteps(jobRun);
         if (jobRun.status === "running") {
           jobRun.fail();
         }

@@ -11859,6 +11859,295 @@ Deno.test("abort cleanup: a job queued behind workflow concurrency whose depends
 });
 
 // ---------------------------------------------------------------------------
+// Work in flight at the abort finishes, whatever shares its level
+// (swamp-club#2549)
+// ---------------------------------------------------------------------------
+
+/**
+ * Holds the steps named in `held` until every one of them has started, then
+ * aborts the run, as a `--timeout` or cancel firing while they are all in
+ * flight. Each held step then rejects with an AbortError once its own signal
+ * aborts, as a killed subprocess does, or, given `release`, only once that
+ * settles: a method still stopping when its level moves on. It aborts once:
+ * steps reached after the abort run normally.
+ */
+class InFlightAbortExecutor extends CountingStepExecutor {
+  readonly controller = new AbortController();
+  #arrived = 0;
+
+  constructor(
+    private readonly held: string[],
+    private readonly release?: Promise<void>,
+  ) {
+    super();
+  }
+
+  /** Counts a held step as started; the last one fires the abort. */
+  protected arrive(): void {
+    this.#arrived++;
+    if (this.#arrived === this.held.length) this.controller.abort();
+  }
+
+  override async execute(
+    step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    const result = await super.execute(step, ctx);
+    if (!this.held.includes(ctx.stepName) || this.controller.signal.aborted) {
+      return result;
+    }
+    this.arrive();
+    await (this.release ?? new Promise<void>((resolve) => {
+      if (ctx.signal.aborted) return resolve();
+      ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+    }));
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
+}
+
+Deno.test("abort cleanup: jobs sharing a level run their own cleanup after the abort and end failed", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "shared-level-wf",
+      jobs: [
+        Job.create({
+          name: "j1",
+          steps: [
+            modelStep("slow1"),
+            modelStep("cleanup1", onStep("slow1", TriggerCondition.always())),
+            modelStep("done1", onStep("slow1", TriggerCondition.completed())),
+            modelStep("rollback1", onStep("slow1", TriggerCondition.failed())),
+            modelStep("next1", onStep("slow1", TriggerCondition.succeeded())),
+          ],
+        }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("slow2"),
+            modelStep("cleanup2", onStep("slow2", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    const executor = new InFlightAbortExecutor(["slow1", "slow2"]);
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, events } = await finishedRun(
+      service.run(workflow.name, { signal: executor.controller.signal }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    for (const [job, step] of [["j1", "slow1"], ["j2", "slow2"]]) {
+      assertEquals(run.getJob(job)!.getStep(step)!.status, "failed", step);
+      assertEquals(run.getJob(job)!.status, "failed", job);
+    }
+    for (const step of ["cleanup1", "done1", "rollback1"]) {
+      assertEquals(run.getJob("j1")!.getStep(step)!.status, "succeeded", step);
+      assertEquals(executor.count(`j1/${step}`), 1, step);
+    }
+    assertEquals(run.getJob("j1")!.getStep("next1")!.status, "skipped");
+    assertEquals(executor.count("j1/next1"), 0);
+    assertEquals(run.getJob("j2")!.getStep("cleanup2")!.status, "succeeded");
+    assertEquals(executor.count("j2/cleanup2"), 1);
+    const completed = events.flatMap((e) =>
+      e.kind === "job_completed" ? [`${e.jobId}:${e.status}`] : []
+    );
+    assertEquals(completed.sort(), ["j1:failed", "j2:failed"]);
+    const failedSteps = events.flatMap((e) =>
+      e.kind === "step_failed" ? [e.stepId] : []
+    );
+    assertEquals(failedSteps.sort(), ["slow1", "slow2"]);
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(
+      stored?.getJob("j1")?.getStep("cleanup1")?.status,
+      "succeeded",
+    );
+    assertEquals(stored?.getJob("j2")?.status, "failed");
+  });
+});
+
+Deno.test("abort cleanup: steps in flight in a job's last level end failed as cancelled, not running", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "last-level-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [modelStep("p1"), modelStep("p2")],
+        }),
+      ],
+    });
+    // The methods stop only after the run has finished, so the level has
+    // moved on without them.
+    const stopped = Promise.withResolvers<void>();
+    const executor = new InFlightAbortExecutor(["p1", "p2"], stopped.promise);
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    try {
+      const { run } = await runUntilAborted(
+        service,
+        workflow,
+        executor.controller.signal,
+      );
+
+      assertEquals(run.status, "cancelled");
+      for (const name of ["p1", "p2"]) {
+        const step = run.getJob("main")!.getStep(name)!;
+        assertEquals(step.status, "failed", name);
+        assertEquals(step.error, CANCELLED_STEP_ERROR, name);
+      }
+      assertEquals(run.getJob("main")!.status, "failed");
+    } finally {
+      stopped.resolve();
+    }
+  });
+});
+
+Deno.test("abort cleanup: a guard still answering in a job that shares its level does not hold the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "shared-level-guard-wf",
+      jobs: [
+        Job.create({
+          name: "j1",
+          steps: [
+            modelStep("create-bucket", {
+              guard: '${{ model.method("bucket", "exists") }}',
+            }),
+            modelStep("create-db"),
+            modelStep(
+              "delete-bucket",
+              onStep("create-bucket", TriggerCondition.failed()),
+            ),
+          ],
+        }),
+        Job.create({ name: "j2", steps: [modelStep("slow2")] }),
+      ],
+    });
+    // The guard's model method answers only when the test releases it, after
+    // the run has finished: a network call that ignores the abort.
+    const guardAnswer = Promise.withResolvers<unknown>();
+    class HeldGuardExecutor extends InFlightAbortExecutor {
+      override execute(
+        step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        if (ctx.stepName === "__guard_create-bucket") {
+          this.arrive();
+          return guardAnswer.promise;
+        }
+        return super.execute(step, ctx);
+      }
+    }
+    const executor = new HeldGuardExecutor([
+      "__guard_create-bucket",
+      "create-db",
+      "slow2",
+    ]);
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    try {
+      const { run } = await runUntilAborted(
+        service,
+        workflow,
+        executor.controller.signal,
+      );
+
+      assertEquals(run.status, "cancelled");
+      assertUndecided(run, "j1", ["create-bucket"]);
+      assertEquals(executor.count("j1/delete-bucket"), 0);
+      assertEquals(run.getJob("j1")!.getStep("create-db")!.status, "failed");
+      assertEquals(run.getJob("j1")!.status, "failed");
+      assertEquals(run.getJob("j2")!.getStep("slow2")!.status, "failed");
+      assertEquals(run.getJob("j2")!.status, "failed");
+    } finally {
+      guardAnswer.resolve({ exists: true });
+    }
+  });
+});
+
+Deno.test("resume: jobs sharing a level run their own cleanup when the abort fires during the resume", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-shared-level-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "j1",
+          dependsOn: [{ job: "main", condition: TriggerCondition.succeeded() }],
+          steps: [
+            modelStep("slow1"),
+            modelStep("cleanup1", onStep("slow1", TriggerCondition.always())),
+          ],
+        }),
+        Job.create({
+          name: "j2",
+          dependsOn: [{ job: "main", condition: TriggerCondition.succeeded() }],
+          steps: [
+            modelStep("slow2"),
+            modelStep("cleanup2", onStep("slow2", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    const executor = new InFlightAbortExecutor(["slow1", "slow2"]);
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const { run } = await finishedRun(
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    for (
+      const [job, slow, cleanup] of [
+        ["j1", "slow1", "cleanup1"],
+        ["j2", "slow2", "cleanup2"],
+      ]
+    ) {
+      assertEquals(run.getJob(job)!.getStep(slow)!.status, "failed", slow);
+      assertEquals(
+        run.getJob(job)!.getStep(cleanup)!.status,
+        "succeeded",
+        cleanup,
+      );
+      assertEquals(executor.count(`${job}/${cleanup}`), 1, cleanup);
+      assertEquals(run.getJob(job)!.status, "failed", job);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // A resume runs the work an abort settled (swamp-club#2543)
 // ---------------------------------------------------------------------------
 
