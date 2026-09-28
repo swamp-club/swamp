@@ -162,6 +162,14 @@ export interface CreateModelOutputProps {
 }
 
 /**
+ * Milliseconds from start to completion, floored at 0. Both are wall-clock
+ * readings, so a clock stepped backward mid-run can put completion first.
+ */
+function durationBetween(startedAt: Date, completedAt: Date): number {
+  return Math.max(0, completedAt.getTime() - startedAt.getTime());
+}
+
+/**
  * ModelOutput is an entity tracking execution state and metadata for each method run.
  *
  * Tracks status, timing, errors, provenance (what triggered it), and artifacts produced.
@@ -228,11 +236,19 @@ export class ModelOutput {
   /**
    * Reconstructs a ModelOutput from persisted data.
    *
+   * A negative durationMs is read as 0. Records written before durations
+   * were clamped carry one when the clock stepped backward mid-run; the
+   * timestamps themselves are kept as recorded.
+   *
    * @param data - The persisted data
    * @returns A ModelOutput instance
    */
   static fromData(data: ModelOutputData): ModelOutput {
-    const validated = ModelOutputSchema.parse(data);
+    const validated = ModelOutputSchema.parse(
+      typeof data.durationMs === "number" && data.durationMs < 0
+        ? { ...data, durationMs: 0 }
+        : data,
+    );
     return new ModelOutput(
       createModelOutputId(validated.id),
       validated.definitionId as DefinitionId,
@@ -339,7 +355,7 @@ export class ModelOutput {
     const completed = completedAt ?? new Date();
     this._status = "succeeded";
     this._completedAt = completed;
-    this._durationMs = completed.getTime() - this.startedAt.getTime();
+    this._durationMs = durationBetween(this.startedAt, completed);
   }
 
   /**
@@ -357,7 +373,7 @@ export class ModelOutput {
     const completed = completedAt ?? new Date();
     this._status = "failed";
     this._completedAt = completed;
-    this._durationMs = completed.getTime() - this.startedAt.getTime();
+    this._durationMs = durationBetween(this.startedAt, completed);
     this._error = error;
   }
 
@@ -377,7 +393,7 @@ export class ModelOutput {
     const completed = new Date();
     this._status = "cancelled";
     this._completedAt = completed;
-    this._durationMs = completed.getTime() - this.startedAt.getTime();
+    this._durationMs = durationBetween(this.startedAt, completed);
     if (reason !== undefined) {
       this._error = { message: reason };
     }

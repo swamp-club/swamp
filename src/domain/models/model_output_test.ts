@@ -22,6 +22,7 @@ import {
   computeDefinitionHash,
   type ExecutionProvenance,
   ModelOutput,
+  type ModelOutputData,
 } from "./model_output.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 
@@ -187,6 +188,55 @@ Deno.test("ModelOutput.markSucceeded calculates duration", () => {
   output.markSucceeded(completedAt);
 
   assertEquals(output.durationMs, 5000);
+});
+
+Deno.test("ModelOutput.markSucceeded: completion before start gives a zero duration", () => {
+  const startedAt = new Date("2023-01-01T00:00:01.000Z");
+  const completedAt = new Date("2023-01-01T00:00:00.165Z");
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    status: "running",
+    startedAt,
+    provenance: defaultProvenance,
+  });
+
+  output.markSucceeded(completedAt);
+
+  assertEquals(output.durationMs, 0);
+  assertEquals(output.completedAt, completedAt);
+});
+
+Deno.test("ModelOutput.markFailed: completion before start gives a zero duration", () => {
+  const startedAt = new Date("2023-01-01T00:00:01.000Z");
+  const completedAt = new Date("2023-01-01T00:00:00.165Z");
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    status: "running",
+    startedAt,
+    provenance: defaultProvenance,
+  });
+
+  output.markFailed({ message: "boom" }, completedAt);
+
+  assertEquals(output.durationMs, 0);
+  assertEquals(output.completedAt, completedAt);
+});
+
+Deno.test("ModelOutput.markCancelled: completion before start gives a zero duration", () => {
+  // markCancelled always completes at the current time, so start in the future.
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    status: "running",
+    startedAt: new Date(Date.now() + 60_000),
+    provenance: defaultProvenance,
+  });
+
+  output.markCancelled();
+
+  assertEquals(output.durationMs, 0);
 });
 
 Deno.test("ModelOutput.markSucceeded throws if not running", () => {
@@ -409,6 +459,50 @@ Deno.test("ModelOutput fromData with explicit data", () => {
   assertEquals(
     output.artifacts.dataArtifacts[0].dataId,
     "550e8400-e29b-41d4-a716-446655440003",
+  );
+});
+
+// durationMs is unknown so tests can feed values a YAML file could hold but
+// ModelOutputData's type does not allow.
+function persistedOutput(durationMs: unknown): ModelOutputData {
+  return {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    definitionId: "660e8400-e29b-41d4-a716-446655440000",
+    methodName: "approve",
+    status: "succeeded",
+    startedAt: "2026-08-21T21:35:41.471Z",
+    completedAt: "2026-08-21T21:35:40.636Z",
+    durationMs: durationMs as number,
+    retryCount: 0,
+    provenance: defaultProvenance,
+  };
+}
+
+Deno.test("ModelOutput.fromData: reads a negative durationMs as 0", () => {
+  const data = persistedOutput(-835);
+
+  const output = ModelOutput.fromData(data);
+
+  assertEquals(output.durationMs, 0);
+  assertEquals(output.status, "succeeded");
+  assertEquals(output.startedAt.toISOString(), "2026-08-21T21:35:41.471Z");
+  assertEquals(output.completedAt?.toISOString(), "2026-08-21T21:35:40.636Z");
+  assertEquals(data.durationMs, -835);
+});
+
+Deno.test("ModelOutput.fromData: still rejects a non-integer durationMs", () => {
+  assertThrows(() => ModelOutput.fromData(persistedOutput(1.5)));
+  assertThrows(() => ModelOutput.fromData(persistedOutput("835")));
+});
+
+Deno.test("ModelOutput.create: still rejects a negative durationMs", () => {
+  assertThrows(() =>
+    ModelOutput.create({
+      definitionId: createDefinitionId(crypto.randomUUID()),
+      methodName: "create",
+      durationMs: -1,
+      provenance: defaultProvenance,
+    })
   );
 });
 
