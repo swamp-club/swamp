@@ -1348,8 +1348,11 @@ order:
   dependency reached `succeeded` or `failed`.
 - Steps whose conditions are not met (`succeeded` on a failed dependency) are
   skipped.
-- In-flight steps stopped by the cancellation signal are marked `failed` with
-  reason `cancelled`.
+- An in-flight step stopped by the cancellation signal is marked `failed`. A
+  step alone in its level is waited for, so it records the error its stopped
+  method reported (for `command/shell`, the killed subprocess's exit). A level
+  holding several steps does not wait for them once the cancellation fires, so
+  each step it leaves `running` is marked `failed` with reason `cancelled`.
 - Steps, `forEach` iterations and jobs that the interrupted level never started
   (queued behind a `concurrency` limit) are settled at the end of that level as
   if they had been reached: skipped when their `dependsOn` is not met (reason
@@ -1375,9 +1378,13 @@ order:
   ambiguous, so neither a `failed`-gated teardown job nor a `succeeded`-gated
   next job runs on it (a `not` condition does), and it gets no
   `job_completed` event. A job that also had a failure ends `failed`, as
-  before. This holds for a job alone in its level; a level holding several
-  jobs does not wait for them after the cancellation, and job-level cleanup
-  marks a job still running `failed` (swamp-club#2549).
+  before.
+- A started job finishes the same way whether or not it shares its level: a
+  level holding several jobs waits for each started job to run its cleanup
+  and reach its outcome. The cancelled record is therefore written once that
+  cleanup has finished. Each cleanup level is bounded by its 30-second
+  cleanup signal, but a method that ignores its signal delays the record, as
+  it would for a job alone in its level.
 - A never-started job settles its steps in dependency order, each as above.
   It stays `pending` while any step is undecided, even when another step was
   cancelled, since nothing in it ran; otherwise it fails when any step failed

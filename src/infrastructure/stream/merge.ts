@@ -20,6 +20,19 @@
 import { AsyncQueue } from "./async_queue.ts";
 import { Semaphore } from "./semaphore.ts";
 
+/** Options for {@link merge} and {@link mergeWithConcurrency}. */
+export interface MergeOptions {
+  /**
+   * When the signal aborts, let the source streams that already started run
+   * to their end and keep yielding their items, and complete once they have,
+   * instead of closing the merged stream at once. A stream that has not
+   * started yet still never starts, and an error a stream throws after the
+   * abort is swallowed without cutting its siblings short. A single stream
+   * already behaves this way.
+   */
+  finishStartedOnAbort?: boolean;
+}
+
 /**
  * Merges multiple async iterables into a single stream.
  * Items are yielded in arrival order (interleaved).
@@ -27,11 +40,13 @@ import { Semaphore } from "./semaphore.ts";
  *
  * When an optional `signal` is provided and aborted, the queue is closed
  * early and `for await` exits. Child generators receive signals independently
- * through their own contexts.
+ * through their own contexts. With `finishStartedOnAbort`, the streams run on
+ * to their end instead (see {@link MergeOptions}).
  */
 export async function* merge<T>(
   streams: AsyncIterable<T>[],
   signal?: AbortSignal,
+  options?: MergeOptions,
 ): AsyncGenerator<T> {
   if (streams.length === 0) return;
   if (streams.length === 1) {
@@ -44,14 +59,18 @@ export async function* merge<T>(
   let firstStreamError: unknown;
   let errorWasAbortInduced = false;
 
+  const finishStarted = options?.finishStartedOnAbort ?? false;
+
   // Close queue early when signal aborts
   let abortHandler: (() => void) | undefined;
   if (signal) {
     if (signal.aborted) {
       return;
     }
-    abortHandler = () => queue.abort(signal.reason);
-    signal.addEventListener("abort", abortHandler, { once: true });
+    if (!finishStarted) {
+      abortHandler = () => queue.abort(signal.reason);
+      signal.addEventListener("abort", abortHandler, { once: true });
+    }
   }
 
   const drainStream = async (stream: AsyncIterable<T>) => {
@@ -70,7 +89,11 @@ export async function* merge<T>(
         firstStreamError = error;
         errorWasAbortInduced = signal?.aborted ?? false;
       }
-      queue.abort();
+      // After the abort the error is swallowed anyway, so leave the queue
+      // open for the siblings that are still finishing.
+      if (!finishStarted || !signal?.aborted) {
+        queue.abort();
+      }
     } finally {
       remaining--;
       if (remaining === 0) {
@@ -92,8 +115,9 @@ export async function* merge<T>(
     // When the signal is aborted, skip waiting for drain tasks so the
     // consumer can proceed to cancellation handling immediately. The
     // drain tasks continue in the background until their generators
-    // finish — same trade-off as manual cancel.
-    if (!signal?.aborted) {
+    // finish — same trade-off as manual cancel. Streams asked to finish
+    // have already ended by the time the queue closes.
+    if (finishStarted || !signal?.aborted) {
       await Promise.allSettled(tasks);
     }
   }
@@ -107,14 +131,17 @@ export async function* merge<T>(
  * streams drain concurrently; additional streams are queued until a permit
  * is released. When `limit` is `undefined` or `0`, delegates to the
  * unbounded {@link merge} — no semaphore overhead on the default path.
+ * With `finishStartedOnAbort`, a stream still waiting for a permit when the
+ * signal aborts never starts.
  */
 export async function* mergeWithConcurrency<T>(
   streams: AsyncIterable<T>[],
   limit: number | undefined,
   signal?: AbortSignal,
+  options?: MergeOptions,
 ): AsyncGenerator<T> {
   if (!limit || limit <= 0 || limit >= streams.length) {
-    yield* merge(streams, signal);
+    yield* merge(streams, signal, options);
     return;
   }
 
@@ -124,17 +151,27 @@ export async function* mergeWithConcurrency<T>(
   let firstStreamError: unknown;
   let errorWasAbortInduced = false;
 
+  const finishStarted = options?.finishStartedOnAbort ?? false;
+
   let abortHandler: (() => void) | undefined;
   if (signal) {
     if (signal.aborted) return;
-    abortHandler = () => queue.abort(signal.reason);
-    signal.addEventListener("abort", abortHandler, { once: true });
+    if (!finishStarted) {
+      abortHandler = () => queue.abort(signal.reason);
+      signal.addEventListener("abort", abortHandler, { once: true });
+    }
   }
 
   const drainStream = async (stream: AsyncIterable<T>) => {
     try {
       await sem.acquire(signal);
     } catch {
+      // Aborted while queued: this stream never starts, but still counts
+      // toward closing the queue for streams that finish after the abort.
+      remaining--;
+      if (remaining === 0) {
+        queue.close();
+      }
       return;
     }
     try {
@@ -152,7 +189,11 @@ export async function* mergeWithConcurrency<T>(
         firstStreamError = error;
         errorWasAbortInduced = signal?.aborted ?? false;
       }
-      queue.abort();
+      // After the abort the error is swallowed anyway, so leave the queue
+      // open for the siblings that are still finishing.
+      if (!finishStarted || !signal?.aborted) {
+        queue.abort();
+      }
     } finally {
       sem.release();
       remaining--;
@@ -170,7 +211,7 @@ export async function* mergeWithConcurrency<T>(
     if (abortHandler && signal) {
       signal.removeEventListener("abort", abortHandler);
     }
-    if (!signal?.aborted) {
+    if (finishStarted || !signal?.aborted) {
       await Promise.allSettled(tasks);
     }
   }
