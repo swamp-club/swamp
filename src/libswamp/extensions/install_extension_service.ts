@@ -412,6 +412,8 @@ export class InstallExtensionService {
             checksum: priorEntry.checksum,
             filesChecksum: priorEntry.filesChecksum,
             serverUrl: priorEntry.serverUrl,
+            channel: priorEntry.channel,
+            pulledAt: priorEntry.pulledAt,
           },
         );
       } else {

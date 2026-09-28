@@ -301,6 +301,7 @@ export function createAutoResolveInstallerAdapter(
           ...(pinnedEntry?.checksum
             ? { expectedChecksum: pinnedEntry.checksum }
             : {}),
+          ...(pinnedEntry?.channel ? { channel: pinnedEntry.channel } : {}),
         };
         return repository !== undefined
           ? await new InstallExtensionService({ denoRuntime, repository })

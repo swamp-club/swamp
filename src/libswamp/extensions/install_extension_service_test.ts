@@ -413,6 +413,80 @@ Deno.test(
 );
 
 Deno.test(
+  "InstallExtensionService.execute: collision rollback keeps the prior entry's channel and pulledAt",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID().slice(0, 8);
+        const typeId = `@test/svc-collide-${id}`;
+        const extA = `@test/collide-a-${id}`;
+        const extB = `@test/collide-b-${id}`;
+
+        await stageModel(repoDir, extA, "model.ts", MINIMAL_MODEL_CODE(typeId));
+        await lockfileRepository.writeEntry(extA, "1.0.0", [
+          `.swamp/pulled-extensions/${extA}/models/model.ts`,
+        ]);
+        await new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: () =>
+            Promise.resolve(
+              makeStubInstallResult(extA, "1.0.0", [
+                `.swamp/pulled-extensions/${extA}/models/model.ts`,
+              ]),
+            ),
+        }).execute(
+          { name: extA, version: "1.0.0" } as ExtensionRef,
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        // B's prior entry was pulled on the beta channel.
+        const priorFiles = [`.swamp/pulled-extensions/${extB}/models/old.ts`];
+        await lockfileRepository.writeEntry(extB, "0.9.0", priorFiles, {
+          channel: "beta",
+          pulledAt: "2026-01-01T00:00:00.000Z",
+        });
+
+        // B's new version claims A's type. The stubbed install rewrites
+        // B's entry as installExtension would, then phase 8 rolls back.
+        await stageModel(repoDir, extB, "model.ts", MINIMAL_MODEL_CODE(typeId));
+        const bExtractedFiles = [
+          `.swamp/pulled-extensions/${extB}/models/model.ts`,
+        ];
+        await assertRejects(
+          () =>
+            new InstallExtensionService({
+              denoRuntime: testDenoRuntime,
+              repository,
+              installExtensionFn: async (_ref, ctx) => {
+                await ctx.lockfileRepository.writeEntry(
+                  extB,
+                  "1.0.0",
+                  bExtractedFiles,
+                );
+                return makeStubInstallResult(extB, "1.0.0", bExtractedFiles);
+              },
+            }).execute(
+              { name: extB, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          DuplicateTypeUserError,
+        );
+
+        const fresh = await LockfileRepository.create(
+          lockfileRepository.lockfilePath,
+        );
+        const restored = fresh.getEntry(extB);
+        assertEquals(restored?.version, "0.9.0");
+        assertEquals(restored?.files, priorFiles);
+        assertEquals(restored?.channel, "beta");
+        assertEquals(restored?.pulledAt, "2026-01-01T00:00:00.000Z");
+      },
+    );
+  },
+);
+
+Deno.test(
   "InstallExtensionService.execute: ghost-row conflict suggests swamp doctor extensions",
   async () => {
     await withFixtureRepo(
