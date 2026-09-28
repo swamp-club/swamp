@@ -103,10 +103,14 @@ export class YamlOutputRepository implements OutputRepository {
    * vanished is skipped silently and an I/O error propagates; anything else
    * (a YAML syntax error, a record that fails validation) is skipped with a
    * warning, so one bad record never fails a read of every other output.
+   * Parse and validation errors are recognised before isIoError, which also
+   * matches on message text a YAML error can quote from the file.
    */
   private skipUnreadableRecord(path: string, error: unknown): void {
     if (error instanceof Deno.errors.NotFound) return;
-    if (isIoError(error)) throw error;
+    const isParseError = error instanceof SyntaxError ||
+      error instanceof z.ZodError;
+    if (!isParseError && isIoError(error)) throw error;
     logger.warn`Skipping unreadable output record ${path}: ${
       describeRecordError(error)
     }`;

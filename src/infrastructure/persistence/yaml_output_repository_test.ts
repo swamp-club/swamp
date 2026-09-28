@@ -986,6 +986,31 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "findAll: a malformed record quoting I/O error text is skipped, not rethrown",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const valid = await makeOutput(repo, new Date());
+      const methodDir = join(
+        dir,
+        ".swamp",
+        "outputs",
+        registeredType.normalized,
+        "run",
+      );
+      // The YAML error message quotes this line, which isIoError matches on.
+      await Deno.writeTextFile(
+        join(methodDir, "quotes-io-error.yaml"),
+        "id: Permission denied: EACCES\n",
+      );
+
+      const found = await repo.findAll(registeredType);
+      assertEquals(found.map((o) => o.id), [valid.id]);
+    });
+  },
+);
+
 Deno.test({
   name: "findAll: an I/O error reading a record still propagates",
   // chmod has no effect on Windows, and root reads the file regardless.
