@@ -211,6 +211,7 @@ import {
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { runShutdownDrain } from "../../serve/shutdown_drain.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -656,6 +657,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.hydrationTimeout) {
     args.push("--hydration-timeout", options.hydrationTimeout as string);
   }
+  if (options.shutdownDrainTimeout) {
+    args.push(
+      "--shutdown-drain-timeout",
+      options.shutdownDrainTimeout as string,
+    );
+  }
   if (options.datastorePollInterval) {
     args.push(
       "--datastore-poll-interval",
@@ -702,6 +709,19 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
     args.push("--auto-resume");
   }
   return args;
+}
+
+/** Shutdown drain deadline when `--shutdown-drain-timeout` is unset. */
+const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
+
+/**
+ * Parses `--shutdown-drain-timeout` into milliseconds. Unset keeps the 30s
+ * default; `0` (with or without a unit) means abort in-flight runs at once.
+ */
+export function parseShutdownDrainTimeout(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  if (/^0+[smhdw]?$/i.test(raw.trim())) return 0;
+  return parseTimerDuration(raw, "--shutdown-drain-timeout");
 }
 
 /**
@@ -1039,6 +1059,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--hydration-timeout <duration:string>",
     "Startup cache hydration timeout (default: 60s, env: SWAMP_HYDRATION_TIMEOUT)",
+  )
+  .option(
+    "--shutdown-drain-timeout <duration:string>",
+    "How long shutdown waits for in-flight runs before aborting them (default: 30s, 0 aborts at once, env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
   )
   .option(
     "--datastore-poll-interval <duration:string>",
@@ -1661,6 +1685,12 @@ export const serveCommand = new Command()
       "Increase for large repos where the initial pull takes longer (env: SWAMP_HYDRATION_TIMEOUT)",
   )
   .option(
+    "--shutdown-drain-timeout <duration:string>",
+    "How long shutdown (SIGTERM/SIGINT) waits for in-flight webhook, scheduled and API runs to finish before aborting them. " +
+      "Accepts seconds (30), explicit units (30s, 5m), or 0 to abort at once. Default: 30s. " +
+      "Keep it below the pod's terminationGracePeriodSeconds minus about 10s (env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
+  )
+  .option(
     "--datastore-poll-interval <duration:string>",
     "How often to pull config, access data and runtime data from the remote datastore. " +
       "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. Minimum: 1s. " +
@@ -1841,6 +1871,10 @@ export const serveCommand = new Command()
         MAX_TIMER_DELAY_MS - RECONCILIATION_JITTER_MS,
       )
       : undefined;
+
+    const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
+      merged.shutdownDrainTimeout,
+    );
 
     const hydrationTimeoutRaw = merged.hydrationTimeout;
     const hydrationTimeoutMs = hydrationTimeoutRaw !== undefined
@@ -4463,6 +4497,9 @@ export const serveCommand = new Command()
     }
 
     let isReady = false;
+    // Set when SIGTERM/SIGINT starts the shutdown; /ready reports 503 from
+    // then on so load balancers stop routing here while runs drain.
+    let shuttingDown = false;
     const enableInternalApi = merged.enableInternalApi;
     const serverStartedAt = Date.now();
 
@@ -5143,8 +5180,15 @@ export const serveCommand = new Command()
           });
         }
 
-        // Readiness endpoint — returns 200 only after full startup
+        // Readiness endpoint — returns 200 only after full startup and
+        // before shutdown begins
         if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
+          if (shuttingDown) {
+            return Response.json(
+              { status: "shutting_down", instanceId },
+              { status: 503 },
+            );
+          }
           if (!isReady) {
             return Response.json(
               { status: "not_ready", instanceId },
@@ -5303,102 +5347,87 @@ export const serveCommand = new Command()
     }
 
     // Handle SIGINT/SIGTERM for graceful shutdown
-    let shuttingDown = false;
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      isReady = false;
       if (isJson) {
         console.log(JSON.stringify({ status: "stopping" }));
       }
-      logger.info("Shutting down...");
-      if (webhookService) {
-        await webhookService.stop();
-      }
-      if (scheduledExecution) {
-        await scheduledExecution.stop();
-      }
-      if (activeRunRegistry) {
-        const activeCount = activeRunRegistry.size;
-        if (activeCount > 0) {
-          logger.info`Draining ${activeCount} active run(s)...`;
-          await activeRunRegistry.drainAll(30_000);
-        }
-        const remaining = activeRunRegistry.list();
-        if (remaining.length > 0) {
+      logger
+        .info`Shutting down (drain timeout: ${shutdownDrainTimeoutMs}ms)...`;
+      const remaining = await runShutdownDrain({
+        webhookService,
+        scheduledExecution,
+        activeRunRegistry: activeRunRegistry ?? null,
+        drainTimeoutMs: shutdownDrainTimeoutMs,
+        abortGraceMs: 5_000,
+        onAborting: (undrained) => {
           if (isJson) {
-            console.log(JSON.stringify({
-              status: "aborting",
-              undrained: remaining.length,
-            }));
+            console.log(JSON.stringify({ status: "aborting", undrained }));
           }
-          logger.info`Aborting ${remaining.length} undrained run(s)...`;
-          for (const run of remaining) {
-            run.controller.abort(new Error("server shutdown"));
-          }
-          await activeRunRegistry.drainAll(5_000);
-
-          const workflowRuns = remaining.filter((r) =>
-            r.kind === "workflow-run" || r.kind === "workflow-resume"
-          );
-          if (workflowRuns.length > 0) {
-            const earliestCutoff = new Date(
-              Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) -
-                60_000,
+        },
+      });
+      const workflowRuns = remaining.filter((r) =>
+        r.kind === "workflow-run" || r.kind === "workflow-resume"
+      );
+      if (workflowRuns.length > 0) {
+        const earliestCutoff = new Date(
+          Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) -
+            60_000,
+        );
+        let allRuns:
+          | Awaited<
+            ReturnType<
+              typeof repoContext.workflowRunRepo.findGlobalByStatus
+            >
+          >
+          | undefined;
+        try {
+          allRuns = await repoContext.workflowRunRepo
+            .findGlobalByStatus(
+              ["running", "cancelled"],
+              earliestCutoff,
             );
-            let allRuns:
-              | Awaited<
-                ReturnType<
-                  typeof repoContext.workflowRunRepo.findGlobalByStatus
-                >
-              >
-              | undefined;
+        } catch (err) {
+          logger.warn(
+            "Failed to load workflow runs for interrupt: {error}",
+            {
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        }
+        if (allRuns) {
+          for (const run of workflowRuns) {
             try {
-              allRuns = await repoContext.workflowRunRepo
-                .findGlobalByStatus(
-                  ["running", "cancelled"],
-                  earliestCutoff,
+              const match = allRuns.find((r) => r.run.id === run.runId);
+              if (
+                match &&
+                (match.run.status === "running" ||
+                  match.run.status === "cancelled")
+              ) {
+                match.run.interrupt("server_shutdown");
+                await repoContext.workflowRunRepo.save(
+                  match.workflowId,
+                  match.run,
                 );
+                if (isJson) {
+                  console.log(JSON.stringify({
+                    status: "interrupted",
+                    runId: run.runId,
+                  }));
+                }
+                logger
+                  .info`Interrupted workflow run ${run.runId} (server shutdown)`;
+              }
             } catch (err) {
               logger.warn(
-                "Failed to load workflow runs for interrupt: {error}",
+                "Failed to interrupt run {runId}: {error}",
                 {
+                  runId: run.runId,
                   error: err instanceof Error ? err.message : String(err),
                 },
               );
-            }
-            if (allRuns) {
-              for (const run of workflowRuns) {
-                try {
-                  const match = allRuns.find((r) => r.run.id === run.runId);
-                  if (
-                    match &&
-                    (match.run.status === "running" ||
-                      match.run.status === "cancelled")
-                  ) {
-                    match.run.interrupt("server_shutdown");
-                    await repoContext.workflowRunRepo.save(
-                      match.workflowId,
-                      match.run,
-                    );
-                    if (isJson) {
-                      console.log(JSON.stringify({
-                        status: "interrupted",
-                        runId: run.runId,
-                      }));
-                    }
-                    logger
-                      .info`Interrupted workflow run ${run.runId} (server shutdown)`;
-                  }
-                } catch (err) {
-                  logger.warn(
-                    "Failed to interrupt run {runId}: {error}",
-                    {
-                      runId: run.runId,
-                      error: err instanceof Error ? err.message : String(err),
-                    },
-                  );
-                }
-              }
             }
           }
         }

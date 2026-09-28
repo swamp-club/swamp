@@ -453,6 +453,57 @@ Deno.test("listEndpoints: includes scheme from each endpoint verifier", async ()
   assertEquals(infos[2].scheme, "generic");
 });
 
+// ── drain (swamp-club#2484) ──────────────────────────────────────────
+
+Deno.test("WebhookService.drain: matched routes get 503 with Retry-After while unmatched stay null", async () => {
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    // deno-lint-ignore no-explicit-any
+    repoContext: {} as any,
+    // deno-lint-ignore no-explicit-any
+    datastoreConfig: {} as any,
+    endpoints: [await parseWebhookFlag("/hooks/gh:deploy:secret")],
+  });
+  const rejections: string[] = [];
+  service.setEventHandler((event) => {
+    if (event.kind === "webhook_rejected") rejections.push(event.reason);
+  });
+
+  await service.drain(0);
+
+  const response = await service.handleRequest(
+    new Request("http://localhost/hooks/gh", { method: "POST", body: "{}" }),
+  );
+  assertEquals(response?.status, 503);
+  assertEquals(response?.headers.get("retry-after"), "5");
+  assertStringIncludes(
+    (await response!.json()).error,
+    "shutting down",
+  );
+  assertEquals(rejections, ["Server shutting down"]);
+
+  const unmatched = await service.handleRequest(
+    new Request("http://localhost/hooks/other", { method: "POST" }),
+  );
+  assertEquals(unmatched, null);
+  await service.stop();
+});
+
+Deno.test("WebhookService.drain: with no in-flight run resolves and stop still succeeds", async () => {
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    // deno-lint-ignore no-explicit-any
+    repoContext: {} as any,
+    // deno-lint-ignore no-explicit-any
+    datastoreConfig: {} as any,
+    endpoints: [],
+  });
+  await service.drain(60_000);
+  await service.stop();
+});
+
 // ── buildWebhookPayload header redaction ─────────────────────────────
 
 Deno.test("buildWebhookPayload: strips authorization header", () => {

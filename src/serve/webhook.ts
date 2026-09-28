@@ -471,6 +471,12 @@ export interface WebhookServiceDeps {
  */
 const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_QUEUE_DEPTH = 100;
+/**
+ * Retry-After for deliveries rejected while serve shuts down. Short, so the
+ * sender's retry lands on the replacement instance rather than waiting out
+ * this one's drain.
+ */
+const SHUTDOWN_RETRY_AFTER_SECONDS = 5;
 
 /**
  * Webhook endpoint info exposed to callers, without the secret.
@@ -495,6 +501,7 @@ export class WebhookService {
   private processingPromise: Promise<void> = Promise.resolve();
   private eventHandler: WebhookEventHandler | null = null;
   private readonly running = new Map<string, AbortController>();
+  private draining = false;
   private endpoints: WebhookEndpoint[];
 
   constructor(private readonly deps: WebhookServiceDeps) {
@@ -573,6 +580,21 @@ export class WebhookService {
     const endpoint = this.endpoints.find((e) => e.route === url.pathname);
     if (!endpoint) {
       return null;
+    }
+
+    if (this.draining) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        reason: "Server shutting down",
+      });
+      return Response.json(
+        { error: "Server is shutting down, try again later" },
+        {
+          status: 503,
+          headers: { "retry-after": String(SHUTDOWN_RETRY_AFTER_SECONDS) },
+        },
+      );
     }
 
     this.emit({
@@ -784,6 +806,8 @@ export class WebhookService {
     traceparent?: string;
     tracestate?: string;
   }): void {
+    // The pending entry stays in the run tracker for the next boot to replay.
+    if (this.draining) return;
     this.runQueue.push(entry);
     if (!this.processing) {
       this.processingPromise = this.processQueue().catch(
@@ -793,6 +817,29 @@ export class WebhookService {
           });
         },
       );
+    }
+  }
+
+  /**
+   * Begin shutdown: reject new deliveries with 503, drop queued runs (their
+   * run-tracker pending entries stay, so boot reconciliation replays them),
+   * and wait up to `timeoutMs` for the in-flight run to finish. A timeout of
+   * 0 returns at once. Call {@link stop} afterwards to abort what is left.
+   */
+  async drain(timeoutMs: number): Promise<void> {
+    this.draining = true;
+    this.runQueue.length = 0;
+    if (timeoutMs <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.processingPromise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

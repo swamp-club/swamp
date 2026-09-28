@@ -168,6 +168,7 @@ export class ScheduledExecutionService {
   }> = [];
   private processing = false;
   private processingPromise: Promise<void> = Promise.resolve();
+  private draining = false;
   private eventHandler: ScheduledExecutionEventHandler | null = null;
   private triggerOverrides: ReadonlyMap<string, TriggerOverride>;
 
@@ -212,6 +213,31 @@ export class ScheduledExecutionService {
     logger.info("Scheduled execution service started with {count} schedules", {
       count: this.scheduler.size,
     });
+  }
+
+  /**
+   * Begin shutdown: stop the watcher and scheduler, drop queued runs (their
+   * pending-run entries stay for the next boot to replay), and wait up to
+   * `timeoutMs` for the in-flight run to finish. A timeout of 0 returns at
+   * once. Call {@link stop} afterwards to abort what is left.
+   */
+  async drain(timeoutMs: number): Promise<void> {
+    this.draining = true;
+    await this.watcher.stop();
+    this.scheduler.stop();
+    this.runQueue.length = 0;
+    if (timeoutMs <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.processingPromise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -317,6 +343,8 @@ export class ScheduledExecutionService {
     pendingRunId: string;
     workflowIdOrName: string;
   }): void {
+    // The pending entry stays in the run tracker for the next boot to replay.
+    if (this.draining) return;
     this.runQueue.push({
       pendingRunId: entry.pendingRunId,
       workflowId: entry.workflowIdOrName as WorkflowId,
@@ -506,6 +534,10 @@ export class ScheduledExecutionService {
       return;
     }
 
+    // A draining service starts no new runs; checked again after the dedup
+    // await, which can span the start of a drain.
+    if (this.draining) return;
+
     // Cross-instance dedup — race to claim this fire slot via the
     // control-plane store. If another instance won, skip silently.
     if (this.deps.cronFireDedup) {
@@ -531,6 +563,7 @@ export class ScheduledExecutionService {
         );
       }
     }
+    if (this.draining) return;
 
     this.emit({
       kind: "schedule_fired",
