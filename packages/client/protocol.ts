@@ -74,6 +74,11 @@ export interface DataGetPayload {
   workflowName?: string;
   runId?: string;
   version?: number;
+  /**
+   * With `workflowName`: the id of the run artifact to return, telling
+   * apart items of the same name and version owned by different models.
+   */
+  dataId?: string;
   includeContent?: boolean;
 }
 
