@@ -20,6 +20,8 @@
 import type { Logger } from "@logtape/logtape";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { escapeLogTemplate } from "../logging/logger.ts";
+import { shouldIsolateProcessGroup } from "./process_group_policy.ts";
+import { isProcessAlive } from "./process_kill.ts";
 
 /**
  * Options for executing a process.
@@ -47,6 +49,14 @@ export interface ProcessExecutorOptions {
   onOutput?: (line: string, stream: "stdout" | "stderr") => void;
   /** Optional abort signal — when aborted, the subprocess is killed. */
   signal?: AbortSignal;
+  /** When true, an abort or timeout terminates everything the command
+   *  started, not just the direct child: on POSIX by running it in its own
+   *  process group (subject to `process_group_policy.ts`), on Windows with
+   *  `taskkill /T`. A command that exits on its own is never signalled, so
+   *  processes it deliberately backgrounds keep running. */
+  terminateProcessTree?: boolean;
+  /** Grace between SIGTERM and SIGKILL when terminating. Tests only. */
+  killGraceMs?: number;
 }
 
 /**
@@ -140,6 +150,201 @@ export async function streamLines(
 const PIPE_DRAIN_GRACE_MS = 5000;
 
 /**
+ * Grace between SIGTERM and SIGKILL. Kept under the 5 s serve allows aborted
+ * runs to settle (`runShutdownDrain` with `abortGraceMs: 5_000`), so a step
+ * that ignores SIGTERM still records its own cancellation.
+ */
+const KILL_GRACE_MS = 3000;
+const GROUP_POLL_MS = 50;
+
+/** How an aborted or timed-out process is terminated. */
+type TerminationMode =
+  /** POSIX: signal the process group the child leads. */
+  | "group"
+  /** Windows: `taskkill /T` the child's tree. */
+  | "tree"
+  /** Signal only the direct child. */
+  | "child";
+
+/** Process groups of isolated spawns that have not settled yet. */
+const liveProcessGroups = new Set<number>();
+let unloadListenerInstalled = false;
+
+/**
+ * SIGKILLs every isolated process group that has not settled. Runs on
+ * `unload`, which fires on `Deno.exit` — a forced second Ctrl-C, or a process
+ * exiting before an escalation finished — so no group outlives swamp.
+ */
+export function killLiveProcessGroups(): void {
+  for (const pgid of liveProcessGroups) {
+    try {
+      Deno.kill(-pgid, "SIGKILL");
+    } catch { /* group already gone */ }
+  }
+  liveProcessGroups.clear();
+}
+
+function trackProcessGroup(pgid: number): void {
+  if (!unloadListenerInstalled) {
+    globalThis.addEventListener("unload", killLiveProcessGroups);
+    unloadListenerInstalled = true;
+  }
+  liveProcessGroups.add(pgid);
+}
+
+/**
+ * Terminates the process, at most once however many triggers (timeout,
+ * abort) fire, and never once the direct child has exited on its own: a
+ * late abort (say, while pipes drain) must not reach what it backgrounded.
+ */
+interface Terminator {
+  /** The child's status. Every path awaits this instead of `child.status`,
+   *  so the terminator learns when the child exits. */
+  status: Promise<Deno.CommandStatus>;
+  terminate(): void;
+  /** Resolves once a started termination finishes, or at once if none. */
+  settled(): Promise<void>;
+}
+
+function createTerminator(
+  child: Deno.ChildProcess,
+  mode: TerminationMode,
+  graceMs: number,
+): Terminator {
+  let running: Promise<void> | undefined;
+  let exited = false;
+  return {
+    status: child.status.then((status) => {
+      exited = true;
+      // Exited on its own: what it backgrounded is not the exit sweep's.
+      if (!running) liveProcessGroups.delete(child.pid);
+      return status;
+    }),
+    terminate: () => {
+      if (exited) return;
+      running ??= terminateProcess(child, mode, graceMs);
+    },
+    settled: () => running ?? Promise.resolve(),
+  };
+}
+
+/**
+ * Runs `onAbort` when `signal` aborts, immediately if it already has.
+ * Returns a function that detaches the listener.
+ */
+function onSignalAbort(
+  signal: AbortSignal | undefined,
+  onAbort: () => void,
+): () => void {
+  if (!signal) return () => {};
+  if (signal.aborted) {
+    onAbort();
+    return () => {};
+  }
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
+}
+
+/**
+ * SIGTERM, then SIGKILL whatever is still alive after the grace period.
+ * Never rejects: it is started from a synchronous listener and awaited later.
+ */
+async function terminateProcess(
+  child: Deno.ChildProcess,
+  mode: TerminationMode,
+  graceMs: number,
+): Promise<void> {
+  try {
+    if (mode === "group") {
+      await terminateGroup(child.pid, graceMs);
+    } else if (mode === "tree") {
+      await terminateWindowsTree(child, graceMs);
+    } else {
+      await terminateChild(child, graceMs);
+    }
+  } catch {
+    // Best effort: the process may already have exited.
+  }
+}
+
+async function terminateGroup(pgid: number, graceMs: number): Promise<void> {
+  try {
+    Deno.kill(-pgid, "SIGTERM");
+  } catch {
+    return; // Group already gone
+  }
+  const deadline = Date.now() + graceMs;
+  while (isProcessAlive(-pgid)) {
+    if (Date.now() >= deadline) {
+      // SIGKILL cannot be ignored, so it is final: a member that stays
+      // visible afterwards is an unreaped zombie, not a live process.
+      try {
+        Deno.kill(-pgid, "SIGKILL");
+      } catch { /* exited in between */ }
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_MS));
+  }
+  liveProcessGroups.delete(pgid);
+}
+
+async function terminateChild(
+  child: Deno.ChildProcess,
+  graceMs: number,
+): Promise<void> {
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    return; // Already exited
+  }
+  // Wait on the status rather than probing the pid: once the child is
+  // reaped, its pid can belong to an unrelated process.
+  if (!await exitsWithin(child, graceMs)) {
+    try {
+      child.kill("SIGKILL");
+    } catch { /* exited in between */ }
+  }
+}
+
+async function terminateWindowsTree(
+  child: Deno.ChildProcess,
+  graceMs: number,
+): Promise<void> {
+  try {
+    const result = await new Deno.Command("taskkill", {
+      args: ["/PID", String(child.pid), "/T", "/F"],
+      stdout: "null",
+      stderr: "null",
+      signal: AbortSignal.timeout(graceMs),
+    }).output();
+    if (result.success) return;
+  } catch {
+    // taskkill unavailable or timed out; fall back to the direct child
+  }
+  try {
+    child.kill("SIGKILL");
+  } catch { /* already exited */ }
+}
+
+async function exitsWithin(
+  child: Deno.ChildProcess,
+  ms: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([
+      child.status.then(() => true, () => true),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Executes a process with optional streaming through a logger.
  *
  * When a logger is provided, stdout lines are logged at info level and stderr
@@ -169,7 +374,38 @@ export async function executeProcess(
     commandOptions.clearEnv = true;
   }
 
+  const isolated = options.terminateProcessTree === true &&
+    shouldIsolateProcessGroup();
+  if (isolated) {
+    // setsid(): the child leads its own session and process group, so the
+    // group id to signal is its pid.
+    commandOptions.detached = true;
+  }
+  const mode: TerminationMode = isolated
+    ? "group"
+    : options.terminateProcessTree && Deno.build.os === "windows"
+    ? "tree"
+    : "child";
+  const graceMs = options.killGraceMs ?? KILL_GRACE_MS;
+
   const command = new Deno.Command(options.command, commandOptions);
+  const spawn = (): Deno.ChildProcess => {
+    const child = command.spawn();
+    if (isolated) trackProcessGroup(child.pid);
+    return child;
+  };
+  // Waits out any termination, then stops tracking the group. A path that
+  // ends while the child still runs (a throwing output callback) abandons
+  // it, so it is terminated rather than left running untracked; a child
+  // that already exited is left alone.
+  const release = async (
+    child: Deno.ChildProcess,
+    terminator: Terminator,
+  ): Promise<void> => {
+    terminator.terminate();
+    await terminator.settled();
+    liveProcessGroups.delete(child.pid);
+  };
 
   let stdout: string;
   let stderr: string;
@@ -180,8 +416,13 @@ export async function executeProcess(
     // pipes separately.  This prevents orphaned child processes that hold
     // pipes open from causing a spurious timeout when the command itself
     // exited successfully.
-    const process = command.spawn();
+    const process = spawn();
+    const terminator = createTerminator(process, mode, graceMs);
     const pipeAbort = new AbortController();
+    const stop = () => {
+      terminator.terminate();
+      pipeAbort.abort();
+    };
 
     const redact = (line: string) =>
       options.redactor?.hasSecrets ? options.redactor.redact(line) : line;
@@ -219,42 +460,17 @@ export async function executeProcess(
     let timedOut = false;
     const timeoutId = setTimeout(() => {
       timedOut = true;
-      try {
-        process.kill("SIGTERM");
-      } catch {
-        // Process may have already exited
-      }
-      pipeAbort.abort();
+      stop();
     }, options.timeoutMs);
 
     // Kill subprocess when abort signal fires
-    let abortHandler: (() => void) | undefined;
-    if (options.signal) {
-      if (options.signal.aborted) {
-        try {
-          process.kill("SIGTERM");
-        } catch {
-          // Process may have already exited
-        }
-        pipeAbort.abort();
-      } else {
-        abortHandler = () => {
-          try {
-            process.kill("SIGTERM");
-          } catch {
-            // Process may have already exited
-          }
-          pipeAbort.abort();
-        };
-        options.signal.addEventListener("abort", abortHandler, { once: true });
-      }
-    }
+    const detachAbort = onSignalAbort(options.signal, stop);
 
     try {
       // Wait for the direct child to exit — process.status resolves
       // independently of pipe closure, so orphaned children holding pipes
       // open do not block this.
-      const status = await process.status;
+      const status = await terminator.status;
       clearTimeout(timeoutId);
 
       if (timedOut) {
@@ -290,37 +506,21 @@ export async function executeProcess(
       ]);
       throw err;
     } finally {
-      if (abortHandler && options.signal) {
-        options.signal.removeEventListener("abort", abortHandler);
-      }
+      clearTimeout(timeoutId);
+      detachAbort();
+      await release(process, terminator);
     }
   } else if (options.logger) {
     // Streaming mode without timeout
-    const process = command.spawn();
+    const process = spawn();
+    const terminator = createTerminator(process, mode, graceMs);
     const pipeAbort = new AbortController();
 
     // Kill subprocess when abort signal fires
-    let abortHandler: (() => void) | undefined;
-    if (options.signal) {
-      if (options.signal.aborted) {
-        try {
-          process.kill("SIGTERM");
-        } catch {
-          // Process may have already exited
-        }
-        pipeAbort.abort();
-      } else {
-        abortHandler = () => {
-          try {
-            process.kill("SIGTERM");
-          } catch {
-            // Process may have already exited
-          }
-          pipeAbort.abort();
-        };
-        options.signal.addEventListener("abort", abortHandler, { once: true });
-      }
-    }
+    const detachAbort = onSignalAbort(options.signal, () => {
+      terminator.terminate();
+      pipeAbort.abort();
+    });
 
     try {
       const logger = options.logger;
@@ -338,16 +538,15 @@ export async function executeProcess(
           if (onOutput) onOutput(redacted, "stderr");
           logger.warn(escapeLogTemplate(redacted));
         }, pipeAbort.signal),
-        process.status,
+        terminator.status,
       ]);
 
       stdout = stdoutResult;
       stderr = stderrResult;
       exitCode = status.code;
     } finally {
-      if (abortHandler && options.signal) {
-        options.signal.removeEventListener("abort", abortHandler);
-      }
+      detachAbort();
+      await release(process, terminator);
     }
 
     // Re-throw as AbortError if signal was responsible for the kill
@@ -356,44 +555,27 @@ export async function executeProcess(
     }
   } else {
     // Simple buffered execution
-    const process = command.spawn();
+    const process = spawn();
+    const terminator = createTerminator(process, mode, graceMs);
     const pipeAbort = new AbortController();
 
-    let abortHandler: (() => void) | undefined;
-    if (options.signal) {
-      if (options.signal.aborted) {
-        try {
-          process.kill("SIGTERM");
-        } catch {
-          // Process may have already exited
-        }
-        pipeAbort.abort();
-      } else {
-        abortHandler = () => {
-          try {
-            process.kill("SIGTERM");
-          } catch {
-            // Process may have already exited
-          }
-          pipeAbort.abort();
-        };
-        options.signal.addEventListener("abort", abortHandler, { once: true });
-      }
-    }
+    const detachAbort = onSignalAbort(options.signal, () => {
+      terminator.terminate();
+      pipeAbort.abort();
+    });
 
     try {
       const [stdoutResult, stderrResult, status] = await Promise.all([
         streamLines(process.stdout, undefined, pipeAbort.signal),
         streamLines(process.stderr, undefined, pipeAbort.signal),
-        process.status,
+        terminator.status,
       ]);
       stdout = stdoutResult;
       stderr = stderrResult;
       exitCode = status.code;
     } finally {
-      if (abortHandler && options.signal) {
-        options.signal.removeEventListener("abort", abortHandler);
-      }
+      detachAbort();
+      await release(process, terminator);
     }
 
     if (options.signal?.aborted) {

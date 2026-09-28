@@ -1435,10 +1435,41 @@ The same applies after a normal step failure without cancellation. Steps with
 `always` or `completed` conditions in later topological levels run instead of
 being skipped.
 
-The `--timeout` flag kills in-flight subprocesses (SIGTERM) when the deadline
-passes, then runs cleanup steps. It marks a subprocess failed without waiting
-for it to finish. Values above about 24.8 days are rejected, because Deno fires
-a longer timer after 1 ms (`parseTimerDuration`, `src/cli/duration_parser.ts`).
+The `--timeout` flag kills in-flight subprocesses when the deadline passes,
+then runs cleanup steps. Values above about 24.8 days are rejected, because Deno
+fires a longer timer after 1 ms (`parseTimerDuration`,
+`src/cli/duration_parser.ts`).
+
+Every abort of a `command/shell` step (`--timeout`, the step's own `timeout`,
+Ctrl-C, `swamp workflow cancel`, serve shutdown) sends SIGTERM, then SIGKILL
+after a 3 s grace to whatever is still alive. The step settles once that is
+done, so it takes no longer than the grace however the command handles SIGTERM
+(`executeProcess`, `src/infrastructure/process/process_executor.ts`). What is
+signalled depends on whether swamp has a controlling terminal
+(`src/infrastructure/process/process_group_policy.ts`):
+
+- **No terminal (CI, agents, system services), and always under `swamp serve`
+  and the worker `exec-dispatch` runner**: the command runs in its own session
+  and process group, and the whole group is signalled, so nothing the step
+  started outlives it. As a consequence, a step cannot open `/dev/tty`.
+  Prompts that need it (a `sudo` password, an ssh host key) fail instead of
+  waiting; use `sudo -S` or askpass, ssh `BatchMode`, or credential helpers.
+  Any group still alive when swamp calls `Deno.exit` gets SIGKILL, and an
+  offline cancel sends SIGKILL to the groups of the process it stops. The
+  groups are outside swamp's own process group, so a supervisor that
+  SIGKILLs swamp or its group directly (`timeout -s KILL`, `kill -9 -- -pgid`)
+  leaves them running; stop swamp with SIGTERM or SIGINT so it terminates
+  them. In a container, run swamp under an init (`docker run --init`; the
+  image itself does not ship one yet, swamp-club#2652) so the processes it
+  kills are reaped.
+- **Interactive terminal**: the command stays in the terminal's foreground
+  group, so it keeps `/dev/tty` prompts, and Ctrl-C reaches every process it
+  started. A timeout or offline cancel signals only the direct child, so its
+  own children can outlive the step.
+- **Windows**: `taskkill /T /F` ends the whole tree.
+
+A step whose command exits on its own is never signalled: anything it
+deliberately backgrounded keeps running.
 
 ### Recovery
 

@@ -82,12 +82,31 @@ async function findChildPids(ppid: number): Promise<number[]> {
   }
 }
 
-function isProcessAlive(pid: number): boolean {
+/**
+ * Whether a signal can still reach `pid`. A negative `pid` probes the process
+ * group `-pid`, which stays alive while any member remains.
+ */
+export function isProcessAlive(pid: number): boolean {
   try {
     Deno.kill(pid, 0);
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * SIGKILLs the process group led by each of `pids`. Shell steps run as their
+ * own group leaders when isolated (see `process_group_policy.ts`), so this
+ * reaches the grandchildren a step left behind. A pid that does not lead a
+ * group has no group of that id, and the kill fails harmlessly.
+ */
+export function killChildGroups(pids: readonly number[]): void {
+  if (Deno.build.os === "windows") return;
+  for (const pid of pids) {
+    try {
+      Deno.kill(-pid, "SIGKILL");
+    } catch { /* not a group leader, or the group is gone */ }
   }
 }
 
@@ -133,7 +152,9 @@ export async function killProcessTree(
     } catch { /* already gone */ }
   }
 
-  // Force kill all children
+  // Force kill all children, and the process groups isolated shell steps
+  // lead: swamp was SIGKILLed or exited, so its own escalation never ran.
+  killChildGroups(children);
   for (const child of children) {
     if (isProcessAlive(child)) {
       try {
