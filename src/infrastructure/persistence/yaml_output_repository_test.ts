@@ -17,14 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { assertPathStringIncludes } from "./path_test_helpers.ts";
 import { ensureDir } from "@std/fs";
 import { dirname, join, SEPARATOR } from "@std/path";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
   createModelOutputId,
   type ExecutionProvenance,
   ModelOutput,
+  type ModelOutputData,
 } from "../../domain/models/model_output.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -845,6 +847,163 @@ Deno.test(
     });
   },
 );
+
+/**
+ * Rewrites a saved output so it finishes 835ms before it starts, as a record
+ * written while the clock stepped backward mid-run does.
+ */
+async function backdateCompletion(path: string): Promise<void> {
+  const data = parseYaml(await Deno.readTextFile(path)) as ModelOutputData;
+  data.completedAt = new Date(new Date(data.startedAt).getTime() - 835)
+    .toISOString();
+  data.durationMs = -835;
+  await Deno.writeTextFile(path, stringifyYaml(data));
+}
+
+/** Seeds a record that fails validation and one that is not valid YAML. */
+async function seedUnreadableYaml(
+  dir: string,
+  type: ModelType,
+  method: string,
+): Promise<{ invalidId: string }> {
+  const methodDir = join(dir, ".swamp", "outputs", type.normalized, method);
+  await ensureDir(methodDir);
+  const invalidId = "not-a-uuid";
+  await Deno.writeTextFile(
+    join(methodDir, "invalid-record.yaml"),
+    stringifyYaml({
+      id: invalidId,
+      definitionId: crypto.randomUUID(),
+      methodName: method,
+      status: "succeeded",
+      startedAt: new Date().toISOString(),
+      retryCount: 0,
+      provenance: defaultProvenance,
+    }),
+  );
+  await Deno.writeTextFile(
+    join(methodDir, "malformed.yaml"),
+    "id: [unclosed\n",
+  );
+  return { invalidId };
+}
+
+Deno.test(
+  "findByDefinition: a record with a negative durationMs loads as 0 and does not block other definitions",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const skewed = await makeOutput(repo, new Date());
+      await backdateCompletion(repo.getPath(registeredType, "run", skewed));
+      const other = await makeOutput(repo, new Date());
+
+      const found = await repo.findByDefinition(
+        registeredType,
+        other.definitionId,
+      );
+      assertEquals(found.map((o) => o.id), [other.id]);
+
+      const all = await repo.findAll(registeredType);
+      assertEquals(all.length, 2);
+      assertEquals(all.find((o) => o.id === skewed.id)?.durationMs, 0);
+    });
+  },
+);
+
+Deno.test(
+  "findByDefinition: unreadable records of another definition are skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const valid = await makeOutput(repo, new Date());
+
+      await seedUnreadableYaml(dir, registeredType, "run");
+
+      const found = await repo.findByDefinition(
+        registeredType,
+        valid.definitionId,
+      );
+      assertEquals(found.map((o) => o.id), [valid.id]);
+    });
+  },
+);
+
+Deno.test(
+  "findAll: unreadable records are skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const valid = await makeOutput(repo, new Date());
+
+      await seedUnreadableYaml(dir, registeredType, "run");
+
+      const found = await repo.findAll(registeredType);
+      assertEquals(found.map((o) => o.id), [valid.id]);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: unreadable records are skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const valid = await makeOutput(repo, new Date());
+
+      await seedUnreadableYaml(dir, registeredType, "run");
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+      assertEquals(found.map((r) => r.output.id), [valid.id]);
+    });
+  },
+);
+
+Deno.test(
+  "findById: unreadable records are skipped and an unreadable target is not found",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const target = await makeOutput(repo, new Date());
+
+      const { invalidId } = await seedUnreadableYaml(
+        dir,
+        registeredType,
+        "run",
+      );
+
+      const found = await repo.findById(registeredType, "run", target.id);
+      assertEquals(found?.id, target.id);
+      assertEquals(
+        await repo.findById(
+          registeredType,
+          "run",
+          createModelOutputId(invalidId),
+        ),
+        null,
+      );
+    });
+  },
+);
+
+Deno.test({
+  name: "findAll: an I/O error reading a record still propagates",
+  // chmod has no effect on Windows, and root reads the file regardless.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const output = await makeOutput(repo, new Date());
+      const path = repo.getPath(registeredType, "run", output);
+      await Deno.chmod(path, 0o000);
+      try {
+        await assertRejects(() => repo.findAll(registeredType));
+      } finally {
+        await Deno.chmod(path, 0o644);
+      }
+    });
+  },
+});
 
 Deno.test(
   "deleteOlderThan: empty YAML file is cleaned up",

@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
+import { getLogger } from "@logtape/logtape";
+import { z } from "zod";
 import { dirname, join, normalize, relative, SEPARATOR } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
@@ -29,6 +31,7 @@ import {
   toRelativePath,
 } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { isIoError } from "./io_errors.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
@@ -41,6 +44,23 @@ import {
 } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { lifetimeToMs } from "../../domain/data/data_metadata.ts";
+
+const logger = getLogger(["output-repo"]);
+
+/**
+ * One-line reason a record could not be loaded: each failed field for a
+ * validation error, the first line of anything else (YAML syntax errors
+ * append a multi-line excerpt of the file).
+ */
+function describeRecordError(error: unknown): string {
+  if (error instanceof z.ZodError) {
+    return error.issues
+      .map((issue) => `${issue.path.join(".") || "record"}: ${issue.message}`)
+      .join("; ");
+  }
+  const msg = error instanceof Error ? error.message : String(error);
+  return msg.split("\n")[0];
+}
 
 /**
  * Minimum age before run gc treats an unreferenced run log as orphaned,
@@ -78,6 +98,20 @@ export class YamlOutputRepository implements OutputRepository {
     if (this.markDirty) await this.markDirty(relPath);
   }
 
+  /**
+   * Handles a failure to load one output record during a scan. A file that
+   * vanished is skipped silently and an I/O error propagates; anything else
+   * (a YAML syntax error, a record that fails validation) is skipped with a
+   * warning, so one bad record never fails a read of every other output.
+   */
+  private skipUnreadableRecord(path: string, error: unknown): void {
+    if (error instanceof Deno.errors.NotFound) return;
+    if (isIoError(error)) throw error;
+    logger.warn`Skipping unreadable output record ${path}: ${
+      describeRecordError(error)
+    }`;
+  }
+
   async findById(
     type: ModelType,
     method: string,
@@ -107,8 +141,7 @@ export class YamlOutputRepository implements OutputRepository {
             return ModelOutput.fromData(data);
           }
         } catch (error) {
-          if (error instanceof Deno.errors.NotFound) continue;
-          throw error;
+          this.skipUnreadableRecord(path, error);
         }
       }
     } catch (error) {
@@ -178,8 +211,7 @@ export class YamlOutputRepository implements OutputRepository {
               }
               outputs.push(ModelOutput.fromData(data));
             } catch (error) {
-              if (error instanceof Deno.errors.NotFound) continue;
-              throw error;
+              this.skipUnreadableRecord(path, error);
             }
           }
         } catch (error) {
@@ -293,8 +325,7 @@ export class YamlOutputRepository implements OutputRepository {
                   method: output.methodName,
                 });
               } catch (error) {
-                if (error instanceof Deno.errors.NotFound) continue;
-                throw error;
+                this.skipUnreadableRecord(path, error);
               }
             }
           } catch (error) {
