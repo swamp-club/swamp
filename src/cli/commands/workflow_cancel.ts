@@ -127,7 +127,7 @@ export interface CancelAllResult {
     status: string;
   }[];
   /** Runs whose record was deleted during the cancel. */
-  deleted: { runId: string; workflowName: string; status: "deleted" }[];
+  deleted: { runId: string; workflowName: string }[];
 }
 
 /**
@@ -144,7 +144,7 @@ export async function cancelAllLocalRuns(
     const previousStatus = run.status;
     const finalRun = await cancelLocalRun(run, workflowId, reason, deps);
     if (!finalRun) {
-      result.deleted.push({ runId: run.id, workflowName, status: "deleted" });
+      result.deleted.push({ runId: run.id, workflowName });
     } else if (finalRun.status === "cancelled") {
       result.cancelled.push({ runId: run.id, workflowName, previousStatus });
     } else {
@@ -324,7 +324,12 @@ export const workflowCancelCommand = withRemoteOptions(
       if (activeRuns.length === 0) {
         if (cliCtx.outputMode === "json") {
           console.log(
-            JSON.stringify({ cancelled: [], finished: [], skipped: [] }),
+            JSON.stringify({
+              cancelled: [],
+              finished: [],
+              deleted: [],
+              skipped: [],
+            }),
           );
         } else {
           cliCtx.logger.info("No active workflow runs found to cancel.");
@@ -351,7 +356,8 @@ export const workflowCancelCommand = withRemoteOptions(
         console.log(JSON.stringify({
           cancelled,
           finished,
-          skipped: [...serveSkipped, ...deleted],
+          deleted,
+          skipped: serveSkipped,
           count: cancelled.length,
           reason,
         }));

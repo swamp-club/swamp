@@ -418,7 +418,6 @@ Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () 
       deleted: [{
         runId: deletedId,
         workflowName: "test-workflow",
-        status: "deleted",
       }],
     });
   });
