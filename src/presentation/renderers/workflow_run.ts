@@ -30,6 +30,7 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 import { dim, green, red, yellow } from "@std/fmt/colors";
@@ -821,7 +822,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
     return {
       validating_inputs: () => {},
       superseded_runs: (e) => {
-        console.log(JSON.stringify({
+        unguardedConsole.error(JSON.stringify({
           event: "superseded_runs",
           cancelledRunIds: e.cancelledRunIds,
         }));
@@ -835,7 +836,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_completed: () => {},
       step_skipped: (e) => {
         if (e.reason === "guarded") {
-          console.log(JSON.stringify({
+          unguardedConsole.error(JSON.stringify({
             step: e.stepId,
             job: e.jobId,
             status: "skipped",
@@ -859,7 +860,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       method_output: () => {},
       method_event: (e) => {
         if (e.event.type === "vault_single_quote_warning") {
-          console.log(JSON.stringify({
+          unguardedConsole.error(JSON.stringify({
             warning: "vault_single_quote",
             modelName: e.modelName,
             message: e.event.message,
@@ -872,14 +873,14 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       report_failed: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
-        console.log(JSON.stringify(e.run, null, 2));
+        unguardedConsole.log(JSON.stringify(e.run, null, 2));
       },
       cancelled: (e) => {
         this._failed = true;
-        console.log(JSON.stringify(e.run, null, 2));
+        unguardedConsole.log(JSON.stringify(e.run, null, 2));
       },
       suspended: (e) => {
-        console.log(JSON.stringify(
+        unguardedConsole.log(JSON.stringify(
           {
             ...e.run,
             approvalRequired: {

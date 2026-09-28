@@ -446,6 +446,39 @@ Deno.test("JsonModelMethodRunRenderer: intermediate events produce no output", (
   }
 });
 
+Deno.test("JsonModelMethodRunRenderer: vault single-quote warning goes to stderr", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+
+  try {
+    const renderer = createModelMethodRunRenderer("json", {
+      modelName: "test-model",
+      methodName: "run",
+    });
+    renderer.handlers().method_event({
+      kind: "method_event",
+      modelName: "test-model",
+      methodName: "run",
+      event: { type: "vault_single_quote_warning", message: "use quotes" },
+    });
+    assertEquals(stdout.length, 0);
+    assertEquals(stderr.map((line) => JSON.parse(line)), [
+      {
+        warning: "vault_single_quote",
+        modelName: "test-model",
+        message: "use quotes",
+      },
+    ]);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
 Deno.test("JsonModelMethodRunRenderer: completed serializes ModelMethodRunView", async () => {
   const logs: string[] = [];
   const originalLog = console.log;

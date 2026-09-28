@@ -1193,11 +1193,16 @@ Console output names the skipped step and shows the guard expression inline:
    main │ skipped do-work (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0
 ```
 
-JSON output includes both fields:
+In `--json` mode, each guarded skip writes a line with both fields to stderr:
 
 ```json
 {"step":"do-work","job":"main","status":"skipped","reason":"guarded","guardExpression":"data.latest(\"checker\", \"result\").attributes.exitCode == 0","guardResult":true}
 ```
+
+stdout holds only the run document, where each guard-skipped step carries
+`skipReason: {"kind": "guarded", "expression": ...}`. The renderer writes
+through `unguardedConsole` (`src/domain/models/console_guard.ts`), so these
+lines never pass through the console guard of a concurrently running method.
 
 Debug-level logging (`--log-level debug`) shows the guard expression and its
 result for both skipped and non-skipped steps.
