@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type MouseEvent, useState } from "react";
+import { type MouseEvent, useEffect, useRef, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import type { View } from "../types.ts";
 import { Logo } from "./Logo";
@@ -67,7 +67,6 @@ function NavItem(
     <div
       className={`nav-item${active ? " active" : ""}`}
       onClick={() => onClick(view)}
-      aria-label={collapsed ? label : undefined}
       style={{
         display: "flex",
         alignItems: "center",
@@ -137,15 +136,13 @@ interface RailTooltip {
 }
 
 /**
- * Collapsed nav items carry their label in aria-label; read it from the
- * hovered item. The tooltip is position: fixed because the nav scrolls,
- * which would clip anything drawn past its 64px edge.
+ * Reads the hovered nav item's visually hidden label. The tooltip is
+ * position: fixed because the nav scrolls, which would clip anything drawn
+ * past its 64px edge.
  */
 function tooltipFor(e: MouseEvent<HTMLElement>): RailTooltip | null {
-  const item = (e.target as HTMLElement).closest<HTMLElement>(
-    ".nav-item[aria-label]",
-  );
-  const label = item?.getAttribute("aria-label");
+  const item = (e.target as HTMLElement).closest<HTMLElement>(".nav-item");
+  const label = item?.querySelector(".nav-label")?.textContent;
   if (!item || !label) return null;
   const rect = item.getBoundingClientRect();
   return { label, top: rect.top + rect.height / 2, left: rect.right + 10 };
@@ -159,6 +156,7 @@ interface SidebarProps {
   onLogout: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  drawerOpen: boolean;
   onCloseDrawer: () => void;
 }
 
@@ -170,9 +168,16 @@ export function Sidebar({
   onLogout,
   collapsed,
   onToggleCollapsed,
+  drawerOpen,
   onCloseDrawer,
 }: SidebarProps) {
   const [tooltip, setTooltip] = useState<RailTooltip | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Move focus into the drawer when it opens so keyboard users land in it.
+  useEffect(() => {
+    if (drawerOpen) closeButtonRef.current?.focus();
+  }, [drawerOpen]);
 
   return (
     <nav
@@ -234,6 +239,7 @@ export function Sidebar({
         </button>
         <button
           type="button"
+          ref={closeButtonRef}
           className="sidebar-icon-button sidebar-close"
           onClick={onCloseDrawer}
           aria-label="Close navigation"

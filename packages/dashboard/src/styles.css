@@ -198,10 +198,20 @@ body {
 
   .app.sidebar-collapsed .sidebar-brand-text,
   .app.sidebar-collapsed .sidebar-section-label,
-  .app.sidebar-collapsed .nav-label,
   .app.sidebar-collapsed .sidebar-health-text,
   .app.sidebar-collapsed .sidebar-logout-text {
     display: none;
+  }
+
+  /* Hidden visually but still read by screen readers, so collapsed
+     items keep their accessible name. */
+  .app.sidebar-collapsed .nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .app.sidebar-collapsed .sidebar-header {
@@ -252,14 +262,12 @@ body {
 }
 
 @media (max-width: 768px) {
-  .rail-tooltip {
-    display: none;
-  }
-}
-
-@media (max-width: 768px) {
   .app {
     grid-template-columns: 1fr;
+  }
+
+  .rail-tooltip {
+    display: none;
   }
 
   .sidebar {

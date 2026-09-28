@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
 import { useHealthStream } from "./client/useHealthStream";
@@ -104,6 +104,20 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
+  // Return focus to the menu button when the drawer closes, but only while
+  // the mobile layout is showing it.
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const wasDrawerOpen = useRef(false);
+  useEffect(() => {
+    if (
+      wasDrawerOpen.current && !drawerOpen &&
+      globalThis.matchMedia(MOBILE_MEDIA_QUERY).matches
+    ) {
+      menuButtonRef.current?.focus();
+    }
+    wasDrawerOpen.current = drawerOpen;
+  }, [drawerOpen]);
+
   const navigateAndClose = useCallback((next: View) => {
     setDrawerOpen(false);
     navigate(next);
@@ -140,6 +154,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         onLogout={onLogout}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
+        drawerOpen={drawerOpen}
         onCloseDrawer={closeDrawer}
       />
       <div className="sidebar-backdrop" onClick={closeDrawer} />
@@ -147,6 +162,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <div className="mobile-topbar">
           <button
             type="button"
+            ref={menuButtonRef}
             className="mobile-menu-button"
             aria-label="Open navigation"
             aria-expanded={drawerOpen}
