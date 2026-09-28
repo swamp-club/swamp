@@ -56,12 +56,9 @@ interface NavItemProps {
   active: boolean;
   onClick: (view: View) => void;
   badge?: number;
-  collapsed: boolean;
 }
 
-function NavItem(
-  { label, view, active, onClick, badge, collapsed }: NavItemProps,
-) {
+function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
   const iconSvg = ICONS[view] ?? "";
   return (
     <div
@@ -174,6 +171,9 @@ export function Sidebar({
   const [tooltip, setTooltip] = useState<RailTooltip | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
+  // Drop a tooltip measured before the rail was toggled.
+  useEffect(() => setTooltip(null), [collapsed]);
+
   // Move focus into the drawer when it opens so keyboard users land in it.
   useEffect(() => {
     if (drawerOpen) closeButtonRef.current?.focus();
@@ -265,7 +265,6 @@ export function Sidebar({
           view="overview"
           active={activeView === "overview"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
       </div>
 
@@ -276,21 +275,18 @@ export function Sidebar({
           view="workflows"
           active={activeView === "workflows"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
         <NavItem
           label="Executions"
           view="executions"
           active={activeView === "executions"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
         <NavItem
           label="Models"
           view="models"
           active={activeView === "models"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
       </div>
 
@@ -301,21 +297,18 @@ export function Sidebar({
           view="schedules"
           active={activeView === "schedules"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
         <NavItem
           label="Webhooks"
           view="webhooks"
           active={activeView === "webhooks"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
         <NavItem
           label="Approvals"
           view="approvals"
           active={activeView === "approvals"}
           onClick={onNavigate}
-          collapsed={collapsed}
           badge={approvalCount > 0 ? approvalCount : undefined}
         />
         <NavItem
@@ -323,7 +316,6 @@ export function Sidebar({
           view="activity"
           active={activeView === "activity"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
       </div>
 
@@ -334,28 +326,24 @@ export function Sidebar({
           view="data"
           active={activeView === "data"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
         <NavItem
           label="Vaults"
           view="vaults"
           active={activeView === "vaults"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
         <NavItem
           label="Extensions"
           view="extensions"
           active={activeView === "extensions"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
         <NavItem
           label="System"
           view="system"
           active={activeView === "system"}
           onClick={onNavigate}
-          collapsed={collapsed}
         />
       </div>
 
