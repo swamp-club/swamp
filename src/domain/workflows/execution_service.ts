@@ -2915,15 +2915,23 @@ export class WorkflowExecutionService {
     await this.saveRun(workflow.id, existingRun);
     // The tracker row follows at once: a serve boot that found the record
     // running beside a stale row would otherwise interrupt this resume.
+    const handBackTrackerRow = this.handOverTrackerRow(
+      existingRun,
+      workflow.name,
+      snapshot.status === "suspended" ? "suspended" : "failed",
+      options?.instanceId,
+    );
+    // The heartbeat starts with the hand-over, so a slow preparation does not
+    // leave the row stale. The finally at the end of this method clears it,
+    // as does the hand-back of a resume that fails before execution.
+    const resumeHeartbeatInterval = this.startResumeHeartbeat(existingRun.id);
     const restore = {
       workflowId: workflow.id,
       snapshot,
-      handBackTrackerRow: this.handOverTrackerRow(
-        existingRun,
-        workflow.name,
-        snapshot.status === "suspended" ? "suspended" : "failed",
-        options?.instanceId,
-      ),
+      handBackTrackerRow: () => {
+        if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
+        handBackTrackerRow();
+      },
     };
 
     const {
@@ -3024,12 +3032,10 @@ export class WorkflowExecutionService {
       };
     });
 
-    // Declared before the try so the finally at the end of this method can
-    // clear it. The try opens immediately after register() — before the
-    // "started" yield — so early consumer abandonment (a client that receives
-    // "started" then disconnects) still unwinds the finally and releases the
-    // log sink.
-    let resumeHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
+    // The try opens immediately after register() — before the "started"
+    // yield — so early consumer abandonment (a client that receives
+    // "started" then disconnects) still unwinds the finally, which stops the
+    // heartbeat and releases the log sink.
     try {
       yield {
         kind: "started",
@@ -3058,19 +3064,6 @@ export class WorkflowExecutionService {
         swampSha: options?.swampSha,
         assertFailOnSeverity: options?.assertFailOnSeverity,
       };
-
-      // The tracker row was handed over after the first save; keep it fresh.
-      if (this.runTracker) {
-        const tracker = this.runTracker;
-        const runId = existingRun.id;
-        resumeHeartbeatInterval = setInterval(() => {
-          try {
-            tracker.heartbeat(runId);
-          } catch {
-            // Heartbeat failure is non-fatal
-          }
-        }, 30_000);
-      }
 
       const jobNodes: GraphNode[] = resolvedWorkflow.jobs.map((job) => ({
         name: job.name,
@@ -4961,6 +4954,24 @@ export class WorkflowExecutionService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Heartbeats the run's tracker row every 30 seconds, when there is a
+   * tracker. The caller clears the returned interval.
+   */
+  private startResumeHeartbeat(
+    runId: string,
+  ): ReturnType<typeof setInterval> | undefined {
+    const tracker = this.runTracker;
+    if (!tracker) return undefined;
+    return setInterval(() => {
+      try {
+        tracker.heartbeat(runId);
+      } catch {
+        // Heartbeat failure is non-fatal
+      }
+    }, 30_000);
   }
 
   /**

@@ -61,7 +61,10 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../src/domain/workflows/workflow_id.ts";
-import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import {
+  WorkflowRun,
+  type WorkflowRunData,
+} from "../src/domain/workflows/workflow_run.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { RunTrackerStore } from "../src/infrastructure/persistence/run_tracker_store.ts";
@@ -77,6 +80,7 @@ import { buildErrorJson } from "../src/presentation/output/error_output.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { handleWorkflowResume } from "../src/serve/handlers/workflow_handlers.ts";
 import { isServeOwnedRun } from "../src/cli/commands/workflow_cancel.ts";
+import { supersedeSuspendedRuns } from "../src/libswamp/mod.ts";
 import { reapOrphanedWorkflowRuns } from "../src/cli/commands/serve.ts";
 import { isProcessDead } from "../src/infrastructure/runtime/process.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
@@ -362,31 +366,44 @@ Deno.test("retry: an evaluation failure after the early save leaves the reloaded
   });
 });
 
+interface Owner {
+  pid: number;
+  instanceId?: string;
+}
+
+/** Rewrites the run's record as if `owner` had started it. */
+async function startedBy(
+  repoDir: string,
+  workflow: Workflow,
+  runId: string,
+  owner: Owner,
+): Promise<void> {
+  const repo = new YamlWorkflowRunRepository(repoDir);
+  const workflowId = createWorkflowId(workflow.id);
+  const run = (await repo.findById(workflowId, createWorkflowRunId(runId)))!;
+  const data = { ...run.toData(), pid: owner.pid };
+  delete data.instanceId;
+  if (owner.instanceId) data.instanceId = owner.instanceId;
+  await repo.save(workflowId, WorkflowRun.fromData(data));
+}
+
 /**
  * Leaves the failed run as another process would have: its record names a
  * different pid and serve instance, and its tracker row is either stale
  * (still failed, owned by a dead process elsewhere) or purged by retention.
+ * Returns that owner.
  */
 async function leaveAsAnotherProcessWould(
   repoDir: string,
   workflow: Workflow,
   runId: string,
   row: "stale" | "purged",
-): Promise<void> {
-  const repo = new YamlWorkflowRunRepository(repoDir);
-  const workflowId = createWorkflowId(workflow.id);
-  const run = (await repo.findById(workflowId, createWorkflowRunId(runId)))!;
-  await repo.save(
-    workflowId,
-    WorkflowRun.fromData({
-      ...run.toData(),
-      pid: Deno.pid + 1,
-      instanceId: crypto.randomUUID(),
-    }),
-  );
+): Promise<Owner> {
+  const owner = { pid: Deno.pid + 1, instanceId: crypto.randomUUID() };
+  await startedBy(repoDir, workflow, runId, owner);
   if (row === "stale") {
     orphanTrackerRow(repoDir, runId);
-    return;
+    return owner;
   }
   const db = new DatabaseSync(join(swampPath(repoDir), "run_tracker.db"));
   try {
@@ -394,6 +411,7 @@ async function leaveAsAnotherProcessWould(
   } finally {
     db.close();
   }
+  return owner;
 }
 
 for (const instanceId of [undefined, crypto.randomUUID()]) {
@@ -404,7 +422,12 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
         const { workflow, tracker, catalogStore, executor, failed } =
           await failPipeline(repoDir);
         try {
-          await leaveAsAnotherProcessWould(repoDir, workflow, failed.id, row);
+          const owner = await leaveAsAnotherProcessWould(
+            repoDir,
+            workflow,
+            failed.id,
+            row,
+          );
 
           executor.failing.clear();
           const { service } = freshService(
@@ -476,9 +499,10 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
               createWorkflowId(workflow.id),
               createWorkflowRunId(failed.id),
             );
+          // Finished, the run names its owner again.
           assertEquals(reloaded?.status, "succeeded");
-          assertEquals(reloaded?.pid, Deno.pid);
-          assertEquals(reloaded?.instanceId, instanceId);
+          assertEquals(reloaded?.pid, owner.pid);
+          assertEquals(reloaded?.instanceId, owner.instanceId);
           assertEquals(tracker.findById(failed.id)?.status, "completed");
         } finally {
           tracker.close();
@@ -487,6 +511,107 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
       });
     });
   }
+}
+
+// ── A resumed run that suspends again ───────────────────────────────────
+
+/** gate1 → build → gate2 → ship, so a resume past gate1 suspends at gate2. */
+function twoGateWorkflow(): Workflow {
+  const after = (step: string) => [{
+    step,
+    condition: TriggerCondition.succeeded(),
+  }];
+  return Workflow.create({
+    name: "two-gates",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate1",
+            task: StepTask.manualApproval("First"),
+          }),
+          Step.create({
+            name: "build",
+            task: StepTask.model("test-model", "run"),
+            dependsOn: after("gate1"),
+          }),
+          Step.create({
+            name: "gate2",
+            task: StepTask.manualApproval("Second"),
+            dependsOn: after("build"),
+          }),
+          Step.create({
+            name: "ship",
+            task: StepTask.model("test-model", "run"),
+            dependsOn: after("gate2"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+for (
+  const [starter, resumer] of [
+    ["a local process", "serve"],
+    ["serve", "a local process"],
+  ] as const
+) {
+  Deno.test(`resume: a run ${starter} started and ${resumer} resumed is ${starter}'s again when it suspends`, async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = twoGateWorkflow();
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+      const workflowId = createWorkflowId(workflow.id);
+      const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+      const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
+      try {
+        const executor = new CountingStepExecutor(tracker);
+        const { service, runRepo } = freshService(
+          repoDir,
+          executor,
+          tracker,
+          catalogStore,
+        );
+        const run = await service.execute(workflow.name);
+        assertEquals(run.status, "suspended");
+        const owner: Owner = {
+          pid: Deno.pid + 1,
+          instanceId: starter === "serve" ? crypto.randomUUID() : undefined,
+        };
+        await startedBy(repoDir, workflow, run.id, owner);
+        const approved = (await runRepo.findById(workflowId, run.id))!;
+        approved.getJob("main")!.getStep("gate1")!.succeed();
+        await runRepo.save(workflowId, approved);
+
+        const events = service.resume(workflow.name, run.id, {
+          instanceId: resumer === "serve" ? crypto.randomUUID() : undefined,
+        });
+        for await (const _ of events) { /* drain */ }
+
+        const suspended = (await runRepo.findById(workflowId, run.id))!;
+        assertEquals(suspended.status, "suspended");
+        assertEquals(executor.count("main/build"), 1);
+        assertEquals(suspended.pid, owner.pid);
+        assertEquals(suspended.instanceId, owner.instanceId);
+        // Cancel and supersede treat it as the starter's run.
+        assertEquals(isServeOwnedRun(suspended), starter === "serve");
+        const superseded = await supersedeSuspendedRuns(
+          workflowId,
+          suspended.inputs,
+          (id) => runRepo.findAllByWorkflowId(id),
+          runRepo,
+        );
+        assertEquals(
+          superseded.cancelledRunIds,
+          starter === "serve" ? [] : [run.id],
+        );
+      } finally {
+        tracker.close();
+        catalogStore.close();
+      }
+    });
+  });
 }
 
 // ── Serve handler branches on a real repository ─────────────────────────
@@ -587,6 +712,18 @@ async function failOverServe(
   return { ctx, runId };
 }
 
+/** Records the run data of every save through the context's run repository. */
+function recordSaves(ctx: ConnectionContext): WorkflowRunData[] {
+  const saved: WorkflowRunData[] = [];
+  const repo = ctx.repoContext.workflowRunRepo;
+  const save = repo.save.bind(repo);
+  repo.save = (workflowId, run) => {
+    saved.push(run.toData());
+    return save(workflowId, run);
+  };
+  return saved;
+}
+
 async function stepStatuses(
   ctx: ConnectionContext,
   workflow: Workflow,
@@ -646,6 +783,7 @@ for (const withRegistry of [false, true]) {
               this.sent.push(data);
             },
           };
+          const saved = recordSaves(ctx);
 
           await handleWorkflowResume(
             socket as unknown as WebSocket,
@@ -678,13 +816,22 @@ for (const withRegistry of [false, true]) {
             prepare: "succeeded",
             check: "succeeded",
           });
-          // The record names serve as the process that drove the retry.
+          // While serve drove the retry the record named serve; finished,
+          // it names the local run's owner again.
+          const running = saved.filter((d) =>
+            d.id === runId && d.status === "running"
+          );
+          assertEquals(running.length > 0, true);
+          for (const record of running) {
+            assertEquals(record.pid, Deno.pid);
+            assertEquals(record.instanceId, ctx.instanceId);
+          }
           const retried = await ctx.repoContext.workflowRunRepo.findById(
             createWorkflowId(workflow.id),
             createWorkflowRunId(runId),
           );
           assertEquals(retried?.pid, Deno.pid);
-          assertEquals(retried?.instanceId, ctx.instanceId);
+          assertEquals(retried?.instanceId, undefined);
           // prepare succeeded the first time and is not a dependent of check.
           assertEquals(
             await countInRunLog(ctx, workflow, runId, "prepared"),

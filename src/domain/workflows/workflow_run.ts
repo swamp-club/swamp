@@ -216,6 +216,15 @@ export const WorkflowRunSchema = z.object({
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
   initiatedBy: z.string().optional(),
   instanceId: z.string().optional(),
+  // The pid and instance id the run had before a resume took it over, kept
+  // while the resume drives the run and restored when the run leaves
+  // running. `pid` and `instanceId` name the live process only while it runs;
+  // otherwise they name the run's owner, which cancel routing and supersede
+  // read.
+  ownerBeforeResume: z.object({
+    pid: z.number().int().positive().optional(),
+    instanceId: z.string().optional(),
+  }).optional(),
   triggerSource: z.string().optional(),
   failedStep: z.string().optional(),
   failureReason: z.string().optional(),
@@ -980,6 +989,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
       | undefined = undefined,
     private _inheritedExpressions: string[] = [],
     private _deferredExpressions: DeferredExpression[] = [],
+    private _ownerBeforeResume:
+      | { pid?: number; instanceId?: string }
+      | undefined = undefined,
   ) {}
 
   /**
@@ -1047,6 +1059,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.runPlan,
       validated.inheritedExpressions ?? [],
       validated.deferredExpressions ?? [],
+      validated.ownerBeforeResume,
     );
   }
 
@@ -1170,6 +1183,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     );
     this._status = anyNonTerminal ? "failed" : "succeeded";
     this._completedAt = new Date();
+    this.releaseOwnership();
   }
 
   /**
@@ -1191,6 +1205,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (reason) {
       this._tags["cancel_reason"] = reason;
     }
+    this.releaseOwnership();
   }
 
   /**
@@ -1225,6 +1240,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this._status = "interrupted";
     this._completedAt = new Date();
     this._tags["interrupt_reason"] = reason;
+    this.releaseOwnership();
   }
 
   /**
@@ -1309,6 +1325,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (inputs) {
       this._inputs = inputs;
     }
+    this.releaseOwnership();
   }
 
   /**
@@ -1383,11 +1400,29 @@ export class WorkflowRun implements TriggerEvaluationContext {
   /**
    * Records the process that now drives the run. The instance id is replaced,
    * not merged: a local resume of a run serve started clears it, so cancel
-   * treats the run as local and stops the resuming process.
+   * treats the run as local and stops the resuming process. The run's owner
+   * is kept aside until the run leaves running (see
+   * {@link releaseOwnership}); an owner already kept aside is not replaced.
    */
   private takeOwnership(owner: RunOwner): void {
+    this._ownerBeforeResume ??= {
+      pid: this._pid,
+      instanceId: this._instanceId,
+    };
     this._pid = owner.pid;
     this._instanceId = owner.instanceId;
+  }
+
+  /**
+   * Hands the run back to the owner a resume took it from, once no process
+   * drives it: a run that suspends again is cancelled and superseded as its
+   * owner's run, not as the resume's.
+   */
+  private releaseOwnership(): void {
+    if (this._ownerBeforeResume === undefined) return;
+    this._pid = this._ownerBeforeResume.pid;
+    this._instanceId = this._ownerBeforeResume.instanceId;
+    this._ownerBeforeResume = undefined;
   }
 
   /**
@@ -1532,6 +1567,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._instanceId !== undefined) {
       data.instanceId = this._instanceId;
+    }
+    if (this._ownerBeforeResume !== undefined) {
+      data.ownerBeforeResume = { ...this._ownerBeforeResume };
     }
     if (this._triggerSource !== undefined) {
       data.triggerSource = this._triggerSource;

@@ -374,7 +374,10 @@ started) is not reported; the run is recorded as cancelled instead.
 **Run ownership:** the run record and the tracker row follow the resuming
 process. Before any step runs, the resume records its pid, and serve's instance
 id when serve drives it, so `workflow cancel` stops the resume rather than the
-process that started the run. See [run tracker](../enablers/run-tracker.md).
+process that started the run. When the run leaves `running` again, the record
+names its original owner once more: a run that suspends at a later gate is
+cancelled and superseded as the run of whoever started it. See
+[run tracker](../enablers/run-tracker.md).
 
 **Limits:** these are part of the operator contract.
 

@@ -8780,9 +8780,16 @@ Deno.test("resume: the first save names the resuming process as owner", async ()
     assertEquals(first.pid, Deno.pid);
     // A local resume of a run serve started clears serve's instance id.
     assertEquals(first.instanceId, undefined);
-    const stored = await runRepo.findById(workflow.id, failed.id);
-    assertEquals(stored?.pid, Deno.pid);
-    assertEquals(stored?.instanceId, undefined);
+    assertEquals(first.ownerBeforeResume, {
+      pid: Deno.pid + 1,
+      instanceId: "serve-a",
+    });
+    // Once the resume ends, the run names its owner again.
+    const stored = (await runRepo.findById(workflow.id, failed.id))!.toData();
+    assertEquals(stored.status, "succeeded");
+    assertEquals(stored.pid, Deno.pid + 1);
+    assertEquals(stored.instanceId, "serve-a");
+    assertEquals(stored.ownerBeforeResume, undefined);
   });
 });
 
@@ -9023,6 +9030,86 @@ Deno.test("resume: a failed resume of a suspended run hands a registered row bac
     assertEquals(tracker.completions.slice(completions), [
       { runId: suspended.id, status: "suspended" },
     ]);
+  });
+});
+
+/**
+ * Runs `fn` while recording the 30-second intervals it starts and clears, so a
+ * test can see whether the resume heartbeat is running. Test files run in
+ * their own workers and tests in a file run in turn, so the wrap is local.
+ */
+async function withHeartbeatWatch(
+  fn: (running: () => number) => Promise<void>,
+): Promise<void> {
+  type IntervalId = ReturnType<typeof setInterval>;
+  const active = new Set<IntervalId>();
+  const set = globalThis.setInterval;
+  const clear = globalThis.clearInterval;
+  const watchedSet = (handler: () => void, timeout?: number): IntervalId => {
+    const id = set(handler, timeout);
+    if (timeout === 30_000) active.add(id);
+    return id;
+  };
+  const watchedClear = (id?: IntervalId): void => {
+    if (id !== undefined) active.delete(id);
+    clear(id);
+  };
+  globalThis.setInterval = watchedSet as unknown as typeof setInterval;
+  globalThis.clearInterval = watchedClear as typeof clearInterval;
+  try {
+    await fn(() => active.size);
+  } finally {
+    globalThis.setInterval = set;
+    globalThis.clearInterval = clear;
+    for (const id of active) clear(id);
+  }
+}
+
+Deno.test("resume: the heartbeat runs from the tracker hand-over and stops when the resume ends", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(false);
+    const tracker = new RecordingRunTracker();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compute");
+    const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
+    executor.failing.clear();
+
+    await withHeartbeatWatch(async (running) => {
+      const events = service.resume(workflow.name, failed.id);
+      try {
+        assertEquals((await events.next()).value?.kind, "started");
+        assertEquals(running(), 1);
+        let next: IteratorResult<unknown>;
+        do {
+          next = await events.next();
+        } while (!next.done);
+      } finally {
+        await events.return(undefined);
+      }
+      assertEquals(running(), 0);
+    });
+  });
+});
+
+Deno.test("resume: a resume that fails before execution stops the heartbeat", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(false);
+    const tracker = new RecordingRunTracker();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compute");
+    const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
+
+    await withHeartbeatWatch(async (running) => {
+      await assertRejects(
+        () =>
+          drainResume(service, workflow.name, failed.id, {
+            inputs: { n: "x" },
+          }),
+        Error,
+        "no such overload",
+      );
+      assertEquals(running(), 0);
+    });
   });
 });
 

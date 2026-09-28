@@ -87,18 +87,23 @@ days are purged at startup. `swamp run gc` removes older records on demand:
 6. **Reactivate**: on resume, the row passes to the resuming process. A
    `suspended`, `failed` or `interrupted` row becomes `running` with that
    process's pid, hostname and `instance_id` (serve's instance id when serve
-   drives the resume, none for a local one), and the heartbeat restarts.
-   `interrupted` is accepted because `workflow recover` sets the run record back
-   to suspended while the row stays interrupted. A row that retention purged is
-   registered again. The workflow-run record passes over too: the resume's first
-   save records the same pid and instance id, and the row is handed over right
-   after it, before the resume prepares. So `workflow cancel` stops the live
-   resume, and serve's boot reapers find either a running row or, with no row,
-   a live pid, and leave it alone. A resume that fails before execution restores
-   the record and returns the row to its prior status. The hand-over is best-effort: a
-   tracker error is logged and the resume goes on. A resume that serve drives
-   carries serve's instance id, which a later serve boot treats as another
-   instance's, as it does for a run serve started.
+   drives the resume, none for a local one). `interrupted` is accepted because
+   `workflow recover` sets the run record back to suspended while the row stays
+   interrupted. A row that retention purged is registered again. The
+   workflow-run record passes over too: the resume's first save records the
+   same pid and instance id, and the row is handed over, and its heartbeat
+   started, right after it, before the resume prepares. So `workflow cancel`
+   stops the live resume, and serve's boot reapers find either a running row
+   or, with no row, a live pid, and leave it alone. A resume that fails before
+   execution restores the record, stops the heartbeat and returns the row to
+   its prior status; the row keeps the failed resume's pid and hostname, which
+   no reaper reads on a row that is not running. The hand-over is best-effort:
+   a tracker error is logged and the resume goes on. A resume that serve
+   drives carries serve's instance id while it runs, which a later serve boot
+   treats as another instance's, as it does for a run serve started. When the
+   run leaves `running` (suspends, finishes, is cancelled or interrupted), the
+   record names its owner from before the resume again (`ownerBeforeResume`),
+   so cancel routing and supersede treat it as the run of whoever started it.
 
 ### Coverage
 
