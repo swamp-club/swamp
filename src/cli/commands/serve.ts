@@ -211,6 +211,7 @@ import {
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { setProcessGroupIsolation } from "../../infrastructure/process/process_group_policy.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -1762,6 +1763,10 @@ export const serveCommand = new Command()
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve"]);
     const repoDir = resolveRepoDir(options.repoDir as string | undefined);
+    // Runs here are triggered remotely: nobody at serve's terminal answers a
+    // step's prompts, so aborting a run must reach every process it started
+    // even when serve runs in the foreground.
+    setProcessGroupIsolation("always");
     const isJson = ctx.outputMode === "json";
     if (!isJson) {
       enableServeOutput();

@@ -145,6 +145,7 @@ async function executeCommand(
       signal: context.signal,
       logger: context.logger,
       redactor: context.redactor,
+      terminateProcessTree: true,
     });
 
     stdout = redact(result.stdout);

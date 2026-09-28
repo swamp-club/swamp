@@ -41,6 +41,9 @@ import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 import { Definition } from "../../../definitions/definition.ts";
 import { extractForeignTemplateFields } from "../../foreign_template_fields.ts";
 import { DefaultModelValidationService } from "../../validation_service.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { setProcessGroupIsolation } from "../../../../infrastructure/process/process_group_policy.ts";
+import { isProcessAlive } from "../../../../infrastructure/process/process_kill.ts";
 
 /**
  * Skip on Windows. The matching `windowsOnlyTest` below covers the
@@ -601,6 +604,47 @@ posixOnlyTest(
       Error,
       "Command exited with code 1",
     );
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute: aborting the step terminates every process it started",
+  async () => {
+    // swamp-club#2634: aborting used to SIGTERM only `sh`, leaving the
+    // command's own children running after the step reported cancelled.
+    const previous = setProcessGroupIsolation("always");
+    const pidFile = await Deno.makeTempFile({ prefix: "swamp-pid-" });
+    const readPid = async () =>
+      Number((await Deno.readTextFile(pidFile)).trim());
+    try {
+      const controller = new AbortController();
+      const args: ShellInputAttributes = {
+        run: `sleep 30 & echo $! > '${pidFile}'; wait`,
+      };
+      const { context } = createTestContext({ signal: controller.signal });
+      const run = shellModel.methods.execute.execute(args, context);
+      await waitFor(
+        () => readPid().then((pid) => pid > 0, () => false),
+        "grandchild pid file",
+      );
+      controller.abort();
+
+      await assertRejects(() => run);
+      const grandchild = await readPid();
+      await waitFor(
+        () => !isProcessAlive(grandchild),
+        "grandchild to be terminated",
+      );
+    } finally {
+      setProcessGroupIsolation(previous);
+      const pid = await readPid().catch(() => 0);
+      if (pid > 0) {
+        try {
+          Deno.kill(pid, "SIGKILL");
+        } catch { /* already gone */ }
+      }
+      await Deno.remove(pidFile).catch(() => {});
+    }
   },
 );
 

@@ -26,6 +26,7 @@
 
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { setProcessGroupIsolation } from "../../infrastructure/process/process_group_policy.ts";
 import { runDispatchRunner } from "../../worker/exec_dispatch.ts";
 
 // Import models barrel so built-in models resolve from the runner's own
@@ -57,6 +58,10 @@ export const workerExecDispatchCommand = new Command()
   .hidden()
   .action(async () => {
     redirectConsoleToStderr();
+    // Dispatches are remote and stdio carries RPC frames, so a step's
+    // prompts cannot be answered here: always let a cancel reach every
+    // process the step started.
+    setProcessGroupIsolation("always");
 
     await initializeLogging({
       logLevel: "info",
