@@ -2057,6 +2057,19 @@ interface StepOptions {
 }
 
 /**
+ * Adds `jobName` to `started` once `stream` is first pulled, which
+ * mergeWithConcurrency does only when the job gets a permit.
+ */
+async function* markStarted<T>(
+  jobName: string,
+  started: Set<string>,
+  stream: AsyncIterable<T>,
+): AsyncGenerator<T> {
+  started.add(jobName);
+  yield* stream;
+}
+
+/**
  * Domain service for workflow execution.
  */
 export class WorkflowExecutionService {
@@ -2499,18 +2512,29 @@ export class WorkflowExecutionService {
 
       // Execute jobs level by level
       let anyJobFailed = false;
+      const startedJobs = new Set<string>();
       for (const level of sortedJobs.levels) {
         const { levelSignal, levelStepOpts, abortedBeforeLevel } = this
-          .enterJobLevel(run, anyJobFailed, options?.signal, stepOpts);
+          .enterJobLevel(
+            run,
+            startedJobs,
+            anyJobFailed,
+            options?.signal,
+            stepOpts,
+          );
 
         // Merge parallel job generators within each level
         const jobStreams = level.map((jobName) =>
-          this.runJob(
-            workflow,
-            run,
+          markStarted(
             jobName,
-            expressionContext,
-            levelStepOpts,
+            startedJobs,
+            this.runJob(
+              workflow,
+              run,
+              jobName,
+              expressionContext,
+              levelStepOpts,
+            ),
           )
         );
         for await (
@@ -3031,9 +3055,16 @@ export class WorkflowExecutionService {
       >();
 
       let anyJobFailed = false;
+      const startedJobs = new Set<string>();
       for (const level of sortedJobs.levels) {
         const { levelSignal, levelStepOpts, abortedBeforeLevel } = this
-          .enterJobLevel(existingRun, anyJobFailed, options?.signal, stepOpts);
+          .enterJobLevel(
+            existingRun,
+            startedJobs,
+            anyJobFailed,
+            options?.signal,
+            stepOpts,
+          );
 
         const jobStreams = level.map((jobName: string) => {
           const jobRun = existingRun.getJob(jobName);
@@ -3042,14 +3073,21 @@ export class WorkflowExecutionService {
             (jobRun.status === "succeeded" || jobRun.status === "failed" ||
               jobRun.status === "skipped" || jobRun.status === "unknown")
           ) {
+            // A job that failed before this resume counts once its level is
+            // reached, as its job_completed event did when it failed.
+            if (jobRun.status === "failed") anyJobFailed = true;
             return (async function* () {})();
           }
-          return this.runJob(
-            resolvedWorkflow,
-            existingRun,
+          return markStarted(
             jobName,
-            expressionContext,
-            levelStepOpts,
+            startedJobs,
+            this.runJob(
+              resolvedWorkflow,
+              existingRun,
+              jobName,
+              expressionContext,
+              levelStepOpts,
+            ),
           );
         });
         for await (
@@ -4587,12 +4625,15 @@ export class WorkflowExecutionService {
    * Prepares one job level of a run or resume. After a job failure with an
    * aborted signal, the level runs in cleanup mode: a fresh cleanup signal so
    * always/completed job dependents can run (shouldJobRun() handles
-   * filtering), and any jobs/steps still in "running" status are marked
-   * failed — the signal aborted their execution but the generators were
-   * abandoned before they could record the failure.
+   * filtering), and any job this walk started that is still "running" is
+   * marked failed with its running steps — the signal aborted their execution
+   * but the generators were abandoned before they could record the failure.
+   * A job a resume inherited as running from a suspension is in flight only
+   * once this walk starts it, so it runs when its level is reached.
    */
   private enterJobLevel(
     run: WorkflowRun,
+    started: ReadonlySet<string>,
     anyJobFailed: boolean,
     signal: AbortSignal | undefined,
     stepOpts: StepOptions,
@@ -4611,6 +4652,7 @@ export class WorkflowExecutionService {
 
     if (cleanupMode) {
       for (const jobRun of run.jobs) {
+        if (!started.has(jobRun.jobName)) continue;
         for (const step of jobRun.steps) {
           if (step.status === "running") {
             step.fail(CANCELLED_STEP_ERROR);
@@ -4642,9 +4684,10 @@ export class WorkflowExecutionService {
    *
    * When the signal aborts mid-level with parallel jobs, mergeWithConcurrency
    * may exit before job_completed events are consumed, so a failure is also
-   * derived from model state. Only a level the abort interrupted can do that:
-   * a job a resume inherited as running from a suspension must not count as
-   * failed when the resume's abort fired before its level started it.
+   * derived from model state. A running job counts even when a resume
+   * inherited it from a suspension: the cancellation left its work
+   * unfinished, so later levels run in cleanup mode, which fails only the jobs
+   * this walk started (enterJobLevel).
    */
   private finishJobLevel(
     workflow: Workflow,
@@ -4672,7 +4715,7 @@ export class WorkflowExecutionService {
       }
     }
 
-    if (!anyJobFailed && !abortedBeforeLevel && signal?.aborted) {
+    if (!anyJobFailed && signal?.aborted) {
       return run.jobs.some((j) =>
         j.status === "running" || j.status === "failed" ||
         j.status === "unknown"

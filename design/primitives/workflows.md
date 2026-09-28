@@ -1388,9 +1388,11 @@ order:
 - `workflow resume` applies the same step- and job-level cleanup when its own
   cancellation interrupts a level: later job levels run with the cleanup
   signal, and it settles never-started steps and jobs the same way
-  (swamp-club#2550). A cancellation that fires before the resume interrupts
-  any level does not start cleanup mode (see the known limitation below), so
-  a job the run was suspended in is left `running` rather than failed.
+  (swamp-club#2550). A job that failed before the resume counts once the
+  resume reaches its level. A job the run was suspended in is unfinished work,
+  so it also starts cleanup mode, but cleanup fails only jobs the resume
+  started: one in a later level runs with the cleanup signal when its level is
+  reached, and one the cancellation kept from starting stays `running`.
 - A resume of the run runs the work its abort settled, as it would have run
   the `pending` records. This holds for a plain resume, one after `workflow
   recover` or an approval, and a retry or `--from`. Each settled step is reset
