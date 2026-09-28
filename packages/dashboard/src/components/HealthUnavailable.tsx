@@ -32,7 +32,8 @@ export function HealthUnavailable(
       <div>
         Access denied: serve refused this token's health stream, so {subject}
         {" "}
-        can't be shown.
+        can't be shown. Log in again; if that doesn't help, this serve may
+        predate health access for non-admin tokens.
       </div>
     </div>
   );

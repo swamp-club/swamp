@@ -219,7 +219,10 @@ import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
 import { createHealthStreamResponse } from "../../serve/health_stream.ts";
-import { healthSnapshotFor } from "../../serve/health_snapshot_view.ts";
+import {
+  createHealthResourceResolver,
+  healthSnapshotFor,
+} from "../../serve/health_snapshot_view.ts";
 import {
   type AdminAuthDeps,
   authenticateAdmin,
@@ -4547,6 +4550,8 @@ export const serveCommand = new Command()
 
     connectionCtx.healthCollector = healthCollector;
 
+    const healthResources = createHealthResourceResolver(repoContext);
+
     const adminAuthDeps: AdminAuthDeps = {
       authMode: authConfig.mode,
       repoDir: resolvedRepoDir,
@@ -4958,7 +4963,9 @@ export const serveCommand = new Command()
             if (!auth.ok) return auth.response;
             const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
             const snapshot = await healthCollector.collect(ac.signal);
-            return Response.json(healthSnapshotFor(snapshot, reader));
+            return Response.json(
+              await healthSnapshotFor(snapshot, reader, healthResources),
+            );
           }
 
           // SSE health stream, bound to its token session so revoking,
@@ -4975,14 +4982,17 @@ export const serveCommand = new Command()
 
             return createHealthStreamResponse({
               collect: async (signal) =>
-                healthSnapshotFor(
+                await healthSnapshotFor(
                   await healthCollector.collect(signal),
                   reader,
+                  healthResources,
                 ),
               intervalParam: url.searchParams.get("interval"),
               lastEventId: req.headers.get("Last-Event-ID"),
               serverSignal: ac.signal,
               requestSignal: req.signal,
+              // Auth mode none has no token, so there is no session to bind
+              // and no per-token cap: that mode is unauthenticated by design.
               registerSession: token === null
                 ? undefined
                 : (closer) =>

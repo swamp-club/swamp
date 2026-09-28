@@ -49,6 +49,7 @@ import {
   setConnectionToken,
   terminateTokenSessions,
   type TerminateTokenSessionsOptions,
+  updateCollectivesForPrincipal,
 } from "./shared.ts";
 import type { ServerMessage } from "../protocol.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
@@ -988,4 +989,21 @@ Deno.test("registerStreamSession: refuses a token's stream past the cap, across 
   for (const stream of streams) stream.unregister();
   other.unregister();
   assertEquals(sessionsFor(name), []);
+});
+
+Deno.test("updateCollectivesForPrincipal: ends that principal's streams so they reconnect with the new access", () => {
+  const principal = `user:${crypto.randomUUID()}`;
+  const name = `tok-${crypto.randomUUID()}`;
+  const mine = openStream(name, MINT_1, principal);
+  const theirs = openStream(`tok-${crypto.randomUUID()}`, MINT_1, "user:other");
+
+  updateCollectivesForPrincipal(principal, ["team-b"], []);
+
+  assertEquals(mine.closes, [{
+    code: 4004,
+    reason: "Session ended: access changed, reconnect",
+  }]);
+  assertEquals(theirs.closes, []);
+  assertEquals(sessionsFor(name), []);
+  theirs.unregister();
 });

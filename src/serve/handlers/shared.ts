@@ -420,11 +420,22 @@ export function updateCollectivesForPrincipal(
   collectives: readonly string[],
   groups: readonly string[],
 ): void {
-  const sockets = principalSockets.get(principalId);
-  if (!sockets) return;
-  for (const socket of sockets) {
+  for (const socket of principalSockets.get(principalId) ?? []) {
     connectionCollectives.set(socket, collectives);
     connectionGroups.set(socket, groups);
+  }
+  // A stream authorized each snapshot with the memberships it opened with.
+  // End it so the client reconnects and is authorized with the new ones.
+  for (const streams of [...tokenStreams.values()]) {
+    for (const stream of [...streams]) {
+      if (stream.binding.principalId !== principalId) continue;
+      unregisterStream(stream);
+      closeStream(
+        stream,
+        ACCESS_CHANGED_CLOSE_CODE,
+        STREAM_ACCESS_CHANGED_REASON,
+      );
+    }
   }
 }
 
@@ -496,6 +507,10 @@ export type TokenSessionTerminationCause =
 // close-frame limit). Each names its cause, so a client can tell a revoked
 // token apart from a principal losing access.
 export const PRINCIPAL_REVOKED_REASON = "Session revoked: access removed";
+/** The token still works; reconnecting picks up the principal's new access. */
+export const ACCESS_CHANGED_CLOSE_CODE = 4004;
+export const STREAM_ACCESS_CHANGED_REASON =
+  "Session ended: access changed, reconnect";
 export const TOKEN_REVOKED_REASON = "Session revoked: token revoked";
 export const TOKEN_ROTATED_REASON =
   "Session revoked: token rotated, reconnect with the new credential";

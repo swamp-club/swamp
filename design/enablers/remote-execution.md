@@ -233,7 +233,10 @@ two ways:
 WebSockets and streams alike. A stream ends with a final `session-ended` event
 carrying the code and reason, as SSE has no close frame. Deprovisioning
 (`closeConnectionsForPrincipal`) ends a principal's streams as well as its
-sockets. `terminateTokenSessions` records an `auth.session.terminated` audit
+sockets. A stream authorizes each snapshot with the collectives and groups it
+opened with, so when the collective refresh changes them
+(`updateCollectivesForPrincipal`) the principal's streams end with 4004 and
+the client reconnects under the new memberships. `terminateTokenSessions` records an `auth.session.terminated` audit
 event per session (see
 [serve-audit.md](serve-audit.md)) and unbinds each session as it closes, so a
 peer that never completes the close handshake is not closed and audited again.

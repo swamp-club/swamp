@@ -21,7 +21,10 @@ import { assertEquals, assertStrictEquals } from "@std/assert";
 import type { AccessResource } from "../domain/access/mod.ts";
 import type { ReadAuthorizer } from "./admin_auth.ts";
 import type { HealthSnapshot } from "./health_collector.ts";
-import { healthSnapshotFor } from "./health_snapshot_view.ts";
+import {
+  type HealthResourceResolver,
+  healthSnapshotFor,
+} from "./health_snapshot_view.ts";
 
 function snapshot(): HealthSnapshot {
   return {
@@ -113,13 +116,45 @@ function reader(
   };
 }
 
-Deno.test("healthSnapshotFor: an admin gets the snapshot unchanged", () => {
+/**
+ * Resolves the fixture's entries the way the repositories would: `wf-2` is the
+ * id of `secret-flow`, `echo-model` is of type `@acme/echo`, and `ghost`
+ * exists nowhere.
+ */
+const RESOLVER: HealthResourceResolver = {
+  workflow: (idOrName) => {
+    const name = idOrName === "wf-2" ? "secret-flow" : idOrName;
+    if (!["nightly", "secret-flow"].includes(name)) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve({
+      kind: "workflow",
+      name,
+      fields: { name, tags: { team: name === "nightly" ? "ops" : "finance" } },
+    });
+  },
+  model: (idOrName) =>
+    Promise.resolve(
+      idOrName === "echo-model"
+        ? {
+          kind: "model",
+          name: "echo-model",
+          fields: { name: "echo-model", modelType: "@acme/echo" },
+        }
+        : null,
+    ),
+};
+
+Deno.test("healthSnapshotFor: an admin gets the snapshot unchanged", async () => {
   const original = snapshot();
-  assertStrictEquals(healthSnapshotFor(original, reader(true)), original);
+  assertStrictEquals(
+    await healthSnapshotFor(original, reader(true), RESOLVER),
+    original,
+  );
 });
 
-Deno.test("healthSnapshotFor: a reader with no grants sees no names, routes, principals or deployment detail", () => {
-  const view = healthSnapshotFor(snapshot(), reader(false));
+Deno.test("healthSnapshotFor: a reader with no grants sees no names, routes, principals or deployment detail", async () => {
+  const view = await healthSnapshotFor(snapshot(), reader(false), RESOLVER);
 
   assertEquals(view.activeRuns, []);
   assertEquals(view.scheduling, { enabled: true, schedules: [] });
@@ -131,14 +166,14 @@ Deno.test("healthSnapshotFor: a reader with no grants sees no names, routes, pri
   assertEquals(view.metrics.completions, 4);
 });
 
-Deno.test("healthSnapshotFor: keeps what the reader may read, without run principals", () => {
+Deno.test("healthSnapshotFor: keeps what the reader may read, without run principals", async () => {
   const r = reader(
     false,
     (resource) =>
       (resource.kind === "workflow" && resource.name === "nightly") ||
       (resource.kind === "model" && resource.name === "echo-model"),
   );
-  const view = healthSnapshotFor(snapshot(), r);
+  const view = await healthSnapshotFor(snapshot(), r, RESOLVER);
 
   assertEquals(
     view.activeRuns.map((run) => [run.runId, run.principalId]),
@@ -151,14 +186,59 @@ Deno.test("healthSnapshotFor: keeps what the reader may read, without run princi
   assertEquals(view.webhooks.map((w) => w.route), ["/hooks/nightly"]);
 });
 
-Deno.test("healthSnapshotFor: method runs are checked as models, other runs as workflows", () => {
-  const r = reader(false);
-  healthSnapshotFor(snapshot(), r);
+Deno.test("healthSnapshotFor: decides on resolved fields, so model-type and tag grants apply", async () => {
+  const r = reader(false, () => true);
+  await healthSnapshotFor(snapshot(), r, RESOLVER);
 
-  const runChecks = r.asked.slice(0, 3);
-  assertEquals(runChecks, [
-    { kind: "workflow", name: "nightly", fields: { name: "nightly" } },
-    { kind: "workflow", name: "secret-flow", fields: { name: "secret-flow" } },
-    { kind: "model", name: "echo-model", fields: { name: "echo-model" } },
-  ]);
+  const byName = new Map(r.asked.map((res) => [res.name, res]));
+  assertEquals(byName.get("echo-model"), {
+    kind: "model",
+    name: "echo-model",
+    fields: { name: "echo-model", modelType: "@acme/echo" },
+  });
+  assertEquals(byName.get("nightly")?.fields, {
+    name: "nightly",
+    tags: { team: "ops" },
+  });
+
+  const noAcme = reader(
+    false,
+    (resource) => resource.fields.modelType !== "@acme/echo",
+  );
+  const view = await healthSnapshotFor(snapshot(), noAcme, RESOLVER);
+  assertEquals(view.activeRuns.map((run) => run.runId), ["r1", "r2"]);
+});
+
+Deno.test("healthSnapshotFor: an entry naming a workflow by id is decided on its name", async () => {
+  const original = snapshot();
+  const withId = {
+    ...original,
+    webhooks: [{ route: "/hooks/by-id", workflow: "wf-2", scheme: "hmac" }],
+  };
+  const denySecret = reader(
+    false,
+    (resource) => resource.name !== "secret-flow",
+  );
+
+  const view = await healthSnapshotFor(withId, denySecret, RESOLVER);
+
+  assertEquals(view.webhooks, []);
+});
+
+Deno.test("healthSnapshotFor: an entry that cannot be resolved is hidden", async () => {
+  const original = snapshot();
+  const ghost = {
+    ...original,
+    activeRuns: [{ ...original.activeRuns[0], resourceName: "ghost" }],
+    webhooks: [{ route: "/hooks/ghost", workflow: "ghost", scheme: "hmac" }],
+  };
+
+  const view = await healthSnapshotFor(
+    ghost,
+    reader(false, () => true),
+    RESOLVER,
+  );
+
+  assertEquals(view.activeRuns, []);
+  assertEquals(view.webhooks, []);
 });

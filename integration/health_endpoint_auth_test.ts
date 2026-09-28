@@ -45,7 +45,10 @@ import {
   createReadAuthorizer,
 } from "../src/serve/admin_auth.ts";
 import type { HealthSnapshot } from "../src/serve/health_collector.ts";
-import { healthSnapshotFor } from "../src/serve/health_snapshot_view.ts";
+import {
+  createHealthResourceResolver,
+  healthSnapshotFor,
+} from "../src/serve/health_snapshot_view.ts";
 import { readServerTokenRecord } from "../src/serve/token_auth.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import "../src/domain/models/models.ts";
@@ -138,7 +141,7 @@ Deno.test("health endpoint auth: a valid token without grants reads health with 
     });
     assertEquals(health.clientAddr, "192.0.2.30");
 
-    const view = healthSnapshotFor(
+    const view = await healthSnapshotFor(
       {
         instanceId: "instance-1",
         deploymentMode: "local",
@@ -180,6 +183,7 @@ Deno.test("health endpoint auth: a valid token without grants reads health with 
         }],
       } satisfies HealthSnapshot,
       createReadAuthorizer(health.authResult, deps),
+      createHealthResourceResolver(repoContext),
     );
     assertEquals(view.activeRuns, []);
     assertEquals(view.scheduling.schedules, []);
