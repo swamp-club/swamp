@@ -935,6 +935,17 @@ Deno.test("WorkflowRun.recordCancelReason: replaces the reason on a cancelled ru
   assertEquals(run.completedAt, completedAt);
 });
 
+Deno.test("WorkflowRun.recordCancelReason: ignores an empty reason, as cancel does", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.cancel("aborted");
+
+  run.recordCancelReason("");
+
+  assertEquals(run.tags.cancel_reason, "aborted");
+});
+
 Deno.test("WorkflowRun.recordCancelReason: no-ops on a run that is not cancelled", () => {
   const workflow = createTestWorkflow();
 

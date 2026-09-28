@@ -28,6 +28,7 @@ import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
   buildCancelUrl,
+  cancelAllLocalRuns,
   cancelLocalRun,
   isServeOwnedRun,
 } from "./workflow_cancel.ts";
@@ -365,5 +366,60 @@ Deno.test("cancelLocalRun: does not recreate a run record deleted during the kil
 
     assertEquals(result, null);
     assertEquals(await runRepo.findById(workflowId, snapshot.id), null);
+  });
+});
+
+Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const cancelledId = crypto.randomUUID();
+    const succeededId = crypto.randomUUID();
+    const deletedId = crypto.randomUUID();
+    const snapshots = [cancelledId, succeededId, deletedId].map((id) =>
+      WorkflowRun.fromData(snapshotData(id))
+    );
+    await runRepo.save(workflowId, snapshots[0]);
+    await runRepo.save(workflowId, snapshots[1]);
+
+    // Only the succeeded run's owner saves a final record during the kill;
+    // the deleted run was never saved.
+    const result = await cancelAllLocalRuns(
+      snapshots.map((run) => ({
+        run,
+        workflowId,
+        workflowName: "test-workflow",
+      })),
+      "No longer needed",
+      {
+        runRepo,
+        killProcess: async () => {
+          await runRepo.save(
+            workflowId,
+            WorkflowRun.fromData(ownerFinalData(succeededId, "succeeded")),
+          );
+          return true;
+        },
+      },
+    );
+
+    assertEquals(result, {
+      cancelled: [{
+        runId: cancelledId,
+        workflowName: "test-workflow",
+        previousStatus: "running",
+      }],
+      finished: [{
+        runId: succeededId,
+        workflowName: "test-workflow",
+        previousStatus: "running",
+        status: "succeeded",
+      }],
+      deleted: [{
+        runId: deletedId,
+        workflowName: "test-workflow",
+        status: "deleted",
+      }],
+    });
   });
 });
