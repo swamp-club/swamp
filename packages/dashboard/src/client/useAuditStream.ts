@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { socketProtocols } from "./connection.ts";
 import { useSwamp } from "./SwampProvider";
 
 export interface AuditEvent {
@@ -52,7 +53,7 @@ export function useAuditStream(): {
   maxEvents: number;
   setMaxEvents: (n: number) => void;
 } {
-  const { connected, request, token } = useSwamp();
+  const { connected, request, token, authMode } = useSwamp();
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [liveEnabled, setLiveEnabled] = useState(true);
@@ -108,8 +109,7 @@ export function useAuditStream(): {
     let cancelled = false;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${proto}//${location.host}/`;
-    const protocols = token ? [`bearer.${token}`] : undefined;
-    const ws = new WebSocket(wsUrl, protocols);
+    const ws = new WebSocket(wsUrl, socketProtocols(token, authMode));
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -188,7 +188,7 @@ export function useAuditStream(): {
       }
       wsRef.current = null;
     };
-  }, [connected, token, liveEnabled, maxEvents]);
+  }, [connected, token, authMode, liveEnabled, maxEvents]);
 
   return {
     events,
