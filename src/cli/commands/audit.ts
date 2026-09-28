@@ -18,9 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { isAbsolute } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
 import {
   createContext,
+  findAncestorRepoDir,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
@@ -36,8 +37,12 @@ import type { AuditTimelineResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 import { AuditService } from "../../domain/audit/audit_service.ts";
-import { createBashCommandEntry } from "../../domain/audit/audit_command_entry.ts";
+import {
+  type BashCommandEntry,
+  createBashCommandEntry,
+} from "../../domain/audit/audit_command_entry.ts";
 import { JsonlAuditRepository } from "../../infrastructure/persistence/jsonl_audit_repository.ts";
+import { SWAMP_MARKER_FILE } from "../../infrastructure/persistence/paths.ts";
 import {
   type HookTool,
   normalizeHookInput,
@@ -87,6 +92,99 @@ function readHookInput(tool: HookTool): Promise<string> {
     if (envInput) return Promise.resolve(envInput);
   }
   return readStdin();
+}
+
+/**
+ * Where a hook invocation came from, used to pick the repository its audit
+ * row belongs to. Environment and process state are passed in rather than
+ * read here so resolution stays deterministic under test.
+ */
+export interface AuditHookTarget {
+  /** The `--repo-dir` option on the hook command, if any. */
+  explicitRepoDir?: string;
+  /** The `cwd` field from the hook payload (may be empty or relative). */
+  hookCwd?: string;
+  /** The value of `SWAMP_REPO_DIR`, if set. */
+  envRepoDir?: string;
+  /** The hook process's working directory. */
+  processCwd: string;
+  /** Finds the nearest initialized repo at or above a directory. */
+  findRepo?: (startDir: string) => string | null;
+}
+
+function hasRepoMarker(dir: string): boolean {
+  try {
+    return Deno.statSync(join(dir, SWAMP_MARKER_FILE)).isFile;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolves the initialized swamp repository an audit hook row belongs to.
+ *
+ * An explicit `--repo-dir` is used as given, like every other command: if it
+ * is not an initialized repo the result is `null`. Otherwise these are tried in
+ * order: the hook payload cwd walked up to the nearest `.swamp.yaml`,
+ * `SWAMP_REPO_DIR`, then the process cwd walked up the same way. Returns
+ * `null` when none of them is an initialized repo, so the hook never creates a
+ * `.swamp/` directory outside a repository.
+ *
+ * @internal Exported for testing
+ */
+export function resolveAuditRepoDir(target: AuditHookTarget): string | null {
+  const findRepo = target.findRepo ?? findAncestorRepoDir;
+
+  if (target.explicitRepoDir !== undefined) {
+    const dir = resolve(target.explicitRepoDir);
+    return hasRepoMarker(dir) ? dir : null;
+  }
+
+  if (target.hookCwd && isAbsolute(target.hookCwd)) {
+    // Check the cwd itself first: the ancestor walk spawns git, and the
+    // agent usually runs from the repo root.
+    if (hasRepoMarker(target.hookCwd)) return resolve(target.hookCwd);
+    const dir = findRepo(target.hookCwd);
+    if (dir !== null) return dir;
+  }
+
+  if (target.envRepoDir) {
+    const dir = resolve(target.envRepoDir);
+    if (hasRepoMarker(dir)) return dir;
+  }
+
+  return findRepo(target.processCwd);
+}
+
+/**
+ * Appends a hook's bash command entry to the audit log of the repository
+ * {@link resolveAuditRepoDir} picks. Writes nothing when no initialized
+ * repository is found.
+ *
+ * @param options.cleanup Start old-data cleanup after the append (default
+ *   `true`). Tests pass `false` so no unawaited directory scan outlives them.
+ * @returns Whether the entry was recorded.
+ * @internal Exported for testing
+ */
+export async function recordHookEntry(
+  entry: BashCommandEntry,
+  target: AuditHookTarget,
+  options: { cleanup?: boolean } = {},
+): Promise<boolean> {
+  const repoDir = resolveAuditRepoDir(target);
+  if (repoDir === null) {
+    return false;
+  }
+
+  const repository = new JsonlAuditRepository(repoDir);
+  await repository.append(entry);
+
+  if (options.cleanup ?? true) {
+    // Fire-and-forget cleanup of old audit data
+    const service = new AuditService(repository);
+    service.cleanupOldAuditData();
+  }
+  return true;
 }
 
 /** Valid values for the --tool option */
@@ -154,16 +252,12 @@ export const auditRecordCommand = new Command()
         failure,
       );
 
-      const hookCwd = isAbsolute(normalized.cwd) ? normalized.cwd : undefined;
-      const repoDir = resolveRepoDir(
-        (options.repoDir as string | undefined) ?? hookCwd,
-      );
-      const repository = new JsonlAuditRepository(repoDir);
-      await repository.append(entry);
-
-      // Fire-and-forget cleanup of old audit data
-      const service = new AuditService(repository);
-      service.cleanupOldAuditData();
+      await recordHookEntry(entry, {
+        explicitRepoDir: options.repoDir as string | undefined,
+        hookCwd: normalized.cwd,
+        envRepoDir: Deno.env.get("SWAMP_REPO_DIR"),
+        processCwd: Deno.cwd(),
+      });
     } catch {
       // Must never throw - this is a hook command.
       // Errors would disrupt the user's coding session.

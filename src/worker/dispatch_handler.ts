@@ -31,6 +31,7 @@
  * Capacity 1 is byte-for-byte identical to the prior serial behavior.
  */
 
+import { traceHeadersToEnv } from "../domain/models/execution_envelope.ts";
 import {
   overlayEnvironment,
   stripWorkerCredentials,
@@ -201,11 +202,10 @@ async function handleDispatch(
     params.environmentSnapshot,
   );
   if (execution.traceHeaders) {
-    const traceSnapshot: Record<string, string> = {};
-    for (const [key, value] of Object.entries(execution.traceHeaders)) {
-      traceSnapshot[key.toUpperCase().replace(/-/g, "_")] = value;
-    }
-    spawnEnv = overlayEnvironment(spawnEnv, traceSnapshot);
+    spawnEnv = overlayEnvironment(
+      spawnEnv,
+      traceHeadersToEnv(execution.traceHeaders),
+    );
   }
   spawnEnv = stripWorkerCredentials(spawnEnv);
 

@@ -371,7 +371,12 @@ unchanged, with its message, any next-command hint and any code it carries. An
 error while an interrupted resume unwinds (Ctrl-C or `--timeout` after the run
 started) is not reported; the run is recorded as cancelled instead.
 
-**Run tracker:** the tracker row follows the resuming process. See
+**Run ownership:** the run record and the tracker row follow the resuming
+process. Before any step runs, the resume records its pid, and serve's instance
+id when serve drives it, so `workflow cancel` stops the resume rather than the
+process that started the run. When the run leaves `running` again, the record
+names its original owner once more: a run that suspends at a later gate is
+cancelled and superseded as the run of whoever started it. See
 [run tracker](../enablers/run-tracker.md).
 
 **Limits:** these are part of the operator contract.
@@ -402,10 +407,6 @@ started) is not reported; the run is recorded as cancelled instead.
 - **Approvals are never reused silently.** Retry refuses a rejected approval. A
   gate in the reset set loses its decision and asks again. The `run` grant and
   `approveRequiresExplicitGrant` still govern every gate.
-- **The run record keeps the original process identity.** During a resume, the
-  run record still carries the pid and instance id of the process that started
-  the run. `workflow cancel` may therefore not stop the resume
-  (swamp-club#2420).
 - **Interrupted, cancelled and running runs are out of scope.** Interrupted
   runs still use `recover`. Retry adds no crash-recovery guarantee.
 
@@ -1193,11 +1194,16 @@ Console output names the skipped step and shows the guard expression inline:
    main │ skipped do-work (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0
 ```
 
-JSON output includes both fields:
+In `--json` mode, each guarded skip writes a line with both fields to stderr:
 
 ```json
 {"step":"do-work","job":"main","status":"skipped","reason":"guarded","guardExpression":"data.latest(\"checker\", \"result\").attributes.exitCode == 0","guardResult":true}
 ```
+
+stdout holds only the run document, where each guard-skipped step carries
+`skipReason: {"kind": "guarded", "expression": ...}`. The renderer writes
+through `unguardedConsole` (`src/domain/models/console_guard.ts`), so these
+lines never pass through the console guard of a concurrently running method.
 
 Debug-level logging (`--log-level debug`) shows the guard expression and its
 result for both skipped and non-skipped steps.
@@ -1348,8 +1354,11 @@ order:
   dependency reached `succeeded` or `failed`.
 - Steps whose conditions are not met (`succeeded` on a failed dependency) are
   skipped.
-- In-flight steps stopped by the cancellation signal are marked `failed` with
-  reason `cancelled`.
+- An in-flight step stopped by the cancellation signal is marked `failed`. A
+  step alone in its level is waited for, so it records the error its stopped
+  method reported (for `command/shell`, the killed subprocess's exit). A level
+  holding several steps does not wait for them once the cancellation fires, so
+  each step it leaves `running` is marked `failed` with reason `cancelled`.
 - Steps, `forEach` iterations and jobs that the interrupted level never started
   (queued behind a `concurrency` limit) are settled at the end of that level as
   if they had been reached: skipped when their `dependsOn` is not met (reason
@@ -1375,17 +1384,28 @@ order:
   ambiguous, so neither a `failed`-gated teardown job nor a `succeeded`-gated
   next job runs on it (a `not` condition does), and it gets no
   `job_completed` event. A job that also had a failure ends `failed`, as
-  before. This holds for a job alone in its level; a level holding several
-  jobs does not wait for them after the cancellation, and job-level cleanup
-  marks a job still running `failed` (swamp-club#2549).
+  before.
+- A started job finishes the same way whether or not it shares its level: a
+  level holding several jobs waits for each started job to run its cleanup
+  and reach its outcome. The cancelled record is therefore written once that
+  cleanup has finished. Each cleanup level is bounded by its 30-second
+  cleanup signal, but a method that ignores its signal delays the record, as
+  it would for a job alone in its level.
 - A never-started job settles its steps in dependency order, each as above.
   It stays `pending` while any step is undecided, even when another step was
   cancelled, since nothing in it ran; otherwise it fails when any step failed
   and is skipped when every step was skipped.
 - Settled steps and jobs get no `step_failed`, `step_skipped`, `job_skipped`
   or `job_completed` event; the run record carries their outcome, and marks
-  each settled step `settledByAbort`. `workflow resume` settles steps the same
-  way, but not jobs: its job loop has no cleanup mode (swamp-club#2550).
+  each settled step `settledByAbort`.
+- `workflow resume` applies the same step- and job-level cleanup when its own
+  cancellation interrupts a level: later job levels run with the cleanup
+  signal, and it settles never-started steps and jobs the same way
+  (swamp-club#2550). A job that failed before the resume counts once the
+  resume reaches its level. A job the run was suspended in is unfinished work,
+  so it also starts cleanup mode, but cleanup fails only jobs the resume
+  started: one in a later level runs with the cleanup signal when its level is
+  reached, and one the cancellation kept from starting stays `running`.
 - A resume of the run runs the work its abort settled, as it would have run
   the `pending` records. This holds for a plain resume, one after `workflow
   recover` or an approval, and a retry or `--from`. Each settled step is reset

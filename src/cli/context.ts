@@ -390,11 +390,12 @@ export function resolveRepoDir(cliValue: string | undefined): string {
  */
 export function resolveTraceparent(
   cliValue: string | undefined,
+  envGet: (key: string) => string | undefined = Deno.env.get.bind(Deno.env),
 ): string | undefined {
   if (cliValue !== undefined) {
     return cliValue;
   }
-  return Deno.env.get("TRACEPARENT") || undefined;
+  return envGet("TRACEPARENT") || undefined;
 }
 
 /**
@@ -405,11 +406,12 @@ export function resolveTraceparent(
  */
 export function resolveTracestate(
   cliValue: string | undefined,
+  envGet: (key: string) => string | undefined = Deno.env.get.bind(Deno.env),
 ): string | undefined {
   if (cliValue !== undefined) {
     return cliValue;
   }
-  return Deno.env.get("TRACESTATE") || undefined;
+  return envGet("TRACESTATE") || undefined;
 }
 
 /**

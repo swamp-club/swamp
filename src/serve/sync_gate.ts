@@ -68,6 +68,7 @@
 import { ReadWriteLock } from "../infrastructure/stream/read_write_lock.ts";
 import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { getTracer, SpanStatusCode } from "../infrastructure/tracing/mod.ts";
 
 const logger = getSwampLogger(["serve", "sync-gate"]);
 
@@ -250,6 +251,11 @@ async function runGated<T>(
     GATE_WAIT_TIMEOUT_MS,
   );
   Deno.unrefTimer(timer);
+  // Covers only the wait, not fn, so a slow gated unit shows how much of its
+  // time went to queueing behind a pull or another mutation (swamp-club#2417).
+  const waitSpan = getTracer().startSpan("swamp.serve.sync_gate.wait", {
+    attributes: { "sync_gate.mode": mode },
+  });
   try {
     if (mode === "exclusive") await gate.acquire(controller.signal);
     else await gate.acquireShared(controller.signal);
@@ -261,6 +267,13 @@ async function runGated<T>(
       .warn`Sync gate not acquired within ${waitedSec}s; proceeding without it — a concurrent datastore pull could undo this ${mode} sync`;
   }
   clearTimeout(timer);
+  waitSpan.setAttribute("sync_gate.acquired", held);
+  waitSpan.setStatus(
+    held
+      ? { code: SpanStatusCode.OK }
+      : { code: SpanStatusCode.ERROR, message: "Sync gate wait timed out" },
+  );
+  waitSpan.end();
   try {
     return await fn();
   } finally {

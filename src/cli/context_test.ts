@@ -634,53 +634,41 @@ Deno.test("createContext: log and json can both be set", () => {
 // resolveTraceparent Tests
 // ============================================================================
 
+function envOf(
+  vars: Record<string, string>,
+): (key: string) => string | undefined {
+  return (key) => vars[key];
+}
+
 Deno.test("resolveTraceparent: returns cli value when provided", () => {
-  const original = Deno.env.get("TRACEPARENT");
-  try {
-    Deno.env.set("TRACEPARENT", "00-env-trace-id-env-span-01");
-    assertEquals(
-      resolveTraceparent("00-cli-trace-id-cli-span-01"),
+  assertEquals(
+    resolveTraceparent(
       "00-cli-trace-id-cli-span-01",
-    );
-  } finally {
-    if (original !== undefined) Deno.env.set("TRACEPARENT", original);
-    else Deno.env.delete("TRACEPARENT");
-  }
+      envOf({ TRACEPARENT: "00-env-trace-id-env-span-01" }),
+    ),
+    "00-cli-trace-id-cli-span-01",
+  );
 });
 
 Deno.test("resolveTraceparent: returns TRACEPARENT env var when cli value undefined", () => {
-  const original = Deno.env.get("TRACEPARENT");
-  try {
-    Deno.env.set("TRACEPARENT", "00-env-trace-id-env-span-01");
-    assertEquals(
-      resolveTraceparent(undefined),
-      "00-env-trace-id-env-span-01",
-    );
-  } finally {
-    if (original !== undefined) Deno.env.set("TRACEPARENT", original);
-    else Deno.env.delete("TRACEPARENT");
-  }
+  assertEquals(
+    resolveTraceparent(
+      undefined,
+      envOf({ TRACEPARENT: "00-env-trace-id-env-span-01" }),
+    ),
+    "00-env-trace-id-env-span-01",
+  );
 });
 
 Deno.test("resolveTraceparent: returns undefined when neither cli nor env set", () => {
-  const original = Deno.env.get("TRACEPARENT");
-  try {
-    Deno.env.delete("TRACEPARENT");
-    assertEquals(resolveTraceparent(undefined), undefined);
-  } finally {
-    if (original !== undefined) Deno.env.set("TRACEPARENT", original);
-  }
+  assertEquals(resolveTraceparent(undefined, envOf({})), undefined);
 });
 
 Deno.test("resolveTraceparent: returns undefined for empty TRACEPARENT env var", () => {
-  const original = Deno.env.get("TRACEPARENT");
-  try {
-    Deno.env.set("TRACEPARENT", "");
-    assertEquals(resolveTraceparent(undefined), undefined);
-  } finally {
-    if (original !== undefined) Deno.env.set("TRACEPARENT", original);
-    else Deno.env.delete("TRACEPARENT");
-  }
+  assertEquals(
+    resolveTraceparent(undefined, envOf({ TRACEPARENT: "" })),
+    undefined,
+  );
 });
 
 // ============================================================================
@@ -688,35 +676,24 @@ Deno.test("resolveTraceparent: returns undefined for empty TRACEPARENT env var",
 // ============================================================================
 
 Deno.test("resolveTracestate: returns cli value when provided", () => {
-  const original = Deno.env.get("TRACESTATE");
-  try {
-    Deno.env.set("TRACESTATE", "vendor=env-value");
-    assertEquals(resolveTracestate("vendor=cli-value"), "vendor=cli-value");
-  } finally {
-    if (original !== undefined) Deno.env.set("TRACESTATE", original);
-    else Deno.env.delete("TRACESTATE");
-  }
+  assertEquals(
+    resolveTracestate(
+      "vendor=cli-value",
+      envOf({ TRACESTATE: "vendor=env-value" }),
+    ),
+    "vendor=cli-value",
+  );
 });
 
 Deno.test("resolveTracestate: returns TRACESTATE env var when cli value undefined", () => {
-  const original = Deno.env.get("TRACESTATE");
-  try {
-    Deno.env.set("TRACESTATE", "vendor=env-value");
-    assertEquals(resolveTracestate(undefined), "vendor=env-value");
-  } finally {
-    if (original !== undefined) Deno.env.set("TRACESTATE", original);
-    else Deno.env.delete("TRACESTATE");
-  }
+  assertEquals(
+    resolveTracestate(undefined, envOf({ TRACESTATE: "vendor=env-value" })),
+    "vendor=env-value",
+  );
 });
 
 Deno.test("resolveTracestate: returns undefined when neither cli nor env set", () => {
-  const original = Deno.env.get("TRACESTATE");
-  try {
-    Deno.env.delete("TRACESTATE");
-    assertEquals(resolveTracestate(undefined), undefined);
-  } finally {
-    if (original !== undefined) Deno.env.set("TRACESTATE", original);
-  }
+  assertEquals(resolveTracestate(undefined, envOf({})), undefined);
 });
 
 // --- colour policy ------------------------------------------------------------

@@ -38,6 +38,20 @@ Deno.test("createModelTestContext: returns context with default values", () => {
   assertExists(context.createCelEnvironment);
 });
 
+Deno.test("createModelTestContext: leaves traceHeaders unset by default", () => {
+  const { context } = createModelTestContext();
+
+  assertEquals(context.traceHeaders, undefined);
+});
+
+Deno.test("createModelTestContext: exposes traceHeaders override", () => {
+  const { context } = createModelTestContext({
+    traceHeaders: { traceparent: "00-abc-def-01" },
+  });
+
+  assertEquals(context.traceHeaders, { traceparent: "00-abc-def-01" });
+});
+
 Deno.test("createModelTestContext: createCelEnvironment returns a working Environment", () => {
   const { context } = createModelTestContext();
   const env = context.createCelEnvironment();

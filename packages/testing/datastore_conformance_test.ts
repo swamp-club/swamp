@@ -17,14 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertThrows } from "@std/assert";
+import { assertRejects, assertThrows } from "@std/assert";
 import {
   assertDatastoreExportConformance,
   assertLockConformance,
+  assertLockTimeoutConformance,
   assertSyncServiceConformance,
   assertVerifierConformance,
 } from "./datastore_conformance.ts";
 import { createDatastoreTestContext } from "./datastore_test_context.ts";
+import type { DistributedLock } from "./datastore_types.ts";
 
 // --- assertDatastoreExportConformance ---
 
@@ -76,6 +78,60 @@ Deno.test("assertLockConformance: passes for conforming in-memory lock", async (
   const { provider } = createDatastoreTestContext();
   const lock = provider.createLock("/test/path");
   await assertLockConformance(lock);
+});
+
+// --- assertLockTimeoutConformance ---
+
+/**
+ * Minimal contended lock: locks created by one factory share a single slot,
+ * and acquire() gives up after maxWaitMs with the given rejection.
+ */
+function contendedLockFactory(
+  reject: (lockKey: string, waitedMs: number) => unknown,
+): (options: { maxWaitMs: number }) => DistributedLock {
+  let held = false;
+  return ({ maxWaitMs }) => ({
+    acquire: async () => {
+      const start = Date.now();
+      while (held) {
+        if (Date.now() - start >= maxWaitMs) {
+          throw reject("t/.lock", Date.now() - start);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      held = true;
+    },
+    release: () => {
+      held = false;
+      return Promise.resolve();
+    },
+    withLock: (fn) => fn(),
+    inspect: () => Promise.resolve(null),
+    forceRelease: () => Promise.resolve(false),
+  });
+}
+
+Deno.test("assertLockTimeoutConformance: passes for an uppercase LOCK_TIMEOUT error", async () => {
+  await assertLockTimeoutConformance(
+    contendedLockFactory((lockKey, waitedMs) =>
+      Object.assign(new Error("timed out"), {
+        code: "LOCK_TIMEOUT",
+        lockKey,
+        waitedMs,
+      })
+    ),
+  );
+});
+
+Deno.test("assertLockTimeoutConformance: fails for a plain Error", async () => {
+  await assertRejects(
+    () =>
+      assertLockTimeoutConformance(
+        contendedLockFactory(() => new Error("timed out")),
+      ),
+    Error,
+    "code lock_timeout",
+  );
 });
 
 // --- assertVerifierConformance ---

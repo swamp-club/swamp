@@ -471,6 +471,12 @@ export interface WebhookServiceDeps {
  */
 const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_QUEUE_DEPTH = 100;
+/**
+ * Retry-After for deliveries rejected while serve shuts down. Short, so the
+ * sender's retry lands on the replacement instance rather than waiting out
+ * this one's drain.
+ */
+const SHUTDOWN_RETRY_AFTER_SECONDS = 5;
 
 /**
  * Webhook endpoint info exposed to callers, without the secret.
@@ -495,6 +501,8 @@ export class WebhookService {
   private processingPromise: Promise<void> = Promise.resolve();
   private eventHandler: WebhookEventHandler | null = null;
   private readonly running = new Map<string, AbortController>();
+  private draining = false;
+  private stopped = false;
   private endpoints: WebhookEndpoint[];
 
   constructor(private readonly deps: WebhookServiceDeps) {
@@ -574,6 +582,8 @@ export class WebhookService {
     if (!endpoint) {
       return null;
     }
+
+    if (this.draining) return this.shuttingDownResponse(endpoint);
 
     this.emit({
       kind: "webhook_received",
@@ -679,6 +689,10 @@ export class WebhookService {
 
     if (httpResponse && !customResponse?.enqueue) return httpResponse;
 
+    // Checked again: a drain can start during the awaits above, and a run
+    // queued after it would be acknowledged and then aborted unreplayed.
+    if (this.draining) return this.shuttingDownResponse(endpoint);
+
     // Queue the workflow run (with backpressure)
     if (this.runQueue.length >= MAX_QUEUE_DEPTH) {
       this.emit({
@@ -771,6 +785,21 @@ export class WebhookService {
     }
   }
 
+  private shuttingDownResponse(endpoint: WebhookEndpoint): Response {
+    this.emit({
+      kind: "webhook_rejected",
+      route: endpoint.route,
+      reason: "Server shutting down",
+    });
+    return Response.json(
+      { error: "Server is shutting down, try again later" },
+      {
+        status: 503,
+        headers: { "retry-after": String(SHUTDOWN_RETRY_AFTER_SECONDS) },
+      },
+    );
+  }
+
   private handlerFailure(endpoint: WebhookEndpoint, reason: string): Response {
     this.emit({ kind: "webhook_rejected", route: endpoint.route, reason });
     return Response.json({ error: "Internal server error" }, { status: 500 });
@@ -784,6 +813,8 @@ export class WebhookService {
     traceparent?: string;
     tracestate?: string;
   }): void {
+    // The pending entry stays in the run tracker for the next boot to replay.
+    if (this.draining) return;
     this.runQueue.push(entry);
     if (!this.processing) {
       this.processingPromise = this.processQueue().catch(
@@ -797,9 +828,36 @@ export class WebhookService {
   }
 
   /**
+   * Begin shutdown: reject new deliveries with 503, drop queued runs (their
+   * run-tracker pending entries stay, so boot reconciliation replays them),
+   * and wait up to `timeoutMs` for the in-flight run to finish. A timeout of
+   * 0 returns at once. Call {@link stop} afterwards to abort what is left.
+   */
+  async drain(timeoutMs: number): Promise<void> {
+    this.draining = true;
+    // A dropped entry's control-plane write is what a replacement instance
+    // replays, so it must land before shutdown moves on.
+    const dropped = this.runQueue.splice(0);
+    await Promise.allSettled(dropped.map((entry) => entry.putPromise));
+    if (timeoutMs <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.processingPromise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * Gracefully stop: abort in-flight runs and drain the processing promise.
    */
   async stop(): Promise<void> {
+    this.stopped = true;
     this.runQueue.length = 0;
     for (const controller of this.running.values()) {
       controller.abort();
@@ -822,10 +880,13 @@ export class WebhookService {
           traceparent,
           tracestate,
         } = this.runQueue.shift()!;
+        if (putPromise) await putPromise;
+        // A drain that began while this entry was dequeued leaves it pending
+        // for the next boot to replay rather than starting it now.
+        if (this.draining) break;
         if (pendingRunId && this.deps.runTracker) {
           this.deps.runTracker.deletePendingRun(pendingRunId);
           if (this.deps.controlPlaneStore) {
-            if (putPromise) await putPromise;
             await this.deps.controlPlaneStore.delete(
               `pending-runs/${pendingRunId}`,
             ).catch((err: unknown) => {
@@ -862,6 +923,8 @@ export class WebhookService {
     const controller = new AbortController();
     const execId = crypto.randomUUID();
     this.running.set(execId, controller);
+    // stop() may have swept `running` while this run was still dequeuing.
+    if (this.stopped) controller.abort();
     let runId = "";
 
     try {

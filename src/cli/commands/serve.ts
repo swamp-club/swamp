@@ -44,6 +44,7 @@ import {
   closeConnectionsForPrincipal,
   emitSystemAuditEvent,
   listTokenSessions,
+  registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
   setConnectionCollectives,
@@ -61,6 +62,7 @@ import {
   createDeviceAuthDeps,
   handleDeviceAuth,
 } from "../../serve/device_auth_handler.ts";
+import { traceHttpRequests } from "../../serve/http_request_span.ts";
 import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import {
@@ -212,14 +214,23 @@ import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { setProcessGroupIsolation } from "../../infrastructure/process/process_group_policy.ts";
+import { runShutdownDrain } from "../../serve/shutdown_drain.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
+import { createHealthStreamResponse } from "../../serve/health_stream.ts";
+import {
+  cachedHealthResourceResolver,
+  createHealthResourceResolver,
+  healthSnapshotFor,
+} from "../../serve/health_snapshot_view.ts";
 import {
   type AdminAuthDeps,
   authenticateAdmin,
+  authenticateToken,
+  createReadAuthorizer,
 } from "../../serve/admin_auth.ts";
 import {
   deleteActiveRun,
@@ -239,8 +250,11 @@ import {
   createExtensionDiscoverer,
   isReloading,
   performServeReload,
+  serveReloadStatus,
 } from "../../serve/extension_reload.ts";
 import {
+  CA_CERT_DESCRIPTION,
+  CA_CERT_FLAG,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -313,6 +327,7 @@ import {
 } from "../../serve/boot_reconciliation.ts";
 import { AccessDataPoller } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
+import { computeFileContentHashIfExists } from "../../domain/extensions/extension_package_cache.ts";
 import { RuntimeDataPoller } from "../../serve/runtime_data_poller.ts";
 import { createSyncGate } from "../../serve/sync_gate.ts";
 
@@ -467,6 +482,15 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 /** Up to this much random delay is added to each reconciliation tick. */
 const RECONCILIATION_JITTER_MS = 500;
+
+/** How long one health collection serves every reader: the stream minimum. */
+const HEALTH_SNAPSHOT_MAX_AGE_MS = 1_000;
+
+/**
+ * How long a health entry's resolved workflow or model is reused. Bounds how
+ * long a tag edit takes to change which entries a non-admin reader sees.
+ */
+const HEALTH_RESOURCE_CACHE_TTL_MS = 5_000;
 
 export function assertOffLoopbackSecurity(
   host: string,
@@ -657,6 +681,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.hydrationTimeout) {
     args.push("--hydration-timeout", options.hydrationTimeout as string);
   }
+  if (options.shutdownDrainTimeout) {
+    args.push(
+      "--shutdown-drain-timeout",
+      options.shutdownDrainTimeout as string,
+    );
+  }
   if (options.datastorePollInterval) {
     args.push(
       "--datastore-poll-interval",
@@ -703,6 +733,19 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
     args.push("--auto-resume");
   }
   return args;
+}
+
+/** Shutdown drain deadline when `--shutdown-drain-timeout` is unset. */
+const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
+
+/**
+ * Parses `--shutdown-drain-timeout` into milliseconds. Unset keeps the 30s
+ * default; `0` (with or without a unit) means abort in-flight runs at once.
+ */
+export function parseShutdownDrainTimeout(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  if (/^0+(ms|mo|[smhdwy])?$/i.test(raw.trim())) return 0;
+  return parseTimerDuration(raw, "--shutdown-drain-timeout");
 }
 
 /**
@@ -1042,6 +1085,10 @@ const daemonEnableCommand = new Command()
     "Startup cache hydration timeout (default: 60s, env: SWAMP_HYDRATION_TIMEOUT)",
   )
   .option(
+    "--shutdown-drain-timeout <duration:string>",
+    "How long shutdown waits for in-flight runs before aborting them (default: 30s, 0 aborts at once, env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
+  )
+  .option(
     "--datastore-poll-interval <duration:string>",
     "Datastore poll interval (default: 30s, minimum: 1s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
@@ -1226,6 +1273,7 @@ const reloadCommand = new Command()
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
 
@@ -1662,10 +1710,17 @@ export const serveCommand = new Command()
       "Increase for large repos where the initial pull takes longer (env: SWAMP_HYDRATION_TIMEOUT)",
   )
   .option(
+    "--shutdown-drain-timeout <duration:string>",
+    "How long shutdown (SIGTERM/SIGINT) waits for in-flight webhook, scheduled and API runs to finish before aborting them. " +
+      "Accepts seconds (30), explicit units (30s, 5m), or 0 to abort at once. Default: 30s. " +
+      "Keep it below the pod's terminationGracePeriodSeconds minus about 10s (env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
+  )
+  .option(
     "--datastore-poll-interval <duration:string>",
-    "How often to pull config, access data and runtime data from the remote datastore. " +
+    "How often to pull config, access data and runtime data from the remote datastore, " +
+      "and to check the managedConfig extension lockfile for changes. " +
       "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. Minimum: 1s. " +
-      "Only effective with a remote datastore (env: SWAMP_DATASTORE_POLL_INTERVAL)",
+      "Only effective with a remote datastore or managedConfig (env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
     "--token-gc-interval <duration:string>",
@@ -1846,6 +1901,10 @@ export const serveCommand = new Command()
         MAX_TIMER_DELAY_MS - RECONCILIATION_JITTER_MS,
       )
       : undefined;
+
+    const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
+      merged.shutdownDrainTimeout,
+    );
 
     const hydrationTimeoutRaw = merged.hydrationTimeout;
     const hydrationTimeoutMs = hydrationTimeoutRaw !== undefined
@@ -2098,6 +2157,14 @@ export const serveCommand = new Command()
         lockfilePath: extensionLockfilePath,
       });
     }
+    // The extension set the registries load below. The config poller reloads
+    // only when the tier lockfile's hash moves away from it. An unreadable
+    // lockfile leaves the baseline to the poller's first poll.
+    const bootLockfileHash = repoMarker?.datastore?.managedConfig
+      ? await computeFileContentHashIfExists(extensionLockfilePath).catch(() =>
+        undefined
+      )
+      : undefined;
 
     // Re-enumerates pulled extension workflow dirs and, once the scheduler
     // exists, rescans schedules. Shared by `serve reload` and the config
@@ -2262,10 +2329,14 @@ export const serveCommand = new Command()
     }
 
     // The access and runtime pollers start whenever a sync service exists,
-    // so this is a different gate from the control-plane flags above.
-    if (!syncService && datastorePollIntervalMs !== undefined) {
+    // and the config poller whenever managedConfig is active, so this is a
+    // different gate from the control-plane flags above.
+    if (
+      !syncService && !repoMarker?.datastore?.managedConfig &&
+      datastorePollIntervalMs !== undefined
+    ) {
       logger.warn(
-        "--datastore-poll-interval has no effect without a remote datastore",
+        "--datastore-poll-interval has no effect without a remote datastore or managedConfig",
       );
     }
 
@@ -2359,47 +2430,6 @@ export const serveCommand = new Command()
         namespace: serveNamespace,
       });
 
-      if (repoMarker?.datastore?.managedConfig) {
-        const extensionDiscoverer = createExtensionDiscoverer({
-          lockfilePath: extensionLockfilePath,
-          repoDir: resolvedRepoDir,
-        });
-        configPoller = new ConfigPoller({
-          syncService,
-          syncGate,
-          pollIntervalMs: datastorePollIntervalMs,
-          catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-          extensionSubdirs: ["config/pulled-extensions"],
-          extensionReloader: async () => {
-            const result = await performServeReload(
-              resolvedRepoDir,
-              extensionLockfilePath,
-              {
-                extensionDiscoverer,
-                workflowReloader: reloadExtensionWorkflows,
-              },
-            );
-            if (result.success) {
-              if (result.reloadedCount > 0) {
-                logger.info(
-                  "Config poller: reloaded {count} extension type(s)",
-                  { count: result.reloadedCount },
-                );
-              }
-              for (const err of result.errors) {
-                logger.warn`Config poller extension reload: ${err}`;
-              }
-            } else {
-              for (const err of result.errors) {
-                logger.warn`Config poller extension reload: ${err}`;
-              }
-            }
-          },
-          namespace: serveNamespace,
-        });
-        configPoller.start();
-      }
-
       if (serveNamespace && rootReadErrors.length > 0) {
         const namespacedStore = syncService.controlPlaneStore!();
         const sentinel = await namespacedStore.get(MIGRATION_SENTINEL);
@@ -2459,6 +2489,56 @@ export const serveCommand = new Command()
           { namespace: serveNamespace },
         );
       }
+    }
+
+    // Watches the managedConfig tier: pulls config/ when a sync service
+    // exists, and reloads extensions when the tier lockfile's hash changes —
+    // a peer's pull, update, rm or pin, or a CLI write on this host.
+    if (repoMarker?.datastore?.managedConfig) {
+      const extensionDiscoverer = createExtensionDiscoverer({
+        lockfilePath: extensionLockfilePath,
+        repoDir: resolvedRepoDir,
+      });
+      configPoller = new ConfigPoller({
+        syncService,
+        syncGate,
+        pollIntervalMs: datastorePollIntervalMs,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        lockfileHash: () =>
+          computeFileContentHashIfExists(extensionLockfilePath),
+        baselineLockfileHash: bootLockfileHash,
+        extensionReloader: async () => {
+          const result = await performServeReload(
+            resolvedRepoDir,
+            extensionLockfilePath,
+            {
+              extensionDiscoverer,
+              workflowReloader: reloadExtensionWorkflows,
+            },
+          );
+          if (result.success && result.reloadedCount > 0) {
+            logger.info(
+              "Config poller: reloaded {count} extension type(s)",
+              { count: result.reloadedCount },
+            );
+          }
+          const status = serveReloadStatus(result);
+          // A successful reload's errors are soft (one discoverer failed)
+          // and logged here. A failed reload's go to the poller, which
+          // warns only on its first and last attempt.
+          if (status === "ok") {
+            for (const err of result.errors) {
+              logger.warn`Config poller extension reload: ${err}`;
+            }
+          }
+          return {
+            status,
+            errors: status === "failed" ? result.errors : [],
+          };
+        },
+        namespace: serveNamespace,
+      });
+      configPoller.start();
     }
 
     // Create the control-plane store AFTER namespace binding (which happens
@@ -4468,6 +4548,9 @@ export const serveCommand = new Command()
     }
 
     let isReady = false;
+    // Set when SIGTERM/SIGINT starts the shutdown; /ready reports 503 from
+    // then on so load balancers stop routing here while runs drain.
+    let shuttingDown = false;
     const enableInternalApi = merged.enableInternalApi;
     const serverStartedAt = Date.now();
 
@@ -4508,6 +4591,9 @@ export const serveCommand = new Command()
       scheduleEnabled: enableSchedule,
       webhookProvider: webhookService ?? null,
       remoteOnly: merged.remoteOnly,
+      // Any valid token may read health, so one collection (component
+      // probes included) serves every reader and stream tick for a second.
+      snapshotMaxAgeMs: HEALTH_SNAPSHOT_MAX_AGE_MS,
       onHealthTransition: (previous, current) => {
         emitSystemAuditEvent(
           connectionCtx,
@@ -4518,6 +4604,11 @@ export const serveCommand = new Command()
     });
 
     connectionCtx.healthCollector = healthCollector;
+
+    const healthResources = cachedHealthResourceResolver(
+      createHealthResourceResolver(repoContext),
+      { ttlMs: HEALTH_RESOURCE_CACHE_TTL_MS },
+    );
 
     const adminAuthDeps: AdminAuthDeps = {
       authMode: authConfig.mode,
@@ -4621,7 +4712,7 @@ export const serveCommand = new Command()
           }
         },
       },
-      async (req, info) => {
+      traceHttpRequests(async (req, info) => {
         // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
         if (upgrade.toLowerCase() === "websocket") {
@@ -4917,93 +5008,60 @@ export const serveCommand = new Command()
           }
         }
 
-        // Health snapshot endpoint (authenticated + authorized)
+        // Health snapshot endpoints (any valid token; the snapshot is
+        // narrowed to what the token may read)
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/api/v1/health") {
-            const auth = await authenticateAdmin(
+            const auth = await authenticateToken(
               req,
               info.remoteAddr.hostname,
               adminAuthDeps,
             );
             if (!auth.ok) return auth.response;
+            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
             const snapshot = await healthCollector.collect(ac.signal);
-            return Response.json(snapshot);
+            return Response.json(
+              await healthSnapshotFor(snapshot, reader, healthResources),
+            );
           }
 
-          // SSE health stream (authenticated + authorized)
+          // SSE health stream, bound to its token session so revoking,
+          // rotating or expiring the token ends it
           if (url.pathname === "/api/v1/health/stream") {
-            const auth = await authenticateAdmin(
+            const auth = await authenticateToken(
               req,
               info.remoteAddr.hostname,
               adminAuthDeps,
             );
             if (!auth.ok) return auth.response;
+            const token = auth.token;
+            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
 
-            const intervalParam = url.searchParams.get("interval");
-            let intervalMs = 5000;
-            if (intervalParam !== null) {
-              const parsed = parseInt(intervalParam, 10);
-              if (!isNaN(parsed)) {
-                intervalMs = Math.max(1000, Math.min(60000, parsed));
-              }
-            }
-
-            const lastEventIdHeader = req.headers.get("Last-Event-ID");
-            let eventId = lastEventIdHeader !== null
-              ? parseInt(lastEventIdHeader, 10) || 0
-              : 0;
-
-            const stream = new ReadableStream<Uint8Array>({
-              async start(controller) {
-                const encoder = new TextEncoder();
-                let stopped = false;
-                let pendingTimer: ReturnType<typeof setTimeout> | null = null;
-
-                const push = async () => {
-                  if (stopped) return;
-                  try {
-                    const snapshot = await healthCollector.collect(ac.signal);
-                    eventId++;
-                    const event = `id: ${eventId}\nevent: health\ndata: ${
-                      JSON.stringify(snapshot)
-                    }\n\n`;
-                    controller.enqueue(encoder.encode(event));
-                  } catch {
-                    // Collection failed — skip this tick
-                  }
-                  if (!stopped) {
-                    pendingTimer = setTimeout(push, intervalMs);
-                  }
-                };
-
-                const cleanup = () => {
-                  stopped = true;
-                  if (pendingTimer !== null) clearTimeout(pendingTimer);
-                  ac.signal.removeEventListener("abort", cleanup);
-                  req.signal.removeEventListener("abort", cleanup);
-                  try {
-                    controller.close();
-                  } catch {
-                    // Already closed
-                  }
-                };
-
-                ac.signal.addEventListener("abort", cleanup, { once: true });
-                req.signal.addEventListener("abort", cleanup, { once: true });
-
-                await push();
-              },
-            });
-
-            return new Response(stream, {
-              headers: {
-                "content-type": "text/event-stream",
-                "cache-control": "no-cache",
-                "connection": "keep-alive",
-                "x-accel-buffering": "no",
-                "x-health-interval": String(intervalMs),
-              },
+            return createHealthStreamResponse({
+              collect: async (signal) =>
+                await healthSnapshotFor(
+                  await healthCollector.collect(signal),
+                  reader,
+                  healthResources,
+                ),
+              intervalParam: url.searchParams.get("interval"),
+              lastEventId: req.headers.get("Last-Event-ID"),
+              serverSignal: ac.signal,
+              requestSignal: req.signal,
+              // Auth mode none has no token, so there is no session to bind
+              // and no per-token cap: that mode is unauthenticated by design.
+              registerSession: token === null
+                ? undefined
+                : (closer) =>
+                  registerStreamSession({
+                    name: token.name,
+                    createdAt: token.createdAt,
+                    principalId: auth.authResult.principalId,
+                  }, {
+                    sourceIp: auth.clientAddr,
+                    close: (code, reason) => closer.close(code, reason),
+                  }),
             });
           }
 
@@ -5148,8 +5206,15 @@ export const serveCommand = new Command()
           });
         }
 
-        // Readiness endpoint — returns 200 only after full startup
+        // Readiness endpoint — returns 200 only after full startup and
+        // before shutdown begins
         if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
+          if (shuttingDown) {
+            return Response.json(
+              { status: "shutting_down", instanceId },
+              { status: 503 },
+            );
+          }
           if (!isReady) {
             return Response.json(
               { status: "not_ready", instanceId },
@@ -5221,7 +5286,7 @@ export const serveCommand = new Command()
         }
 
         return new Response("Not found", { status: 404 });
-      },
+      }),
     );
 
     // Hot-reload: PID file + SIGHUP handler
@@ -5308,102 +5373,92 @@ export const serveCommand = new Command()
     }
 
     // Handle SIGINT/SIGTERM for graceful shutdown
-    let shuttingDown = false;
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      isReady = false;
       if (isJson) {
         console.log(JSON.stringify({ status: "stopping" }));
       }
-      logger.info("Shutting down...");
-      if (webhookService) {
-        await webhookService.stop();
+      if (shutdownDrainTimeoutMs > 0) {
+        logger.info`Shutting down, draining in-flight runs for up to ${
+          shutdownDrainTimeoutMs / 1000
+        }s...`;
+      } else {
+        logger.info`Shutting down, aborting in-flight runs immediately...`;
       }
-      if (scheduledExecution) {
-        await scheduledExecution.stop();
-      }
-      if (activeRunRegistry) {
-        const activeCount = activeRunRegistry.size;
-        if (activeCount > 0) {
-          logger.info`Draining ${activeCount} active run(s)...`;
-          await activeRunRegistry.drainAll(30_000);
-        }
-        const remaining = activeRunRegistry.list();
-        if (remaining.length > 0) {
+      const remaining = await runShutdownDrain({
+        webhookService,
+        scheduledExecution,
+        activeRunRegistry: activeRunRegistry ?? null,
+        drainTimeoutMs: shutdownDrainTimeoutMs,
+        abortGraceMs: 5_000,
+        onAborting: (undrained) => {
           if (isJson) {
-            console.log(JSON.stringify({
-              status: "aborting",
-              undrained: remaining.length,
-            }));
+            console.log(JSON.stringify({ status: "aborting", undrained }));
           }
-          logger.info`Aborting ${remaining.length} undrained run(s)...`;
-          for (const run of remaining) {
-            run.controller.abort(new Error("server shutdown"));
-          }
-          await activeRunRegistry.drainAll(5_000);
-
-          const workflowRuns = remaining.filter((r) =>
-            r.kind === "workflow-run" || r.kind === "workflow-resume"
-          );
-          if (workflowRuns.length > 0) {
-            const earliestCutoff = new Date(
-              Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) -
-                60_000,
+        },
+      });
+      const workflowRuns = remaining.filter((r) =>
+        r.kind === "workflow-run" || r.kind === "workflow-resume"
+      );
+      if (workflowRuns.length > 0) {
+        const earliestCutoff = new Date(
+          Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) -
+            60_000,
+        );
+        let allRuns:
+          | Awaited<
+            ReturnType<
+              typeof repoContext.workflowRunRepo.findGlobalByStatus
+            >
+          >
+          | undefined;
+        try {
+          allRuns = await repoContext.workflowRunRepo
+            .findGlobalByStatus(
+              ["running", "cancelled"],
+              earliestCutoff,
             );
-            let allRuns:
-              | Awaited<
-                ReturnType<
-                  typeof repoContext.workflowRunRepo.findGlobalByStatus
-                >
-              >
-              | undefined;
+        } catch (err) {
+          logger.warn(
+            "Failed to load workflow runs for interrupt: {error}",
+            {
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        }
+        if (allRuns) {
+          for (const run of workflowRuns) {
             try {
-              allRuns = await repoContext.workflowRunRepo
-                .findGlobalByStatus(
-                  ["running", "cancelled"],
-                  earliestCutoff,
+              const match = allRuns.find((r) => r.run.id === run.runId);
+              if (
+                match &&
+                (match.run.status === "running" ||
+                  match.run.status === "cancelled")
+              ) {
+                match.run.interrupt("server_shutdown");
+                await repoContext.workflowRunRepo.save(
+                  match.workflowId,
+                  match.run,
                 );
+                if (isJson) {
+                  console.log(JSON.stringify({
+                    status: "interrupted",
+                    runId: run.runId,
+                  }));
+                }
+                logger
+                  .info`Interrupted workflow run ${run.runId} (server shutdown)`;
+              }
             } catch (err) {
               logger.warn(
-                "Failed to load workflow runs for interrupt: {error}",
+                "Failed to interrupt run {runId}: {error}",
                 {
+                  runId: run.runId,
                   error: err instanceof Error ? err.message : String(err),
                 },
               );
-            }
-            if (allRuns) {
-              for (const run of workflowRuns) {
-                try {
-                  const match = allRuns.find((r) => r.run.id === run.runId);
-                  if (
-                    match &&
-                    (match.run.status === "running" ||
-                      match.run.status === "cancelled")
-                  ) {
-                    match.run.interrupt("server_shutdown");
-                    await repoContext.workflowRunRepo.save(
-                      match.workflowId,
-                      match.run,
-                    );
-                    if (isJson) {
-                      console.log(JSON.stringify({
-                        status: "interrupted",
-                        runId: run.runId,
-                      }));
-                    }
-                    logger
-                      .info`Interrupted workflow run ${run.runId} (server shutdown)`;
-                  }
-                } catch (err) {
-                  logger.warn(
-                    "Failed to interrupt run {runId}: {error}",
-                    {
-                      runId: run.runId,
-                      error: err instanceof Error ? err.message : String(err),
-                    },
-                  );
-                }
-              }
             }
           }
         }

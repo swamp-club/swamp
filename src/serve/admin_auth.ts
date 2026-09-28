@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import type { PolicySnapshotLoader } from "../domain/access/mod.ts";
+import type {
+  AccessResource,
+  PolicySnapshotLoader,
+} from "../domain/access/mod.ts";
 import {
   authenticateServerToken,
   type ServerTokenAuthResult,
@@ -42,23 +45,46 @@ export interface AdminAuthDeps {
   readonly instanceId?: string;
 }
 
+type AuthenticatedPrincipal = Omit<
+  ServerTokenAuthResult & { ok: true },
+  "tokenName" | "tokenCreatedAt"
+>;
+
 // Per-request HTTP admin auth holds no session, so the token identity that
 // binds WebSocket sessions is not part of it (auth-mode none has no token).
 export type AdminAuthResult =
+  | { ok: true; authResult: AuthenticatedPrincipal }
+  | { ok: false; response: Response };
+
+/**
+ * The outcome of authenticating a request's server token, without any
+ * authorization decision. `token` identifies the mint that authenticated, so a
+ * long-lived response can be bound to it as a token session; it is null in
+ * auth-mode none, which has no token.
+ */
+export type TokenAuthResult =
   | {
     ok: true;
-    authResult: Omit<
-      ServerTokenAuthResult & { ok: true },
-      "tokenName" | "tokenCreatedAt"
-    >;
+    authResult: AuthenticatedPrincipal;
+    token: { name: string; createdAt: string } | null;
+    clientAddr: string;
   }
   | { ok: false; response: Response };
 
-export async function authenticateAdmin(
+/**
+ * Authenticates a request's bearer token with the same rate limits as
+ * `authenticateAdmin`, but grants any valid token: it answers only 401 or 429,
+ * never 403.
+ */
+export async function authenticateToken(
   req: Request,
   remoteAddr: string,
   deps: AdminAuthDeps,
-): Promise<AdminAuthResult> {
+): Promise<TokenAuthResult> {
+  const clientAddr = deps.trustProxy
+    ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
+    : remoteAddr;
+
   if (deps.authMode === "none") {
     return {
       ok: true,
@@ -68,12 +94,10 @@ export async function authenticateAdmin(
         collectives: [],
         groups: [],
       },
+      token: null,
+      clientAddr,
     };
   }
-
-  const clientAddr = deps.trustProxy
-    ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
-    : remoteAddr;
 
   const ipBurst = checkIpBurst(clientAddr);
   if (!ipBurst.allowed) {
@@ -132,6 +156,27 @@ export async function authenticateAdmin(
 
   clearRateLimit(rlKey);
 
+  const { tokenName, tokenCreatedAt, ...principal } = authResult;
+  return {
+    ok: true,
+    authResult: principal,
+    token: { name: tokenName, createdAt: tokenCreatedAt },
+    clientAddr,
+  };
+}
+
+export async function authenticateAdmin(
+  req: Request,
+  remoteAddr: string,
+  deps: AdminAuthDeps,
+): Promise<AdminAuthResult> {
+  const authenticated = await authenticateToken(req, remoteAddr, deps);
+  if (!authenticated.ok) return authenticated;
+  if (deps.authMode === "none") {
+    return { ok: true, authResult: authenticated.authResult };
+  }
+  const authResult = authenticated.authResult;
+
   if (!deps.policySnapshotLoader) {
     return {
       ok: false,
@@ -166,4 +211,54 @@ export async function authenticateAdmin(
   }
 
   return { ok: true, authResult };
+}
+
+/**
+ * Read decisions for one authenticated request, with the rules
+ * `filterByAuthorization` applies over WebSocket: an explicit allow or deny
+ * wins, and a resource no grant covers is readable only by an admin. Each call
+ * consults the current policy snapshot, so a long-lived stream follows grant
+ * changes.
+ */
+export interface ReadAuthorizer {
+  isAdmin(): boolean;
+  canRead(resource: AccessResource): boolean;
+}
+
+export function createReadAuthorizer(
+  principal: AuthenticatedPrincipal,
+  deps: Pick<AdminAuthDeps, "authMode" | "policySnapshotLoader">,
+): ReadAuthorizer {
+  if (deps.authMode === "none") {
+    return { isAdmin: () => true, canRead: () => true };
+  }
+  const loader = deps.policySnapshotLoader;
+  if (!loader) {
+    return { isAdmin: () => false, canRead: () => false };
+  }
+  const accessPrincipal = {
+    principal: parsePrincipal(principal.principalId),
+    collectives: [...principal.collectives],
+    groups: [...principal.groups],
+  };
+  const isAdmin = () => {
+    const decision = loader.decisionService.decide(
+      accessPrincipal,
+      "admin",
+      { kind: "access", name: "*", fields: {} },
+    );
+    return decision !== null && decision.effect === "allow";
+  };
+  return {
+    isAdmin,
+    canRead(resource) {
+      const decision = loader.decisionService.decide(
+        accessPrincipal,
+        "read",
+        resource,
+      );
+      if (decision) return decision.effect === "allow";
+      return isAdmin();
+    },
+  };
 }

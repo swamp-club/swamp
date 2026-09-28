@@ -18,8 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { HealthSnapshot } from "../client/useHealthStream";
+import { healthViewState } from "../client/health_state";
+import { HealthUnavailable } from "../components/HealthUnavailable";
 
-export function Webhooks({ health }: { health: HealthSnapshot | null }) {
+export function Webhooks(
+  { health, denied }: { health: HealthSnapshot | null; denied: boolean },
+) {
+  const state = healthViewState(health, denied);
   const webhooks = health?.webhooks ?? [];
 
   return (
@@ -27,22 +32,26 @@ export function Webhooks({ health }: { health: HealthSnapshot | null }) {
       <div className="page-header">
         <h1>Webhooks</h1>
         <div className="header-right">
-          <div
-            className="health-pill"
-            style={{
-              background: "var(--surface)",
-              color: "var(--text-2)",
-              border: "1px solid var(--border)",
-            }}
-          >
-            {webhooks.length} endpoints
-          </div>
+          {state === "ready" && (
+            <div
+              className="health-pill"
+              style={{
+                background: "var(--surface)",
+                color: "var(--text-2)",
+                border: "1px solid var(--border)",
+              }}
+            >
+              {webhooks.length} endpoints
+            </div>
+          )}
         </div>
       </div>
 
       <div className="panel">
-        {webhooks.length === 0
-          ? <div className="loading">No webhooks configured</div>
+        {state !== "ready"
+          ? <HealthUnavailable state={state} subject="webhooks" />
+          : webhooks.length === 0
+          ? <div className="loading">No webhooks visible to this token</div>
           : (
             <div className="table-wrap">
               <table className="data-table">

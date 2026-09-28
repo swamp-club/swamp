@@ -32,7 +32,7 @@ import {
 } from "../repo_context.ts";
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
-import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
+import { pushManagedConfigPathsDeferred } from "../managed_config_sync.ts";
 import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
 import {
   consumeStream,
@@ -245,6 +245,6 @@ export const extensionUpdateCommand = withRemoteOptions(
   }
 
   if (publish) {
-    await pushManagedConfigChangesDeferred(repoDir, marker);
+    await pushManagedConfigPathsDeferred(repoDir, marker, [lockfilePath]);
   }
 });

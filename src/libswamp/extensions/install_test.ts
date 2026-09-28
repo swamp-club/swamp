@@ -1894,3 +1894,58 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "extensionInstall: restores an entry on its lockfile channel",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      // Both entries list files that are not on disk, so both restore.
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/beta": {
+            version: "2026.01.01.1",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [".swamp/pulled-extensions/@test/beta/models/main.ts"],
+            checksum: "beta-checksum",
+            channel: "beta",
+          },
+          "@test/stable": {
+            version: "2026.01.01.1",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [".swamp/pulled-extensions/@test/stable/models/main.ts"],
+          },
+        }),
+      );
+
+      const seen = new Map<string, InstallContext>();
+      const reinstall = makeSuccessfulInstall(tmpDir, lockfilePath);
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: (ref, installCtx) => {
+            seen.set(ref.name, installCtx);
+            return reinstall(ref, installCtx);
+          },
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.installed, 2);
+      }
+      assertEquals(seen.get("@test/beta")?.channel, "beta");
+      assertEquals(seen.get("@test/beta")?.expectedChecksum, "beta-checksum");
+      assertEquals(seen.get("@test/stable")?.channel, undefined);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);

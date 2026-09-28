@@ -30,6 +30,8 @@ import { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader
 import { EventBus } from "../../domain/events/event_bus.ts";
 import { validateServerRepoExclusivity } from "./access_helpers.ts";
 import {
+  CA_CERT_DESCRIPTION,
+  CA_CERT_FLAG,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -66,6 +68,7 @@ export const accessReloadCommand = new Command()
     "--token-file <path:string>",
     "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
+  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
 

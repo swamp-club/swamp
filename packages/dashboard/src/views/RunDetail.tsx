@@ -23,6 +23,9 @@ import { type ResumableRun, resumeStateFor } from "../client/resume_state";
 import { StatusPill } from "../components/StatusPill";
 import { ResumeAction } from "../components/ResumeAction";
 import { StatusDot } from "../components/StatusDot";
+import { RouteLink } from "../components/RouteLink";
+import type { ArtifactRef } from "./data_target.ts";
+import { stepArtifactLink, workflowReportLinks } from "./artifact_links.ts";
 
 interface LogsData {
   path?: string;
@@ -53,11 +56,7 @@ interface StepRun {
   allowedFailure?: boolean;
   approval?: ApprovalInfo;
   outputs?: Record<string, unknown>;
-  dataArtifacts?: Array<{
-    dataId: string;
-    name: string;
-    version: number;
-  }>;
+  dataArtifacts?: ArtifactRef[];
 }
 
 interface JobRun {
@@ -78,6 +77,7 @@ interface WorkflowRun {
   completedAt?: string;
   duration?: number;
   jobs: JobRun[];
+  workflowDataArtifacts?: ArtifactRef[];
 }
 
 interface RunDetailProps {
@@ -114,20 +114,7 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
     <>
       <div className="page-header">
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button
-            type="button"
-            onClick={onBack}
-            style={{
-              border: "1px solid var(--border)",
-              background: "var(--surface)",
-              borderRadius: 6,
-              padding: "4px 10px",
-              cursor: "pointer",
-              color: "var(--text-2)",
-              fontFamily: "inherit",
-              fontSize: "0.82rem",
-            }}
-          >
+          <button type="button" className="back-button" onClick={onBack}>
             &larr; Back
           </button>
           <h1>{workflowName}</h1>
@@ -360,11 +347,26 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
                             flexWrap: "wrap",
                           }}
                         >
-                          {step.dataArtifacts.map((da) => (
-                            <span className="cron-badge" key={da.dataId}>
-                              {da.name} v{da.version}
-                            </span>
-                          ))}
+                          {step.dataArtifacts.map((da) => {
+                            const link = stepArtifactLink(da);
+                            if (!link) return null;
+                            return link.to
+                              ? (
+                                <RouteLink
+                                  key={da.dataId}
+                                  to={link.to}
+                                  className="cron-badge"
+                                  title={`Open ${da.name} v${da.version}`}
+                                >
+                                  {link.label}
+                                </RouteLink>
+                              )
+                              : (
+                                <span className="cron-badge" key={da.dataId}>
+                                  {link.label}
+                                </span>
+                              );
+                          })}
                         </div>
                       )}
                     </div>
@@ -384,6 +386,44 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
               </div>
             </div>
           ))}
+
+          {(() => {
+            const reports = workflowReportLinks(
+              run.workflowDataArtifacts,
+              run.workflowName,
+              run.id,
+            );
+            return reports.length > 0 && (
+              <div className="panel">
+                <div className="panel-header">
+                  <div className="panel-title">
+                    Workflow reports{" "}
+                    <span className="panel-count">{reports.length}</span>
+                  </div>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 6,
+                    flexWrap: "wrap",
+                    padding: "12px 18px",
+                  }}
+                >
+                  {reports.map((report) =>
+                    report.to && (
+                      <RouteLink
+                        key={report.label}
+                        to={report.to}
+                        className="cron-badge"
+                      >
+                        {report.label}
+                      </RouteLink>
+                    )
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {logs?.lines && logs.lines.length > 0 && (
             <div className="panel">

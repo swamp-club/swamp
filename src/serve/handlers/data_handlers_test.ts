@@ -22,8 +22,11 @@ import { SEPARATOR } from "@std/path";
 import {
   handleDataDelete,
   handleDataGc,
+  handleDataGet,
+  handleDataList,
   handleDataPrune,
   handleDataRename,
+  handleDataVersions,
   handleRunGc,
   resolveDataFields,
   resolveRunGcInput,
@@ -515,5 +518,119 @@ Deno.test("handleRunGc: pushes after run gc", async () => {
     assertEquals(JSON.parse(socket.sent[0]).type, "run.gc");
     assertEquals(pushCalls.length, 1);
     assertEquals(pushCalls[0].namespace, "shared");
+  });
+});
+
+Deno.test("handleDataGet: forwards reason and entity type for a missing version", async () => {
+  await withTempDir(async (dir) => {
+    const { ctx } = await createSyncFixture(dir, { syncService: false });
+    const socket = createMockSocket();
+
+    await handleDataGet(
+      socket,
+      ctx,
+      "req-get",
+      { modelIdOrName: "sync-model", dataName: "result", version: 7 },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "error");
+    assertEquals(response.error.code, "data_get_failed");
+    assertEquals(response.error.details, {
+      reason: "not_found",
+      entityType: "Data",
+    });
+  });
+});
+
+Deno.test("handleDataGet: forwards entity type Model for an unknown model", async () => {
+  await withTempDir(async (dir) => {
+    const { ctx } = await createSyncFixture(dir, { syncService: false });
+    const socket = createMockSocket();
+
+    await handleDataGet(
+      socket,
+      ctx,
+      "req-get-model",
+      { modelIdOrName: "no-such-model", dataName: "result" },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.error.code, "data_get_failed");
+    assertEquals(response.error.details, {
+      reason: "not_found",
+      entityType: "Model",
+    });
+  });
+});
+
+Deno.test("handleDataGet: returns the requested version without error details", async () => {
+  await withTempDir(async (dir) => {
+    const { ctx } = await createSyncFixture(dir, { syncService: false });
+    const socket = createMockSocket();
+
+    await handleDataGet(
+      socket,
+      ctx,
+      "req-get-ok",
+      { modelIdOrName: "sync-model", dataName: "result", version: 1 },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "data.get");
+    assertEquals(response.payload.data.version, 1);
+    assertEquals(response.payload.data.content, "hello");
+  });
+});
+
+Deno.test("handleDataVersions: forwards reason and entity type for unknown data", async () => {
+  await withTempDir(async (dir) => {
+    const { ctx } = await createSyncFixture(dir, { syncService: false });
+    const socket = createMockSocket();
+
+    await handleDataVersions(
+      socket,
+      ctx,
+      "req-versions",
+      { modelIdOrName: "sync-model", dataName: "missing" },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.error.code, "data_versions_failed");
+    assertEquals(response.error.details, {
+      reason: "not_found",
+      entityType: "Data",
+    });
+  });
+});
+
+Deno.test("handleDataList: forwards reason and entity type for an unknown model", async () => {
+  await withTempDir(async (dir) => {
+    const { ctx } = await createSyncFixture(dir, { syncService: false });
+    const socket = createMockSocket();
+
+    await handleDataList(
+      socket,
+      ctx,
+      "req-list",
+      { modelIdOrName: "no-such-model" },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.error.code, "data_list_failed");
+    assertEquals(response.error.details, {
+      reason: "not_found",
+      entityType: "Model",
+    });
   });
 });

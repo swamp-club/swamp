@@ -20,7 +20,8 @@
 // The OAuth server-token mint against a real repository on disk, wired to a
 // sync service through the same markDirty hook serve uses. Pins which dirty
 // signals the mint sends and in what order relative to its push
-// (swamp-club#2408).
+// (swamp-club#2408), and that a login request traces as one tree with the
+// datastore push inside it (swamp-club#2417).
 
 import { assert, assertEquals, assertExists } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -37,7 +38,19 @@ import { TOKEN_SECRETS_VAULT_NAME } from "../src/domain/vaults/control_plane_vau
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
-import { createDeviceAuthDeps } from "../src/serve/device_auth_handler.ts";
+import {
+  createDeviceAuthDeps,
+  type DeviceAuthDeps,
+  handleDeviceAuth,
+} from "../src/serve/device_auth_handler.ts";
+import { traceHttpRequests } from "../src/serve/http_request_span.ts";
+import { createSyncGate } from "../src/serve/sync_gate.ts";
+import { getTracer, withSpan } from "../src/infrastructure/tracing/mod.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../src/infrastructure/tracing/span_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -255,6 +268,135 @@ Deno.test("createDeviceAuthDeps: mintServerToken re-marks the token paths after 
         dirtyAtPush.some((p) => p.endsWith("/token-main")),
         `token data must still be marked when the mint pushes, got ${dirtyAtPush}`,
       );
+    } finally {
+      repoContext.catalogStore.close();
+    }
+  });
+});
+
+// Opens its own active span in pushChanged, the way the gcs-datastore
+// extension does, so the test can check what that span is parented to.
+function createSpanningSyncService(): DatastoreSyncService {
+  return {
+    pullChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
+      return Promise.resolve(0);
+    },
+    pushChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
+      return getTracer().startActiveSpan("gcs-datastore push", (span) => {
+        span.end();
+        return Promise.resolve(0);
+      });
+    },
+    markDirty(_options?: DatastoreSyncOptions): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+}
+
+Deno.test("serve login: POST /auth/device/token traces as one tree with the datastore push inside the mint (swamp-club#2417)", async () => {
+  await withTempDir(async (dir) => {
+    await writeTokenSecretsVault(dir);
+
+    const service = createSpanningSyncService();
+    const repoContext = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+      namespace: "infra",
+      markDirty: buildMarkDirtyHook(service, swampPath(dir), dir),
+    });
+    try {
+      const deps: DeviceAuthDeps = {
+        ...createDeviceAuthDeps(
+          AUTH_CONFIG,
+          "test-client-secret",
+          dir,
+          repoContext,
+          undefined,
+          service,
+          "infra",
+          createSyncGate(),
+        ),
+        // Only the upstream provider is stubbed; the mint, the gate and the
+        // access-token store are the real ones.
+        pollForToken: () =>
+          Promise.resolve({ accessToken: "access-token", tokenType: "Bearer" }),
+        getUserInfo: () =>
+          Promise.resolve({
+            sub: "user-1",
+            email: "user@example.com",
+            name: "User One",
+            collectives: ["team-a"],
+            groups: [],
+          }),
+      };
+      const handler = traceHttpRequests(async (req) =>
+        (await handleDeviceAuth(req, deps)) ??
+          new Response("Not found", { status: 404 })
+      );
+      const info = {
+        remoteAddr: { transport: "tcp", hostname: "127.0.0.1", port: 1 },
+        completed: Promise.resolve(),
+      } as unknown as Deno.ServeHandlerInfo<Deno.NetAddr>;
+
+      await withCapturedSpans(async (spans) => {
+        // serve runs inside the swamp.cli span, which never ends; the
+        // request must still start its own trace.
+        const response = await withSpan(
+          "swamp.cli",
+          {},
+          () =>
+            Promise.resolve(handler(
+              new Request("http://localhost/auth/device/token", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ deviceCode: "dev-code" }),
+              }),
+              info,
+            )),
+        );
+        assertEquals(response.status, 200);
+
+        const request = findSpan(spans, "POST /auth/device/token");
+        assertEquals(request.parentSpanId, undefined);
+        assertEquals(request.attributes["http.response.status_code"], 200);
+
+        const mint = findSpan(spans, "swamp.serve.auth.mint");
+        const push = findSpan(spans, "swamp.serve.auth.mint.push");
+        const datastorePush = findSpan(spans, "gcs-datastore push");
+        assert(isChildOf(mint, request), "mint must be under the request");
+        assert(isChildOf(push, mint), "mint.push must be under the mint");
+        assert(
+          isChildOf(datastorePush, push),
+          "the datastore push must not be a root span",
+        );
+        for (
+          const name of [
+            "swamp.serve.auth.poll_token",
+            "swamp.serve.auth.userinfo",
+            "swamp.serve.auth.store_access_token",
+          ]
+        ) {
+          assert(isChildOf(findSpan(spans, name), request), name);
+        }
+        for (
+          const name of [
+            "swamp.serve.sync_gate.wait",
+            "swamp.serve.auth.mint.vault_put",
+            "swamp.serve.auth.mint.definition_save",
+            "swamp.serve.auth.mint.token_write",
+            "swamp.serve.auth.mint.verify",
+          ]
+        ) {
+          assert(isChildOf(findSpan(spans, name), mint), name);
+        }
+
+        const traceIds = new Set(
+          spans
+            .filter((s) => s.name !== "swamp.cli")
+            .map((s) => s.spanContext().traceId),
+        );
+        assertEquals(traceIds.size, 1, "the whole login must be one trace");
+      });
     } finally {
       repoContext.catalogStore.close();
     }

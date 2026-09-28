@@ -1073,12 +1073,131 @@ Deno.test("WorkflowRun.resumeFromFailed: transitions from failed to running", ()
 
   assertEquals(run.status, "failed");
 
-  run.resumeFromFailed();
+  run.resumeFromFailed({ pid: Deno.pid });
 
   assertEquals(run.status, "running");
   assertEquals(run.completedAt, undefined);
   // startedAt preserved (same as resumeFromSuspended)
   assertEquals(run.startedAt !== undefined, true);
+});
+
+Deno.test("WorkflowRun.resumeFromFailed: records the resuming process as owner", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111);
+  run.complete();
+
+  run.resumeFromFailed({ pid: 2222, instanceId: "serve-b" });
+
+  assertEquals(run.pid, 2222);
+  assertEquals(run.instanceId, "serve-b");
+});
+
+Deno.test("WorkflowRun.resumeFromSuspended: records the resuming process as owner", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111);
+  run.suspend();
+
+  run.resumeFromSuspended({ pid: 2222, instanceId: "serve-b" });
+
+  assertEquals(run.status, "running");
+  assertEquals(run.pid, 2222);
+  assertEquals(run.instanceId, "serve-b");
+});
+
+Deno.test("WorkflowRun.resumeFromSuspended: a local resume clears the serve instance id", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111, "serve-a");
+  run.suspend();
+
+  run.resumeFromSuspended({ pid: 2222 });
+
+  assertEquals(run.pid, 2222);
+  assertEquals(run.instanceId, undefined);
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.pid, 2222);
+  assertEquals(restored.instanceId, undefined);
+  assertEquals("instanceId" in run.toData(), false);
+});
+
+Deno.test("WorkflowRun.resumeFromFailed: the new owner round-trips through toData", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111);
+  run.complete();
+
+  run.resumeFromFailed({ pid: 2222, instanceId: "serve-b" });
+
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.pid, 2222);
+  assertEquals(restored.instanceId, "serve-b");
+});
+
+/** A run started by serve-a's process 1111, then resumed by process 2222. */
+function resumedRun(): WorkflowRun {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111, "serve-a");
+  run.suspend();
+  run.resumeFromSuspended({ pid: 2222 });
+  return run;
+}
+
+Deno.test("WorkflowRun.resumeFromSuspended: keeps the owner aside while the resume runs", () => {
+  const run = resumedRun();
+
+  assertEquals(run.toData().ownerBeforeResume, {
+    pid: 1111,
+    instanceId: "serve-a",
+  });
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.toData().ownerBeforeResume, {
+    pid: 1111,
+    instanceId: "serve-a",
+  });
+});
+
+const leaveRunning: [string, (run: WorkflowRun) => void][] = [
+  ["suspend", (run) => run.suspend()],
+  ["complete", (run) => run.complete()],
+  ["cancel", (run) => run.cancel("stop")],
+  ["interrupt", (run) => run.interrupt("server_crash")],
+];
+
+for (const [transition, leave] of leaveRunning) {
+  Deno.test(`WorkflowRun.${transition}: hands a resumed run back to its owner`, () => {
+    // Reloaded, as another process ending the run would see it.
+    const run = WorkflowRun.fromData(resumedRun().toData());
+
+    leave(run);
+
+    assertEquals(run.pid, 1111);
+    assertEquals(run.instanceId, "serve-a");
+    assertEquals(run.toData().ownerBeforeResume, undefined);
+  });
+}
+
+Deno.test("WorkflowRun.suspend: leaves a run no resume took over as it is", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1111, "serve-a");
+
+  run.suspend();
+
+  assertEquals(run.pid, 1111);
+  assertEquals(run.instanceId, "serve-a");
+  assertEquals("ownerBeforeResume" in run.toData(), false);
+});
+
+Deno.test("WorkflowRun.resumeFromFailed: keeps the owner a resume already set aside", () => {
+  // A run whose resume was interrupted by a process that did not release it.
+  const run = WorkflowRun.fromData({
+    ...resumedRun().toData(),
+    status: "failed",
+  });
+
+  run.resumeFromFailed({ pid: 3333, instanceId: "serve-b" });
+
+  assertEquals(run.toData().ownerBeforeResume, {
+    pid: 1111,
+    instanceId: "serve-a",
+  });
 });
 
 Deno.test("WorkflowRun.resetForResumeFrom: resets target steps and their containing jobs", () => {

@@ -339,3 +339,164 @@ Deno.test("merge does not throw stream error after abort", async () => {
   assert(elapsed < 1_000, `Expected prompt exit, took ${elapsed}ms`);
   assert(items.length <= 1);
 });
+
+// finishStartedOnAbort: started streams run to their end after the abort
+
+/**
+ * Yields `<name>:before`, waits for `release`, then yields `<name>:after` and
+ * records that it reached its end.
+ */
+async function* heldStream(
+  name: string,
+  release: Promise<void>,
+  reached: Set<string>,
+): AsyncGenerator<string> {
+  yield `${name}:before`;
+  await release;
+  yield `${name}:after`;
+  reached.add(name);
+}
+
+async function* tracked(
+  name: string,
+  started: Set<string>,
+): AsyncGenerator<string> {
+  started.add(name);
+  yield name;
+}
+
+Deno.test("merge: finishStartedOnAbort yields the items started streams produce after the abort", async () => {
+  const controller = new AbortController();
+  const release = Promise.withResolvers<void>();
+  const reached = new Set<string>();
+
+  const items: string[] = [];
+  for await (
+    const item of merge(
+      [
+        heldStream("a", release.promise, reached),
+        heldStream("b", release.promise, reached),
+      ],
+      controller.signal,
+      { finishStartedOnAbort: true },
+    )
+  ) {
+    items.push(item);
+    if (items.length === 2) {
+      controller.abort();
+      release.resolve();
+    }
+  }
+
+  assertEquals(items.slice(2).sort(), ["a:after", "b:after"]);
+  assertEquals([...reached].sort(), ["a", "b"]);
+});
+
+Deno.test("mergeWithConcurrency: finishStartedOnAbort finishes started streams and never starts queued ones", async () => {
+  const controller = new AbortController();
+  const release = Promise.withResolvers<void>();
+  const reached = new Set<string>();
+  const started = new Set<string>();
+
+  const items: string[] = [];
+  for await (
+    const item of mergeWithConcurrency(
+      [
+        heldStream("a", release.promise, reached),
+        heldStream("b", release.promise, reached),
+        tracked("c", started),
+      ],
+      2,
+      controller.signal,
+      { finishStartedOnAbort: true },
+    )
+  ) {
+    items.push(item);
+    if (items.length === 2) {
+      controller.abort();
+      release.resolve();
+    }
+  }
+
+  assertEquals(items.slice(2).sort(), ["a:after", "b:after"]);
+  assertEquals([...reached].sort(), ["a", "b"]);
+  assertEquals(started.size, 0);
+});
+
+Deno.test("merge: finishStartedOnAbort swallows an error after the abort without cutting its sibling short", async () => {
+  const controller = new AbortController();
+  const release = Promise.withResolvers<void>();
+  const failed = Promise.withResolvers<void>();
+
+  async function* failsAfterRelease(): AsyncGenerator<string> {
+    yield "a:before";
+    await release.promise;
+    failed.resolve();
+    throw new Error("should be suppressed");
+  }
+  async function* finishesAfterSibling(): AsyncGenerator<string> {
+    yield "b:before";
+    await failed.promise;
+    // A macrotask runs only once the sibling's rejection has been handled.
+    await new Promise((r) => setTimeout(r, 0));
+    yield "b:after";
+  }
+
+  const items: string[] = [];
+  for await (
+    const item of merge(
+      [failsAfterRelease(), finishesAfterSibling()],
+      controller.signal,
+      { finishStartedOnAbort: true },
+    )
+  ) {
+    items.push(item);
+    if (items.length === 2) {
+      controller.abort();
+      release.resolve();
+    }
+  }
+
+  assertEquals(items.slice(2), ["b:after"]);
+});
+
+Deno.test("merge: finishStartedOnAbort still rethrows an error raised before any abort", async () => {
+  const controller = new AbortController();
+  await assertRejects(
+    () =>
+      collect(merge(
+        [fromArray([1, 2]), throwImmediately(new Error("stream B crashed"))],
+        controller.signal,
+        { finishStartedOnAbort: true },
+      )),
+    Error,
+    "stream B crashed",
+  );
+});
+
+Deno.test("merge: finishStartedOnAbort with a pre-aborted signal yields nothing", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const started = new Set<string>();
+  const items = await collect(merge(
+    [tracked("a", started), tracked("b", started)],
+    controller.signal,
+    { finishStartedOnAbort: true },
+  ));
+  assertEquals(items, []);
+  assertEquals(started.size, 0);
+});
+
+Deno.test("mergeWithConcurrency: finishStartedOnAbort with a pre-aborted signal yields nothing", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const started = new Set<string>();
+  const items = await collect(mergeWithConcurrency(
+    [tracked("a", started), tracked("b", started), tracked("c", started)],
+    1,
+    controller.signal,
+    { finishStartedOnAbort: true },
+  ));
+  assertEquals(items, []);
+  assertEquals(started.size, 0);
+});

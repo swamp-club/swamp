@@ -48,6 +48,8 @@ import { Vaults } from "./views/Vaults";
 import { Extensions } from "./views/Extensions";
 import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
+import { DataDetail } from "./views/DataDetail";
+import { buildPath } from "./routes.ts";
 
 export function App() {
   return (
@@ -84,8 +86,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     openWorkflow,
     openRun,
     closeDetail,
+    goUp,
   } = useRouter();
-  const health = useHealthStream();
+  const { health, denied: healthDenied } = useHealthStream();
   const auditStream = useAuditStream();
 
   const { data: approvalsData, refetch: refetchApprovals } = useRequest(
@@ -131,14 +134,16 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       if (action === "close-drawer") {
         e.preventDefault();
         setDrawerOpen(false);
-      } else if (action === "close-detail") {
+      } else if (action === "leave-detail") {
         e.preventDefault();
-        closeDetail();
+        // Deep-linked items step up to their model or run; other details
+        // close to their list view as before.
+        goUp();
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [drawerOpen, detail, closeDetail]);
+  }, [drawerOpen, detail, goUp]);
 
   const appClass = `app${drawerOpen ? " drawer-open" : ""}${
     collapsed ? " sidebar-collapsed" : ""
@@ -183,7 +188,16 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           </button>
           <Logo size="sm" />
         </div>
-        {detail?.kind === "run"
+        {detail?.kind === "data" || detail?.kind === "report" ||
+            detail?.kind === "runReport"
+          ? (
+            <DataDetail
+              key={buildPath({ view, detail })}
+              detail={detail}
+              onBack={goUp}
+            />
+          )
+          : detail?.kind === "run"
           ? (
             <RunDetail
               workflowName={detail.workflowName}
@@ -211,6 +225,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "overview" && (
                 <Overview
                   health={health}
+                  healthDenied={healthDenied}
                   onOpenRun={openRun}
                   onApprovalsChanged={refetchApprovals}
                 />
@@ -220,8 +235,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               )}
               {view === "executions" && <Executions onOpenRun={openRun} />}
               {view === "models" && <Models onOpenModel={openModel} />}
-              {view === "schedules" && <Schedules health={health} />}
-              {view === "webhooks" && <Webhooks health={health} />}
+              {view === "schedules" && (
+                <Schedules health={health} denied={healthDenied} />
+              )}
+              {view === "webhooks" && (
+                <Webhooks health={health} denied={healthDenied} />
+              )}
               {view === "approvals" && (
                 <Approvals onApprovalsChanged={refetchApprovals} />
               )}
@@ -229,7 +248,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}
               {view === "extensions" && <Extensions />}
-              {view === "system" && <System health={health} />}
+              {view === "system" && (
+                <System health={health} denied={healthDenied} />
+              )}
             </>
           )}
       </main>

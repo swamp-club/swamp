@@ -22,7 +22,7 @@ export interface WireFrame {
   type: string;
   id: string;
   payload?: unknown;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: unknown };
   event?: unknown;
 }
 
@@ -30,14 +30,25 @@ export interface WireFrame {
 export type FrameOutcome =
   | { kind: "ignore" }
   | { kind: "resolve"; value: unknown; detach: boolean }
-  | { kind: "reject"; message: string };
+  | { kind: "reject"; message: string; code: string; details?: unknown };
+
+function rejectFrom(
+  error: NonNullable<WireFrame["error"]>,
+): FrameOutcome {
+  return {
+    kind: "reject",
+    message: error.message,
+    code: error.code,
+    ...(error.details !== undefined && { details: error.details }),
+  };
+}
 
 /**
  * Settles a plain request: it resolves on the frame that carries a payload.
  */
 export function settleRequest(frame: WireFrame): FrameOutcome {
   if (frame.type === "error" && frame.error) {
-    return { kind: "reject", message: frame.error.message };
+    return rejectFrom(frame.error);
   }
   if (frame.payload !== undefined) {
     return { kind: "resolve", value: frame.payload, detach: false };
@@ -54,7 +65,7 @@ export function settleRequest(frame: WireFrame): FrameOutcome {
  */
 export function settleDetached(frame: WireFrame): FrameOutcome {
   if (frame.type === "error" && frame.error) {
-    return { kind: "reject", message: frame.error.message };
+    return rejectFrom(frame.error);
   }
   if (frame.type === "event") {
     return { kind: "resolve", value: undefined, detach: true };
@@ -73,4 +84,43 @@ export function settleDetached(frame: WireFrame): FrameOutcome {
  */
 export function detachFrame(requestId: string): { type: "cancel"; id: string } {
   return { type: "cancel", id: requestId };
+}
+
+/**
+ * A rejected request, keeping serve's error code and the machine-readable
+ * reason and entity type serve attaches to data and history errors, so a
+ * view can tell an expired version from a missing model or a denial.
+ */
+export class RequestError extends Error {
+  readonly code: string;
+  readonly reason?: string;
+  readonly entityType?: string;
+
+  constructor(message: string, code: string, details?: unknown) {
+    super(message);
+    this.name = "RequestError";
+    this.code = code;
+    if (details !== null && typeof details === "object") {
+      const { reason, entityType } = details as Record<string, unknown>;
+      if (typeof reason === "string") this.reason = reason;
+      if (typeof entityType === "string") this.entityType = entityType;
+    }
+  }
+}
+
+/** The structured parts of a failed request a view branches on. */
+export interface RequestErrorInfo {
+  code: string;
+  reason?: string;
+  entityType?: string;
+}
+
+/** Reads the structured parts of an error thrown by a request. */
+export function requestErrorInfo(error: unknown): RequestErrorInfo | null {
+  if (!(error instanceof RequestError)) return null;
+  return {
+    code: error.code,
+    ...(error.reason !== undefined && { reason: error.reason }),
+    ...(error.entityType !== undefined && { entityType: error.entityType }),
+  };
 }

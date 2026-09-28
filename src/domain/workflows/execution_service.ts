@@ -165,7 +165,12 @@ import {
 import { mergeWithConcurrency } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
-import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
+import {
+  bindGeneratorToSpan,
+  getTracer,
+  type Span,
+  SpanStatusCode,
+} from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
 import { minOf } from "../array_extrema.ts";
@@ -532,6 +537,23 @@ const MAX_WORKFLOW_NESTING_DEPTH = 10;
  * timeout so they cannot hang indefinitely.
  */
 const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
+
+/**
+ * Fails the job's steps still `running` with {@link CANCELLED_STEP_ERROR} and
+ * reports whether there were any. A level of several steps does not wait for
+ * them once the abort fires, so their generators end without recording an
+ * outcome.
+ */
+function failAbandonedSteps(jobRun: JobRun): boolean {
+  let failed = false;
+  for (const step of jobRun.steps) {
+    if (step.status === "running") {
+      step.fail(CANCELLED_STEP_ERROR);
+      failed = true;
+    }
+  }
+  return failed;
+}
 
 /**
  * Decode the step-name segment of a `${jobId}:${stepName}` composite key.
@@ -2057,6 +2079,19 @@ interface StepOptions {
 }
 
 /**
+ * Adds `jobName` to `started` once `stream` is first pulled, which
+ * mergeWithConcurrency does only when the job gets a permit.
+ */
+async function* markStarted<T>(
+  jobName: string,
+  started: Set<string>,
+  stream: AsyncIterable<T>,
+): AsyncGenerator<T> {
+  started.add(jobName);
+  yield* stream;
+}
+
+/**
  * Domain service for workflow execution.
  */
 export class WorkflowExecutionService {
@@ -2200,10 +2235,25 @@ export class WorkflowExecutionService {
       references?: Record<string, string>;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    const tracer = getTracer();
-    const runSpan = tracer.startSpan("swamp.workflow.run", {
+    const runSpan = getTracer().startSpan("swamp.workflow.run", {
       attributes: { "workflow.name": idOrName },
     });
+    yield* bindGeneratorToSpan(
+      runSpan,
+      this.runInSpan(runSpan, idOrName, options),
+    );
+  }
+
+  /**
+   * Body of {@link run}, executed with `runSpan` as the active span so job
+   * spans (and everything under them) nest beneath it. Ends `runSpan`.
+   */
+  private async *runInSpan(
+    runSpan: Span,
+    idOrName: string,
+    options?: Parameters<WorkflowExecutionService["run"]>[1],
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    const tracer = getTracer();
 
     let workflowRun: WorkflowRun | undefined;
     let workflowAffinityKey: string | undefined;
@@ -2499,45 +2549,29 @@ export class WorkflowExecutionService {
 
       // Execute jobs level by level
       let anyJobFailed = false;
+      const startedJobs = new Set<string>();
       for (const level of sortedJobs.levels) {
-        // After a job failure with an aborted signal, give subsequent
-        // levels a fresh cleanup signal so always/completed job
-        // dependents can run. shouldJobRun() handles filtering.
-        const cleanupMode = anyJobFailed &&
-          (options?.signal?.aborted ?? false);
-        const levelSignal = cleanupMode
-          ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
-          : options?.signal;
-        const levelStepOpts = cleanupMode
-          ? { ...stepOpts, signal: levelSignal, cleanupJobLevel: true }
-          : stepOpts;
-        // Only a level the abort interrupted settles its never-started jobs.
-        const abortedBeforeLevel = levelSignal?.aborted ?? false;
-
-        if (cleanupMode) {
-          // Mark any jobs/steps still in "running" status as failed —
-          // the signal aborted their execution but the generators were
-          // abandoned before they could record the failure.
-          for (const jobRun of run.jobs) {
-            for (const step of jobRun.steps) {
-              if (step.status === "running") {
-                step.fail(CANCELLED_STEP_ERROR);
-              }
-            }
-            if (jobRun.status === "running") {
-              jobRun.fail();
-            }
-          }
-        }
+        const { levelSignal, levelStepOpts, abortedBeforeLevel } = this
+          .enterJobLevel(
+            run,
+            startedJobs,
+            anyJobFailed,
+            options?.signal,
+            stepOpts,
+          );
 
         // Merge parallel job generators within each level
         const jobStreams = level.map((jobName) =>
-          this.runJob(
-            workflow,
-            run,
+          markStarted(
             jobName,
-            expressionContext,
-            levelStepOpts,
+            startedJobs,
+            this.runJob(
+              workflow,
+              run,
+              jobName,
+              expressionContext,
+              levelStepOpts,
+            ),
           )
         );
         for await (
@@ -2545,6 +2579,9 @@ export class WorkflowExecutionService {
             jobStreams,
             jobConcurrency,
             levelSignal,
+            // Each started job runs on to its own cleanup and completion, as
+            // a job alone in its level does.
+            { finishStartedOnAbort: true },
           )
         ) {
           if (event.kind === "model_resolved") {
@@ -2575,38 +2612,15 @@ export class WorkflowExecutionService {
           yield event;
         }
 
-        // A job this level never started (queued behind workflow concurrency
-        // when the abort fired) would stay pending, so a failed or completed
-        // condition on it could never be met. Settle it as runJob would have:
-        // skipped when its dependsOn is unmet, otherwise from its steps
-        // (settleNotStartedJob). A suspended run keeps its pending jobs to
-        // resume.
-        if (
-          !abortedBeforeLevel && levelSignal?.aborted &&
-          run.status !== "suspended"
-        ) {
-          for (const jobName of level) {
-            const jobRun = run.getJob(jobName);
-            if (jobRun?.status !== "pending") continue;
-            const job = workflow.getJob(jobName);
-            if (!job) continue;
-            if (!this.shouldJobRun(job, run)) {
-              jobRun.skipNotStarted();
-            } else {
-              this.settleNotStartedJob(job, jobRun);
-            }
-          }
-        }
-
-        // When the signal aborts mid-level with parallel jobs,
-        // mergeWithConcurrency may exit before job_completed events are
-        // consumed. Derive anyJobFailed from model state.
-        if (!anyJobFailed && options?.signal?.aborted) {
-          anyJobFailed = run.jobs.some((j) =>
-            j.status === "running" || j.status === "failed" ||
-            j.status === "unknown"
-          );
-        }
+        anyJobFailed = this.finishJobLevel(
+          workflow,
+          run,
+          level,
+          anyJobFailed,
+          options?.signal,
+          levelSignal,
+          abortedBeforeLevel,
+        );
 
         await this.saveRun(workflow.id, run);
 
@@ -2818,6 +2832,11 @@ export class WorkflowExecutionService {
        * an approval can never start a retry of a failed run.
        */
       suspendedOnly?: boolean;
+      /**
+       * The serve instance driving this resume. Omitted for a local resume,
+       * which clears any instance id the run carried.
+       */
+      instanceId?: string;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -2889,11 +2908,14 @@ export class WorkflowExecutionService {
     // abort left it pending. Reopened per record before a failed run's reset
     // set, which resets by name in every job.
     existingRun.reopenAbortedWork();
+    // This process now drives the run. Recorded before the save below, so
+    // cancel sees the live process from the start.
+    const owner = { pid: Deno.pid, instanceId: options?.instanceId };
     if (reset) {
       existingRun.resetForResumeFrom(reset.steps, reset.tracked);
-      existingRun.resumeFromFailed();
+      existingRun.resumeFromFailed(owner);
     } else {
-      existingRun.resumeFromSuspended();
+      existingRun.resumeFromSuspended(owner);
     }
 
     // Record the key names of any resume-time inputs for audit (never the
@@ -2905,6 +2927,26 @@ export class WorkflowExecutionService {
     // The running status saved here also stops a second resume of this run
     // from starting while this one prepares.
     await this.saveRun(workflow.id, existingRun);
+    // The tracker row follows at once: a serve boot that found the record
+    // running beside a stale row would otherwise interrupt this resume.
+    const handBackTrackerRow = this.handOverTrackerRow(
+      existingRun,
+      workflow.name,
+      snapshot.status === "suspended" ? "suspended" : "failed",
+      options?.instanceId,
+    );
+    // The heartbeat starts with the hand-over, so a slow preparation does not
+    // leave the row stale. The finally at the end of this method clears it,
+    // as does the hand-back of a resume that fails before execution.
+    const resumeHeartbeatInterval = this.startResumeHeartbeat(existingRun.id);
+    const restore = {
+      workflowId: workflow.id,
+      snapshot,
+      handBackTrackerRow: () => {
+        if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
+        handBackTrackerRow();
+      },
+    };
 
     const {
       expressionContext,
@@ -2913,7 +2955,7 @@ export class WorkflowExecutionService {
       resolvedWorkflow,
       workflowLogPath,
       workflowLogHandle,
-    } = await this.restoreRunOnFailure(workflow.id, snapshot, async () => {
+    } = await this.restoreRunOnFailure(restore, async () => {
       const expressionContext = await this.buildRunContext(
         workflow,
         false,
@@ -3004,12 +3046,10 @@ export class WorkflowExecutionService {
       };
     });
 
-    // Declared before the try so the finally at the end of this method can
-    // clear it. The try opens immediately after register() — before the
-    // "started" yield — so early consumer abandonment (a client that receives
-    // "started" then disconnects) still unwinds the finally and releases the
-    // log sink.
-    let resumeHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
+    // The try opens immediately after register() — before the "started"
+    // yield — so early consumer abandonment (a client that receives
+    // "started" then disconnects) still unwinds the finally, which stops the
+    // heartbeat and releases the log sink.
     try {
       yield {
         kind: "started",
@@ -3039,21 +3079,6 @@ export class WorkflowExecutionService {
         assertFailOnSeverity: options?.assertFailOnSeverity,
       };
 
-      // Hand the tracker row to this process (suspended, failed, or
-      // interrupted → running) and start heartbeat
-      if (this.runTracker) {
-        this.runTracker.reactivate(existingRun.id, Deno.pid, hostname());
-        const tracker = this.runTracker;
-        const runId = existingRun.id;
-        resumeHeartbeatInterval = setInterval(() => {
-          try {
-            tracker.heartbeat(runId);
-          } catch {
-            // Heartbeat failure is non-fatal
-          }
-        }, 30_000);
-      }
-
       const jobNodes: GraphNode[] = resolvedWorkflow.jobs.map((job) => ({
         name: job.name,
         weight: job.weight,
@@ -3080,7 +3105,18 @@ export class WorkflowExecutionService {
         import("../models/model.ts").DataHandle[]
       >();
 
+      let anyJobFailed = false;
+      const startedJobs = new Set<string>();
       for (const level of sortedJobs.levels) {
+        const { levelSignal, levelStepOpts, abortedBeforeLevel } = this
+          .enterJobLevel(
+            existingRun,
+            startedJobs,
+            anyJobFailed,
+            options?.signal,
+            stepOpts,
+          );
+
         const jobStreams = level.map((jobName: string) => {
           const jobRun = existingRun.getJob(jobName);
           if (
@@ -3088,21 +3124,29 @@ export class WorkflowExecutionService {
             (jobRun.status === "succeeded" || jobRun.status === "failed" ||
               jobRun.status === "skipped" || jobRun.status === "unknown")
           ) {
+            // A job that failed before this resume counts once its level is
+            // reached, as its job_completed event did when it failed.
+            if (jobRun.status === "failed") anyJobFailed = true;
             return (async function* () {})();
           }
-          return this.runJob(
-            resolvedWorkflow,
-            existingRun,
+          return markStarted(
             jobName,
-            expressionContext,
-            stepOpts,
+            startedJobs,
+            this.runJob(
+              resolvedWorkflow,
+              existingRun,
+              jobName,
+              expressionContext,
+              levelStepOpts,
+            ),
           );
         });
         for await (
           const event of mergeWithConcurrency(
             jobStreams,
             jobConcurrency,
-            options?.signal,
+            levelSignal,
+            { finishStartedOnAbort: true },
           )
         ) {
           if (event.kind === "model_resolved") {
@@ -3127,8 +3171,25 @@ export class WorkflowExecutionService {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
             await this.saveRun(workflow.id, existingRun);
           }
+          if (event.kind === "job_completed" && event.status === "failed") {
+            anyJobFailed = true;
+          }
           yield event as WorkflowExecutionEvent;
         }
+
+        // Settled against resolvedWorkflow, the workflow runJob ran: a job
+        // whose name is written with an expression exists only under its
+        // evaluated name.
+        anyJobFailed = this.finishJobLevel(
+          resolvedWorkflow,
+          existingRun,
+          level,
+          anyJobFailed,
+          options?.signal,
+          levelSignal,
+          abortedBeforeLevel,
+        );
+
         await this.saveRun(workflow.id, existingRun);
 
         if (existingRun.status === "suspended") {
@@ -3243,11 +3304,34 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    const tracer = getTracer();
-    const jobSpan = tracer.startSpan("swamp.workflow.job", {
+    const jobSpan = getTracer().startSpan("swamp.workflow.job", {
       attributes: { "job.name": jobName },
     });
+    yield* bindGeneratorToSpan(
+      jobSpan,
+      this.runJobInSpan(
+        jobSpan,
+        workflow,
+        run,
+        jobName,
+        expressionContext,
+        options,
+      ),
+    );
+  }
 
+  /**
+   * Body of {@link runJob}, executed with `jobSpan` as the active span so step
+   * spans nest beneath it. Ends `jobSpan`.
+   */
+  private async *runJobInSpan(
+    jobSpan: Span,
+    workflow: Workflow,
+    run: WorkflowRun,
+    jobName: string,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     try {
       const job = workflow.getJob(jobName);
       if (!job) {
@@ -3365,11 +3449,7 @@ export class WorkflowExecutionService {
           // Mark any steps still in "running" status as failed — the
           // signal aborted their execution but the generators were
           // abandoned before they could record the failure.
-          for (const step of jobRun.steps) {
-            if (step.status === "running") {
-              step.fail(CANCELLED_STEP_ERROR);
-            }
-          }
+          failAbandonedSteps(jobRun);
         }
 
         // Merge parallel step generators within each level
@@ -3499,6 +3579,15 @@ export class WorkflowExecutionService {
         }
       }
 
+      // The same for steps the abort left running in the job's last level,
+      // which no later cleanup level marks.
+      if (
+        run.status !== "suspended" && options.signal?.aborted &&
+        failAbandonedSteps(jobRun)
+      ) {
+        jobFailed = true;
+      }
+
       // A step a failed-run resume reset that this walk never reached was
       // stranded by a workflow change (for example, an iteration dropped from
       // a smaller forEach collection). Fail it rather than report the job
@@ -3538,10 +3627,7 @@ export class WorkflowExecutionService {
           // Only undecided guarded steps are left, so the job's outcome is
           // ambiguous: neither `succeeded`, `failed`, `completed` nor
           // `skipped` holds for it. Like other work an abort settles, it gets
-          // no event. A job the run's cleanup already failed while this
-          // generator was abandoned (a level holding several jobs,
-          // swamp-club#2549) keeps that status, so the record matches what
-          // later levels saw.
+          // no event. A job no longer running keeps its status.
           if (jobRun.status === "running") jobRun.markUnknown();
           jobSpan.setAttribute("job.status", jobRun.status);
           jobSpan.setStatus({ code: SpanStatusCode.OK });
@@ -3593,7 +3679,44 @@ export class WorkflowExecutionService {
         "job.name": job.name,
       },
     });
+    yield* bindGeneratorToSpan(
+      stepSpan,
+      this.runStepInSpan(
+        stepSpan,
+        workflow,
+        run,
+        job,
+        jobRun,
+        stepName,
+        originalStep,
+        forEachVar,
+        expressionContext,
+        options,
+        forEachIndex,
+        forEachTemplate,
+      ),
+    );
+  }
 
+  /**
+   * Body of {@link runStep}, executed with `stepSpan` as the active span so
+   * the model method span (and the traceparent handed to it) nests beneath
+   * it. Ends `stepSpan`.
+   */
+  private async *runStepInSpan(
+    stepSpan: Span,
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    jobRun: JobRun,
+    stepName: string,
+    originalStep: Step | undefined,
+    forEachVar: { name: string; value: unknown } | undefined,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+    forEachIndex?: number,
+    forEachTemplate?: string,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
     if (!step) {
@@ -3812,19 +3935,22 @@ export class WorkflowExecutionService {
 
     // Start step
     stepRun.start();
-    yield {
-      kind: "step_started",
-      jobId: job.name,
-      stepId: stepName,
-      forEachTemplate,
-      forEachIndex,
-    };
 
     // This step's `steps.<name>.outputs`, taken from the full output before
     // it is stripped for the run record. Declared here so the finally below
     // sees it for both model_method and workflow steps.
     let liveOutputs: Record<string, unknown> | undefined;
     try {
+      // Yielded inside the try so a consumer that stops here still ends the
+      // step span in the finally below.
+      yield {
+        kind: "step_started",
+        jobId: job.name,
+        stepId: stepName,
+        forEachTemplate,
+        forEachIndex,
+      };
+
       const task = step.task.data;
 
       // Handle manual approval tasks — suspend the workflow
@@ -4612,6 +4738,105 @@ export class WorkflowExecutionService {
     });
   }
 
+  /**
+   * Prepares one job level of a run or resume. After a job failure with an
+   * aborted signal, the level runs in cleanup mode: a fresh cleanup signal so
+   * always/completed job dependents can run (shouldJobRun() handles
+   * filtering), and any job this walk started that is still "running" is
+   * marked failed with its running steps — the signal aborted their execution
+   * but the generators were abandoned before they could record the failure.
+   * A job a resume inherited as running from a suspension is in flight only
+   * once this walk starts it, so it runs when its level is reached.
+   */
+  private enterJobLevel(
+    run: WorkflowRun,
+    started: ReadonlySet<string>,
+    anyJobFailed: boolean,
+    signal: AbortSignal | undefined,
+    stepOpts: StepOptions,
+  ): {
+    levelSignal: AbortSignal | undefined;
+    levelStepOpts: StepOptions;
+    abortedBeforeLevel: boolean;
+  } {
+    const cleanupMode = anyJobFailed && (signal?.aborted ?? false);
+    const levelSignal = cleanupMode
+      ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
+      : signal;
+    const levelStepOpts = cleanupMode
+      ? { ...stepOpts, signal: levelSignal, cleanupJobLevel: true }
+      : stepOpts;
+
+    if (cleanupMode) {
+      for (const jobRun of run.jobs) {
+        if (!started.has(jobRun.jobName)) continue;
+        failAbandonedSteps(jobRun);
+        if (jobRun.status === "running") {
+          jobRun.fail();
+        }
+      }
+    }
+
+    // Only a level the abort interrupted settles its never-started jobs.
+    return {
+      levelSignal,
+      levelStepOpts,
+      abortedBeforeLevel: levelSignal?.aborted ?? false,
+    };
+  }
+
+  /**
+   * Finishes one job level of a run or resume after its jobs drained, and
+   * returns whether a job has failed so the next level enters cleanup mode.
+   *
+   * A job this level never started (queued behind workflow concurrency when
+   * the abort fired) would stay pending, so a failed or completed condition on
+   * it could never be met. It is settled as runJob would have: skipped when
+   * its dependsOn is unmet, otherwise from its steps (settleNotStartedJob). A
+   * suspended run keeps its pending jobs to resume.
+   *
+   * When the signal aborts mid-level with parallel jobs, mergeWithConcurrency
+   * may exit before job_completed events are consumed, so a failure is also
+   * derived from model state. A running job counts even when a resume
+   * inherited it from a suspension: the cancellation left its work
+   * unfinished, so later levels run in cleanup mode, which fails only the jobs
+   * this walk started (enterJobLevel).
+   */
+  private finishJobLevel(
+    workflow: Workflow,
+    run: WorkflowRun,
+    level: readonly string[],
+    anyJobFailed: boolean,
+    signal: AbortSignal | undefined,
+    levelSignal: AbortSignal | undefined,
+    abortedBeforeLevel: boolean,
+  ): boolean {
+    if (
+      !abortedBeforeLevel && levelSignal?.aborted &&
+      run.status !== "suspended"
+    ) {
+      for (const jobName of level) {
+        const jobRun = run.getJob(jobName);
+        if (jobRun?.status !== "pending") continue;
+        const job = workflow.getJob(jobName);
+        if (!job) continue;
+        if (!this.shouldJobRun(job, run)) {
+          jobRun.skipNotStarted();
+        } else {
+          this.settleNotStartedJob(job, jobRun);
+        }
+      }
+    }
+
+    if (!anyJobFailed && signal?.aborted) {
+      return run.jobs.some((j) =>
+        j.status === "running" || j.status === "failed" ||
+        j.status === "unknown"
+      );
+    }
+    return anyJobFailed;
+  }
+
   private shouldJobRun(job: Job, run: WorkflowRun): boolean {
     // If no dependencies, always run
     if (job.dependsOn.length === 0) {
@@ -4888,6 +5113,7 @@ export class WorkflowExecutionService {
     // Re-enter the executor via the existing resume path
     yield* this.resume(workflowIdOrName, run.id, {
       signal: options?.signal,
+      instanceId: options?.instanceId,
     });
   }
 
@@ -4899,12 +5125,16 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Runs `prepare`; if it throws, saves the run back as `snapshot` and
-   * rethrows. A failed restore is logged and the original error still wins.
+   * Runs `prepare`; if it throws, saves the run back as `snapshot`, hands its
+   * tracker row back, and rethrows. A failed restore is logged and the
+   * original error still wins.
    */
   private async restoreRunOnFailure<T>(
-    workflowId: WorkflowId,
-    snapshot: WorkflowRunData,
+    { workflowId, snapshot, handBackTrackerRow }: {
+      workflowId: WorkflowId;
+      snapshot: WorkflowRunData;
+      handBackTrackerRow: () => void;
+    },
     prepare: () => Promise<T>,
   ): Promise<T> {
     try {
@@ -4923,7 +5153,86 @@ export class WorkflowExecutionService {
           },
         );
       }
+      try {
+        handBackTrackerRow();
+      } catch (restoreError) {
+        getSwampLogger(["workflow", "resume"]).warn(
+          "Could not restore the tracker row of run {runId} after a failed resume: {error}",
+          {
+            runId: snapshot.id,
+            error: restoreError instanceof Error
+              ? restoreError.message
+              : String(restoreError),
+          },
+        );
+      }
       throw error;
+    }
+  }
+
+  /**
+   * Heartbeats the run's tracker row every 30 seconds, when there is a
+   * tracker. The caller clears the returned interval.
+   */
+  private startResumeHeartbeat(
+    runId: string,
+  ): ReturnType<typeof setInterval> | undefined {
+    const tracker = this.runTracker;
+    if (!tracker) return undefined;
+    return setInterval(() => {
+      try {
+        tracker.heartbeat(runId);
+      } catch {
+        // Heartbeat failure is non-fatal
+      }
+    }, 30_000);
+  }
+
+  /**
+   * Hands the run's tracker row to this process: a suspended, failed or
+   * interrupted row becomes running under this pid and `instanceId`, and a
+   * row that retention purged is registered again. A row in any other status
+   * is left alone. Returns a function that puts the row back to its prior
+   * status (`priorStatus` for a row this call registered), for a resume that
+   * fails before execution starts.
+   *
+   * Never throws: it runs after the run is saved as running and before the
+   * restore that would undo that save, and tracker bookkeeping is
+   * best-effort, so a tracker failure is logged and the resume goes on.
+   */
+  private handOverTrackerRow(
+    run: WorkflowRun,
+    workflowName: string,
+    priorStatus: ActiveRunStatus,
+    instanceId: string | undefined,
+  ): () => void {
+    const tracker = this.runTracker;
+    if (!tracker) return () => {};
+    try {
+      const prior = tracker.findById(run.id);
+      if (tracker.reactivate(run.id, Deno.pid, hostname(), instanceId)) {
+        const status = prior?.status ?? priorStatus;
+        return () => tracker.complete(run.id, status);
+      }
+      if (prior) return () => {};
+      tracker.register(ActiveRun.createWorkflowRun({
+        id: run.id,
+        workflowName,
+        pid: Deno.pid,
+        hostname: hostname(),
+        initiatedBy: run.initiatedBy,
+        instanceId,
+      }));
+      return () => tracker.complete(run.id, priorStatus);
+    } catch (error) {
+      getSwampLogger(["workflow", "resume"]).warn(
+        "Could not hand the tracker row of run {runId} to this resume: {error}",
+        {
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return () => {};
     }
   }
 

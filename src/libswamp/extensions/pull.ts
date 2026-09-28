@@ -206,7 +206,8 @@ export interface InstallContext {
    * extraction and throws a UserError on mismatch. Scoped strictly to the
    * lockfile-restore path (extensionInstall, migration re-pull) — explicit
    * `swamp extension pull` leaves this unset so the user opts into
-   * whatever bytes the registry currently serves.
+   * whatever bytes the registry currently serves. It anchors the top-level
+   * ref only; dependency installs never inherit it.
    */
   expectedChecksum?: string;
   /** Release channel to record in the lockfile entry. */
@@ -1418,10 +1419,15 @@ export async function installExtension(
             name: depRef.name,
             version: depVersion,
           };
+          // expectedChecksum anchors the parent's archive, not this one. A
+          // dependency reached here has no lockfile entry, so it has no
+          // anchor of its own: it installs like a fresh pull, still checked
+          // against the registry's server checksum.
           const depResult = await installExtension(resolvedRef, {
             ...ctx,
             depth: ctx.depth + 1,
             channel: depChannel,
+            expectedChecksum: undefined,
           });
           if (depResult) {
             dependencyResults.push(depResult);

@@ -19,6 +19,11 @@
 
 import { useEffect, useState } from "react";
 import { useSwamp } from "./SwampProvider";
+import {
+  HEALTH_RETRY_MS,
+  healthRetryDelayMs,
+  healthStreamOutcome,
+} from "./health_state";
 
 interface ActiveRun {
   runId: string;
@@ -77,15 +82,29 @@ export interface HealthSnapshot {
   components: ComponentHealth[];
 }
 
-export function useHealthStream(intervalMs = 5000): HealthSnapshot | null {
+export interface HealthStream {
+  health: HealthSnapshot | null;
+  /** Serve refused the stream for this token. */
+  denied: boolean;
+}
+
+export function useHealthStream(intervalMs = 5000): HealthStream {
   const { token } = useSwamp();
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
+  const [denied, setDenied] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let retryTimeout: ReturnType<typeof setTimeout>;
+    // Aborting on cleanup closes the connection itself; serve counts each
+    // open stream against the token's limit until it closes.
+    const abort = new AbortController();
+    // A new token starts from scratch: what the last one saw no longer holds.
+    setHealth(null);
+    setDenied(false);
 
     async function connect() {
+      let retryMs = HEALTH_RETRY_MS;
       try {
         const headers: Record<string, string> = {};
         if (token) {
@@ -93,41 +112,63 @@ export function useHealthStream(intervalMs = 5000): HealthSnapshot | null {
         }
 
         const url = `/api/v1/health/stream?interval=${intervalMs}`;
-        const resp = await fetch(url, { headers });
+        const resp = await fetch(url, { headers, signal: abort.signal });
 
-        if (!resp.ok || !resp.body) return;
+        const outcome = healthStreamOutcome(resp.status);
+        if (outcome === "denied") {
+          await resp.body?.cancel();
+          if (!cancelled) {
+            setHealth(null);
+            setDenied(true);
+          }
+          return;
+        }
 
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
+        if (outcome === "ok" && resp.body) {
+          setDenied(false);
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let event = "message";
 
-        while (!cancelled) {
-          const { done, value } = await reader.read();
-          if (done) break;
+          while (!cancelled) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
 
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              try {
-                const snapshot = JSON.parse(
-                  line.slice(6),
-                ) as HealthSnapshot;
-                setHealth(snapshot);
-              } catch {
-                // ignore parse errors
+            for (const line of lines) {
+              if (line === "") {
+                event = "message";
+              } else if (line.startsWith("event: ")) {
+                event = line.slice(7);
+              } else if (line.startsWith("data: ") && event === "health") {
+                try {
+                  const snapshot = JSON.parse(
+                    line.slice(6),
+                  ) as HealthSnapshot;
+                  setHealth(snapshot);
+                } catch {
+                  // ignore parse errors
+                }
               }
+              // A session-ended event precedes the server closing the
+              // stream; the reconnect below then learns whether the token
+              // still works.
             }
           }
+        } else {
+          retryMs = healthRetryDelayMs(resp.headers.get("Retry-After"));
+          await resp.body?.cancel();
         }
       } catch {
         // reconnect after delay
       }
 
       if (!cancelled) {
-        retryTimeout = setTimeout(connect, 5000);
+        retryTimeout = setTimeout(connect, retryMs);
       }
     }
 
@@ -136,8 +177,9 @@ export function useHealthStream(intervalMs = 5000): HealthSnapshot | null {
     return () => {
       cancelled = true;
       clearTimeout(retryTimeout);
+      abort.abort();
     };
   }, [token, intervalMs]);
 
-  return health;
+  return { health, denied };
 }

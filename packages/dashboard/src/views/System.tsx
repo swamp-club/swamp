@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { HealthSnapshot } from "../client/useHealthStream";
+import { healthViewState } from "../client/health_state";
+import { HealthUnavailable } from "../components/HealthUnavailable";
 import { useRequest } from "../client/useRequest";
 import { extractArray, extractObject } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
@@ -46,7 +48,10 @@ interface WorkerInfo {
   activeDispatchIds: string[];
 }
 
-export function System({ health }: { health: HealthSnapshot | null }) {
+export function System(
+  { health, denied }: { health: HealthSnapshot | null; denied: boolean },
+) {
+  const healthState = healthViewState(health, denied);
   const { data: clusterData } = useRequest("cluster.instances");
   const { data: configData } = useRequest("serve.config");
   const { data: workersData } = useRequest("worker.list");
@@ -175,6 +180,15 @@ export function System({ health }: { health: HealthSnapshot | null }) {
         </div>
       )}
 
+      {healthState !== "ready" && (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <HealthUnavailable
+            state={healthState}
+            subject="deployment and component health"
+          />
+        </div>
+      )}
+
       {/* Deployment + Datastore side by side */}
       <div className="panels-grid" style={{ marginBottom: 14 }}>
         {health && (
@@ -221,6 +235,14 @@ export function System({ health }: { health: HealthSnapshot | null }) {
                   )}
                 </span>
               </div>
+              {(!health.components || health.components.length === 0) && (
+                <div className="sys-row" style={{ padding: "8px 18px" }}>
+                  <span className="sys-key">components</span>
+                  <span className="sys-val">
+                    none visible to this token (admins see component health)
+                  </span>
+                </div>
+              )}
               {health.components && health.components.length > 0 &&
                 health.components.map((c) => (
                   <div

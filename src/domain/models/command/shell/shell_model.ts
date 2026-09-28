@@ -28,6 +28,7 @@ import {
 } from "../../model.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 import { createSafeMethodEnv } from "../../../remote/environment_snapshot.ts";
+import { traceHeadersToEnv } from "../../execution_envelope.ts";
 import { selectShellStrategy } from "./shell_strategy.ts";
 
 const shellStrategy = selectShellStrategy();
@@ -131,10 +132,13 @@ async function executeCommand(
     }
 
     const invocation = shellStrategy.buildInvocation(shellCommand);
-    const safeBaseEnv = createSafeMethodEnv(Deno.env.toObject());
-    const processEnv = Object.keys(shellEnv).length > 0
-      ? { ...safeBaseEnv, ...shellEnv }
-      : safeBaseEnv;
+    // This execution's own trace context overrides whatever the shared
+    // process env holds; explicit user env still wins over both.
+    const processEnv = {
+      ...createSafeMethodEnv(Deno.env.toObject()),
+      ...traceHeadersToEnv(context.traceHeaders),
+      ...shellEnv,
+    };
     const result = await executeProcess({
       command: invocation.command,
       args: invocation.args,

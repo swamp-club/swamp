@@ -370,6 +370,32 @@ export interface ServeReloadOptions {
   ) => Promise<number>;
 }
 
+/** The error {@link performServeReload} reports while another reload runs. */
+export const RELOAD_IN_PROGRESS_ERROR = "Reload already in progress";
+
+/**
+ * The outcome of an extension reload as the config poller sees it: `busy`
+ * when another reload was already running, so the change is still unapplied.
+ */
+export type ExtensionReloadStatus = "ok" | "failed" | "busy";
+
+/**
+ * What an extension reloader reports to the config poller. `errors` carries a
+ * failed reload's messages so the poller decides how loudly to log them.
+ */
+export interface ExtensionReloadResult {
+  status: ExtensionReloadStatus;
+  errors: readonly string[];
+}
+
+/** Maps a {@link performServeReload} result to an {@link ExtensionReloadStatus}. */
+export function serveReloadStatus(
+  result: ServeReloadResponse,
+): ExtensionReloadStatus {
+  if (result.success) return "ok";
+  return result.errors.includes(RELOAD_IN_PROGRESS_ERROR) ? "busy" : "failed";
+}
+
 export async function performServeReload(
   repoDir: string,
   lockfilePath: string,
@@ -380,7 +406,7 @@ export async function performServeReload(
     return {
       success: false,
       reloadedCount: 0,
-      errors: ["Reload already in progress"],
+      errors: [RELOAD_IN_PROGRESS_ERROR],
     };
   }
 

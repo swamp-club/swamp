@@ -231,6 +231,54 @@ Deno.test("serve code must not make bare markDirty() calls (swamp-club#2408, swa
   );
 });
 
+// CLI commands that write the extension lockfile publish exactly the paths
+// they changed. The bulk helpers call a bare markDirty(), which makes the
+// push walk the whole cache and skip deletion detection (swamp-club#2415,
+// swamp-club#2429). A new extension writer belongs in this list.
+const EXTENSION_WRITER_FILES: readonly string[] = [
+  "src/cli/commands/doctor_extensions.ts",
+  "src/cli/commands/extension_install.ts",
+  "src/cli/commands/extension_pull.ts",
+  "src/cli/commands/extension_rm.ts",
+  "src/cli/commands/extension_search.ts",
+  "src/cli/commands/extension_update.ts",
+  "src/cli/commands/repo_init.ts",
+];
+const BULK_PUSH_HELPER_CALL = /\bpushManagedConfigChanges(?:Deferred)?\s*\(/;
+const PATH_PUSH_HELPER_CALL =
+  /\b(?:pushManagedConfigPaths(?:Deferred)?|pushManagedLockfileIfChangedDeferred)\s*\(/;
+
+Deno.test("extension writers publish by path, never through the bulk push helpers (swamp-club#2429)", async () => {
+  const bulk: string[] = [];
+  const unpublished: string[] = [];
+
+  for (const rel of EXTENSION_WRITER_FILES) {
+    const code = (await Deno.readTextFile(join(ROOT, rel)))
+      .split("\n")
+      .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+      .join("\n");
+    if (BULK_PUSH_HELPER_CALL.test(code)) bulk.push(rel);
+    if (!PATH_PUSH_HELPER_CALL.test(code)) unpublished.push(rel);
+  }
+
+  assertEquals(
+    bulk,
+    [],
+    "Extension writers must not call pushManagedConfigChanges or " +
+      "pushManagedConfigChangesDeferred: their bare markDirty() turns the " +
+      "push into a full-cache walk that never detects deletions. Pass the " +
+      "files the command wrote to pushManagedConfigPathsDeferred, or use " +
+      "pushManagedLockfileIfChangedDeferred.",
+  );
+  assertEquals(
+    unpublished,
+    [],
+    "These extension writers no longer publish the tier lockfile through " +
+      "a per-path helper. Publish it, or remove the file from " +
+      "EXTENSION_WRITER_FILES if it no longer writes the lockfile.",
+  );
+});
+
 // A command that takes model locks installs the datastore sync coordinator's
 // SIGINT handler, which exits the process with 130 once it has released the
 // locks. A command that also cancels its work on Ctrl-C must suppress that

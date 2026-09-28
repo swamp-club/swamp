@@ -41,6 +41,7 @@ import {
 } from "./data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
 import { withConsoleGuard } from "./console_guard.ts";
+import { processTraceEnv } from "./process_trace_env.ts";
 
 /**
  * Renders a LogTape string template the way LogTape does for its own sinks:
@@ -107,14 +108,6 @@ export function wrapLoggerWithOutput(
       return Reflect.get(target, prop, receiver);
     },
   });
-}
-
-function restoreEnv(key: string, saved: string | undefined): void {
-  if (saved !== undefined) {
-    Deno.env.set(key, saved);
-  } else {
-    Deno.env.delete(key);
-  }
 }
 
 /**
@@ -251,6 +244,7 @@ export class InProcessExecutor {
     this.contextWithWriters = {
       ...this.context,
       methodName: this.methodName,
+      traceHeaders: request.traceHeaders,
       logger: wrapLoggerWithOutput(this.context.logger, this.context.onEvent),
       writeResource,
       readResource,
@@ -282,23 +276,19 @@ export class InProcessExecutor {
       ) => gateSvc.reject(options, callerInfo, signal, logger);
     }
 
-    const savedTraceparent = Deno.env.get("TRACEPARENT");
-    const savedTracestate = Deno.env.get("TRACESTATE");
     try {
-      if (request.traceHeaders) {
-        for (const [key, value] of Object.entries(request.traceHeaders)) {
-          Deno.env.set(key.toUpperCase().replace(/-/g, "_"), value);
-        }
-      }
-
-      const result = await withConsoleGuard(
+      const result = await processTraceEnv.run(
+        request.traceHeaders,
         () =>
-          this.executor.execute(
-            this.definition,
-            this.method,
-            this.contextWithWriters!,
+          withConsoleGuard(
+            () =>
+              this.executor.execute(
+                this.definition,
+                this.method,
+                this.contextWithWriters!,
+              ),
+            logs,
           ),
-        logs,
       );
 
       const durationMs = performance.now() - start;
@@ -368,9 +358,6 @@ export class InProcessExecutor {
         logs,
         durationMs,
       };
-    } finally {
-      restoreEnv("TRACEPARENT", savedTraceparent);
-      restoreEnv("TRACESTATE", savedTracestate);
     }
   }
 }
