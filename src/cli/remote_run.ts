@@ -930,26 +930,35 @@ export function getDefaultHttpClient(): Deno.HttpClient {
 
 let resolvedEnvCaCerts: string[] | undefined;
 
-function resolveCaCertPath(): string | undefined {
-  const envPath = Deno.env.get("SWAMP_CA_CERT");
-  if (envPath) return envPath;
+/**
+ * Precedence: `--ca-cert` flag > `SWAMP_CA_CERT` env. An empty value from
+ * either source counts as unset.
+ */
+export function resolveCaCertPath(
+  args: readonly string[],
+  envPath: string | undefined,
+): string | undefined {
   // Handle both --ca-cert value and --ca-cert=value forms
-  for (let i = 0; i < Deno.args.length; i++) {
-    if (Deno.args[i] === "--ca-cert" && i + 1 < Deno.args.length) {
-      return Deno.args[i + 1];
+  for (let i = 0; i < args.length; i++) {
+    let flagPath: string | undefined;
+    if (args[i] === "--ca-cert" && i + 1 < args.length) {
+      flagPath = args[i + 1];
+    } else if (args[i].startsWith("--ca-cert=")) {
+      flagPath = args[i].slice("--ca-cert=".length);
     }
-    if (Deno.args[i].startsWith("--ca-cert=")) {
-      return Deno.args[i].slice("--ca-cert=".length);
-    }
+    if (flagPath) return flagPath;
   }
-  return undefined;
+  return envPath || undefined;
 }
 
 export function getEnvCaCerts(): string[] | undefined {
   if (resolvedEnvCaCerts !== undefined) {
     return resolvedEnvCaCerts.length > 0 ? resolvedEnvCaCerts : undefined;
   }
-  const certPath = resolveCaCertPath();
+  const certPath = resolveCaCertPath(
+    Deno.args,
+    Deno.env.get("SWAMP_CA_CERT"),
+  );
   if (!certPath) {
     resolvedEnvCaCerts = [];
     return undefined;

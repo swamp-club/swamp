@@ -1265,7 +1265,8 @@ credentials and extensions onto workers:
   TLS uses standard trust-anchor verification. `--ca-cert` / `SWAMP_CA_CERT`
   adds a PEM CA to trust (`src/cli/commands/worker_connect.ts`) for the control
   socket and each dispatch runner's data-plane requests, so `DENO_CERT` is not
-  needed. Certificate **pinning is not implemented**.
+  needed. The flag wins when both are set. Certificate **pinning is not
+  implemented**.
 
   The data-plane **session credential** is short-lived and lease-scoped. Token
   lifetimes should be short too: a token leaked before enrollment is the main
