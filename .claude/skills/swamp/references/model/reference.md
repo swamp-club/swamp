@@ -393,6 +393,12 @@ swamp model method run my-deploy create --skip-check valid-region
 swamp model method run my-deploy create --skip-check-label live
 ```
 
+**Inputs are evaluated.** `--input`, `--input-file`, and `--stdin` values are
+treated as operator-written: any `${{ vault.get(...) }}` or `${{ env.X }}` in
+them resolves and reaches the method in plaintext. Never pass untrusted text
+(issue bodies, tickets, scraped pages) this way; see the vault reference, "Trust
+Boundary: Which Inputs Are Evaluated".
+
 **Data versioning:** Running a method multiple times creates new data versions
 (v1, v2, ...), never overwrites. Each run's artifacts are preserved. Use
 `swamp data get <name> <spec> --version <N>` to access a specific version, or
