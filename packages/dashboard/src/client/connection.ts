@@ -346,7 +346,7 @@ export async function requestAuthInfo(
  * the same check as the WebSocket upgrade and answers 401 only for a
  * rejected token.
  *
- * It is heavier than the question needs: an admin token also runs a full
+ * It is heavier than the question needs: any accepted token also runs a full
  * health collection, and every probe records an auth audit event. Probes only
  * follow a failed reconnect and are spaced by backoff; switch to a
  * lightweight token-check endpoint if serve gains one.

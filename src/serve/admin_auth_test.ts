@@ -18,7 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { type AdminAuthDeps, authenticateAdmin } from "./admin_auth.ts";
+import {
+  type AdminAuthDeps,
+  authenticateAdmin,
+  authenticateToken,
+  createReadAuthorizer,
+} from "./admin_auth.ts";
+import type {
+  AccessDecisionService,
+  AccessResource,
+  PolicySnapshotLoader,
+} from "../domain/access/mod.ts";
 
 function makeDeps(overrides: Partial<AdminAuthDeps> = {}): AdminAuthDeps {
   return {
@@ -89,4 +99,119 @@ Deno.test("authenticateAdmin: trustProxy passes x-forwarded-for through auth flo
   if (!result.ok) {
     assertEquals(result.response.status, 401);
   }
+});
+
+Deno.test("authenticateToken: no-auth mode is anonymous with no token binding", async () => {
+  const deps = makeDeps({ authMode: "none" });
+  const req = new Request("http://localhost/api/v1/health/stream");
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.authResult.principalId, "@anonymous");
+    assertEquals(result.token, null);
+    assertEquals(result.clientAddr, "127.0.0.1");
+  }
+});
+
+Deno.test("authenticateToken: trustProxy reports the forwarded client address", async () => {
+  const deps = makeDeps({ authMode: "none", trustProxy: true });
+  const req = new Request("http://localhost/api/v1/health/stream", {
+    headers: { "x-forwarded-for": "10.0.0.9, 192.168.1.1" },
+  });
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.clientAddr, "10.0.0.9");
+});
+
+Deno.test("authenticateToken: returns 401 without a bearer token", async () => {
+  const deps = makeDeps();
+  const req = new Request("http://localhost/api/v1/health/stream");
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.response.status, 401);
+});
+
+Deno.test("authenticateToken: returns 401 with an invalid token", async () => {
+  const deps = makeDeps();
+  const req = new Request("http://localhost/api/v1/health/stream", {
+    headers: { authorization: `Bearer not-${crypto.randomUUID()}` },
+  });
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.response.status, 401);
+});
+
+const PRINCIPAL = {
+  ok: true as const,
+  principalId: "user:operator",
+  collectives: ["team-a"],
+  groups: ["ops"],
+};
+
+/** A policy answering from `rules`, keyed by "action kind:name". */
+function policy(
+  rules: Record<string, "allow" | "deny">,
+): PolicySnapshotLoader {
+  const service = {
+    decide: (_p: unknown, action: string, resource: AccessResource) => {
+      const effect = rules[`${action} ${resource.kind}:${resource.name}`];
+      return effect
+        ? {
+          effect,
+          grantId: "g",
+          subject: { kind: "user" as const, name: "operator" },
+        }
+        : null;
+    },
+    explain: () => [],
+    hasAnyGrantForKind: () => true,
+  } as unknown as AccessDecisionService;
+  return { decisionService: service } as unknown as PolicySnapshotLoader;
+}
+
+const WORKFLOW = (name: string): AccessResource => ({
+  kind: "workflow",
+  name,
+  fields: { name },
+});
+
+Deno.test("createReadAuthorizer: auth mode none reads everything as admin", () => {
+  const reader = createReadAuthorizer(PRINCIPAL, {
+    authMode: "none",
+    policySnapshotLoader: null,
+  });
+  assertEquals(reader.isAdmin(), true);
+  assertEquals(reader.canRead(WORKFLOW("any")), true);
+});
+
+Deno.test("createReadAuthorizer: without a policy snapshot nothing is readable", () => {
+  const reader = createReadAuthorizer(PRINCIPAL, {
+    authMode: "token",
+    policySnapshotLoader: null,
+  });
+  assertEquals(reader.isAdmin(), false);
+  assertEquals(reader.canRead(WORKFLOW("any")), false);
+});
+
+Deno.test("createReadAuthorizer: explicit allow and deny win; uncovered resources need admin", () => {
+  const rules = {
+    "read workflow:open": "allow",
+    "read workflow:closed": "deny",
+  } as const;
+  const operator = createReadAuthorizer(PRINCIPAL, {
+    authMode: "token",
+    policySnapshotLoader: policy(rules),
+  });
+  assertEquals(operator.isAdmin(), false);
+  assertEquals(operator.canRead(WORKFLOW("open")), true);
+  assertEquals(operator.canRead(WORKFLOW("closed")), false);
+  assertEquals(operator.canRead(WORKFLOW("uncovered")), false);
+
+  const admin = createReadAuthorizer(PRINCIPAL, {
+    authMode: "token",
+    policySnapshotLoader: policy({ ...rules, "admin access:*": "allow" }),
+  });
+  assertEquals(admin.isAdmin(), true);
+  assertEquals(admin.canRead(WORKFLOW("uncovered")), true);
+  assertEquals(admin.canRead(WORKFLOW("closed")), false);
 });

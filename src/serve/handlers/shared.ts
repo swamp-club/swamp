@@ -369,6 +369,7 @@ const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
 const tokenSockets = new Map<string, Set<WebSocket>>();
+const tokenStreams = new Map<string, Set<StreamSession>>();
 
 export function setConnectionCollectives(
   socket: WebSocket,
@@ -419,19 +420,36 @@ export function updateCollectivesForPrincipal(
   collectives: readonly string[],
   groups: readonly string[],
 ): void {
-  const sockets = principalSockets.get(principalId);
-  if (!sockets) return;
-  for (const socket of sockets) {
+  for (const socket of principalSockets.get(principalId) ?? []) {
     connectionCollectives.set(socket, collectives);
     connectionGroups.set(socket, groups);
+  }
+  // A stream authorized each snapshot with the memberships it opened with.
+  // End it so the client reconnects and is authorized with the new ones.
+  for (const streams of [...tokenStreams.values()]) {
+    for (const stream of [...streams]) {
+      if (stream.binding.principalId !== principalId) continue;
+      unregisterStream(stream);
+      closeStream(
+        stream,
+        ACCESS_CHANGED_CLOSE_CODE,
+        STREAM_ACCESS_CHANGED_REASON,
+      );
+    }
   }
 }
 
 export function closeConnectionsForPrincipal(principalId: string): void {
   const sockets = principalSockets.get(principalId);
-  if (!sockets) return;
-  for (const socket of [...sockets]) {
+  for (const socket of [...(sockets ?? [])]) {
     closeSession(socket, 4003, PRINCIPAL_REVOKED_REASON);
+  }
+  for (const streams of [...tokenStreams.values()]) {
+    for (const stream of [...streams]) {
+      if (stream.binding.principalId !== principalId) continue;
+      unregisterStream(stream);
+      closeStream(stream, 4003, PRINCIPAL_REVOKED_REASON);
+    }
   }
 }
 
@@ -489,6 +507,10 @@ export type TokenSessionTerminationCause =
 // close-frame limit). Each names its cause, so a client can tell a revoked
 // token apart from a principal losing access.
 export const PRINCIPAL_REVOKED_REASON = "Session revoked: access removed";
+/** The token still works; reconnecting picks up the principal's new access. */
+export const ACCESS_CHANGED_CLOSE_CODE = 4004;
+export const STREAM_ACCESS_CHANGED_REASON =
+  "Session ended: access changed, reconnect";
 export const TOKEN_REVOKED_REASON = "Session revoked: token revoked";
 export const TOKEN_ROTATED_REASON =
   "Session revoked: token rotated, reconnect with the new credential";
@@ -520,6 +542,66 @@ export interface TerminateTokenSessionsOptions {
 
 const sessionLogger = getSwampLogger(["serve", "sessions"]);
 
+/**
+ * Open token-bound HTTP streams one token may hold. Streams run until their
+ * client leaves, so without a bound any token holder could hold open an
+ * unlimited number of them.
+ */
+export const MAX_STREAM_SESSIONS_PER_TOKEN = 10;
+
+/**
+ * A long-lived HTTP response bound to a server token, such as the health
+ * stream. It is a token session like a WebSocket: revoking, rotating or
+ * expiring the token, or removing the principal's access, ends it.
+ */
+export interface StreamSessionHandle {
+  readonly sourceIp: string;
+  /** Ends the response, telling the client why. */
+  close(code: number, reason: string): void;
+}
+
+interface StreamSession {
+  readonly binding: TokenSessionBinding;
+  readonly handle: StreamSessionHandle;
+}
+
+/**
+ * Registers a token-bound HTTP stream so the token's session lifecycle can end
+ * it. Returns the function that unregisters it (safe to call more than once),
+ * or null when the token already holds `MAX_STREAM_SESSIONS_PER_TOKEN` streams.
+ * The count spans every mint of the name, so rotating does not reset it.
+ */
+export function registerStreamSession(
+  binding: TokenSessionBinding,
+  handle: StreamSessionHandle,
+): (() => void) | null {
+  let streams = tokenStreams.get(binding.name);
+  if (streams && streams.size >= MAX_STREAM_SESSIONS_PER_TOKEN) return null;
+  if (!streams) {
+    streams = new Set();
+    tokenStreams.set(binding.name, streams);
+  }
+  const session: StreamSession = { binding, handle };
+  streams.add(session);
+  return () => unregisterStream(session);
+}
+
+function unregisterStream(session: StreamSession): void {
+  const streams = tokenStreams.get(session.binding.name);
+  if (!streams?.delete(session)) return;
+  if (streams.size === 0) tokenStreams.delete(session.binding.name);
+}
+
+function closeStream(session: StreamSession, code: number, reason: string) {
+  try {
+    session.handle.close(code, reason);
+  } catch (error) {
+    sessionLogger.warn("Failed to close stream session: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export function setConnectionToken(
   socket: WebSocket,
   binding: TokenSessionBinding,
@@ -538,32 +620,42 @@ export function listTokenSessions(): {
   name: string;
   createdAt: string;
 }[] {
-  const sessions: { name: string; createdAt: string }[] = [];
+  const mintsByName = new Map<string, Set<string>>();
+  const addMint = (name: string, createdAt: string) => {
+    let mints = mintsByName.get(name);
+    if (!mints) {
+      mints = new Set();
+      mintsByName.set(name, mints);
+    }
+    mints.add(createdAt);
+  };
   for (const [name, sockets] of tokenSockets) {
-    const mints = new Set<string>();
     for (const socket of sockets) {
       const binding = connectionTokens.get(socket);
-      if (binding) mints.add(binding.createdAt);
+      if (binding) addMint(name, binding.createdAt);
     }
+  }
+  for (const [name, streams] of tokenStreams) {
+    for (const stream of streams) addMint(name, stream.binding.createdAt);
+  }
+  const sessions: { name: string; createdAt: string }[] = [];
+  for (const [name, mints] of mintsByName) {
     for (const createdAt of mints) sessions.push({ name, createdAt });
   }
   return sessions;
 }
 
 /**
- * Ends the open sessions of a server token, auditing each one before its
- * socket closes. This is the single path the server uses to cut off a token
- * whose authority has ended. Returns the number of sessions closed.
+ * Ends the open sessions of a server token, WebSockets and token-bound
+ * streams alike, auditing each one before it closes. This is the single path
+ * the server uses to cut off a token whose authority has ended. Returns the
+ * number of sessions closed.
  */
 export function terminateTokenSessions(
   name: string,
   options: TerminateTokenSessionsOptions,
 ): number {
-  const sockets = tokenSockets.get(name);
-  if (!sockets) return 0;
-  // Copy first: closing a socket runs removeConnection, which edits the set.
-  const targets = [...sockets].filter((socket) => {
-    const binding = connectionTokens.get(socket);
+  const matches = (binding: TokenSessionBinding | undefined) => {
     if (!binding) return false;
     if (
       options.onlyCreatedAt !== undefined &&
@@ -574,37 +666,63 @@ export function terminateTokenSessions(
       binding.createdAt === options.exceptCreatedAt
     ) return false;
     return true;
-  });
+  };
+
+  const sockets = tokenSockets.get(name);
+  // Copy first: closing a socket runs removeConnection, which edits the set.
+  const targets = [...(sockets ?? [])].filter((socket) =>
+    matches(connectionTokens.get(socket))
+  );
   for (const socket of targets) {
-    emitSessionTerminated(socket, name, options);
+    emitSessionTerminated(
+      connectionTokens.get(socket)?.principalId ?? "",
+      getConnectionSourceIp(socket),
+      name,
+      options,
+    );
     // Unbind before closing: the close event (and removeConnection) waits for
     // the peer's close handshake, and a peer that never answers must not be
     // listed, closed and audited again on every revalidation pass.
-    sockets.delete(socket);
+    sockets?.delete(socket);
     connectionTokens.delete(socket);
     closeSession(socket, options.code, options.reason);
   }
-  if (sockets.size === 0) tokenSockets.delete(name);
-  if (targets.length > 0) {
+  if (sockets?.size === 0) tokenSockets.delete(name);
+
+  const streamTargets = [...(tokenStreams.get(name) ?? [])].filter((stream) =>
+    matches(stream.binding)
+  );
+  for (const stream of streamTargets) {
+    emitSessionTerminated(
+      stream.binding.principalId,
+      stream.handle.sourceIp,
+      name,
+      options,
+    );
+    unregisterStream(stream);
+    closeStream(stream, options.code, options.reason);
+  }
+
+  const closed = targets.length + streamTargets.length;
+  if (closed > 0) {
     sessionLogger.info(
       "Closed {count} session(s) for token {name} ({cause})",
-      { count: targets.length, name, cause: options.cause },
+      { count: closed, name, cause: options.cause },
     );
   }
-  return targets.length;
+  return closed;
 }
 
 function emitSessionTerminated(
-  socket: WebSocket,
+  principalId: string,
+  sourceIp: string,
   name: string,
   options: TerminateTokenSessionsOptions,
 ): void {
   const emitter = options.audit?.emitter;
   if (!emitter) return;
   try {
-    const principal = parsePrincipal(
-      connectionTokens.get(socket)?.principalId ?? "",
-    );
+    const principal = parsePrincipal(principalId);
     emitter.emit(buildAuditEvent({
       instanceId: options.audit?.instanceId ?? "unknown",
       category: "auth",
@@ -616,7 +734,7 @@ function emitSessionTerminated(
       principalKind: principal.kind,
       principalId: principal.id,
       initiatedBy: options.initiatedBy,
-      sourceIp: getConnectionSourceIp(socket),
+      sourceIp,
       requestId: options.requestId ?? crypto.randomUUID(),
       detail: options.cause,
     }));

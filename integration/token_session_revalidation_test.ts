@@ -20,7 +20,8 @@
 /**
  * Wires the real server token model, repository reads, connection registry and
  * audit emitter together to check that a token losing its authority ends the
- * WebSocket sessions already open with it (swamp-club#2454).
+ * WebSocket sessions already open with it (swamp-club#2454), and the health
+ * streams bound to it (swamp-club#2504).
  */
 
 import { assert, assertEquals, assertExists } from "@std/assert";
@@ -53,8 +54,10 @@ import type { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_
 import type { Principal } from "../src/domain/access/principal.ts";
 import { readServerTokenRecord } from "../src/serve/token_auth.ts";
 import {
+  closeConnectionsForPrincipal,
   type ConnectionContext,
   listTokenSessions,
+  registerStreamSession,
   removeConnection,
   setConnectionCollectives,
   setConnectionSourceIp,
@@ -478,4 +481,134 @@ Deno.test("revalidation: ends sessions revoked, rotated or expired outside this 
       });
     }
   });
+});
+
+interface FakeStream {
+  closes: { code: number; reason: string }[];
+  unregister: () => void;
+}
+
+/** A health stream bound the way `/api/v1/health/stream` binds one. */
+function openStream(
+  name: string,
+  createdAt: string,
+  principalId: string,
+): FakeStream {
+  const closes: { code: number; reason: string }[] = [];
+  const unregister = registerStreamSession(
+    { name, createdAt, principalId },
+    {
+      sourceIp: "192.0.2.45",
+      close: (code, reason) => closes.push({ code, reason }),
+    },
+  );
+  assertExists(unregister, "stream refused at the cap");
+  return { closes, unregister };
+}
+
+Deno.test("revalidation: ends health streams revoked, rotated or expired outside this instance", async () => {
+  await withRepo(async (repo) => {
+    const libCtx = createLibSwampContext();
+    const revoked = `revoked-${crypto.randomUUID()}`;
+    const rotated = `rotated-${crypto.randomUUID()}`;
+    const expiring = `expiring-${crypto.randomUUID()}`;
+    const healthy = `healthy-${crypto.randomUUID()}`;
+    const revokedMint = await repo.mint(revoked, "user:alice");
+    const rotatedMint = await repo.mint(rotated, "user:bob");
+    const expiringMint = await repo.mint(expiring, "user:carol", 1);
+    const healthyMint = await repo.mint(healthy, "user:alice");
+
+    const revokedStream = openStream(revoked, revokedMint, "user:alice");
+    const rotatedStream = openStream(rotated, rotatedMint, "user:bob");
+    const expiringStream = openStream(expiring, expiringMint, "user:carol");
+    const healthyStream = openStream(healthy, healthyMint, "user:alice");
+
+    await collect(
+      serverTokenRevoke(
+        libCtx,
+        await createServerTokenRevokeDeps(
+          libCtx,
+          repo.repoDir,
+          repo.repoContext,
+        ),
+        { name: revoked },
+      ),
+    );
+    await waitFor(
+      () => Date.now() > Date.parse(rotatedMint),
+      "the clock to pass the mint",
+    );
+    await collect(
+      serverTokenRotate(
+        libCtx,
+        await createServerTokenRotateDeps(
+          libCtx,
+          repo.repoDir,
+          repo.repoContext,
+        ),
+        { name: rotated },
+      ),
+    );
+    const reopened = openStream(
+      rotated,
+      await repo.createdAt(rotated),
+      "user:bob",
+    );
+    const expiresAt = (await readServerTokenRecord(repo.repoContext, expiring))
+      .expiresAt;
+    await waitFor(
+      () => Date.now() > Date.parse(expiresAt),
+      "the short-lived token to expire",
+    );
+
+    const sink = new CollectorSink();
+    const emitter = new AuditEmitter({ sinks: [sink] });
+    const mine = new Set([revoked, rotated, expiring, healthy]);
+    const service = new TokenSessionRevalidationService({
+      intervalMs: DEFAULT_TOKEN_SESSION_REVALIDATION_MS,
+      listTokenSessions: () =>
+        listTokenSessions().filter((s) => mine.has(s.name)),
+      readToken: (name) => readServerTokenRecord(repo.repoContext, name),
+      terminateSessions: (name, options) =>
+        terminateTokenSessions(name, {
+          ...options,
+          initiatedBy: "system",
+          audit: { emitter, instanceId: "instance-1" },
+        }),
+    });
+
+    assertEquals(await service.runOnce(), 3);
+    await emitter.flush();
+
+    assertEquals(revokedStream.closes.map((c) => c.code), [4003]);
+    assertEquals(rotatedStream.closes.map((c) => c.code), [4003]);
+    assertEquals(expiringStream.closes.map((c) => c.code), [4002]);
+    assertEquals(healthyStream.closes, []);
+    assertEquals(reopened.closes, []);
+
+    const byToken = new Map(
+      terminated(sink).map((e) => [e.resourceName, e]),
+    );
+    assertEquals(byToken.get(revoked)?.detail, "revoked");
+    assertEquals(byToken.get(rotated)?.detail, "rotated");
+    assertEquals(byToken.get(expiring)?.detail, "expired");
+    assertEquals(byToken.get(revoked)?.sourceIp, "192.0.2.45");
+
+    healthyStream.unregister();
+    reopened.unregister();
+  });
+});
+
+Deno.test("deprovisioning: removing a principal's access ends its health streams", () => {
+  const principal = `user:${crypto.randomUUID()}`;
+  const name = `tok-${crypto.randomUUID()}`;
+  const stream = openStream(name, "2026-01-01T00:00:00.000Z", principal);
+
+  closeConnectionsForPrincipal(principal);
+
+  assertEquals(stream.closes, [{
+    code: 4003,
+    reason: "Session revoked: access removed",
+  }]);
+  assertEquals(listTokenSessions().filter((s) => s.name === name), []);
 });

@@ -44,6 +44,7 @@ import {
   closeConnectionsForPrincipal,
   emitSystemAuditEvent,
   listTokenSessions,
+  registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
   setConnectionCollectives,
@@ -217,9 +218,16 @@ import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
+import { createHealthStreamResponse } from "../../serve/health_stream.ts";
+import {
+  createHealthResourceResolver,
+  healthSnapshotFor,
+} from "../../serve/health_snapshot_view.ts";
 import {
   type AdminAuthDeps,
   authenticateAdmin,
+  authenticateToken,
+  createReadAuthorizer,
 } from "../../serve/admin_auth.ts";
 import {
   deleteActiveRun,
@@ -4542,6 +4550,8 @@ export const serveCommand = new Command()
 
     connectionCtx.healthCollector = healthCollector;
 
+    const healthResources = createHealthResourceResolver(repoContext);
+
     const adminAuthDeps: AdminAuthDeps = {
       authMode: authConfig.mode,
       repoDir: resolvedRepoDir,
@@ -4940,93 +4950,60 @@ export const serveCommand = new Command()
           }
         }
 
-        // Health snapshot endpoint (authenticated + authorized)
+        // Health snapshot endpoints (any valid token; the snapshot is
+        // narrowed to what the token may read)
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/api/v1/health") {
-            const auth = await authenticateAdmin(
+            const auth = await authenticateToken(
               req,
               info.remoteAddr.hostname,
               adminAuthDeps,
             );
             if (!auth.ok) return auth.response;
+            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
             const snapshot = await healthCollector.collect(ac.signal);
-            return Response.json(snapshot);
+            return Response.json(
+              await healthSnapshotFor(snapshot, reader, healthResources),
+            );
           }
 
-          // SSE health stream (authenticated + authorized)
+          // SSE health stream, bound to its token session so revoking,
+          // rotating or expiring the token ends it
           if (url.pathname === "/api/v1/health/stream") {
-            const auth = await authenticateAdmin(
+            const auth = await authenticateToken(
               req,
               info.remoteAddr.hostname,
               adminAuthDeps,
             );
             if (!auth.ok) return auth.response;
+            const token = auth.token;
+            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
 
-            const intervalParam = url.searchParams.get("interval");
-            let intervalMs = 5000;
-            if (intervalParam !== null) {
-              const parsed = parseInt(intervalParam, 10);
-              if (!isNaN(parsed)) {
-                intervalMs = Math.max(1000, Math.min(60000, parsed));
-              }
-            }
-
-            const lastEventIdHeader = req.headers.get("Last-Event-ID");
-            let eventId = lastEventIdHeader !== null
-              ? parseInt(lastEventIdHeader, 10) || 0
-              : 0;
-
-            const stream = new ReadableStream<Uint8Array>({
-              async start(controller) {
-                const encoder = new TextEncoder();
-                let stopped = false;
-                let pendingTimer: ReturnType<typeof setTimeout> | null = null;
-
-                const push = async () => {
-                  if (stopped) return;
-                  try {
-                    const snapshot = await healthCollector.collect(ac.signal);
-                    eventId++;
-                    const event = `id: ${eventId}\nevent: health\ndata: ${
-                      JSON.stringify(snapshot)
-                    }\n\n`;
-                    controller.enqueue(encoder.encode(event));
-                  } catch {
-                    // Collection failed — skip this tick
-                  }
-                  if (!stopped) {
-                    pendingTimer = setTimeout(push, intervalMs);
-                  }
-                };
-
-                const cleanup = () => {
-                  stopped = true;
-                  if (pendingTimer !== null) clearTimeout(pendingTimer);
-                  ac.signal.removeEventListener("abort", cleanup);
-                  req.signal.removeEventListener("abort", cleanup);
-                  try {
-                    controller.close();
-                  } catch {
-                    // Already closed
-                  }
-                };
-
-                ac.signal.addEventListener("abort", cleanup, { once: true });
-                req.signal.addEventListener("abort", cleanup, { once: true });
-
-                await push();
-              },
-            });
-
-            return new Response(stream, {
-              headers: {
-                "content-type": "text/event-stream",
-                "cache-control": "no-cache",
-                "connection": "keep-alive",
-                "x-accel-buffering": "no",
-                "x-health-interval": String(intervalMs),
-              },
+            return createHealthStreamResponse({
+              collect: async (signal) =>
+                await healthSnapshotFor(
+                  await healthCollector.collect(signal),
+                  reader,
+                  healthResources,
+                ),
+              intervalParam: url.searchParams.get("interval"),
+              lastEventId: req.headers.get("Last-Event-ID"),
+              serverSignal: ac.signal,
+              requestSignal: req.signal,
+              // Auth mode none has no token, so there is no session to bind
+              // and no per-token cap: that mode is unauthenticated by design.
+              registerSession: token === null
+                ? undefined
+                : (closer) =>
+                  registerStreamSession({
+                    name: token.name,
+                    createdAt: token.createdAt,
+                    principalId: auth.authResult.principalId,
+                  }, {
+                    sourceIp: auth.clientAddr,
+                    close: (code, reason) => closer.close(code, reason),
+                  }),
             });
           }
 

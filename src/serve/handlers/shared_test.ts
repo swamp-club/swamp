@@ -36,7 +36,9 @@ import {
   filterByAuthorization,
   LibSwampStreamError,
   listTokenSessions,
+  MAX_STREAM_SESSIONS_PER_TOKEN,
   paginate,
+  registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
   send,
@@ -47,6 +49,7 @@ import {
   setConnectionToken,
   terminateTokenSessions,
   type TerminateTokenSessionsOptions,
+  updateCollectivesForPrincipal,
 } from "./shared.ts";
 import type { ServerMessage } from "../protocol.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
@@ -805,4 +808,202 @@ Deno.test("clientErrorDetails: ignores codes outside the allow-list", () => {
 Deno.test("clientErrorDetails: ignores plain errors", () => {
   assertEquals(clientErrorDetails(new Error("boom")), undefined);
   assertEquals(clientErrorDetails("boom"), undefined);
+});
+
+interface FakeStream {
+  closes: { code: number; reason: string }[];
+  unregister: () => void;
+}
+
+function openStream(
+  name: string,
+  createdAt: string,
+  principalId = "user:alice",
+  sourceIp = "192.0.2.20",
+): FakeStream {
+  const closes: { code: number; reason: string }[] = [];
+  const unregister = registerStreamSession(
+    { name, createdAt, principalId },
+    { sourceIp, close: (code, reason) => closes.push({ code, reason }) },
+  );
+  if (unregister === null) throw new Error("stream refused at the cap");
+  return { closes, unregister };
+}
+
+Deno.test("registerStreamSession: a stream is listed as a token session until unregistered", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const stream = openStream(name, MINT_1);
+
+  assertEquals(sessionsFor(name), [{ name, createdAt: MINT_1 }]);
+
+  stream.unregister();
+  stream.unregister();
+  assertEquals(sessionsFor(name), []);
+});
+
+Deno.test("listTokenSessions: reports a mint shared by a socket and a stream once", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  bindToken(name, MINT_1);
+  const stream = openStream(name, MINT_1);
+  openStream(name, MINT_2);
+
+  assertEquals(sessionsFor(name), [
+    { name, createdAt: MINT_1 },
+    { name, createdAt: MINT_2 },
+  ]);
+
+  terminate(name);
+  stream.unregister();
+});
+
+Deno.test("terminateTokenSessions: closes the token's streams and counts them", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const socket = bindToken(name, MINT_1);
+  const stream = openStream(name, MINT_1);
+
+  assertEquals(terminate(name), 2);
+
+  assertEquals(socket.closes, [{ code: 4003, reason: "Session revoked" }]);
+  assertEquals(stream.closes, [{ code: 4003, reason: "Session revoked" }]);
+  assertEquals(sessionsFor(name), []);
+});
+
+Deno.test("terminateTokenSessions: mint filters apply to streams", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const oldMint = openStream(name, MINT_1);
+  const newMint = openStream(name, MINT_2);
+
+  assertEquals(terminate(name, { exceptCreatedAt: MINT_2 }), 1);
+  assertEquals(oldMint.closes.length, 1);
+  assertEquals(newMint.closes, []);
+
+  assertEquals(terminate(name, { onlyCreatedAt: MINT_1 }), 0);
+  assertEquals(terminate(name, { onlyCreatedAt: MINT_2 }), 1);
+  assertEquals(newMint.closes.length, 1);
+});
+
+Deno.test("terminateTokenSessions: unregisters a stream before closing it, so it closes once", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const listedAtClose: number[] = [];
+  const unregister = registerStreamSession(
+    { name, createdAt: MINT_1, principalId: "user:alice" },
+    {
+      sourceIp: "192.0.2.20",
+      close: () => listedAtClose.push(sessionsFor(name).length),
+    },
+  );
+
+  assertEquals(terminate(name), 1);
+  assertEquals(terminate(name), 0);
+  assertEquals(listedAtClose, [0]);
+  unregister?.();
+});
+
+Deno.test("terminateTokenSessions: a stream whose close throws does not stop the others", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  registerStreamSession(
+    { name, createdAt: MINT_1, principalId: "user:alice" },
+    {
+      sourceIp: "192.0.2.20",
+      close: () => {
+        throw new Error("boom");
+      },
+    },
+  );
+  const other = openStream(name, MINT_1);
+
+  assertEquals(terminate(name), 2);
+  assertEquals(other.closes.length, 1);
+  assertEquals(sessionsFor(name), []);
+});
+
+Deno.test("terminateTokenSessions: audits a closed stream with its principal and source IP", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const events: AuditEvent[] = [];
+  const order: string[] = [];
+  registerStreamSession(
+    { name, createdAt: MINT_1, principalId: "user:bob" },
+    { sourceIp: "203.0.113.9", close: () => order.push("close") },
+  );
+
+  terminate(name, {
+    audit: {
+      instanceId: "instance-1",
+      emitter: {
+        emit: (event) => {
+          order.push("audit");
+          events.push(event);
+        },
+      },
+    },
+  });
+
+  assertEquals(order, ["audit", "close"]);
+  assertEquals(events.length, 1);
+  assertEquals(events[0].action, "auth.session.terminated");
+  assertEquals(events[0].resourceName, name);
+  assertEquals(events[0].principalId, "bob");
+  assertEquals(events[0].sourceIp, "203.0.113.9");
+  assertEquals(events[0].detail, "revoked");
+});
+
+Deno.test("closeConnectionsForPrincipal: closes that principal's streams and keeps others", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const principal = `user:${crypto.randomUUID()}`;
+  const mine = openStream(name, MINT_1, principal);
+  const theirs = openStream(`tok-${crypto.randomUUID()}`, MINT_1, "user:other");
+
+  closeConnectionsForPrincipal(principal);
+
+  assertEquals(mine.closes, [{
+    code: 4003,
+    reason: "Session revoked: access removed",
+  }]);
+  assertEquals(theirs.closes, []);
+  assertEquals(sessionsFor(name), []);
+  theirs.unregister();
+});
+
+Deno.test("registerStreamSession: refuses a token's stream past the cap, across mints", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const streams = Array.from(
+    { length: MAX_STREAM_SESSIONS_PER_TOKEN },
+    (_, i) => openStream(name, i % 2 === 0 ? MINT_1 : MINT_2),
+  );
+  const other = openStream(`tok-${crypto.randomUUID()}`, MINT_1);
+
+  const refused = registerStreamSession(
+    { name, createdAt: MINT_2, principalId: "user:alice" },
+    { sourceIp: "192.0.2.20", close: () => {} },
+  );
+  assertEquals(refused, null);
+
+  streams[0].unregister();
+  const freed = registerStreamSession(
+    { name, createdAt: MINT_1, principalId: "user:alice" },
+    { sourceIp: "192.0.2.20", close: () => {} },
+  );
+  assertEquals(typeof freed, "function");
+
+  freed?.();
+  for (const stream of streams) stream.unregister();
+  other.unregister();
+  assertEquals(sessionsFor(name), []);
+});
+
+Deno.test("updateCollectivesForPrincipal: ends that principal's streams so they reconnect with the new access", () => {
+  const principal = `user:${crypto.randomUUID()}`;
+  const name = `tok-${crypto.randomUUID()}`;
+  const mine = openStream(name, MINT_1, principal);
+  const theirs = openStream(`tok-${crypto.randomUUID()}`, MINT_1, "user:other");
+
+  updateCollectivesForPrincipal(principal, ["team-b"], []);
+
+  assertEquals(mine.closes, [{
+    code: 4004,
+    reason: "Session ended: access changed, reconnect",
+  }]);
+  assertEquals(theirs.closes, []);
+  assertEquals(sessionsFor(name), []);
+  theirs.unregister();
 });

@@ -18,8 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { HealthSnapshot } from "../client/useHealthStream";
+import { healthViewState } from "../client/health_state";
+import { HealthUnavailable } from "../components/HealthUnavailable";
 
-export function Schedules({ health }: { health: HealthSnapshot | null }) {
+export function Schedules(
+  { health, denied }: { health: HealthSnapshot | null; denied: boolean },
+) {
+  const state = healthViewState(health, denied);
   const schedules = health?.scheduling?.schedules ?? [];
 
   return (
@@ -27,22 +32,26 @@ export function Schedules({ health }: { health: HealthSnapshot | null }) {
       <div className="page-header">
         <h1>Schedules</h1>
         <div className="header-right">
-          <div
-            className="health-pill"
-            style={{
-              background: "var(--surface)",
-              color: "var(--text-2)",
-              border: "1px solid var(--border)",
-            }}
-          >
-            {schedules.length} scheduled workflows
-          </div>
+          {state === "ready" && (
+            <div
+              className="health-pill"
+              style={{
+                background: "var(--surface)",
+                color: "var(--text-2)",
+                border: "1px solid var(--border)",
+              }}
+            >
+              {schedules.length} scheduled workflows
+            </div>
+          )}
         </div>
       </div>
 
       <div className="panel">
-        {schedules.length === 0
-          ? <div className="loading">No schedules configured</div>
+        {state !== "ready"
+          ? <HealthUnavailable state={state} subject="schedules" />
+          : schedules.length === 0
+          ? <div className="loading">No schedules visible to this token</div>
           : (
             <div className="table-wrap">
               <table className="data-table">
