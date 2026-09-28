@@ -24,6 +24,7 @@ import {
 } from "./datastore_expression_resolver.ts";
 import { UserError } from "../domain/errors.ts";
 import type { VaultService } from "../domain/vaults/vault_service.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 
 function baseContext(
   overrides?: Partial<DatastoreExpressionContext>,
@@ -90,41 +91,31 @@ Deno.test("resolveDatastoreExpressions: config with only primitives passes throu
 // ============================================================================
 
 Deno.test("resolveDatastoreExpressions: resolves env expression in flat config", async () => {
-  const original = Deno.env.get("SWAMP_TEST_DS_EXPR_TOKEN");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_TOKEN", "my-secret-token");
-    const config = { token: "${{ env.SWAMP_TEST_DS_EXPR_TOKEN }}" };
-    const result = await resolveDatastoreExpressions(config, baseContext());
-    assertEquals(result, { token: "my-secret-token" });
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_EXPR_TOKEN", original);
-    } else Deno.env.delete("SWAMP_TEST_DS_EXPR_TOKEN");
-  }
+  await withMockedEnv(
+    { SWAMP_TEST_DS_EXPR_TOKEN: "my-secret-token" },
+    async () => {
+      const config = { token: "${{ env.SWAMP_TEST_DS_EXPR_TOKEN }}" };
+      const result = await resolveDatastoreExpressions(config, baseContext());
+      assertEquals(result, { token: "my-secret-token" });
+    },
+  );
 });
 
 Deno.test("resolveDatastoreExpressions: resolves env expression in nested config", async () => {
-  const original = Deno.env.get("SWAMP_TEST_DS_EXPR_NESTED");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_NESTED", "secret-val");
+  await withMockedEnv({ SWAMP_TEST_DS_EXPR_NESTED: "secret-val" }, async () => {
     const config = {
       connection: { token: "${{ env.SWAMP_TEST_DS_EXPR_NESTED }}" },
     };
     const result = await resolveDatastoreExpressions(config, baseContext());
     assertEquals(result, { connection: { token: "secret-val" } });
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_EXPR_NESTED", original);
-    } else Deno.env.delete("SWAMP_TEST_DS_EXPR_NESTED");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreExpressions: resolves env expressions in arrays", async () => {
-  const origA = Deno.env.get("SWAMP_TEST_DS_EXPR_A");
-  const origB = Deno.env.get("SWAMP_TEST_DS_EXPR_B");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_A", "host-a");
-    Deno.env.set("SWAMP_TEST_DS_EXPR_B", "host-b");
+  await withMockedEnv({
+    SWAMP_TEST_DS_EXPR_A: "host-a",
+    SWAMP_TEST_DS_EXPR_B: "host-b",
+  }, async () => {
     const config = {
       hosts: [
         "${{ env.SWAMP_TEST_DS_EXPR_A }}",
@@ -133,72 +124,51 @@ Deno.test("resolveDatastoreExpressions: resolves env expressions in arrays", asy
     };
     const result = await resolveDatastoreExpressions(config, baseContext());
     assertEquals(result, { hosts: ["host-a", "host-b"] });
-  } finally {
-    if (origA !== undefined) Deno.env.set("SWAMP_TEST_DS_EXPR_A", origA);
-    else Deno.env.delete("SWAMP_TEST_DS_EXPR_A");
-    if (origB !== undefined) Deno.env.set("SWAMP_TEST_DS_EXPR_B", origB);
-    else Deno.env.delete("SWAMP_TEST_DS_EXPR_B");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreExpressions: interpolates multiple expressions in one string", async () => {
-  const origH = Deno.env.get("SWAMP_TEST_DS_EXPR_HOST");
-  const origP = Deno.env.get("SWAMP_TEST_DS_EXPR_PORT");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_HOST", "db.example.com");
-    Deno.env.set("SWAMP_TEST_DS_EXPR_PORT", "5432");
+  await withMockedEnv({
+    SWAMP_TEST_DS_EXPR_HOST: "db.example.com",
+    SWAMP_TEST_DS_EXPR_PORT: "5432",
+  }, async () => {
     const config = {
       url:
         "https://${{ env.SWAMP_TEST_DS_EXPR_HOST }}:${{ env.SWAMP_TEST_DS_EXPR_PORT }}/db",
     };
     const result = await resolveDatastoreExpressions(config, baseContext());
     assertEquals(result, { url: "https://db.example.com:5432/db" });
-  } finally {
-    if (origH !== undefined) Deno.env.set("SWAMP_TEST_DS_EXPR_HOST", origH);
-    else Deno.env.delete("SWAMP_TEST_DS_EXPR_HOST");
-    if (origP !== undefined) Deno.env.set("SWAMP_TEST_DS_EXPR_PORT", origP);
-    else Deno.env.delete("SWAMP_TEST_DS_EXPR_PORT");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreExpressions: trims whitespace inside expression delimiters", async () => {
-  const original = Deno.env.get("SWAMP_TEST_DS_EXPR_WS");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_WS", "trimmed");
+  await withMockedEnv({ SWAMP_TEST_DS_EXPR_WS: "trimmed" }, async () => {
     const config = { val: "${{  env.SWAMP_TEST_DS_EXPR_WS  }}" };
     const result = await resolveDatastoreExpressions(config, baseContext());
     assertEquals(result, { val: "trimmed" });
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_TEST_DS_EXPR_WS", original);
-    else Deno.env.delete("SWAMP_TEST_DS_EXPR_WS");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreExpressions: throws UserError for missing env var", async () => {
-  Deno.env.delete("SWAMP_TEST_DS_EXPR_MISSING");
-  const config = { token: "${{ env.SWAMP_TEST_DS_EXPR_MISSING }}" };
-  await assertRejects(
-    () => resolveDatastoreExpressions(config, baseContext()),
-    UserError,
-    "SWAMP_TEST_DS_EXPR_MISSING",
-  );
+  await withMockedEnv({ SWAMP_TEST_DS_EXPR_MISSING: undefined }, async () => {
+    const config = { token: "${{ env.SWAMP_TEST_DS_EXPR_MISSING }}" };
+    await assertRejects(
+      () => resolveDatastoreExpressions(config, baseContext()),
+      UserError,
+      "SWAMP_TEST_DS_EXPR_MISSING",
+    );
+  });
 });
 
 Deno.test("resolveDatastoreExpressions: throws UserError for empty env var", async () => {
-  const original = Deno.env.get("SWAMP_TEST_DS_EXPR_EMPTY");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_EMPTY", "");
+  await withMockedEnv({ SWAMP_TEST_DS_EXPR_EMPTY: "" }, async () => {
     const config = { token: "${{ env.SWAMP_TEST_DS_EXPR_EMPTY }}" };
     await assertRejects(
       () => resolveDatastoreExpressions(config, baseContext()),
       UserError,
       "not set or empty",
     );
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_EXPR_EMPTY", original);
-    } else Deno.env.delete("SWAMP_TEST_DS_EXPR_EMPTY");
-  }
+  });
 });
 
 // ============================================================================
@@ -269,9 +239,7 @@ Deno.test("resolveDatastoreExpressions: throws UserError when secret not found",
 // ============================================================================
 
 Deno.test("resolveDatastoreExpressions: resolves both env and vault in different fields", async () => {
-  const original = Deno.env.get("SWAMP_TEST_DS_EXPR_MIX");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_MIX", "env-val");
+  await withMockedEnv({ SWAMP_TEST_DS_EXPR_MIX: "env-val" }, async () => {
     const ctx = baseContext({
       vaultServiceFactory: mockVaultFactory({
         v: { k: "vault-val" },
@@ -283,17 +251,11 @@ Deno.test("resolveDatastoreExpressions: resolves both env and vault in different
     };
     const result = await resolveDatastoreExpressions(config, ctx);
     assertEquals(result, { host: "env-val", token: "vault-val" });
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_EXPR_MIX", original);
-    } else Deno.env.delete("SWAMP_TEST_DS_EXPR_MIX");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreExpressions: interpolates env and vault in one string", async () => {
-  const original = Deno.env.get("SWAMP_TEST_DS_EXPR_PREFIX");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_PREFIX", "prod");
+  await withMockedEnv({ SWAMP_TEST_DS_EXPR_PREFIX: "prod" }, async () => {
     const ctx = baseContext({
       vaultServiceFactory: mockVaultFactory({
         v: { k: "abc123" },
@@ -304,11 +266,7 @@ Deno.test("resolveDatastoreExpressions: interpolates env and vault in one string
     };
     const result = await resolveDatastoreExpressions(config, ctx);
     assertEquals(result, { url: "prod-abc123" });
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_EXPR_PREFIX", original);
-    } else Deno.env.delete("SWAMP_TEST_DS_EXPR_PREFIX");
-  }
+  });
 });
 
 // ============================================================================
@@ -338,18 +296,12 @@ Deno.test("resolveDatastoreExpressions: managedConfig blocks vault expressions",
 });
 
 Deno.test("resolveDatastoreExpressions: managedConfig allows env expressions", async () => {
-  const original = Deno.env.get("SWAMP_TEST_DS_EXPR_MC");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_MC", "allowed");
+  await withMockedEnv({ SWAMP_TEST_DS_EXPR_MC: "allowed" }, async () => {
     const ctx = baseContext({ managedConfig: true });
     const config = { token: "${{ env.SWAMP_TEST_DS_EXPR_MC }}" };
     const result = await resolveDatastoreExpressions(config, ctx);
     assertEquals(result, { token: "allowed" });
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_EXPR_MC", original);
-    } else Deno.env.delete("SWAMP_TEST_DS_EXPR_MC");
-  }
+  });
 });
 
 // ============================================================================
@@ -369,9 +321,7 @@ Deno.test("resolveDatastoreExpressions: non-string config values pass through", 
 });
 
 Deno.test("resolveDatastoreExpressions: deeply nested config resolves at all levels", async () => {
-  const original = Deno.env.get("SWAMP_TEST_DS_EXPR_DEEP");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_EXPR_DEEP", "deep-val");
+  await withMockedEnv({ SWAMP_TEST_DS_EXPR_DEEP: "deep-val" }, async () => {
     const config = {
       level1: {
         level2: {
@@ -383,9 +333,5 @@ Deno.test("resolveDatastoreExpressions: deeply nested config resolves at all lev
     assertEquals(result, {
       level1: { level2: { level3: { secret: "deep-val" } } },
     });
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_EXPR_DEEP", original);
-    } else Deno.env.delete("SWAMP_TEST_DS_EXPR_DEEP");
-  }
+  });
 });

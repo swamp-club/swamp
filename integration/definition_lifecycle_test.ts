@@ -38,6 +38,7 @@ import {
   collectAuthoredExpressions,
   ExpressionEvaluationService,
 } from "../src/domain/expressions/expression_evaluation_service.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { CLI_ARGS } from "./test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -765,9 +766,7 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
     const modelType = ModelType.create("test/model");
 
     // Set an env variable for testing
-    Deno.env.set("TEST_ENV_VAR", "env-value-123");
-
-    try {
+    await withMockedEnv({ TEST_ENV_VAR: "env-value-123" }, async () => {
       const definition = Definition.create({
         name: "env-var-model",
         globalArguments: {
@@ -806,9 +805,7 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
         runtimeResult.definition.globalArguments.from_env,
         "env-value-123",
       );
-    } finally {
-      Deno.env.delete("TEST_ENV_VAR");
-    }
+    });
   });
 });
 

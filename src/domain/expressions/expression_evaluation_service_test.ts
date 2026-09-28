@@ -28,6 +28,7 @@ import {
   containsVaultExpression,
   ExpressionEvaluationService,
 } from "./expression_evaluation_service.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import type { ExpressionContext } from "./model_resolver.ts";
 import { deferredExpressionReference } from "./deferred_expression.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
@@ -488,8 +489,7 @@ Deno.test("resolveAllExpressionsInData: resolves env runtime expressions", async
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_HOME", "/tmp/test-home-291");
-    try {
+    await withMockedEnv({ SWAMP_TEST_HOME: "/tmp/test-home-291" }, async () => {
       const data = {
         volumes: ["${{ env.SWAMP_TEST_HOME }}:/host-home:ro"],
       };
@@ -500,9 +500,7 @@ Deno.test("resolveAllExpressionsInData: resolves env runtime expressions", async
         collectAuthoredExpressions(data),
       ) as { volumes: string[] };
       assertEquals(result.volumes, ["/tmp/test-home-291:/host-home:ro"]);
-    } finally {
-      Deno.env.delete("SWAMP_TEST_HOME");
-    }
+    });
   });
 });
 
@@ -537,42 +535,40 @@ Deno.test("resolveAllExpressionsInData: walks nested arrays and objects", async 
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_A", "alpha");
-    Deno.env.set("SWAMP_TEST_B", "beta");
-    try {
-      const data = {
-        extraArgs: [
+    await withMockedEnv(
+      { SWAMP_TEST_A: "alpha", SWAMP_TEST_B: "beta" },
+      async () => {
+        const data = {
+          extraArgs: [
+            "--label",
+            "${{ env.SWAMP_TEST_A }}",
+            "--label",
+            "${{ env.SWAMP_TEST_B }}",
+          ],
+          env: {
+            FIRST: "${{ env.SWAMP_TEST_A }}",
+            NESTED: { inner: "${{ env.SWAMP_TEST_B }}" },
+          },
+        };
+        const result = await service.resolveAllExpressionsInData(
+          data,
+          makeContext(),
+          undefined,
+          collectAuthoredExpressions(data),
+        ) as {
+          extraArgs: string[];
+          env: { FIRST: string; NESTED: { inner: string } };
+        };
+        assertEquals(result.extraArgs, [
           "--label",
-          "${{ env.SWAMP_TEST_A }}",
+          "alpha",
           "--label",
-          "${{ env.SWAMP_TEST_B }}",
-        ],
-        env: {
-          FIRST: "${{ env.SWAMP_TEST_A }}",
-          NESTED: { inner: "${{ env.SWAMP_TEST_B }}" },
-        },
-      };
-      const result = await service.resolveAllExpressionsInData(
-        data,
-        makeContext(),
-        undefined,
-        collectAuthoredExpressions(data),
-      ) as {
-        extraArgs: string[];
-        env: { FIRST: string; NESTED: { inner: string } };
-      };
-      assertEquals(result.extraArgs, [
-        "--label",
-        "alpha",
-        "--label",
-        "beta",
-      ]);
-      assertEquals(result.env.FIRST, "alpha");
-      assertEquals(result.env.NESTED.inner, "beta");
-    } finally {
-      Deno.env.delete("SWAMP_TEST_A");
-      Deno.env.delete("SWAMP_TEST_B");
-    }
+          "beta",
+        ]);
+        assertEquals(result.env.FIRST, "alpha");
+        assertEquals(result.env.NESTED.inner, "beta");
+      },
+    );
   });
 });
 
@@ -602,8 +598,7 @@ Deno.test("resolveAllExpressionsInData: env-only resolution does not register se
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_PUB", "public-value");
-    try {
+    await withMockedEnv({ SWAMP_TEST_PUB: "public-value" }, async () => {
       let addedSecrets = 0;
       const redactor = new SecretRedactor();
       const origAdd = redactor.addSecret.bind(redactor);
@@ -619,9 +614,7 @@ Deno.test("resolveAllExpressionsInData: env-only resolution does not register se
         collectAuthoredExpressions(data),
       );
       assertEquals(addedSecrets, 0);
-    } finally {
-      Deno.env.delete("SWAMP_TEST_PUB");
-    }
+    });
   });
 });
 
@@ -794,8 +787,7 @@ Deno.test("resolveAllExpressionsInData: mixed prose and valid env resolves only 
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_MIXED", "ok");
-    try {
+    await withMockedEnv({ SWAMP_TEST_MIXED: "ok" }, async () => {
       const data = {
         doc: "documentation: ${{ env.* }} is invalid syntax",
         real: "${{ env.SWAMP_TEST_MIXED }}",
@@ -808,9 +800,7 @@ Deno.test("resolveAllExpressionsInData: mixed prose and valid env resolves only 
       ) as { doc: string; real: string };
       assertEquals(result.doc, data.doc);
       assertEquals(result.real, "ok");
-    } finally {
-      Deno.env.delete("SWAMP_TEST_MIXED");
-    }
+    });
   });
 });
 
@@ -1093,9 +1083,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: resolves an env expression the
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_AUTHORED", "resolved");
-
-    try {
+    await withMockedEnv({ SWAMP_TEST_AUTHORED: "resolved" }, async () => {
       const definition = Definition.create({
         name: "authored-model",
         globalArguments: { token: "${{ env.SWAMP_TEST_AUTHORED }}" },
@@ -1109,9 +1097,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: resolves an env expression the
       );
 
       assertEquals(result.definition.globalArguments.token, "resolved");
-    } finally {
-      Deno.env.delete("SWAMP_TEST_AUTHORED");
-    }
+    });
   });
 });
 
@@ -1119,9 +1105,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: refuses an env expression abse
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_INJECTED", "leaked-secret");
-
-    try {
+    await withMockedEnv({ SWAMP_TEST_INJECTED: "leaked-secret" }, async () => {
       // Stands in for a definition that CEL substitution spliced data content
       // into: the expression is present in the tree but was never authored.
       const definition = Definition.create({
@@ -1140,9 +1124,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: refuses an env expression abse
         result.definition.globalArguments.note,
         "${{ env.SWAMP_TEST_INJECTED }}",
       );
-    } finally {
-      Deno.env.delete("SWAMP_TEST_INJECTED");
-    }
+    });
   });
 });
 
@@ -1150,10 +1132,10 @@ Deno.test("resolveRuntimeExpressionsInDefinition: resolves only the authored exp
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_OK", "fine");
-    Deno.env.set("SWAMP_TEST_BAD", "leaked-secret");
-
-    try {
+    await withMockedEnv({
+      SWAMP_TEST_OK: "fine",
+      SWAMP_TEST_BAD: "leaked-secret",
+    }, async () => {
       const definition = Definition.create({
         name: "mixed-model",
         globalArguments: {
@@ -1174,10 +1156,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: resolves only the authored exp
         result.definition.globalArguments.injected,
         "${{ env.SWAMP_TEST_BAD }}",
       );
-    } finally {
-      Deno.env.delete("SWAMP_TEST_OK");
-      Deno.env.delete("SWAMP_TEST_BAD");
-    }
+    });
   });
 });
 
@@ -1185,20 +1164,19 @@ Deno.test("resolveRuntimeExpressionsInData: refuses an env expression absent fro
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_DATA_INJECTED", "leaked-secret");
+    await withMockedEnv(
+      { SWAMP_TEST_DATA_INJECTED: "leaked-secret" },
+      async () => {
+        const result = await service.resolveRuntimeExpressionsInData(
+          { note: "${{ env.SWAMP_TEST_DATA_INJECTED }}" },
+          undefined,
+          undefined,
+          new Set<string>(),
+        ) as { note: string };
 
-    try {
-      const result = await service.resolveRuntimeExpressionsInData(
-        { note: "${{ env.SWAMP_TEST_DATA_INJECTED }}" },
-        undefined,
-        undefined,
-        new Set<string>(),
-      ) as { note: string };
-
-      assertEquals(result.note, "${{ env.SWAMP_TEST_DATA_INJECTED }}");
-    } finally {
-      Deno.env.delete("SWAMP_TEST_DATA_INJECTED");
-    }
+        assertEquals(result.note, "${{ env.SWAMP_TEST_DATA_INJECTED }}");
+      },
+    );
   });
 });
 
@@ -1259,9 +1237,7 @@ Deno.test("resolveAllExpressionsInData: refuses a runtime expression its own CEL
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
-    Deno.env.set("SWAMP_TEST_SPLICED", "leaked-secret");
-
-    try {
+    await withMockedEnv({ SWAMP_TEST_SPLICED: "leaked-secret" }, async () => {
       // `note` holds attacker-controlled text; CEL splices it into `run`, and
       // the runtime pass must not then treat it as a definition-source
       // expression. This is swamp-club#2172 in miniature.
@@ -1275,9 +1251,7 @@ Deno.test("resolveAllExpressionsInData: refuses a runtime expression its own CEL
       ) as { run: string };
 
       assertEquals(result.run, "echo ${{ env.SWAMP_TEST_SPLICED }}");
-    } finally {
-      Deno.env.delete("SWAMP_TEST_SPLICED");
-    }
+    });
   });
 });
 

@@ -49,6 +49,7 @@ import {
 import { gzipSync } from "node:zlib";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 
 /**
  * In-process scripted serve endpoint: the script receives each parsed client
@@ -156,216 +157,159 @@ Deno.test("resolveCaCertPath: a trailing --ca-cert with no value falls through t
 // ── resolveServeUrl tests ──────────────────────────────────────────────
 
 Deno.test("resolveServeUrl: flag value takes precedence over env var", () => {
-  const prev = Deno.env.get("SWAMP_SERVE_URL");
-  try {
-    Deno.env.set("SWAMP_SERVE_URL", "wss://env.example.com");
+  withMockedEnv({ SWAMP_SERVE_URL: "wss://env.example.com" }, () => {
     assertEquals(
       resolveServeUrl("wss://flag.example.com"),
       "wss://flag.example.com",
     );
-  } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVE_URL", prev);
-    else Deno.env.delete("SWAMP_SERVE_URL");
-  }
+  });
 });
 
 Deno.test("resolveServeUrl: falls back to SWAMP_SERVE_URL env var", () => {
-  const prev = Deno.env.get("SWAMP_SERVE_URL");
-  try {
-    Deno.env.set("SWAMP_SERVE_URL", "wss://env.example.com");
+  withMockedEnv({ SWAMP_SERVE_URL: "wss://env.example.com" }, () => {
     assertEquals(resolveServeUrl(undefined), "wss://env.example.com");
-  } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVE_URL", prev);
-    else Deno.env.delete("SWAMP_SERVE_URL");
-  }
+  });
 });
 
 Deno.test("resolveServeUrl: falls back to SWAMP_SERVER_URL when SWAMP_SERVE_URL is not set", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.set("SWAMP_SERVER_URL", "wss://server-env.example.com");
+  withMockedEnv({
+    SWAMP_SERVE_URL: undefined,
+    SWAMP_SERVER_URL: "wss://server-env.example.com",
+  }, () => {
     assertEquals(resolveServeUrl(undefined), "wss://server-env.example.com");
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    else Deno.env.delete("SWAMP_SERVE_URL");
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-    else Deno.env.delete("SWAMP_SERVER_URL");
-  }
+  });
 });
 
 Deno.test("resolveServeUrl: SWAMP_SERVE_URL takes precedence over SWAMP_SERVER_URL", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.set("SWAMP_SERVE_URL", "wss://serve.example.com");
-    Deno.env.set("SWAMP_SERVER_URL", "wss://server.example.com");
+  withMockedEnv({
+    SWAMP_SERVE_URL: "wss://serve.example.com",
+    SWAMP_SERVER_URL: "wss://server.example.com",
+  }, () => {
     assertEquals(resolveServeUrl(undefined), "wss://serve.example.com");
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    else Deno.env.delete("SWAMP_SERVE_URL");
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-    else Deno.env.delete("SWAMP_SERVER_URL");
-  }
+  });
 });
 
 Deno.test("resolveServeUrl: returns undefined when no flag or env var set", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    assertEquals(resolveServeUrl(undefined), undefined);
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-  }
+  withMockedEnv(
+    { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+    () => {
+      assertEquals(resolveServeUrl(undefined), undefined);
+    },
+  );
 });
 
 Deno.test("resolveServeUrl: falls back to markerValue when no flag or env var set", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    assertEquals(
-      resolveServeUrl(undefined, "wss://marker.example.com"),
-      "wss://marker.example.com",
-    );
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-  }
+  withMockedEnv(
+    { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+    () => {
+      assertEquals(
+        resolveServeUrl(undefined, "wss://marker.example.com"),
+        "wss://marker.example.com",
+      );
+    },
+  );
 });
 
 Deno.test("resolveServeUrl: env var takes precedence over markerValue", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.set("SWAMP_SERVE_URL", "wss://env.example.com");
-    Deno.env.delete("SWAMP_SERVER_URL");
+  withMockedEnv({
+    SWAMP_SERVE_URL: "wss://env.example.com",
+    SWAMP_SERVER_URL: undefined,
+  }, () => {
     assertEquals(
       resolveServeUrl(undefined, "wss://marker.example.com"),
       "wss://env.example.com",
     );
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    else Deno.env.delete("SWAMP_SERVE_URL");
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-    else Deno.env.delete("SWAMP_SERVER_URL");
-  }
+  });
 });
 
 Deno.test("resolveServeUrl: flag takes precedence over markerValue", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    assertEquals(
-      resolveServeUrl("wss://flag.example.com", "wss://marker.example.com"),
-      "wss://flag.example.com",
-    );
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-  }
+  withMockedEnv(
+    { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+    () => {
+      assertEquals(
+        resolveServeUrl("wss://flag.example.com", "wss://marker.example.com"),
+        "wss://flag.example.com",
+      );
+    },
+  );
 });
 
 Deno.test("resolveServeUrl: returns undefined when no flag, env var, or markerValue", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    assertEquals(resolveServeUrl(undefined, undefined), undefined);
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-  }
+  withMockedEnv(
+    { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+    () => {
+      assertEquals(resolveServeUrl(undefined, undefined), undefined);
+    },
+  );
 });
 
 // ── cached marker serverAddress tests ─────────────────────────────────
 
 Deno.test("resolveServeUrl: falls back to cached marker serverAddress", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
   try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    setMarkerServerAddress("wss://cached.example.com");
-    assertEquals(resolveServeUrl(undefined), "wss://cached.example.com");
+    withMockedEnv(
+      { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+      () => {
+        setMarkerServerAddress("wss://cached.example.com");
+        assertEquals(resolveServeUrl(undefined), "wss://cached.example.com");
+      },
+    );
   } finally {
     resetMarkerServerAddress();
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
   }
 });
 
 Deno.test("resolveServeUrl: explicit markerValue takes precedence over cached value", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
   try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    setMarkerServerAddress("wss://cached.example.com");
-    assertEquals(
-      resolveServeUrl(undefined, "wss://explicit.example.com"),
-      "wss://explicit.example.com",
+    withMockedEnv(
+      { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+      () => {
+        setMarkerServerAddress("wss://cached.example.com");
+        assertEquals(
+          resolveServeUrl(undefined, "wss://explicit.example.com"),
+          "wss://explicit.example.com",
+        );
+      },
     );
   } finally {
     resetMarkerServerAddress();
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
   }
 });
 
 Deno.test("resolveServeUrl: env var takes precedence over cached marker value", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
   try {
-    Deno.env.set("SWAMP_SERVE_URL", "wss://env.example.com");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    setMarkerServerAddress("wss://cached.example.com");
-    assertEquals(resolveServeUrl(undefined), "wss://env.example.com");
+    withMockedEnv({
+      SWAMP_SERVE_URL: "wss://env.example.com",
+      SWAMP_SERVER_URL: undefined,
+    }, () => {
+      setMarkerServerAddress("wss://cached.example.com");
+      assertEquals(resolveServeUrl(undefined), "wss://env.example.com");
+    });
   } finally {
     resetMarkerServerAddress();
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    else Deno.env.delete("SWAMP_SERVE_URL");
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-    else Deno.env.delete("SWAMP_SERVER_URL");
   }
 });
 
 Deno.test("resolveServeUrl: returns undefined when cache is not set and no other source", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    resetMarkerServerAddress();
-    assertEquals(resolveServeUrl(undefined), undefined);
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-  }
+  withMockedEnv(
+    { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+    () => {
+      resetMarkerServerAddress();
+      assertEquals(resolveServeUrl(undefined), undefined);
+    },
+  );
 });
 
 Deno.test("resetMarkerServerAddress: clears the cached value", () => {
-  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
-  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
-  try {
-    Deno.env.delete("SWAMP_SERVE_URL");
-    Deno.env.delete("SWAMP_SERVER_URL");
-    setMarkerServerAddress("wss://cached.example.com");
-    assertEquals(resolveServeUrl(undefined), "wss://cached.example.com");
-    resetMarkerServerAddress();
-    assertEquals(resolveServeUrl(undefined), undefined);
-  } finally {
-    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
-    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
-  }
+  withMockedEnv(
+    { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+    () => {
+      setMarkerServerAddress("wss://cached.example.com");
+      assertEquals(resolveServeUrl(undefined), "wss://cached.example.com");
+      resetMarkerServerAddress();
+      assertEquals(resolveServeUrl(undefined), undefined);
+    },
+  );
 });
 
 Deno.test("toWebSocketUrl: accepts ws/wss and maps http/https", () => {
@@ -875,20 +819,21 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     const server = headerCapturingServer();
-    const prev = Deno.env.get("SWAMP_SERVE_EXTRA_HEADERS");
     try {
-      Deno.env.set("SWAMP_SERVE_EXTRA_HEADERS", "X-From-Env: envvalue");
-      for await (
-        const _ of runWorkflowOverServer({
-          server: server.url,
-          payload: { workflowIdOrName: "wf" },
-        })
-        // deno-lint-ignore no-empty
-      ) {}
-      assertEquals(server.capturedHeaders().get("x-from-env"), "envvalue");
+      await withMockedEnv(
+        { SWAMP_SERVE_EXTRA_HEADERS: "X-From-Env: envvalue" },
+        async () => {
+          for await (
+            const _ of runWorkflowOverServer({
+              server: server.url,
+              payload: { workflowIdOrName: "wf" },
+            })
+            // deno-lint-ignore no-empty
+          ) {}
+          assertEquals(server.capturedHeaders().get("x-from-env"), "envvalue");
+        },
+      );
     } finally {
-      if (prev !== undefined) Deno.env.set("SWAMP_SERVE_EXTRA_HEADERS", prev);
-      else Deno.env.delete("SWAMP_SERVE_EXTRA_HEADERS");
       await server.shutdown();
     }
   },
@@ -900,22 +845,22 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     const server = headerCapturingServer();
-    const prev = Deno.env.get("SWAMP_SERVE_EXTRA_HEADERS");
     try {
-      Deno.env.set("SWAMP_SERVE_EXTRA_HEADERS", "X-Env: should-not-appear");
-      for await (
-        const _ of runWorkflowOverServer({
-          server: server.url,
-          headers: { "X-Explicit": "wins" },
-          payload: { workflowIdOrName: "wf" },
-        })
-        // deno-lint-ignore no-empty
-      ) {}
-      assertEquals(server.capturedHeaders().get("x-explicit"), "wins");
-      assertEquals(server.capturedHeaders().get("x-env"), null);
+      await withMockedEnv({
+        SWAMP_SERVE_EXTRA_HEADERS: "X-Env: should-not-appear",
+      }, async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            headers: { "X-Explicit": "wins" },
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+        assertEquals(server.capturedHeaders().get("x-explicit"), "wins");
+        assertEquals(server.capturedHeaders().get("x-env"), null);
+      });
     } finally {
-      if (prev !== undefined) Deno.env.set("SWAMP_SERVE_EXTRA_HEADERS", prev);
-      else Deno.env.delete("SWAMP_SERVE_EXTRA_HEADERS");
       await server.shutdown();
     }
   },
@@ -976,51 +921,45 @@ Deno.test("readTokenFile: throws UserError for empty file", async () => {
 
 Deno.test("resolveServerToken: reads token from SWAMP_SERVER_TOKEN_FILE env var", async () => {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
-  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
   try {
-    await Deno.writeTextFile(tmpFile, "file.token-value\n");
-    Deno.env.set("SWAMP_SERVER_TOKEN_FILE", tmpFile);
-    const emptyRepo: ServerCredentialRepository = {
-      get: () => Promise.resolve(null),
-      save: () => Promise.resolve(),
-      remove: () => Promise.resolve(),
-      list: () => Promise.resolve([]),
-    };
-    const result = await resolveServerToken(
-      "http://localhost:9090",
-      undefined,
-      emptyRepo,
-    );
-    assertEquals(result, "file.token-value");
+    await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: tmpFile }, async () => {
+      await Deno.writeTextFile(tmpFile, "file.token-value\n");
+      const emptyRepo: ServerCredentialRepository = {
+        get: () => Promise.resolve(null),
+        save: () => Promise.resolve(),
+        remove: () => Promise.resolve(),
+        list: () => Promise.resolve([]),
+      };
+      const result = await resolveServerToken(
+        "http://localhost:9090",
+        undefined,
+        emptyRepo,
+      );
+      assertEquals(result, "file.token-value");
+    });
   } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
-    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
     await Deno.remove(tmpFile).catch(() => {});
   }
 });
 
 Deno.test("resolveServerToken: explicit token takes precedence over token file env var", async () => {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
-  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
   try {
-    await Deno.writeTextFile(tmpFile, "file.token\n");
-    Deno.env.set("SWAMP_SERVER_TOKEN_FILE", tmpFile);
-    const result = await resolveServerToken(
-      "http://localhost:9090",
-      "explicit.token",
-    );
-    assertEquals(result, "explicit.token");
+    await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: tmpFile }, async () => {
+      await Deno.writeTextFile(tmpFile, "file.token\n");
+      const result = await resolveServerToken(
+        "http://localhost:9090",
+        "explicit.token",
+      );
+      assertEquals(result, "explicit.token");
+    });
   } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
-    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
     await Deno.remove(tmpFile).catch(() => {});
   }
 });
 
 Deno.test("resolveServerToken: falls back to credential repo when no token file set", async () => {
-  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
-  try {
-    Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
+  await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: undefined }, async () => {
     const mockRepo: ServerCredentialRepository = {
       get: (): Promise<ServerCredential | null> =>
         Promise.resolve({
@@ -1040,35 +979,30 @@ Deno.test("resolveServerToken: falls back to credential repo when no token file 
       mockRepo,
     );
     assertEquals(result, "stored.credential");
-  } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
-    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
-  }
+  });
 });
 
 // ── resolveServerTokenFromOptions tests ──────────────────────────────
 
 Deno.test("resolveServerTokenFromOptions: reads token from options.tokenFile", async () => {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
-  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
   try {
-    Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
-    await Deno.writeTextFile(tmpFile, "file.token-value\n");
-    const emptyRepo: ServerCredentialRepository = {
-      get: () => Promise.resolve(null),
-      save: () => Promise.resolve(),
-      remove: () => Promise.resolve(),
-      list: () => Promise.resolve([]),
-    };
-    const result = await resolveServerTokenFromOptions(
-      "http://localhost:9090",
-      { tokenFile: tmpFile },
-      emptyRepo,
-    );
-    assertEquals(result, "file.token-value");
+    await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: undefined }, async () => {
+      await Deno.writeTextFile(tmpFile, "file.token-value\n");
+      const emptyRepo: ServerCredentialRepository = {
+        get: () => Promise.resolve(null),
+        save: () => Promise.resolve(),
+        remove: () => Promise.resolve(),
+        list: () => Promise.resolve([]),
+      };
+      const result = await resolveServerTokenFromOptions(
+        "http://localhost:9090",
+        { tokenFile: tmpFile },
+        emptyRepo,
+      );
+      assertEquals(result, "file.token-value");
+    });
   } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
-    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
     await Deno.remove(tmpFile).catch(() => {});
   }
 });
@@ -1086,41 +1020,34 @@ Deno.test("resolveServerTokenFromOptions: throws when both token and tokenFile p
 });
 
 Deno.test("resolveServerTokenFromOptions: passes token through when no tokenFile", async () => {
-  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
-  try {
-    Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
+  await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: undefined }, async () => {
     const result = await resolveServerTokenFromOptions(
       "http://localhost:9090",
       { token: "explicit.token" },
     );
     assertEquals(result, "explicit.token");
-  } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
-    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
-  }
+  });
 });
 
 Deno.test("resolveServerTokenFromOptions: falls back to env var when no options", async () => {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
-  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
   try {
-    await Deno.writeTextFile(tmpFile, "env-file.token\n");
-    Deno.env.set("SWAMP_SERVER_TOKEN_FILE", tmpFile);
-    const emptyRepo: ServerCredentialRepository = {
-      get: () => Promise.resolve(null),
-      save: () => Promise.resolve(),
-      remove: () => Promise.resolve(),
-      list: () => Promise.resolve([]),
-    };
-    const result = await resolveServerTokenFromOptions(
-      "http://localhost:9090",
-      {},
-      emptyRepo,
-    );
-    assertEquals(result, "env-file.token");
+    await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: tmpFile }, async () => {
+      await Deno.writeTextFile(tmpFile, "env-file.token\n");
+      const emptyRepo: ServerCredentialRepository = {
+        get: () => Promise.resolve(null),
+        save: () => Promise.resolve(),
+        remove: () => Promise.resolve(),
+        list: () => Promise.resolve([]),
+      };
+      const result = await resolveServerTokenFromOptions(
+        "http://localhost:9090",
+        {},
+        emptyRepo,
+      );
+      assertEquals(result, "env-file.token");
+    });
   } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
-    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
     await Deno.remove(tmpFile).catch(() => {});
   }
 });
@@ -2183,24 +2110,19 @@ Deno.test({
     const server = scriptedServer((_request, _reply) => {
       // Intentionally never reply — triggers timeout
     });
-    const original = Deno.env.get("SWAMP_SERVE_TIMEOUT_MS");
-    Deno.env.set("SWAMP_SERVE_TIMEOUT_MS", "200");
     try {
-      await assertRejects(
-        () =>
-          requestServerResponse(
-            { server: server.url },
-            { type: "test.timeout" },
-          ),
-        UserError,
-        "timed out after 200ms",
-      );
+      await withMockedEnv({ SWAMP_SERVE_TIMEOUT_MS: "200" }, async () => {
+        await assertRejects(
+          () =>
+            requestServerResponse(
+              { server: server.url },
+              { type: "test.timeout" },
+            ),
+          UserError,
+          "timed out after 200ms",
+        );
+      });
     } finally {
-      if (original !== undefined) {
-        Deno.env.set("SWAMP_SERVE_TIMEOUT_MS", original);
-      } else {
-        Deno.env.delete("SWAMP_SERVE_TIMEOUT_MS");
-      }
       await server.shutdown();
     }
   },

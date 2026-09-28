@@ -102,36 +102,63 @@ export function assertPathMatches(
   assertMatch(actual.replaceAll("\\", "/"), expected, msg);
 }
 
+const MOCKED_ENV_READERS = ["get", "has", "toObject"] as const;
+
 /**
- * Runs `fn` with `Deno.env.get` answering from `overrides` instead of the
- * process environment. A key mapped to `undefined` reads as unset; keys not
- * in `overrides` pass through to the real environment. When `fn` returns a
- * promise, the original `Deno.env.get` is restored once it settles.
+ * Runs `fn` with `Deno.env.get`, `Deno.env.has` and `Deno.env.toObject`
+ * answering from `overrides` instead of the process environment. A key mapped
+ * to `undefined` reads as unset (and is absent from `toObject`); keys not in
+ * `overrides` pass through to the real environment. When `fn` returns a
+ * promise, the original readers are restored once it settles.
  *
- * Use this instead of `Deno.env.set` / `Deno.env.delete` for the
- * home-directory variables (`HOME`, `USERPROFILE`, `SWAMP_HOME`,
- * `XDG_CONFIG_HOME`). `deno test --parallel` runs every test file in one
- * process, so a real mutation is visible to every other file running at the
- * same moment; replacing `Deno.env.get` only affects the current file's
- * worker. Only `Deno.env.get` is replaced: `Deno.env.has` and
- * `Deno.env.toObject` still read the real environment, and writes made
- * inside `fn` still go to it.
+ * Use this instead of `Deno.env.set` / `Deno.env.delete` in tests.
+ * `deno test --parallel` runs every test file in one process, so a real
+ * mutation is visible to every other file running at the same moment;
+ * replacing the readers only affects the current file's worker. Map every
+ * variable the test needs unset to `undefined` explicitly — an absent key
+ * reads the developer's real environment. Writes made inside `fn` still go to
+ * the real environment, and child processes never see the overrides: pass
+ * them an explicit `env` instead. Override keys match exactly, even on Windows
+ * where the real environment is case-insensitive (`PATH` is not `Path`).
  */
 export function withMockedEnv<T>(
   overrides: Record<string, string | undefined>,
   fn: () => T,
 ): T {
-  const original = Object.getOwnPropertyDescriptor(Deno.env, "get");
+  const originals = MOCKED_ENV_READERS.map((name) =>
+    [name, Object.getOwnPropertyDescriptor(Deno.env, name)] as const
+  );
   const realGet = Deno.env.get.bind(Deno.env);
-  Object.defineProperty(Deno.env, "get", {
-    configurable: true,
-    writable: true,
-    value: (key: string) =>
+  const realHas = Deno.env.has.bind(Deno.env);
+  const realToObject = Deno.env.toObject.bind(Deno.env);
+  const mocked: Record<(typeof MOCKED_ENV_READERS)[number], unknown> = {
+    get: (key: string) =>
       Object.hasOwn(overrides, key) ? overrides[key] : realGet(key),
-  });
+    has: (key: string) =>
+      Object.hasOwn(overrides, key)
+        ? overrides[key] !== undefined
+        : realHas(key),
+    toObject: () => {
+      const env = realToObject();
+      for (const [key, value] of Object.entries(overrides)) {
+        if (value === undefined) delete env[key];
+        else env[key] = value;
+      }
+      return env;
+    },
+  };
+  for (const name of MOCKED_ENV_READERS) {
+    Object.defineProperty(Deno.env, name, {
+      configurable: true,
+      writable: true,
+      value: mocked[name],
+    });
+  }
   const restore = () => {
-    if (original) Object.defineProperty(Deno.env, "get", original);
-    else delete (Deno.env as { get?: unknown }).get;
+    for (const [name, original] of originals) {
+      if (original) Object.defineProperty(Deno.env, name, original);
+      else delete (Deno.env as Partial<Pick<Deno.Env, typeof name>>)[name];
+    }
   };
 
   let result: T;

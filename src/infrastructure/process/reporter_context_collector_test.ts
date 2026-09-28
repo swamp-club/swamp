@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { collectReporterContext } from "./reporter_context_collector.ts";
+import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 
 const INPUTS = {
   extensionName: "@adam/cfgmgmt",
@@ -37,31 +38,17 @@ Deno.test("collectReporterContext: populates runtime fields from Deno", () => {
 });
 
 Deno.test("collectReporterContext: SHELL env var flows through when set", () => {
-  const originalShell = Deno.env.get("SHELL");
-  Deno.env.set("SHELL", "/bin/zsh-test");
-  try {
+  withMockedEnv({ SHELL: "/bin/zsh-test" }, () => {
     const ctx = collectReporterContext(INPUTS);
     assertEquals(ctx.shell, "/bin/zsh-test");
-  } finally {
-    if (originalShell === undefined) {
-      Deno.env.delete("SHELL");
-    } else {
-      Deno.env.set("SHELL", originalShell);
-    }
-  }
+  });
 });
 
 Deno.test("collectReporterContext: SHELL falls back to 'unknown' when unset", () => {
-  const originalShell = Deno.env.get("SHELL");
-  Deno.env.delete("SHELL");
-  try {
+  withMockedEnv({ SHELL: undefined }, () => {
     const ctx = collectReporterContext(INPUTS);
     assertEquals(ctx.shell, "unknown");
-  } finally {
-    if (originalShell !== undefined) {
-      Deno.env.set("SHELL", originalShell);
-    }
-  }
+  });
 });
 
 Deno.test("collectReporterContext: only populates the seven declared fields", () => {

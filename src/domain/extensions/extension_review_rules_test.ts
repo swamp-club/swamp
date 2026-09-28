@@ -36,6 +36,7 @@ import {
   type ReviewRulesIo,
   type ReviewSource,
 } from "./extension_review_rules.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 function source(overrides: Partial<ReviewSource>): ReviewSource {
   return {
@@ -431,57 +432,35 @@ Deno.test("reviewReportPath: deterministic and hash-bound", () => {
 });
 
 Deno.test("reviewReportPath: explicit baseTmpDir takes precedence over env var", () => {
-  const prev = Deno.env.get("SWAMP_EXTENSION_REVIEW_DIR");
-  try {
-    Deno.env.set(
-      "SWAMP_EXTENSION_REVIEW_DIR",
-      join(SEPARATOR, "ci", "reviews"),
-    );
-    const p = reviewReportPath(
-      "@acme/thing",
-      "abc123",
-      join(SEPARATOR, "explicit"),
-    );
-    const expected = join(SEPARATOR, "explicit", "swamp-extension-review");
-    assert(p.startsWith(expected));
-  } finally {
-    if (prev !== undefined) {
-      Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", prev);
-    } else {
-      Deno.env.delete("SWAMP_EXTENSION_REVIEW_DIR");
-    }
-  }
+  withMockedEnv(
+    { SWAMP_EXTENSION_REVIEW_DIR: join(SEPARATOR, "ci", "reviews") },
+    () => {
+      const p = reviewReportPath(
+        "@acme/thing",
+        "abc123",
+        join(SEPARATOR, "explicit"),
+      );
+      const expected = join(SEPARATOR, "explicit", "swamp-extension-review");
+      assert(p.startsWith(expected));
+    },
+  );
 });
 
 Deno.test("reviewReportPath: SWAMP_EXTENSION_REVIEW_DIR used when no explicit baseTmpDir", () => {
-  const prev = Deno.env.get("SWAMP_EXTENSION_REVIEW_DIR");
   const reviewDir = join(SEPARATOR, "ci", "reviews");
-  try {
-    Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", reviewDir);
+  withMockedEnv({ SWAMP_EXTENSION_REVIEW_DIR: reviewDir }, () => {
     const p = reviewReportPath("@acme/thing", "abc123");
     const expected = join(reviewDir, "swamp-extension-review");
     assert(p.startsWith(expected));
-  } finally {
-    if (prev !== undefined) {
-      Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", prev);
-    } else {
-      Deno.env.delete("SWAMP_EXTENSION_REVIEW_DIR");
-    }
-  }
+  });
 });
 
 Deno.test("reviewReportPath: falls back to OS temp when env var is unset", () => {
-  const prev = Deno.env.get("SWAMP_EXTENSION_REVIEW_DIR");
   const ciDir = join(SEPARATOR, "ci");
-  try {
-    Deno.env.delete("SWAMP_EXTENSION_REVIEW_DIR");
+  withMockedEnv({ SWAMP_EXTENSION_REVIEW_DIR: undefined }, () => {
     const p = reviewReportPath("@acme/thing", "abc123");
     assert(!p.startsWith(ciDir));
-  } finally {
-    if (prev !== undefined) {
-      Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", prev);
-    }
-  }
+  });
 });
 
 Deno.test("parseReviewReport: returns null on non-JSON input", () => {

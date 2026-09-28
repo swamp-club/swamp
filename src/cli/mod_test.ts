@@ -40,46 +40,32 @@ import {
   managedConfigLockfilePath,
   registerManagedConfig,
 } from "../infrastructure/persistence/paths.ts";
-import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("resolveModelsDir returns default 'extensions/models' when no config", () => {
   // Ensure env var is not set
-  const original = Deno.env.get("SWAMP_MODELS_DIR");
-  try {
-    Deno.env.delete("SWAMP_MODELS_DIR");
-
+  withMockedEnv({ SWAMP_MODELS_DIR: undefined }, () => {
     const result = resolveModelsDir(null);
     assertEquals(result, "extensions/models");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_MODELS_DIR", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveModelsDir returns default when marker has no modelsDir", () => {
-  const original = Deno.env.get("SWAMP_MODELS_DIR");
-  try {
-    Deno.env.delete("SWAMP_MODELS_DIR");
-
+  withMockedEnv({ SWAMP_MODELS_DIR: undefined }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
     };
     const result = resolveModelsDir(marker);
     assertEquals(result, "extensions/models");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_MODELS_DIR", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveModelsDir uses marker.modelsDir when set", () => {
-  const original = Deno.env.get("SWAMP_MODELS_DIR");
-  try {
-    Deno.env.delete("SWAMP_MODELS_DIR");
-
+  withMockedEnv({ SWAMP_MODELS_DIR: undefined }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
@@ -87,18 +73,11 @@ Deno.test("resolveModelsDir uses marker.modelsDir when set", () => {
     };
     const result = resolveModelsDir(marker);
     assertEquals(result, "custom/models/path");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_MODELS_DIR", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveModelsDir env var takes priority over marker.modelsDir", () => {
-  const original = Deno.env.get("SWAMP_MODELS_DIR");
-  try {
-    Deno.env.set("SWAMP_MODELS_DIR", "/env/var/path");
-
+  withMockedEnv({ SWAMP_MODELS_DIR: "/env/var/path" }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
@@ -106,68 +85,36 @@ Deno.test("resolveModelsDir env var takes priority over marker.modelsDir", () =>
     };
     const result = resolveModelsDir(marker);
     assertEquals(result, "/env/var/path");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_MODELS_DIR", original);
-    } else {
-      Deno.env.delete("SWAMP_MODELS_DIR");
-    }
-  }
+  });
 });
 
 Deno.test("resolveModelsDir env var takes priority over default", () => {
-  const original = Deno.env.get("SWAMP_MODELS_DIR");
-  try {
-    Deno.env.set("SWAMP_MODELS_DIR", "env/models");
-
+  withMockedEnv({ SWAMP_MODELS_DIR: "env/models" }, () => {
     const result = resolveModelsDir(null);
     assertEquals(result, "env/models");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_MODELS_DIR", original);
-    } else {
-      Deno.env.delete("SWAMP_MODELS_DIR");
-    }
-  }
+  });
 });
 
 Deno.test("resolveLogLevel returns undefined when no env var and no config", () => {
-  const original = Deno.env.get("SWAMP_LOG_LEVEL");
-  try {
-    Deno.env.delete("SWAMP_LOG_LEVEL");
-
+  withMockedEnv({ SWAMP_LOG_LEVEL: undefined }, () => {
     const result = resolveLogLevel(null);
     assertEquals(result, undefined);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_LOG_LEVEL", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveLogLevel returns undefined when marker has no logLevel", () => {
-  const original = Deno.env.get("SWAMP_LOG_LEVEL");
-  try {
-    Deno.env.delete("SWAMP_LOG_LEVEL");
-
+  withMockedEnv({ SWAMP_LOG_LEVEL: undefined }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
     };
     const result = resolveLogLevel(marker);
     assertEquals(result, undefined);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_LOG_LEVEL", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveLogLevel returns marker.logLevel when only config is set", () => {
-  const original = Deno.env.get("SWAMP_LOG_LEVEL");
-  try {
-    Deno.env.delete("SWAMP_LOG_LEVEL");
-
+  withMockedEnv({ SWAMP_LOG_LEVEL: undefined }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
@@ -175,18 +122,11 @@ Deno.test("resolveLogLevel returns marker.logLevel when only config is set", () 
     };
     const result = resolveLogLevel(marker);
     assertEquals(result, "warning");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_LOG_LEVEL", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveLogLevel returns env var when set, even if config also has logLevel", () => {
-  const original = Deno.env.get("SWAMP_LOG_LEVEL");
-  try {
-    Deno.env.set("SWAMP_LOG_LEVEL", "debug");
-
+  withMockedEnv({ SWAMP_LOG_LEVEL: "debug" }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
@@ -194,29 +134,14 @@ Deno.test("resolveLogLevel returns env var when set, even if config also has log
     };
     const result = resolveLogLevel(marker);
     assertEquals(result, "debug");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_LOG_LEVEL", original);
-    } else {
-      Deno.env.delete("SWAMP_LOG_LEVEL");
-    }
-  }
+  });
 });
 
 Deno.test("resolveLogLevel returns env var when set with no marker", () => {
-  const original = Deno.env.get("SWAMP_LOG_LEVEL");
-  try {
-    Deno.env.set("SWAMP_LOG_LEVEL", "error");
-
+  withMockedEnv({ SWAMP_LOG_LEVEL: "error" }, () => {
     const result = resolveLogLevel(null);
     assertEquals(result, "error");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_LOG_LEVEL", original);
-    } else {
-      Deno.env.delete("SWAMP_LOG_LEVEL");
-    }
-  }
+  });
 });
 
 Deno.test("isTelemetryDisabledByConfig returns false for null marker", () => {
@@ -250,124 +175,61 @@ Deno.test("isTelemetryDisabledByConfig returns true when field is true", () => {
 });
 
 Deno.test("isTelemetryDisabledByEnv returns false when env var is not set", () => {
-  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
-  try {
-    Deno.env.delete("SWAMP_NO_TELEMETRY");
+  withMockedEnv({ SWAMP_NO_TELEMETRY: undefined }, () => {
     assertEquals(isTelemetryDisabledByEnv(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_TELEMETRY", original);
-    }
-  }
+  });
 });
 
 Deno.test("isTelemetryDisabledByEnv returns true when env var is '1'", () => {
-  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
-  try {
-    Deno.env.set("SWAMP_NO_TELEMETRY", "1");
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "1" }, () => {
     assertEquals(isTelemetryDisabledByEnv(), true);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_TELEMETRY", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_TELEMETRY");
-    }
-  }
+  });
 });
 
 Deno.test("isTelemetryDisabledByEnv returns true when env var is 'true'", () => {
-  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
-  try {
-    Deno.env.set("SWAMP_NO_TELEMETRY", "true");
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "true" }, () => {
     assertEquals(isTelemetryDisabledByEnv(), true);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_TELEMETRY", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_TELEMETRY");
-    }
-  }
+  });
 });
 
 Deno.test("isTelemetryDisabledByEnv returns false when env var is '0'", () => {
-  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
-  try {
-    Deno.env.set("SWAMP_NO_TELEMETRY", "0");
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "0" }, () => {
     assertEquals(isTelemetryDisabledByEnv(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_TELEMETRY", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_TELEMETRY");
-    }
-  }
+  });
 });
 
 Deno.test("isTelemetryDisabledByEnv returns false when env var is 'false'", () => {
-  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
-  try {
-    Deno.env.set("SWAMP_NO_TELEMETRY", "false");
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "false" }, () => {
     assertEquals(isTelemetryDisabledByEnv(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_TELEMETRY", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_TELEMETRY");
-    }
-  }
+  });
 });
 
 Deno.test("isTelemetryDisabledByEnv returns false when env var is ''", () => {
-  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
-  try {
-    Deno.env.set("SWAMP_NO_TELEMETRY", "");
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "" }, () => {
     assertEquals(isTelemetryDisabledByEnv(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_TELEMETRY", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_TELEMETRY");
-    }
-  }
+  });
 });
 
 Deno.test("resolveWorkflowsDir returns default 'extensions/workflows' when no config", () => {
-  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
-  try {
-    Deno.env.delete("SWAMP_WORKFLOWS_DIR");
-
+  withMockedEnv({ SWAMP_WORKFLOWS_DIR: undefined }, () => {
     const result = resolveWorkflowsDir(null);
     assertEquals(result, "extensions/workflows");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveWorkflowsDir returns default when marker has no workflowsDir", () => {
-  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
-  try {
-    Deno.env.delete("SWAMP_WORKFLOWS_DIR");
-
+  withMockedEnv({ SWAMP_WORKFLOWS_DIR: undefined }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
     };
     const result = resolveWorkflowsDir(marker);
     assertEquals(result, "extensions/workflows");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveWorkflowsDir uses marker.workflowsDir when set", () => {
-  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
-  try {
-    Deno.env.delete("SWAMP_WORKFLOWS_DIR");
-
+  withMockedEnv({ SWAMP_WORKFLOWS_DIR: undefined }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
@@ -375,18 +237,11 @@ Deno.test("resolveWorkflowsDir uses marker.workflowsDir when set", () => {
     };
     const result = resolveWorkflowsDir(marker);
     assertEquals(result, "custom/workflows/path");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
-    }
-  }
+  });
 });
 
 Deno.test("resolveWorkflowsDir env var takes priority over marker.workflowsDir", () => {
-  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
-  try {
-    Deno.env.set("SWAMP_WORKFLOWS_DIR", "/env/var/path");
-
+  withMockedEnv({ SWAMP_WORKFLOWS_DIR: "/env/var/path" }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
@@ -394,29 +249,14 @@ Deno.test("resolveWorkflowsDir env var takes priority over marker.workflowsDir",
     };
     const result = resolveWorkflowsDir(marker);
     assertEquals(result, "/env/var/path");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
-    } else {
-      Deno.env.delete("SWAMP_WORKFLOWS_DIR");
-    }
-  }
+  });
 });
 
 Deno.test("resolveWorkflowsDir env var takes priority over default", () => {
-  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
-  try {
-    Deno.env.set("SWAMP_WORKFLOWS_DIR", "env/workflows");
-
+  withMockedEnv({ SWAMP_WORKFLOWS_DIR: "env/workflows" }, () => {
     const result = resolveWorkflowsDir(null);
     assertEquals(result, "env/workflows");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
-    } else {
-      Deno.env.delete("SWAMP_WORKFLOWS_DIR");
-    }
-  }
+  });
 });
 
 // --- isLocalhostUrl tests ---
@@ -507,85 +347,39 @@ Deno.test("resolveTelemetryEndpoint ignores an empty env override", () => {
 // --- isUpdateCheckDisabledByEnv tests ---
 
 Deno.test("isUpdateCheckDisabledByEnv returns false when env var is not set", () => {
-  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
-  try {
-    Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
+  withMockedEnv({ SWAMP_NO_UPDATE_CHECK: undefined }, () => {
     assertEquals(isUpdateCheckDisabledByEnv(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
-    }
-  }
+  });
 });
 
 Deno.test("isUpdateCheckDisabledByEnv returns true when env var is '1'", () => {
-  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
-  try {
-    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "1");
+  withMockedEnv({ SWAMP_NO_UPDATE_CHECK: "1" }, () => {
     assertEquals(isUpdateCheckDisabledByEnv(), true);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
-    }
-  }
+  });
 });
 
 Deno.test("isUpdateCheckDisabledByEnv returns true when env var is 'true'", () => {
-  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
-  try {
-    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "true");
+  withMockedEnv({ SWAMP_NO_UPDATE_CHECK: "true" }, () => {
     assertEquals(isUpdateCheckDisabledByEnv(), true);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
-    }
-  }
+  });
 });
 
 Deno.test("isUpdateCheckDisabledByEnv returns false when env var is '0'", () => {
-  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
-  try {
-    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "0");
+  withMockedEnv({ SWAMP_NO_UPDATE_CHECK: "0" }, () => {
     assertEquals(isUpdateCheckDisabledByEnv(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
-    }
-  }
+  });
 });
 
 Deno.test("isUpdateCheckDisabledByEnv returns false when env var is 'false'", () => {
-  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
-  try {
-    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "false");
+  withMockedEnv({ SWAMP_NO_UPDATE_CHECK: "false" }, () => {
     assertEquals(isUpdateCheckDisabledByEnv(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
-    }
-  }
+  });
 });
 
 Deno.test("isUpdateCheckDisabledByEnv returns false when env var is ''", () => {
-  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
-  try {
-    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "");
+  withMockedEnv({ SWAMP_NO_UPDATE_CHECK: "" }, () => {
     assertEquals(isUpdateCheckDisabledByEnv(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
-    } else {
-      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
-    }
-  }
+  });
 });
 
 Deno.test("commandNeedsLoaderSetup returns false for empty args (bare swamp)", () => {

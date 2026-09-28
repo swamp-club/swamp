@@ -51,6 +51,7 @@ import {
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -338,64 +339,64 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    Deno.env.set("SWAMP_TEST_2172_WEBHOOK", "leaked-plaintext");
-    try {
-      await withRepo(async (repoDir) => {
-        const workflow = Workflow.create({
-          name: "webhook-injected-expression",
-          trigger: {
-            inputs: {
-              identifier: "${{ webhook.body.data.issue.identifier }}",
+    await withMockedEnv(
+      { SWAMP_TEST_2172_WEBHOOK: "leaked-plaintext" },
+      async () => {
+        await withRepo(async (repoDir) => {
+          const workflow = Workflow.create({
+            name: "webhook-injected-expression",
+            trigger: {
+              inputs: {
+                identifier: "${{ webhook.body.data.issue.identifier }}",
+              },
             },
-          },
-          inputs: requiredInputSchema,
-          jobs: [
-            Job.create({
-              name: "main",
-              steps: [
-                Step.create({
-                  name: "echo",
-                  task: StepTask.directExecution(
-                    "command/shell",
-                    "webhook-injected-shell",
-                    "execute",
-                    { run: 'echo "VALUE=${{ inputs.identifier }}"' },
-                  ),
-                }),
-              ],
-            }),
-          ],
-        });
-        await new YamlWorkflowRepository(repoDir).save(workflow);
+            inputs: requiredInputSchema,
+            jobs: [
+              Job.create({
+                name: "main",
+                steps: [
+                  Step.create({
+                    name: "echo",
+                    task: StepTask.directExecution(
+                      "command/shell",
+                      "webhook-injected-shell",
+                      "execute",
+                      { run: 'echo "VALUE=${{ inputs.identifier }}"' },
+                    ),
+                  }),
+                ],
+              }),
+            ],
+          });
+          await new YamlWorkflowRepository(repoDir).save(workflow);
 
-        const events = await runWebhook(repoDir, workflow.name, {
-          body: {
-            data: {
-              issue: { identifier: "${{ env.SWAMP_TEST_2172_WEBHOOK }}" },
+          const events = await runWebhook(repoDir, workflow.name, {
+            body: {
+              data: {
+                issue: { identifier: "${{ env.SWAMP_TEST_2172_WEBHOOK }}" },
+              },
             },
-          },
-          headers: { "x-linear-event": "Issue" },
-          route: "/hooks/linear",
+            headers: { "x-linear-event": "Issue" },
+            route: "/hooks/linear",
+          });
+
+          const serialized = JSON.stringify(events);
+
+          // The payload text did reach the command — without this the test could
+          // pass because nothing was substituted at all.
+          assertEquals(
+            serialized.includes("env.SWAMP_TEST_2172_WEBHOOK"),
+            true,
+            `payload text never reached the step: ${serialized}`,
+          );
+          assertEquals(
+            serialized.includes("leaked-plaintext"),
+            false,
+            `environment variable was resolved from webhook payload text: ${serialized}`,
+          );
         });
-
-        const serialized = JSON.stringify(events);
-
-        // The payload text did reach the command — without this the test could
-        // pass because nothing was substituted at all.
-        assertEquals(
-          serialized.includes("env.SWAMP_TEST_2172_WEBHOOK"),
-          true,
-          `payload text never reached the step: ${serialized}`,
-        );
-        assertEquals(
-          serialized.includes("leaked-plaintext"),
-          false,
-          `environment variable was resolved from webhook payload text: ${serialized}`,
-        );
-      });
-    } finally {
-      Deno.env.delete("SWAMP_TEST_2172_WEBHOOK");
-    }
+      },
+    );
   },
 });
 
@@ -411,57 +412,55 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Distinct from cel_data_access_test.ts's variable: test files run in
-    // parallel in one process, so a shared name races on set/delete.
-    Deno.env.set("SWAMP_TEST_2172_WEBHOOK_AUTHORED", "authored-value");
-    try {
-      await withRepo(async (repoDir) => {
-        const workflow = Workflow.create({
-          name: "webhook-authored-expression",
-          trigger: {
-            inputs: {
-              identifier: "${{ webhook.body.data.issue.identifier }}",
+    await withMockedEnv(
+      { SWAMP_TEST_2172_WEBHOOK_AUTHORED: "authored-value" },
+      async () => {
+        await withRepo(async (repoDir) => {
+          const workflow = Workflow.create({
+            name: "webhook-authored-expression",
+            trigger: {
+              inputs: {
+                identifier: "${{ webhook.body.data.issue.identifier }}",
+              },
             },
-          },
-          inputs: requiredInputSchema,
-          jobs: [
-            Job.create({
-              name: "main",
-              steps: [
-                Step.create({
-                  name: "echo",
-                  task: StepTask.directExecution(
-                    "command/shell",
-                    "webhook-authored-shell",
-                    "execute",
-                    {
-                      run:
-                        'echo "VALUE=${{ env.SWAMP_TEST_2172_WEBHOOK_AUTHORED }}"',
-                    },
-                  ),
-                }),
-              ],
-            }),
-          ],
-        });
-        await new YamlWorkflowRepository(repoDir).save(workflow);
+            inputs: requiredInputSchema,
+            jobs: [
+              Job.create({
+                name: "main",
+                steps: [
+                  Step.create({
+                    name: "echo",
+                    task: StepTask.directExecution(
+                      "command/shell",
+                      "webhook-authored-shell",
+                      "execute",
+                      {
+                        run:
+                          'echo "VALUE=${{ env.SWAMP_TEST_2172_WEBHOOK_AUTHORED }}"',
+                      },
+                    ),
+                  }),
+                ],
+              }),
+            ],
+          });
+          await new YamlWorkflowRepository(repoDir).save(workflow);
 
-        const events = await runWebhook(repoDir, workflow.name, {
-          body: { data: { issue: { identifier: "PLT-1" } } },
-          headers: { "x-linear-event": "Issue" },
-          route: "/hooks/linear",
-        });
+          const events = await runWebhook(repoDir, workflow.name, {
+            body: { data: { issue: { identifier: "PLT-1" } } },
+            headers: { "x-linear-event": "Issue" },
+            route: "/hooks/linear",
+          });
 
-        const serialized = JSON.stringify(events);
-        assertEquals(
-          serialized.includes("VALUE=authored-value"),
-          true,
-          `authored env reference did not resolve: ${serialized}`,
-        );
-      });
-    } finally {
-      Deno.env.delete("SWAMP_TEST_2172_WEBHOOK_AUTHORED");
-    }
+          const serialized = JSON.stringify(events);
+          assertEquals(
+            serialized.includes("VALUE=authored-value"),
+            true,
+            `authored env reference did not resolve: ${serialized}`,
+          );
+        });
+      },
+    );
   },
 });
 
@@ -481,61 +480,61 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    Deno.env.set("SWAMP_TEST_2172_BRACKET", "leaked-plaintext");
-    try {
-      await withRepo(async (repoDir) => {
-        const workflow = Workflow.create({
-          name: "webhook-injected-bracket-expression",
-          trigger: {
-            inputs: {
-              identifier: "${{ webhook.body.data.issue.identifier }}",
+    await withMockedEnv(
+      { SWAMP_TEST_2172_BRACKET: "leaked-plaintext" },
+      async () => {
+        await withRepo(async (repoDir) => {
+          const workflow = Workflow.create({
+            name: "webhook-injected-bracket-expression",
+            trigger: {
+              inputs: {
+                identifier: "${{ webhook.body.data.issue.identifier }}",
+              },
             },
-          },
-          inputs: requiredInputSchema,
-          jobs: [
-            Job.create({
-              name: "main",
-              steps: [
-                Step.create({
-                  name: "echo",
-                  task: StepTask.directExecution(
-                    "command/shell",
-                    "webhook-injected-bracket-shell",
-                    "execute",
-                    { run: 'echo "VALUE=${{ inputs.identifier }}"' },
-                  ),
-                }),
-              ],
-            }),
-          ],
-        });
-        await new YamlWorkflowRepository(repoDir).save(workflow);
+            inputs: requiredInputSchema,
+            jobs: [
+              Job.create({
+                name: "main",
+                steps: [
+                  Step.create({
+                    name: "echo",
+                    task: StepTask.directExecution(
+                      "command/shell",
+                      "webhook-injected-bracket-shell",
+                      "execute",
+                      { run: 'echo "VALUE=${{ inputs.identifier }}"' },
+                    ),
+                  }),
+                ],
+              }),
+            ],
+          });
+          await new YamlWorkflowRepository(repoDir).save(workflow);
 
-        const events = await runWebhook(repoDir, workflow.name, {
-          body: {
-            data: {
-              issue: { identifier: "${{ env['SWAMP_TEST_2172_BRACKET'] }}" },
+          const events = await runWebhook(repoDir, workflow.name, {
+            body: {
+              data: {
+                issue: { identifier: "${{ env['SWAMP_TEST_2172_BRACKET'] }}" },
+              },
             },
-          },
-          headers: { "x-linear-event": "Issue" },
-          route: "/hooks/linear",
-        });
+            headers: { "x-linear-event": "Issue" },
+            route: "/hooks/linear",
+          });
 
-        const serialized = JSON.stringify(events);
-        assertEquals(
-          serialized.includes("SWAMP_TEST_2172_BRACKET"),
-          true,
-          `payload text never reached the step: ${serialized}`,
-        );
-        assertEquals(
-          serialized.includes("leaked-plaintext"),
-          false,
-          `bracket-index env reference was resolved from webhook payload text: ${serialized}`,
-        );
-      });
-    } finally {
-      Deno.env.delete("SWAMP_TEST_2172_BRACKET");
-    }
+          const serialized = JSON.stringify(events);
+          assertEquals(
+            serialized.includes("SWAMP_TEST_2172_BRACKET"),
+            true,
+            `payload text never reached the step: ${serialized}`,
+          );
+          assertEquals(
+            serialized.includes("leaked-plaintext"),
+            false,
+            `bracket-index env reference was resolved from webhook payload text: ${serialized}`,
+          );
+        });
+      },
+    );
   },
 });
 

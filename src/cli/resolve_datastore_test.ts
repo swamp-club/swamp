@@ -41,7 +41,10 @@ import {
 } from "../domain/extensions/extension_auto_resolver.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { z } from "zod";
-import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../infrastructure/persistence/path_test_helpers.ts";
 
 /**
  * Creates a stub DatastoreProvider for testing custom datastore resolution.
@@ -123,66 +126,67 @@ Deno.test("parseDatastoreEnvVar: throws on unknown type", async () => {
 });
 
 Deno.test("resolveDatastoreConfig: default is filesystem at .swamp/", async () => {
-  const config = await resolveDatastoreConfig(null, undefined, "/repo");
-  assertEquals(config.type, "filesystem");
-  if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertPathEquals(config.path, "/repo/.swamp");
-  }
-});
-
-Deno.test("resolveDatastoreConfig: env var takes priority", async () => {
-  const originalEnv = Deno.env.get("SWAMP_DATASTORE");
-  try {
-    Deno.env.set("SWAMP_DATASTORE", "filesystem:/custom/path");
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
     const config = await resolveDatastoreConfig(null, undefined, "/repo");
     assertEquals(config.type, "filesystem");
     if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-      assertPathEquals(config.path, "/custom/path");
+      assertPathEquals(config.path, "/repo/.swamp");
     }
-  } finally {
-    if (originalEnv) {
-      Deno.env.set("SWAMP_DATASTORE", originalEnv);
-    } else {
-      Deno.env.delete("SWAMP_DATASTORE");
-    }
-  }
+  });
+});
+
+Deno.test("resolveDatastoreConfig: env var takes priority", async () => {
+  await withMockedEnv(
+    { SWAMP_DATASTORE: "filesystem:/custom/path" },
+    async () => {
+      const config = await resolveDatastoreConfig(null, undefined, "/repo");
+      assertEquals(config.type, "filesystem");
+      if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
+        assertPathEquals(config.path, "/custom/path");
+      }
+    },
+  );
 });
 
 Deno.test("resolveDatastoreConfig: CLI arg overrides marker", async () => {
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: { type: "filesystem", path: "/marker-path" },
-  };
-  const config = await resolveDatastoreConfig(
-    marker,
-    "filesystem:/cli-path",
-    "/repo",
-  );
-  assertEquals(config.type, "filesystem");
-  if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertPathEquals(config.path, "/cli-path");
-  }
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: { type: "filesystem", path: "/marker-path" },
+    };
+    const config = await resolveDatastoreConfig(
+      marker,
+      "filesystem:/cli-path",
+      "/repo",
+    );
+    assertEquals(config.type, "filesystem");
+    if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
+      assertPathEquals(config.path, "/cli-path");
+    }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: marker config used when no env/cli", async () => {
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: {
-      type: "filesystem",
-      path: "/marker-path",
-      directories: ["data", "outputs"],
-    },
-  };
-  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
-  assertEquals(config.type, "filesystem");
-  if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertPathEquals(config.path, "/marker-path");
-    assertEquals(config.directories, ["data", "outputs"]);
-  }
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: {
+        type: "filesystem",
+        path: "/marker-path",
+        directories: ["data", "outputs"],
+      },
+    };
+    const config = await resolveDatastoreConfig(marker, undefined, "/repo");
+    assertEquals(config.type, "filesystem");
+    if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
+      assertPathEquals(config.path, "/marker-path");
+      assertEquals(config.directories, ["data", "outputs"]);
+    }
+  });
 });
 
 // ============================================================================
@@ -190,24 +194,26 @@ Deno.test("resolveDatastoreConfig: marker config used when no env/cli", async ()
 // ============================================================================
 
 Deno.test("resolveDatastoreConfig: S3 marker without extension throws UserError", async () => {
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: {
-      type: "s3",
-      bucket: "my-space",
-      region: "us-east-1",
-      endpoint: "https://nyc3.digitaloceanspaces.com",
-      forcePathStyle: false,
-    },
-  };
-  // Without the @swamp/s3-datastore extension installed, S3 configs throw
-  await assertRejects(
-    () => resolveDatastoreConfig(marker, undefined, "/repo"),
-    Error,
-    "S3 datastore requires the @swamp/s3-datastore extension",
-  );
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: {
+        type: "s3",
+        bucket: "my-space",
+        region: "us-east-1",
+        endpoint: "https://nyc3.digitaloceanspaces.com",
+        forcePathStyle: false,
+      },
+    };
+    // Without the @swamp/s3-datastore extension installed, S3 configs throw
+    await assertRejects(
+      () => resolveDatastoreConfig(marker, undefined, "/repo"),
+      Error,
+      "S3 datastore requires the @swamp/s3-datastore extension",
+    );
+  });
 });
 
 // ============================================================================
@@ -274,52 +280,58 @@ Deno.test("parseDatastoreEnvVar: custom type validates config schema", async () 
 });
 
 Deno.test("resolveDatastoreConfig: YAML custom type produces CustomDatastoreConfig", async () => {
-  ensureTestType("test-custom-yaml");
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: {
-      type: "test-custom-yaml",
-      config: { key: "value" },
-      directories: ["data"],
-    },
-  };
-  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
-  assertEquals(config.type, "test-custom-yaml");
-  assertEquals(isCustomDatastoreConfig(config), true);
-  const custom = config as CustomDatastoreConfig;
-  assertEquals(custom.config, { key: "value" });
-  assertPathEquals(custom.datastorePath, "/repo/.custom-store");
-  assertPathEquals(custom.cachePath, "/repo/.custom-cache");
-  assertEquals(custom.directories, ["data"]);
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    ensureTestType("test-custom-yaml");
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: {
+        type: "test-custom-yaml",
+        config: { key: "value" },
+        directories: ["data"],
+      },
+    };
+    const config = await resolveDatastoreConfig(marker, undefined, "/repo");
+    assertEquals(config.type, "test-custom-yaml");
+    assertEquals(isCustomDatastoreConfig(config), true);
+    const custom = config as CustomDatastoreConfig;
+    assertEquals(custom.config, { key: "value" });
+    assertPathEquals(custom.datastorePath, "/repo/.custom-store");
+    assertPathEquals(custom.cachePath, "/repo/.custom-cache");
+    assertEquals(custom.directories, ["data"]);
+  });
 });
 
 Deno.test("resolveDatastoreConfig: YAML unknown type throws UserError", async () => {
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: { type: "nonexistent-type" },
-  };
-  await assertRejects(
-    () => resolveDatastoreConfig(marker, undefined, "/repo"),
-    Error,
-    "Unknown datastore type",
-  );
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: { type: "nonexistent-type" },
+    };
+    await assertRejects(
+      () => resolveDatastoreConfig(marker, undefined, "/repo"),
+      Error,
+      "Unknown datastore type",
+    );
+  });
 });
 
 Deno.test("resolveDatastoreConfig: YAML custom type with no config defaults to empty object", async () => {
-  ensureTestType("test-custom-noconfig");
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: { type: "test-custom-noconfig" },
-  };
-  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
-  const custom = config as CustomDatastoreConfig;
-  assertEquals(custom.config, {});
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    ensureTestType("test-custom-noconfig");
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: { type: "test-custom-noconfig" },
+    };
+    const config = await resolveDatastoreConfig(marker, undefined, "/repo");
+    const custom = config as CustomDatastoreConfig;
+    assertEquals(custom.config, {});
+  });
 });
 
 // ============================================================================
@@ -403,32 +415,36 @@ Deno.test("parseDatastoreEnvVar: resolves relative filesystem path against repoD
 });
 
 Deno.test("resolveDatastoreConfig: resolves relative YAML path against repoDir", async () => {
-  const repoDir = resolve("/my/repo");
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: { type: "filesystem", path: ".swamp" },
-  };
-  const config = await resolveDatastoreConfig(marker, undefined, repoDir);
-  assertEquals(config.type, "filesystem");
-  if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertPathEquals(config.path, resolve(repoDir, ".swamp"));
-  }
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const repoDir = resolve("/my/repo");
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: { type: "filesystem", path: ".swamp" },
+    };
+    const config = await resolveDatastoreConfig(marker, undefined, repoDir);
+    assertEquals(config.type, "filesystem");
+    if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
+      assertPathEquals(config.path, resolve(repoDir, ".swamp"));
+    }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: preserves absolute YAML path as-is", async () => {
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: { type: "filesystem", path: "/absolute/datastore" },
-  };
-  const config = await resolveDatastoreConfig(marker, undefined, "/my/repo");
-  assertEquals(config.type, "filesystem");
-  if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertPathEquals(config.path, "/absolute/datastore");
-  }
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: { type: "filesystem", path: "/absolute/datastore" },
+    };
+    const config = await resolveDatastoreConfig(marker, undefined, "/my/repo");
+    assertEquals(config.type, "filesystem");
+    if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
+      assertPathEquals(config.path, "/absolute/datastore");
+    }
+  });
 });
 
 // ============================================================================
@@ -481,9 +497,10 @@ Deno.test("resolveDatastoreConfig: resolves env expression in custom type YAML c
   ensureTestType("@test/ds-expr", {
     configSchema: z.object({ token: z.string() }),
   });
-  const original = Deno.env.get("SWAMP_TEST_DS_INTEG_TOKEN");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_INTEG_TOKEN", "my-secret-token");
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_DS_INTEG_TOKEN: "my-secret-token",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -499,59 +516,50 @@ Deno.test("resolveDatastoreConfig: resolves env expression in custom type YAML c
       (config as CustomDatastoreConfig).config.token,
       "my-secret-token",
     );
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_INTEG_TOKEN", original);
-    } else Deno.env.delete("SWAMP_TEST_DS_INTEG_TOKEN");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: resolves env expression in SWAMP_DATASTORE env var", async () => {
   ensureTestType("@test/ds-expr-env", {
     configSchema: z.object({ token: z.string() }),
   });
-  const origDs = Deno.env.get("SWAMP_DATASTORE");
-  const origToken = Deno.env.get("SWAMP_TEST_DS_INTEG_TOKEN2");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_INTEG_TOKEN2", "env-secret");
-    Deno.env.set(
-      "SWAMP_DATASTORE",
+  await withMockedEnv({
+    SWAMP_TEST_DS_INTEG_TOKEN2: "env-secret",
+    SWAMP_DATASTORE:
       '@test/ds-expr-env:{"token":"${{ env.SWAMP_TEST_DS_INTEG_TOKEN2 }}"}',
-    );
+  }, async () => {
     const config = await resolveDatastoreConfig(null, undefined, "/tmp/test");
     assertEquals(isCustomDatastoreConfig(config), true);
     assertEquals(
       (config as CustomDatastoreConfig).config.token,
       "env-secret",
     );
-  } finally {
-    if (origDs !== undefined) Deno.env.set("SWAMP_DATASTORE", origDs);
-    else Deno.env.delete("SWAMP_DATASTORE");
-    if (origToken !== undefined) {
-      Deno.env.set("SWAMP_TEST_DS_INTEG_TOKEN2", origToken);
-    } else Deno.env.delete("SWAMP_TEST_DS_INTEG_TOKEN2");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: missing env expression in config throws UserError", async () => {
   ensureTestType("@test/ds-expr-miss", {
     configSchema: z.object({ token: z.string() }),
   });
-  Deno.env.delete("SWAMP_TEST_DS_INTEG_NONEXISTENT");
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-id",
-    datastore: {
-      type: "@test/ds-expr-miss",
-      config: { token: "${{ env.SWAMP_TEST_DS_INTEG_NONEXISTENT }}" },
-    },
-  };
-  await assertRejects(
-    () => resolveDatastoreConfig(marker, undefined, "/tmp/test"),
-    Error,
-    "SWAMP_TEST_DS_INTEG_NONEXISTENT",
-  );
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_DS_INTEG_NONEXISTENT: undefined,
+  }, async () => {
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-id",
+      datastore: {
+        type: "@test/ds-expr-miss",
+        config: { token: "${{ env.SWAMP_TEST_DS_INTEG_NONEXISTENT }}" },
+      },
+    };
+    await assertRejects(
+      () => resolveDatastoreConfig(marker, undefined, "/tmp/test"),
+      Error,
+      "SWAMP_TEST_DS_INTEG_NONEXISTENT",
+    );
+  });
 });
 
 // ============================================================================
@@ -560,9 +568,10 @@ Deno.test("resolveDatastoreConfig: missing env expression in config throws UserE
 
 Deno.test("resolveDatastoreConfig: resolves env expression in namespace for custom type", async () => {
   ensureTestType("@test/ds-ns-expr");
-  const orig = Deno.env.get("SWAMP_TEST_DS_NS");
-  try {
-    Deno.env.set("SWAMP_TEST_DS_NS", "prod-namespace");
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_DS_NS: "prod-namespace",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -575,16 +584,14 @@ Deno.test("resolveDatastoreConfig: resolves env expression in namespace for cust
     };
     const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
     assertEquals(config.namespace, "prod-namespace");
-  } finally {
-    if (orig !== undefined) Deno.env.set("SWAMP_TEST_DS_NS", orig);
-    else Deno.env.delete("SWAMP_TEST_DS_NS");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: resolves env expression in namespace for filesystem type", async () => {
-  const orig = Deno.env.get("SWAMP_TEST_FS_NS");
-  try {
-    Deno.env.set("SWAMP_TEST_FS_NS", "dev-ns");
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_FS_NS: "dev-ns",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -597,19 +604,16 @@ Deno.test("resolveDatastoreConfig: resolves env expression in namespace for file
     };
     const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
     assertEquals(config.namespace, "dev-ns");
-  } finally {
-    if (orig !== undefined) Deno.env.set("SWAMP_TEST_FS_NS", orig);
-    else Deno.env.delete("SWAMP_TEST_FS_NS");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: resolves env expressions in directories array", async () => {
   ensureTestType("@test/ds-dirs-expr");
-  const origA = Deno.env.get("SWAMP_TEST_DIR_A");
-  const origB = Deno.env.get("SWAMP_TEST_DIR_B");
-  try {
-    Deno.env.set("SWAMP_TEST_DIR_A", "data");
-    Deno.env.set("SWAMP_TEST_DIR_B", "outputs");
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_DIR_A: "data",
+    SWAMP_TEST_DIR_B: "outputs",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -625,19 +629,15 @@ Deno.test("resolveDatastoreConfig: resolves env expressions in directories array
     };
     const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
     assertEquals(config.directories, ["data", "outputs"]);
-  } finally {
-    if (origA !== undefined) Deno.env.set("SWAMP_TEST_DIR_A", origA);
-    else Deno.env.delete("SWAMP_TEST_DIR_A");
-    if (origB !== undefined) Deno.env.set("SWAMP_TEST_DIR_B", origB);
-    else Deno.env.delete("SWAMP_TEST_DIR_B");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: resolves env expressions in exclude array", async () => {
   ensureTestType("@test/ds-excl-expr");
-  const orig = Deno.env.get("SWAMP_TEST_EXCL");
-  try {
-    Deno.env.set("SWAMP_TEST_EXCL", "secrets");
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_EXCL: "secrets",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -650,17 +650,15 @@ Deno.test("resolveDatastoreConfig: resolves env expressions in exclude array", a
     };
     const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
     assertEquals(config.exclude, ["secrets"]);
-  } finally {
-    if (orig !== undefined) Deno.env.set("SWAMP_TEST_EXCL", orig);
-    else Deno.env.delete("SWAMP_TEST_EXCL");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: resolves env expression in hydrationStrategy", async () => {
   ensureTestType("@test/ds-hydra-expr");
-  const orig = Deno.env.get("SWAMP_TEST_HYDRA");
-  try {
-    Deno.env.set("SWAMP_TEST_HYDRA", "lazy");
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_HYDRA: "lazy",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -674,34 +672,33 @@ Deno.test("resolveDatastoreConfig: resolves env expression in hydrationStrategy"
     const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
     assertEquals(isCustomDatastoreConfig(config), true);
     assertEquals((config as CustomDatastoreConfig).hydrationStrategy, "lazy");
-  } finally {
-    if (orig !== undefined) Deno.env.set("SWAMP_TEST_HYDRA", orig);
-    else Deno.env.delete("SWAMP_TEST_HYDRA");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: non-expression fields pass through unchanged", async () => {
-  ensureTestType("@test/ds-no-expr");
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "aaaaaaaa-bbbb-1ccc-9ddd-eeeeeeeeeeee",
-    datastore: {
-      type: "@test/ds-no-expr",
-      namespace: "plain-namespace",
-      directories: ["data", "outputs"],
-      exclude: ["secrets"],
-      hydrationStrategy: "full",
-      config: {},
-    },
-  };
-  const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
-  assertEquals(isCustomDatastoreConfig(config), true);
-  const custom = config as CustomDatastoreConfig;
-  assertEquals(custom.namespace, "plain-namespace");
-  assertEquals(custom.directories, ["data", "outputs"]);
-  assertEquals(custom.exclude, ["secrets"]);
-  assertEquals(custom.hydrationStrategy, "full");
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    ensureTestType("@test/ds-no-expr");
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "aaaaaaaa-bbbb-1ccc-9ddd-eeeeeeeeeeee",
+      datastore: {
+        type: "@test/ds-no-expr",
+        namespace: "plain-namespace",
+        directories: ["data", "outputs"],
+        exclude: ["secrets"],
+        hydrationStrategy: "full",
+        config: {},
+      },
+    };
+    const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
+    assertEquals(isCustomDatastoreConfig(config), true);
+    const custom = config as CustomDatastoreConfig;
+    assertEquals(custom.namespace, "plain-namespace");
+    assertEquals(custom.directories, ["data", "outputs"]);
+    assertEquals(custom.exclude, ["secrets"]);
+    assertEquals(custom.hydrationStrategy, "full");
+  });
 });
 
 // ============================================================================
@@ -710,11 +707,11 @@ Deno.test("resolveDatastoreConfig: non-expression fields pass through unchanged"
 
 Deno.test("resolveDatastoreConfig: string managedConfig resolves and gates vault correctly", async () => {
   ensureTestType("@test/ds-mc-expr");
-  const origMc = Deno.env.get("SWAMP_TEST_MC");
-  const origToken = Deno.env.get("SWAMP_TEST_MC_TOKEN");
-  try {
-    Deno.env.set("SWAMP_TEST_MC", "true");
-    Deno.env.set("SWAMP_TEST_MC_TOKEN", "env-token");
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_MC: "true",
+    SWAMP_TEST_MC_TOKEN: "env-token",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -728,32 +725,27 @@ Deno.test("resolveDatastoreConfig: string managedConfig resolves and gates vault
     const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
     const custom = config as CustomDatastoreConfig;
     assertEquals(custom.config.token, "env-token");
-  } finally {
-    if (origMc !== undefined) Deno.env.set("SWAMP_TEST_MC", origMc);
-    else Deno.env.delete("SWAMP_TEST_MC");
-    if (origToken !== undefined) {
-      Deno.env.set("SWAMP_TEST_MC_TOKEN", origToken);
-    } else Deno.env.delete("SWAMP_TEST_MC_TOKEN");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: managedConfig strict parsing — only true/1 are truthy", async () => {
   ensureTestType("@test/ds-mc-strict");
-  const origMc = Deno.env.get("SWAMP_TEST_MC_STRICT");
-  try {
-    for (
-      const [input, expected] of [
-        ["true", true],
-        ["TRUE", true],
-        ["True", true],
-        ["1", true],
-        ["false", false],
-        ["0", false],
-        ["yes", false],
-        ["no", false],
-      ] as const
-    ) {
-      Deno.env.set("SWAMP_TEST_MC_STRICT", input);
+  for (
+    const [input, expected] of [
+      ["true", true],
+      ["TRUE", true],
+      ["True", true],
+      ["1", true],
+      ["false", false],
+      ["0", false],
+      ["yes", false],
+      ["no", false],
+    ] as const
+  ) {
+    await withMockedEnv({
+      SWAMP_DATASTORE: undefined,
+      SWAMP_TEST_MC_STRICT: input,
+    }, async () => {
       const marker: RepoMarkerData = {
         swampVersion: "0.1.0",
         initializedAt: "2024-01-01",
@@ -780,10 +772,7 @@ Deno.test("resolveDatastoreConfig: managedConfig strict parsing — only true/1 
       if (expected) {
         // When managedConfig is true, vault.get() would be blocked (tested separately)
       }
-    }
-  } finally {
-    if (origMc !== undefined) Deno.env.set("SWAMP_TEST_MC_STRICT", origMc);
-    else Deno.env.delete("SWAMP_TEST_MC_STRICT");
+    });
   }
 });
 
@@ -805,12 +794,10 @@ Deno.test("resolveDatastoreConfig: resolves env expression in repoId", async () 
         }),
     });
   }
-  const orig = Deno.env.get("SWAMP_TEST_REPO_ID");
-  try {
-    Deno.env.set(
-      "SWAMP_TEST_REPO_ID",
-      "b24851d1-696e-4f07-8daf-1649cab9cd45",
-    );
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_REPO_ID: "b24851d1-696e-4f07-8daf-1649cab9cd45",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -826,17 +813,15 @@ Deno.test("resolveDatastoreConfig: resolves env expression in repoId", async () 
       custom.cachePath,
       join(getSwampDataDir(), "repos", "b24851d1-696e-4f07-8daf-1649cab9cd45"),
     );
-  } finally {
-    if (orig !== undefined) Deno.env.set("SWAMP_TEST_REPO_ID", orig);
-    else Deno.env.delete("SWAMP_TEST_REPO_ID");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: repoId UUID validation rejects non-UUID", async () => {
   ensureTestType("@test/ds-repoid-invalid");
-  const orig = Deno.env.get("SWAMP_TEST_REPO_ID_BAD");
-  try {
-    Deno.env.set("SWAMP_TEST_REPO_ID_BAD", "not-a-uuid");
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_REPO_ID_BAD: "not-a-uuid",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -851,51 +836,48 @@ Deno.test("resolveDatastoreConfig: repoId UUID validation rejects non-UUID", asy
       Error,
       "repoId must be a valid UUID",
     );
-  } finally {
-    if (orig !== undefined) Deno.env.set("SWAMP_TEST_REPO_ID_BAD", orig);
-    else Deno.env.delete("SWAMP_TEST_REPO_ID_BAD");
-  }
+  });
 });
 
 Deno.test("resolveDatastoreConfig: plain UUID repoId passes through unchanged", async () => {
-  const typeName = "@test/ds-repoid-plain";
-  if (!datastoreTypeRegistry.has(typeName)) {
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test repoId plain",
-      description: "Test plain repoId passthrough",
-      isBuiltIn: false,
-      createProvider: () =>
-        createStubProvider({
-          resolveCachePath: () => undefined,
-        }),
-    });
-  }
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "aaaaaaaa-bbbb-1ccc-9ddd-eeeeeeeeeeee",
-    datastore: {
-      type: typeName,
-      config: {},
-    },
-  };
-  const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
-  const custom = config as CustomDatastoreConfig;
-  assertEquals(
-    custom.cachePath,
-    join(getSwampDataDir(), "repos", "aaaaaaaa-bbbb-1ccc-9ddd-eeeeeeeeeeee"),
-  );
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const typeName = "@test/ds-repoid-plain";
+    if (!datastoreTypeRegistry.has(typeName)) {
+      datastoreTypeRegistry.register({
+        type: typeName,
+        name: "Test repoId plain",
+        description: "Test plain repoId passthrough",
+        isBuiltIn: false,
+        createProvider: () =>
+          createStubProvider({
+            resolveCachePath: () => undefined,
+          }),
+      });
+    }
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "aaaaaaaa-bbbb-1ccc-9ddd-eeeeeeeeeeee",
+      datastore: {
+        type: typeName,
+        config: {},
+      },
+    };
+    const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
+    const custom = config as CustomDatastoreConfig;
+    assertEquals(
+      custom.cachePath,
+      join(getSwampDataDir(), "repos", "aaaaaaaa-bbbb-1ccc-9ddd-eeeeeeeeeeee"),
+    );
+  });
 });
 
 Deno.test("resolveDatastoreConfig: repoId expression does not mutate marker", async () => {
   ensureTestType("@test/ds-repoid-nomut");
-  const orig = Deno.env.get("SWAMP_TEST_REPO_ID_NOMUT");
-  try {
-    Deno.env.set(
-      "SWAMP_TEST_REPO_ID_NOMUT",
-      "b24851d1-696e-4f07-8daf-1649cab9cd45",
-    );
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_REPO_ID_NOMUT: "b24851d1-696e-4f07-8daf-1649cab9cd45",
+  }, async () => {
     const marker: RepoMarkerData = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01",
@@ -910,10 +892,7 @@ Deno.test("resolveDatastoreConfig: repoId expression does not mutate marker", as
       marker.repoId,
       "${{ env.SWAMP_TEST_REPO_ID_NOMUT }}",
     );
-  } finally {
-    if (orig !== undefined) Deno.env.set("SWAMP_TEST_REPO_ID_NOMUT", orig);
-    else Deno.env.delete("SWAMP_TEST_REPO_ID_NOMUT");
-  }
+  });
 });
 
 /** No-op auto-resolve output port. */
@@ -972,43 +951,47 @@ async function withRecordingAutoResolver(
 }
 
 Deno.test("resolveDatastoreConfig: autoResolve false never consults the auto-resolver", async () => {
-  const collective = `t${crypto.randomUUID().slice(0, 8)}`;
-  const type = `@${collective}/missing-datastore`;
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: { type },
-  };
-  await withRecordingAutoResolver(collective, async (lookups) => {
-    await assertRejects(
-      () =>
-        resolveDatastoreConfig(marker, undefined, "/repo", {
-          autoResolve: false,
-        }),
-      Error,
-      "Unknown datastore type",
-    );
-    assertEquals(lookups, []);
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+    const type = `@${collective}/missing-datastore`;
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: { type },
+    };
+    await withRecordingAutoResolver(collective, async (lookups) => {
+      await assertRejects(
+        () =>
+          resolveDatastoreConfig(marker, undefined, "/repo", {
+            autoResolve: false,
+          }),
+        Error,
+        "Unknown datastore type",
+      );
+      assertEquals(lookups, []);
+    });
   });
 });
 
 Deno.test("resolveDatastoreConfig: auto-resolves a missing datastore type by default", async () => {
-  const collective = `t${crypto.randomUUID().slice(0, 8)}`;
-  const type = `@${collective}/missing-datastore`;
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: { type },
-  };
-  await withRecordingAutoResolver(collective, async (lookups) => {
-    await assertRejects(
-      () => resolveDatastoreConfig(marker, undefined, "/repo"),
-      Error,
-      "Unknown datastore type",
-    );
-    assertEquals(lookups.length > 0, true);
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+    const type = `@${collective}/missing-datastore`;
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: { type },
+    };
+    await withRecordingAutoResolver(collective, async (lookups) => {
+      await assertRejects(
+        () => resolveDatastoreConfig(marker, undefined, "/repo"),
+        Error,
+        "Unknown datastore type",
+      );
+      assertEquals(lookups.length > 0, true);
+    });
   });
 });
 

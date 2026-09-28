@@ -116,18 +116,13 @@ Deno.test("StdioTransport + RpcChannel: stream events flow through bridge", asyn
 });
 
 Deno.test("environment isolation: overlayEnvironment does not mutate process env", () => {
-  const originalValue = Deno.env.get("ISOLATION_TEST_VAR");
-  Deno.env.delete("ISOLATION_TEST_VAR");
-
-  const base = Deno.env.toObject();
+  const before = Deno.env.get("ISOLATION_TEST_VAR");
+  const base: Record<string, string> = { PATH: "/usr/bin" };
   const merged = overlayEnvironment(base, { ISOLATION_TEST_VAR: "shipped" });
 
   assertEquals(merged["ISOLATION_TEST_VAR"], "shipped");
-  assertEquals(Deno.env.get("ISOLATION_TEST_VAR"), undefined);
-
-  if (originalValue !== undefined) {
-    Deno.env.set("ISOLATION_TEST_VAR", originalValue);
-  }
+  assertEquals(base, { PATH: "/usr/bin" });
+  assertEquals(Deno.env.get("ISOLATION_TEST_VAR"), before);
 });
 
 Deno.test("environment isolation: denylist vars survive overlay", () => {

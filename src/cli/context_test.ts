@@ -36,7 +36,10 @@ import {
 } from "./context.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
-import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../infrastructure/persistence/path_test_helpers.ts";
 import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
 
 // Initialize logging once before tests run
@@ -163,14 +166,10 @@ Deno.test("createContext lets --json override a false output environment", () =>
 // ============================================================================
 
 Deno.test("getRepoDirFromArgs returns cwd when no --repo-dir flag", () => {
-  const saved = Deno.env.get("SWAMP_REPO_DIR");
-  Deno.env.delete("SWAMP_REPO_DIR");
-  try {
+  withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
     assertCwdDerivedRepoDir(getRepoDirFromArgs([]));
     assertCwdDerivedRepoDir(getRepoDirFromArgs(["model", "create"]));
-  } finally {
-    if (saved !== undefined) Deno.env.set("SWAMP_REPO_DIR", saved);
-  }
+  });
 });
 
 Deno.test("getRepoDirFromArgs parses --repo-dir with space separator", () => {
@@ -201,13 +200,9 @@ Deno.test("getRepoDirFromArgs resolves relative paths to absolute", () => {
 });
 
 Deno.test("getRepoDirFromArgs returns cwd when --repo-dir is last arg with no value", () => {
-  const saved = Deno.env.get("SWAMP_REPO_DIR");
-  Deno.env.delete("SWAMP_REPO_DIR");
-  try {
+  withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
     assertCwdDerivedRepoDir(getRepoDirFromArgs(["model", "run", "--repo-dir"]));
-  } finally {
-    if (saved !== undefined) Deno.env.set("SWAMP_REPO_DIR", saved);
-  }
+  });
 });
 
 Deno.test("getRepoDirFromArgs finds flag among other args", () => {
@@ -225,57 +220,37 @@ Deno.test("getRepoDirFromArgs finds flag among other args", () => {
 });
 
 Deno.test("getRepoDirFromArgs uses SWAMP_REPO_DIR when flag absent", () => {
-  const original = Deno.env.get("SWAMP_REPO_DIR");
-  try {
-    Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
+  withMockedEnv({ SWAMP_REPO_DIR: "/tmp/env-repo" }, () => {
     assertPathEquals(getRepoDirFromArgs([]), resolve("/tmp/env-repo"));
     assertPathEquals(
       getRepoDirFromArgs(["model", "create"]),
       resolve("/tmp/env-repo"),
     );
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
-    else Deno.env.delete("SWAMP_REPO_DIR");
-  }
+  });
 });
 
 Deno.test("getRepoDirFromArgs prefers --repo-dir flag over SWAMP_REPO_DIR", () => {
-  const original = Deno.env.get("SWAMP_REPO_DIR");
-  try {
-    Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
+  withMockedEnv({ SWAMP_REPO_DIR: "/tmp/env-repo" }, () => {
     const result = getRepoDirFromArgs(["--repo-dir", "/tmp/flag-repo"]);
     assertPathEquals(result, resolve("/tmp/flag-repo"));
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
-    else Deno.env.delete("SWAMP_REPO_DIR");
-  }
+  });
 });
 
 Deno.test("getRepoDirFromArgs ignores empty SWAMP_REPO_DIR and falls back to cwd", () => {
-  const original = Deno.env.get("SWAMP_REPO_DIR");
-  try {
-    Deno.env.set("SWAMP_REPO_DIR", "");
+  withMockedEnv({ SWAMP_REPO_DIR: "" }, () => {
     assertCwdDerivedRepoDir(getRepoDirFromArgs([]));
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
-    else Deno.env.delete("SWAMP_REPO_DIR");
-  }
+  });
 });
 
 Deno.test("getRepoDirFromArgs resolves SWAMP_REPO_DIR to absolute path", () => {
-  const original = Deno.env.get("SWAMP_REPO_DIR");
-  try {
-    Deno.env.set("SWAMP_REPO_DIR", "./relative/env/path");
+  withMockedEnv({ SWAMP_REPO_DIR: "./relative/env/path" }, () => {
     const result = getRepoDirFromArgs([]);
     assertEquals(isAbsolute(result), true);
     assertEquals(
       result.replaceAll("\\", "/").endsWith("relative/env/path"),
       true,
     );
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
-    else Deno.env.delete("SWAMP_REPO_DIR");
-  }
+  });
 });
 
 // ============================================================================
@@ -283,51 +258,32 @@ Deno.test("getRepoDirFromArgs resolves SWAMP_REPO_DIR to absolute path", () => {
 // ============================================================================
 
 Deno.test("resolveRepoDir returns cli value when provided", () => {
-  const original = Deno.env.get("SWAMP_REPO_DIR");
-  try {
-    Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
+  withMockedEnv({ SWAMP_REPO_DIR: "/tmp/env-repo" }, () => {
     assertPathEquals(
       resolveRepoDir("/tmp/flag-repo"),
       resolve("/tmp/flag-repo"),
     );
     // explicit "." from flag resolves to absolute cwd
     assertPathEquals(resolveRepoDir("."), resolve("."));
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
-    else Deno.env.delete("SWAMP_REPO_DIR");
-  }
+  });
 });
 
 Deno.test("resolveRepoDir returns SWAMP_REPO_DIR when cli value undefined", () => {
-  const original = Deno.env.get("SWAMP_REPO_DIR");
-  try {
-    Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
+  withMockedEnv({ SWAMP_REPO_DIR: "/tmp/env-repo" }, () => {
     assertPathEquals(resolveRepoDir(undefined), resolve("/tmp/env-repo"));
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
-    else Deno.env.delete("SWAMP_REPO_DIR");
-  }
+  });
 });
 
 Deno.test("resolveRepoDir returns absolute cwd when neither cli value nor env var set", () => {
-  const original = Deno.env.get("SWAMP_REPO_DIR");
-  try {
-    Deno.env.delete("SWAMP_REPO_DIR");
+  withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
     assertCwdDerivedRepoDir(resolveRepoDir(undefined));
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
-  }
+  });
 });
 
 Deno.test("resolveRepoDir treats empty SWAMP_REPO_DIR as unset", () => {
-  const original = Deno.env.get("SWAMP_REPO_DIR");
-  try {
-    Deno.env.set("SWAMP_REPO_DIR", "");
+  withMockedEnv({ SWAMP_REPO_DIR: "" }, () => {
     assertCwdDerivedRepoDir(resolveRepoDir(undefined));
-  } finally {
-    if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
-    else Deno.env.delete("SWAMP_REPO_DIR");
-  }
+  });
 });
 
 // ============================================================================
@@ -501,16 +457,10 @@ Deno.test("findAncestorRepoDir: returns null from a linked worktree when the mai
 // ============================================================================
 
 Deno.test("getExtensionsDirFromArgs: returns undefined when no flag or env var", () => {
-  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
-  try {
-    Deno.env.delete("SWAMP_EXTENSIONS_DIR");
+  withMockedEnv({ SWAMP_EXTENSIONS_DIR: undefined }, () => {
     assertEquals(getExtensionsDirFromArgs([]), undefined);
     assertEquals(getExtensionsDirFromArgs(["model", "create"]), undefined);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
-    }
-  }
+  });
 });
 
 Deno.test("getExtensionsDirFromArgs: parses --extensions-dir with space separator", () => {
@@ -535,43 +485,25 @@ Deno.test("getExtensionsDirFromArgs: resolves relative paths to absolute", () =>
 });
 
 Deno.test("getExtensionsDirFromArgs: uses SWAMP_EXTENSIONS_DIR when flag absent", () => {
-  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
-  try {
-    Deno.env.set("SWAMP_EXTENSIONS_DIR", "/tmp/env-ext");
+  withMockedEnv({ SWAMP_EXTENSIONS_DIR: "/tmp/env-ext" }, () => {
     assertPathEquals(getExtensionsDirFromArgs([])!, resolve("/tmp/env-ext"));
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
-    } else Deno.env.delete("SWAMP_EXTENSIONS_DIR");
-  }
+  });
 });
 
 Deno.test("getExtensionsDirFromArgs: prefers flag over env var", () => {
-  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
-  try {
-    Deno.env.set("SWAMP_EXTENSIONS_DIR", "/tmp/env-ext");
+  withMockedEnv({ SWAMP_EXTENSIONS_DIR: "/tmp/env-ext" }, () => {
     const result = getExtensionsDirFromArgs([
       "--extensions-dir",
       "/tmp/flag-ext",
     ]);
     assertPathEquals(result!, resolve("/tmp/flag-ext"));
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
-    } else Deno.env.delete("SWAMP_EXTENSIONS_DIR");
-  }
+  });
 });
 
 Deno.test("getExtensionsDirFromArgs: ignores empty env var", () => {
-  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
-  try {
-    Deno.env.set("SWAMP_EXTENSIONS_DIR", "");
+  withMockedEnv({ SWAMP_EXTENSIONS_DIR: "" }, () => {
     assertEquals(getExtensionsDirFromArgs([]), undefined);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
-    } else Deno.env.delete("SWAMP_EXTENSIONS_DIR");
-  }
+  });
 });
 
 // ============================================================================
@@ -586,27 +518,15 @@ Deno.test("resolveExtensionsDir: returns resolved cli value when provided", () =
 });
 
 Deno.test("resolveExtensionsDir: returns env var when cli value undefined", () => {
-  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
-  try {
-    Deno.env.set("SWAMP_EXTENSIONS_DIR", "/tmp/env-ext");
+  withMockedEnv({ SWAMP_EXTENSIONS_DIR: "/tmp/env-ext" }, () => {
     assertPathEquals(resolveExtensionsDir(undefined)!, resolve("/tmp/env-ext"));
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
-    } else Deno.env.delete("SWAMP_EXTENSIONS_DIR");
-  }
+  });
 });
 
 Deno.test("resolveExtensionsDir: returns undefined when neither set", () => {
-  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
-  try {
-    Deno.env.delete("SWAMP_EXTENSIONS_DIR");
+  withMockedEnv({ SWAMP_EXTENSIONS_DIR: undefined }, () => {
     assertEquals(resolveExtensionsDir(undefined), undefined);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
-    }
-  }
+  });
 });
 
 // ============================================================================

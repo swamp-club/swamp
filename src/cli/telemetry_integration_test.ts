@@ -26,6 +26,7 @@ import {
   isTelemetryDisabled,
   projectEnvSnapshot,
 } from "./telemetry_integration.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("extractCommandInfo extracts simple command", () => {
   const info = extractCommandInfo(["model"]);
@@ -329,40 +330,26 @@ Deno.test("extractCommandInfo handles --streaming as boolean flag", () => {
 });
 
 Deno.test("projectEnvSnapshot picks up whitelist keys present on Deno.env", () => {
-  // Touch one whitelist key in this process so the projection has something
-  // to capture. Restore in a finally so we don't leak into sibling tests.
+  // Mock one whitelist key so the projection has something to capture.
   const sentinel = "swamp-test-claude";
-  const previous = Deno.env.get("CLAUDE_CODE_ENTRYPOINT");
-  Deno.env.set("CLAUDE_CODE_ENTRYPOINT", sentinel);
-  try {
+  withMockedEnv({ CLAUDE_CODE_ENTRYPOINT: sentinel }, () => {
     const snapshot = projectEnvSnapshot();
     assertEquals(snapshot.CLAUDE_CODE_ENTRYPOINT, sentinel);
-  } finally {
-    if (previous === undefined) {
-      Deno.env.delete("CLAUDE_CODE_ENTRYPOINT");
-    } else {
-      Deno.env.set("CLAUDE_CODE_ENTRYPOINT", previous);
-    }
-  }
+  });
 });
 
 Deno.test("projectEnvSnapshot does not include keys outside the whitelist", () => {
   // Set a non-whitelist key and assert it does not appear in the projection.
-  const previous = Deno.env.get("AWS_SECRET_ACCESS_KEY");
-  Deno.env.set("AWS_SECRET_ACCESS_KEY", "AKIA-test-secret-do-not-leak");
-  try {
-    const snapshot = projectEnvSnapshot();
-    assert(
-      !("AWS_SECRET_ACCESS_KEY" in snapshot),
-      "projectEnvSnapshot leaked a non-whitelist key",
-    );
-  } finally {
-    if (previous === undefined) {
-      Deno.env.delete("AWS_SECRET_ACCESS_KEY");
-    } else {
-      Deno.env.set("AWS_SECRET_ACCESS_KEY", previous);
-    }
-  }
+  withMockedEnv(
+    { AWS_SECRET_ACCESS_KEY: "AKIA-test-secret-do-not-leak" },
+    () => {
+      const snapshot = projectEnvSnapshot();
+      assert(
+        !("AWS_SECRET_ACCESS_KEY" in snapshot),
+        "projectEnvSnapshot leaked a non-whitelist key",
+      );
+    },
+  );
 });
 
 Deno.test("buildInvocationContext: claude detected, tools configured", () => {

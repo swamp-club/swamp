@@ -59,6 +59,7 @@ import { createEphemeralStore } from "../src/infrastructure/persistence/ephemera
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -204,43 +205,43 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    Deno.env.set("SWAMP_TEST_2172_RESUME", "leaked-plaintext");
-    try {
-      await withRepo(async (repoDir) => {
-        const workflow = failingWorkflow(
-          "resume-injected-expression",
-          'echo "VALUE=${{ inputs.identifier }}"',
-        );
-        await new YamlWorkflowRepository(repoDir).save(workflow);
+    await withMockedEnv(
+      { SWAMP_TEST_2172_RESUME: "leaked-plaintext" },
+      async () => {
+        await withRepo(async (repoDir) => {
+          const workflow = failingWorkflow(
+            "resume-injected-expression",
+            'echo "VALUE=${{ inputs.identifier }}"',
+          );
+          await new YamlWorkflowRepository(repoDir).save(workflow);
 
-        const runId = await runToFailure(repoDir, workflow.name, {
-          identifier: "${{ env.SWAMP_TEST_2172_RESUME }}",
+          const runId = await runToFailure(repoDir, workflow.name, {
+            identifier: "${{ env.SWAMP_TEST_2172_RESUME }}",
+          });
+
+          const events = await resumeFromStep(
+            repoDir,
+            workflow.name,
+            runId,
+            "echo",
+          );
+          const serialized = JSON.stringify(events);
+
+          // The injected text did reach the resumed command — without this the
+          // test could pass because the step never re-ran.
+          assertEquals(
+            serialized.includes("env.SWAMP_TEST_2172_RESUME"),
+            true,
+            `injected text never reached the resumed step: ${serialized}`,
+          );
+          assertEquals(
+            serialized.includes("leaked-plaintext"),
+            false,
+            `resume seam resolved an environment variable from input text: ${serialized}`,
+          );
         });
-
-        const events = await resumeFromStep(
-          repoDir,
-          workflow.name,
-          runId,
-          "echo",
-        );
-        const serialized = JSON.stringify(events);
-
-        // The injected text did reach the resumed command — without this the
-        // test could pass because the step never re-ran.
-        assertEquals(
-          serialized.includes("env.SWAMP_TEST_2172_RESUME"),
-          true,
-          `injected text never reached the resumed step: ${serialized}`,
-        );
-        assertEquals(
-          serialized.includes("leaked-plaintext"),
-          false,
-          `resume seam resolved an environment variable from input text: ${serialized}`,
-        );
-      });
-    } finally {
-      Deno.env.delete("SWAMP_TEST_2172_RESUME");
-    }
+      },
+    );
   },
 });
 
@@ -250,35 +251,35 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    Deno.env.set("SWAMP_TEST_2172_RESUME_OK", "authored-value");
-    try {
-      await withRepo(async (repoDir) => {
-        const workflow = failingWorkflow(
-          "resume-authored-expression",
-          'echo "VALUE=${{ env.SWAMP_TEST_2172_RESUME_OK }}"',
-        );
-        await new YamlWorkflowRepository(repoDir).save(workflow);
+    await withMockedEnv(
+      { SWAMP_TEST_2172_RESUME_OK: "authored-value" },
+      async () => {
+        await withRepo(async (repoDir) => {
+          const workflow = failingWorkflow(
+            "resume-authored-expression",
+            'echo "VALUE=${{ env.SWAMP_TEST_2172_RESUME_OK }}"',
+          );
+          await new YamlWorkflowRepository(repoDir).save(workflow);
 
-        const runId = await runToFailure(repoDir, workflow.name, {
-          identifier: "unused",
+          const runId = await runToFailure(repoDir, workflow.name, {
+            identifier: "unused",
+          });
+
+          const events = await resumeFromStep(
+            repoDir,
+            workflow.name,
+            runId,
+            "echo",
+          );
+
+          assertEquals(
+            JSON.stringify(events).includes("VALUE=authored-value"),
+            true,
+            "authored env reference did not resolve on the resume path",
+          );
         });
-
-        const events = await resumeFromStep(
-          repoDir,
-          workflow.name,
-          runId,
-          "echo",
-        );
-
-        assertEquals(
-          JSON.stringify(events).includes("VALUE=authored-value"),
-          true,
-          "authored env reference did not resolve on the resume path",
-        );
-      });
-    } finally {
-      Deno.env.delete("SWAMP_TEST_2172_RESUME_OK");
-    }
+      },
+    );
   },
 });
 
@@ -295,55 +296,55 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    Deno.env.set("SWAMP_TEST_2172_LASTEVAL", "leaked-plaintext");
-    try {
-      await withRepo(async (repoDir) => {
-        const workflow = Workflow.create({
-          name: "lasteval-injected-expression",
-          inputs: inputSchema,
-          jobs: [
-            Job.create({
-              name: "main",
-              steps: [
-                Step.create({
-                  name: "echo",
-                  task: StepTask.directExecution(
-                    "command/shell",
-                    "lasteval-injected-shell",
-                    "execute",
-                    { run: 'echo "VALUE=${{ inputs.identifier }}"' },
-                  ),
-                }),
-              ],
-            }),
-          ],
+    await withMockedEnv(
+      { SWAMP_TEST_2172_LASTEVAL: "leaked-plaintext" },
+      async () => {
+        await withRepo(async (repoDir) => {
+          const workflow = Workflow.create({
+            name: "lasteval-injected-expression",
+            inputs: inputSchema,
+            jobs: [
+              Job.create({
+                name: "main",
+                steps: [
+                  Step.create({
+                    name: "echo",
+                    task: StepTask.directExecution(
+                      "command/shell",
+                      "lasteval-injected-shell",
+                      "execute",
+                      { run: 'echo "VALUE=${{ inputs.identifier }}"' },
+                    ),
+                  }),
+                ],
+              }),
+            ],
+          });
+          await new YamlWorkflowRepository(repoDir).save(workflow);
+
+          const injected = "${{ env['SWAMP_TEST_2172_LASTEVAL'] }}";
+          await runWorkflow(repoDir, workflow.name, { identifier: injected });
+          const { events } = await runWorkflow(
+            repoDir,
+            workflow.name,
+            { identifier: injected },
+            true,
+          );
+          const serialized = JSON.stringify(events);
+
+          assertEquals(
+            serialized.includes("SWAMP_TEST_2172_LASTEVAL"),
+            true,
+            `injected text never reached the cached step: ${serialized}`,
+          );
+          assertEquals(
+            serialized.includes("leaked-plaintext"),
+            false,
+            `--last-evaluated re-parse resolved an environment variable from cached input text: ${serialized}`,
+          );
         });
-        await new YamlWorkflowRepository(repoDir).save(workflow);
-
-        const injected = "${{ env['SWAMP_TEST_2172_LASTEVAL'] }}";
-        await runWorkflow(repoDir, workflow.name, { identifier: injected });
-        const { events } = await runWorkflow(
-          repoDir,
-          workflow.name,
-          { identifier: injected },
-          true,
-        );
-        const serialized = JSON.stringify(events);
-
-        assertEquals(
-          serialized.includes("SWAMP_TEST_2172_LASTEVAL"),
-          true,
-          `injected text never reached the cached step: ${serialized}`,
-        );
-        assertEquals(
-          serialized.includes("leaked-plaintext"),
-          false,
-          `--last-evaluated re-parse resolved an environment variable from cached input text: ${serialized}`,
-        );
-      });
-    } finally {
-      Deno.env.delete("SWAMP_TEST_2172_LASTEVAL");
-    }
+      },
+    );
   },
 });
 
@@ -359,69 +360,69 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    Deno.env.set("SWAMP_TEST_2172_NESTED", "leaked-plaintext");
-    try {
-      await withRepo(async (repoDir) => {
-        const repo = new YamlWorkflowRepository(repoDir);
-        const child = Workflow.create({
-          name: "nested-child",
-          inputs: inputSchema,
-          jobs: [
-            Job.create({
-              name: "main",
-              steps: [
-                Step.create({
-                  name: "echo",
-                  task: StepTask.directExecution(
-                    "command/shell",
-                    "nested-child-shell",
-                    "execute",
-                    { run: 'echo "VALUE=${{ inputs.identifier }}"' },
-                  ),
-                }),
-              ],
-            }),
-          ],
-        });
-        const parent = Workflow.create({
-          name: "nested-parent",
-          inputs: inputSchema,
-          jobs: [
-            Job.create({
-              name: "main",
-              steps: [
-                Step.create({
-                  name: "call-child",
-                  task: StepTask.workflow("nested-child", {
-                    identifier: "${{ inputs.identifier }}",
+    await withMockedEnv(
+      { SWAMP_TEST_2172_NESTED: "leaked-plaintext" },
+      async () => {
+        await withRepo(async (repoDir) => {
+          const repo = new YamlWorkflowRepository(repoDir);
+          const child = Workflow.create({
+            name: "nested-child",
+            inputs: inputSchema,
+            jobs: [
+              Job.create({
+                name: "main",
+                steps: [
+                  Step.create({
+                    name: "echo",
+                    task: StepTask.directExecution(
+                      "command/shell",
+                      "nested-child-shell",
+                      "execute",
+                      { run: 'echo "VALUE=${{ inputs.identifier }}"' },
+                    ),
                   }),
-                }),
-              ],
-            }),
-          ],
-        });
-        await repo.save(child);
-        await repo.save(parent);
+                ],
+              }),
+            ],
+          });
+          const parent = Workflow.create({
+            name: "nested-parent",
+            inputs: inputSchema,
+            jobs: [
+              Job.create({
+                name: "main",
+                steps: [
+                  Step.create({
+                    name: "call-child",
+                    task: StepTask.workflow("nested-child", {
+                      identifier: "${{ inputs.identifier }}",
+                    }),
+                  }),
+                ],
+              }),
+            ],
+          });
+          await repo.save(child);
+          await repo.save(parent);
 
-        const { events } = await runWorkflow(repoDir, parent.name, {
-          identifier: "${{ env['SWAMP_TEST_2172_NESTED'] }}",
-        });
-        const serialized = JSON.stringify(events);
+          const { events } = await runWorkflow(repoDir, parent.name, {
+            identifier: "${{ env['SWAMP_TEST_2172_NESTED'] }}",
+          });
+          const serialized = JSON.stringify(events);
 
-        assertEquals(
-          serialized.includes("SWAMP_TEST_2172_NESTED"),
-          true,
-          `injected text never reached the child step: ${serialized}`,
-        );
-        assertEquals(
-          serialized.includes("leaked-plaintext"),
-          false,
-          `nested-workflow re-parse resolved an environment variable from parent input text: ${serialized}`,
-        );
-      });
-    } finally {
-      Deno.env.delete("SWAMP_TEST_2172_NESTED");
-    }
+          assertEquals(
+            serialized.includes("SWAMP_TEST_2172_NESTED"),
+            true,
+            `injected text never reached the child step: ${serialized}`,
+          );
+          assertEquals(
+            serialized.includes("leaked-plaintext"),
+            false,
+            `nested-workflow re-parse resolved an environment variable from parent input text: ${serialized}`,
+          );
+        });
+      },
+    );
   },
 });
 
@@ -439,61 +440,66 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    Deno.env.set("SWAMP_TEST_2172_CACHED", "cached-authored");
-    try {
-      await withRepo(async (repoDir) => {
-        const definition = Definition.create({
-          name: "lasteval-edited-shell",
-          methods: { execute: { arguments: { run: "echo placeholder" } } },
-        });
-        await new YamlDefinitionRepository(repoDir).save(
-          ModelType.create("command/shell"),
-          definition,
-        );
-        const build = (run: string): Workflow =>
-          Workflow.fromData({
-            id: "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f",
-            name: "lasteval-edited-source",
-            inputs: undefined,
-            jobs: [
-              Job.create({
-                name: "main",
-                steps: [
-                  Step.create({
-                    name: "echo",
-                    task: StepTask.modelMethod(definition.name, "execute", {
-                      run,
-                    }),
-                  }),
-                ],
-              }).toData(),
-            ],
+    await withMockedEnv(
+      { SWAMP_TEST_2172_CACHED: "cached-authored" },
+      async () => {
+        await withRepo(async (repoDir) => {
+          const definition = Definition.create({
+            name: "lasteval-edited-shell",
+            methods: { execute: { arguments: { run: "echo placeholder" } } },
           });
-        const workflowRepo = new YamlWorkflowRepository(repoDir);
-        const original = build(
-          "echo \"VALUE=${{ env['SWAMP_TEST_2172_CACHED'] }}\"",
-        );
-        await workflowRepo.save(original);
-        await runWorkflow(repoDir, original.name, {});
+          await new YamlDefinitionRepository(repoDir).save(
+            ModelType.create("command/shell"),
+            definition,
+          );
+          const build = (run: string): Workflow =>
+            Workflow.fromData({
+              id: "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f",
+              name: "lasteval-edited-source",
+              inputs: undefined,
+              jobs: [
+                Job.create({
+                  name: "main",
+                  steps: [
+                    Step.create({
+                      name: "echo",
+                      task: StepTask.modelMethod(definition.name, "execute", {
+                        run,
+                      }),
+                    }),
+                  ],
+                }).toData(),
+              ],
+            });
+          const workflowRepo = new YamlWorkflowRepository(repoDir);
+          const original = build(
+            "echo \"VALUE=${{ env['SWAMP_TEST_2172_CACHED'] }}\"",
+          );
+          await workflowRepo.save(original);
+          await runWorkflow(repoDir, original.name, {});
 
-        const evaluateEvents = await collect(modelEvaluate(
-          createLibSwampContext(),
-          createModelEvaluateDeps(repoDir),
-          { modelIdOrName: definition.name },
-        ));
-        assertEquals(evaluateEvents.filter((e) => e.kind === "error"), []);
+          const evaluateEvents = await collect(modelEvaluate(
+            createLibSwampContext(),
+            createModelEvaluateDeps(repoDir),
+            { modelIdOrName: definition.name },
+          ));
+          assertEquals(evaluateEvents.filter((e) => e.kind === "error"), []);
 
-        await workflowRepo.save(build('echo "VALUE=edited"'));
-        const { events } = await runWorkflow(repoDir, original.name, {}, true);
-        const serialized = JSON.stringify(events);
-        assertEquals(
-          serialized.includes("cached-authored"),
-          true,
-          `cached authored expression was not resolved: ${serialized}`,
-        );
-      });
-    } finally {
-      Deno.env.delete("SWAMP_TEST_2172_CACHED");
-    }
+          await workflowRepo.save(build('echo "VALUE=edited"'));
+          const { events } = await runWorkflow(
+            repoDir,
+            original.name,
+            {},
+            true,
+          );
+          const serialized = JSON.stringify(events);
+          assertEquals(
+            serialized.includes("cached-authored"),
+            true,
+            `cached authored expression was not resolved: ${serialized}`,
+          );
+        });
+      },
+    );
   },
 });

@@ -50,7 +50,10 @@ import {
 } from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { FileLock } from "../infrastructure/persistence/file_lock.ts";
-import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../infrastructure/persistence/path_test_helpers.ts";
 import {
   isManagedConfigBaseResolved,
   resolvePulledExtensionsRoot,
@@ -1330,21 +1333,15 @@ Deno.test(
     await assertRejects(
       async () => {
         // Force a short timeout via env var to keep the test fast
-        const prev = Deno.env.get("SWAMP_LOCK_TIMEOUT_MS");
-        Deno.env.set("SWAMP_LOCK_TIMEOUT_MS", "2000");
-        try {
-          await waitForPerModelLocks(
-            "/unused/datastore/path",
-            undefined,
-            scanner,
-          );
-        } finally {
-          if (prev !== undefined) {
-            Deno.env.set("SWAMP_LOCK_TIMEOUT_MS", prev);
-          } else {
-            Deno.env.delete("SWAMP_LOCK_TIMEOUT_MS");
-          }
-        }
+        await withMockedEnv(
+          { SWAMP_LOCK_TIMEOUT_MS: "2000" },
+          () =>
+            waitForPerModelLocks(
+              "/unused/datastore/path",
+              undefined,
+              scanner,
+            ),
+        );
       },
       LockTimeoutError,
     );
@@ -1480,20 +1477,20 @@ Deno.test(
         }),
       );
 
-      Deno.env.set(SWAMP_LOCK_HOLDER_PID, String(parentPid));
-      try {
-        const start = Date.now();
-        await waitForPerModelLocks(dir);
-        const elapsed = Date.now() - start;
+      await withMockedEnv(
+        { [SWAMP_LOCK_HOLDER_PID]: String(parentPid) },
+        async () => {
+          const start = Date.now();
+          await waitForPerModelLocks(dir);
+          const elapsed = Date.now() - start;
 
-        assertEquals(
-          elapsed < 500,
-          true,
-          `expected immediate return when parent lock is skipped, elapsed=${elapsed}ms`,
-        );
-      } finally {
-        Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
-      }
+          assertEquals(
+            elapsed < 500,
+            true,
+            `expected immediate return when parent lock is skipped, elapsed=${elapsed}ms`,
+          );
+        },
+      );
     });
   },
 );
@@ -1518,8 +1515,7 @@ Deno.test(
         }),
       );
 
-      Deno.env.set(SWAMP_LOCK_HOLDER_PID, "77777");
-      try {
+      await withMockedEnv({ [SWAMP_LOCK_HOLDER_PID]: "77777" }, async () => {
         const start = Date.now();
         // The lock has a 2s TTL; the scanner will count it on the first
         // pass, enter the wait loop, and eventually see it as stale.
@@ -1531,9 +1527,7 @@ Deno.test(
           true,
           `expected to wait for non-parent lock to go stale, elapsed=${elapsed}ms`,
         );
-      } finally {
-        Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
-      }
+      });
     });
   },
 );
@@ -1556,16 +1550,17 @@ Deno.test(
         }),
       );
 
-      Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
-      const start = Date.now();
-      await waitForPerModelLocks(dir);
-      const elapsed = Date.now() - start;
+      await withMockedEnv({ [SWAMP_LOCK_HOLDER_PID]: undefined }, async () => {
+        const start = Date.now();
+        await waitForPerModelLocks(dir);
+        const elapsed = Date.now() - start;
 
-      assertEquals(
-        elapsed >= 1_000,
-        true,
-        `expected to wait for lock to go stale without env var, elapsed=${elapsed}ms`,
-      );
+        assertEquals(
+          elapsed >= 1_000,
+          true,
+          `expected to wait for lock to go stale without env var, elapsed=${elapsed}ms`,
+        );
+      });
     });
   },
 );

@@ -32,6 +32,55 @@ interface RecordedWrite {
 }
 
 /**
+ * Makes `Deno.env.get`, `has` and `toObject` answer from `overrides` (a key
+ * mapped to `undefined` reads as unset) and returns a function that puts the
+ * previous readers back. Mocks stack, so restore them in reverse order.
+ *
+ * `deno test --parallel` runs every test file in one process, so a real
+ * `Deno.env.set` here would repoint HOME for every other file running at the
+ * same moment; replacing the readers only affects this file's worker. This
+ * extension is self-contained, so it cannot import swamp's `withMockedEnv`.
+ */
+function mockEnvReads(
+  overrides: Record<string, string | undefined>,
+): () => void {
+  const names = ["get", "has", "toObject"] as const;
+  const previous = names.map((name) =>
+    [name, Object.getOwnPropertyDescriptor(Deno.env, name)] as const
+  );
+  const get = Deno.env.get.bind(Deno.env);
+  const has = Deno.env.has.bind(Deno.env);
+  const toObject = Deno.env.toObject.bind(Deno.env);
+  const mocked = {
+    get: (key: string) =>
+      Object.hasOwn(overrides, key) ? overrides[key] : get(key),
+    has: (key: string) =>
+      Object.hasOwn(overrides, key) ? overrides[key] !== undefined : has(key),
+    toObject: () => {
+      const env = toObject();
+      for (const [key, value] of Object.entries(overrides)) {
+        if (value === undefined) delete env[key];
+        else env[key] = value;
+      }
+      return env;
+    },
+  };
+  for (const name of names) {
+    Object.defineProperty(Deno.env, name, {
+      configurable: true,
+      writable: true,
+      value: mocked[name],
+    });
+  }
+  return () => {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(Deno.env, name, descriptor);
+      else delete (Deno.env as Partial<Pick<Deno.Env, typeof name>>)[name];
+    }
+  };
+}
+
+/**
  * Build a fake method execution context that records writes and short-circuits
  * the swamp-club client by pointing HOME/XDG_CONFIG_HOME at an empty temp dir
  * and clearing credential env vars.
@@ -52,26 +101,15 @@ async function buildTestContext(
   };
   const tempDir = await Deno.makeTempDir({ prefix: "issue_lifecycle_test_" });
 
-  const original = {
-    SWAMP_API_KEY: Deno.env.get("SWAMP_API_KEY"),
-    SWAMP_CLUB_URL: Deno.env.get("SWAMP_CLUB_URL"),
-    HOME: Deno.env.get("HOME"),
-    XDG_CONFIG_HOME: Deno.env.get("XDG_CONFIG_HOME"),
-  };
-
-  Deno.env.delete("SWAMP_API_KEY");
-  Deno.env.delete("SWAMP_CLUB_URL");
-  Deno.env.set("HOME", tempDir);
-  Deno.env.set("XDG_CONFIG_HOME", tempDir);
+  const restoreEnv = mockEnvReads({
+    SWAMP_API_KEY: undefined,
+    SWAMP_CLUB_URL: undefined,
+    HOME: tempDir,
+    XDG_CONFIG_HOME: tempDir,
+  });
 
   const restore = async () => {
-    for (const [k, v] of Object.entries(original)) {
-      if (v === undefined) {
-        Deno.env.delete(k);
-      } else {
-        Deno.env.set(k, v);
-      }
-    }
+    restoreEnv();
     await Deno.remove(tempDir, { recursive: true });
   };
 
@@ -685,12 +723,6 @@ async function buildStartTestContext(
   const patchBodies: unknown[] = [];
   const tempDir = await Deno.makeTempDir({ prefix: "issue_lifecycle_test_" });
 
-  const original = {
-    SWAMP_API_KEY: Deno.env.get("SWAMP_API_KEY"),
-    SWAMP_CLUB_URL: Deno.env.get("SWAMP_CLUB_URL"),
-    HOME: Deno.env.get("HOME"),
-    XDG_CONFIG_HOME: Deno.env.get("XDG_CONFIG_HOME"),
-  };
   const originalFetch = globalThis.fetch;
 
   // Write fake auth.json if credentials are provided
@@ -711,11 +743,14 @@ async function buildStartTestContext(
     );
   }
 
-  // Set env so createSwampClubClient uses auth.json (not SWAMP_API_KEY)
-  Deno.env.delete("SWAMP_API_KEY");
-  Deno.env.delete("SWAMP_CLUB_URL");
-  Deno.env.set("HOME", tempDir);
-  Deno.env.set("XDG_CONFIG_HOME", tempDir);
+  // Point env reads at auth.json so createSwampClubClient uses it (not
+  // SWAMP_API_KEY)
+  const restoreEnv = mockEnvReads({
+    SWAMP_API_KEY: undefined,
+    SWAMP_CLUB_URL: undefined,
+    HOME: tempDir,
+    XDG_CONFIG_HOME: tempDir,
+  });
 
   // Install fetch stub
   globalThis.fetch = ((
@@ -753,13 +788,7 @@ async function buildStartTestContext(
 
   const restore = async () => {
     globalThis.fetch = originalFetch;
-    for (const [k, v] of Object.entries(original)) {
-      if (v === undefined) {
-        Deno.env.delete(k);
-      } else {
-        Deno.env.set(k, v);
-      }
-    }
+    restoreEnv();
     await Deno.remove(tempDir, { recursive: true });
   };
 
@@ -2194,8 +2223,10 @@ async function buildOnlineTestContext(
   );
   const originalFetch = globalThis.fetch;
 
-  Deno.env.set("SWAMP_API_KEY", "fake-key");
-  Deno.env.set("SWAMP_CLUB_URL", "https://fake.swamp-club.com");
+  const restoreEnv = mockEnvReads({
+    SWAMP_API_KEY: "fake-key",
+    SWAMP_CLUB_URL: "https://fake.swamp-club.com",
+  });
 
   globalThis.fetch = ((
     input: string | URL | Request,
@@ -2210,6 +2241,7 @@ async function buildOnlineTestContext(
     writes,
     restore: async () => {
       globalThis.fetch = originalFetch;
+      restoreEnv();
       await restoreBase();
     },
   };
