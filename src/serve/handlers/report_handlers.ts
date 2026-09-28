@@ -74,6 +74,13 @@ export async function handleReportGet(
       findAllGlobal: () => ctx.repoContext.unifiedDataRepo.findAllGlobal(),
       findAllForModel: (type, modelId) =>
         ctx.repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+      findDataByVersion: (type, modelId, dataName, version) =>
+        ctx.repoContext.unifiedDataRepo.findByName(
+          type,
+          modelId,
+          dataName,
+          version,
+        ),
       getContent: (type, modelId, dataName, version) =>
         ctx.repoContext.unifiedDataRepo.getContent(
           type,

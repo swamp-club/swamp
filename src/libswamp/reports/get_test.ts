@@ -53,6 +53,7 @@ function makeDeps(
     findAllGlobal: () => Promise.resolve(globalData),
     findAllForModel: (_type: ModelType, _modelId: string) =>
       Promise.resolve([] as Data[]),
+    findDataByVersion: () => Promise.resolve(null),
     getContent: (
       _type: ModelType,
       _modelId: string,
@@ -312,4 +313,192 @@ Deno.test("reportGet - populates varySuffix in returned detail", async () => {
   if (last.kind === "completed") {
     assertEquals(last.data.varySuffix, "10.0.0.1");
   }
+});
+
+function makeReportVersion(
+  version: number,
+  opts: { name?: string; varySuffix?: string; createdAt?: Date } = {},
+): Data {
+  return Data.create({
+    name: opts.name ?? "report-cost",
+    version,
+    contentType: "text/markdown",
+    lifetime: "30d",
+    garbageCollection: 5,
+    tags: {
+      type: "report",
+      reportName: "cost-report",
+      reportScope: "model",
+      ...(opts.varySuffix ? { varySuffix: opts.varySuffix } : {}),
+    },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+    createdAt: opts.createdAt ?? new Date(`2026-01-1${version}T10:00:00Z`),
+  });
+}
+
+interface VersionLookup {
+  dataName: string;
+  version: number;
+}
+
+/**
+ * Deps over one report data item stored at versions 1..3, where the
+ * latest-only finders return v3 and findDataByVersion serves any stored
+ * version. Records every version lookup and content read.
+ */
+function makeVersionedDeps(): {
+  deps: ReportGetDeps;
+  lookups: VersionLookup[];
+  contentReads: Array<{ dataName: string; version?: number }>;
+} {
+  const modelType = ModelType.create("aws/ec2");
+  const def = Definition.create({ name: "my-model", type: "aws/ec2" });
+  const versions = [1, 2, 3].map((v) => makeReportVersion(v));
+  const latest = versions[2];
+  const lookups: VersionLookup[] = [];
+  const contentReads: Array<{ dataName: string; version?: number }> = [];
+
+  const deps: ReportGetDeps = {
+    findAllGlobal: () =>
+      Promise.resolve([{ data: latest, modelType, modelId: def.id }]),
+    findAllForModel: () => Promise.resolve([latest]),
+    findDataByVersion: (_type, _modelId, dataName, version) => {
+      lookups.push({ dataName, version });
+      return Promise.resolve(
+        versions.find((d) => d.name === dataName && d.version === version) ??
+          null,
+      );
+    },
+    getContent: (_type, _modelId, dataName, version) => {
+      contentReads.push({ dataName, version });
+      const body = dataName.endsWith("-json")
+        ? JSON.stringify({ v: version })
+        : `# v${version}`;
+      return Promise.resolve(new TextEncoder().encode(body));
+    },
+    lookupDefinition: (idOrName) =>
+      Promise.resolve(
+        idOrName === "my-model" ? { definition: def, type: modelType } : null,
+      ),
+    lookupDefinitionById: () => Promise.resolve(def),
+    findWorkflowByName: (name) =>
+      Promise.resolve(
+        name === "my-workflow" ? { id: "wf-id", name: "my-workflow" } : null,
+      ),
+    findWorkflowById: () =>
+      Promise.resolve({ id: "wf-id", name: "my-workflow" }),
+  };
+  return { deps, lookups, contentReads };
+}
+
+for (
+  const [label, scope] of [
+    ["model", { model: "my-model" }],
+    ["workflow", { workflow: "my-workflow" }],
+    ["global", {}],
+  ] as const
+) {
+  Deno.test(`reportGet: --version returns an older version on the ${label} path`, async () => {
+    const { deps, lookups, contentReads } = makeVersionedDeps();
+
+    const events = await collect(
+      reportGet(createLibSwampContext(), deps, {
+        reportName: "cost-report",
+        version: 1,
+        ...scope,
+      }),
+    );
+    const last = events[events.length - 1];
+
+    assertEquals(last.kind, "completed");
+    if (last.kind === "completed") {
+      assertEquals(last.data.version, 1);
+      assertEquals(last.data.markdown, "# v1");
+      assertEquals(last.data.json, { v: 1 });
+    }
+    assertEquals(lookups, [{ dataName: "report-cost", version: 1 }]);
+    assertEquals(contentReads, [
+      { dataName: "report-cost", version: 1 },
+      { dataName: "report-cost-json", version: 1 },
+    ]);
+  });
+}
+
+Deno.test("reportGet: --version errors when the version does not exist", async () => {
+  const { deps } = makeVersionedDeps();
+
+  const events = await collect(
+    reportGet(createLibSwampContext(), deps, {
+      reportName: "cost-report",
+      model: "my-model",
+      version: 99,
+    }),
+  );
+  const last = events[events.length - 1];
+
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "not_found");
+    assertStringIncludes(last.error.message, "version 99");
+  }
+});
+
+Deno.test("reportGet: without --version returns the latest without a version lookup", async () => {
+  const { deps, lookups } = makeVersionedDeps();
+
+  const events = await collect(
+    reportGet(createLibSwampContext(), deps, {
+      reportName: "cost-report",
+      model: "my-model",
+    }),
+  );
+  const last = events[events.length - 1];
+
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.version, 3);
+    assertEquals(last.data.markdown, "# v3");
+  }
+  assertEquals(lookups, []);
+});
+
+Deno.test("reportGet: --version looks up the newest candidate's data name", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const untagged = makeReportVersion(4, {
+    createdAt: new Date("2026-01-10T10:00:00Z"),
+  });
+  const tagged = makeReportVersion(4, {
+    name: "report-cost-eu",
+    varySuffix: "eu",
+    createdAt: new Date("2026-01-20T10:00:00Z"),
+  });
+  const lookups: VersionLookup[] = [];
+
+  const deps: ReportGetDeps = {
+    ...makeDeps([
+      { data: untagged, modelType, modelId: "test-id" },
+      { data: tagged, modelType, modelId: "test-id" },
+    ]),
+    findDataByVersion: (_type, _modelId, dataName, version) => {
+      lookups.push({ dataName, version });
+      return Promise.resolve(
+        makeReportVersion(version, { name: dataName, varySuffix: "eu" }),
+      );
+    },
+  };
+
+  const events = await collect(
+    reportGet(createLibSwampContext(), deps, {
+      reportName: "cost-report",
+      version: 2,
+    }),
+  );
+  const last = events[events.length - 1];
+
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.dataName, "report-cost-eu");
+    assertEquals(last.data.version, 2);
+  }
+  assertEquals(lookups, [{ dataName: "report-cost-eu", version: 2 }]);
 });

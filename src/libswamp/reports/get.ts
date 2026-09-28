@@ -44,6 +44,12 @@ export interface ReportGetDeps {
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   >;
   findAllForModel: (type: ModelType, modelId: string) => Promise<Data[]>;
+  findDataByVersion: (
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ) => Promise<Data | null>;
   getContent: (
     type: ModelType,
     modelId: string,
@@ -192,13 +198,20 @@ export async function* reportGet(
         }
       }
 
-      // Pick the best match (latest version or specific version)
+      // Candidates hold only the latest version of each data item, so pick
+      // the newest candidate, then load the requested version for it.
+      matches.sort(
+        (a, b) => b.data.createdAt.getTime() - a.data.createdAt.getTime(),
+      );
       let match = matches[0];
       if (input.version) {
-        const versionMatch = matches.find(
-          (m) => m.data.version === input.version,
+        const versioned = await deps.findDataByVersion(
+          match.modelType,
+          match.modelId,
+          match.data.name,
+          input.version,
         );
-        if (!versionMatch) {
+        if (!versioned || !isMatchingReport(versioned, input.reportName)) {
           yield {
             kind: "error",
             error: notFound(
@@ -208,13 +221,7 @@ export async function* reportGet(
           };
           return;
         }
-        match = versionMatch;
-      } else {
-        // Pick latest by createdAt
-        matches.sort(
-          (a, b) => b.data.createdAt.getTime() - a.data.createdAt.getTime(),
-        );
-        match = matches[0];
+        match = { ...match, data: versioned };
       }
 
       const { data, modelType, modelId } = match;

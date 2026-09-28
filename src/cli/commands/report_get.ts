@@ -146,6 +146,8 @@ export const reportGetCommand = withRemoteOptions(
     findAllGlobal: () => repoContext.unifiedDataRepo.findAllGlobal(),
     findAllForModel: (type, modelId) =>
       repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+    findDataByVersion: (type, modelId, dataName, version) =>
+      repoContext.unifiedDataRepo.findByName(type, modelId, dataName, version),
     getContent: (type, modelId, dataName, version) =>
       repoContext.unifiedDataRepo.getContent(
         type,
