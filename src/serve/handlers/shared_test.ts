@@ -24,14 +24,17 @@ import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
+import { notFound, validationFailed } from "../../libswamp/mod.ts";
 import {
   authorizeAnyOrReject,
+  clientErrorDetails,
   closeConnectionsForPrincipal,
   closeSession,
   COMPRESSION_THRESHOLD_BYTES,
   type ConnectionContext,
   emitSystemAuditEvent,
   filterByAuthorization,
+  LibSwampStreamError,
   listTokenSessions,
   paginate,
   removeConnection,
@@ -754,4 +757,52 @@ Deno.test("terminateTokenSessions: without an emitter it closes and records noth
 
   assertEquals(terminate(name, { audit: {} }), 1);
   assertEquals(session.closes.length, 1);
+});
+
+Deno.test("clientErrorDetails: forwards reason and entity type from notFound", () => {
+  const error = new LibSwampStreamError(notFound("Data", "secret-name"));
+  assertEquals(clientErrorDetails(error), {
+    reason: "not_found",
+    entityType: "Data",
+  });
+});
+
+Deno.test("clientErrorDetails: never forwards the identifier", () => {
+  const details = clientErrorDetails(
+    new LibSwampStreamError(notFound("Model", "/Users/me/secret")),
+  );
+  assertEquals(JSON.stringify(details).includes("secret"), false);
+});
+
+Deno.test("clientErrorDetails: drops entity types outside the allow-list", () => {
+  const error = new LibSwampStreamError(notFound("Vault", "x"));
+  assertEquals(clientErrorDetails(error), { reason: "not_found" });
+});
+
+Deno.test("clientErrorDetails: forwards data_pending without details", () => {
+  const error = new LibSwampStreamError({
+    code: "data_pending",
+    message: "The run is still in progress",
+  });
+  assertEquals(clientErrorDetails(error), { reason: "data_pending" });
+});
+
+Deno.test("clientErrorDetails: forwards validation_failed without its details", () => {
+  const error = new LibSwampStreamError(
+    validationFailed("bad input", { field: "secret" }),
+  );
+  assertEquals(clientErrorDetails(error), { reason: "validation_failed" });
+});
+
+Deno.test("clientErrorDetails: ignores codes outside the allow-list", () => {
+  const error = new LibSwampStreamError({
+    code: "not_authenticated",
+    message: "nope",
+  });
+  assertEquals(clientErrorDetails(error), undefined);
+});
+
+Deno.test("clientErrorDetails: ignores plain errors", () => {
+  assertEquals(clientErrorDetails(new Error("boom")), undefined);
+  assertEquals(clientErrorDetails("boom"), undefined);
 });

@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { detachFrame, settleDetached, settleRequest } from "./stream.ts";
+import {
+  detachFrame,
+  RequestError,
+  requestErrorInfo,
+  settleDetached,
+  settleRequest,
+} from "./stream.ts";
 
 Deno.test("settleRequest: resolves on a payload and rejects on an error", () => {
   assertEquals(
@@ -35,7 +41,7 @@ Deno.test("settleRequest: resolves on a payload and rejects on an error", () => 
       id: "r1",
       error: { code: "unauthorized", message: "no" },
     }),
-    { kind: "reject", message: "no" },
+    { kind: "reject", message: "no", code: "unauthorized" },
   );
   assertEquals(settleRequest({ type: "event", id: "r1", event: {} }), {
     kind: "ignore",
@@ -64,11 +70,63 @@ Deno.test("settleDetached: rejects on an error frame", () => {
       id: "r1",
       error: { code: "workflow_resume_failed", message: "not suspended" },
     }),
-    { kind: "reject", message: "not suspended" },
+    {
+      kind: "reject",
+      message: "not suspended",
+      code: "workflow_resume_failed",
+    },
   );
 });
 
 Deno.test("detachFrame: cancels by request id, never by run id", () => {
   // A cancel carrying a run id would cancel the run itself.
   assertEquals(detachFrame("request-7"), { type: "cancel", id: "request-7" });
+});
+
+Deno.test("settleRequest: keeps the error code and details", () => {
+  assertEquals(
+    settleRequest({
+      type: "error",
+      id: "r1",
+      error: {
+        code: "data_get_failed",
+        message: "Data not found",
+        details: { reason: "not_found", entityType: "Data" },
+      },
+    }),
+    {
+      kind: "reject",
+      message: "Data not found",
+      code: "data_get_failed",
+      details: { reason: "not_found", entityType: "Data" },
+    },
+  );
+});
+
+Deno.test("requestErrorInfo: reads code, reason and entity type", () => {
+  const error = new RequestError("gone", "data_get_failed", {
+    reason: "not_found",
+    entityType: "Data",
+  });
+  assertEquals(requestErrorInfo(error), {
+    code: "data_get_failed",
+    reason: "not_found",
+    entityType: "Data",
+  });
+});
+
+Deno.test("requestErrorInfo: ignores malformed details", () => {
+  const error = new RequestError("no", "unauthorized", {
+    reason: 7,
+    entityType: null,
+  });
+  assertEquals(requestErrorInfo(error), { code: "unauthorized" });
+  assertEquals(
+    requestErrorInfo(new RequestError("no", "unauthorized", "text")),
+    { code: "unauthorized" },
+  );
+});
+
+Deno.test("requestErrorInfo: returns null for other errors", () => {
+  assertEquals(requestErrorInfo(new Error("WebSocket closed")), null);
 });

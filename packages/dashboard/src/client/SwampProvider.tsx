@@ -28,6 +28,7 @@ import {
 } from "react";
 import {
   detachFrame,
+  RequestError,
   settleDetached,
   settleRequest,
   type WireFrame,
@@ -140,7 +141,9 @@ export function SwampProvider({ children }: { children: ReactNode }) {
 
       pendingRef.current.delete(msg.id);
       if (outcome.kind === "reject") {
-        pending.reject(new Error(outcome.message));
+        pending.reject(
+          new RequestError(outcome.message, outcome.code, outcome.details),
+        );
         return;
       }
       if (outcome.detach && ws.readyState === WebSocket.OPEN) {

@@ -73,9 +73,11 @@ import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeAnyOrReject,
   authorizeOrReject,
+  clientErrorDetails,
   type ConnectionContext,
   DEFAULT_QUERY_LIMIT,
   filterByAuthorization,
+  LibSwampStreamError,
   MAX_QUERY_RESULTS,
   pushChangedToRemote,
   sanitizeErrorForClient,
@@ -173,7 +175,7 @@ export async function handleDataGet(
           result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
-          throw new Error(e.error.message);
+          throw new LibSwampStreamError(e.error);
         },
       },
     );
@@ -195,7 +197,13 @@ export async function handleDataGet(
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "data_get_failed", message);
+    sendError(
+      socket,
+      requestId,
+      "data_get_failed",
+      message,
+      clientErrorDetails(error),
+    );
   }
 }
 
@@ -353,7 +361,7 @@ export async function handleDataList(
           result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
-          throw new Error(e.error.message);
+          throw new LibSwampStreamError(e.error);
         },
       },
     );
@@ -426,7 +434,13 @@ export async function handleDataList(
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "data_list_failed", message);
+    sendError(
+      socket,
+      requestId,
+      "data_list_failed",
+      message,
+      clientErrorDetails(error),
+    );
   }
 }
 
@@ -566,7 +580,7 @@ export async function handleDataVersions(
           result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
-          throw new Error(e.error.message);
+          throw new LibSwampStreamError(e.error);
         },
       },
     );
@@ -588,7 +602,13 @@ export async function handleDataVersions(
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "data_versions_failed", message);
+    sendError(
+      socket,
+      requestId,
+      "data_versions_failed",
+      message,
+      clientErrorDetails(error),
+    );
   }
 }
 

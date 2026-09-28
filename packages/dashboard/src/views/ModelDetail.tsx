@@ -18,8 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useRequest } from "../client/useRequest";
-import { extractObject } from "../client/extract";
+import { extractArray, extractObject } from "../client/extract";
 import { CodeBlock } from "../components/CodeBlock";
+import { RouteLink } from "../components/RouteLink";
+import {
+  type ItemLink,
+  partitionModelData,
+  type SearchItem,
+} from "./artifact_links.ts";
 import * as yaml from "js-yaml";
 
 interface ModelDetailProps {
@@ -45,6 +51,14 @@ export function ModelDetail({ modelName, onBack }: ModelDetailProps) {
   });
 
   const model = extractObject<ModelData>(data);
+  const { data: searchData } = useRequest("data.search", {
+    model: modelName,
+    limit: 1000,
+  });
+  const { data: items, reports } = partitionModelData(
+    modelName,
+    extractArray<SearchItem>(searchData),
+  );
 
   return (
     <>
@@ -87,6 +101,13 @@ export function ModelDetail({ modelName, onBack }: ModelDetailProps) {
         </div>
       )}
 
+      {(reports.length > 0 || items.length > 0) && (
+        <div className="panels-grid" style={{ marginBottom: 16 }}>
+          <LinkPanel title="Reports" links={reports} />
+          <LinkPanel title="Data" links={items} />
+        </div>
+      )}
+
       {model && (
         <div className="panel">
           <div className="panel-header">
@@ -101,5 +122,26 @@ export function ModelDetail({ modelName, onBack }: ModelDetailProps) {
         </div>
       )}
     </>
+  );
+}
+
+function LinkPanel({ title, links }: { title: string; links: ItemLink[] }) {
+  if (links.length === 0) return null;
+  return (
+    <div className="panel">
+      <div className="panel-header">
+        <div className="panel-title">{title}</div>
+        <span className="panel-count">{links.length}</span>
+      </div>
+      <ul className="version-list">
+        {links.map((link) => (
+          <li key={link.label}>
+            {link.to
+              ? <RouteLink to={link.to}>{link.label}</RouteLink>
+              : link.label}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

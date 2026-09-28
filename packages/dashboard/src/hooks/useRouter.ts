@@ -22,8 +22,10 @@ import type { View } from "../types.ts";
 import {
   buildPath,
   type DetailView,
+  parentOf,
   parseRoute,
   type RouteState,
+  viewForDetail,
 } from "../routes.ts";
 
 let currentState: RouteState = parseRoute(location.pathname);
@@ -58,6 +60,14 @@ function onPopState() {
 
 addEventListener("popstate", onPopState);
 
+/**
+ * Navigates in-app to a route. Links use this directly so a view deep in the
+ * tree can link anywhere without having router callbacks passed down to it.
+ */
+export function navigateTo(next: RouteState): void {
+  pushState(next);
+}
+
 export interface Router {
   view: View;
   detail: DetailView;
@@ -66,6 +76,11 @@ export interface Router {
   openWorkflow: (workflowName: string) => void;
   openRun: (workflowName: string, runId?: string) => void;
   closeDetail: () => void;
+  /**
+   * Back/Escape: a deep-linked data item or report returns to its model or
+   * run; any other detail closes to its list view, as before.
+   */
+  goUp: () => void;
 }
 
 export function useRouter(): Router {
@@ -100,6 +115,15 @@ export function useRouter(): Router {
     pushState({ view: state.view, detail: null });
   }, [state.view]);
 
+  const goUp = useCallback(() => {
+    const parent = parentOf(state.detail);
+    pushState(
+      parent
+        ? { view: viewForDetail(parent), detail: parent }
+        : { view: state.view, detail: null },
+    );
+  }, [state.view, state.detail]);
+
   return {
     view: state.view,
     detail: state.detail,
@@ -108,5 +132,6 @@ export function useRouter(): Router {
     openWorkflow,
     openRun,
     closeDetail,
+    goUp,
   };
 }

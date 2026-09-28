@@ -20,10 +20,13 @@
 import { useState } from "react";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
+import { RouteLink } from "../components/RouteLink";
+import { dataRowLink } from "./artifact_links.ts";
 
 interface DataItem {
   name: string;
   modelName?: string;
+  modelType?: string;
   type?: string;
   version?: number;
   tags?: Record<string, string>;
@@ -104,7 +107,14 @@ export function Data() {
                   <tbody>
                     {items.map((item, i) => (
                       <tr key={`${item.name}-${item.modelName}-${page}-${i}`}>
-                        <td style={{ fontWeight: 500 }}>{item.name}</td>
+                        <td style={{ fontWeight: 500 }}>
+                          {(() => {
+                            const to = dataRowLink(item);
+                            return to
+                              ? <RouteLink to={to}>{item.name}</RouteLink>
+                              : item.name;
+                          })()}
+                        </td>
                         <td
                           className="mono"
                           style={{

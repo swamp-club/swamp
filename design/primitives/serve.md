@@ -598,7 +598,39 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   Navigation state is in the URL path (`/dashboard/models/<name>`,
   `/dashboard/workflows/<name>/runs/<runId>`, etc.), so views are linkable. The
   server falls back to `index.html` for any `/dashboard/` sub-path to support
-  client-side routing. On desktop the sidebar collapses to an icon-only rail
+  client-side routing.
+
+  Individual data items and reports have shareable deep links:
+  - `/dashboard/models/<model>/data/<dataName>`: the latest version.
+  - `/dashboard/models/<model>/data/<dataName>/versions/<n>`: the permalink
+    for one version. A step's output, including its method-scope reports,
+    links here through the owning model (`tags.modelName`), since several
+    steps in one run can write the same name.
+  - `/dashboard/models/<model>/reports/<reportName>[/variants/<variant>]`: the
+    latest report, found under the data name the report is persisted as
+    (`report-<sanitised name>[-<variant>]`) and checked against its tags.
+  - `/dashboard/workflows/<wf>/runs/<runId>/reports/<reportName>`: a run's
+    workflow-scope report, fetched at the exact artifact versions the run
+    recorded. The page shows "no longer available" rather than a later run's
+    content.
+
+  Each path segment is percent-encoded with `@` left readable, so `/` in
+  scoped names is `%2F` (`/reports/@swamp%2Fworkflow-summary`). Names
+  containing `..` cannot be deep-linked because the static handler rejects
+  them. A malformed escape lands on the nearest valid parent route. The item
+  page offers "Copy link" and, for a latest view, "Copy permalink" pinned to
+  the version on screen. `index.html` carries only static Open Graph
+  metadata, so link unfurls never disclose data or report names.
+
+  `data.get`, `data.versions`, `data.list` and `workflow.history.get` errors
+  keep their top-level codes (`data_get_failed` etc.) and add
+  `details: { reason, entityType }`. `reason` is one of `not_found`,
+  `validation_failed` or `data_pending`; `entityType` is the fixed label from
+  libswamp's `notFound()` (`Model`, `Workflow`, `Workflow run`, `Data`, …).
+  Identifiers are never included. The dashboard uses these to tell an expired
+  version from a missing model; access denials stay top-level `unauthorized`.
+
+  On desktop the sidebar collapses to an icon-only rail
   (remembered in `localStorage`); at 768px and below it becomes an off-canvas
   drawer opened from a top-bar menu button.
 
