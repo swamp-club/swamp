@@ -2895,7 +2895,7 @@ export class WorkflowExecutionService {
     // set, which resets by name in every job.
     existingRun.reopenAbortedWork();
     // This process now drives the run. Recorded before the save below, so
-    // cancel and serve's reapers see the live process from the start.
+    // cancel sees the live process from the start.
     const owner = { pid: Deno.pid, instanceId: options?.instanceId };
     if (reset) {
       existingRun.resetForResumeFrom(reset.steps, reset.tracked);
@@ -2913,6 +2913,18 @@ export class WorkflowExecutionService {
     // The running status saved here also stops a second resume of this run
     // from starting while this one prepares.
     await this.saveRun(workflow.id, existingRun);
+    // The tracker row follows at once: a serve boot that found the record
+    // running beside a stale row would otherwise interrupt this resume.
+    const restore = {
+      workflowId: workflow.id,
+      snapshot,
+      handBackTrackerRow: this.handOverTrackerRow(
+        existingRun,
+        workflow.name,
+        snapshot.status === "suspended" ? "suspended" : "failed",
+        options?.instanceId,
+      ),
+    };
 
     const {
       expressionContext,
@@ -2921,7 +2933,7 @@ export class WorkflowExecutionService {
       resolvedWorkflow,
       workflowLogPath,
       workflowLogHandle,
-    } = await this.restoreRunOnFailure(workflow.id, snapshot, async () => {
+    } = await this.restoreRunOnFailure(restore, async () => {
       const expressionContext = await this.buildRunContext(
         workflow,
         false,
@@ -3047,26 +3059,8 @@ export class WorkflowExecutionService {
         assertFailOnSeverity: options?.assertFailOnSeverity,
       };
 
-      // Hand the tracker row to this process (suspended, failed, or
-      // interrupted → running) and start heartbeat. A row purged by
-      // retention is registered again so the run is tracked while it runs.
+      // The tracker row was handed over after the first save; keep it fresh.
       if (this.runTracker) {
-        const reactivated = this.runTracker.reactivate(
-          existingRun.id,
-          Deno.pid,
-          hostname(),
-          options?.instanceId,
-        );
-        if (!reactivated && !this.runTracker.findById(existingRun.id)) {
-          this.runTracker.register(ActiveRun.createWorkflowRun({
-            id: existingRun.id,
-            workflowName: workflow.name,
-            pid: Deno.pid,
-            hostname: hostname(),
-            initiatedBy: existingRun.initiatedBy,
-            instanceId: options?.instanceId,
-          }));
-        }
         const tracker = this.runTracker;
         const runId = existingRun.id;
         resumeHeartbeatInterval = setInterval(() => {
@@ -4924,12 +4918,16 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Runs `prepare`; if it throws, saves the run back as `snapshot` and
-   * rethrows. A failed restore is logged and the original error still wins.
+   * Runs `prepare`; if it throws, saves the run back as `snapshot`, hands its
+   * tracker row back, and rethrows. A failed restore is logged and the
+   * original error still wins.
    */
   private async restoreRunOnFailure<T>(
-    workflowId: WorkflowId,
-    snapshot: WorkflowRunData,
+    { workflowId, snapshot, handBackTrackerRow }: {
+      workflowId: WorkflowId;
+      snapshot: WorkflowRunData;
+      handBackTrackerRow: () => void;
+    },
     prepare: () => Promise<T>,
   ): Promise<T> {
     try {
@@ -4948,7 +4946,68 @@ export class WorkflowExecutionService {
           },
         );
       }
+      try {
+        handBackTrackerRow();
+      } catch (restoreError) {
+        getSwampLogger(["workflow", "resume"]).warn(
+          "Could not restore the tracker row of run {runId} after a failed resume: {error}",
+          {
+            runId: snapshot.id,
+            error: restoreError instanceof Error
+              ? restoreError.message
+              : String(restoreError),
+          },
+        );
+      }
       throw error;
+    }
+  }
+
+  /**
+   * Hands the run's tracker row to this process: a suspended, failed or
+   * interrupted row becomes running under this pid and `instanceId`, and a
+   * row that retention purged is registered again. A row in any other status
+   * is left alone. Returns a function that puts the row back to its prior
+   * status (`priorStatus` for a row this call registered), for a resume that
+   * fails before execution starts.
+   *
+   * Never throws: it runs after the run is saved as running and before the
+   * restore that would undo that save, and tracker bookkeeping is
+   * best-effort, so a tracker failure is logged and the resume goes on.
+   */
+  private handOverTrackerRow(
+    run: WorkflowRun,
+    workflowName: string,
+    priorStatus: ActiveRunStatus,
+    instanceId: string | undefined,
+  ): () => void {
+    const tracker = this.runTracker;
+    if (!tracker) return () => {};
+    try {
+      const prior = tracker.findById(run.id);
+      if (tracker.reactivate(run.id, Deno.pid, hostname(), instanceId)) {
+        const status = prior?.status ?? priorStatus;
+        return () => tracker.complete(run.id, status);
+      }
+      if (prior) return () => {};
+      tracker.register(ActiveRun.createWorkflowRun({
+        id: run.id,
+        workflowName,
+        pid: Deno.pid,
+        hostname: hostname(),
+        initiatedBy: run.initiatedBy,
+        instanceId,
+      }));
+      return () => tracker.complete(run.id, priorStatus);
+    } catch (error) {
+      getSwampLogger(["workflow", "resume"]).warn(
+        "Could not hand the tracker row of run {runId} to this resume: {error}",
+        {
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return () => {};
     }
   }
 

@@ -7432,7 +7432,14 @@ class RecordingRunTracker implements RunTrackerRepository {
   /** The row findById returns. */
   existingRow: ActiveRun | null = null;
 
+  /** Thrown by register when set, as a busy or locked database would. */
+  registerError: Error | undefined;
+
+  /** Thrown by reactivate when set. */
+  reactivateError: Error | undefined;
+
   register(run: ActiveRun): void {
+    if (this.registerError) throw this.registerError;
     this.registrations.push(run);
   }
 
@@ -7455,6 +7462,7 @@ class RecordingRunTracker implements RunTrackerRepository {
     hostname: string,
     instanceId?: string,
   ): boolean {
+    if (this.reactivateError) throw this.reactivateError;
     this.reactivations.push({ runId, pid, hostname, instanceId });
     return this.reactivateResult;
   }
@@ -8895,6 +8903,126 @@ Deno.test("resume: leaves an existing tracker row it cannot hand over", async ()
     await drainResume(service, workflow.name, failed.id);
 
     assertEquals(tracker.registrations.length, registered);
+  });
+});
+
+Deno.test("resume: hands the tracker row over before it yields started", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createRetryWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+
+    executor.failing.clear();
+    const events = service.resume(workflow.name, failed.id);
+    try {
+      assertEquals((await events.next()).value?.kind, "started");
+      assertEquals(tracker.reactivations.length, 1);
+    } finally {
+      await events.return(undefined);
+    }
+  });
+});
+
+for (const failing of ["reactivate", "register"] as const) {
+  Deno.test(`resume: a tracker ${failing} failure does not fail the resume`, async () => {
+    await withTempDir(async (tempDir) => {
+      const tracker = new RecordingRunTracker();
+      const workflow = createRetryWorkflow();
+      const { runRepo, executor, service } = await setupRetry(
+        tempDir,
+        workflow,
+        tracker,
+      );
+      executor.failing.add("compile");
+      const failed = await service.execute(workflow.name);
+      const error = new Error("database is locked");
+      if (failing === "reactivate") tracker.reactivateError = error;
+      else {
+        tracker.reactivateResult = false;
+        tracker.registerError = error;
+      }
+
+      executor.failing.clear();
+      const completed = await drainResume(service, workflow.name, failed.id);
+
+      assertEquals(completed?.status, "succeeded");
+      const stored = await runRepo.findById(workflow.id, failed.id);
+      assertEquals(stored?.status, "succeeded");
+    });
+  });
+}
+
+for (const purged of [false, true]) {
+  const row = purged ? "a row it registered" : "the row it took over";
+  Deno.test(`resume: a failed resume hands back ${row} as failed`, async () => {
+    await withTempDir(async (tempDir) => {
+      const tracker = new RecordingRunTracker();
+      const workflow = createArithmeticWorkflow(false);
+      const { executor, service } = await setupRetry(
+        tempDir,
+        workflow,
+        tracker,
+      );
+      executor.failing.add("compute");
+      const failed = await service.execute(workflow.name, {
+        inputs: { n: 1 },
+      });
+      tracker.reactivateResult = !purged;
+      tracker.existingRow = purged ? null : ActiveRun.fromData({
+        ...ActiveRun.createWorkflowRun({
+          id: failed.id,
+          workflowName: workflow.name,
+          pid: 1234,
+          hostname: "other-host",
+        }).toData(),
+        status: "failed",
+      });
+      const completions = tracker.completions.length;
+
+      executor.failing.clear();
+      await assertRejects(
+        () =>
+          drainResume(service, workflow.name, failed.id, {
+            inputs: { n: "x" },
+          }),
+        Error,
+        "no such overload",
+      );
+
+      assertEquals(tracker.completions.slice(completions), [
+        { runId: failed.id, status: "failed" },
+      ]);
+    });
+  });
+}
+
+Deno.test("resume: a failed resume of a suspended run hands a registered row back as suspended", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createArithmeticWorkflow(true);
+    const { runRepo, service } = await setupRetry(tempDir, workflow, tracker);
+    const suspended = await service.execute(workflow.name, {
+      inputs: { n: 1 },
+    });
+    suspended.getJob("main")!.getStep("gate")!.succeed();
+    await runRepo.save(workflow.id, suspended);
+    tracker.reactivateResult = false;
+    const completions = tracker.completions.length;
+
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, suspended.id, {
+          inputs: { n: "x" },
+        }),
+      Error,
+      "no such overload",
+    );
+
+    assertEquals(tracker.completions.slice(completions), [
+      { runId: suspended.id, status: "suspended" },
+    ]);
   });
 });
 

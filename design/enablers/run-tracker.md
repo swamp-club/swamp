@@ -90,12 +90,15 @@ days are purged at startup. `swamp run gc` removes older records on demand:
    drives the resume, none for a local one), and the heartbeat restarts.
    `interrupted` is accepted because `workflow recover` sets the run record back
    to suspended while the row stays interrupted. A row that retention purged is
-   registered again. The workflow-run record passes over too: its first save
-   in the resume records the same pid and instance id. So `workflow cancel`
-   stops the live resume, and serve's boot reapers, with or without a row,
-   leave it alone. A resume that serve drives carries serve's instance id,
-   which a later serve boot treats as another instance's, as it does for a run
-   serve started.
+   registered again. The workflow-run record passes over too: the resume's first
+   save records the same pid and instance id, and the row is handed over right
+   after it, before the resume prepares. So `workflow cancel` stops the live
+   resume, and serve's boot reapers find either a running row or, with no row,
+   a live pid, and leave it alone. A resume that fails before execution restores
+   the record and returns the row to its prior status. The hand-over is best-effort: a
+   tracker error is logged and the resume goes on. A resume that serve drives
+   carries serve's instance id, which a later serve boot treats as another
+   instance's, as it does for a run serve started.
 
 ### Coverage
 

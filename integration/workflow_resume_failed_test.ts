@@ -353,6 +353,8 @@ Deno.test("retry: an evaluation failure after the early save leaves the reloaded
       assertEquals(reloaded?.status, "failed");
       assertEquals(reloaded?.toData(), before);
       assertEquals(executor.count("build/compile"), 1);
+      // The tracker row the resume took over is handed back as failed.
+      assertEquals(tracker.findById(failed.id)?.status, "failed");
     } finally {
       tracker.close();
       catalogStore.close();
@@ -362,12 +364,14 @@ Deno.test("retry: an evaluation failure after the early save leaves the reloaded
 
 /**
  * Leaves the failed run as another process would have: its record names a
- * different pid and serve instance, and retention has purged its tracker row.
+ * different pid and serve instance, and its tracker row is either stale
+ * (still failed, owned by a dead process elsewhere) or purged by retention.
  */
-async function handToAnotherProcess(
+async function leaveAsAnotherProcessWould(
   repoDir: string,
   workflow: Workflow,
   runId: string,
+  row: "stale" | "purged",
 ): Promise<void> {
   const repo = new YamlWorkflowRunRepository(repoDir);
   const workflowId = createWorkflowId(workflow.id);
@@ -380,6 +384,10 @@ async function handToAnotherProcess(
       instanceId: crypto.randomUUID(),
     }),
   );
+  if (row === "stale") {
+    orphanTrackerRow(repoDir, runId);
+    return;
+  }
   const db = new DatabaseSync(join(swampPath(repoDir), "run_tracker.db"));
   try {
     db.prepare("DELETE FROM active_runs WHERE id = ?").run(runId);
@@ -389,87 +397,96 @@ async function handToAnotherProcess(
 }
 
 for (const instanceId of [undefined, crypto.randomUUID()]) {
-  const driver = instanceId ? "serve" : "a local process";
-  Deno.test(`retry: a resume by ${driver} owns the run record and tracker row while it runs`, async () => {
-    await withRepo(async (repoDir) => {
-      const { workflow, tracker, catalogStore, executor, failed } =
-        await failPipeline(repoDir);
-      try {
-        await handToAnotherProcess(repoDir, workflow, failed.id);
-        assertEquals(tracker.findById(failed.id), null);
-
-        executor.failing.clear();
-        const { service } = freshService(
-          repoDir,
-          executor,
-          tracker,
-          catalogStore,
-        );
-        // Pulling events by hand holds the resume wherever the test stops.
-        const events = service.resume(workflow.name, failed.id, {
-          instanceId,
-        });
+  for (const row of ["stale", "purged"] as const) {
+    const driver = instanceId ? "serve" : "a local process";
+    Deno.test(`retry: a resume by ${driver} owns the run record and a ${row} tracker row before it starts`, async () => {
+      await withRepo(async (repoDir) => {
+        const { workflow, tracker, catalogStore, executor, failed } =
+          await failPipeline(repoDir);
         try {
-          // Hold 1: started follows the save that hands the record over.
-          assertEquals((await events.next()).value?.kind, "started");
-          const record = (await new YamlWorkflowRunRepository(repoDir)
+          await leaveAsAnotherProcessWould(repoDir, workflow, failed.id, row);
+
+          executor.failing.clear();
+          const { service } = freshService(
+            repoDir,
+            executor,
+            tracker,
+            catalogStore,
+          );
+          // Pulling events by hand holds the resume wherever the test stops.
+          const events = service.resume(workflow.name, failed.id, {
+            instanceId,
+          });
+          try {
+            // Held at started, before any step runs.
+            assertEquals((await events.next()).value?.kind, "started");
+            const record = (await new YamlWorkflowRunRepository(repoDir)
+              .findById(
+                createWorkflowId(workflow.id),
+                createWorkflowRunId(failed.id),
+              ))!;
+            assertEquals(record.status, "running");
+            assertEquals(record.pid, Deno.pid);
+            assertEquals(record.instanceId, instanceId);
+            // A local resume is cancelled locally; a serve resume via serve.
+            assertEquals(isServeOwnedRun(record), instanceId !== undefined);
+
+            const tracked = tracker.findById(failed.id);
+            assertEquals(tracked?.status, "running");
+            assertEquals(tracked?.pid, Deno.pid);
+            assertEquals(tracked?.hostname, hostname());
+            assertEquals(tracked?.instanceId, instanceId);
+
+            // Serve's boot reaper leaves the live resume alone, reading the
+            // tracker row or, without one, the record: a serve that booted
+            // while a local resume runs, or the serve driving the resume.
+            const lookups = [
+              (id: string) => {
+                const found = tracker.findById(id);
+                return found ? { status: found.status } : null;
+              },
+              () => null,
+            ];
+            for (const lookup of lookups) {
+              let reaperSaves = 0;
+              const reaped = await reapOrphanedWorkflowRuns(
+                [{ run: record, workflowId: createWorkflowId(workflow.id) }],
+                () => {
+                  reaperSaves++;
+                  return Promise.resolve();
+                },
+                lookup,
+                isProcessDead,
+                instanceId ?? crypto.randomUUID(),
+              );
+              assertEquals(reaped, { reaped: 0, skipped: 1 });
+              assertEquals(reaperSaves, 0);
+            }
+
+            let next: IteratorResult<unknown>;
+            do {
+              next = await events.next();
+            } while (!next.done);
+          } finally {
+            await events.return(undefined);
+          }
+
+          const reloaded = await new YamlWorkflowRunRepository(repoDir)
             .findById(
               createWorkflowId(workflow.id),
               createWorkflowRunId(failed.id),
-            ))!;
-          assertEquals(record.status, "running");
-          assertEquals(record.pid, Deno.pid);
-          assertEquals(record.instanceId, instanceId);
-          // A local resume is cancelled locally; a serve resume through serve.
-          assertEquals(isServeOwnedRun(record), instanceId !== undefined);
-          // Serve's reaper with no tracker row falls back to the record and
-          // leaves the live resume alone: a serve that booted while a local
-          // resume runs, or the serve driving the resume.
-          let reaperSaves = 0;
-          const reaped = await reapOrphanedWorkflowRuns(
-            [{ run: record, workflowId: createWorkflowId(workflow.id) }],
-            () => {
-              reaperSaves++;
-              return Promise.resolve();
-            },
-            () => null,
-            isProcessDead,
-            instanceId ?? crypto.randomUUID(),
-          );
-          assertEquals(reaped, { reaped: 0, skipped: 1 });
-          assertEquals(reaperSaves, 0);
-
-          // Hold 2: the first step event follows the tracker hand-off, which
-          // registers the purged row again.
-          assertEquals((await events.next()).done, false);
-          const row = tracker.findById(failed.id);
-          assertEquals(row?.status, "running");
-          assertEquals(row?.pid, Deno.pid);
-          assertEquals(row?.hostname, hostname());
-          assertEquals(row?.instanceId, instanceId);
-
-          let last: IteratorResult<unknown> | undefined;
-          do {
-            last = await events.next();
-          } while (!last.done);
+            );
+          assertEquals(reloaded?.status, "succeeded");
+          assertEquals(reloaded?.pid, Deno.pid);
+          assertEquals(reloaded?.instanceId, instanceId);
+          assertEquals(tracker.findById(failed.id)?.status, "completed");
         } finally {
-          await events.return(undefined);
+          tracker.close();
+          catalogStore.close();
         }
-
-        const reloaded = await new YamlWorkflowRunRepository(repoDir).findById(
-          createWorkflowId(workflow.id),
-          createWorkflowRunId(failed.id),
-        );
-        assertEquals(reloaded?.status, "succeeded");
-        assertEquals(reloaded?.pid, Deno.pid);
-        assertEquals(reloaded?.instanceId, instanceId);
-        assertEquals(tracker.findById(failed.id)?.status, "completed");
-      } finally {
-        tracker.close();
-        catalogStore.close();
-      }
+      });
     });
-  });
+  }
 }
 
 // ── Serve handler branches on a real repository ─────────────────────────
