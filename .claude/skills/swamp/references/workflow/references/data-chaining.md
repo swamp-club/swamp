@@ -82,12 +82,22 @@ your intent matches — `data.latest("m", "n")` reads more clearly than the
 equivalent predicate. Reach for `data.query()` when you need a multi-field
 predicate, a projection, or history access.
 
-| Expression                            | Sees current-run data?       | Sees prior-run data? | Implicit dependency? | Status         |
-| ------------------------------------- | ---------------------------- | -------------------- | -------------------- | -------------- |
-| `data.query('<predicate>')`           | **Yes** — sync catalog query | **Yes**              | **No**               | **Primary**    |
-| `data.latest("<name>", "<spec>")`     | **Yes** — shortcut for query | **Yes**              | **Yes**              | **Shortcut**   |
-| `data.version("<name>", "<spec>", N)` | **Yes** — shortcut for query | **Yes**              | **Yes**              | **Shortcut**   |
-| `model.<name>.resource.<spec>`        | **Yes** — eagerly populated  | **Yes**              | **Yes**              | **Deprecated** |
+| Expression                                 | Sees current-run data?       | Sees prior-run data? | Implicit dependency? | Status         |
+| ------------------------------------------ | ---------------------------- | -------------------- | -------------------- | -------------- |
+| `data.query('<predicate>')`                | **Yes** — sync catalog query | **Yes**              | **No**               | **Primary**    |
+| `data.latest("<model>", "<dataName>")`     | **Yes** — shortcut for query | **Yes**              | **Yes**              | **Shortcut**   |
+| `data.version("<model>", "<dataName>", N)` | **Yes** — shortcut for query | **Yes**              | **Yes**              | **Shortcut**   |
+| `model.<name>.resource.<spec>`             | **Yes** — eagerly populated  | **Yes**              | **Yes**              | **Deprecated** |
+
+`data.latest()` and `data.version()` take the **data name** — the instance name
+the model wrote — not the output spec name. They often differ: an extension may
+write spec `syncRunSummary` as `sync-<timestamp>`, so
+`data.latest("mirror", "syncRunSummary")` finds nothing. List a model's data
+names with `swamp data query "modelName == 'mirror'" --select name`. To read
+every record of a spec, use `data.findBySpec("<model>", "<spec>")` — one record
+per data name, not ordered newest-first. When `data.latest()` or
+`data.version()` is passed a spec name, the error names the data written under
+that spec.
 
 ### Implicit dependencies and ordering
 

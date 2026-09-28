@@ -1617,3 +1617,136 @@ Deno.test("CelEvaluator: a resolved lookup still returns its attributes", async 
   );
   assertEquals(result, 1);
 });
+
+function specNameContext(
+  specInstanceNames: (modelName: string, specName: string) => string[],
+): Record<string, unknown> {
+  const context = missingRecordContext();
+  (context.data as Record<string, unknown>).specInstanceNames =
+    specInstanceNames;
+  return context;
+}
+
+Deno.test("CelEvaluator: names the data written under a spec when data.latest() is passed a spec name", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("mirror", "syncRunSummary").attributes.prCount',
+    specNameContext((m, s) =>
+      m === "mirror" && s === "syncRunSummary"
+        ? ["sync-2026-01-02", "sync-2026-01-01"]
+        : []
+    ),
+  );
+  assertStringIncludes(
+    message,
+    'data.latest("mirror", "syncRunSummary") found no data record',
+  );
+  assertStringIncludes(
+    message,
+    '"syncRunSummary" is an output spec name, but data.latest() takes a data name.',
+  );
+  assertStringIncludes(
+    message,
+    'mirror has 2 records of spec "syncRunSummary": "sync-2026-01-02", "sync-2026-01-01" (newest first).',
+  );
+  assertStringIncludes(
+    message,
+    'data.findBySpec("mirror", "syncRunSummary") to get every record of that spec.',
+  );
+  // cel-js's source snippet and caret must survive the appended hint.
+  assertStringIncludes(message, "^");
+});
+
+Deno.test("CelEvaluator: names data.version() in the spec-name hint", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.version("mirror", "summary", 1).attributes.ok',
+    specNameContext(() => ["run-1"]),
+  );
+  assertStringIncludes(
+    message,
+    '"summary" is an output spec name, but data.version() takes a data name.',
+  );
+  assertStringIncludes(
+    message,
+    'mirror has 1 record of spec "summary": "run-1".',
+  );
+  assertStringIncludes(message, "Pass one of those names to data.version()");
+});
+
+Deno.test("CelEvaluator: lists at most three spec instances and counts the rest", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("mirror", "summary").attributes.ok',
+    specNameContext(() => ["r5", "r4", "r3", "r2", "r1"]),
+  );
+  assertStringIncludes(
+    message,
+    '"r5", "r4", "r3" (newest first), and 2 more.',
+  );
+  assertEquals(message.includes('"r2"'), false);
+});
+
+Deno.test("CelEvaluator: adds no spec-name hint when the name is not a spec", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("echo-hi", "nope").attributes.exitCode',
+    specNameContext(() => []),
+  );
+  assertStringIncludes(message, "found no data record");
+  assertEquals(message.includes("output spec name"), false);
+});
+
+Deno.test("CelEvaluator: adds no spec-name hint when the data namespace cannot list spec instances", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("echo-hi", "nope").attributes.exitCode',
+    missingRecordContext(),
+  );
+  assertStringIncludes(message, "found no data record");
+  assertEquals(message.includes("output spec name"), false);
+});
+
+Deno.test("CelEvaluator: adds no spec-name hint for a vary-composed data name", async () => {
+  const calls: string[] = [];
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("mirror", "summary", ["dev"]).attributes.ok',
+    specNameContext((_m, s) => {
+      calls.push(s);
+      return ["run-1"];
+    }),
+  );
+  assertStringIncludes(message, "found no data record");
+  assertEquals(message.includes("output spec name"), false);
+  assertEquals(calls, []);
+});
+
+Deno.test("CelEvaluator: keeps the original error when the spec lookup throws", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("echo-hi", "nope").attributes.exitCode',
+    specNameContext(() => {
+      throw new Error("catalog unavailable");
+    }),
+  );
+  assertStringIncludes(message, "No such key: attributes");
+  assertStringIncludes(
+    message,
+    'data.latest("echo-hi", "nope") found no data record',
+  );
+  assertEquals(message.includes("catalog unavailable"), false);
+});
+
+Deno.test("CelEvaluator: skips the spec lookup when the expression succeeds", async () => {
+  const calls: string[] = [];
+  const result = await new CelEvaluator().evaluateAsync(
+    'data.latest("echo-hi", "nope").?attributes.?ok.orValue(0)',
+    specNameContext((_m, s) => {
+      calls.push(s);
+      return ["run-1"];
+    }),
+  );
+  assertEquals(result, 0);
+  assertEquals(calls, []);
+});

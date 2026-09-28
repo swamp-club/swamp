@@ -74,6 +74,16 @@ same model. An exact data name that differs from the specName is unaffected,
 even if sibling items share the spec. Use `data.findBySpec()` to query by
 specName. The raw `data.query()` equivalent skips this check.
 
+**Spec name passed as a data name:** `data.latest()` and `data.version()` match
+the data (instance) name, which a model may write under a different name than
+its spec (e.g. spec `syncRunSummary` as `sync-<timestamp>`). When a
+non-optional select fails on such a miss, the evaluator
+(`CelEvaluator.explainMissedLookups`) asks
+`DataNamespace.specInstanceNames()` for the data names written under that spec
+— same namespace scoping as `data.latest()` — and appends them to the error,
+newest first, with a pointer to `data.findBySpec()`. The lookup runs only on
+the error path.
+
 ### Null-safe access (.?)
 
 `data.latest()` and `data.version()` return `null` when the named instance

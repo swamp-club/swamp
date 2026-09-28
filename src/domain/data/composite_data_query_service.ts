@@ -89,6 +89,25 @@ export class CompositeDataQueryService extends DataQueryService {
     ) ?? await super.getLatestRecord(modelName, dataName, namespace, options);
   }
 
+  // Ephemeral names first: they belong to the run in progress, so they are
+  // newer than anything in the persistent catalog.
+  override latestDataNamesForSpec(
+    modelName: string,
+    specName: string,
+    namespace?: string,
+  ): string[] {
+    return [
+      ...new Set([
+        ...this.ephemeralQueryService.latestDataNamesForSpec(
+          modelName,
+          specName,
+          namespace,
+        ),
+        ...super.latestDataNamesForSpec(modelName, specName, namespace),
+      ]),
+    ];
+  }
+
   override async query(
     predicate: string,
     options?: DataQueryOptions,

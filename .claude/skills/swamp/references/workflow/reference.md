@@ -889,7 +889,7 @@ errors. Without the block scalar, the inner double quotes break YAML parsing:
 - name: check
   task:
     type: assert
-    expr: data.latest("model", "spec").attributes.value == "expected"
+    expr: data.latest("model", "result").attributes.value == "expected"
     message: "Check failed"
 
 # CORRECT — block scalar avoids quoting conflicts:
@@ -897,7 +897,7 @@ errors. Without the block scalar, the inner double quotes break YAML parsing:
   task:
     type: assert
     expr: >-
-      data.latest("model", "spec").attributes.value == "expected"
+      data.latest("model", "result").attributes.value == "expected"
     message: "Check failed"
 ```
 
@@ -906,9 +906,12 @@ same expression context as other step expressions. Use `data.latest()` to read
 output from prior steps:
 
 ```
-data.latest("<modelName>", "<specName>").attributes.<field>
+data.latest("<modelName>", "<dataName>").attributes.<field>
 ```
 
+The second argument is the data name the model wrote, which is not always its
+output spec name — see
+[data-chaining.md](references/data-chaining.md#choosing-model-vs-datalatest-expressions).
 The result of `data.latest()` is a `DataRecord` — access fields via
 `.attributes.<field>`, NOT `.content.<field>`. The `.attributes` map contains
 the structured output data that models produce.
@@ -940,28 +943,28 @@ interpolation. Use this to include actual values in failure messages:
 ```yaml
 # String containment
 expr: >-
-  data.latest("model", "spec").attributes.stdout.contains("expected-value")
+  data.latest("model", "result").attributes.stdout.contains("expected-value")
 
 # Exact equality
 expr: >-
-  data.latest("model", "spec").attributes.status == "active"
+  data.latest("model", "result").attributes.status == "active"
 
 # Numeric comparison
 expr: >-
-  int(data.latest("model", "spec").attributes.count) > 0
+  int(data.latest("model", "result").attributes.count) > 0
 
 # Compound predicates (AND / OR)
 expr: >-
-  data.latest("model", "spec").attributes.status == "running"
-  && int(data.latest("model", "spec").attributes.replicas) >= 3
+  data.latest("model", "result").attributes.status == "running"
+  && int(data.latest("model", "result").attributes.replicas) >= 3
 
 # Negation
 expr: >-
-  !data.latest("model", "spec").attributes.output.contains("ERROR")
+  !data.latest("model", "result").attributes.output.contains("ERROR")
 
 # Optional access (returns null if data doesn't exist yet)
 expr: >-
-  data.latest("model", "spec").?attributes.?ready == true
+  data.latest("model", "result").?attributes.?ready == true
 ```
 
 ### When Expressions Resolve

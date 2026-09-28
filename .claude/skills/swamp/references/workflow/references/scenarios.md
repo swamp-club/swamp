@@ -667,12 +667,12 @@ retries only security-group.
 
 ### Guard Patterns Used
 
-| Guard expression                                | Meaning                      |
-| ----------------------------------------------- | ---------------------------- |
-| `data.latest("model", "spec")`                  | Truthy if data exists        |
-| `data.latest("model", "spec").attributes.field` | Truthy if field has a value  |
-| `model.method("model", "check", {}).stdout`     | Truthy if probe returns data |
-| `data.latest(...).attributes.v == inputs.v`     | Truthy if values match       |
+| Guard expression                                  | Meaning                      |
+| ------------------------------------------------- | ---------------------------- |
+| `data.latest("model", "result")`                  | Truthy if data exists        |
+| `data.latest("model", "result").attributes.field` | Truthy if field has a value  |
+| `model.method("model", "check", {}).stdout`       | Truthy if probe returns data |
+| `data.latest(...).attributes.v == inputs.v`       | Truthy if values match       |
 
 ### Combining Guards with forEach
 

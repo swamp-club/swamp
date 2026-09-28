@@ -2251,3 +2251,79 @@ Deno.test("data.query(): record results and path projections carry the path", as
     catalog.close();
   });
 });
+
+// ============================================================================
+// data.specInstanceNames() lists the data names written under a spec
+// ============================================================================
+
+Deno.test("data.specInstanceNames() lists data names of a spec, scoped like latest()", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "mirror",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    await dataRepo.save(
+      type,
+      model.id,
+      Data.create({
+        name: "sync-2026-01-01",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", specName: "summary", modelName: "mirror" },
+        ownerDefinition: owner,
+      }),
+      new TextEncoder().encode(JSON.stringify({ ok: true })),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.data?.specInstanceNames);
+    assertEquals(ctx.data.specInstanceNames("mirror", "summary"), [
+      "sync-2026-01-01",
+    ]);
+    assertEquals(ctx.data.specInstanceNames("*:mirror", "summary"), [
+      "sync-2026-01-01",
+    ]);
+    assertEquals(ctx.data.specInstanceNames("infra:mirror", "summary"), []);
+    assertEquals(ctx.data.specInstanceNames("mirror", "other"), []);
+    catalog.close();
+  });
+});
+
+Deno.test("data.specInstanceNames() returns no names without a data query service", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const ctx = await resolver.buildContext();
+
+    assertEquals(ctx.data?.specInstanceNames?.("mirror", "summary") ?? [], []);
+    catalog.close();
+  });
+});
