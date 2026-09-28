@@ -778,3 +778,36 @@ Deno.test("ConfigPoller: survives the lockfile hash read throwing", async () => 
   await waitFor(() => reads >= 2, "hash read retried on the next poll");
   await poller.stop();
 });
+
+Deno.test("ConfigPoller: a poll still running when stop() is called does not start a reload", async () => {
+  const sync = createMockSyncService();
+  let release!: () => void;
+  const released = new Promise<void>((r) => release = r);
+  sync.pullChanged = async (options?: DatastoreSyncOptions) => {
+    sync.pullCalls.push(options ?? {});
+    await released;
+    return 0;
+  };
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+  const lockfile = createLockfile("hash-b");
+
+  const poller = new ConfigPoller({
+    syncService: sync,
+    catalogInvalidate,
+    extensionReloader,
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  // The poller's timer is unref'd, so poll rather than await a bare promise.
+  await waitFor(() => sync.pullCalls.length >= 1, "pull in flight");
+  const stopping = poller.stop();
+  release();
+  await stopping;
+
+  assertEquals(state.extensionReloaderCalls, 0);
+  assertEquals(lockfile.reads, 0);
+});

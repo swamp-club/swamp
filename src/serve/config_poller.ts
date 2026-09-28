@@ -194,6 +194,8 @@ export class ConfigPoller {
   }
 
   async #reloadOnLockfileChange(): Promise<void> {
+    // Never start a reload once stop() was called: shutdown would wait on it.
+    if (this.#stopController.signal.aborted) return;
     let hash: string | null;
     try {
       hash = await this.#lockfileHash();
