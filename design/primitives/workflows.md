@@ -1366,9 +1366,18 @@ order:
   cancelled, since nothing in it ran; otherwise it fails when any step failed
   and is skipped when every step was skipped.
 - Settled steps and jobs get no `step_failed`, `step_skipped`, `job_skipped`
-  or `job_completed` event; the run record carries their outcome. `workflow
-  resume` settles steps the same way, but not jobs: its job loop has no cleanup
-  mode (swamp-club#2550).
+  or `job_completed` event; the run record carries their outcome, and marks
+  each settled step `settledByAbort`. `workflow resume` settles steps the same
+  way, but not jobs: its job loop has no cleanup mode (swamp-club#2550).
+- A resume of the run runs the work its abort settled, as it would have run
+  the `pending` records. This holds for a plain resume, one after `workflow
+  recover` or an approval, and a retry or `--from`. Each settled step is reset
+  to `pending`, and a finished job holding one is walked again. Cleanup that
+  already ran for that work is not run again.
+- A step that already failed stays failed on resume. When resume walks its job
+  again, the job ends `failed` unless that failure was allowed, so the run
+  ends `failed` and can be retried. An in-flight step the cancellation stopped
+  is such a step.
 - A level that suspends at an approval gate keeps its queued steps `pending`,
   so the run can be resumed.
 

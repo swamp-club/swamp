@@ -2037,3 +2037,106 @@ Deno.test("JobRun.settleNotStarted: keeps a job pending while a step is undecide
 
   assertEquals(job.status, "pending");
 });
+
+Deno.test("StepRun: work an abort settles is marked, persisted, and cleared by a reset", () => {
+  const cancelled = StepRun.pending("a");
+  cancelled.cancelUnstarted();
+  assertEquals(cancelled.status, "failed");
+  assertEquals(cancelled.error, CANCELLED_STEP_ERROR);
+  assertEquals(cancelled.startedAt, undefined);
+  assertEquals(cancelled.settledByAbort, true);
+
+  const skipped = StepRun.pending("b");
+  skipped.skipUnstarted({ kind: "dependency" });
+  assertEquals(skipped.status, "skipped");
+  assertEquals(skipped.skipReason, { kind: "dependency" });
+  assertEquals(skipped.settledByAbort, true);
+
+  assertEquals(StepRun.fromData(cancelled.toData()).settledByAbort, true);
+  assertEquals("settledByAbort" in StepRun.pending("c").toData(), false);
+  // An in-flight step the abort stopped ran, so it is not marked.
+  const inFlight = StepRun.pending("d");
+  inFlight.start();
+  inFlight.fail(CANCELLED_STEP_ERROR);
+  assertEquals(inFlight.settledByAbort, false);
+
+  cancelled.resetToPending();
+  assertEquals(cancelled.settledByAbort, false);
+  assertEquals(cancelled.error, undefined);
+});
+
+Deno.test("JobRun: cancelling and skipping a never-started job marks each step it settles", () => {
+  const cancelled = JobRun.pending("j1", ["a", "b"]);
+  cancelled.getStep("a")!.succeed();
+  cancelled.cancelPendingSteps(["a", "b"]);
+  assertEquals(cancelled.getStep("a")!.settledByAbort, false);
+  assertEquals(cancelled.getStep("b")!.settledByAbort, true);
+
+  const skipped = JobRun.pending("j2", ["c", "d"]);
+  skipped.getStep("c")!.skipUnstarted({ kind: "dependency" });
+  skipped.skipNotStarted();
+  assertEquals(skipped.status, "skipped");
+  assertEquals(skipped.getStep("c")!.skipReason, { kind: "dependency" });
+  assertEquals(skipped.getStep("d")!.skipReason, { kind: "job_skipped" });
+  assertEquals(skipped.steps.every((s) => s.settledByAbort), true);
+});
+
+Deno.test("WorkflowRun.resetSettledByAbort: resets settled steps and re-enters their finished jobs", () => {
+  const workflow = Workflow.create({
+    name: "settled-wf",
+    jobs: ["done", "failed", "running", "pending", "clean"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "x", task: StepTask.model("m", "run") }),
+          Step.create({ name: "y", task: StepTask.model("m", "run") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  // A job whose only settled step was skipped can still have succeeded.
+  const done = run.getJob("done")!;
+  done.start();
+  done.getStep("x")!.succeed();
+  done.getStep("y")!.skipUnstarted({ kind: "dependency" });
+  done.succeed();
+  const failed = run.getJob("failed")!;
+  failed.start();
+  failed.getStep("x")!.start();
+  failed.getStep("x")!.fail(CANCELLED_STEP_ERROR);
+  failed.cancelPendingSteps(["y"]);
+  failed.fail();
+  const running = run.getJob("running")!;
+  running.start();
+  running.getStep("x")!.succeed();
+  running.cancelPendingSteps(["y"]);
+  // Never started: one step cancelled, one guarded step left undecided.
+  run.getJob("pending")!.cancelPendingSteps(["x"]);
+  const clean = run.getJob("clean")!;
+  clean.start();
+  clean.getStep("x")!.fail("boom");
+  clean.getStep("y")!.succeed();
+  clean.fail();
+  run.suspend();
+
+  run.resetSettledByAbort();
+
+  assertEquals(done.status, "pending");
+  assertEquals(done.getStep("x")!.status, "succeeded");
+  assertEquals(done.getStep("y")!.status, "pending");
+  assertEquals(failed.status, "pending");
+  // The in-flight step ran, so it keeps its failure.
+  assertEquals(failed.getStep("x")!.status, "failed");
+  assertEquals(failed.getStep("y")!.status, "pending");
+  assertEquals(running.status, "running");
+  assertEquals(running.getStep("y")!.status, "pending");
+  assertEquals(run.getJob("pending")!.status, "pending");
+  assertEquals(run.getJob("pending")!.getStep("x")!.status, "pending");
+  assertEquals(clean.status, "failed");
+  assertEquals(clean.getStep("x")!.status, "failed");
+  for (const job of run.jobs) {
+    assertEquals(job.steps.some((s) => s.settledByAbort), false, job.jobName);
+  }
+});

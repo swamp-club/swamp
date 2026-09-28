@@ -1282,3 +1282,112 @@ Deno.test("checkSuspendedRunResume: serve's error limit keeps the way out for re
     `Step "${notify}" is in job "${main}" in the run, job "${post}" in the workflow.`,
   );
 });
+
+/**
+ * A run of `wf` whose job `pre` the abort interrupted: `check` was in flight
+ * and `queued`, which never started, was cancelled. Job `main` then suspended
+ * at its gate, and the gate was approved.
+ */
+function settledSuspendedRun(wf: Workflow): WorkflowRun {
+  const run = suspendedRun(wf);
+  const pre = run.getJob("pre")!;
+  pre.start();
+  pre.getStep("check")!.start();
+  pre.getStep("check")!.fail("cancelled");
+  pre.cancelPendingSteps(["queued"]);
+  pre.fail();
+  return run;
+}
+
+function settledBefore(): Workflow {
+  return workflow([
+    { name: "pre", steps: [plain("check"), plain("queued")] },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+}
+
+Deno.test("checkSuspendedRunResume: accepts an unchanged workflow whose finished job holds settled work", () => {
+  const wf = settledBefore();
+  checkSuspendedRunResume(wf, settledSuspendedRun(wf));
+});
+
+Deno.test("checkSuspendedRunResume: refuses a step added to a finished job holding settled work, which resume re-enters", () => {
+  const added = workflow([
+    { name: "pre", steps: [plain("check"), plain("queued"), plain("lint")] },
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(added, settledSuspendedRun(settledBefore())),
+    `Step "lint" in job "pre" is not in the run.`,
+  );
+});
+
+Deno.test("checkSuspendedRunResume: refuses a removed finished job holding settled work", () => {
+  const removed = workflow([
+    {
+      name: "main",
+      steps: [
+        plain("prep"),
+        plain("gate", ["prep"]),
+        plain("deploy", ["gate"]),
+      ],
+    },
+  ]);
+  assertStringIncludes(
+    suspendedRefusal(removed, settledSuspendedRun(settledBefore())),
+    `Job "pre" is in the run but not in the workflow.`,
+  );
+});
+
+/**
+ * main: `a` was in flight when the abort fired, `b` was queued beside it and
+ * cancelled, and `c`, which depends on `a`, was skipped. The run then failed.
+ */
+function settledFailedRun(wf: Workflow): WorkflowRun {
+  const run = WorkflowRun.create(wf);
+  run.start();
+  const main = run.getJob("main")!;
+  main.start();
+  main.getStep("a")!.start();
+  main.getStep("a")!.fail("cancelled");
+  main.cancelPendingSteps(["b"]);
+  main.getStep("c")!.skip({ kind: "dependency" });
+  main.fail();
+  run.complete();
+  return run;
+}
+
+Deno.test("planFailedRunResume: resets and tracks the work the abort settled beside the --from step", () => {
+  const wf = workflow([
+    { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
+  ]);
+  const plan = planFailedRunResume(wf, settledFailedRun(wf), "a");
+  assertEquals(plan.steps, new Set(["a", "b", "c"]));
+  assertEquals(sortRefs(plan.tracked), ["main/a", "main/b", "main/c"]);
+});
+
+Deno.test("planFailedRunResume: resets settled work whose step was removed without tracking it", () => {
+  const before = workflow([
+    { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
+  ]);
+  const removed = workflow([
+    { name: "main", steps: [plain("a"), plain("c", ["a"])] },
+  ]);
+  const plan = planFailedRunResume(removed, settledFailedRun(before), "a");
+  assertEquals(plan.steps, new Set(["a", "b", "c"]));
+  assertEquals(sortRefs(plan.tracked), ["main/a", "main/c"]);
+});

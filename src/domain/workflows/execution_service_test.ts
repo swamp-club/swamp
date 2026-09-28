@@ -69,6 +69,7 @@ import {
   CANCELLED_STEP_ERROR,
   STRANDED_STEP_ERROR,
   WorkflowRun,
+  type WorkflowRunData,
 } from "./workflow_run.ts";
 import type { WorkflowExecutionEvent } from "./execution_events.ts";
 import { assessRecoveryForRun } from "./recovery_assessment.ts";
@@ -10856,9 +10857,9 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
 /**
  * Aborts the run from inside the step named `abortAt`, as a `--timeout` or
  * cancel firing while that step runs. The step then fails with an AbortError,
- * or succeeds as a method that ignores the signal would. Every guard call
- * (`__guard_<step>`) that succeeds returns `guardValue` (null, so falsy, by
- * default).
+ * or succeeds as a method that ignores the signal would. It aborts once: a
+ * later resume runs the step normally. Every guard call (`__guard_<step>`)
+ * that succeeds returns `guardValue` (null, so falsy, by default).
  */
 class AbortingStepExecutor extends CountingStepExecutor {
   readonly controller = new AbortController();
@@ -10876,7 +10877,7 @@ class AbortingStepExecutor extends CountingStepExecutor {
     ctx: StepExecutionContext,
   ): Promise<unknown> {
     const result = await super.execute(step, ctx);
-    if (ctx.stepName === this.abortAt) {
+    if (ctx.stepName === this.abortAt && !this.controller.signal.aborted) {
       this.controller.abort();
       if (this.outcome === "reject") {
         throw new DOMException("The operation was aborted.", "AbortError");
@@ -10946,6 +10947,7 @@ function assertCancelledBeforeStart(
     assertEquals(step.status, "failed", name);
     assertEquals(step.error, CANCELLED_STEP_ERROR, name);
     assertEquals(step.startedAt, undefined, name);
+    assertEquals(step.settledByAbort, true, name);
   }
 }
 
@@ -11852,4 +11854,390 @@ Deno.test("abort cleanup: a job queued behind workflow concurrency whose depends
     );
     assertEquals(executor.count("revert/undo"), 0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// A resume runs the work an abort settled (swamp-club#2543)
+// ---------------------------------------------------------------------------
+
+/**
+ * What swamp serve leaves on disk for an aborted run, and what
+ * 'swamp workflow recover --acknowledge-unknown' then does: the stored record
+ * (changed by `edit` first, as a crash mid-cleanup would have left it) is
+ * interrupted with `reason`, and its unknown records are reset.
+ */
+async function interruptAndRecover(
+  runRepo: InMemoryWorkflowRunRepository,
+  workflowId: WorkflowId,
+  run: WorkflowRun,
+  reason: string,
+  edit: (data: WorkflowRunData) => WorkflowRunData = (data) => data,
+): Promise<void> {
+  const stored = WorkflowRun.fromData(edit(run.toData()));
+  stored.interrupt(reason);
+  stored.resetUnknownStepsForRecovery();
+  await runRepo.save(workflowId, stored);
+}
+
+Deno.test("resume: a never-started job's cancelled and undecided steps run after serve shutdown and recover", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-queued-job-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("create", {
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+            modelStep("configure"),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "cancelled");
+    assertUndecided(run, "j2", ["create"]);
+    assertCancelledBeforeStart(run, "j2", ["configure"]);
+
+    await interruptAndRecover(runRepo, workflow.id, run, "server_shutdown");
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.status, "succeeded");
+    const j2 = resumed.getJob("j2")!;
+    assertEquals(j2.getStep("create")!.status, "succeeded");
+    assertEquals(j2.getStep("configure")!.status, "succeeded");
+    assertEquals(executor.count("j2/create"), 1);
+    assertEquals(executor.count("j2/configure"), 1);
+  });
+});
+
+Deno.test("resume: a never-started job's settled steps run in dependency order after recover", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-queued-chain-wf",
+      concurrency: 1,
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "j2",
+          steps: [
+            modelStep("build"),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+            modelStep("ship", onStep("build", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("s1", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.getJob("j2")!.status, "failed");
+    const settledShip = run.getJob("j2")!.getStep("ship")!;
+    assertEquals(settledShip.status, "skipped");
+    assertEquals(settledShip.settledByAbort, true);
+
+    await interruptAndRecover(runRepo, workflow.id, run, "server_shutdown");
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.status, "succeeded");
+    const j2 = resumed.getJob("j2")!;
+    assertEquals(j2.status, "succeeded");
+    assertEquals(j2.getStep("build")!.status, "succeeded");
+    assertEquals(j2.getStep("ship")!.status, "succeeded");
+    assertEquals(j2.getStep("rollback")!.status, "skipped");
+    assertEquals(executor.count("j2/build"), 1);
+    assertEquals(executor.count("j2/ship"), 1);
+    assertEquals(executor.count("j2/rollback"), 0);
+  });
+});
+
+Deno.test("resume: queued forEach iterations run after serve shutdown and recover, and the rollback that ran for them does not run again", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-queued-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("build", { forEach: EACH_TARGET, concurrency: 1 }),
+            modelStep("rollback", onStep("build", TriggerCondition.failed())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("build-a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+      { targets: ["a", "b", "c"] },
+    );
+    assertCancelledBeforeStart(run, "main", ["build-b", "build-c"]);
+    assertEquals(executor.count("main/rollback"), 1);
+
+    await interruptAndRecover(runRepo, workflow.id, run, "server_shutdown");
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    const main = resumed.getJob("main")!;
+    assertEquals(main.getStep("build-b")!.status, "succeeded");
+    assertEquals(main.getStep("build-c")!.status, "succeeded");
+    assertEquals(executor.count("main/build-b"), 1);
+    assertEquals(executor.count("main/build-c"), 1);
+    assertEquals(executor.count("main/rollback"), 1);
+    // build-a was cancelled while it ran, so the run fails and can be retried.
+    assertEquals(resumed.status, "failed");
+    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["build-a"]);
+  });
+});
+
+Deno.test("resume: a step queued when a crash hit cleanup runs after server_crash recovery", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "resume-crash-cleanup-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          concurrency: 1,
+          steps: [
+            modelStep("a"),
+            modelStep("b"),
+            modelStep("notify", onStep("b", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    assertEquals(executor.count("main/notify"), 1);
+
+    // The process died while notify ran: the settled record was saved, the
+    // run was never cancelled, and the reaper interrupts it.
+    await interruptAndRecover(
+      runRepo,
+      workflow.id,
+      run,
+      "server_crash",
+      (data) => ({
+        ...data,
+        status: "running",
+        completedAt: undefined,
+        jobs: data.jobs.map((job) => ({
+          ...job,
+          status: "running",
+          completedAt: undefined,
+          steps: job.steps.map((step) =>
+            step.stepName === "notify"
+              ? { ...step, status: "running", completedAt: undefined }
+              : step
+          ),
+        })),
+      }),
+    );
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
+    assertEquals(executor.count("main/b"), 1);
+    assertEquals(executor.count("main/notify"), 2);
+    assertEquals(resumed.status, "failed");
+    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
+  });
+});
+
+/** main: `a` and `b` queued behind it; a gate cleanup reaches after `a`. */
+function gatedCleanupWorkflow(name: string): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        concurrency: 1,
+        steps: [
+          modelStep("a"),
+          modelStep("b"),
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("go?"),
+            dependsOn: [{ step: "a", condition: TriggerCondition.always() }],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("resume: a step queued when --timeout fired runs once cleanup's gate is approved, and the cancelled step fails the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = gatedCleanupWorkflow("resume-timeout-gate-wf");
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    assertCancelledBeforeStart(run, "main", ["b"]);
+    const gate = run.getJob("main")!.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    await runRepo.save(workflow.id, run);
+
+    const resumed = await drainResume(service, workflow.name, run.id);
+
+    assert(resumed !== undefined, "the resume did not complete");
+    assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
+    assertEquals(executor.count("main/b"), 1);
+    assertEquals(resumed.status, "failed");
+    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
+  });
+});
+
+Deno.test("resume: --from reruns the work the abort settled beside the entry step", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = gatedCleanupWorkflow("resume-from-settled-wf");
+    const executor = new AbortingStepExecutor("a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+    assertEquals(run.status, "suspended");
+    // What 'swamp workflow reject' does: the run fails with b still settled.
+    const main = run.getJob("main")!;
+    const gate = main.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: false,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.fail("Approval rejected");
+    main.fail();
+    run.complete();
+    assertEquals(run.status, "failed");
+    await runRepo.save(workflow.id, run);
+
+    await drainResume(service, workflow.name, run.id, { fromStep: "a" });
+
+    const stored = (await runRepo.findById(workflow.id, run.id))!;
+    // a and b ran; the gate after a asks again.
+    assertEquals(stored.status, "suspended");
+    assertEquals(stored.getJob("main")!.getStep("a")!.status, "succeeded");
+    assertEquals(stored.getJob("main")!.getStep("b")!.status, "succeeded");
+    assertEquals(executor.count("main/a"), 2);
+    assertEquals(executor.count("main/b"), 1);
+  });
+});
+
+Deno.test("resume: a step that failed before its suspended run resumed fails the job", async () => {
+  for (const allowFailure of [false, true]) {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "resume-prior-failure-wf",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "gate",
+                task: StepTask.manualApproval("go?"),
+              }),
+              Step.create({
+                name: "side",
+                task: StepTask.model("test-model", "run"),
+                allowFailure,
+              }),
+              modelStep("work", onStep("gate", TriggerCondition.succeeded())),
+            ],
+          }),
+        ],
+      });
+      const { runRepo, executor, service } = await setupRetry(
+        tempDir,
+        workflow,
+      );
+      executor.failing.add("side");
+      const suspended = await suspendAndApprove(service, runRepo, workflow);
+      assertEquals(
+        suspended.getJob("main")!.getStep("side")!.status,
+        "failed",
+      );
+
+      const resumed = await drainResume(service, workflow.name, suspended.id);
+
+      assert(resumed !== undefined, "the resume did not complete");
+      assertEquals(
+        executor.count("main/work"),
+        1,
+        `allowFailure ${allowFailure}`,
+      );
+      assertEquals(
+        resumed.status,
+        allowFailure ? "succeeded" : "failed",
+        `allowFailure ${allowFailure}`,
+      );
+      assertEquals(
+        resumed.getJob("main")!.status,
+        allowFailure ? "succeeded" : "failed",
+      );
+    });
+  }
 });

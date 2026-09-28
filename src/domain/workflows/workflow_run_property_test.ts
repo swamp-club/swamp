@@ -174,6 +174,7 @@ Deno.test("JobRun: cancelling pending steps settles every named pending step and
           if (names.includes(step.stepName) && was.status === "pending") {
             assertEquals(step.status, "failed");
             assertEquals(step.error, CANCELLED_STEP_ERROR);
+            assertEquals(step.settledByAbort, true);
             assert(cancelled.includes(step));
           } else {
             assertEquals(step.toData(), was);
@@ -219,6 +220,71 @@ Deno.test("JobRun: settling a never-started job is decided by its steps and leav
         }
         // Steps are never changed by settling the job.
         assertEquals(job.steps.map((s) => s.status), statuses);
+      },
+    ),
+  );
+});
+
+Deno.test("WorkflowRun: resetting settled work reopens exactly the settled records and their finished jobs", () => {
+  // Each step either took a transition, or was settled by the abort.
+  const OUTCOMES: ReadonlyArray<(step: StepRun) => void> = [
+    ...TRANSITIONS,
+    (s) => s.cancelUnstarted(),
+    (s) => s.skipUnstarted({ kind: "dependency" }),
+  ];
+  const JOB_STATUSES: ReadonlyArray<(job: JobRun) => void> = [
+    () => {},
+    (j) => j.start(),
+    (j) => j.succeed(),
+    (j) => j.fail(),
+    (j) => j.skip(),
+    (j) => j.markUnknown(),
+  ];
+  fc.assert(
+    fc.property(
+      fc.array(
+        fc.record({
+          status: fc.nat({ max: JOB_STATUSES.length - 1 }),
+          steps: fc.array(fc.nat({ max: OUTCOMES.length - 1 }), {
+            minLength: STEPS.length,
+            maxLength: STEPS.length,
+          }),
+        }),
+        { minLength: JOBS.length, maxLength: JOBS.length },
+      ),
+      (jobs) => {
+        const run = createFailedRun();
+        run.jobs.forEach((job, i) => {
+          STEPS.forEach((name, j) => {
+            const step = job.getStep(name)!;
+            step.resetToPending();
+            OUTCOMES[jobs[i].steps[j]](step);
+          });
+          job.resetToPending();
+          JOB_STATUSES[jobs[i].status](job);
+        });
+        const before = run.jobs.map((job) => job.toData());
+
+        run.resetSettledByAbort();
+
+        run.jobs.forEach((job, i) => {
+          const was = before[i];
+          const settled = was.steps.some((s) => s.settledByAbort === true);
+          job.steps.forEach((step, j) => {
+            if (was.steps[j].settledByAbort) {
+              assertEquals(step.status, "pending");
+              assertEquals(step.settledByAbort, false);
+            } else {
+              assertEquals(step.toData(), was.steps[j]);
+            }
+          });
+          const finished = ["succeeded", "failed", "skipped", "unknown"]
+            .includes(was.status);
+          assertEquals(
+            job.status,
+            settled && finished ? "pending" : was.status,
+          );
+        });
       },
     ),
   );

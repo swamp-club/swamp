@@ -2578,7 +2578,7 @@ export class WorkflowExecutionService {
             const job = workflow.getJob(jobName);
             if (!job) continue;
             if (!this.shouldJobRun(job, run)) {
-              jobRun.skip();
+              jobRun.skipNotStarted();
             } else {
               this.settleNotStartedJob(job, jobRun);
             }
@@ -2876,6 +2876,9 @@ export class WorkflowExecutionService {
       existingRun.resetForResumeFrom(reset.steps, reset.tracked);
       existingRun.resumeFromFailed();
     } else {
+      // Work an abort settled without starting runs now, as it would have
+      // had the abort left it pending (a failed run's reset set includes it).
+      existingRun.resetSettledByAbort();
       existingRun.resumeFromSuspended();
     }
 
@@ -3454,6 +3457,15 @@ export class WorkflowExecutionService {
             s.status === "unknown"
           );
         }
+        // A step that failed before a resume walked its level emits no
+        // step_failed here, but it still fails the job unless its failure was
+        // allowed, as it did when it failed.
+        if (!jobFailed) {
+          jobFailed = level.some((name) => {
+            const step = jobRun.getStep(name);
+            return step?.status === "failed" && !step.allowedFailure;
+          });
+        }
         // A guarded step the interrupted level left undecided: the job did
         // not finish its work, so later levels run in cleanup mode, but its
         // outcome is ambiguous (see the end of the job).
@@ -3579,7 +3591,8 @@ export class WorkflowExecutionService {
       jobRun.addExpandedStep(stepName);
       stepRun = jobRun.getStep(stepName);
     }
-    // Skip steps that already completed (during resume from suspended state)
+    // Skip steps that already finished (a resumed run). The job counts one
+    // that failed after its level (see runJob).
     if (
       stepRun &&
       (stepRun.status === "succeeded" || stepRun.status === "failed" ||
@@ -4619,9 +4632,10 @@ export class WorkflowExecutionService {
   /**
    * Settles a step the run's abort left unstarted as runStep would have on
    * reaching it: skipped when its dependsOn is unmet, otherwise failed as
-   * cancelled like an in-flight step. A step with a guard stays pending: its
-   * guard never decided whether the step's work was already done, so neither
-   * `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
+   * cancelled like an in-flight step. Either way it is marked
+   * `settledByAbort`, so a resume runs it. A step with a guard stays pending:
+   * its guard never decided whether the step's work was already done, so
+   * neither `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
    */
   private settleUnstartedStep(
     step: Step | undefined,
@@ -4629,7 +4643,7 @@ export class WorkflowExecutionService {
     jobRun: JobRun,
   ): void {
     if (step && !this.shouldStepRun(step, jobRun)) {
-      stepRun.skip({ kind: "dependency" });
+      stepRun.skipUnstarted({ kind: "dependency" });
     } else if (!step?.guard) {
       jobRun.cancelPendingSteps([stepRun.stepName]);
     }
