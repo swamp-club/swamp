@@ -25,7 +25,11 @@ import {
   type SwampError,
   workflowCancelSuspended,
 } from "../libswamp/mod.ts";
-import type { ConnectionContext } from "./handlers/shared.ts";
+import {
+  type ConnectionContext,
+  pushChangedToRemote,
+} from "./handlers/shared.ts";
+import type { ActiveRunRegistry } from "./active_run_registry.ts";
 
 export interface SuspendedRunCancelRequest {
   runId: string;
@@ -111,4 +115,50 @@ export async function cancelSuspendedRunInServe(
   } finally {
     release();
   }
+}
+
+/**
+ * Runs {@link cancelSuspendedRunInServe} and pushes the result. Callers run it
+ * inside `withSyncGate`, as one handler mutation unit.
+ */
+export async function cancelSuspendedRunAndPush(
+  ctx: ConnectionContext,
+  request: SuspendedRunCancelRequest,
+  authorize: (workflow: CancelTargetWorkflow) => Promise<boolean> | boolean,
+): Promise<SuspendedRunCancelResult> {
+  try {
+    return await cancelSuspendedRunInServe(ctx, request, authorize);
+  } finally {
+    await pushChangedToRemote(ctx);
+  }
+}
+
+/** How long a cancel waits for an aborted run to leave the registry. */
+export const RUN_CANCEL_GRACE_MS = 5_000;
+
+/**
+ * Waits for an aborted run to finish and leave the registry, up to `graceMs`.
+ * Returns whether it left. A run that left may have saved itself suspended
+ * rather than cancelled: a resume that reached another approval gate just
+ * before the abort. The caller then cancels the persisted run.
+ */
+export async function awaitAbortedRun(
+  registry: ActiveRunRegistry,
+  runId: string,
+  graceMs: number = RUN_CANCEL_GRACE_MS,
+): Promise<boolean> {
+  const run = registry.get(runId);
+  if (!run) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      run.completion,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, graceMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return registry.get(runId) === undefined;
 }

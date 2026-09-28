@@ -37,7 +37,8 @@ import {
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import {
-  cancelSuspendedRunInServe,
+  cancelSuspendedRunAndPush,
+  RUN_CANCEL_GRACE_MS,
   type SuspendedRunCancelResult,
 } from "../../serve/suspended_run_cancel.ts";
 import { withSyncGate } from "../../serve/sync_gate.ts";
@@ -52,7 +53,6 @@ import {
   emitRunCancelAudit,
   emitSystemAuditEvent,
   listTokenSessions,
-  pushChangedToRemote,
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
@@ -371,7 +371,7 @@ type AnyOptions = any;
 
 const logger = getSwampLogger(["serve"]);
 
-export const CANCEL_GRACE_MS = 5_000;
+export const CANCEL_GRACE_MS = RUN_CANCEL_GRACE_MS;
 
 export type CancelStatus =
   | "cancelled"
@@ -465,8 +465,12 @@ export async function cancelExecution(
     executionId,
     deps.reason,
   );
+  // Whether the abort went to a run in the active-run registry, which may
+  // leave it suspended rather than cancelled.
+  let abortedActive = false;
   if (!found && deps.activeRunRegistry) {
     found = deps.activeRunRegistry.cancel(executionId, deps.reason);
+    abortedActive = found;
   }
   let foundViaScheduled = false;
   if (
@@ -486,6 +490,7 @@ export async function cancelExecution(
         // A resume registered the run after the registry miss above.
         found = deps.activeRunRegistry?.cancel(executionId, deps.reason) ??
           false;
+        abortedActive = found;
         break;
       case "busy":
       case "not_suspended":
@@ -509,17 +514,36 @@ export async function cancelExecution(
     };
   }
   const activeRun = deps.activeRunRegistry?.get(executionId);
-  if (activeRun) {
-    await Promise.race([
-      activeRun.completion,
-      new Promise<void>((r) => setTimeout(r, graceMs)),
-    ]);
+  if (activeRun || abortedActive) {
+    if (activeRun) {
+      await Promise.race([
+        activeRun.completion,
+        new Promise<void>((r) => setTimeout(r, graceMs)),
+      ]);
+    }
     const confirmed = deps.activeRunRegistry?.get(executionId) === undefined;
-    return {
-      status: confirmed ? "cancelled" : "cancellation_requested",
-      executionType,
-      executionId,
-    };
+    if (!confirmed) {
+      return { status: "cancellation_requested", executionType, executionId };
+    }
+    // A resume can save the run suspended at its next gate just before the
+    // abort lands, and still be registered until its final push. Then the
+    // abort stopped nothing: cancel the persisted run.
+    if (executionType === "workflow-run" && deps.cancelSuspended) {
+      const left = await deps.cancelSuspended(executionId);
+      if (left.status === "busy") {
+        return {
+          status: "conflict",
+          executionType,
+          executionId,
+          message: left.message,
+        };
+      }
+      if (left.status === "active") {
+        deps.activeRunRegistry?.cancel(executionId, deps.reason);
+        return { status: "cancellation_requested", executionType, executionId };
+      }
+    }
+    return { status: "cancelled", executionType, executionId };
   }
   if (foundViaScheduled) {
     return { status: "cancellation_requested", executionType, executionId };
@@ -4979,7 +5003,23 @@ export const serveCommand = new Command()
 
               const cancelPrincipal = parsePrincipal(authResult.principalId);
               cancelAuditPrincipal = cancelPrincipal;
+              const auditRefusal = (detail: string) =>
+                emitRunCancelAudit(connectionCtx, {
+                  action: cancelMatch ? "cancel" : "cancel.all",
+                  resourceKind: cancelMatch?.[1] === "method-run"
+                    ? "model"
+                    : cancelMatch
+                    ? "workflow"
+                    : "execution",
+                  resourceName: cancelMatch?.[2] ?? "*",
+                  principal: cancelPrincipal,
+                  sourceIp: cancelRemoteAddr,
+                  requestId: crypto.randomUUID(),
+                  outcome: "denied",
+                  detail,
+                });
               if (!policySnapshotLoader) {
+                auditRefusal("access_not_configured");
                 return Response.json({
                   status: "error",
                   message:
@@ -4998,6 +5038,7 @@ export const serveCommand = new Command()
                   { kind: "access", name: "*", fields: {} },
                 );
                 if (!decision || decision.effect !== "allow") {
+                  auditRefusal("admin required");
                   return Response.json({
                     status: "error",
                     message: "Access denied: cancel requires admin permission",
@@ -5037,17 +5078,15 @@ export const serveCommand = new Command()
                   // The endpoint already required admin on every resource, so
                   // the run's own workflow needs no further check.
                   cancelSuspended: (id) =>
-                    withSyncGate(connectionCtx.syncGate, async () => {
-                      try {
-                        return await cancelSuspendedRunInServe(
+                    withSyncGate(
+                      connectionCtx.syncGate,
+                      () =>
+                        cancelSuspendedRunAndPush(
                           connectionCtx,
                           { runId: id, reason },
                           () => true,
-                        );
-                      } finally {
-                        await pushChangedToRemote(connectionCtx);
-                      }
-                    }),
+                        ),
+                    ),
                 },
               );
             } catch (error) {

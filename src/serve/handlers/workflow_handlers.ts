@@ -64,7 +64,7 @@ import {
   createWorkflowRunDeps,
   executeWorkflowWithLocks,
 } from "../deps.ts";
-import { withSharedSyncGate } from "../sync_gate.ts";
+import { withSharedSyncGate, withSyncGate } from "../sync_gate.ts";
 import { serializeEvent } from "../serializer.ts";
 import type {
   WorkflowApprovePayload,
@@ -116,8 +116,10 @@ import {
   startDetachedResume,
 } from "../resume_launcher.ts";
 import {
-  cancelSuspendedRunInServe,
+  awaitAbortedRun,
+  cancelSuspendedRunAndPush,
   SUSPENDED_RUN_BUSY_MESSAGE,
+  type SuspendedRunCancelResult,
 } from "../suspended_run_cancel.ts";
 import {
   deleteActiveRun,
@@ -1290,6 +1292,12 @@ async function reserveSuspendedRun(
  * checked against the workflow the server knows the run belongs to, never the
  * payload's, and silently: a caller refused, a missing run, and a run of
  * another workflow than the payload names all get the same reply.
+ *
+ * A registered run is aborted, then awaited outside the sync gate, which the
+ * run needs for its final push. If it leaves the registry, the persisted run
+ * is checked again: a resume can save the run suspended at its next gate just
+ * before the abort lands, and then the abort stopped nothing. Only the
+ * persisted cancel and its push take the gate.
  */
 export async function handleWorkflowCancel(
   socket: WebSocket,
@@ -1300,6 +1308,7 @@ export async function handleWorkflowCancel(
   principal: Principal | null,
 ): Promise<void> {
   const notFound = `No cancellable run with id ${payload.runId}`;
+  const reason = cancelReasonFor(cancelActor(principal, ctx), payload.reason);
   const mayCancel = async (workflowName: string): Promise<boolean> =>
     isAuthorized(socket, requestId, principal, "run", {
       kind: "workflow",
@@ -1309,31 +1318,55 @@ export async function handleWorkflowCancel(
         workflowName,
       ),
     }, ctx);
+  const cancelPersisted = () =>
+    withSyncGate(ctx.syncGate, () =>
+      cancelSuspendedRunAndPush(
+        ctx,
+        {
+          runId: payload.runId,
+          workflowIdOrName: payload.workflowIdOrName,
+          reason,
+        },
+        (workflow) => mayCancel(workflow.name),
+      ));
+  const reply = (workflowName: string, status: string) =>
+    send(socket, {
+      type: "workflow.cancel",
+      id: requestId,
+      payload: { data: { runId: payload.runId, workflowName, status } },
+    });
 
   try {
-    const active = ctx.activeRunRegistry?.get(payload.runId);
-    if (active) {
-      await cancelActiveWorkflowRun(
-        socket,
-        ctx,
-        requestId,
-        payload,
-        active,
-        mayCancel,
-        principal,
-      );
+    const registry = ctx.activeRunRegistry;
+    const outcome: SuspendedRunCancelResult = registry?.get(payload.runId)
+      ? { status: "active" }
+      : await cancelPersisted();
+
+    if (outcome.status === "active") {
+      // Registered before the lookup, or a resume registered it after.
+      const active = registry?.get(payload.runId);
+      const workflowName = active
+        ? await abortActiveWorkflowRun(ctx, payload, active, mayCancel, reason)
+        : undefined;
+      if (!registry || workflowName === undefined) {
+        sendError(socket, requestId, "workflow_cancel_failed", notFound);
+        return;
+      }
+      if (!(await awaitAbortedRun(registry, payload.runId))) {
+        reply(workflowName, "cancellation_requested");
+        return;
+      }
+      const left = await cancelPersisted();
+      if (left.status === "busy") {
+        sendError(socket, requestId, "workflow_cancel_failed", left.message);
+      } else if (left.status === "active") {
+        registry.cancel(payload.runId, reason);
+        reply(workflowName, "cancellation_requested");
+      } else {
+        reply(workflowName, "cancelled");
+      }
       return;
     }
-
-    const outcome = await cancelSuspendedRunInServe(
-      ctx,
-      {
-        runId: payload.runId,
-        workflowIdOrName: payload.workflowIdOrName,
-        reason: cancelReasonFor(cancelActor(principal, ctx), payload.reason),
-      },
-      (workflow) => mayCancel(workflow.name),
-    );
 
     if (controller.signal.aborted && outcome.status !== "cancelled") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
@@ -1342,36 +1375,8 @@ export async function handleWorkflowCancel(
 
     switch (outcome.status) {
       case "cancelled":
-        send(socket, {
-          type: "workflow.cancel",
-          id: requestId,
-          payload: {
-            data: {
-              runId: outcome.runId,
-              workflowName: outcome.workflowName,
-              status: "cancelled",
-            },
-          },
-        });
+        reply(outcome.workflowName, "cancelled");
         return;
-      case "active": {
-        // A resume registered the run after the lookup above.
-        const registered = ctx.activeRunRegistry?.get(payload.runId);
-        if (registered) {
-          await cancelActiveWorkflowRun(
-            socket,
-            ctx,
-            requestId,
-            payload,
-            registered,
-            mayCancel,
-            principal,
-          );
-        } else {
-          sendError(socket, requestId, "workflow_cancel_failed", notFound);
-        }
-        return;
-      }
       case "busy":
       case "not_suspended":
         sendError(socket, requestId, "workflow_cancel_failed", outcome.message);
@@ -1383,58 +1388,36 @@ export async function handleWorkflowCancel(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_cancel_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
   }
 }
 
 /**
  * Aborts a workflow run this instance is driving, authorizing on the workflow
- * recorded in the registry entry. A method run, a refused caller, and a
- * payload naming another workflow all get the same not-found reply.
+ * recorded in the registry entry. Returns that workflow's name, or undefined
+ * for a method run, a refused caller, or a payload naming another workflow,
+ * which the caller reports as not found.
  */
-async function cancelActiveWorkflowRun(
-  socket: WebSocket,
+async function abortActiveWorkflowRun(
   ctx: ConnectionContext,
-  requestId: string,
   payload: WorkflowCancelPayload,
   active: import("../active_run_registry.ts").ActiveRun,
   mayCancel: (workflowName: string) => Promise<boolean>,
-  principal: Principal | null,
-): Promise<void> {
-  const notFound = `No cancellable run with id ${payload.runId}`;
-  const workflow = active.kind === "method-run"
-    ? undefined
-    : await ctx.repoContext.workflowRepo.findByName(active.resourceName) ??
-      await ctx.repoContext.workflowRepo.findById(
-        createWorkflowId(active.resourceName),
-      );
+  reason: string,
+): Promise<string | undefined> {
+  if (active.kind === "method-run") return undefined;
+  const workflow = await ctx.repoContext.workflowRepo.findByName(
+    active.resourceName,
+  ) ??
+    await ctx.repoContext.workflowRepo.findById(
+      createWorkflowId(active.resourceName),
+    );
   const workflowName = workflow?.name ?? active.resourceName;
   const matches = payload.workflowIdOrName === undefined ||
     payload.workflowIdOrName === workflowName ||
     payload.workflowIdOrName === workflow?.id;
-  if (
-    active.kind === "method-run" || !matches ||
-    !(await mayCancel(workflowName))
-  ) {
-    sendError(socket, requestId, "workflow_cancel_failed", notFound);
-    return;
-  }
-  ctx.activeRunRegistry?.cancel(
-    payload.runId,
-    cancelReasonFor(cancelActor(principal, ctx), payload.reason),
-  );
-  send(socket, {
-    type: "workflow.cancel",
-    id: requestId,
-    payload: {
-      data: {
-        runId: payload.runId,
-        workflowName,
-        status: "cancellation_requested",
-      },
-    },
-  });
+  if (!matches || !(await mayCancel(workflowName))) return undefined;
+  ctx.activeRunRegistry?.cancel(payload.runId, reason);
+  return workflowName;
 }
 
 export async function handleWorkflowResume(

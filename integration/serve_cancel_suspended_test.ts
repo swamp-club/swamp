@@ -271,17 +271,31 @@ async function loadRun(h: Harness): Promise<WorkflowRun | null> {
   );
 }
 
-function registeredResume(h: Harness): ActiveRun {
-  return {
+/**
+ * A resume registered under the run's id. Once aborted it finishes; with
+ * `leaves` it also leaves the registry, as a resume does after saving the run
+ * suspended at its next gate. Otherwise it is still pushing when the cancel
+ * stops waiting.
+ */
+function registeredResume(h: Harness, leaves = false): ActiveRun {
+  let finish!: () => void;
+  const resume: ActiveRun = {
     runId: h.runId,
     kind: "workflow-resume",
     resourceName: h.workflow.name,
     buffer: new RunEventBuffer(10),
     controller: new AbortController(),
     startedAt: new Date(),
-    completion: new Promise<void>(() => {}),
+    completion: new Promise<void>((resolve) => {
+      finish = resolve;
+    }),
     principalId: null,
   };
+  resume.controller.signal.addEventListener("abort", () => {
+    if (leaves) h.registry.deregister(h.runId);
+    finish();
+  });
+  return resume;
 }
 
 const testOpts = { sanitizeOps: false, sanitizeResources: false };
@@ -397,6 +411,53 @@ Deno.test({
         "stuck gate (cancelled by user:operator)",
       );
       assertEquals((await loadRun(h))?.status, "suspended");
+    }),
+});
+
+Deno.test({
+  ...testOpts,
+  name:
+    "serve cancel: a resume that left the run suspended as the abort landed is still cancelled",
+  fn: () =>
+    withHarness(async (h) => {
+      h.registry.register(registeredResume(h, true));
+
+      const replies = await cancelOverWs(h, OPERATOR);
+
+      assertEquals(replies.length, 1, JSON.stringify(replies));
+      assertEquals(replies[0].type, "workflow.cancel", JSON.stringify(replies));
+      assertEquals(replies[0].payload?.data.status, "cancelled");
+      const run = await loadRun(h);
+      assertEquals(run?.status, "cancelled");
+      assertEquals(
+        run?.tags["cancel_reason"],
+        "stuck gate (cancelled by user:operator)",
+      );
+    }),
+});
+
+Deno.test({
+  ...testOpts,
+  name:
+    "serve cancel: over HTTP, a resume that left the run suspended as the abort landed is still cancelled",
+  fn: () =>
+    withHarness(async (h) => {
+      h.registry.register(registeredResume(h, true));
+
+      const result = await cancelExecution("workflow-run", h.runId, {
+        cancelRegistry: new RunCancelRegistry(),
+        activeRunRegistry: h.registry,
+        reason: "cancelled by user:admin",
+        cancelSuspended: (id) =>
+          cancelSuspendedRunInServe(
+            h.ctx,
+            { runId: id, reason: "cancelled by user:admin" },
+            () => true,
+          ),
+      });
+
+      assertEquals(result.status, "cancelled");
+      assertEquals((await loadRun(h))?.status, "cancelled");
     }),
 });
 

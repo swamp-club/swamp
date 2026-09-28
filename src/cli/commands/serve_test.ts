@@ -1289,3 +1289,90 @@ Deno.test("cancelExecution: passes its reason to the registry that aborts the ru
     "cancelled by user:alice",
   );
 });
+
+/** A registered run that leaves the registry as soon as it is aborted. */
+function exitingRun(registry: ActiveRunRegistry, runId: string): ActiveRun {
+  let resolve!: () => void;
+  const run = makeActiveRun(
+    runId,
+    new Promise<void>((r) => {
+      resolve = r;
+    }),
+  );
+  run.controller.signal.addEventListener("abort", () => {
+    registry.deregister(runId);
+    resolve();
+  });
+  registry.register(run);
+  return run;
+}
+
+Deno.test("cancelExecution: cancels the persisted run when an aborted resume left it suspended", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  exitingRun(activeRunRegistry, "r1");
+  const calls: string[] = [];
+
+  const result = await cancelExecution("workflow-run", "r1", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    cancelSuspended: (id) => {
+      calls.push(id);
+      return Promise.resolve({
+        status: "cancelled",
+        runId: id,
+        workflowName: "wf",
+      });
+    },
+  }, 1_000);
+
+  assertEquals(result.status, "cancelled");
+  assertEquals(calls, ["r1"]);
+});
+
+Deno.test("cancelExecution: an aborted run that left nothing suspended is cancelled", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  exitingRun(activeRunRegistry, "r1");
+
+  const result = await cancelExecution("workflow-run", "r1", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    cancelSuspended: () =>
+      Promise.resolve({ status: "not_found", message: "none" }),
+  }, 1_000);
+
+  assertEquals(result.status, "cancelled");
+});
+
+Deno.test("cancelExecution: reports conflict when another operation holds the run after the abort", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  exitingRun(activeRunRegistry, "r1");
+
+  const result = await cancelExecution("workflow-run", "r1", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    cancelSuspended: () => Promise.resolve({ status: "busy", message: "busy" }),
+  }, 1_000);
+
+  assertEquals(result.status, "conflict");
+  assertEquals(result.message, "busy");
+});
+
+Deno.test("cancelExecution: does not re-check a run still registered after the grace period", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  activeRunRegistry.register(
+    makeActiveRun("r1", new Promise<void>(() => {})),
+  );
+  let calls = 0;
+
+  const result = await cancelExecution("workflow-run", "r1", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    cancelSuspended: () => {
+      calls++;
+      return Promise.resolve({ status: "not_found", message: "none" });
+    },
+  }, 10);
+
+  assertEquals(result.status, "cancellation_requested");
+  assertEquals(calls, 0);
+});

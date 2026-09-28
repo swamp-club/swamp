@@ -2933,16 +2933,17 @@ export function handleMessage(
       );
       break;
     case "workflow.cancel":
+      // Not gated here: the handler waits for an aborted run, which needs the
+      // gate for its final push, and gates only its own persisted cancel.
       task = audited(
-        withSyncGate(ctx.syncGate, () =>
-          handleWorkflowCancel(
-            socket,
-            ctx,
-            request.id,
-            request.payload,
-            controller,
-            principal,
-          )),
+        handleWorkflowCancel(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );
       break;
