@@ -4099,3 +4099,18 @@ Deno.test("recoveredDataHandles: returns [] when nothing usable is attached", ()
   assertEquals(recoveredDataHandles("boom"), []);
   assertEquals(recoveredDataHandles(null), []);
 });
+
+Deno.test("recoveredDataHandles: drops entries that are not shaped like a data handle", () => {
+  const valid = { name: "state", dataId: "d-1", version: 1 };
+  const error = Object.assign(new Error("boom"), {
+    dataHandles: [
+      valid,
+      null,
+      "state",
+      { name: "missing-id", version: 1 },
+      { name: "bad-version", dataId: "d-2", version: "1" },
+    ],
+  });
+
+  assertEquals(recoveredDataHandles(error), [valid]);
+});

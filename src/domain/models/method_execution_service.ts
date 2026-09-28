@@ -162,12 +162,22 @@ export interface MethodExecutionService {
  * Method execution attaches them as `error.dataHandles` (see
  * `executeWorkflow`, and models such as `command/shell` that write output
  * before throwing) so failure-path reports and step records can still point
- * at that data.
+ * at that data. The error can come from extension code, so entries without
+ * the fields a handle is identified by are dropped.
  */
 export function recoveredDataHandles(error: unknown): DataHandle[] {
   if (typeof error !== "object" || error === null) return [];
   const handles = (error as { dataHandles?: unknown }).dataHandles;
-  return Array.isArray(handles) ? handles as DataHandle[] : [];
+  if (!Array.isArray(handles)) return [];
+  return handles.filter(isDataHandleShaped);
+}
+
+function isDataHandleShaped(value: unknown): value is DataHandle {
+  if (typeof value !== "object" || value === null) return false;
+  const handle = value as Record<string, unknown>;
+  return typeof handle.dataId === "string" &&
+    typeof handle.name === "string" &&
+    typeof handle.version === "number";
 }
 
 /**

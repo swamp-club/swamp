@@ -597,6 +597,13 @@ export function mapWorkflowExecutionEvent(
         timeout: event.timeout,
       };
     }
+    case "step_failed": {
+      // dataHandles is domain-internal: it feeds the workflow summary. Keep
+      // it off the published event so serve and JSON consumers see the same
+      // step_failed shape as before.
+      const { dataHandles: _dataHandles, ...published } = event;
+      return published;
+    }
     case "job_started":
     case "job_completed":
     case "job_skipped":
@@ -606,7 +613,6 @@ export function mapWorkflowExecutionEvent(
     case "approval_requested":
     case "step_queued":
     case "step_target_disconnected":
-    case "step_failed":
     case "model_resolved":
     case "env_var_warning":
     case "method_executing":
