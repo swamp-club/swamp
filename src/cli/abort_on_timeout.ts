@@ -19,12 +19,15 @@
 
 /**
  * Aborts `controller` once `ms` elapse, with the same `TimeoutError` reason
- * `AbortSignal.timeout` gives, so a run cancelled by `--timeout` records a
- * timeout as its `cancel_reason` rather than a bare abort indistinguishable
- * from Ctrl-C. A controller that is already aborted keeps its own reason.
+ * `AbortSignal.timeout` gives, so a local run cancelled by `--timeout`
+ * records a timeout as its `cancel_reason` rather than a bare abort
+ * indistinguishable from Ctrl-C. Over `--server` the reason stays with the
+ * client: the cancel frame sent to serve carries none. A controller that is
+ * already aborted keeps its own reason.
  *
  * Returns a disposer that disarms the timeout. Call it once the guarded work
- * ends: while armed, the timeout keeps the process alive.
+ * ends: while its abort listener is attached, the timeout keeps the process
+ * alive.
  */
 export function abortOnTimeout(
   controller: AbortController,
