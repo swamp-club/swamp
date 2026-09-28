@@ -296,6 +296,22 @@ export function createConnection<S extends SocketLike>(
   };
 }
 
+/**
+ * The subprotocols a dashboard socket requests. Serve echoes the bearer
+ * subprotocol only when it authenticates the upgrade, and a browser fails a
+ * handshake that asked for one and got none back — so a token left in
+ * sessionStorage must not be presented to serve in `none` mode.
+ */
+export function socketProtocols(
+  token: string | null,
+  authMode: AuthMode | null,
+): string[] | undefined {
+  if (!token || authMode === null || authMode === "none") {
+    return undefined;
+  }
+  return [`bearer.${token}`];
+}
+
 /** Validates an `/auth/info` body. */
 export function parseAuthInfo(value: unknown): AuthInfo | null {
   if (typeof value !== "object" || value === null) return null;

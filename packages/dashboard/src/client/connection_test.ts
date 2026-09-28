@@ -27,6 +27,7 @@ import {
   requestAuthInfo,
   requestTokenProbe,
   type SocketHandlers,
+  socketProtocols,
   type Timers,
 } from "./connection.ts";
 import { MAX_DELAY_MS, type ProbeResult } from "./reconnect.ts";
@@ -531,4 +532,24 @@ Deno.test("loadAuthInfo: cancel stops further attempts", async () => {
   inFlight.requests[0].reply({ mode: "none" });
   await settle();
   assertEquals(inFlight.loaded, []);
+});
+
+Deno.test("socketProtocols: presents no token in none mode", () => {
+  assertEquals(socketProtocols("stale", "none"), undefined);
+});
+
+Deno.test("socketProtocols: presents the bearer subprotocol in token and oauth modes", () => {
+  assertEquals(socketProtocols("abc", "token"), ["bearer.abc"]);
+  assertEquals(socketProtocols("abc", "oauth"), ["bearer.abc"]);
+});
+
+Deno.test("socketProtocols: requests no subprotocol without a token", () => {
+  assertEquals(socketProtocols(null, "none"), undefined);
+  assertEquals(socketProtocols(null, "token"), undefined);
+  assertEquals(socketProtocols(null, "oauth"), undefined);
+  assertEquals(socketProtocols("", "token"), undefined);
+});
+
+Deno.test("socketProtocols: presents no token before the auth mode is known", () => {
+  assertEquals(socketProtocols("abc", null), undefined);
 });
