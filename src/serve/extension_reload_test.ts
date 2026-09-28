@@ -26,8 +26,10 @@ import {
   createExtensionDiscoverer,
   isReloading,
   performServeReload,
+  RELOAD_IN_PROGRESS_ERROR,
   reloadPulledExtensions,
   resolveLockfilePath,
+  serveReloadStatus,
 } from "./extension_reload.ts";
 import {
   ExtensionCatalogStore,
@@ -105,6 +107,57 @@ Deno.test("performServeReload: resets isReloading flag after failure", async () 
     await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
     await performServeReload(tmpDir, join(tmpDir, "missing.json"));
     assertEquals(isReloading(), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("serveReloadStatus: maps success, busy and failure", () => {
+  assertEquals(
+    serveReloadStatus({ success: true, reloadedCount: 0, errors: ["soft"] }),
+    "ok",
+  );
+  assertEquals(
+    serveReloadStatus({
+      success: false,
+      reloadedCount: 0,
+      errors: [RELOAD_IN_PROGRESS_ERROR],
+    }),
+    "busy",
+  );
+  assertEquals(
+    serveReloadStatus({
+      success: false,
+      reloadedCount: 0,
+      errors: ["Hot-reload failed: boom"],
+    }),
+    "failed",
+  );
+});
+
+Deno.test("performServeReload: an overlapping reload maps to busy", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    const lockfilePath = join(tmpDir, "missing.json");
+    let entered!: () => void;
+    const enteredDiscoverer = new Promise<void>((r) => entered = r);
+    let release!: () => void;
+    const released = new Promise<void>((r) => release = r);
+    const first = performServeReload(tmpDir, lockfilePath, {
+      extensionDiscoverer: async () => {
+        entered();
+        await released;
+        return 0;
+      },
+    });
+    await enteredDiscoverer;
+    const second = await performServeReload(tmpDir, lockfilePath);
+    release();
+    const firstResult = await first;
+
+    assertEquals(serveReloadStatus(second), "busy");
+    assertEquals(serveReloadStatus(firstResult), "ok");
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }

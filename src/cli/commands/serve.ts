@@ -238,6 +238,7 @@ import {
   createExtensionDiscoverer,
   isReloading,
   performServeReload,
+  serveReloadStatus,
 } from "../../serve/extension_reload.ts";
 import {
   requestServerResponse,
@@ -312,6 +313,7 @@ import {
 } from "../../serve/boot_reconciliation.ts";
 import { AccessDataPoller } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
+import { computeFileContentHashIfExists } from "../../domain/extensions/extension_package_cache.ts";
 import { RuntimeDataPoller } from "../../serve/runtime_data_poller.ts";
 import { createSyncGate } from "../../serve/sync_gate.ts";
 
@@ -1664,7 +1666,7 @@ export const serveCommand = new Command()
     "--datastore-poll-interval <duration:string>",
     "How often to pull config, access data and runtime data from the remote datastore. " +
       "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. Minimum: 1s. " +
-      "Only effective with a remote datastore (env: SWAMP_DATASTORE_POLL_INTERVAL)",
+      "Only effective with a remote datastore or managedConfig, whose extension lockfile is checked at this interval (env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
     "--token-gc-interval <duration:string>",
@@ -2093,6 +2095,14 @@ export const serveCommand = new Command()
         lockfilePath: extensionLockfilePath,
       });
     }
+    // The extension set the registries load below. The config poller reloads
+    // only when the tier lockfile's hash moves away from it. An unreadable
+    // lockfile leaves the baseline to the poller's first poll.
+    const bootLockfileHash = repoMarker?.datastore?.managedConfig
+      ? await computeFileContentHashIfExists(extensionLockfilePath).catch(() =>
+        undefined
+      )
+      : undefined;
 
     // Re-enumerates pulled extension workflow dirs and, once the scheduler
     // exists, rescans schedules. Shared by `serve reload` and the config
@@ -2257,8 +2267,12 @@ export const serveCommand = new Command()
     }
 
     // The access and runtime pollers start whenever a sync service exists,
-    // so this is a different gate from the control-plane flags above.
-    if (!syncService && datastorePollIntervalMs !== undefined) {
+    // and the config poller whenever managedConfig is active, so this is a
+    // different gate from the control-plane flags above.
+    if (
+      !syncService && !repoMarker?.datastore?.managedConfig &&
+      datastorePollIntervalMs !== undefined
+    ) {
       logger.warn(
         "--datastore-poll-interval has no effect without a remote datastore",
       );
@@ -2354,47 +2368,6 @@ export const serveCommand = new Command()
         namespace: serveNamespace,
       });
 
-      if (repoMarker?.datastore?.managedConfig) {
-        const extensionDiscoverer = createExtensionDiscoverer({
-          lockfilePath: extensionLockfilePath,
-          repoDir: resolvedRepoDir,
-        });
-        configPoller = new ConfigPoller({
-          syncService,
-          syncGate,
-          pollIntervalMs: datastorePollIntervalMs,
-          catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-          extensionSubdirs: ["config/pulled-extensions"],
-          extensionReloader: async () => {
-            const result = await performServeReload(
-              resolvedRepoDir,
-              extensionLockfilePath,
-              {
-                extensionDiscoverer,
-                workflowReloader: reloadExtensionWorkflows,
-              },
-            );
-            if (result.success) {
-              if (result.reloadedCount > 0) {
-                logger.info(
-                  "Config poller: reloaded {count} extension type(s)",
-                  { count: result.reloadedCount },
-                );
-              }
-              for (const err of result.errors) {
-                logger.warn`Config poller extension reload: ${err}`;
-              }
-            } else {
-              for (const err of result.errors) {
-                logger.warn`Config poller extension reload: ${err}`;
-              }
-            }
-          },
-          namespace: serveNamespace,
-        });
-        configPoller.start();
-      }
-
       if (serveNamespace && rootReadErrors.length > 0) {
         const namespacedStore = syncService.controlPlaneStore!();
         const sentinel = await namespacedStore.get(MIGRATION_SENTINEL);
@@ -2454,6 +2427,50 @@ export const serveCommand = new Command()
           { namespace: serveNamespace },
         );
       }
+    }
+
+    // Watches the managedConfig tier: pulls config/ when a sync service
+    // exists, and reloads extensions when the tier lockfile's hash changes —
+    // a peer's pull, update, rm or pin, or a CLI write on this host.
+    if (repoMarker?.datastore?.managedConfig) {
+      const extensionDiscoverer = createExtensionDiscoverer({
+        lockfilePath: extensionLockfilePath,
+        repoDir: resolvedRepoDir,
+      });
+      configPoller = new ConfigPoller({
+        syncService,
+        syncGate,
+        pollIntervalMs: datastorePollIntervalMs,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        lockfileHash: () =>
+          computeFileContentHashIfExists(extensionLockfilePath),
+        baselineLockfileHash: bootLockfileHash,
+        extensionReloader: async () => {
+          const result = await performServeReload(
+            resolvedRepoDir,
+            extensionLockfilePath,
+            {
+              extensionDiscoverer,
+              workflowReloader: reloadExtensionWorkflows,
+            },
+          );
+          if (result.success && result.reloadedCount > 0) {
+            logger.info(
+              "Config poller: reloaded {count} extension type(s)",
+              { count: result.reloadedCount },
+            );
+          }
+          const status = serveReloadStatus(result);
+          if (status !== "busy") {
+            for (const err of result.errors) {
+              logger.warn`Config poller extension reload: ${err}`;
+            }
+          }
+          return status;
+        },
+        namespace: serveNamespace,
+      });
+      configPoller.start();
     }
 
     // Create the control-plane store AFTER namespace binding (which happens

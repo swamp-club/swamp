@@ -432,14 +432,11 @@ when they run, but `data.query` reads the local cache without pulling.
 
 Serve runs three background pollers to fix this:
 
-- **ConfigPoller** refreshes managed configuration. It pulls extension files
-  (`config/pulled-extensions/`) separately from definitions (`config/`), so the
-  extension registry reloads only when extension files change. Extension
-  sources are not pushed today (they live in each repo's own pulled root until
-  swamp-club#2429); peers push only the lockfile, which arrives with the
-  definitions, so this reload fires only when `config/pulled-extensions/`
-  itself changes, as after `datastore config migrate`. Even then it re-bundles
-  from the pod's own pulled root, not from that tree.
+- **ConfigPoller** refreshes managed configuration. It pulls `config/` and
+  invalidates catalogs when the pull changed anything, then reloads the
+  extension registry when the config-tier lockfile's content hash changes. See
+  "Extension auto-reload via config poller" below. It runs whenever
+  managedConfig is active, and without a sync service it checks only the hash.
 - **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) refreshes
   access-control grants and groups, then reloads the policy snapshot.
 - **RuntimeDataPoller** (`subdirs: ["data"]`) refreshes the `data/` subtree
@@ -1074,10 +1071,10 @@ writing:
   `YamlVaultConfigRepository` has no hook. `vault.migrate` also marks the old
   config it removed, so the scoped push deletes the remote copy. Otherwise the
   config poller would bring it back as a second config with the same name.
-- The extension handlers (`extension.install`, `pull`, `rm`, `update`) mark the
-  config-tier lockfile. Serve still writes extension sources to the repo-local
-  pulled-extensions root (swamp-club#2429), so the lockfile is the only file
-  they change in the cache.
+- The extension handlers (`extension.install`, `pull`, `rm`, `update`) mark
+  each file they changed through `markExtensionChanges(paths)`. Today that is
+  the config-tier lockfile alone: serve still writes extension sources to the
+  repo-local pulled-extensions root (swamp-club#2612).
 - The serve startup migration moves grant and server-token definitions from
   `models/` to `auto-definitions/` on disk, and marks each moved file.
 
@@ -1095,6 +1092,18 @@ and definitions a partial startup pull left missing. A directory mark is safe
 only for a tree the mutation itself owns and has just written, such as a data
 item's folder.
 
+The CLI extension commands follow the same rule. `extension pull`, `update`,
+`rm` and `install` mark the config-tier lockfile by path and push through
+`pushManagedConfigPathsDeferred`, instead of the bulk mark that
+`pushManagedConfigChanges` sends. Search install, `repo upgrade` and
+`doctor extensions --repair` publish the lockfile the same way, but only when
+its content hash changed during the command. `pushManagedConfigPaths` drops any
+path outside the namespace's cache tree rather than forwarding it, and bounds
+the push by the datastore's sync timeout. An extension that keeps its dirty set
+in memory still walks the whole cache on a fresh process (rule 4), so "exact
+paths" means the marks sent, not the objects the extension compares. The
+lockfile is uploaded either way.
+
 `integration/datastore_sync_rules_test.ts` enforces this at build time:
 
 - One rule rejects a bare `notifyDirty()` inside the per-path-wired
@@ -1103,6 +1112,9 @@ item's folder.
   `src/cli/commands/serve.ts`. It matches the `.markDirty()` and
   `.markDirty?.()` forms on any receiver, and names the top-level function that
   makes the call.
+- A third checks a pinned list of CLI extension writers. None may call
+  `pushManagedConfigChanges` or `pushManagedConfigChangesDeferred`, and each
+  must publish through a per-path helper.
 
 Every serve mutation handler that changes the cache must call `pushChanged()`
 after the mutation. The data-domain handlers (`data.delete`, `data.rename`,
@@ -1599,7 +1611,7 @@ lock directly, for when a crashed process left a lock that has not expired.
   activates managed config: whenever it is true, `resolveManagedConfigPaths`
   (`src/cli/repo_context.ts`) points the extension lockfile at the
   datastore-resolved config path. Pulled extension sources stay in the repo's
-  `.swamp/config/pulled-extensions` until swamp-club#2429. For custom
+  `.swamp/config/pulled-extensions` until swamp-club#2612. For custom
   datastores (S3, GCS), `ensureManagedConfigBase` resolves the datastore config
   to derive the cache-relative config path and records it, with its
   provenance, in the module-level registry; see "Extension commands and the
@@ -1812,14 +1824,17 @@ S3) as the only source of truth for configuration.
 
 Every CLI command and serve handler that changes config-tier files writes to the
 `config/` subdirectory resolved by `DatastorePathResolver`, then pushes to the
-remote with `pushManagedConfigChanges` (`src/cli/managed_config_sync.ts`):
+remote through `src/cli/managed_config_sync.ts`: `pushManagedConfigChanges` for
+definitions and vault configs, and the per-path helpers for the extension
+lockfile:
 
 | Mutation type | Config-tier path | CLI push | Serve push |
 |---------------|-----------------|----------|------------|
 | Model definition create/edit | `config/models/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
-| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2429) | `pushManagedConfigChangesDeferred`, skipped when the datastore-extension exemption records into the in-repo lockfile | `ctx.syncService.pushChanged` after marking the lockfile |
+| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | `pushManagedConfigPathsDeferred` with the lockfile path, no bulk mark; skipped when the datastore-extension exemption records into the in-repo lockfile | `ctx.syncService.pushChanged` after `markExtensionChanges` marks the lockfile |
+| Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | `pushManagedLockfileIfChangedDeferred`, only when the lockfile's content changed | — |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 
 Auto-definitions are a normal datastore subdirectory
@@ -1914,7 +1929,7 @@ Recommended init container sequence for a stateless pod:
 2. **`swamp datastore setup extension`**: configure the datastore backend.
 3. **`swamp datastore sync --pull`**: hydrate the local cache from the remote,
    including `config/` (definitions and the lockfile). Pulled extension sources
-   are not loaded from the remote (swamp-club#2429); step 5 restores them into
+   are not loaded from the remote (swamp-club#2612); step 5 restores them into
    the repo's pulled root.
 4. **`swamp datastore config migrate`**: idempotent. First boot copies local
    config into the datastore tier and pushes; later boots the sentinel skips the
@@ -1956,14 +1971,31 @@ When a pod boots and logs "N pulled extension(s) have missing source files":
 
 ### Extension auto-reload via config poller
 
-With `managedConfig`, the config poller pulls `config/pulled-extensions/`
-separately from the rest of `config/` and calls `performServeReload` only when
-extension files changed. Definition-only changes (model, vault or workflow YAML
-edits) invalidate catalogs without reloading extension registries. Because
-extension sources are not pushed (they stay in each repo's pulled root until
-swamp-club#2429), another instance's `extension pull` or `extension install`
-changes only the lockfile here, so it does not trigger this reload. A running
-serve learns extension types only at boot or on reload, so each pod needs
-`extension install` followed by `swamp serve reload` or a restart. Until
-swamp-club#2429, `--hot-reload` is therefore needed for extension registration
-as well as for trigger overrides and workflow reloading.
+With `managedConfig`, serve builds the config poller whether or not it has a
+sync service. Each poll pulls `config/` when a sync service exists, and
+invalidates catalogs when the pull reports files changed or an unknown count
+(`void`). A cycle skipped for a busy sync gate invalidates nothing. The poll then
+hashes the config-tier lockfile and compares it with the last hash it acted on.
+That baseline is seeded at boot, right after `pullManagedConfigAtBoot`, so the
+registries' first load is not repeated. When the hash differs, the poller
+advances the baseline and calls `performServeReload`. A change that lands while
+the reload runs is picked up on the next poll.
+
+So a peer's `extension pull`, `update`, `rm` or version pin now reloads serve,
+and so does a CLI extension write on the same host, or a handler's own write.
+Only a lockfile change triggers it. Definition-only changes (model, vault or
+workflow YAML edits) invalidate catalogs without reloading the registries.
+
+The reloader reports `ok`, `failed` or `busy`. `busy` means another reload was
+running, and serve's `Reload already in progress` response maps to it. A busy
+reload stays pending and is retried on the next poll. A failed reload is retried
+up to three times per lockfile version, then waits for the next change. Only
+the first and last failures are warnings.
+
+The reload re-bundles from the pod's own pulled root. Extension sources are not
+pushed (they stay in each repo's pulled root until swamp-club#2612), so a peer's
+new extension still needs `extension install` on each pod before it can
+register. Serve also cannot unregister a removed extension's types yet, so a
+peer's `rm` reloads serve without dropping them. Until swamp-club#2612,
+`--hot-reload` is therefore needed for extension registration as well as for
+trigger overrides and workflow reloading.

@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertGreater } from "@std/assert";
-import { ConfigPoller } from "./config_poller.ts";
+import { ConfigPoller, MAX_FAILED_RELOAD_ATTEMPTS } from "./config_poller.ts";
+import type { ExtensionReloadStatus } from "./extension_reload.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
   DatastoreSyncOptions,
@@ -80,11 +81,24 @@ function createCallbackTrackers() {
     catalogInvalidate: () => {
       state.catalogInvalidateCalls++;
     },
-    extensionReloader: () => {
+    extensionReloader: (): Promise<ExtensionReloadStatus> => {
       state.extensionReloaderCalls++;
-      return Promise.resolve();
+      return Promise.resolve("ok");
     },
   };
+}
+
+/** A lockfile whose hash a test changes, counting each read. */
+function createLockfile(initial: string | null = "hash-a") {
+  const lockfile = {
+    hash: initial,
+    reads: 0,
+    lockfileHash: (): Promise<string | null> => {
+      lockfile.reads++;
+      return Promise.resolve(lockfile.hash);
+    },
+  };
+  return lockfile;
 }
 
 Deno.test("ConfigPoller: start and stop lifecycle completes cleanly", async () => {
@@ -95,6 +109,7 @@ Deno.test("ConfigPoller: start and stop lifecycle completes cleanly", async () =
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 50,
   });
 
@@ -111,6 +126,7 @@ Deno.test("ConfigPoller: pullChanged is called with subdirs config", async () =>
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
   });
 
@@ -130,6 +146,7 @@ Deno.test("ConfigPoller: namespace is passed through to pullChanged", async () =
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
     namespace: "test-namespace",
   });
@@ -150,6 +167,7 @@ Deno.test("ConfigPoller: invalidates catalogs when pullChanged returns count > 0
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
   });
 
@@ -173,6 +191,7 @@ Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns 0
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
   });
 
@@ -184,8 +203,9 @@ Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns 0
   assertEquals(state.extensionReloaderCalls, 0);
 });
 
-Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns void", async () => {
-  const sync = createMockSyncService({ pullResult: undefined });
+Deno.test("ConfigPoller: invalidates catalogs when pullChanged returns void", async () => {
+  // The sync contract treats an unknown count as a changed cache.
+  const sync = createMockSyncService({ pullResultFn: () => undefined });
   const { state, catalogInvalidate, extensionReloader } =
     createCallbackTrackers();
 
@@ -193,15 +213,50 @@ Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns v
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
   });
 
   poller.start();
-  await waitFor(() => sync.pullCalls.length >= 2, "at least two pulls");
+  await waitFor(
+    () => state.catalogInvalidateCalls >= 1,
+    "catalog invalidation",
+  );
   await poller.stop();
 
-  assertEquals(state.catalogInvalidateCalls, 0);
   assertEquals(state.extensionReloaderCalls, 0);
+});
+
+Deno.test("ConfigPoller: a cycle skipped for a busy sync gate does not invalidate catalogs", async () => {
+  const sync = createMockSyncService({ pullResultFn: () => undefined });
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+  const lockfile = createLockfile();
+  const gate = createSyncGate();
+
+  let release!: () => void;
+  const released = new Promise<void>((r) => release = r);
+  const mutation = withSyncGate(gate, () => released);
+
+  const poller = new ConfigPoller({
+    syncService: sync,
+    syncGate: gate,
+    catalogInvalidate,
+    extensionReloader,
+    lockfileHash: lockfile.lockfileHash,
+    pollIntervalMs: 5,
+  });
+
+  poller.start();
+  await waitFor(() => lockfile.reads >= 2, "two skipped polls");
+  const pullsWhileHeld = sync.pullCalls.length;
+  const invalidationsWhileHeld = state.catalogInvalidateCalls;
+  release();
+  await mutation;
+  await poller.stop();
+
+  assertEquals(pullsWhileHeld, 0);
+  assertEquals(invalidationsWhileHeld, 0);
 });
 
 Deno.test("ConfigPoller: survives pullChanged throwing an error", async () => {
@@ -214,6 +269,7 @@ Deno.test("ConfigPoller: survives pullChanged throwing an error", async () => {
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
   });
 
@@ -232,6 +288,7 @@ Deno.test("ConfigPoller: serializes pulls — skips tick while pulling", async (
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 20,
   });
 
@@ -253,6 +310,7 @@ Deno.test("ConfigPoller: double start does not create duplicate timers", async (
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
   });
 
@@ -284,6 +342,7 @@ Deno.test("ConfigPoller: stop awaits pending pull before returning", async () =>
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 20,
   });
 
@@ -304,6 +363,7 @@ Deno.test("ConfigPoller: respects custom pollIntervalMs", async () => {
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 80,
   });
 
@@ -327,6 +387,7 @@ Deno.test("ConfigPoller: stop on never-started poller is a no-op", async () => {
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
   });
 
   await poller.stop();
@@ -341,6 +402,7 @@ Deno.test("ConfigPoller: can be restarted after stop", async () => {
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
   });
 
@@ -368,6 +430,7 @@ Deno.test("ConfigPoller: without namespace, pullChanged options omit namespace",
     syncService: sync,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 30,
   });
 
@@ -388,6 +451,7 @@ Deno.test("ConfigPoller: pull holds the sync gate, so it cannot interleave a mut
     syncGate: gate,
     catalogInvalidate,
     extensionReloader,
+    lockfileHash: createLockfile().lockfileHash,
     pollIntervalMs: 1,
   });
 
@@ -415,131 +479,298 @@ Deno.test("ConfigPoller: pull holds the sync gate, so it cannot interleave a mut
   assertEquals(typeof sync.pullCalls[0].signal, "object");
 });
 
-Deno.test("ConfigPoller: awaits async extensionReloader when extension files change", async () => {
-  const sync = createMockSyncService({ pullResult: 2 });
-  let reloaderCompleted = false;
-  const poller = new ConfigPoller({
-    syncService: sync,
-    catalogInvalidate: () => {},
-    extensionSubdirs: ["config/pulled-extensions"],
-    extensionReloader: async () => {
-      await new Promise<void>((r) => setTimeout(r, 20));
-      reloaderCompleted = true;
-    },
-    pollIntervalMs: 30,
-  });
-
-  poller.start();
-  await waitFor(() => reloaderCompleted, "extension reloader completed");
-  await poller.stop();
-
-  assertEquals(reloaderCompleted, true);
-});
-
-Deno.test("ConfigPoller: survives extensionReloader throwing an error", async () => {
-  const sync = createMockSyncService({ pullResult: 1 });
-  let reloaderCalls = 0;
-  const poller = new ConfigPoller({
-    syncService: sync,
-    catalogInvalidate: () => {},
-    extensionSubdirs: ["config/pulled-extensions"],
-    extensionReloader: () => {
-      reloaderCalls++;
-      return Promise.reject(new Error("reload failed"));
-    },
-    pollIntervalMs: 30,
-  });
-
-  poller.start();
-  await waitFor(
-    () => reloaderCalls >= 2,
-    "reloader called at least twice despite errors",
-  );
-  await poller.stop();
-
-  assertGreater(reloaderCalls, 1);
-});
-
-Deno.test("ConfigPoller: does not call extensionReloader when only definition files change", async () => {
-  const sync = createMockSyncService({
-    pullResultFn: (options) => {
-      const subdirs = options.subdirs as readonly string[] | undefined;
-      if (subdirs?.includes("config/pulled-extensions")) return 0;
-      return 3;
-    },
-  });
+Deno.test("ConfigPoller: a lockfile-only change runs the extension reloader once", async () => {
+  const sync = createMockSyncService({ pullResult: 0 });
   const { state, catalogInvalidate, extensionReloader } =
     createCallbackTrackers();
+  const lockfile = createLockfile("hash-a");
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionSubdirs: ["config/pulled-extensions"],
     extensionReloader,
-    pollIntervalMs: 30,
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
   });
 
   poller.start();
+  await waitFor(() => lockfile.reads >= 2, "two polls");
+  assertEquals(state.extensionReloaderCalls, 0);
+
+  lockfile.hash = "hash-b";
+  await waitFor(() => state.extensionReloaderCalls >= 1, "reload");
+  const readsAfterReload = lockfile.reads;
   await waitFor(
-    () => state.catalogInvalidateCalls >= 1,
-    "catalog invalidation",
+    () => lockfile.reads >= readsAfterReload + 2,
+    "two more polls",
   );
   await poller.stop();
 
+  assertEquals(state.extensionReloaderCalls, 1);
+  assertEquals(state.catalogInvalidateCalls, 0);
+});
+
+Deno.test("ConfigPoller: pulled files without a lockfile change invalidate catalogs but do not reload", async () => {
+  const sync = createMockSyncService({ pullResult: 3 });
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+  const lockfile = createLockfile("hash-a");
+
+  const poller = new ConfigPoller({
+    syncService: sync,
+    catalogInvalidate,
+    extensionReloader,
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  await waitFor(() => lockfile.reads >= 2, "two polls");
+  assertEquals(state.extensionReloaderCalls, 0);
   assertGreater(state.catalogInvalidateCalls, 0);
+
+  // Archives arrive in one poll, the lockfile in a later one: one reload.
+  lockfile.hash = "hash-b";
+  await waitFor(() => state.extensionReloaderCalls >= 1, "reload");
+  const readsAfterReload = lockfile.reads;
+  await waitFor(
+    () => lockfile.reads >= readsAfterReload + 2,
+    "two more polls",
+  );
+  await poller.stop();
+
+  assertEquals(state.extensionReloaderCalls, 1);
+});
+
+Deno.test("ConfigPoller: a void pull with an unchanged lockfile does not reload", async () => {
+  const sync = createMockSyncService({ pullResultFn: () => undefined });
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+  const lockfile = createLockfile("hash-a");
+
+  const poller = new ConfigPoller({
+    syncService: sync,
+    catalogInvalidate,
+    extensionReloader,
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  await waitFor(() => lockfile.reads >= 3, "three polls");
+  await poller.stop();
+
   assertEquals(state.extensionReloaderCalls, 0);
 });
 
-Deno.test("ConfigPoller: calls extensionReloader only when extension subdirs have changes", async () => {
-  const sync = createMockSyncService({
-    pullResultFn: (options) => {
-      const subdirs = options.subdirs as readonly string[] | undefined;
-      if (subdirs?.includes("config/pulled-extensions")) return 2;
-      return 0;
-    },
-  });
+Deno.test("ConfigPoller: a baseline matching the boot lockfile causes no reload", async () => {
   const { state, catalogInvalidate, extensionReloader } =
     createCallbackTrackers();
+  const lockfile = createLockfile("hash-a");
 
   const poller = new ConfigPoller({
-    syncService: sync,
     catalogInvalidate,
-    extensionSubdirs: ["config/pulled-extensions"],
     extensionReloader,
-    pollIntervalMs: 30,
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
   });
 
   poller.start();
-  await waitFor(
-    () => state.extensionReloaderCalls >= 1,
-    "extension reloader called",
-  );
+  await waitFor(() => lockfile.reads >= 3, "three polls");
   await poller.stop();
 
-  assertGreater(state.catalogInvalidateCalls, 0);
-  assertGreater(state.extensionReloaderCalls, 0);
+  assertEquals(state.extensionReloaderCalls, 0);
 });
 
-Deno.test("ConfigPoller: pulls extension subdirs before config subdirs", async () => {
-  const sync = createMockSyncService({ pullResult: 0 });
-  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
+Deno.test("ConfigPoller: without a baseline the first poll seeds it without reloading", async () => {
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+  const lockfile = createLockfile("hash-a");
 
   const poller = new ConfigPoller({
-    syncService: sync,
     catalogInvalidate,
-    extensionSubdirs: ["config/pulled-extensions"],
     extensionReloader,
-    pollIntervalMs: 30,
+    lockfileHash: lockfile.lockfileHash,
+    pollIntervalMs: 10,
   });
 
   poller.start();
-  // Two pulls per tick: extension subdirs first, then config
-  await waitFor(() => sync.pullCalls.length >= 2, "at least two pulls");
+  await waitFor(() => lockfile.reads >= 2, "two polls");
+  assertEquals(state.extensionReloaderCalls, 0);
+
+  lockfile.hash = "hash-b";
+  await waitFor(() => state.extensionReloaderCalls >= 1, "reload");
   await poller.stop();
 
-  assertEquals(
-    sync.pullCalls[0].subdirs,
-    ["config/pulled-extensions"],
+  assertEquals(state.extensionReloaderCalls, 1);
+});
+
+Deno.test("ConfigPoller: a lockfile that appears or disappears counts as a change", async () => {
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+  const lockfile = createLockfile(null);
+
+  const poller = new ConfigPoller({
+    catalogInvalidate,
+    extensionReloader,
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: null,
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  lockfile.hash = "hash-a";
+  await waitFor(() => state.extensionReloaderCalls >= 1, "reload on create");
+  lockfile.hash = null;
+  await waitFor(() => state.extensionReloaderCalls >= 2, "reload on delete");
+  await poller.stop();
+
+  assertEquals(state.extensionReloaderCalls, 2);
+});
+
+Deno.test("ConfigPoller: without a sync service it never pulls and still reloads on a lockfile change", async () => {
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+  const lockfile = createLockfile("hash-a");
+
+  const poller = new ConfigPoller({
+    catalogInvalidate,
+    extensionReloader,
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  lockfile.hash = "hash-b";
+  await waitFor(() => state.extensionReloaderCalls >= 1, "reload");
+  await poller.stop();
+
+  assertEquals(state.catalogInvalidateCalls, 0);
+});
+
+Deno.test("ConfigPoller: a busy reload stays pending and is retried until it succeeds", async () => {
+  const statuses: ExtensionReloadStatus[] = ["busy", "busy", "ok"];
+  let calls = 0;
+  const lockfile = createLockfile("hash-a");
+
+  const poller = new ConfigPoller({
+    catalogInvalidate: () => {},
+    extensionReloader: () => Promise.resolve(statuses[calls++] ?? "ok"),
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  lockfile.hash = "hash-b";
+  await waitFor(() => calls >= 3, "three reload attempts");
+  const readsAfterOk = lockfile.reads;
+  await waitFor(() => lockfile.reads >= readsAfterOk + 2, "two more polls");
+  await poller.stop();
+
+  assertEquals(calls, 3);
+});
+
+Deno.test("ConfigPoller: a failed reload is retried up to the cap, then waits for the next lockfile change", async () => {
+  let calls = 0;
+  const lockfile = createLockfile("hash-a");
+
+  const poller = new ConfigPoller({
+    catalogInvalidate: () => {},
+    extensionReloader: () => {
+      calls++;
+      return Promise.resolve("failed");
+    },
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  lockfile.hash = "hash-b";
+  await waitFor(
+    () => calls >= MAX_FAILED_RELOAD_ATTEMPTS,
+    "reload attempts up to the cap",
   );
-  assertEquals(sync.pullCalls[1].subdirs, ["config"]);
+  const readsAtCap = lockfile.reads;
+  await waitFor(() => lockfile.reads >= readsAtCap + 2, "two more polls");
+  assertEquals(calls, MAX_FAILED_RELOAD_ATTEMPTS);
+
+  lockfile.hash = "hash-c";
+  await waitFor(
+    () => calls > MAX_FAILED_RELOAD_ATTEMPTS,
+    "a fresh attempt after the next change",
+  );
+  await poller.stop();
+});
+
+Deno.test("ConfigPoller: a throwing reloader counts as failed and the poller keeps running", async () => {
+  let calls = 0;
+  const lockfile = createLockfile("hash-a");
+
+  const poller = new ConfigPoller({
+    catalogInvalidate: () => {},
+    extensionReloader: () => {
+      calls++;
+      return Promise.reject(new Error("reload failed"));
+    },
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  lockfile.hash = "hash-b";
+  await waitFor(() => calls >= 2, "reloader retried after throwing");
+  await poller.stop();
+
+  assertGreater(calls, 1);
+});
+
+Deno.test("ConfigPoller: a lockfile change landing during a reload triggers another reload", async () => {
+  let calls = 0;
+  const lockfile = createLockfile("hash-a");
+
+  const poller = new ConfigPoller({
+    catalogInvalidate: () => {},
+    extensionReloader: () => {
+      calls++;
+      if (calls === 1) lockfile.hash = "hash-c";
+      return Promise.resolve("ok");
+    },
+    lockfileHash: lockfile.lockfileHash,
+    baselineLockfileHash: "hash-a",
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  lockfile.hash = "hash-b";
+  await waitFor(() => calls >= 2, "second reload for the mid-reload change");
+  const readsAfter = lockfile.reads;
+  await waitFor(() => lockfile.reads >= readsAfter + 2, "two more polls");
+  await poller.stop();
+
+  assertEquals(calls, 2);
+});
+
+Deno.test("ConfigPoller: survives the lockfile hash read throwing", async () => {
+  let reads = 0;
+  const poller = new ConfigPoller({
+    catalogInvalidate: () => {},
+    extensionReloader: () => Promise.resolve("ok"),
+    lockfileHash: () => {
+      reads++;
+      return Promise.reject(new Error("permission denied"));
+    },
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  await waitFor(() => reads >= 2, "hash read retried on the next poll");
+  await poller.stop();
 });

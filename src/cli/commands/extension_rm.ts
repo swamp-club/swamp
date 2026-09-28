@@ -28,7 +28,7 @@ import {
   requireRepoMarker,
   resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
-import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
+import { pushManagedConfigPathsDeferred } from "../managed_config_sync.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import {
@@ -171,5 +171,5 @@ export const extensionRemoveCommand = withRemoteOptions(
     deps.repository.close();
   }
 
-  await pushManagedConfigChangesDeferred(repoDir, marker);
+  await pushManagedConfigPathsDeferred(repoDir, marker, [lockfilePath]);
 });

@@ -93,6 +93,10 @@ import {
   resolveManagedConfigPaths,
 } from "../repo_context.ts";
 import {
+  pushManagedLockfileIfChangedDeferred,
+  snapshotLockfileHash,
+} from "../managed_config_sync.ts";
+import {
   type DatastoreEnvReader,
   isExtensionBackedDatastore,
 } from "../../infrastructure/persistence/managed_config_lockfile.ts";
@@ -360,6 +364,9 @@ export const doctorExtensionsCommand = withRemoteOptions(
     });
 
     const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
+    const lockfileHashBefore = repair && !rescanSkipped
+      ? await snapshotLockfileHash(lockfilePath)
+      : null;
     await consumeStream(
       doctorExtensions({
         registries,
@@ -484,6 +491,17 @@ export const doctorExtensionsCommand = withRemoteOptions(
       }),
       renderer.handlers(),
     );
+
+    // A repair re-pull can rewrite the lockfile; publish it like the other
+    // extension writers. Before the exit below, which would skip it.
+    if (repair && !rescanSkipped && !dryRun) {
+      await pushManagedLockfileIfChangedDeferred(
+        repoDir,
+        marker,
+        lockfilePath,
+        lockfileHashBefore,
+      );
+    }
 
     cliCtx.logger.debug("doctor extensions command completed");
 

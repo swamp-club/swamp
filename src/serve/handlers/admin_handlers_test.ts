@@ -475,7 +475,7 @@ Deno.test("handleExtensionRm: marks only the config-tier lockfile before the pus
 
       assertEquals(JSON.parse(socket.sent[0]).type, "extension.rm");
       // Extension sources still live outside the datastore tier
-      // (swamp-club#2429), so the lockfile is the only file to mark. A bare
+      // (swamp-club#2612), so the lockfile is the only file to mark. A bare
       // markDirty() would turn the push into a walk of the whole cache.
       assertEquals(events, [
         { kind: "mark", relPath: "config/upstream_extensions.json" },
