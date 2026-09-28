@@ -23,6 +23,7 @@ import {
   type RunArtifactRef,
   type RunArtifacts,
   runArtifacts,
+  runReportNames,
 } from "./run_report.ts";
 
 function reportRef(
@@ -194,4 +195,37 @@ Deno.test("runArtifacts: lists step artifacts before workflow-scope ones", () =>
     workflowDataArtifacts: [{ dataId: "2", name: "b", version: 1 }],
   };
   assertEquals(runArtifacts(run).map((a) => a.ref.name), ["a", "b"]);
+});
+
+Deno.test("runReportNames: lists each recorded report once, without -json twins", () => {
+  const run: RunArtifacts = {
+    jobs: [{
+      name: "main",
+      steps: [{
+        name: "a",
+        dataArtifacts: [
+          { dataId: "1", name: "result", version: 1, tags: {} },
+          ...withJsonTwin(
+            reportRef(
+              "report-swamp-method-summary",
+              "@swamp/method-summary",
+              1,
+            ),
+          ),
+        ],
+      }, {
+        name: "b",
+        dataArtifacts: withJsonTwin(
+          reportRef("report-swamp-method-summary", "@swamp/method-summary", 2),
+        ),
+      }],
+    }],
+    workflowDataArtifacts: withJsonTwin(
+      reportRef("report-swamp-workflow-summary", "@swamp/workflow-summary", 1),
+    ),
+  };
+  assertEquals(runReportNames(run), [
+    "@swamp/method-summary",
+    "@swamp/workflow-summary",
+  ]);
 });

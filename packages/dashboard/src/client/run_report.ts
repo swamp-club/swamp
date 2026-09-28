@@ -112,3 +112,14 @@ export function resolveRunReport(
   if (matches.length === 1) return { kind: "found", artifact: matches[0] };
   return { kind: "ambiguous", candidates: matches };
 }
+
+/** The distinct report names whose output the run recorded, sorted. */
+export function runReportNames(run: RunArtifacts): string[] {
+  const all = runArtifacts(run);
+  const names = new Set<string>();
+  for (const artifact of all) {
+    const name = artifact.ref.tags?.reportName;
+    if (name && isReportOutput(artifact, all)) names.add(name);
+  }
+  return [...names].sort();
+}

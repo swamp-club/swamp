@@ -27,7 +27,11 @@ import {
   formatBytes,
   prettyJson,
 } from "../client/content_kind.ts";
-import { resolveRunReport, type RunArtifacts } from "../client/run_report.ts";
+import {
+  resolveRunReport,
+  type RunArtifacts,
+  runReportNames,
+} from "../client/run_report.ts";
 import { CodeBlock } from "../components/CodeBlock";
 import { DetailLink } from "../components/DetailLink";
 import { Markdown } from "../components/Markdown";
@@ -524,11 +528,13 @@ function RunReportDetail(
       <Notice>
         {resolution.kind === "notFound"
           ? (
-            <>
-              This run did not record a {target.reportName} report. Open the
-              {" "}
-              <DetailLink to={runLink}>run</DetailLink>.
-            </>
+            <NotRecorded
+              reportName={target.reportName}
+              recorded={runReportNames(run)}
+              workflowName={target.workflowName}
+              runId={target.runId}
+              runLink={runLink}
+            />
           )
           : (
             <>
@@ -557,6 +563,54 @@ function RunReportDetail(
             </>
           )}
       </Notice>
+    </>
+  );
+}
+
+/**
+ * The run has no report by this name. A link cut short by line wrapping or a
+ * chat client usually lands here with a partial name, so list the reports the
+ * run did record.
+ */
+function NotRecorded(
+  { reportName, recorded, workflowName, runId, runLink }: {
+    reportName: string;
+    recorded: string[];
+    workflowName: string;
+    runId: string;
+    runLink: NonNullable<DetailView>;
+  },
+) {
+  return (
+    <>
+      This run did not record a {reportName} report. {recorded.length > 0
+        ? (
+          <>
+            It recorded:
+            <ul style={{ margin: "8px 0", padding: 0, listStyle: "none" }}>
+              {recorded.map((name) => (
+                <li key={name}>
+                  <DetailLink
+                    to={{
+                      kind: "runReport",
+                      workflowName,
+                      runId,
+                      reportName: name,
+                    }}
+                  >
+                    {name}
+                  </DetailLink>
+                </li>
+              ))}
+            </ul>
+            Or open the <DetailLink to={runLink}>run</DetailLink>.
+          </>
+        )
+        : (
+          <>
+            Open the <DetailLink to={runLink}>run</DetailLink>.
+          </>
+        )}
     </>
   );
 }
