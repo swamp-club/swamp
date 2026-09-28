@@ -36,6 +36,7 @@ import {
   filterByAuthorization,
   LibSwampStreamError,
   listTokenSessions,
+  MAX_STREAM_SESSIONS_PER_PRINCIPAL,
   MAX_STREAM_SESSIONS_PER_TOKEN,
   paginate,
   registerStreamSession,
@@ -818,7 +819,7 @@ interface FakeStream {
 function openStream(
   name: string,
   createdAt: string,
-  principalId = "user:alice",
+  principalId = `user:${crypto.randomUUID()}`,
   sourceIp = "192.0.2.20",
 ): FakeStream {
   const closes: { code: number; reason: string }[] = [];
@@ -989,6 +990,47 @@ Deno.test("registerStreamSession: refuses a token's stream past the cap, across 
   for (const stream of streams) stream.unregister();
   other.unregister();
   assertEquals(sessionsFor(name), []);
+});
+
+Deno.test("registerStreamSession: refuses a principal's stream past the cap, across tokens", () => {
+  const principal = `user:${crypto.randomUUID()}`;
+  const names = Array.from(
+    { length: 3 },
+    () => `tok-${crypto.randomUUID()}`,
+  );
+  const streams = Array.from(
+    { length: MAX_STREAM_SESSIONS_PER_PRINCIPAL },
+    (_, i) => openStream(names[i % 2], MINT_1, principal),
+  );
+  const someoneElse = openStream(names[2], MINT_1);
+
+  const refused = registerStreamSession(
+    { name: names[2], createdAt: MINT_1, principalId: principal },
+    { sourceIp: "192.0.2.20", close: () => {} },
+  );
+  assertEquals(refused, null);
+
+  streams[0].unregister();
+  const freed = openStream(names[2], MINT_1, principal);
+
+  freed.unregister();
+  for (const stream of streams) stream.unregister();
+  someoneElse.unregister();
+  for (const name of names) assertEquals(sessionsFor(name), []);
+});
+
+Deno.test("registerStreamSession: a principal's streams closed by revocation free its cap", () => {
+  const principal = `user:${crypto.randomUUID()}`;
+  const names = [`tok-${crypto.randomUUID()}`, `tok-${crypto.randomUUID()}`];
+  for (let i = 0; i < MAX_STREAM_SESSIONS_PER_PRINCIPAL; i++) {
+    openStream(names[i % 2], MINT_1, principal);
+  }
+
+  closeConnectionsForPrincipal(principal);
+  const reopened = openStream(names[0], MINT_1, principal);
+
+  reopened.unregister();
+  for (const name of names) assertEquals(sessionsFor(name), []);
 });
 
 Deno.test("updateCollectivesForPrincipal: ends that principal's streams so they reconnect with the new access", () => {

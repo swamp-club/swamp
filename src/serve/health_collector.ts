@@ -104,6 +104,14 @@ export interface HealthCollectorDeps {
   readonly scheduleEnabled: boolean;
   readonly webhookProvider: WebhookProvider | null;
   readonly remoteOnly: boolean;
+  /**
+   * How long, in milliseconds, one collected snapshot is served to every
+   * caller before the next call collects again. Defaults to 0: every call
+   * collects (callers arriving while a collection runs still share it).
+   */
+  readonly snapshotMaxAgeMs?: number;
+  /** Monotonic clock for the snapshot age. Defaults to `performance.now`. */
+  readonly now?: () => number;
   readonly onHealthTransition?: (
     previous: HealthStatus,
     current: HealthStatus,
@@ -125,17 +133,38 @@ export class HealthCollector {
   readonly #deps: HealthCollectorDeps;
   #inflight: Promise<HealthSnapshot> | null = null;
   #previousStatus: HealthStatus | null = null;
+  #cached: { snapshot: HealthSnapshot; collectedAt: number } | null = null;
 
   constructor(deps: HealthCollectorDeps) {
     this.#deps = deps;
   }
 
+  /**
+   * Returns a health snapshot. Within `snapshotMaxAgeMs` of the last
+   * collection it returns that snapshot, so any number of readers and stream
+   * ticks cost one collection, component probes included. A failed
+   * collection is not kept.
+   */
   collect(signal?: AbortSignal): Promise<HealthSnapshot> {
+    const now = this.#deps.now ?? (() => performance.now());
+    const maxAgeMs = this.#deps.snapshotMaxAgeMs ?? 0;
+    if (this.#cached) {
+      const age = now() - this.#cached.collectedAt;
+      // A negative age means the clock went backwards: treat it as expired.
+      if (age >= 0 && age < maxAgeMs) {
+        return Promise.resolve(this.#cached.snapshot);
+      }
+      this.#cached = null;
+    }
     if (this.#inflight) {
       return this.#inflight;
     }
 
-    const p = this.#buildSnapshot(signal).finally(() => {
+    const collectedAt = now();
+    const p = this.#buildSnapshot(signal).then((snapshot) => {
+      if (maxAgeMs > 0) this.#cached = { snapshot, collectedAt };
+      return snapshot;
+    }).finally(() => {
       this.#inflight = null;
     });
     this.#inflight = p;

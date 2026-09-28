@@ -75,6 +75,76 @@ export function createHealthResourceResolver(repos: {
   };
 }
 
+/** Resolved entries a cached resolver holds before sweeping expired ones. */
+const MAX_CACHED_HEALTH_RESOURCES = 1024;
+
+export interface CachedHealthResourceResolverOptions {
+  /** How long, in milliseconds, one resolution is reused. */
+  readonly ttlMs: number;
+  /** Monotonic clock. Defaults to `performance.now`. */
+  readonly now?: () => number;
+}
+
+/**
+ * Reuses each resolution for `ttlMs` across snapshots, so health readers and
+ * stream ticks do not look the same workflow or model up in the repositories
+ * again and again. Callers asking at once share one lookup, and a lookup that
+ * fails is not kept.
+ *
+ * Only the resource is reused, never a read decision: every reader is still
+ * judged on its own grants against it. A tag edit that changes which grants
+ * match can therefore take up to `ttlMs` to change which health entries a
+ * reader sees. Changes to a principal's access are unaffected, since those end
+ * the principal's health streams.
+ */
+export function cachedHealthResourceResolver(
+  inner: HealthResourceResolver,
+  options: CachedHealthResourceResolverOptions,
+): HealthResourceResolver {
+  const now = options.now ?? (() => performance.now());
+  const entries = new Map<
+    string,
+    { resource: Promise<AccessResource | null>; resolvedAt: number }
+  >();
+  // A negative age means the clock went backwards: treat it as expired.
+  const fresh = (resolvedAt: number, at: number) => {
+    const age = at - resolvedAt;
+    return age >= 0 && age < options.ttlMs;
+  };
+
+  const resolve = (
+    kind: "workflow" | "model",
+    idOrName: string,
+  ): Promise<AccessResource | null> => {
+    const key = `${kind}:${idOrName}`;
+    const at = now();
+    const entry = entries.get(key);
+    if (entry && fresh(entry.resolvedAt, at)) return entry.resource;
+
+    if (entries.size >= MAX_CACHED_HEALTH_RESOURCES) {
+      for (const [k, e] of entries) {
+        if (!fresh(e.resolvedAt, at)) entries.delete(k);
+      }
+      if (entries.size >= MAX_CACHED_HEALTH_RESOURCES) entries.clear();
+    }
+
+    const cached = {
+      resource: inner[kind](idOrName).catch((error: unknown) => {
+        if (entries.get(key) === cached) entries.delete(key);
+        throw error;
+      }),
+      resolvedAt: at,
+    };
+    entries.set(key, cached);
+    return cached.resource;
+  };
+
+  return {
+    workflow: (idOrName) => resolve("workflow", idOrName),
+    model: (idOrName) => resolve("model", idOrName),
+  };
+}
+
 /**
  * The health snapshot as one reader may see it. Admins get it whole. Anyone
  * else sees the runs, schedules and webhooks of the workflows and models they

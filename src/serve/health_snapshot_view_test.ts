@@ -17,11 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStrictEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
 import type { AccessResource } from "../domain/access/mod.ts";
 import type { ReadAuthorizer } from "./admin_auth.ts";
 import type { HealthSnapshot } from "./health_collector.ts";
 import {
+  cachedHealthResourceResolver,
   type HealthResourceResolver,
   healthSnapshotFor,
 } from "./health_snapshot_view.ts";
@@ -241,4 +242,159 @@ Deno.test("healthSnapshotFor: an entry that cannot be resolved is hidden", async
 
   assertEquals(view.activeRuns, []);
   assertEquals(view.webhooks, []);
+});
+
+/** Wraps RESOLVER, counting lookups per kind and name. */
+function countingResolver(): {
+  resolver: HealthResourceResolver;
+  lookups: (key: string) => number;
+} {
+  const counts = new Map<string, number>();
+  const count = (key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
+  return {
+    resolver: {
+      workflow: (idOrName) => {
+        count(`workflow:${idOrName}`);
+        return RESOLVER.workflow(idOrName);
+      },
+      model: (idOrName) => {
+        count(`model:${idOrName}`);
+        return RESOLVER.model(idOrName);
+      },
+    },
+    lookups: (key) => counts.get(key) ?? 0,
+  };
+}
+
+Deno.test("cachedHealthResourceResolver: reuses a resolution within the ttl", async () => {
+  const { resolver, lookups } = countingResolver();
+  let clock = 1_000;
+  const cached = cachedHealthResourceResolver(resolver, {
+    ttlMs: 5_000,
+    now: () => clock,
+  });
+
+  const first = await cached.workflow("nightly");
+  clock += 4_999;
+  const second = await cached.workflow("nightly");
+
+  assertEquals(lookups("workflow:nightly"), 1);
+  assertStrictEquals(second, first);
+});
+
+Deno.test("cachedHealthResourceResolver: keeps workflows and models apart", async () => {
+  const { resolver, lookups } = countingResolver();
+  const cached = cachedHealthResourceResolver(resolver, {
+    ttlMs: 5_000,
+    now: () => 0,
+  });
+
+  assertEquals(await cached.model("nightly"), null);
+  assertEquals((await cached.workflow("nightly"))?.kind, "workflow");
+  assertEquals(lookups("model:nightly"), 1);
+  assertEquals(lookups("workflow:nightly"), 1);
+});
+
+Deno.test("cachedHealthResourceResolver: resolves again once the ttl has passed", async () => {
+  const { resolver, lookups } = countingResolver();
+  let clock = 1_000;
+  const cached = cachedHealthResourceResolver(resolver, {
+    ttlMs: 5_000,
+    now: () => clock,
+  });
+
+  await cached.model("echo-model");
+  clock += 5_000;
+  await cached.model("echo-model");
+
+  assertEquals(lookups("model:echo-model"), 2);
+});
+
+Deno.test("cachedHealthResourceResolver: treats a backwards clock step as expired", async () => {
+  const { resolver, lookups } = countingResolver();
+  let clock = 10_000;
+  const cached = cachedHealthResourceResolver(resolver, {
+    ttlMs: 5_000,
+    now: () => clock,
+  });
+
+  await cached.workflow("nightly");
+  clock -= 1;
+  await cached.workflow("nightly");
+
+  assertEquals(lookups("workflow:nightly"), 2);
+});
+
+Deno.test("cachedHealthResourceResolver: concurrent callers share one lookup", async () => {
+  const { resolver, lookups } = countingResolver();
+  const cached = cachedHealthResourceResolver(resolver, {
+    ttlMs: 5_000,
+    now: () => 0,
+  });
+
+  await Promise.all([
+    cached.workflow("wf-2"),
+    cached.workflow("wf-2"),
+    cached.workflow("wf-2"),
+  ]);
+
+  assertEquals(lookups("workflow:wf-2"), 1);
+});
+
+Deno.test("cachedHealthResourceResolver: does not keep a failed lookup", async () => {
+  let fail = true;
+  let calls = 0;
+  const cached = cachedHealthResourceResolver({
+    workflow: (idOrName) => {
+      calls++;
+      if (fail) return Promise.reject(new Error("repository unavailable"));
+      return RESOLVER.workflow(idOrName);
+    },
+    model: RESOLVER.model,
+  }, { ttlMs: 5_000, now: () => 0 });
+
+  await assertRejects(
+    () => cached.workflow("nightly"),
+    Error,
+    "repository unavailable",
+  );
+  fail = false;
+  assertEquals((await cached.workflow("nightly"))?.name, "nightly");
+  assertEquals(calls, 2);
+});
+
+Deno.test("cachedHealthResourceResolver: every reader is still judged on its own grants", async () => {
+  const cached = cachedHealthResourceResolver(RESOLVER, {
+    ttlMs: 5_000,
+    now: () => 0,
+  });
+  const ops = reader(false, (r) =>
+    r.fields.tags !== undefined &&
+    (r.fields.tags as Record<string, string>).team === "ops");
+  const nobody = reader(false);
+
+  const opsView = await healthSnapshotFor(snapshot(), ops, cached);
+  const nobodyView = await healthSnapshotFor(snapshot(), nobody, cached);
+
+  assertEquals(
+    opsView.scheduling.schedules.map((s) => s.workflowName),
+    ["nightly"],
+  );
+  assertEquals(nobodyView.scheduling.schedules, []);
+  assertEquals(nobodyView.activeRuns, []);
+  assertEquals(nobodyView.webhooks, []);
+});
+
+Deno.test("cachedHealthResourceResolver: stays bounded when every entry is fresh", async () => {
+  const { resolver, lookups } = countingResolver();
+  const cached = cachedHealthResourceResolver(resolver, {
+    ttlMs: 5_000,
+    now: () => 0,
+  });
+
+  await cached.workflow("nightly");
+  for (let i = 0; i < 1024; i++) await cached.workflow(`flow-${i}`);
+  await cached.workflow("nightly");
+
+  assertEquals(lookups("workflow:nightly"), 2);
 });

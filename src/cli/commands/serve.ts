@@ -221,6 +221,7 @@ import { ComponentHealthChecker } from "../../serve/component_health_checker.ts"
 import { HealthCollector } from "../../serve/health_collector.ts";
 import { createHealthStreamResponse } from "../../serve/health_stream.ts";
 import {
+  cachedHealthResourceResolver,
   createHealthResourceResolver,
   healthSnapshotFor,
 } from "../../serve/health_snapshot_view.ts";
@@ -480,6 +481,15 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 /** Up to this much random delay is added to each reconciliation tick. */
 const RECONCILIATION_JITTER_MS = 500;
+
+/** How long one health collection serves every reader: the stream minimum. */
+const HEALTH_SNAPSHOT_MAX_AGE_MS = 1_000;
+
+/**
+ * How long a health entry's resolved workflow or model is reused. Bounds how
+ * long a tag edit takes to change which entries a non-admin reader sees.
+ */
+const HEALTH_RESOURCE_CACHE_TTL_MS = 5_000;
 
 export function assertOffLoopbackSecurity(
   host: string,
@@ -4576,6 +4586,9 @@ export const serveCommand = new Command()
       scheduleEnabled: enableSchedule,
       webhookProvider: webhookService ?? null,
       remoteOnly: merged.remoteOnly,
+      // Any valid token may read health, so one collection (component
+      // probes included) serves every reader and stream tick for a second.
+      snapshotMaxAgeMs: HEALTH_SNAPSHOT_MAX_AGE_MS,
       onHealthTransition: (previous, current) => {
         emitSystemAuditEvent(
           connectionCtx,
@@ -4587,7 +4600,10 @@ export const serveCommand = new Command()
 
     connectionCtx.healthCollector = healthCollector;
 
-    const healthResources = createHealthResourceResolver(repoContext);
+    const healthResources = cachedHealthResourceResolver(
+      createHealthResourceResolver(repoContext),
+      { ttlMs: HEALTH_RESOURCE_CACHE_TTL_MS },
+    );
 
     const adminAuthDeps: AdminAuthDeps = {
       authMode: authConfig.mode,
