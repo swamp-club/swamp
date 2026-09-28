@@ -1151,10 +1151,18 @@ export class ExtensionLoader {
         // layout or datastore change), so refresh that. The row may have
         // been written under another spelling of the repo root (`/tmp/r`
         // vs `/private/tmp/r` on macOS), which changes the source-dirs
-        // fingerprint and forces this rebuild (swamp-club#2570).
+        // fingerprint and forces this rebuild (swamp-club#2570). An exact
+        // row without a usable type (tombstoned, or cleared by origin
+        // conflict resolution) does not hide one under the other spelling.
         const sourcePath = canonicalizePath(absolutePath);
-        const existing = catalog.findBySourcePath(absolutePath) ??
-          this.findRowUnderOtherSpelling(catalog, sourcePath, otherSpellings);
+        const exact = catalog.findBySourcePath(absolutePath);
+        const existing = exact !== undefined && isIndexedRow(exact)
+          ? exact
+          : this.findRowUnderOtherSpelling(
+            catalog,
+            sourcePath,
+            otherSpellings,
+          ) ?? exact;
         const indexed = existing !== undefined && isIndexedRow(existing);
         if (
           indexed && sourceFingerprint !== undefined &&
@@ -1164,17 +1172,21 @@ export class ExtensionLoader {
             // Move the row to this spelling, as the next warm scan would
             // when it drops rows for paths it no longer sees. Moving it
             // keeps one row per file, so no second row claims its type.
+            const moved = {
+              ...existing,
+              source_path: sourcePath,
+              bundle_path: bundlePath,
+              source_mtime: sourceStat.mtime?.toISOString() ?? "",
+              extension_name: existing.extension_name ?? "",
+              extension_version: existing.extension_version ?? "",
+            };
             catalog.runInTransaction(() => {
               catalog.removeByRawSourcePath(existing.source_path);
-              catalog.upsertWithIdentity({
-                ...existing,
-                source_path: sourcePath,
-                bundle_path: bundlePath,
-                source_mtime: sourceStat.mtime?.toISOString() ?? "",
-                extension_name: existing.extension_name ?? "",
-                extension_version: existing.extension_version ?? "",
-              });
+              catalog.upsertWithIdentity(moved);
             });
+            // A second spelling of the file later in this pass must match
+            // the moved row, not the one just removed.
+            otherSpellings.rows?.set(realCanonicalPath(sourcePath), moved);
           } else if (existing.bundle_path !== bundlePath) {
             catalog.upsert({
               ...existing,

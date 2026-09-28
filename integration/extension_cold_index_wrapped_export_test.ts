@@ -418,3 +418,67 @@ export const model = ${wrapped ? "withDefaults(definition)" : "definition"};
     });
   },
 });
+
+Deno.test({
+  name:
+    "cold buildIndex looks past an exact row without a usable type to the row under another spelling",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(false, async (repo) => {
+      await withSpellings(repo, async ({ real, alias }) => {
+        await reconcileUnder(repo, real);
+        const indexed = repo.catalog.findBySourcePath(
+          join(real, EXT_RELATIVE),
+        )!;
+        // As left by origin-conflict resolution: a row at the exact path
+        // whose type was cleared.
+        repo.catalog.upsert({
+          ...indexed,
+          source_path: join(alias, EXT_RELATIVE),
+          type_normalized: "",
+        });
+
+        await buildIndexUnder(repo, alias);
+
+        assertEquals(extractionWarnings(), []);
+        const after = repo.catalog.findBySourcePath(join(alias, EXT_RELATIVE));
+        assertEquals(after?.type_normalized, indexed.type_normalized);
+        assertEquals(
+          repo.catalog.findBySourcePath(join(real, EXT_RELATIVE)),
+          undefined,
+        );
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "cold buildIndex walking one file under two spellings in a pass keeps one row",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(false, async (repo) => {
+      await withSpellings(repo, async ({ real, alias }) => {
+        await reconcileUnder(repo, real);
+
+        const loader = new ExtensionLoader(
+          testDenoRuntime,
+          modelKindAdapter,
+          alias,
+          undefined,
+          repositoryUnder(repo, alias),
+        );
+        await loader.buildIndex(join(alias, "extensions", "models"), {
+          additionalDirs: [join(real, "extensions", "models")],
+          indexOnly: true,
+        });
+
+        assertEquals(extractionWarnings(), []);
+        const rows = repo.catalog.findAll().filter((row) =>
+          row.source_path.endsWith(EXT_RELATIVE)
+        );
+        assertEquals(rows.length, 1);
+      });
+    });
+  },
+});
