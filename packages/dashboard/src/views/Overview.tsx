@@ -22,10 +22,12 @@ import { useSwamp } from "../client/SwampProvider";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
 import type { HealthSnapshot } from "../client/useHealthStream";
+import { healthViewState } from "../client/health_state";
 import { StatusDot } from "../components/StatusDot";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
 import { ResumeAction } from "../components/ResumeAction";
+import { HealthUnavailable } from "../components/HealthUnavailable";
 
 interface WorkflowRunSearchItem {
   runId: string;
@@ -53,14 +55,17 @@ interface ApprovalInfo {
 
 interface OverviewProps {
   health: HealthSnapshot | null;
+  /** Serve refused the health stream for this token. */
+  healthDenied: boolean;
   onOpenRun?: (workflowName: string, runId?: string) => void;
   /** Called after a gate decision or resume, so the sidebar count refreshes. */
   onApprovalsChanged?: () => void;
 }
 
 export function Overview(
-  { health, onOpenRun, onApprovalsChanged }: OverviewProps,
+  { health, healthDenied, onOpenRun, onApprovalsChanged }: OverviewProps,
 ) {
+  const healthState = healthViewState(health, healthDenied);
   const { request } = useSwamp();
 
   const { data: runsData, refetch: refetchRuns } = useRequest(
@@ -313,7 +318,11 @@ export function Overview(
             <div className="panel-title">Upcoming Schedules</div>
           </div>
           <div>
-            {(!health?.scheduling?.schedules?.length) && (
+            {healthState !== "ready" && (
+              <HealthUnavailable state={healthState} subject="schedules" />
+            )}
+            {healthState === "ready" &&
+              !health?.scheduling?.schedules?.length && (
               <div className="loading">No schedules configured</div>
             )}
             {(health?.scheduling?.schedules ?? []).map((s) => (

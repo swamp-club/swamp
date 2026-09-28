@@ -152,8 +152,9 @@ Everything below shares the one listener, dispatched in table order
 | HTTP | `/data/*`, `/bundle/*` | worker session bearer | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
 | HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
-| HTTP GET | `/api/v1/health`, `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`), heartbeat roster, redacted merged options |
-| SSE | `/api/v1/health/stream?interval=` | admin | Health snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID` |
+| HTTP GET | `/api/v1/health` | any valid token (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`), including active runs with their principals and component messages |
+| SSE | `/api/v1/health/stream?interval=` | any valid token; at most 10 open streams per token, else 429 | Health snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID` (`src/serve/health_stream.ts`). The stream is a token session: when its token is revoked, rotated or expires, or its principal loses access, it ends with a `session-ended` event carrying the close code and reason |
+| HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
 | HTTP GET | `/internal/runs?limit=&offset=` | admin; 404 unless `--enable-internal-api` | Full run-tracker history |
 | HTTP POST | `/auth/device`, `/auth/device/token` | none (IP burst limit) | OAuth device grant, mode `oauth` only (`src/serve/device_auth_handler.ts`) |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |

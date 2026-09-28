@@ -88,7 +88,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     closeDetail,
     goUp,
   } = useRouter();
-  const health = useHealthStream();
+  const { health, denied: healthDenied } = useHealthStream();
   const auditStream = useAuditStream();
 
   const { data: approvalsData, refetch: refetchApprovals } = useRequest(
@@ -225,6 +225,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "overview" && (
                 <Overview
                   health={health}
+                  healthDenied={healthDenied}
                   onOpenRun={openRun}
                   onApprovalsChanged={refetchApprovals}
                 />
@@ -234,8 +235,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               )}
               {view === "executions" && <Executions onOpenRun={openRun} />}
               {view === "models" && <Models onOpenModel={openModel} />}
-              {view === "schedules" && <Schedules health={health} />}
-              {view === "webhooks" && <Webhooks health={health} />}
+              {view === "schedules" && (
+                <Schedules health={health} denied={healthDenied} />
+              )}
+              {view === "webhooks" && (
+                <Webhooks health={health} denied={healthDenied} />
+              )}
               {view === "approvals" && (
                 <Approvals onApprovalsChanged={refetchApprovals} />
               )}
@@ -243,7 +248,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}
               {view === "extensions" && <Extensions />}
-              {view === "system" && <System health={health} />}
+              {view === "system" && (
+                <System health={health} denied={healthDenied} />
+              )}
             </>
           )}
       </main>

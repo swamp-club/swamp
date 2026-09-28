@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { HealthSnapshot } from "../client/useHealthStream";
+import { healthViewState } from "../client/health_state";
+import { HealthUnavailable } from "../components/HealthUnavailable";
 import { useRequest } from "../client/useRequest";
 import { extractArray, extractObject } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
@@ -46,7 +48,10 @@ interface WorkerInfo {
   activeDispatchIds: string[];
 }
 
-export function System({ health }: { health: HealthSnapshot | null }) {
+export function System(
+  { health, denied }: { health: HealthSnapshot | null; denied: boolean },
+) {
+  const healthState = healthViewState(health, denied);
   const { data: clusterData } = useRequest("cluster.instances");
   const { data: configData } = useRequest("serve.config");
   const { data: workersData } = useRequest("worker.list");
@@ -172,6 +177,15 @@ export function System({ health }: { health: HealthSnapshot | null }) {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {healthState !== "ready" && (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <HealthUnavailable
+            state={healthState}
+            subject="deployment and component health"
+          />
         </div>
       )}
 

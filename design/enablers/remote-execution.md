@@ -210,7 +210,10 @@ model run, or update `lastUsedAt`. It accepts the token via
 A token's authority ends for sessions that are already open, not just for new
 connections. Each session is bound to the token name and the record's
 `createdAt` (rotation rewrites it) it was opened with (`setConnectionToken` in
-`src/serve/handlers/shared.ts`). Sessions end in two ways:
+`src/serve/handlers/shared.ts`). The SSE health stream is a token session too:
+`registerStreamSession` binds it the same way, and caps each token at
+`MAX_STREAM_SESSIONS_PER_TOKEN` open streams across its mints. Sessions end in
+two ways:
 
 - **Immediately.** The `access.token.revoke` and `access.token.rotate` handlers
   close the token's sessions on their own instance once they reply, even when
@@ -226,8 +229,12 @@ connections. Each session is bound to the token name and the record's
   HA peers, whose record arrives through the runtime data poller, so a peer
   ends the session within the poll interval plus 30s.
 
-`terminateTokenSessions` is the one path that ends a token's sessions. It
-records an `auth.session.terminated` audit event per session (see
+`terminateTokenSessions` is the one path that ends a token's sessions,
+WebSockets and streams alike. A stream ends with a final `session-ended` event
+carrying the code and reason, as SSE has no close frame. Deprovisioning
+(`closeConnectionsForPrincipal`) ends a principal's streams as well as its
+sockets. `terminateTokenSessions` records an `auth.session.terminated` audit
+event per session (see
 [serve-audit.md](serve-audit.md)) and unbinds each session as it closes, so a
 peer that never completes the close handshake is not closed and audited again.
 

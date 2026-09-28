@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { type AdminAuthDeps, authenticateAdmin } from "./admin_auth.ts";
+import {
+  type AdminAuthDeps,
+  authenticateAdmin,
+  authenticateToken,
+} from "./admin_auth.ts";
 
 function makeDeps(overrides: Partial<AdminAuthDeps> = {}): AdminAuthDeps {
   return {
@@ -89,4 +93,44 @@ Deno.test("authenticateAdmin: trustProxy passes x-forwarded-for through auth flo
   if (!result.ok) {
     assertEquals(result.response.status, 401);
   }
+});
+
+Deno.test("authenticateToken: no-auth mode is anonymous with no token binding", async () => {
+  const deps = makeDeps({ authMode: "none" });
+  const req = new Request("http://localhost/api/v1/health/stream");
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.authResult.principalId, "@anonymous");
+    assertEquals(result.token, null);
+    assertEquals(result.clientAddr, "127.0.0.1");
+  }
+});
+
+Deno.test("authenticateToken: trustProxy reports the forwarded client address", async () => {
+  const deps = makeDeps({ authMode: "none", trustProxy: true });
+  const req = new Request("http://localhost/api/v1/health/stream", {
+    headers: { "x-forwarded-for": "10.0.0.9, 192.168.1.1" },
+  });
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.clientAddr, "10.0.0.9");
+});
+
+Deno.test("authenticateToken: returns 401 without a bearer token", async () => {
+  const deps = makeDeps();
+  const req = new Request("http://localhost/api/v1/health/stream");
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.response.status, 401);
+});
+
+Deno.test("authenticateToken: returns 401 with an invalid token", async () => {
+  const deps = makeDeps();
+  const req = new Request("http://localhost/api/v1/health/stream", {
+    headers: { authorization: `Bearer not-${crypto.randomUUID()}` },
+  });
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.response.status, 401);
 });

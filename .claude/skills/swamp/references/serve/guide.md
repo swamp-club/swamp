@@ -242,9 +242,12 @@ or `4002` on expiry. A CLI run cut off with `4003` stops and prints the reason
 rather than reconnecting. On `4002` it tries one reconnect, since the same code
 ends a session at the 8-hour cap, where reconnecting works; if the token has
 expired that reconnect is refused and the CLI reports the expiry reason.
-Rotation keeps sessions opened with the new credential. With audit enabled, each
-closed session records an `auth.session.terminated` event whose `detail` is the
-cause: `revoked`, `rotated`, `expired`, `deleted` or `invalid` (filter with
+Rotation keeps sessions opened with the new credential. The SSE health stream
+(`/api/v1/health/stream`, readable with any valid token, at most 10 open per
+token) ends the same way, with a final `session-ended` event carrying the code
+and reason. With audit enabled, each closed session records an
+`auth.session.terminated` event whose `detail` is the cause: `revoked`,
+`rotated`, `expired`, `deleted` or `invalid` (filter with
 `swamp audit log --action auth.session.terminated`).
 
 A running serve deletes revoked tokens at its next token GC sweep. It deletes

@@ -71,7 +71,8 @@ export type ProbeResult = number | "network-error";
 
 /**
  * Reads a token probe of `/api/v1/health`. Only 401 means the token was
- * rejected: 403 is a valid non-admin token and 429 is rate limiting. Any
+ * rejected: 403 is a refusal from an older serve that required admin and 429
+ * is rate limiting. Any
  * other answer means serve is up yet refused the upgrade, which also happens
  * when it came back with auth off and so never echoes the bearer
  * subprotocol, so re-check the auth mode. No answer means serve is down.
