@@ -71,8 +71,14 @@ export type ProbeResult = number | "network-error";
 
 /**
  * Reads a token probe of `/api/v1/health`. Only 401 means the token was
- * rejected: 403 is a valid non-admin token and 429 is rate limiting.
+ * rejected: 403 is a valid non-admin token and 429 is rate limiting. Any
+ * other answer means serve is up yet refused the upgrade, which also happens
+ * when it came back with auth off and so never echoes the bearer
+ * subprotocol, so re-check the auth mode. No answer means serve is down.
  */
-export function probeOutcome(result: ProbeResult): "retry" | "reauth" {
-  return result === 401 ? "reauth" : "retry";
+export function probeOutcome(
+  result: ProbeResult,
+): "retry" | "recheck-mode" | "reauth" {
+  if (result === 401) return "reauth";
+  return result === "network-error" ? "retry" : "recheck-mode";
 }

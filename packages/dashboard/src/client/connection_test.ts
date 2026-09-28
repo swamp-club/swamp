@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   type AuthInfo,
   type ConnectionDeps,
@@ -29,11 +29,15 @@ import {
   type SocketHandlers,
   type Timers,
 } from "./connection.ts";
-import type { ProbeResult } from "./reconnect.ts";
+import { MAX_DELAY_MS, type ProbeResult } from "./reconnect.ts";
 
 // Fake timers tell check timeouts from retries by this duration. Retries are
 // capped at MAX_DELAY_MS (30s), so no retry can ever share it.
 const CHECK_TIMEOUT = 99_999;
+
+Deno.test("fakeTimers: check timeouts cannot collide with retry delays", () => {
+  assert(MAX_DELAY_MS < CHECK_TIMEOUT);
+});
 
 class FakeSocket {
   closed = false;
@@ -228,9 +232,9 @@ Deno.test("createConnection: a failed upgrade with a token probes it", async () 
   for (
     const [result, expected] of [
       [401, "reauth"],
-      [403, "retry"],
-      [429, "retry"],
-      [200, "retry"],
+      [403, "recheck"],
+      [429, "recheck"],
+      [200, "recheck"],
       ["network-error", "retry"],
     ] as const
   ) {
@@ -241,7 +245,13 @@ Deno.test("createConnection: a failed upgrade with a token probes it", async () 
     assertEquals(h.timers.retries(), []);
     h.probes[0].reply(result);
     await settle();
-    if (expected === "reauth") {
+    // Both reauth and recheck read the auth mode; network-error does not.
+    assertEquals(
+      h.authChecks.length,
+      expected === "retry" ? 0 : 1,
+      `${result}`,
+    );
+    if (expected !== "retry") {
       h.authChecks[0].reply({ mode: "token" });
       await settle();
     }
@@ -250,9 +260,48 @@ Deno.test("createConnection: a failed upgrade with a token probes it", async () 
       expected === "reauth",
       `${result}`,
     );
-    assertEquals(h.timers.retries().length, expected === "retry" ? 1 : 0);
+    assertEquals(h.timers.retries().length, expected === "reauth" ? 0 : 1);
     assertEquals(h.timers.checkTimeouts(), 0);
   }
+});
+
+Deno.test("createConnection: serve back with auth off stops a token connection with mode none", async () => {
+  const h = harness();
+  h.connection.start({ token: "t", authMode: "token" });
+  h.latest().handlers.onOpen();
+  h.latest().handlers.onClose(1006);
+  h.timers.fireRetry();
+  // Serve drops the bearer subprotocol when auth is off, so the upgrade fails.
+  h.latest().handlers.onClose(1006);
+  h.probes[0].reply(200);
+  await settle();
+  h.authChecks[0].reply({ mode: "none" });
+  await settle();
+  assertEquals(h.events, ["open:0", "disconnect", "disconnect", "mode:none"]);
+  assertEquals(h.timers.retries(), []);
+});
+
+Deno.test("createConnection: a socket constructor that throws counts as a failed upgrade", async () => {
+  let throwNext = true;
+  const h = harness({
+    createSocket: (protocols, handlers) => {
+      if (throwNext) {
+        throwNext = false;
+        throw new SyntaxError("bad subprotocol");
+      }
+      const socket = new FakeSocket(protocols, handlers);
+      h.sockets.push(socket);
+      return socket;
+    },
+  });
+  // Logs "could not open a WebSocket" once; the controller reports it there.
+  h.connection.start({ token: "t", authMode: "token" });
+  assertEquals(h.sockets.length, 0);
+  assertEquals(h.probes.map((p) => p.arg), ["t"]);
+  h.probes[0].reply("network-error");
+  await settle();
+  h.timers.fireRetry();
+  assertEquals(h.sockets.length, 1);
 });
 
 Deno.test("createConnection: a probe that never answers times out and retries", async () => {

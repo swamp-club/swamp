@@ -239,31 +239,48 @@ export function createConnection<S extends SocketLike>(
     const gen = ++generation;
     const presented = token;
     let opened = false;
-    const created: S = deps.createSocket(
-      presented !== null ? [`bearer.${presented}`] : undefined,
-      {
-        onOpen: () => {
-          if (gen !== generation) return;
-          opened = true;
-          socketOpened = true;
-          attempt = 0;
-          deps.onOpen(created);
-        },
-        onMessage: (text) => {
-          if (gen !== generation) return;
-          deps.onMessage(created, text);
-        },
-        onClose: (code) => {
-          if (gen !== generation) return;
-          socket = null;
-          socketOpened = false;
-          deps.onDisconnect();
-          afterClose(
-            closeAction({ code, opened, tokenPresented: presented !== null }),
-          );
-        },
+    let created: S | null = null;
+    const handlers: SocketHandlers = {
+      onOpen: () => {
+        if (gen !== generation || created === null) return;
+        opened = true;
+        socketOpened = true;
+        attempt = 0;
+        deps.onOpen(created);
       },
-    );
+      onMessage: (text) => {
+        if (gen !== generation || created === null) return;
+        deps.onMessage(created, text);
+      },
+      onClose: (code) => {
+        if (gen !== generation) return;
+        socket = null;
+        socketOpened = false;
+        deps.onDisconnect();
+        afterClose(
+          closeAction({ code, opened, tokenPresented: presented !== null }),
+        );
+      },
+    };
+    try {
+      created = deps.createSocket(
+        presented !== null ? [`bearer.${presented}`] : undefined,
+        handlers,
+      );
+    } catch (err) {
+      // The constructor throws on a subprotocol it cannot send, such as a
+      // malformed token. Treat it as a failed upgrade rather than let it
+      // escape a retry timer and end reconnection.
+      console.error("swamp: could not open a WebSocket", err);
+      afterClose(
+        closeAction({
+          code: 1006,
+          opened: false,
+          tokenPresented: presented !== null,
+        }),
+      );
+      return;
+    }
     socket = created;
   };
 

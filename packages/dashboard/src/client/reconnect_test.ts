@@ -102,7 +102,14 @@ Deno.test("closeAction: a failed upgrade without a token re-checks the auth mode
 
 Deno.test("probeOutcome: only 401 means the token was rejected", () => {
   assertEquals(probeOutcome(401), "reauth");
-  for (const result of [200, 403, 429, 500, 503, "network-error"] as const) {
-    assertEquals(probeOutcome(result), "retry");
+});
+
+Deno.test("probeOutcome: any other answer re-checks the auth mode", () => {
+  for (const status of [200, 403, 429, 500, 503]) {
+    assertEquals(probeOutcome(status), "recheck-mode");
   }
+});
+
+Deno.test("probeOutcome: no answer retries", () => {
+  assertEquals(probeOutcome("network-error"), "retry");
 });
