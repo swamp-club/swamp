@@ -162,6 +162,33 @@ export function autoDefinitionLockKey(name: string): string {
 }
 
 /**
+ * Initial retry interval for the auto-definition create lock.
+ *
+ * The lock guards only a re-check and a definition save, so `FileLock`'s 1s
+ * default made race losers — sibling forEach iterations creating the same
+ * name — sleep through a release that happened milliseconds later. Matches
+ * the per-model lock interval (`MODEL_LOCK_RETRY_INTERVAL_MS`); backoff still
+ * doubles from here, so sustained contention converges on the same cadence.
+ */
+export const AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS = 25;
+
+/**
+ * Creates the lock that serializes concurrent auto-creation of a definition
+ * name under `lockDir`.
+ */
+export function createAutoDefinitionLock(
+  lockDir: string,
+  name: string,
+): FileLock {
+  return new FileLock(lockDir, {
+    lockKey: autoDefinitionLockKey(name),
+    ttlMs: 5_000,
+    maxWaitMs: 10_000,
+    retryIntervalMs: AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS,
+  });
+}
+
+/**
  * Expressions in the global arguments the caller cannot vouch for: text that
  * arrived through data substitution rather than being written by an author.
  * Persisting such text would turn it into an authored expression on every
@@ -419,11 +446,7 @@ export async function resolveOrCreateDefinition(
   // Serialize auto-creation with a name-based file lock so concurrent
   // processes converge on a single definition instead of creating duplicates.
   if (lockDir) {
-    const lock = new FileLock(lockDir, {
-      lockKey: autoDefinitionLockKey(definitionName),
-      ttlMs: 5_000,
-      maxWaitMs: 10_000,
-    });
+    const lock = createAutoDefinitionLock(lockDir, definitionName);
     try {
       return await lock.withLock(async () => {
         // Re-check under lock — race losers adopt the winner's definition.
