@@ -133,6 +133,8 @@ export function createConnection<S extends SocketLike>(
   let authMode: AuthMode = "none";
   let attempt = 0;
   let socket: S | null = null;
+  // Whether `socket` reached open, so stopping it must report the disconnect.
+  let socketOpened = false;
   let retryTimer: number | null = null;
   let cancelCheck: (() => void) | null = null;
 
@@ -145,8 +147,12 @@ export function createConnection<S extends SocketLike>(
     cancelCheck?.();
     cancelCheck = null;
     const closing = socket;
+    const wasOpen = socketOpened;
     socket = null;
+    socketOpened = false;
     closing?.close();
+    // The closed socket's own onclose is now stale and will not report it.
+    if (wasOpen) deps.onDisconnect();
   };
 
   const scheduleRetry = () => {
@@ -239,6 +245,7 @@ export function createConnection<S extends SocketLike>(
         onOpen: () => {
           if (gen !== generation) return;
           opened = true;
+          socketOpened = true;
           attempt = 0;
           deps.onOpen(created);
         },
@@ -249,6 +256,7 @@ export function createConnection<S extends SocketLike>(
         onClose: (code) => {
           if (gen !== generation) return;
           socket = null;
+          socketOpened = false;
           deps.onDisconnect();
           afterClose(
             closeAction({ code, opened, tokenPresented: presented !== null }),
@@ -370,7 +378,11 @@ export function loadAuthInfo(
 
   return () => {
     cancelled = true;
-    if (retryTimer !== null) deps.clearTimer(retryTimer);
+    if (retryTimer !== null) {
+      deps.clearTimer(retryTimer);
+      retryTimer = null;
+    }
     cancelRequest?.();
+    cancelRequest = null;
   };
 }

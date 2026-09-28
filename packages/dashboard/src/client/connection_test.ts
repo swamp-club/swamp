@@ -308,7 +308,7 @@ Deno.test("createConnection: a superseded socket's events are ignored", () => {
   assertEquals(old.closed, true);
   old.handlers.onMessage("late");
   old.handlers.onClose(1000);
-  assertEquals(h.events, ["open:0"]);
+  assertEquals(h.events, ["open:0", "disconnect"]);
   assertEquals(h.timers.retries(), []);
   assertEquals(h.latest().protocols, ["bearer.new"]);
 });
@@ -323,6 +323,30 @@ Deno.test("createConnection: stop closes a connecting socket without retrying", 
   assertEquals(h.events, []);
   assertEquals(h.timers.retries(), []);
   assertEquals(h.authChecks.length, 0);
+});
+
+Deno.test("createConnection: stop on an open socket reports the disconnect once", () => {
+  const h = harness();
+  h.connection.start({ token: "t", authMode: "token" });
+  const socket = h.latest();
+  socket.handlers.onOpen();
+  h.connection.stop();
+  assertEquals(socket.closed, true);
+  // The socket's own close arrives later and is stale.
+  socket.handlers.onClose(1000);
+  assertEquals(h.events, ["open:0", "disconnect"]);
+  assertEquals(h.timers.retries(), []);
+  h.connection.stop();
+  assertEquals(h.events, ["open:0", "disconnect"]);
+});
+
+Deno.test("createConnection: restarting an open connection reports the disconnect first", () => {
+  const h = harness();
+  h.connection.start({ token: "old", authMode: "token" });
+  h.latest().handlers.onOpen();
+  h.connection.start({ token: "new", authMode: "token" });
+  h.latest().handlers.onOpen();
+  assertEquals(h.events, ["open:0", "disconnect", "open:1"]);
 });
 
 Deno.test("createConnection: stop cancels a pending retry", () => {

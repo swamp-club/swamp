@@ -127,6 +127,8 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     setToken(null);
   }, []);
 
+  // Built once, on first render: the callbacks it captures (clearToken,
+  // applyAuthInfo, the refs) must stay stable, so keep their deps empty.
   const connectionRef = useRef<Connection | null>(null);
   if (connectionRef.current === null) {
     const handleFrame = (ws: WebSocket, text: string) => {
