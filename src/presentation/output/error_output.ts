@@ -123,20 +123,60 @@ export function tlsErrorHint(message: string): string | undefined {
 }
 
 /**
+ * Returns remediation guidance if the error message is Deno's failure to read
+ * the OS certificate store, or `undefined` otherwise (swamp-club#2314).
+ *
+ * Deno reads the store when it builds the TLS root store for the first
+ * request, so the failure reaches whichever network call ran first — as a raw
+ * `Error` from `fetch()`, or embedded in a wrapping `UserError`. The remedy is
+ * opt-in: falling back to the bundled roots silently would drop any corporate
+ * root the operator installed in the OS store. Messages that already name the
+ * remedy (from `createTlsHttpClient`) get no second copy.
+ */
+export function platformCertStoreHint(message: string): string | undefined {
+  if (
+    !message.includes("Failed to load platform certificates") ||
+    message.includes("DENO_TLS_CA_STORE=mozilla")
+  ) {
+    return undefined;
+  }
+  return [
+    "The operating system's certificate store could not be read. swamp reads it",
+    'when DENO_TLS_CA_STORE includes "system" (swamp sets "system,mozilla" when',
+    "the variable is unset).",
+    "",
+    "Before retrying, switch to Deno's bundled root certificates only:",
+    "  export DENO_TLS_CA_STORE=mozilla",
+    "",
+    "Roots installed only in the OS store, such as a corporate CA, are then not",
+    "trusted. If you need one, export it to a PEM file and also set:",
+    "  export SSL_CERT_FILE=/path/to/root-ca.pem",
+  ].join("\n");
+}
+
+/**
  * Renders an error to the user.
  *
  * In JSON mode this is the SINGLE emitter for fatal output: it writes
  * the JSON error to stderr and does NOT call `logger.fatal`, so log-mode
  * sinks never produce a duplicate FTL line. In log mode it falls
  * through to LogTape — UserError / Cliffy ValidationError emit just the
- * message; other errors emit the full Error (stack trace included).
+ * message; other errors emit the full Error (stack trace included),
+ * except an unreadable OS certificate store, which renders like a
+ * UserError with its remedy hint.
  */
 export function renderError(error: unknown, outputMode?: OutputMode): void {
   const err = error instanceof Error ? error : new Error(String(error));
+  // A certificate-store failure is an environment problem the user can fix,
+  // not a swamp bug, so it gets no stack trace even when it arrives raw.
+  const certStoreHint = platformCertStoreHint(err.message);
+  const hint = tlsErrorHint(err.message) ?? certStoreHint;
 
   if (outputMode === "json") {
     const json = buildErrorJson(err);
-    const hint = tlsErrorHint(err.message);
+    if (certStoreHint) {
+      delete json.stack;
+    }
     if (hint) {
       json.hint = hint;
     }
@@ -145,7 +185,7 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
     return;
   }
 
-  if (err instanceof UserError) {
+  if (err instanceof UserError || certStoreHint) {
     console.error(`\n${red(bold("Error:"))} ${err.message}`);
   } else if (err instanceof ValidationError) {
     logger.fatal("Error: {message}", { message: err.message });
@@ -153,7 +193,6 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
     logger.fatal("{error}", { error: err });
   }
 
-  const hint = tlsErrorHint(err.message);
   if (hint) {
     console.error(`\n${yellow(bold("Hint:"))} ${dim(hint)}`);
   }

@@ -24,6 +24,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
+import { renderError } from "../presentation/output/error_output.ts";
 import {
   createTlsHttpClient,
   diagnoseTlsMessage,
@@ -1930,6 +1931,28 @@ Deno.test("createTlsHttpClient: turns a cert-store failure into guidance", () =>
   );
   assertStringIncludes(error.message, "SecTrustSettingsCopyCertificates");
   assertStringIncludes(error.message, "DENO_TLS_CA_STORE=mozilla");
+});
+
+Deno.test("createTlsHttpClient: its guidance renders without a duplicate hint", () => {
+  const error = assertThrows(
+    () =>
+      createTlsHttpClient({}, () => {
+        throw new Error(
+          "Failed to load platform certificates: SecTrustSettingsCopyCertificates failed",
+        );
+      }),
+    UserError,
+  );
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    renderError(error);
+  } finally {
+    console.error = originalError;
+  }
+  assertEquals(logs.length, 1);
+  assertEquals(logs[0].split("DENO_TLS_CA_STORE=mozilla").length, 2);
 });
 
 Deno.test("createTlsHttpClient: returns the client when the store loads", () => {
