@@ -76,6 +76,7 @@ import {
 import {
   handleWorkflowApprovals,
   handleWorkflowApprove,
+  handleWorkflowCancel,
   handleWorkflowCreate,
   handleWorkflowDelete,
   handleWorkflowEdit,
@@ -163,8 +164,11 @@ import {
 } from "./handlers/admin_handlers.ts";
 import {
   authorizeOrReject,
+  cancelActor,
+  cancelReasonFor,
   closeSession,
   type ConnectionContext,
+  emitRunCancelAudit,
   getConnectionSourceIp,
   isRestrictedCommand,
   MAX_PREDICATE_LENGTH,
@@ -785,6 +789,16 @@ const WorkflowRejectRequestSchema = z.object({
   }),
 });
 
+const WorkflowCancelRequestSchema = z.object({
+  type: z.literal("workflow.cancel"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    runId: z.string().min(1).max(256),
+    workflowIdOrName: z.string().optional(),
+    reason: z.string().max(1024).optional(),
+  }),
+});
+
 const WorkflowResumeRequestSchema = z.object({
   type: z.literal("workflow.resume"),
   id: z.string().min(1).max(256),
@@ -1350,6 +1364,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowApprovalsRequestSchema,
   WorkflowApproveRequestSchema,
   WorkflowRejectRequestSchema,
+  WorkflowCancelRequestSchema,
   WorkflowResumeRequestSchema,
   VaultDescribeRequestSchema,
   VaultInspectRequestSchema,
@@ -2917,6 +2932,21 @@ export function handleMessage(
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );
       break;
+    case "workflow.cancel":
+      // Not gated here: the handler waits for an aborted run, which needs the
+      // gate for its final push, and gates only its own persisted cancel.
+      task = audited(
+        handleWorkflowCancel(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
+      );
+      break;
     case "workflow.resume":
       task = audited(
         handleWorkflowResume(
@@ -3753,7 +3783,20 @@ async function handleCancelRun(
       ctx,
     ).allowed
   ) {
-    ctx.activeRunRegistry!.cancel(requestId);
+    const cancelled = ctx.activeRunRegistry!.cancel(
+      requestId,
+      cancelReasonFor(cancelActor(principal, ctx)),
+    );
+    emitRunCancelAudit(ctx, {
+      action: "cancel",
+      resourceKind,
+      resourceName: requestId,
+      principal,
+      sourceIp: getConnectionSourceIp(socket),
+      requestId,
+      outcome: cancelled ? "success" : "failure",
+      detail: `${resourceKind}=${run.resourceName}`,
+    });
   }
 }
 

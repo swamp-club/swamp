@@ -62,7 +62,10 @@ import type {
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
-import type { AuditDecision } from "../../domain/serve_audit/audit_event.ts";
+import type {
+  AuditDecision,
+  AuditOutcome,
+} from "../../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
@@ -827,59 +830,34 @@ export interface AuthorizationResult {
   readonly decision: AccessDecision | null;
 }
 
-export function authorizeOrReject(
+type AccessOutcome =
+  | { kind: "allowed"; decision: AccessDecision | null }
+  | { kind: "not_configured" }
+  | { kind: "no_principal" }
+  | {
+    kind: "refused";
+    principal: Principal;
+    decision: AccessDecision | null;
+    groups: readonly string[];
+  };
+
+/**
+ * The single access decision behind {@link authorizeOrReject} and
+ * {@link isAuthorized}: an explicit grant allows, an explicit deny refuses,
+ * and with neither the admin permission decides.
+ */
+function decideAccess(
   socket: WebSocket,
-  requestId: string,
   principal: Principal | null,
   action: Action,
   resource: AccessResource,
   ctx: ConnectionContext,
-): AuthorizationResult {
+): AccessOutcome {
   if (ctx.authConfig.mode === "none") {
-    return { allowed: true, decision: null };
+    return { kind: "allowed", decision: null };
   }
-
-  if (!ctx.policySnapshotLoader) {
-    sendError(
-      socket,
-      requestId,
-      "access_not_configured",
-      "Authorization enforcement is enabled but no policy snapshot is available",
-    );
-    emitDenial(
-      socket,
-      ctx,
-      requestId,
-      principal,
-      action,
-      resource,
-      "access_not_configured",
-      null,
-      [],
-    );
-    return { allowed: false, decision: null };
-  }
-
-  if (!principal) {
-    sendError(
-      socket,
-      requestId,
-      "unauthorized",
-      `Access denied: no authenticated principal for '${action}' on ${resource.kind}:${resource.name}`,
-    );
-    emitDenial(
-      socket,
-      ctx,
-      requestId,
-      null,
-      action,
-      resource,
-      "no_principal",
-      null,
-      [],
-    );
-    return { allowed: false, decision: null };
-  }
+  if (!ctx.policySnapshotLoader) return { kind: "not_configured" };
+  if (!principal) return { kind: "no_principal" };
 
   const collectives = connectionCollectives.get(socket) ?? [];
   const groups = connectionGroups.get(socket) ?? [];
@@ -891,7 +869,7 @@ export function authorizeOrReject(
   );
 
   if (decision && decision.effect === "allow") {
-    return { allowed: true, decision };
+    return { kind: "allowed", decision };
   }
 
   if (!decision) {
@@ -901,38 +879,155 @@ export function authorizeOrReject(
       { kind: "access", name: "*", fields: {} },
     );
     if (adminDecision && adminDecision.effect === "allow") {
-      return { allowed: true, decision: adminDecision };
+      return { kind: "allowed", decision: adminDecision };
     }
   }
 
-  const principalStr = resolveDisplayPrincipal(principal, ctx);
-  if (decision && decision.effect === "deny") {
-    sendError(
-      socket,
-      requestId,
-      "unauthorized",
-      `Access denied: ${principalStr} is explicitly denied '${action}' on ${resource.kind}:${resource.name}`,
-    );
-  } else {
-    sendError(
-      socket,
-      requestId,
-      "unauthorized",
-      `Access denied: ${principalStr} does not have '${action}' on ${resource.kind}:${resource.name}`,
-    );
+  return { kind: "refused", principal, decision, groups };
+}
+
+export function authorizeOrReject(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+): AuthorizationResult {
+  const outcome = decideAccess(socket, principal, action, resource, ctx);
+  switch (outcome.kind) {
+    case "allowed":
+      return { allowed: true, decision: outcome.decision };
+    case "not_configured":
+      sendError(
+        socket,
+        requestId,
+        "access_not_configured",
+        "Authorization enforcement is enabled but no policy snapshot is available",
+      );
+      emitDenial(
+        socket,
+        ctx,
+        requestId,
+        principal,
+        action,
+        resource,
+        "access_not_configured",
+        null,
+        [],
+      );
+      return { allowed: false, decision: null };
+    case "no_principal":
+      sendError(
+        socket,
+        requestId,
+        "unauthorized",
+        `Access denied: no authenticated principal for '${action}' on ${resource.kind}:${resource.name}`,
+      );
+      emitDenial(
+        socket,
+        ctx,
+        requestId,
+        null,
+        action,
+        resource,
+        "no_principal",
+        null,
+        [],
+      );
+      return { allowed: false, decision: null };
+    case "refused": {
+      const { decision, groups } = outcome;
+      const principalStr = resolveDisplayPrincipal(outcome.principal, ctx);
+      if (decision && decision.effect === "deny") {
+        sendError(
+          socket,
+          requestId,
+          "unauthorized",
+          `Access denied: ${principalStr} is explicitly denied '${action}' on ${resource.kind}:${resource.name}`,
+        );
+      } else {
+        sendError(
+          socket,
+          requestId,
+          "unauthorized",
+          `Access denied: ${principalStr} does not have '${action}' on ${resource.kind}:${resource.name}`,
+        );
+      }
+      emitDenial(
+        socket,
+        ctx,
+        requestId,
+        outcome.principal,
+        action,
+        resource,
+        "unauthorized",
+        decision,
+        groups,
+      );
+      return { allowed: false, decision: decision ?? null };
+    }
   }
-  emitDenial(
-    socket,
-    ctx,
-    requestId,
-    principal,
-    action,
-    resource,
-    "unauthorized",
-    decision,
-    groups,
-  );
-  return { allowed: false, decision: decision ?? null };
+}
+
+/**
+ * Makes the same decision as {@link authorizeOrReject} and audits a refusal
+ * the same way, but sends nothing to the client. For a handler whose reply
+ * must not reveal what the caller was refused, such as the name of the
+ * workflow a run id belongs to.
+ */
+export function isAuthorized(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+): boolean {
+  const outcome = decideAccess(socket, principal, action, resource, ctx);
+  switch (outcome.kind) {
+    case "allowed":
+      return true;
+    case "not_configured":
+      emitDenial(
+        socket,
+        ctx,
+        requestId,
+        principal,
+        action,
+        resource,
+        "access_not_configured",
+        null,
+        [],
+      );
+      return false;
+    case "no_principal":
+      emitDenial(
+        socket,
+        ctx,
+        requestId,
+        null,
+        action,
+        resource,
+        "no_principal",
+        null,
+        [],
+      );
+      return false;
+    case "refused":
+      emitDenial(
+        socket,
+        ctx,
+        requestId,
+        outcome.principal,
+        action,
+        resource,
+        "unauthorized",
+        outcome.decision,
+        outcome.groups,
+      );
+      return false;
+  }
 }
 
 function buildAuditDecision(
@@ -1243,6 +1338,69 @@ export function subscribeUntilDetach(
       unsub();
     }, { once: true });
   });
+}
+
+/**
+ * Who cancelled a run, as recorded in its `cancel_reason` and audit event:
+ * the principal's display name, or `anonymous` when serve runs without auth.
+ */
+export function cancelActor(
+  principal: Principal | null,
+  ctx: Pick<ConnectionContext, "resolvedUserNames">,
+): string {
+  if (!principal) return "anonymous";
+  if (principal.kind === "user" && ctx.resolvedUserNames?.[principal.id]) {
+    return `user:${ctx.resolvedUserNames[principal.id]}`;
+  }
+  return principalToString(principal);
+}
+
+/** The `cancel_reason` a run cancelled through serve records. */
+export function cancelReasonFor(actor: string, reason?: string): string {
+  return reason ? `${reason} (cancelled by ${actor})` : `cancelled by ${actor}`;
+}
+
+export interface RunCancelAudit {
+  /** The request's own action name, e.g. `cancel` or `cancel.all`. */
+  action: string;
+  resourceKind: string;
+  /** The run id, or `*` for a bulk cancel. */
+  resourceName: string;
+  principal: Principal | null;
+  sourceIp: string;
+  requestId: string;
+  outcome: AuditOutcome;
+  detail?: string;
+}
+
+/**
+ * Audits a run cancellation made through serve, over HTTP or WebSocket, with
+ * the principal who made it. Every path that aborts or cancels a run calls
+ * this once, whatever the outcome.
+ */
+export function emitRunCancelAudit(
+  ctx: Pick<
+    ConnectionContext,
+    "auditEmitter" | "instanceId" | "resolvedUserNames"
+  >,
+  audit: RunCancelAudit,
+): void {
+  if (!ctx.auditEmitter) return;
+  ctx.auditEmitter.emit(buildAuditEvent({
+    instanceId: ctx.instanceId ?? "unknown",
+    category: "execution",
+    stage: "response",
+    outcome: audit.outcome,
+    action: audit.action,
+    resourceKind: audit.resourceKind,
+    resourceName: audit.resourceName,
+    principalKind: audit.principal?.kind ?? "anonymous",
+    principalId: audit.principal?.id ?? "anonymous",
+    initiatedBy: audit.principal ? cancelActor(audit.principal, ctx) : "ghost",
+    sourceIp: audit.sourceIp,
+    requestId: audit.requestId,
+    detail: audit.detail,
+  }));
 }
 
 export function emitSystemAuditEvent(

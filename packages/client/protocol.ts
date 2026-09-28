@@ -256,6 +256,12 @@ export interface WorkflowRejectPayload {
   decidedBy?: string;
 }
 
+export interface WorkflowCancelPayload {
+  runId: string;
+  workflowIdOrName?: string;
+  reason?: string;
+}
+
 export interface WorkflowResumePayload {
   workflowIdOrName: string;
   runId?: string;
@@ -493,6 +499,7 @@ export type ServerRequest =
   | { type: "workflow.search"; id: string; payload?: WorkflowSearchPayload }
   | { type: "workflow.approve"; id: string; payload: WorkflowApprovePayload }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectPayload }
+  | { type: "workflow.cancel"; id: string; payload: WorkflowCancelPayload }
   | { type: "workflow.approvals"; id: string }
   | {
     type: "workflow.trigger.get";
@@ -690,6 +697,7 @@ export type ServerMessage =
   | { type: "workflow.search"; id: string; payload: DataResponse }
   | { type: "workflow.approve"; id: string; payload: DataResponse }
   | { type: "workflow.reject"; id: string; payload: DataResponse }
+  | { type: "workflow.cancel"; id: string; payload: DataResponse }
   | { type: "workflow.approvals"; id: string; payload: DataResponse }
   | {
     type: "workflow.trigger.get";

@@ -714,7 +714,7 @@ function suspendedRefusal(wf: Workflow, run: WorkflowRun): string {
     assertEquals(JSON.stringify(run.toData()), before, "run was mutated");
     assert(!ABSOLUTE_PATH.test(error.message), error.message);
     const wayOut = run.instanceId !== undefined
-      ? "Revert the change to resume it: a suspended run started by swamp serve cannot be cancelled yet."
+      ? `To cancel it: 'swamp workflow cancel --run ${run.id} --server <url>'.`
       : `To cancel it: 'swamp workflow cancel ${wf.name} --run ${run.id}'.`;
     assertStringIncludes(
       error.message.slice(0, MAX_CLIENT_ERROR_LENGTH),
@@ -1034,9 +1034,9 @@ Deno.test("checkSuspendedRunResume: accepts a removed finished job, which resume
   checkSuspendedRunResume(removed, run);
 });
 
-Deno.test("checkSuspendedRunResume: tells a run started by swamp serve to revert the change", () => {
-  // swamp serve cannot cancel a suspended run it started, and a local cancel
-  // refuses one, so the cancel command would not work for it.
+Deno.test("checkSuspendedRunResume: tells a run started by swamp serve to cancel it through serve", () => {
+  // A local cancel refuses a run serve started, so the way out names the
+  // serve cancel instead.
   const wf = gatedBefore();
   const run = WorkflowRun.create(wf);
   run.start(1234, crypto.randomUUID());
@@ -1059,7 +1059,8 @@ Deno.test("checkSuspendedRunResume: tells a run started by swamp serve to revert
     { name: "post", steps: [plain("announce")], dependsOn: ["main"] },
   ]);
   const message = suspendedRefusal(added, run);
-  assert(!message.includes("swamp workflow cancel"), message);
+  assert(message.includes(`--run ${run.id} --server <url>`), message);
+  assert(!message.includes(`cancel ${added.name} --run`), message);
 });
 
 /**

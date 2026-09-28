@@ -408,6 +408,12 @@ export interface WorkflowRejectPayload {
   decidedBy?: string;
 }
 
+export interface WorkflowCancelPayload {
+  runId: string;
+  workflowIdOrName?: string;
+  reason?: string;
+}
+
 export interface WorkflowResumePayload {
   workflowIdOrName: string;
   runId?: string;
@@ -811,6 +817,7 @@ export type ServerRequest =
   | { type: "workflow.approve"; id: string; payload: WorkflowApprovePayload }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectPayload }
   | { type: "workflow.resume"; id: string; payload: WorkflowResumePayload }
+  | { type: "workflow.cancel"; id: string; payload: WorkflowCancelPayload }
   | { type: "vault.get"; id: string; payload: VaultGetPayload }
   | { type: "vault.put"; id: string; payload: VaultPutPayload }
   | { type: "vault.delete"; id: string; payload: VaultDeletePayload }
@@ -1219,6 +1226,10 @@ export interface WorkflowApproveResponse {
 }
 
 export interface WorkflowRejectResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowCancelResponse {
   data: Record<string, unknown>;
 }
 
@@ -1667,6 +1678,7 @@ export type ServerMessage =
   }
   | { type: "workflow.approve"; id: string; payload: WorkflowApproveResponse }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectResponse }
+  | { type: "workflow.cancel"; id: string; payload: WorkflowCancelResponse }
   | { type: "vault.get"; id: string; payload: VaultGetResponse }
   | { type: "vault.put"; id: string; payload: VaultPutResponse }
   | { type: "vault.delete"; id: string; payload: VaultDeleteResponse }

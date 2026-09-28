@@ -786,3 +786,84 @@ Deno.test("RegistryCapacityError: principal_cap message contains principal and l
     assertEquals(e.message.includes("3"), true);
   }
 });
+
+Deno.test("ActiveRunRegistry: reserve blocks register until released", () => {
+  const registry = new ActiveRunRegistry();
+  const release = registry.reserve("r1");
+  if (!release) throw new Error("expected a reservation");
+
+  const err = assertThrows(
+    () => registry.register(makeRun("r1")),
+    RegistryCapacityError,
+  );
+  assertEquals(err.code, "reserved");
+
+  release();
+  registry.register(makeRun("r1"));
+  assertEquals(registry.get("r1")?.runId, "r1");
+});
+
+Deno.test("ActiveRunRegistry: reserve is refused for a registered or reserved id", () => {
+  const registry = new ActiveRunRegistry();
+  registry.register(makeRun("running"));
+  assertEquals(registry.reserve("running"), null);
+
+  const release = registry.reserve("held");
+  assertEquals(release === null, false);
+  assertEquals(registry.reserve("held"), null);
+});
+
+Deno.test("ActiveRunRegistry: release is idempotent", () => {
+  const registry = new ActiveRunRegistry();
+  const first = registry.reserve("r1")!;
+  first();
+  const second = registry.reserve("r1")!;
+  first();
+  assertEquals(registry.reserve("r1"), null);
+  second();
+  assertEquals(registry.reserve("r1") === null, false);
+});
+
+Deno.test("ActiveRunRegistry: a reservation is not a run", () => {
+  const registry = new ActiveRunRegistry({ maxConcurrent: 1 });
+  registry.reserve("held");
+
+  assertEquals(registry.get("held"), undefined);
+  assertEquals(registry.list().length, 0);
+  assertEquals(registry.size, 0);
+  assertEquals(registry.cancel("held"), false);
+  assertEquals(registry.cancelAll(), 0);
+  registry.register(makeRun("other"));
+  assertEquals(registry.size, 1);
+});
+
+Deno.test("ActiveRunRegistry: rekey ignores reservations", () => {
+  const registry = new ActiveRunRegistry();
+  registry.register(makeRun("request-id"));
+  registry.reserve("domain-id");
+
+  assertEquals(registry.rekey("request-id", "domain-id"), true);
+  assertEquals(registry.get("domain-id")?.runId, "domain-id");
+});
+
+Deno.test("ActiveRunRegistry: cancel and cancelAll record the given reason", () => {
+  const registry = new ActiveRunRegistry();
+  const one = makeRun("r1");
+  const two = makeRun("r2");
+  const three = makeRun("r3");
+  registry.register(one);
+  registry.register(two);
+
+  registry.cancel("r1", "cancelled by user:alice");
+  const message = (run: ActiveRun) => {
+    const reason = run.controller.signal.reason;
+    return reason instanceof Error ? reason.message : reason;
+  };
+  assertEquals(message(one), "cancelled by user:alice");
+
+  registry.deregister("r1");
+  registry.register(three);
+  registry.cancelAll(undefined, "cancelled by user:bob");
+  assertEquals(message(two), "cancelled by user:bob");
+  assertEquals(message(three), "cancelled by user:bob");
+});

@@ -31,7 +31,11 @@ import {
   cancelAllLocalRuns,
   cancelLocalRun,
   isServeOwnedRun,
+  SERVER_CANCEL_TIMEOUT_MS,
+  serverCancelFailure,
 } from "./workflow_cancel.ts";
+import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
+import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -421,4 +425,47 @@ Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () 
       }],
     });
   });
+});
+
+Deno.test("SERVER_CANCEL_TIMEOUT_MS: outlasts the server's grace period and sync gate wait", () => {
+  assertEquals(
+    SERVER_CANCEL_TIMEOUT_MS > RUN_CANCEL_GRACE_MS + GATE_WAIT_TIMEOUT_MS,
+    true,
+  );
+});
+
+Deno.test("serverCancelFailure: a timeout says the cancel may still complete", () => {
+  const error = serverCancelFailure(
+    "ws://alice:hunter2@127.0.0.1:9000/?token=abc.s3cret",
+    "run-1",
+    new DOMException("timed out", "TimeoutError"),
+  );
+
+  assertEquals(error instanceof UserError, true);
+  assertEquals(
+    error.message.startsWith(
+      `No answer from ws://127.0.0.1:9000 within ${
+        SERVER_CANCEL_TIMEOUT_MS / 1000
+      }s. The cancel may still complete on the server`,
+    ),
+    true,
+    error.message,
+  );
+  assertEquals(
+    error.message.includes("swamp workflow history get run-1 --server"),
+    true,
+  );
+  assertEquals(error.message.includes("hunter2"), false);
+  assertEquals(error.message.includes("s3cret"), false);
+});
+
+Deno.test("serverCancelFailure: other failures are reported as a connection error", () => {
+  const error = serverCancelFailure(
+    "ws://127.0.0.1:9000",
+    "run-1",
+    new TypeError("connection refused"),
+  );
+
+  assertEquals(error.message.startsWith("Could not connect to "), true);
+  assertEquals(error.message.endsWith(": connection refused"), true);
 });

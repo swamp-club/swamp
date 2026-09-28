@@ -51,12 +51,12 @@ window in a way the resume would walk into (a step added or moved into a job the
 resume re-runs, a pending step moved to another job, a pending job removed, or a
 job renamed or added), resume refuses before anything changes and the run stays
 suspended. The refusal starts with the way out:
-`swamp workflow cancel <wf> --run <id>`, then start a new run. A run started by
-`swamp serve` cannot be cancelled while suspended, so for one of those the
-refusal says to revert the change and resume. Removing a step, and narrowing a
-`forEach` through `--input`, still work. Approve and reject are not checked.
-Names written with an expression are not checked, so a step added with one still
-fails with `Step run not found`.
+`swamp workflow cancel <wf> --run <id>`, then start a new run. A local cancel
+refuses a run started by `swamp serve`, so for one of those the refusal names
+`swamp workflow cancel --run <id> --server <url>` instead. Removing a step, and
+narrowing a `forEach` through `--input`, still work. Approve and reject are not
+checked. Names written with an expression are not checked, so a step added with
+one still fails with `Step run not found`.
 
 Under `swamp serve`, a workflow with `autoResume: true` resumes without that
 second invocation. Serve launches the resume once an approval made through serve

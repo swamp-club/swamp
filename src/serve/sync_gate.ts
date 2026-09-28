@@ -148,6 +148,10 @@ export function pollerGateTiming(pollIntervalMs: number): PollerGateTiming {
  * in `integration/serve_deps_rules_test.ts` pins the correspondence so a new
  * pushing handler cannot be added without gating it.
  *
+ * `workflow.cancel` is absent on purpose: it waits for an aborted run, which
+ * needs the gate for its final push, so it gates only its persisted cancel
+ * and push (`cancelSuspendedRunAndPush`), not the whole handler.
+ *
  * `vault.put` is absent on purpose: `acquireVaultSync`'s flush is a documented
  * no-op because vault secrets live in always-local `.swamp/secrets` and never
  * enter the datastore. `vault.annotate`, `vault.delete` and `vault.edit` no

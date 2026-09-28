@@ -37,16 +37,26 @@ import {
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import {
+  cancelSuspendedRunAndPush,
+  RUN_CANCEL_GRACE_MS,
+  type SuspendedRunCancelResult,
+} from "../../serve/suspended_run_cancel.ts";
+import { withSyncGate } from "../../serve/sync_gate.ts";
+import {
   collectClusterInstances,
   redactServeOptions,
 } from "../../serve/handlers/admin_handlers.ts";
 import {
+  cancelActor,
+  cancelReasonFor,
   closeConnectionsForPrincipal,
+  emitRunCancelAudit,
   emitSystemAuditEvent,
   listTokenSessions,
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
+  sanitizeErrorForClient,
   setConnectionCollectives,
   setConnectionCompression,
   setConnectionSourceIp,
@@ -361,9 +371,13 @@ type AnyOptions = any;
 
 const logger = getSwampLogger(["serve"]);
 
-export const CANCEL_GRACE_MS = 5_000;
+export const CANCEL_GRACE_MS = RUN_CANCEL_GRACE_MS;
 
-export type CancelStatus = "cancelled" | "cancellation_requested" | "not_found";
+export type CancelStatus =
+  | "cancelled"
+  | "cancellation_requested"
+  | "not_found"
+  | "conflict";
 
 export interface CancelResult {
   status: CancelStatus;
@@ -376,6 +390,13 @@ export interface CancelDeps {
   cancelRegistry: RunCancelRegistry;
   activeRunRegistry?: ActiveRunRegistry;
   scheduledCancelByRunId?: (id: string) => boolean;
+  /** Recorded as the cancelled run's `cancel_reason`. */
+  reason?: string;
+  /**
+   * Cancels a persisted suspended workflow run no process here is driving.
+   * Tried only for a workflow-run that no registry holds.
+   */
+  cancelSuspended?: (id: string) => Promise<SuspendedRunCancelResult>;
 }
 
 const CHAIN_RECONSTRUCT_LOOKBACK_DAYS = 14;
@@ -439,9 +460,17 @@ export async function cancelExecution(
   deps: CancelDeps,
   graceMs: number = CANCEL_GRACE_MS,
 ): Promise<CancelResult> {
-  let found = deps.cancelRegistry.cancel(executionType, executionId);
+  let found = deps.cancelRegistry.cancel(
+    executionType,
+    executionId,
+    deps.reason,
+  );
+  // Whether the abort went to a run in the active-run registry, which may
+  // leave it suspended rather than cancelled.
+  let abortedActive = false;
   if (!found && deps.activeRunRegistry) {
-    found = deps.activeRunRegistry.cancel(executionId);
+    found = deps.activeRunRegistry.cancel(executionId, deps.reason);
+    abortedActive = found;
   }
   let foundViaScheduled = false;
   if (
@@ -449,6 +478,31 @@ export async function cancelExecution(
   ) {
     found = deps.scheduledCancelByRunId(executionId);
     foundViaScheduled = found;
+  }
+  if (
+    !found && executionType === "workflow-run" && deps.cancelSuspended
+  ) {
+    const suspended = await deps.cancelSuspended(executionId);
+    switch (suspended.status) {
+      case "cancelled":
+        return { status: "cancelled", executionType, executionId };
+      case "active":
+        // A resume registered the run after the registry miss above.
+        found = deps.activeRunRegistry?.cancel(executionId, deps.reason) ??
+          false;
+        abortedActive = found;
+        break;
+      case "busy":
+      case "not_suspended":
+        return {
+          status: "conflict",
+          executionType,
+          executionId,
+          message: suspended.message,
+        };
+      case "not_found":
+        break;
+    }
   }
   if (!found) {
     return {
@@ -460,17 +514,36 @@ export async function cancelExecution(
     };
   }
   const activeRun = deps.activeRunRegistry?.get(executionId);
-  if (activeRun) {
-    await Promise.race([
-      activeRun.completion,
-      new Promise<void>((r) => setTimeout(r, graceMs)),
-    ]);
+  if (activeRun || abortedActive) {
+    if (activeRun) {
+      await Promise.race([
+        activeRun.completion,
+        new Promise<void>((r) => setTimeout(r, graceMs)),
+      ]);
+    }
     const confirmed = deps.activeRunRegistry?.get(executionId) === undefined;
-    return {
-      status: confirmed ? "cancelled" : "cancellation_requested",
-      executionType,
-      executionId,
-    };
+    if (!confirmed) {
+      return { status: "cancellation_requested", executionType, executionId };
+    }
+    // A resume can save the run suspended at its next gate just before the
+    // abort lands, and still be registered until its final push. Then the
+    // abort stopped nothing: cancel the persisted run.
+    if (executionType === "workflow-run" && deps.cancelSuspended) {
+      const left = await deps.cancelSuspended(executionId);
+      if (left.status === "busy") {
+        return {
+          status: "conflict",
+          executionType,
+          executionId,
+          message: left.message,
+        };
+      }
+      if (left.status === "active") {
+        deps.activeRunRegistry?.cancel(executionId, deps.reason);
+        return { status: "cancellation_requested", executionType, executionId };
+      }
+    }
+    return { status: "cancelled", executionType, executionId };
   }
   if (foundViaScheduled) {
     return { status: "cancellation_requested", executionType, executionId };
@@ -4872,13 +4945,15 @@ export const serveCommand = new Command()
             /^\/api\/v1\/cancel\/(workflow-run|method-run)\/([^/]+)$/,
           );
           const isBulkCancel = url.pathname === "/api/v1/cancel";
+          let cancelAuditPrincipal: ReturnType<typeof parsePrincipal> | null =
+            null;
+          const cancelRemoteAddr = trustProxy
+            ? (req.headers.get("x-forwarded-for")
+              ?.split(",")[0]?.trim() ??
+              info.remoteAddr.hostname)
+            : info.remoteAddr.hostname;
           if (cancelMatch || isBulkCancel) {
             if (authConfig.mode !== "none") {
-              const cancelRemoteAddr = trustProxy
-                ? (req.headers.get("x-forwarded-for")
-                  ?.split(",")[0]?.trim() ??
-                  info.remoteAddr.hostname)
-                : info.remoteAddr.hostname;
               const cancelIpBurst = checkIpBurst(cancelRemoteAddr);
               if (!cancelIpBurst.allowed) {
                 return new Response("Too Many Requests", {
@@ -4927,7 +5002,24 @@ export const serveCommand = new Command()
               clearRateLimit(cancelRlKey);
 
               const cancelPrincipal = parsePrincipal(authResult.principalId);
+              cancelAuditPrincipal = cancelPrincipal;
+              const auditRefusal = (detail: string) =>
+                emitRunCancelAudit(connectionCtx, {
+                  action: cancelMatch ? "cancel" : "cancel.all",
+                  resourceKind: cancelMatch?.[1] === "method-run"
+                    ? "model"
+                    : cancelMatch
+                    ? "workflow"
+                    : "execution",
+                  resourceName: cancelMatch?.[2] ?? "*",
+                  principal: cancelPrincipal,
+                  sourceIp: cancelRemoteAddr,
+                  requestId: crypto.randomUUID(),
+                  outcome: "denied",
+                  detail,
+                });
               if (!policySnapshotLoader) {
+                auditRefusal("access_not_configured");
                 return Response.json({
                   status: "error",
                   message:
@@ -4946,6 +5038,7 @@ export const serveCommand = new Command()
                   { kind: "access", name: "*", fields: {} },
                 );
                 if (!decision || decision.effect !== "allow") {
+                  auditRefusal("admin required");
                   return Response.json({
                     status: "error",
                     message: "Access denied: cancel requires admin permission",
@@ -4957,22 +5050,74 @@ export const serveCommand = new Command()
           if (cancelMatch) {
             const executionType = cancelMatch[1] as ExecutionType;
             const executionId = cancelMatch[2];
-            const result = await cancelExecution(
-              executionType,
-              executionId,
-              {
-                cancelRegistry,
-                activeRunRegistry,
-                scheduledCancelByRunId: scheduledExecution
-                  ? (id) => scheduledExecution.cancelByRunId(id)
-                  : undefined,
-              },
+            const reason = cancelReasonFor(
+              cancelActor(cancelAuditPrincipal, connectionCtx),
             );
+            const audit = {
+              action: "cancel",
+              resourceKind: executionType === "method-run"
+                ? "model"
+                : "workflow",
+              resourceName: executionId,
+              principal: cancelAuditPrincipal,
+              sourceIp: cancelRemoteAddr,
+              requestId: crypto.randomUUID(),
+            };
+            let result: CancelResult;
+            try {
+              result = await cancelExecution(
+                executionType,
+                executionId,
+                {
+                  cancelRegistry,
+                  activeRunRegistry,
+                  reason,
+                  scheduledCancelByRunId: scheduledExecution
+                    ? (id) => scheduledExecution.cancelByRunId(id, reason)
+                    : undefined,
+                  // The endpoint already required admin on every resource, so
+                  // the run's own workflow needs no further check.
+                  cancelSuspended: (id) =>
+                    withSyncGate(
+                      connectionCtx.syncGate,
+                      () =>
+                        cancelSuspendedRunAndPush(
+                          connectionCtx,
+                          { runId: id, reason },
+                          () => true,
+                        ),
+                    ),
+                },
+              );
+            } catch (error) {
+              emitRunCancelAudit(connectionCtx, {
+                ...audit,
+                outcome: "failure",
+                detail: error instanceof Error ? error.message : String(error),
+              });
+              return Response.json({
+                status: "error",
+                message: sanitizeErrorForClient(error),
+              }, { status: 500 });
+            }
+            const succeeded = result.status === "cancelled" ||
+              result.status === "cancellation_requested";
+            emitRunCancelAudit(connectionCtx, {
+              ...audit,
+              outcome: succeeded ? "success" : "failure",
+              detail: succeeded ? result.status : result.message,
+            });
             if (result.status === "not_found") {
               return Response.json({
                 status: result.status,
                 message: result.message,
               }, { status: 404 });
+            }
+            if (result.status === "conflict") {
+              return Response.json({
+                status: result.status,
+                message: result.message,
+              }, { status: 409 });
             }
             return Response.json({
               status: result.status,
@@ -4994,16 +5139,33 @@ export const serveCommand = new Command()
                 message: "executionType must be 'workflow-run' or 'method-run'",
               }, { status: 400 });
             }
-            let count = cancelRegistry.cancelAll(typeFilter);
+            const reason = cancelReasonFor(
+              cancelActor(cancelAuditPrincipal, connectionCtx),
+            );
+            let count = cancelRegistry.cancelAll(typeFilter, reason);
             if (activeRunRegistry) {
-              count += activeRunRegistry.cancelAll(typeFilter);
+              count += activeRunRegistry.cancelAll(typeFilter, reason);
             }
             if (
               (!typeFilter || typeFilter === "workflow-run") &&
               scheduledExecution
             ) {
-              count += scheduledExecution.cancelAllRuns();
+              count += scheduledExecution.cancelAllRuns(reason);
             }
+            emitRunCancelAudit(connectionCtx, {
+              action: "cancel.all",
+              resourceKind: typeFilter === "method-run"
+                ? "model"
+                : typeFilter === "workflow-run"
+                ? "workflow"
+                : "execution",
+              resourceName: "*",
+              principal: cancelAuditPrincipal,
+              sourceIp: cancelRemoteAddr,
+              requestId: crypto.randomUUID(),
+              outcome: "success",
+              detail: `count=${count}`,
+            });
             return Response.json({ status: "cancellation_requested", count });
           }
         }

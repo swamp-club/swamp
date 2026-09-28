@@ -142,6 +142,8 @@ export async function startDetachedResume(
     if (err instanceof RegistryCapacityError) {
       const clientMsg = err.code === "already_registered"
         ? "A run with this ID is already in progress"
+        : err.code === "reserved"
+        ? "Another operation on this run is in progress; try again"
         : "Too many concurrent runs; wait for active runs to complete";
       return { ok: false, code: err.code, message: clientMsg };
     }
