@@ -1384,8 +1384,13 @@ order:
   and is skipped when every step was skipped.
 - Settled steps and jobs get no `step_failed`, `step_skipped`, `job_skipped`
   or `job_completed` event; the run record carries their outcome, and marks
-  each settled step `settledByAbort`. `workflow resume` settles steps the same
-  way, but not jobs: its job loop has no cleanup mode (swamp-club#2550).
+  each settled step `settledByAbort`.
+- `workflow resume` applies the same step- and job-level cleanup when its own
+  cancellation interrupts a level: later job levels run with the cleanup
+  signal, and it settles never-started steps and jobs the same way
+  (swamp-club#2550). A cancellation that fires before the resume interrupts
+  any level does not start cleanup mode (see the known limitation below), so
+  a job the run was suspended in is left `running` rather than failed.
 - A resume of the run runs the work its abort settled, as it would have run
   the `pending` records. This holds for a plain resume, one after `workflow
   recover` or an approval, and a retry or `--from`. Each settled step is reset

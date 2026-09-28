@@ -12650,3 +12650,295 @@ Deno.test("resume: a step that failed before its suspended run resumed fails the
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Job-level cleanup mode on resume after an abort (swamp-club#2550)
+// ---------------------------------------------------------------------------
+
+/**
+ * Aborts at `abortAt` like {@link AbortingStepExecutor}, and rejects a step
+ * that starts with its signal already aborted, as a killed subprocess does.
+ */
+class SignalHonoringExecutor extends AbortingStepExecutor {
+  override async execute(
+    step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    const startedAborted = ctx.signal.aborted;
+    const result = await super.execute(step, ctx);
+    if (startedAborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    return result;
+  }
+}
+
+/**
+ * main: gate → post, so main is still running while the run is suspended;
+ * `work` (after main succeeded): w, which the executor aborts; then `extra`
+ * jobs, and each cleanup job always-gated on work. Jobs in a level start in
+ * name order, so an extra job named after `work` queues behind it.
+ */
+function resumeCleanupWorkflow(
+  name: string,
+  opts: { cleanups?: string[]; extra?: Job[]; concurrency?: number } = {},
+): Workflow {
+  return Workflow.create({
+    name,
+    concurrency: opts.concurrency,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("go?") }),
+          modelStep("post", onStep("gate", TriggerCondition.succeeded())),
+        ],
+      }),
+      Job.create({
+        name: "work",
+        dependsOn: [{ job: "main", condition: TriggerCondition.succeeded() }],
+        steps: [modelStep("w")],
+      }),
+      ...(opts.extra ?? []),
+      ...(opts.cleanups ?? ["cleanup"]).map((cleanup) =>
+        Job.create({
+          name: cleanup,
+          dependsOn: [{ job: "work", condition: TriggerCondition.always() }],
+          steps: [modelStep("c")],
+        })
+      ),
+    ],
+  });
+}
+
+async function resumeUntilAborted(
+  service: WorkflowExecutionService,
+  workflow: Workflow,
+  runId: string,
+  signal: AbortSignal,
+): Promise<WorkflowRun> {
+  const { run } = await finishedRun(
+    service.resume(workflow.name, runId, { signal }),
+  );
+  return run;
+}
+
+Deno.test("resume cleanup: an always-gated cleanup job runs after the resume's abort fails a job", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = resumeCleanupWorkflow("resume-cleanup-job-wf");
+    const executor = new SignalHonoringExecutor("w");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("work")!.status, "failed");
+    assertEquals(run.getJob("cleanup")!.status, "succeeded");
+    assertEquals(run.getJob("cleanup")!.getStep("c")!.status, "succeeded");
+    assertEquals(executor.count("cleanup/c"), 1);
+  });
+});
+
+Deno.test("resume cleanup: every always-gated cleanup job in a level runs after the resume's abort", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = resumeCleanupWorkflow("resume-cleanup-jobs-wf", {
+      cleanups: ["cleanup-a", "cleanup-b"],
+    });
+    const executor = new SignalHonoringExecutor("w");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    for (const cleanup of ["cleanup-a", "cleanup-b"]) {
+      assertEquals(run.getJob(cleanup)!.status, "succeeded", cleanup);
+      assertEquals(executor.count(`${cleanup}/c`), 1, cleanup);
+    }
+  });
+});
+
+Deno.test("resume cleanup: a succeeded-gated job in the cleanup level is skipped as not started", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = resumeCleanupWorkflow("resume-cleanup-skip-wf", {
+      extra: [
+        Job.create({
+          name: "deploy",
+          dependsOn: [{
+            job: "work",
+            condition: TriggerCondition.succeeded(),
+          }],
+          steps: [modelStep("d")],
+        }),
+      ],
+    });
+    const executor = new SignalHonoringExecutor("w");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("cleanup")!.status, "succeeded");
+    assertEquals(run.getJob("deploy")!.status, "skipped");
+    assertEquals(run.getJob("deploy")!.getStep("d")!.settledByAbort, true);
+    assertEquals(executor.count("deploy/d"), 0);
+  });
+});
+
+Deno.test("resume cleanup: a job queued behind workflow concurrency when the resume's abort fires is cancelled, so a completed-gated cleanup job runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = resumeCleanupWorkflow("resume-cleanup-queued-wf", {
+      concurrency: 1,
+      cleanups: [],
+      extra: [
+        Job.create({
+          name: "x-queued",
+          dependsOn: [{
+            job: "main",
+            condition: TriggerCondition.succeeded(),
+          }],
+          steps: [modelStep("q")],
+        }),
+        Job.create({
+          name: "teardown",
+          dependsOn: [{
+            job: "x-queued",
+            condition: TriggerCondition.completed(),
+          }],
+          steps: [modelStep("t")],
+        }),
+      ],
+    });
+    const executor = new SignalHonoringExecutor("w");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("work")!.status, "failed");
+    assertEquals(run.getJob("x-queued")!.status, "failed");
+    assertCancelledBeforeStart(run, "x-queued", ["q"]);
+    assertEquals(executor.count("x-queued/q"), 0);
+    assertEquals(run.getJob("teardown")!.status, "succeeded");
+    assertEquals(executor.count("teardown/t"), 1);
+  });
+});
+
+Deno.test("resume cleanup: a queued job whose name is written with an input expression is settled", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = resumeCleanupWorkflow("resume-cleanup-expr-wf", {
+      concurrency: 1,
+      extra: [
+        Job.create({
+          name: "x-queued-${{ inputs.env }}",
+          dependsOn: [{
+            job: "main",
+            condition: TriggerCondition.succeeded(),
+          }],
+          steps: [modelStep("q")],
+        }),
+      ],
+    });
+    const executor = new SignalHonoringExecutor("w");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow, {
+      env: "prod",
+    });
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertCancelledBeforeStart(run, "x-queued-prod", ["q"]);
+    assertEquals(run.getJob("x-queued-prod")!.status, "failed");
+    assertEquals(executor.count("x-queued-prod/q"), 0);
+    assertEquals(run.getJob("cleanup")!.status, "succeeded");
+  });
+});
+
+Deno.test("resume cleanup: a resume aborted before it starts leaves the approved gate's job running, not failed", async () => {
+  await withTempDir(async (tempDir) => {
+    // side shares main's level, so the aborted merge starts neither: a lone
+    // stream would still run with the aborted signal.
+    const workflow = resumeCleanupWorkflow("resume-cleanup-preaborted-wf", {
+      extra: [Job.create({ name: "side", steps: [modelStep("s")] })],
+    });
+    const executor = new SignalHonoringExecutor("w");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    assertEquals(suspended.getJob("main")!.status, "running");
+    executor.controller.abort();
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      executor.controller.signal,
+    );
+
+    // No level was interrupted, so no cleanup mode: main never started here
+    // and is not failed as if the abort had stopped it.
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.status, "running");
+    assertEquals(run.getJob("main")!.getStep("post")!.status, "pending");
+    assertEquals(executor.count("main/post"), 0);
+    assertEquals(executor.count("work/w"), 0);
+  });
+});
