@@ -156,6 +156,32 @@ export interface MethodExecutionService {
 }
 
 /**
+ * Returns the data handles attached to an error thrown by a method that
+ * persisted data before failing, or [] when there are none.
+ *
+ * Method execution attaches them as `error.dataHandles` (see
+ * `executeWorkflow`, and models such as `command/shell` that write output
+ * before throwing) so failure-path reports and step records can still point
+ * at that data. The error can come from extension code, so entries without
+ * the fields a handle is identified and recorded by are dropped.
+ */
+export function recoveredDataHandles(error: unknown): DataHandle[] {
+  if (typeof error !== "object" || error === null) return [];
+  const handles = (error as { dataHandles?: unknown }).dataHandles;
+  if (!Array.isArray(handles)) return [];
+  return handles.filter(isDataHandleShaped);
+}
+
+function isDataHandleShaped(value: unknown): value is DataHandle {
+  if (typeof value !== "object" || value === null) return false;
+  const handle = value as Record<string, unknown>;
+  return typeof handle.dataId === "string" &&
+    typeof handle.name === "string" &&
+    typeof handle.version === "number" &&
+    typeof handle.tags === "object" && handle.tags !== null;
+}
+
+/**
  * Default implementation of the method execution service.
  *
  * Validates definition attributes against the method's schema before execution.

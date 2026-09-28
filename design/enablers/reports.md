@@ -59,7 +59,14 @@ Method-scope and model-scope reports get the same context fields whether the
 method ran directly via `swamp model method run` or from a workflow step. Both
 paths fill `swampSha`, `outputSpecs`, `executionStatus` and every other
 `MethodReportContext` field. In both paths, reports also run on failed
-executions, with `executionStatus: "failed"` and `errorMessage` set.
+executions, with `executionStatus: "failed"` and `errorMessage` set, and
+`dataHandles` holding any data the method persisted before it failed.
+
+In a workflow, a failed step's report artifacts are recorded on its step run
+exactly as a successful step's are, so run history and
+`swamp data list --workflow --run` reach them. A failed forEach iteration uses
+the same vary-suffixed report names as a successful one. The built-in workflow
+summary lists the data a failed model-method step wrote.
 
 ## Report Context
 

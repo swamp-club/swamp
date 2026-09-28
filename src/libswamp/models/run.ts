@@ -40,7 +40,10 @@ import { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
-import type { MethodExecutionService } from "../../domain/models/method_execution_service.ts";
+import {
+  type MethodExecutionService,
+  recoveredDataHandles,
+} from "../../domain/models/method_execution_service.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
@@ -943,7 +946,7 @@ export async function* modelMethodRun(
                   methodName: input.methodName,
                   executionStatus: "failed",
                   errorMessage,
-                  dataHandles: [],
+                  dataHandles: recoveredDataHandles(error),
                   outputSpecs: buildOutputSpecs(modelDef),
                   extensionFilesRoot: modelDef.extensionFilesRoot,
                 },

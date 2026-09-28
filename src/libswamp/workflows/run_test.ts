@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   extractStepArtifacts,
   inputValidationFailed,
+  mapWorkflowExecutionEvent,
   resolveRunStepOutputs,
   type RunStepOutputs,
   toRunData,
@@ -40,6 +41,7 @@ import { StepTask } from "../../domain/workflows/step_task.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { StepOutputResolver } from "../../domain/workflows/step_output_resolver.ts";
 import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
+import type { DataHandle } from "../../domain/models/model.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -1429,4 +1431,41 @@ Deno.test("workflowRun creates the ephemeral store in the data repo's namespace"
   }));
 
   assertEquals(ephemeralNamespace, "team-a");
+});
+
+Deno.test("mapWorkflowExecutionEvent: keeps step_failed dataHandles off the published event", () => {
+  const event: WorkflowExecutionEvent = {
+    kind: "step_failed",
+    jobId: "job1",
+    stepId: "step1",
+    error: "deploy blew up",
+    modelName: "failer",
+    methodName: "run",
+    dataHandles: [
+      {
+        name: "state",
+        specName: "state",
+        kind: "resource",
+        dataId: "d-1",
+        version: 1,
+        size: 1,
+        tags: {},
+        metadata: { contentType: "application/json" },
+      } as unknown as DataHandle,
+    ],
+  };
+
+  const published = mapWorkflowExecutionEvent(
+    event,
+    new InMemoryWorkflowRunRepository(),
+  );
+
+  assertEquals(published, {
+    kind: "step_failed",
+    jobId: "job1",
+    stepId: "step1",
+    error: "deploy blew up",
+    modelName: "failer",
+    methodName: "run",
+  });
 });

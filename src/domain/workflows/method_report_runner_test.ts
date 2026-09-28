@@ -396,7 +396,7 @@ Deno.test("runFor: feeds the method execution context to the report", async () =
   });
 });
 
-Deno.test("runFor: failed run executes method-scope reports with the error and returns no artifacts", async () => {
+Deno.test("runFor: failed run executes method-scope reports with the error and returns their artifacts", async () => {
   const name = `@test/${crypto.randomUUID()}`;
   let seen: MethodReportContext | undefined;
   await withReports([
@@ -408,30 +408,82 @@ Deno.test("runFor: failed run executes method-scope reports with the error and r
       }),
     },
   ], async () => {
+    const written = makeDataHandle();
     const harness = makeHarness({
       status: "failed",
       errorMessage: "deploy blew up",
+      dataHandles: [written],
     });
     requireReports(harness, [name]);
 
     const refs = await new MethodReportRunner().runFor(harness.args);
 
-    // The failure path never returns artifacts — the caller keeps the
-    // original execution error as the outcome.
-    assertEquals(refs, []);
-
-    // But the report still ran with a structured failure context and
-    // its artifacts were persisted.
+    // The report ran with a structured failure context that includes
+    // the data the method persisted before it failed.
     assertEquals(seen?.executionStatus, "failed");
     assertEquals(seen?.errorMessage, "deploy blew up");
-    assertEquals(seen?.dataHandles, []);
+    assertEquals(seen?.dataHandles, [written]);
+
+    // Its persisted artifacts are returned so the caller records them
+    // on the failed step, as it does for a successful one.
+    const sanitized = name.replace(/@/g, "").replace(/\//g, "-");
     assertEquals(harness.saved.length, 2);
+    assertEquals(refs.map((r) => r.name), [
+      `report-${sanitized}`,
+      `report-${sanitized}-json`,
+    ]);
 
     const completed = harness.events.filter((e) =>
       e.kind === "report_completed"
     );
     assertEquals(completed.length, 1);
     assertEquals(completed[0].reportName, name);
+  });
+});
+
+Deno.test("runFor: failed run returns a failing report's fallback error artifacts", async () => {
+  const name = `@test/${crypto.randomUUID()}`;
+  await withReports([
+    {
+      name,
+      report: makeReport("method", () => {
+        throw new Error("report exploded");
+      }),
+    },
+  ], async () => {
+    const harness = makeHarness({ status: "failed", errorMessage: "boom" });
+    requireReports(harness, [name]);
+
+    const refs = await new MethodReportRunner().runFor(harness.args);
+
+    const sanitized = name.replace(/@/g, "").replace(/\//g, "-");
+    assertEquals(refs.map((r) => r.name), [
+      `report-${sanitized}`,
+      `report-${sanitized}-json`,
+    ]);
+    const failed = harness.events.filter((e) => e.kind === "report_failed");
+    assertEquals(failed.length, 1);
+  });
+});
+
+Deno.test("runFor: failed run appends the vary suffix to report artifact names", async () => {
+  const name = `@test/${crypto.randomUUID()}`;
+  await withReports([{ name, report: makeReport("method") }], async () => {
+    const harness = makeHarness({
+      status: "failed",
+      errorMessage: "boom",
+      reportVarySuffix: "eu-1",
+    });
+    requireReports(harness, [name]);
+
+    const refs = await new MethodReportRunner().runFor(harness.args);
+
+    const sanitized = name.replace(/@/g, "").replace(/\//g, "-");
+    assertEquals(refs.map((r) => r.name), [
+      `report-${sanitized}-eu-1`,
+      `report-${sanitized}-eu-1-json`,
+    ]);
+    assertEquals(refs[0].tags.varySuffix, "eu-1");
   });
 });
 
@@ -474,13 +526,41 @@ Deno.test("runFor: failed run swallows report machinery errors and warns", async
     const refs = await new MethodReportRunner().runFor(harness.args);
 
     // The report machinery error is swallowed — the caller's original
-    // execution error stays intact — and logged at warn.
+    // execution error stays intact — and logged at warn. It broke before
+    // any report persisted, so there is nothing to return.
     assertEquals(refs, []);
     assertEquals(harness.warnings.length, 1);
     assertStringIncludes(
       harness.warnings[0].template,
       "Failed to run reports for failed method",
     );
+    assertEquals(harness.warnings[0].props?.error, "event sink broken");
+  });
+});
+
+Deno.test("runFor: failed run returns artifacts persisted before a swallowed report machinery error", async () => {
+  const first = `@test/a-${crypto.randomUUID()}`;
+  const second = `@test/b-${crypto.randomUUID()}`;
+  await withReports([
+    { name: first, report: makeReport("method") },
+    { name: second, report: makeReport("method") },
+  ], async () => {
+    const harness = makeHarness({ status: "failed", errorMessage: "boom" });
+    requireReports(harness, [first, second]);
+    harness.args.emitEvent = (event) => {
+      if (event.kind === "report_started" && event.reportName === second) {
+        throw new Error("event sink broken");
+      }
+    };
+
+    const refs = await new MethodReportRunner().runFor(harness.args);
+
+    const sanitized = first.replace(/@/g, "").replace(/\//g, "-");
+    assertEquals(refs.map((r) => r.name), [
+      `report-${sanitized}`,
+      `report-${sanitized}-json`,
+    ]);
+    assertEquals(harness.warnings.length, 1);
     assertEquals(harness.warnings[0].props?.error, "event sink broken");
   });
 });

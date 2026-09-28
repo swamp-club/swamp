@@ -104,6 +104,12 @@ export type WorkflowExecutionEvent =
      */
     modelName?: string;
     methodName?: string;
+    /**
+     * Data a failing model-method step persisted before it threw, so the
+     * workflow summary can point at it. Set only at the model-method catch
+     * site, and only when there is such data.
+     */
+    dataHandles?: DataHandle[];
     forEachTemplate?: string;
     forEachIndex?: number;
   }

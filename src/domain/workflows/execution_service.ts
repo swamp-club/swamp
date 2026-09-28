@@ -99,7 +99,10 @@ import {
   type WorkflowStepExecutionDetail,
 } from "./workflow_report_runner.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
-import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
+import {
+  DefaultMethodExecutionService,
+  recoveredDataHandles,
+} from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import { buildMethodContext } from "../models/method_context.ts";
 import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
@@ -1949,10 +1952,8 @@ export class DefaultStepExecutor implements StepExecutor {
     // Recover data handles written before the throw (e.g. model wrote
     // data then threw on verdict=FAIL). The execution service attaches
     // them to the error.
-    const errorHandles = (error as Record<string, unknown>).dataHandles as
-      | import("../models/model.ts").DataHandle[]
-      | undefined;
-    if (errorHandles && errorHandles.length > 0) {
+    const errorHandles = recoveredDataHandles(error);
+    if (errorHandles.length > 0) {
       for (const handle of errorHandles) {
         const artifactRef = {
           dataId: handle.dataId,
@@ -1979,12 +1980,18 @@ export class DefaultStepExecutor implements StepExecutor {
     // Run method-summary report for failed executions so report
     // consumers see structured error output (matching modelMethodRun
     // failure behavior). The runner's internal try/catch ensures
-    // report errors don't mask the original execution error.
+    // report errors don't mask the original execution error. The
+    // artifacts it returns are recorded on the failed step, exactly as
+    // for a successful step.
     if (ctx.reportFilterOptions) {
-      await this.reportRunner.runFor({
+      const reportVarySuffix = ctx.forEachVariable?.value !== undefined
+        ? coerceToSuffix(ctx.forEachVariable.value)
+        : undefined;
+
+      const reportArtifacts = await this.reportRunner.runFor({
         status: "failed",
         errorMessage,
-        dataHandles: [],
+        dataHandles: errorHandles,
         modelType,
         modelDef,
         evaluatedDefinition,
@@ -1993,6 +2000,7 @@ export class DefaultStepExecutor implements StepExecutor {
         reportGlobalArgs,
         reportMethodArgs,
         reportFilterOptions: ctx.reportFilterOptions,
+        reportVarySuffix,
         repoDir: ctx.repoDir,
         swampSha: ctx.swampSha,
         runLogger,
@@ -2002,11 +2010,18 @@ export class DefaultStepExecutor implements StepExecutor {
         jobName: ctx.jobName,
         stepName: ctx.stepName,
       });
+      for (const artifact of reportArtifacts) {
+        output.addDataArtifact(artifact);
+        savedArtifacts.push(artifact);
+      }
     }
 
     // Attach saved artifacts to the error so the outer step loop can
-    // record them on the StepRun.
-    if (savedArtifacts.length > 0) {
+    // record them on the StepRun. A thrown primitive cannot carry them, and
+    // assigning to one would replace the real error with a TypeError.
+    if (
+      savedArtifacts.length > 0 && typeof error === "object" && error !== null
+    ) {
       (error as Record<string, unknown>).dataArtifacts = savedArtifacts;
     }
   }
@@ -2600,7 +2615,11 @@ export class WorkflowExecutionService {
             }
             await this.saveRun(workflow.id, run);
           } else if (event.kind === "step_failed") {
-            stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
+            const key = `${event.jobId}:${event.stepId}`;
+            stepStatuses.set(key, "failed");
+            if (event.dataHandles) {
+              dataHandlesByStep.set(key, event.dataHandles);
+            }
             await this.saveRun(workflow.id, run);
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
@@ -3165,7 +3184,11 @@ export class WorkflowExecutionService {
             }
             await this.saveRun(workflow.id, existingRun);
           } else if (event.kind === "step_failed") {
-            stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
+            const key = `${event.jobId}:${event.stepId}`;
+            stepStatuses.set(key, "failed");
+            if (event.dataHandles) {
+              dataHandlesByStep.set(key, event.dataHandles);
+            }
             await this.saveRun(workflow.id, existingRun);
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
@@ -4340,6 +4363,9 @@ export class WorkflowExecutionService {
       // steps (which short-circuit via runWorkflowStep above) and other
       // structural failures leave them undefined.
       const taskData = step.task.data;
+      const failedDataHandles = taskData.type === "model_method"
+        ? recoveredDataHandles(error)
+        : [];
       yield {
         kind: "step_failed",
         jobId: job.name,
@@ -4351,6 +4377,9 @@ export class WorkflowExecutionService {
           : undefined,
         methodName: taskData.type === "model_method"
           ? taskData.methodName
+          : undefined,
+        dataHandles: failedDataHandles.length > 0
+          ? failedDataHandles
           : undefined,
         forEachTemplate,
         forEachIndex,
