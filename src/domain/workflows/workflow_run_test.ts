@@ -922,6 +922,60 @@ Deno.test("WorkflowRun.complete: no-ops on cancelled run", () => {
   assertEquals(run.status, "cancelled");
 });
 
+Deno.test("WorkflowRun.recordCancelReason: replaces the reason on a cancelled run", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.cancel("aborted");
+  const completedAt = run.completedAt;
+
+  run.recordCancelReason("No longer needed");
+
+  assertEquals(run.status, "cancelled");
+  assertEquals(run.tags.cancel_reason, "No longer needed");
+  assertEquals(run.completedAt, completedAt);
+});
+
+Deno.test("WorkflowRun.recordCancelReason: ignores an empty reason, as cancel does", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.cancel("aborted");
+
+  run.recordCancelReason("");
+
+  assertEquals(run.tags.cancel_reason, "aborted");
+});
+
+Deno.test("WorkflowRun.recordCancelReason: no-ops on a run that is not cancelled", () => {
+  const workflow = createTestWorkflow();
+
+  const running = WorkflowRun.create(workflow);
+  running.start();
+  const succeeded = WorkflowRun.create(workflow);
+  succeeded.start();
+  succeeded.getJob("job1")?.start();
+  succeeded.getJob("job1")?.succeed();
+  succeeded.getJob("job2")?.start();
+  succeeded.getJob("job2")?.succeed();
+  succeeded.complete();
+  const failed = WorkflowRun.create(workflow);
+  failed.start();
+  failed.getJob("job1")?.start();
+  failed.getJob("job1")?.fail();
+  failed.complete();
+  const interrupted = WorkflowRun.create(workflow);
+  interrupted.start();
+  interrupted.interrupt("server_shutdown");
+
+  for (const run of [running, succeeded, failed, interrupted]) {
+    const status = run.status;
+    run.recordCancelReason("No longer needed");
+    assertEquals(run.status, status);
+    assertEquals(run.tags.cancel_reason, undefined);
+  }
+});
+
 Deno.test("WorkflowRun: cancelled round-trips through serialization", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);

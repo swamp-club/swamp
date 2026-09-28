@@ -80,11 +80,83 @@ export function isServeOwnedRun(run: WorkflowRun): boolean {
   return run.instanceId !== undefined;
 }
 
-async function cancelRun(run: WorkflowRun, reason: string): Promise<void> {
+export interface CancelLocalRunDeps {
+  runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
+  killProcess?: (pid: number) => Promise<boolean>;
+}
+
+/**
+ * Cancels a locally-owned run. Stops the owning process first, then re-reads
+ * the run: the owner saves its own final record while handling SIGTERM, and
+ * saving the pre-kill snapshot would overwrite it. A run the owner already
+ * finished keeps its record (a cancelled one gets this reason); a run that is
+ * still active is cancelled. Returns the persisted run, or null when the
+ * record no longer exists.
+ */
+export async function cancelLocalRun(
+  run: WorkflowRun,
+  workflowId: WorkflowId,
+  reason: string,
+  { runRepo, killProcess = killProcessTree }: CancelLocalRunDeps,
+): Promise<WorkflowRun | null> {
   if (run.pid && run.pid !== Deno.pid) {
-    await killProcessTree(run.pid);
+    await killProcess(run.pid);
   }
-  run.cancel(reason);
+  const current = await runRepo.findById(workflowId, run.id);
+  if (!current) {
+    return null;
+  }
+  if (!TERMINAL_STATUSES.has(current.status)) {
+    current.cancel(reason);
+  } else if (current.status === "cancelled") {
+    current.recordCancelReason(reason);
+  } else {
+    return current;
+  }
+  await runRepo.save(workflowId, current);
+  return current;
+}
+
+export interface CancelAllResult {
+  cancelled: { runId: string; workflowName: string; previousStatus: string }[];
+  /** Runs that reached another terminal status before the cancel landed. */
+  finished: {
+    runId: string;
+    workflowName: string;
+    previousStatus: string;
+    status: string;
+  }[];
+  /** Runs whose record was deleted during the cancel. */
+  deleted: { runId: string; workflowName: string }[];
+}
+
+/**
+ * Cancels each locally-owned run with {@link cancelLocalRun} and sorts the
+ * outcomes, so only runs that actually ended cancelled count as cancelled.
+ */
+export async function cancelAllLocalRuns(
+  runs: { run: WorkflowRun; workflowId: WorkflowId; workflowName: string }[],
+  reason: string,
+  deps: CancelLocalRunDeps,
+): Promise<CancelAllResult> {
+  const result: CancelAllResult = { cancelled: [], finished: [], deleted: [] };
+  for (const { run, workflowId, workflowName } of runs) {
+    const previousStatus = run.status;
+    const finalRun = await cancelLocalRun(run, workflowId, reason, deps);
+    if (!finalRun) {
+      result.deleted.push({ runId: run.id, workflowName });
+    } else if (finalRun.status === "cancelled") {
+      result.cancelled.push({ runId: run.id, workflowName, previousStatus });
+    } else {
+      result.finished.push({
+        runId: run.id,
+        workflowName,
+        previousStatus,
+        status: finalRun.status,
+      });
+    }
+  }
+  return result;
 }
 
 async function findAllActiveRuns(
@@ -251,7 +323,14 @@ export const workflowCancelCommand = withRemoteOptions(
       const activeRuns = await findAllActiveRuns(workflowRepo, runRepo);
       if (activeRuns.length === 0) {
         if (cliCtx.outputMode === "json") {
-          console.log(JSON.stringify({ cancelled: [], skipped: [] }));
+          console.log(
+            JSON.stringify({
+              cancelled: [],
+              finished: [],
+              deleted: [],
+              skipped: [],
+            }),
+          );
         } else {
           cliCtx.logger.info("No active workflow runs found to cancel.");
         }
@@ -261,23 +340,13 @@ export const workflowCancelCommand = withRemoteOptions(
       const localRuns = activeRuns.filter(({ run }) => !isServeOwnedRun(run));
       const serveRuns = activeRuns.filter(({ run }) => isServeOwnedRun(run));
 
-      const cancelled: {
-        runId: string;
-        workflowName: string;
-        previousStatus: string;
-      }[] = [];
-      for (const { run, workflowId, workflowName } of localRuns) {
-        const previousStatus = run.status;
-        await cancelRun(run, reason);
-        await runRepo.save(workflowId, run);
-        cancelled.push({
-          runId: run.id,
-          workflowName,
-          previousStatus,
-        });
-      }
+      const { cancelled, finished, deleted } = await cancelAllLocalRuns(
+        localRuns,
+        reason,
+        { runRepo },
+      );
 
-      const skipped = serveRuns.map(({ run, workflowName }) => ({
+      const serveSkipped = serveRuns.map(({ run, workflowName }) => ({
         runId: run.id,
         workflowName,
         status: run.status,
@@ -286,7 +355,9 @@ export const workflowCancelCommand = withRemoteOptions(
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
           cancelled,
-          skipped,
+          finished,
+          deleted,
+          skipped: serveSkipped,
           count: cancelled.length,
           reason,
         }));
@@ -299,15 +370,34 @@ export const workflowCancelCommand = withRemoteOptions(
               .info`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> cancelled`;
           }
         }
-        if (skipped.length > 0) {
+        if (finished.length > 0) {
           cliCtx.logger
-            .warn`Skipped ${skipped.length} serve-owned run(s) — cancel these individually via --server --run <id>`;
-          for (const entry of skipped) {
+            .warn`${finished.length} run(s) finished before the cancel took effect`;
+          for (const entry of finished) {
+            cliCtx.logger
+              .warn`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> ${entry.status}`;
+          }
+        }
+        if (deleted.length > 0) {
+          cliCtx.logger
+            .warn`Skipped ${deleted.length} run(s) whose record no longer exists`;
+          for (const entry of deleted) {
+            cliCtx.logger
+              .warn`  ${entry.workflowName} (${entry.runId})`;
+          }
+        }
+        if (serveSkipped.length > 0) {
+          cliCtx.logger
+            .warn`Skipped ${serveSkipped.length} serve-owned run(s) — cancel these individually via --server --run <id>`;
+          for (const entry of serveSkipped) {
             cliCtx.logger
               .warn`  ${entry.workflowName} (${entry.runId}): ${entry.status}`;
           }
         }
-        if (cancelled.length === 0 && skipped.length === 0) {
+        if (
+          cancelled.length === 0 && finished.length === 0 &&
+          deleted.length === 0 && serveSkipped.length === 0
+        ) {
           cliCtx.logger.info("No active workflow runs found to cancel.");
         }
       }
@@ -366,23 +456,36 @@ export const workflowCancelCommand = withRemoteOptions(
     }
 
     const previousStatus = run.status;
-    await cancelRun(run, reason);
-    await runRepo.save(createWorkflowId(workflow.id), run);
+    const finalRun = await cancelLocalRun(
+      run,
+      createWorkflowId(workflow.id),
+      reason,
+      { runRepo },
+    );
+    if (!finalRun) {
+      throw new UserError(`Workflow run no longer exists: ${run.id}`);
+    }
+    const status = finalRun.status;
 
     if (cliCtx.outputMode === "json") {
       console.log(JSON.stringify({
         runId: run.id,
         workflowName: workflow.name,
         previousStatus,
-        status: "cancelled",
-        reason,
+        status,
+        ...(status === "cancelled" ? { reason } : {}),
       }));
     } else {
+      if (status === "cancelled") {
+        cliCtx.logger
+          .info`Cancelled run ${run.id} of workflow ${workflow.name}`;
+      } else {
+        cliCtx.logger
+          .warn`Run ${run.id} of workflow ${workflow.name} finished as ${status} before the cancel took effect`;
+      }
       cliCtx.logger
-        .info`Cancelled run ${run.id} of workflow ${workflow.name}`;
-      cliCtx.logger
-        .info`Status: ${previousStatus} -> cancelled`;
-      if (options.reason) {
+        .info`Status: ${previousStatus} -> ${status}`;
+      if (options.reason && status === "cancelled") {
         cliCtx.logger.info`Reason: ${reason}`;
       }
     }
