@@ -28,11 +28,14 @@ import { notFound, validationFailed } from "../../libswamp/mod.ts";
 import {
   authorizeAnyOrReject,
   authorizeOrReject,
+  cancelActor,
+  cancelReasonFor,
   clientErrorDetails,
   closeConnectionsForPrincipal,
   closeSession,
   COMPRESSION_THRESHOLD_BYTES,
   type ConnectionContext,
+  emitRunCancelAudit,
   emitSystemAuditEvent,
   filterByAuthorization,
   isAuthorized,
@@ -1223,4 +1226,66 @@ Deno.test("isAuthorized: decides as authorizeOrReject does", () => {
       name,
     );
   }
+});
+
+Deno.test("cancelActor: names the principal, its resolved user name, or anonymous", () => {
+  assertEquals(cancelActor(null, {}), "anonymous");
+  assertEquals(cancelActor(makePrincipal("u-1"), {}), "user:u-1");
+  assertEquals(
+    cancelActor(makePrincipal("u-1"), {
+      resolvedUserNames: { "u-1": "alice" },
+    }),
+    "user:alice",
+  );
+});
+
+Deno.test("cancelReasonFor: records who cancelled, with any reason given", () => {
+  assertEquals(cancelReasonFor("user:alice"), "cancelled by user:alice");
+  assertEquals(
+    cancelReasonFor("user:alice", "stuck gate"),
+    "stuck gate (cancelled by user:alice)",
+  );
+});
+
+Deno.test("emitRunCancelAudit: records the cancel, its outcome and who made it", () => {
+  const events: AuditEvent[] = [];
+  const ctx = {
+    instanceId: "inst-1",
+    resolvedUserNames: { "u-1": "alice" },
+    auditEmitter: { emit: (e: AuditEvent) => events.push(e) },
+  } as unknown as ConnectionContext;
+
+  emitRunCancelAudit(ctx, {
+    action: "cancel",
+    resourceKind: "workflow",
+    resourceName: "run-1",
+    principal: makePrincipal("u-1"),
+    sourceIp: "10.0.0.1",
+    requestId: "req-1",
+    outcome: "success",
+    detail: "workflow=deploy",
+  });
+  emitRunCancelAudit(ctx, {
+    action: "cancel.all",
+    resourceKind: "execution",
+    resourceName: "*",
+    principal: null,
+    sourceIp: "10.0.0.2",
+    requestId: "req-2",
+    outcome: "success",
+    detail: "count=3",
+  });
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0].category, "execution");
+  assertEquals(events[0].action, "cancel");
+  assertEquals(events[0].outcome, "success");
+  assertEquals(events[0].resourceName, "run-1");
+  assertEquals(events[0].principalId, "u-1");
+  assertEquals(events[0].initiatedBy, "user:alice");
+  assertEquals(events[0].sourceIp, "10.0.0.1");
+  assertEquals(events[0].detail, "workflow=deploy");
+  assertEquals(events[1].action, "cancel.all");
+  assertEquals(events[1].principalKind, "anonymous");
+  assertEquals(events[1].initiatedBy, "ghost");
 });

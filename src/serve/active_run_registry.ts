@@ -167,18 +167,19 @@ export class ActiveRunRegistry {
     return this.#runs.get(runId);
   }
 
-  cancel(runId: string): boolean {
+  /** `reason` becomes the cancelled run's `cancel_reason`. */
+  cancel(runId: string, reason = "cancelled by user"): boolean {
     const run = this.#runs.get(runId);
     if (!run) return false;
-    run.controller.abort(new Error("cancelled by user"));
+    run.controller.abort(new Error(reason));
     return true;
   }
 
-  cancelAll(typeFilter?: string): number {
+  cancelAll(typeFilter?: string, reason = "cancelled by user"): number {
     let count = 0;
     for (const run of this.#runs.values()) {
       if (typeFilter && !matchesTypeFilter(run.kind, typeFilter)) continue;
-      run.controller.abort(new Error("cancelled by user"));
+      run.controller.abort(new Error(reason));
       count++;
     }
     return count;

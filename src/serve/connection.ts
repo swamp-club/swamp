@@ -164,8 +164,11 @@ import {
 } from "./handlers/admin_handlers.ts";
 import {
   authorizeOrReject,
+  cancelActor,
+  cancelReasonFor,
   closeSession,
   type ConnectionContext,
+  emitRunCancelAudit,
   getConnectionSourceIp,
   isRestrictedCommand,
   MAX_PREDICATE_LENGTH,
@@ -3779,7 +3782,20 @@ async function handleCancelRun(
       ctx,
     ).allowed
   ) {
-    ctx.activeRunRegistry!.cancel(requestId);
+    const cancelled = ctx.activeRunRegistry!.cancel(
+      requestId,
+      cancelReasonFor(cancelActor(principal, ctx)),
+    );
+    emitRunCancelAudit(ctx, {
+      action: "cancel",
+      resourceKind,
+      resourceName: requestId,
+      principal,
+      sourceIp: getConnectionSourceIp(socket),
+      requestId,
+      outcome: cancelled ? "success" : "failure",
+      detail: `${resourceKind}=${run.resourceName}`,
+    });
   }
 }
 

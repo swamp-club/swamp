@@ -127,6 +127,8 @@ import {
 import {
   authorizeAnyOrReject,
   authorizeOrReject,
+  cancelActor,
+  cancelReasonFor,
   clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
@@ -1318,6 +1320,7 @@ export async function handleWorkflowCancel(
         payload,
         active,
         mayCancel,
+        principal,
       );
       return;
     }
@@ -1327,7 +1330,7 @@ export async function handleWorkflowCancel(
       {
         runId: payload.runId,
         workflowIdOrName: payload.workflowIdOrName,
-        reason: payload.reason ?? "cancelled via serve",
+        reason: cancelReasonFor(cancelActor(principal, ctx), payload.reason),
       },
       (workflow) => mayCancel(workflow.name),
     );
@@ -1362,6 +1365,7 @@ export async function handleWorkflowCancel(
             payload,
             registered,
             mayCancel,
+            principal,
           );
         } else {
           sendError(socket, requestId, "workflow_cancel_failed", notFound);
@@ -1396,6 +1400,7 @@ async function cancelActiveWorkflowRun(
   payload: WorkflowCancelPayload,
   active: import("../active_run_registry.ts").ActiveRun,
   mayCancel: (workflowName: string) => Promise<boolean>,
+  principal: Principal | null,
 ): Promise<void> {
   const notFound = `No cancellable run with id ${payload.runId}`;
   const workflow = active.kind === "method-run"
@@ -1415,7 +1420,10 @@ async function cancelActiveWorkflowRun(
     sendError(socket, requestId, "workflow_cancel_failed", notFound);
     return;
   }
-  ctx.activeRunRegistry?.cancel(payload.runId);
+  ctx.activeRunRegistry?.cancel(
+    payload.runId,
+    cancelReasonFor(cancelActor(principal, ctx), payload.reason),
+  );
   send(socket, {
     type: "workflow.cancel",
     id: requestId,

@@ -59,25 +59,33 @@ export class RunCancelRegistry {
     }
   }
 
-  cancel(executionType: ExecutionType, executionId: string): boolean {
+  /** `reason` becomes the cancelled run's `cancel_reason`. */
+  cancel(
+    executionType: ExecutionType,
+    executionId: string,
+    reason = "cancelled by user",
+  ): boolean {
     const k = this.key(executionType, executionId);
     const entry = this.entries.get(k);
     if (!entry) {
       return false;
     }
     logger.info`Cancelling ${executionType} ${executionId}`;
-    entry.controller.abort(new Error("cancelled by user"));
+    entry.controller.abort(new Error(reason));
     return true;
   }
 
-  cancelAll(executionType?: ExecutionType): number {
+  cancelAll(
+    executionType?: ExecutionType,
+    reason = "cancelled by user",
+  ): number {
     let count = 0;
     for (const entry of this.entries.values()) {
       if (executionType && entry.executionType !== executionType) {
         continue;
       }
       logger.info`Cancelling ${entry.executionType} ${entry.executionId}`;
-      entry.controller.abort(new Error("cancelled by user"));
+      entry.controller.abort(new Error(reason));
       count++;
     }
     return count;

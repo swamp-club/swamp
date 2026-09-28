@@ -357,14 +357,15 @@ export class ScheduledExecutionService {
   /**
    * Cancels a scheduled run by run ID (reverse lookup). Used by the REST
    * cancel endpoint which receives a run ID, not a workflow ID.
-   * Returns true if found and aborted.
+   * Returns true if found and aborted. `reason` becomes the run's
+   * `cancel_reason`.
    */
-  cancelByRunId(runId: string): boolean {
+  cancelByRunId(runId: string, reason = "cancelled by user"): boolean {
     for (const [workflowId, entry] of this.running) {
       if (entry.runId === runId) {
         logger
           .info`Cancelling scheduled run ${runId} for workflow ${workflowId}`;
-        entry.controller.abort(new Error("cancelled by user"));
+        entry.controller.abort(new Error(reason));
         return true;
       }
     }
@@ -374,11 +375,11 @@ export class ScheduledExecutionService {
   /**
    * Cancels all scheduled runs. Returns the number of runs cancelled.
    */
-  cancelAllRuns(): number {
+  cancelAllRuns(reason = "cancelled by user"): number {
     let count = 0;
     for (const [workflowId, entry] of this.running) {
       logger.info`Cancelling scheduled run for workflow ${workflowId}`;
-      entry.controller.abort(new Error("cancelled by user"));
+      entry.controller.abort(new Error(reason));
       count++;
     }
     return count;

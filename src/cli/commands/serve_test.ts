@@ -23,7 +23,6 @@ import {
   assertOffLoopbackSecurity,
   cancelExecution,
   collectServeExtraArgs,
-  emitHttpCancelAudit,
   parseDatastorePollInterval,
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
@@ -1273,40 +1272,20 @@ Deno.test("cancelExecution: cancels a resume that registered after the registry 
   assertEquals(result.status, "cancellation_requested");
 });
 
-Deno.test("emitHttpCancelAudit: records the cancel outcome and principal", () => {
-  const events: Record<string, unknown>[] = [];
-  const ctx = {
-    instanceId: "inst-1",
-    auditEmitter: { emit: (e: Record<string, unknown>) => events.push(e) },
-  } as unknown as Parameters<typeof emitHttpCancelAudit>[0];
+Deno.test("cancelExecution: passes its reason to the registry that aborts the run", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  const run = makeActiveRun("r1", Promise.resolve());
+  activeRunRegistry.register(run);
 
-  emitHttpCancelAudit(
-    ctx,
-    { status: "cancelled", executionType: "workflow-run", executionId: "r1" },
-    { kind: "user", id: "alice" },
-    "10.0.0.1",
-  );
-  emitHttpCancelAudit(
-    ctx,
-    {
-      status: "conflict",
-      executionType: "workflow-run",
-      executionId: "r2",
-      message: "busy",
-    },
-    null,
-    "10.0.0.2",
-  );
+  await cancelExecution("workflow-run", "r1", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    reason: "cancelled by user:alice",
+  }, 10);
 
-  assertEquals(events.length, 2);
-  assertEquals(events[0].category, "execution");
-  assertEquals(events[0].action, "cancel");
-  assertEquals(events[0].outcome, "success");
-  assertEquals(events[0].resourceKind, "workflow");
-  assertEquals(events[0].resourceName, "r1");
-  assertEquals(events[0].principalId, "alice");
-  assertEquals(events[0].sourceIp, "10.0.0.1");
-  assertEquals(events[1].outcome, "failure");
-  assertEquals(events[1].principalKind, "anonymous");
-  assertEquals(events[1].detail, "busy");
+  const reason = run.controller.signal.reason;
+  assertEquals(
+    reason instanceof Error ? reason.message : reason,
+    "cancelled by user:alice",
+  );
 });

@@ -41,6 +41,8 @@ import type { Grant } from "../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { ActiveRunRegistry } from "./active_run_registry.ts";
+import { RunEventBuffer } from "./run_event_buffer.ts";
+import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import { Workflow } from "../domain/workflows/workflow.ts";
 import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { Job } from "../domain/workflows/job.ts";
@@ -313,6 +315,57 @@ Deno.test("handleMessage cancel for unknown id is a no-op", () => {
   );
 
   assertEquals(mock.sent.length, 0);
+});
+
+Deno.test("handleMessage cancel of another connection's run records who cancelled it and audits it", async () => {
+  const registry = new ActiveRunRegistry();
+  const runController = new AbortController();
+  registry.register({
+    runId: "run-7",
+    kind: "workflow-run",
+    resourceName: "deploy",
+    buffer: new RunEventBuffer(10),
+    controller: runController,
+    startedAt: new Date(),
+    completion: Promise.resolve(),
+    principalId: "user:someone-else",
+  });
+  const audit: AuditEvent[] = [];
+  const ctx = {
+    ...makeCtx(modeTokenConfig, [
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        resource: { kind: "workflow", pattern: "deploy" },
+        actions: ["run"],
+      }),
+    ]),
+    activeRunRegistry: registry,
+    instanceId: "inst-1",
+    auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
+  } as unknown as ConnectionContext;
+  const mock = createMockSocket();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type: "cancel", id: "run-7" })),
+    testPrincipal,
+  );
+
+  await waitFor(() => audit.length >= 1, "cancel audited");
+  const reason = runController.signal.reason;
+  assertEquals(
+    reason instanceof Error ? reason.message : reason,
+    "cancelled by user:adam",
+  );
+  assertEquals(audit.length, 1);
+  assertEquals(audit[0].category, "execution");
+  assertEquals(audit[0].action, "cancel");
+  assertEquals(audit[0].outcome, "success");
+  assertEquals(audit[0].resourceName, "run-7");
+  assertEquals(audit[0].principalId, "adam");
+  assertEquals(audit[0].detail, "workflow=deploy");
 });
 
 // ── handleMessage: duplicate request ID ─────────────────────────────────

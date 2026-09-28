@@ -305,7 +305,10 @@ Deno.test({
       });
       const run = await loadRun(h);
       assertEquals(run?.status, "cancelled");
-      assertEquals(run?.tags["cancel_reason"], "stuck gate");
+      assertEquals(
+        run?.tags["cancel_reason"],
+        "stuck gate (cancelled by user:operator)",
+      );
       assertEquals(h.registry.reserve(h.runId) !== null, true);
     }),
 });
@@ -388,6 +391,11 @@ Deno.test({
       assertEquals(replies[0].type, "workflow.cancel", JSON.stringify(replies));
       assertEquals(replies[0].payload?.data.status, "cancellation_requested");
       assertEquals(resume.controller.signal.aborted, true);
+      const reason = resume.controller.signal.reason;
+      assertEquals(
+        reason instanceof Error ? reason.message : reason,
+        "stuck gate (cancelled by user:operator)",
+      );
       assertEquals((await loadRun(h))?.status, "suspended");
     }),
 });

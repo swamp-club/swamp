@@ -1349,20 +1349,38 @@ includes a run with an expired gate and one whose resume refuses a changed
 workflow. A local cancel refuses such a run, and supersede skips it. Any serve
 instance can cancel it, not only the one that started it, because each serve
 start records a fresh `instanceId`. The endpoint's admin check still applies,
-the change runs under the sync gate and is pushed like any handler mutation,
-and each single-run HTTP cancel is audited (category `execution`, action
-`cancel`). A run found but no longer suspended, or one another operation holds,
+and the change runs under the sync gate and is pushed like any handler
+mutation. The fallback searches only suspended runs, so a run that is already
+cancelled or finished gets `404`. A suspended run that another operation holds
 gets `409`.
+
+**Who cancelled.** Every run cancellation through serve is audited, and the
+run records who made it. The HTTP single-run and bulk cancels, the WebSocket
+`cancel` of a registered run, and `workflow.cancel` each emit one audit event:
+category `execution`, action `cancel`, `cancel.all` or `workflow.cancel`, with
+the principal and source IP, or `anonymous` without auth. The run's
+`cancel_reason` names the same principal: `cancelled by user:alice`, or
+`<reason> (cancelled by user:alice)` when the request gave a reason. For a run
+in progress it travels as the abort reason passed to the registry that held it
+(`ActiveRunRegistry`, `RunCancelRegistry`, or the scheduled runs); the executor
+records the abort reason as `cancel_reason`. `cancelActor`,
+`cancelReasonFor` and `emitRunCancelAudit` in `src/serve/handlers/shared.ts`
+build both.
 
 Over WebSocket, the `workflow.cancel` request (`runId`, optional
 `workflowIdOrName` and `reason`) does the same for a run this instance is
 driving or a persisted suspended run. It authorizes the `run` action on the
 workflow the run belongs to, as the server knows it, never the payload's name.
+So does the bare `cancel` when its id names a run in the registry rather than
+one of the connection's own requests. By design, any principal with `run` on a
+workflow may cancel that workflow's runs, including ones other principals
+started. The audit event and `cancel_reason` record who did.
 It checks without replying (`isAuthorized` in `src/serve/handlers/shared.ts`).
 A refused caller, a missing run, and a run of another workflow than the
 payload names all get the same `No cancellable run with id <id>` error, so a
-run id reveals nothing. The bare `cancel` message is unchanged: it aborts an
-in-flight request on the same connection and sends no reply.
+run id reveals nothing. The bare `cancel` message sends no reply. For one of
+the connection's own requests it only aborts that request, which detaches its
+stream.
 
 Within one serve process, the cancel serializes with a resume, approve or
 reject of the same run through `ActiveRunRegistry.reserve`. That is a claim on

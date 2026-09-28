@@ -845,3 +845,25 @@ Deno.test("ActiveRunRegistry: rekey ignores reservations", () => {
   assertEquals(registry.rekey("request-id", "domain-id"), true);
   assertEquals(registry.get("domain-id")?.runId, "domain-id");
 });
+
+Deno.test("ActiveRunRegistry: cancel and cancelAll record the given reason", () => {
+  const registry = new ActiveRunRegistry();
+  const one = makeRun("r1");
+  const two = makeRun("r2");
+  const three = makeRun("r3");
+  registry.register(one);
+  registry.register(two);
+
+  registry.cancel("r1", "cancelled by user:alice");
+  const message = (run: ActiveRun) => {
+    const reason = run.controller.signal.reason;
+    return reason instanceof Error ? reason.message : reason;
+  };
+  assertEquals(message(one), "cancelled by user:alice");
+
+  registry.deregister("r1");
+  registry.register(three);
+  registry.cancelAll(undefined, "cancelled by user:bob");
+  assertEquals(message(two), "cancelled by user:bob");
+  assertEquals(message(three), "cancelled by user:bob");
+});

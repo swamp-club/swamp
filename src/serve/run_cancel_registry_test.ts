@@ -98,3 +98,35 @@ Deno.test("RunCancelRegistry.list: returns entries filtered by type", () => {
   assertEquals(registry.list("method-run").length, 1);
   assertEquals(registry.list().length, 2);
 });
+
+function abortMessage(controller: AbortController): unknown {
+  const reason = controller.signal.reason;
+  return reason instanceof Error ? reason.message : reason;
+}
+
+Deno.test("RunCancelRegistry.cancel: records the given reason, defaulting to cancelled by user", () => {
+  const registry = new RunCancelRegistry();
+  const named = new AbortController();
+  const unnamed = new AbortController();
+  registry.register("workflow-run", "run-1", named);
+  registry.register("workflow-run", "run-2", unnamed);
+
+  registry.cancel("workflow-run", "run-1", "cancelled by user:alice");
+  registry.cancel("workflow-run", "run-2");
+
+  assertEquals(abortMessage(named), "cancelled by user:alice");
+  assertEquals(abortMessage(unnamed), "cancelled by user");
+});
+
+Deno.test("RunCancelRegistry.cancelAll: records the given reason on every run", () => {
+  const registry = new RunCancelRegistry();
+  const a = new AbortController();
+  const b = new AbortController();
+  registry.register("workflow-run", "run-1", a);
+  registry.register("method-run", "run-2", b);
+
+  registry.cancelAll(undefined, "cancelled by user:alice");
+
+  assertEquals(abortMessage(a), "cancelled by user:alice");
+  assertEquals(abortMessage(b), "cancelled by user:alice");
+});

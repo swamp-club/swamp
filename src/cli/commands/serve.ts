@@ -41,19 +41,22 @@ import {
   type SuspendedRunCancelResult,
 } from "../../serve/suspended_run_cancel.ts";
 import { withSyncGate } from "../../serve/sync_gate.ts";
-import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
 import {
   collectClusterInstances,
   redactServeOptions,
 } from "../../serve/handlers/admin_handlers.ts";
 import {
+  cancelActor,
+  cancelReasonFor,
   closeConnectionsForPrincipal,
+  emitRunCancelAudit,
   emitSystemAuditEvent,
   listTokenSessions,
   pushChangedToRemote,
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
+  sanitizeErrorForClient,
   setConnectionCollectives,
   setConnectionCompression,
   setConnectionSourceIp,
@@ -88,10 +91,7 @@ import {
   clearRateLimit,
   rateLimitKey,
 } from "../../serve/rate_limiter.ts";
-import {
-  parsePrincipal,
-  principalToString,
-} from "../../domain/access/principal.ts";
+import { parsePrincipal } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { getActiveTelemetryContext } from "../telemetry_integration.ts";
@@ -390,6 +390,8 @@ export interface CancelDeps {
   cancelRegistry: RunCancelRegistry;
   activeRunRegistry?: ActiveRunRegistry;
   scheduledCancelByRunId?: (id: string) => boolean;
+  /** Recorded as the cancelled run's `cancel_reason`. */
+  reason?: string;
   /**
    * Cancels a persisted suspended workflow run no process here is driving.
    * Tried only for a workflow-run that no registry holds.
@@ -458,9 +460,13 @@ export async function cancelExecution(
   deps: CancelDeps,
   graceMs: number = CANCEL_GRACE_MS,
 ): Promise<CancelResult> {
-  let found = deps.cancelRegistry.cancel(executionType, executionId);
+  let found = deps.cancelRegistry.cancel(
+    executionType,
+    executionId,
+    deps.reason,
+  );
   if (!found && deps.activeRunRegistry) {
-    found = deps.activeRunRegistry.cancel(executionId);
+    found = deps.activeRunRegistry.cancel(executionId, deps.reason);
   }
   let foundViaScheduled = false;
   if (
@@ -478,7 +484,8 @@ export async function cancelExecution(
         return { status: "cancelled", executionType, executionId };
       case "active":
         // A resume registered the run after the registry miss above.
-        found = deps.activeRunRegistry?.cancel(executionId) ?? false;
+        found = deps.activeRunRegistry?.cancel(executionId, deps.reason) ??
+          false;
         break;
       case "busy":
       case "not_suspended":
@@ -518,36 +525,6 @@ export async function cancelExecution(
     return { status: "cancellation_requested", executionType, executionId };
   }
   return { status: "cancelled", executionType, executionId };
-}
-
-/**
- * Audits a single-execution cancel over HTTP. The bulk cancel and the
- * WebSocket request abort are not audited here.
- */
-export function emitHttpCancelAudit(
-  ctx: import("../../serve/connection.ts").ConnectionContext,
-  result: CancelResult,
-  principal: ReturnType<typeof parsePrincipal> | null,
-  sourceIp: string,
-): void {
-  if (!ctx.auditEmitter) return;
-  const succeeded = result.status === "cancelled" ||
-    result.status === "cancellation_requested";
-  ctx.auditEmitter.emit(buildAuditEvent({
-    instanceId: ctx.instanceId ?? "unknown",
-    category: "execution",
-    stage: "response",
-    outcome: succeeded ? "success" : "failure",
-    action: "cancel",
-    resourceKind: result.executionType === "method-run" ? "model" : "workflow",
-    resourceName: result.executionId,
-    principalKind: principal?.kind ?? "anonymous",
-    principalId: principal?.id ?? "anonymous",
-    initiatedBy: principal ? principalToString(principal) : "ghost",
-    sourceIp,
-    requestId: crypto.randomUUID(),
-    detail: succeeded ? result.status : result.message,
-  }));
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -4946,13 +4923,13 @@ export const serveCommand = new Command()
           const isBulkCancel = url.pathname === "/api/v1/cancel";
           let cancelAuditPrincipal: ReturnType<typeof parsePrincipal> | null =
             null;
+          const cancelRemoteAddr = trustProxy
+            ? (req.headers.get("x-forwarded-for")
+              ?.split(",")[0]?.trim() ??
+              info.remoteAddr.hostname)
+            : info.remoteAddr.hostname;
           if (cancelMatch || isBulkCancel) {
             if (authConfig.mode !== "none") {
-              const cancelRemoteAddr = trustProxy
-                ? (req.headers.get("x-forwarded-for")
-                  ?.split(",")[0]?.trim() ??
-                  info.remoteAddr.hostname)
-                : info.remoteAddr.hostname;
               const cancelIpBurst = checkIpBurst(cancelRemoteAddr);
               if (!cancelIpBurst.allowed) {
                 return new Response("Too Many Requests", {
@@ -5032,40 +5009,65 @@ export const serveCommand = new Command()
           if (cancelMatch) {
             const executionType = cancelMatch[1] as ExecutionType;
             const executionId = cancelMatch[2];
-            const result = await cancelExecution(
-              executionType,
-              executionId,
-              {
-                cancelRegistry,
-                activeRunRegistry,
-                scheduledCancelByRunId: scheduledExecution
-                  ? (id) => scheduledExecution.cancelByRunId(id)
-                  : undefined,
-                // The endpoint already required admin on every resource, so
-                // the run's own workflow needs no further check.
-                cancelSuspended: (id) =>
-                  withSyncGate(connectionCtx.syncGate, async () => {
-                    try {
-                      return await cancelSuspendedRunInServe(
-                        connectionCtx,
-                        { runId: id, reason: "cancelled via serve API" },
-                        () => true,
-                      );
-                    } finally {
-                      await pushChangedToRemote(connectionCtx);
-                    }
-                  }),
-              },
+            const reason = cancelReasonFor(
+              cancelActor(cancelAuditPrincipal, connectionCtx),
             );
-            emitHttpCancelAudit(
-              connectionCtx,
-              result,
-              cancelAuditPrincipal,
-              trustProxy
-                ? (req.headers.get("x-forwarded-for")?.split(",")[0]
-                  ?.trim() ?? info.remoteAddr.hostname)
-                : info.remoteAddr.hostname,
-            );
+            const audit = {
+              action: "cancel",
+              resourceKind: executionType === "method-run"
+                ? "model"
+                : "workflow",
+              resourceName: executionId,
+              principal: cancelAuditPrincipal,
+              sourceIp: cancelRemoteAddr,
+              requestId: crypto.randomUUID(),
+            };
+            let result: CancelResult;
+            try {
+              result = await cancelExecution(
+                executionType,
+                executionId,
+                {
+                  cancelRegistry,
+                  activeRunRegistry,
+                  reason,
+                  scheduledCancelByRunId: scheduledExecution
+                    ? (id) => scheduledExecution.cancelByRunId(id, reason)
+                    : undefined,
+                  // The endpoint already required admin on every resource, so
+                  // the run's own workflow needs no further check.
+                  cancelSuspended: (id) =>
+                    withSyncGate(connectionCtx.syncGate, async () => {
+                      try {
+                        return await cancelSuspendedRunInServe(
+                          connectionCtx,
+                          { runId: id, reason },
+                          () => true,
+                        );
+                      } finally {
+                        await pushChangedToRemote(connectionCtx);
+                      }
+                    }),
+                },
+              );
+            } catch (error) {
+              emitRunCancelAudit(connectionCtx, {
+                ...audit,
+                outcome: "failure",
+                detail: error instanceof Error ? error.message : String(error),
+              });
+              return Response.json({
+                status: "error",
+                message: sanitizeErrorForClient(error),
+              }, { status: 500 });
+            }
+            const succeeded = result.status === "cancelled" ||
+              result.status === "cancellation_requested";
+            emitRunCancelAudit(connectionCtx, {
+              ...audit,
+              outcome: succeeded ? "success" : "failure",
+              detail: succeeded ? result.status : result.message,
+            });
             if (result.status === "not_found") {
               return Response.json({
                 status: result.status,
@@ -5098,16 +5100,33 @@ export const serveCommand = new Command()
                 message: "executionType must be 'workflow-run' or 'method-run'",
               }, { status: 400 });
             }
-            let count = cancelRegistry.cancelAll(typeFilter);
+            const reason = cancelReasonFor(
+              cancelActor(cancelAuditPrincipal, connectionCtx),
+            );
+            let count = cancelRegistry.cancelAll(typeFilter, reason);
             if (activeRunRegistry) {
-              count += activeRunRegistry.cancelAll(typeFilter);
+              count += activeRunRegistry.cancelAll(typeFilter, reason);
             }
             if (
               (!typeFilter || typeFilter === "workflow-run") &&
               scheduledExecution
             ) {
-              count += scheduledExecution.cancelAllRuns();
+              count += scheduledExecution.cancelAllRuns(reason);
             }
+            emitRunCancelAudit(connectionCtx, {
+              action: "cancel.all",
+              resourceKind: typeFilter === "method-run"
+                ? "model"
+                : typeFilter === "workflow-run"
+                ? "workflow"
+                : "execution",
+              resourceName: "*",
+              principal: cancelAuditPrincipal,
+              sourceIp: cancelRemoteAddr,
+              requestId: crypto.randomUUID(),
+              outcome: "success",
+              detail: `count=${count}`,
+            });
             return Response.json({ status: "cancellation_requested", count });
           }
         }

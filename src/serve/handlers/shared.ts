@@ -62,7 +62,10 @@ import type {
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
-import type { AuditDecision } from "../../domain/serve_audit/audit_event.ts";
+import type {
+  AuditDecision,
+  AuditOutcome,
+} from "../../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
@@ -1335,6 +1338,69 @@ export function subscribeUntilDetach(
       unsub();
     }, { once: true });
   });
+}
+
+/**
+ * Who cancelled a run, as recorded in its `cancel_reason` and audit event:
+ * the principal's display name, or `anonymous` when serve runs without auth.
+ */
+export function cancelActor(
+  principal: Principal | null,
+  ctx: Pick<ConnectionContext, "resolvedUserNames">,
+): string {
+  if (!principal) return "anonymous";
+  if (principal.kind === "user" && ctx.resolvedUserNames?.[principal.id]) {
+    return `user:${ctx.resolvedUserNames[principal.id]}`;
+  }
+  return principalToString(principal);
+}
+
+/** The `cancel_reason` a run cancelled through serve records. */
+export function cancelReasonFor(actor: string, reason?: string): string {
+  return reason ? `${reason} (cancelled by ${actor})` : `cancelled by ${actor}`;
+}
+
+export interface RunCancelAudit {
+  /** The request's own action name, e.g. `cancel` or `cancel.all`. */
+  action: string;
+  resourceKind: string;
+  /** The run id, or `*` for a bulk cancel. */
+  resourceName: string;
+  principal: Principal | null;
+  sourceIp: string;
+  requestId: string;
+  outcome: AuditOutcome;
+  detail?: string;
+}
+
+/**
+ * Audits a run cancellation made through serve, over HTTP or WebSocket, with
+ * the principal who made it. Every path that aborts or cancels a run calls
+ * this once, whatever the outcome.
+ */
+export function emitRunCancelAudit(
+  ctx: Pick<
+    ConnectionContext,
+    "auditEmitter" | "instanceId" | "resolvedUserNames"
+  >,
+  audit: RunCancelAudit,
+): void {
+  if (!ctx.auditEmitter) return;
+  ctx.auditEmitter.emit(buildAuditEvent({
+    instanceId: ctx.instanceId ?? "unknown",
+    category: "execution",
+    stage: "response",
+    outcome: audit.outcome,
+    action: audit.action,
+    resourceKind: audit.resourceKind,
+    resourceName: audit.resourceName,
+    principalKind: audit.principal?.kind ?? "anonymous",
+    principalId: audit.principal?.id ?? "anonymous",
+    initiatedBy: audit.principal ? cancelActor(audit.principal, ctx) : "ghost",
+    sourceIp: audit.sourceIp,
+    requestId: audit.requestId,
+    detail: audit.detail,
+  }));
 }
 
 export function emitSystemAuditEvent(
