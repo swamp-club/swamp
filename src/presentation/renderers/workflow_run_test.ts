@@ -704,10 +704,13 @@ Deno.test("JsonWorkflowRunRenderer: completed serializes WorkflowRunView", async
   }
 });
 
-Deno.test("JsonWorkflowRunRenderer: step_skipped guarded includes guard fields", () => {
-  const logs: string[] = [];
+Deno.test("JsonWorkflowRunRenderer: step_skipped guarded writes guard fields to stderr", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
   const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
 
   try {
     const renderer = createWorkflowRunRenderer("json", {
@@ -723,8 +726,9 @@ Deno.test("JsonWorkflowRunRenderer: step_skipped guarded includes guard fields",
         'data.latest("checker", "result").attributes.exitCode == 0',
       guardResult: true,
     });
-    assertEquals(logs.length, 1);
-    const parsed = JSON.parse(logs[0]);
+    assertEquals(stdout.length, 0);
+    assertEquals(stderr.length, 1);
+    const parsed = JSON.parse(stderr[0]);
     assertEquals(parsed.step, "do-work");
     assertEquals(parsed.reason, "guarded");
     assertEquals(
@@ -734,13 +738,16 @@ Deno.test("JsonWorkflowRunRenderer: step_skipped guarded includes guard fields",
     assertEquals(parsed.guardResult, true);
   } finally {
     console.log = originalLog;
+    console.error = originalError;
   }
 });
 
 Deno.test("JsonWorkflowRunRenderer: step_skipped dependency emits no output", () => {
   const logs: string[] = [];
   const originalLog = console.log;
+  const originalError = console.error;
   console.log = (msg: string) => logs.push(msg);
+  console.error = (msg: string) => logs.push(msg);
 
   try {
     const renderer = createWorkflowRunRenderer("json", {
@@ -756,6 +763,47 @@ Deno.test("JsonWorkflowRunRenderer: step_skipped dependency emits no output", ()
     assertEquals(logs.length, 0);
   } finally {
     console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+Deno.test("JsonWorkflowRunRenderer: superseded_runs and vault warning go to stderr", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const handlers = renderer.handlers();
+    handlers.superseded_runs({
+      kind: "superseded_runs",
+      cancelledRunIds: ["run-0"],
+    });
+    handlers.method_event({
+      kind: "method_event",
+      jobId: "main",
+      stepId: "deploy",
+      modelName: "deploy-shell",
+      methodName: "execute",
+      event: { type: "vault_single_quote_warning", message: "use quotes" },
+    });
+    assertEquals(stdout.length, 0);
+    assertEquals(stderr.map((line) => JSON.parse(line)), [
+      { event: "superseded_runs", cancelledRunIds: ["run-0"] },
+      {
+        warning: "vault_single_quote",
+        modelName: "deploy-shell",
+        message: "use quotes",
+      },
+    ]);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
   }
 });
 

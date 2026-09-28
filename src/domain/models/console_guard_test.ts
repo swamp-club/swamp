@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { withConsoleGuard } from "./console_guard.ts";
+import {
+  setConsoleGuardStderrWriter,
+  unguardedConsole,
+  withConsoleGuard,
+} from "./console_guard.ts";
 
 Deno.test("withConsoleGuard: captures console.log into logs array", async () => {
   const logs: string[] = [];
@@ -199,4 +203,116 @@ Deno.test("withConsoleGuard: skips capture in non-JSON mode", async () => {
 
   assertEquals(result, 99);
   assertEquals(logs.length, 0);
+});
+
+Deno.test("withConsoleGuard: a line logged under concurrent guards reaches stderr once", async () => {
+  const stderr: string[] = [];
+  setConsoleGuardStderrWriter((line) => stderr.push(line));
+  const logsA: string[] = [];
+  const logsB: string[] = [];
+  const gateA = Promise.withResolvers<void>();
+  const gateB = Promise.withResolvers<void>();
+  const bothActive = Promise.withResolvers<void>();
+
+  try {
+    const guardA = withConsoleGuard(() => gateA.promise, logsA, {
+      jsonMode: true,
+    });
+    const guardB = withConsoleGuard(
+      async () => {
+        bothActive.resolve();
+        await gateB.promise;
+      },
+      logsB,
+      { jsonMode: true },
+    );
+    await bothActive.promise;
+
+    console.log("shared line");
+
+    gateB.resolve();
+    await guardB;
+    gateA.resolve();
+    await guardA;
+
+    assertEquals(stderr, ["shared line"]);
+    assertEquals(logsA, ["shared line"]);
+    assertEquals(logsB, ["shared line"]);
+  } finally {
+    setConsoleGuardStderrWriter(undefined);
+  }
+});
+
+Deno.test("unguardedConsole: bypasses capture while a guard is active", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+  const captured: string[] = [];
+  setConsoleGuardStderrWriter((line) => captured.push(line));
+  const logs: string[] = [];
+
+  try {
+    await withConsoleGuard(
+      () => {
+        unguardedConsole.log("to stdout");
+        unguardedConsole.error("to stderr");
+      },
+      logs,
+      { jsonMode: true },
+    );
+
+    assertEquals(logs, []);
+    assertEquals(captured, []);
+    assertEquals(stdout, ["to stdout"]);
+    assertEquals(stderr, ["to stderr"]);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    setConsoleGuardStderrWriter(undefined);
+  }
+});
+
+Deno.test("unguardedConsole: uses the current console when no guard is active", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+
+  try {
+    unguardedConsole.log("out");
+    unguardedConsole.error("err");
+
+    assertEquals(stdout, ["out"]);
+    assertEquals(stderr, ["err"]);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+Deno.test("withConsoleGuard: restores the console in place before the first guard", async () => {
+  const originalLog = console.log;
+  const stub = (..._args: unknown[]) => {};
+  console.log = stub;
+  setConsoleGuardStderrWriter(() => {});
+
+  try {
+    await withConsoleGuard(
+      () => {
+        console.log("captured");
+      },
+      [],
+      { jsonMode: true },
+    );
+
+    assertEquals(console.log, stub);
+  } finally {
+    console.log = originalLog;
+    setConsoleGuardStderrWriter(undefined);
+  }
 });
