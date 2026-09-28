@@ -23,6 +23,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   buildErrorJson,
   exitCodeForError,
+  platformCertStoreHint,
   renderError,
   tlsErrorHint,
 } from "./error_output.ts";
@@ -577,6 +578,128 @@ Deno.test("renderError: no TLS hint for non-TLS errors", () => {
     renderError(new UserError("Model not found"));
     assertEquals(logs.length, 1);
     assertEquals(logs[0].includes("Hint:"), false);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+// ============================================================================
+// platformCertStoreHint tests (swamp-club#2314)
+// ============================================================================
+
+// Verbatim from Deno 2.9.7: a global fetch() when the OS store read fails.
+const RAW_CERT_STORE_MESSAGE =
+  "Failed to load platform certificates: No such file or directory (os error 2)";
+
+function certStoreErrorWithStack(): Error {
+  const error = new Error(RAW_CERT_STORE_MESSAGE);
+  error.stack = `Error: ${RAW_CERT_STORE_MESSAGE}\n` +
+    "    at mainFetch (ext:deno_fetch/26_fetch.js:2:2193)\n" +
+    "    at HttpUpdateChecker.checkForUpdate (file:///src/infrastructure/update/http_update_checker.ts:248:28)";
+  return error;
+}
+
+Deno.test("platformCertStoreHint: returns remedy for the raw Deno message", () => {
+  const hint = platformCertStoreHint(RAW_CERT_STORE_MESSAGE);
+  assertEquals(hint !== undefined, true);
+  assertStringIncludes(hint!, "DENO_TLS_CA_STORE=mozilla");
+  assertStringIncludes(hint!, "SSL_CERT_FILE");
+  assertStringIncludes(hint!, "corporate CA");
+});
+
+Deno.test("platformCertStoreHint: returns remedy for the macOS keychain variant", () => {
+  const hint = platformCertStoreHint(
+    "Failed to load platform certificates: SecTrustSettingsCopyCertificates failed",
+  );
+  assertStringIncludes(hint!, "DENO_TLS_CA_STORE=mozilla");
+});
+
+Deno.test("platformCertStoreHint: returns remedy when embedded in a wrapping message", () => {
+  for (
+    const message of [
+      `Could not connect to https://swamp-club.com: ${RAW_CERT_STORE_MESSAGE}`,
+      `Download failed: ${RAW_CERT_STORE_MESSAGE}`,
+    ]
+  ) {
+    assertStringIncludes(
+      platformCertStoreHint(message)!,
+      "DENO_TLS_CA_STORE=mozilla",
+    );
+  }
+});
+
+Deno.test("platformCertStoreHint: returns undefined for unrelated and UnknownIssuer errors", () => {
+  assertEquals(platformCertStoreHint("connection refused"), undefined);
+  assertEquals(
+    platformCertStoreHint("invalid peer certificate: UnknownIssuer"),
+    undefined,
+  );
+});
+
+Deno.test("platformCertStoreHint: returns undefined when the message already names the remedy", () => {
+  assertEquals(
+    platformCertStoreHint(
+      `Could not read the OS certificate store: ${RAW_CERT_STORE_MESSAGE} — ` +
+        "re-run with DENO_TLS_CA_STORE=mozilla",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("renderError: log mode renders a raw cert-store Error without a stack trace", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+
+  try {
+    renderError(certStoreErrorWithStack());
+
+    assertEquals(logs.length, 2);
+    assertStringIncludes(logs[0], "Error:");
+    assertStringIncludes(logs[0], RAW_CERT_STORE_MESSAGE);
+    assertEquals(logs[0].includes("    at "), false);
+    assertEquals(logs[0].includes("FTL"), false);
+    assertStringIncludes(logs[1], "Hint:");
+    assertStringIncludes(logs[1], "DENO_TLS_CA_STORE=mozilla");
+    assertStringIncludes(logs[1], "SSL_CERT_FILE");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: json mode renders a raw cert-store Error with a hint and no stack", () => {
+  const stderrLogs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
+
+  try {
+    renderError(certStoreErrorWithStack(), "json");
+
+    assertEquals(stderrLogs.length, 1);
+    const parsed = JSON.parse(stderrLogs[0]);
+    assertEquals(parsed.error, RAW_CERT_STORE_MESSAGE);
+    assertEquals(parsed.stack, undefined);
+    assertStringIncludes(parsed.hint, "DENO_TLS_CA_STORE=mozilla");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: log mode appends the cert-store hint once to a wrapping UserError", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+
+  try {
+    renderError(
+      new UserError(
+        `Could not connect to https://swamp-club.com: ${RAW_CERT_STORE_MESSAGE}`,
+      ),
+    );
+
+    assertEquals(logs.length, 2);
+    assertStringIncludes(logs[0], "Could not connect");
+    assertEquals(logs[1].split("DENO_TLS_CA_STORE=mozilla").length, 2);
   } finally {
     console.error = originalError;
   }

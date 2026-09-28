@@ -45,6 +45,7 @@ import {
   STATUS_COLORS,
   writeBlankLine,
 } from "../output/console_writer.ts";
+import { platformCertStoreHint } from "../output/error_output.ts";
 
 export interface WorkflowRunRenderOpts {
   workflowName: string;
@@ -631,6 +632,16 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           );
           writeBlankLine();
           writeOutput(this.pipe.line("system", STATUS_COLORS.error(stepError)));
+          // This renderer prints the run's error itself instead of throwing
+          // it to renderError, so it carries the cert-store hint too.
+          const certStoreHint = platformCertStoreHint(stepError);
+          if (certStoreHint) {
+            writeBlankLine();
+            writeOutput(this.pipe.line("system", yellow("Hint:")));
+            for (const line of certStoreHint.split("\n")) {
+              writeOutput(this.pipe.line("system", dim(line)));
+            }
+          }
           writeBlankLine();
           for (const line of this.nextActionForFailedRun(e.run)) {
             writeOutput(this.pipe.line("system", line));

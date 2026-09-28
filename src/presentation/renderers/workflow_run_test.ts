@@ -169,6 +169,38 @@ Deno.test("ConsoleWorkflowRunRenderer: failed run shows Failed with error", asyn
   assertStringIncludes(output, "connection refused");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: failed run with a cert-store error shows the remedy hint", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const runView = makeRunView("failed");
+  runView.jobs[0].steps[0].error =
+    "Failed to load platform certificates: No such file or directory (os error 2)";
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  const errorAt = output.indexOf("Failed to load platform certificates");
+  const hintAt = output.indexOf("Hint:");
+  assertEquals(errorAt >= 0 && hintAt > errorAt, true);
+  assertStringIncludes(output, "DENO_TLS_CA_STORE=mozilla");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: failed run with an unrelated error shows no hint", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(simpleEvents(makeRunView("failed"))),
+      renderer.handlers(),
+    );
+  });
+  assertEquals(lines.join("\n").includes("Hint:"), false);
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: pipe-prefixed output uses job name", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
