@@ -151,6 +151,7 @@ export type {
 export {
   assertDatastoreExportConformance,
   assertLockConformance,
+  assertLockTimeoutConformance,
   assertSyncServiceConformance,
   assertVerifierConformance,
 } from "./datastore_conformance.ts";

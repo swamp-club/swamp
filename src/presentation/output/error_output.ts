@@ -85,12 +85,16 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
  * Returns the process exit code for an error.
  *
  * - `75` (EX_TEMPFAIL) for `lock_timeout` — a temporary failure that
- *   callers should retry with backoff.
+ *   callers should retry with backoff. Matched in any case: datastore
+ *   extensions throw `LOCK_TIMEOUT`, and core only translates the ones
+ *   raised through a lock it wrapped.
  * - `1` for all other errors.
  */
 export function exitCodeForError(error: unknown): number {
   const code = (error as { code?: unknown })?.code;
-  if (code === "lock_timeout") return 75;
+  if (typeof code === "string" && code.toLowerCase() === "lock_timeout") {
+    return 75;
+  }
   return 1;
 }
 

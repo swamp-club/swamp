@@ -17,9 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { UserError } from "../errors.ts";
-import { LockTimeoutError } from "./distributed_lock.ts";
+import {
+  type DistributedLock,
+  type LockInfo,
+  LockTimeoutError,
+  toCoreLockTimeoutError,
+  withCoreLockErrors,
+} from "./distributed_lock.ts";
 
 Deno.test("LockTimeoutError: includes holder info when available", () => {
   const error = new LockTimeoutError(
@@ -90,4 +102,164 @@ Deno.test("LockTimeoutError: namespaced filesystem path omits namespace hint", (
     5000,
   );
   assertEquals(error.message.includes("namespace set"), false);
+});
+
+/** Mirrors the error the S3 and GCS datastore extensions throw on timeout. */
+class ExtensionLockTimeoutError extends Error {
+  override readonly name = "LockTimeoutError";
+  readonly code = "LOCK_TIMEOUT" as const;
+  readonly retryable = true as const;
+
+  constructor(
+    public readonly lockKey: string,
+    public readonly holder: LockInfo | null,
+    public readonly waitedMs: number,
+  ) {
+    super(`Lock "${lockKey}" [extension] — timed out after ${waitedMs}ms`);
+  }
+}
+
+const HOLDER: LockInfo = {
+  holder: "sam@host",
+  hostname: "host",
+  pid: 4242,
+  acquiredAt: "2026-09-28T12:00:00.000Z",
+  ttlMs: 30000,
+};
+
+Deno.test("toCoreLockTimeoutError: returns a core LockTimeoutError unchanged", () => {
+  const original = new LockTimeoutError("k", null, 10);
+  assertStrictEquals(toCoreLockTimeoutError(original), original);
+});
+
+Deno.test("toCoreLockTimeoutError: translates an extension LOCK_TIMEOUT error", () => {
+  const original = new ExtensionLockTimeoutError("data/m/.lock", HOLDER, 6484);
+  const translated = toCoreLockTimeoutError(original);
+
+  assertInstanceOf(translated, LockTimeoutError);
+  assertInstanceOf(translated, UserError);
+  assertEquals(translated.code, "lock_timeout");
+  assertEquals(translated.lockKey, "data/m/.lock");
+  assertEquals(translated.holder, HOLDER);
+  assertEquals(translated.waitedMs, 6484);
+  assertStringIncludes(translated.message, "sam@host");
+  assertStringIncludes(translated.message, "6484ms");
+  assertStrictEquals(translated.cause, original);
+});
+
+Deno.test("toCoreLockTimeoutError: matches the code in any case", () => {
+  const translated = toCoreLockTimeoutError({
+    code: "Lock_Timeout",
+    lockKey: "k",
+    waitedMs: 5,
+    holder: null,
+  });
+  assertInstanceOf(translated, LockTimeoutError);
+});
+
+Deno.test("toCoreLockTimeoutError: translated global lock key keeps the namespace hint", () => {
+  const translated = toCoreLockTimeoutError(
+    new ExtensionLockTimeoutError(".datastore.lock", null, 60000),
+  );
+  assertInstanceOf(translated, LockTimeoutError);
+  assertStringIncludes(translated.message, "swamp datastore namespace set");
+});
+
+Deno.test("toCoreLockTimeoutError: keeps the original message when lock fields are missing", () => {
+  const original = Object.assign(new Error("backend gave up waiting"), {
+    code: "LOCK_TIMEOUT",
+  });
+  const translated = toCoreLockTimeoutError(original);
+
+  assertInstanceOf(translated, LockTimeoutError);
+  assertEquals(translated.message, "backend gave up waiting");
+  assertEquals(translated.code, "lock_timeout");
+});
+
+Deno.test("toCoreLockTimeoutError: drops a malformed holder", () => {
+  const translated = toCoreLockTimeoutError({
+    code: "LOCK_TIMEOUT",
+    lockKey: "k",
+    waitedMs: 5,
+    holder: { holder: 7 },
+  });
+  assertInstanceOf(translated, LockTimeoutError);
+  assertEquals(translated.holder, null);
+});
+
+Deno.test("toCoreLockTimeoutError: returns null for unrelated errors", () => {
+  assertEquals(toCoreLockTimeoutError(new Error("boom")), null);
+  assertEquals(
+    toCoreLockTimeoutError(new UserError("nope", "timeout")),
+    null,
+  );
+  assertEquals(toCoreLockTimeoutError("LOCK_TIMEOUT"), null);
+  assertEquals(toCoreLockTimeoutError(null), null);
+});
+
+function fakeLock(overrides: Partial<DistributedLock>): DistributedLock {
+  return {
+    acquire: () => Promise.resolve(),
+    release: () => Promise.resolve(),
+    withLock: (fn) => fn(),
+    inspect: () => Promise.resolve(null),
+    forceRelease: () => Promise.resolve(false),
+    ...overrides,
+  };
+}
+
+Deno.test("withCoreLockErrors: acquire rejects with the core LockTimeoutError", async () => {
+  const lock = withCoreLockErrors(fakeLock({
+    acquire: () =>
+      Promise.reject(new ExtensionLockTimeoutError("k", HOLDER, 3000)),
+  }));
+
+  const error = await assertRejects(() => lock.acquire(), LockTimeoutError);
+  assertEquals(error.code, "lock_timeout");
+});
+
+Deno.test("withCoreLockErrors: withLock rejects with the core LockTimeoutError", async () => {
+  const lock = withCoreLockErrors(fakeLock({
+    withLock: () =>
+      Promise.reject(new ExtensionLockTimeoutError("k", null, 3000)),
+  }));
+
+  await assertRejects(
+    () => lock.withLock(() => Promise.resolve("never")),
+    LockTimeoutError,
+  );
+});
+
+Deno.test("withCoreLockErrors: passes other errors through unchanged", async () => {
+  const original = new Error("network down");
+  const lock = withCoreLockErrors(fakeLock({
+    acquire: () => Promise.reject(original),
+  }));
+
+  const error = await assertRejects(() => lock.acquire());
+  assertStrictEquals(error, original);
+});
+
+Deno.test("withCoreLockErrors: delegates release, inspect, forceRelease and withLock results", async () => {
+  const calls: string[] = [];
+  const lock = withCoreLockErrors(fakeLock({
+    release: () => {
+      calls.push("release");
+      return Promise.resolve();
+    },
+    inspect: () => {
+      calls.push("inspect");
+      return Promise.resolve(HOLDER);
+    },
+    forceRelease: (nonce) => {
+      calls.push(`forceRelease:${nonce}`);
+      return Promise.resolve(true);
+    },
+  }));
+
+  await lock.release();
+  assertEquals(await lock.inspect(), HOLDER);
+  assertEquals(await lock.forceRelease("n-1"), true);
+  assertEquals(await lock.withLock(() => Promise.resolve(42)), 42);
+  assertEquals(calls, ["release", "inspect", "forceRelease:n-1"]);
 });

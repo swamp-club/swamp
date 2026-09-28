@@ -350,6 +350,76 @@ export async function assertLockConformance(
 }
 
 /**
+ * Asserts that a lock rejects with a recognisable timeout error when another
+ * holder keeps the lock past `maxWaitMs`.
+ *
+ * Swamp core translates the rejection into its own lock-timeout error, which
+ * `swamp model method run` reports as `"code": "lock_timeout"` with exit code
+ * 75, so callers know to retry. The translation relies on this shape:
+ *
+ * - `code` is `"lock_timeout"`, matched in any case (`"LOCK_TIMEOUT"` is fine)
+ * - `lockKey` is a string
+ * - `waitedMs` is a number
+ *
+ * `createLock` must return locks on the same key, so that a second lock
+ * contends with the first. Each call receives the `maxWaitMs` to use.
+ *
+ * ```typescript
+ * import { assertLockTimeoutConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("s3 lock timeout contract", async () => {
+ *   await assertLockTimeoutConformance(({ maxWaitMs }) =>
+ *     provider.createLock("/test/path", { lockKey: "t/.lock", maxWaitMs })
+ *   );
+ * });
+ * ```
+ */
+export async function assertLockTimeoutConformance(
+  createLock: (options: { maxWaitMs: number }) => DistributedLock,
+): Promise<void> {
+  const holder = createLock({ maxWaitMs: 5_000 });
+  const waiter = createLock({ maxWaitMs: 200 });
+
+  await holder.acquire();
+  let rejection: unknown = undefined;
+  let acquired = false;
+  try {
+    await waiter.acquire();
+    acquired = true;
+  } catch (error) {
+    rejection = error;
+  } finally {
+    if (acquired) await waiter.release();
+    await holder.release();
+  }
+
+  assertEquals(
+    acquired,
+    false,
+    "acquire() must reject while another holder keeps the lock past maxWaitMs",
+  );
+  const fields =
+    (typeof rejection === "object" && rejection !== null
+      ? rejection
+      : {}) as Record<string, unknown>;
+  assertEquals(
+    typeof fields.code === "string" ? fields.code.toLowerCase() : fields.code,
+    "lock_timeout",
+    "lock timeout errors must carry code lock_timeout (any case)",
+  );
+  assertEquals(
+    typeof fields.lockKey,
+    "string",
+    "lock timeout errors must carry the lockKey",
+  );
+  assertEquals(
+    typeof fields.waitedMs,
+    "number",
+    "lock timeout errors must carry waitedMs",
+  );
+}
+
+/**
  * Asserts that a DatastoreVerifier implementation returns a valid health result.
  *
  * ```typescript

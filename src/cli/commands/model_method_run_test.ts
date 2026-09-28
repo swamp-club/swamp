@@ -45,6 +45,7 @@ Deno.test("modelMethodRunCommand has correct description", async () => {
   );
   assertStringIncludes(desc, "lock_timeout");
   assertStringIncludes(desc, "Exit codes:");
+  assertStringIncludes(desc, "SWAMP_LOCK_TIMEOUT_MS");
 });
 
 Deno.test("modelMethodCommand module loads", async () => {

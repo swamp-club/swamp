@@ -1250,7 +1250,12 @@ export async function waitForPerModelLocks(
  */
 export interface ModelLockResult {
   flush: () => Promise<void>;
-  /** True if a remote datastore sync pulled data during lock acquisition. */
+  /**
+   * True if a remote datastore pull during lock acquisition may have changed
+   * the local cache, so callers must invalidate the catalog. False when every
+   * pull reported 0 files: skipping the invalidation spares a full catalog
+   * backfill while the lock is held (swamp-club#2553).
+   */
   synced: boolean;
 }
 
@@ -1522,7 +1527,7 @@ export async function acquireModelLocks(
           ? config.namespace
           : undefined;
         const syncService = customSyncService;
-        await wrapSync(() => {
+        const pulled = await wrapSync(() => {
           if (caps?.scopedSync) {
             const context: SyncContext = {
               models: [{ modelType, modelId }],
@@ -1535,7 +1540,8 @@ export async function acquireModelLocks(
           if (ns) return syncService.pullChanged({ namespace: ns });
           return syncService.pullChanged();
         });
-        synced = true;
+        // 0 means the local cache is unchanged; void means unknown.
+        if (pulled !== 0) synced = true;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         write(

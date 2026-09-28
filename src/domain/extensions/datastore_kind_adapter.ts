@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { isZodSchemaLike } from "../zod_compat.ts";
 import type { DatastoreProvider } from "../datastore/datastore_provider.ts";
+import { withCoreLockErrors } from "../datastore/distributed_lock.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
@@ -41,6 +42,34 @@ const UserDatastoreSchema = z.object({
     (config: Record<string, unknown>) => DatastoreProvider
   >((val) => typeof val === "function"),
 });
+
+/**
+ * Wraps an extension's `createProvider` so every lock its providers create
+ * rejects with the core `LockTimeoutError` on timeout. This is the one place
+ * extension datastores enter core, so every lock call site — per-model,
+ * global and push locks in the CLI and serve — gets core semantics (exit
+ * code 75, `lock_timeout`) without knowing the backend (swamp-club#2553).
+ *
+ * The provider is proxied rather than copied: extension providers may be
+ * class instances, and a spread would drop their prototype methods.
+ */
+function wrapExtensionProvider(
+  createProvider: (config: Record<string, unknown>) => DatastoreProvider,
+): (config: Record<string, unknown>) => DatastoreProvider {
+  return (config) => {
+    const provider = createProvider(config);
+    return new Proxy(provider, {
+      get(target, prop) {
+        if (prop === "createLock") {
+          return (...args: Parameters<DatastoreProvider["createLock"]>) =>
+            withCoreLockErrors(target.createLock(...args));
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+}
 
 export const datastoreKindAdapter: KindAdapter = {
   kind: "datastore",
@@ -93,7 +122,7 @@ export const datastoreKindAdapter: KindAdapter = {
       name: v.name,
       description: v.description,
       configSchema: v.configSchema,
-      createProvider: v.createProvider,
+      createProvider: wrapExtensionProvider(v.createProvider),
       isBuiltIn: false,
     });
   },
@@ -118,7 +147,7 @@ export const datastoreKindAdapter: KindAdapter = {
       name: v.name,
       description: v.description,
       configSchema: v.configSchema,
-      createProvider: v.createProvider,
+      createProvider: wrapExtensionProvider(v.createProvider),
       isBuiltIn: false,
     });
   },

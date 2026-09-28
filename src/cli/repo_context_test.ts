@@ -1636,7 +1636,7 @@ Deno.test("acquireModelLocks - scopedSync passes SyncContext to pull and push", 
       createSyncService: () => ({
         pullChanged: (options?: unknown) => {
           pullArgs.push(options);
-          return Promise.resolve(0);
+          return Promise.resolve(1);
         },
         pushChanged: (options?: unknown) => {
           pushArgs.push(options);
@@ -1873,7 +1873,7 @@ Deno.test("acquireModelLocks - no capabilities calls pull/push with no args", as
       createSyncService: () => ({
         pullChanged: (...args: unknown[]) => {
           pullArgs.push(args);
-          return Promise.resolve(0);
+          return Promise.resolve(1);
         },
         pushChanged: (...args: unknown[]) => {
           pushArgs.push(args);
@@ -1954,7 +1954,7 @@ Deno.test("acquireModelLocks - buggy capabilities degrades to full sync", async 
       createSyncService: () => ({
         pullChanged: (...args: unknown[]) => {
           pullArgs.push(args);
-          return Promise.resolve(0);
+          return Promise.resolve(1);
         },
         pushChanged: () => Promise.resolve(0),
         markDirty: () => Promise.resolve(),
@@ -2027,7 +2027,7 @@ Deno.test("acquireModelLocks - scopedSync deduplicates models in context", async
       createSyncService: () => ({
         pullChanged: (options?: unknown) => {
           pullArgs.push(options);
-          return Promise.resolve(0);
+          return Promise.resolve(1);
         },
         pushChanged: () => Promise.resolve(0),
         markDirty: () => Promise.resolve(),
@@ -2227,6 +2227,87 @@ Deno.test("acquireModelLocks - namespace is threaded to pull and push", async ()
     datastoreTypeRegistry.invalidateType(typeName);
   }
 });
+
+// ── swamp-club#2553: synced reflects whether the pull changed the cache ─────
+
+for (
+  const [label, pullResult, expectedSynced] of [
+    ["0 files pulled leaves synced false", 0, false],
+    ["a positive count sets synced", 3, true],
+    ["an unknown (void) count sets synced", undefined, true],
+  ] as const
+) {
+  Deno.test(`acquireModelLocks - ${label}`, async () => {
+    const { datastoreTypeRegistry } = await import(
+      "../domain/datastore/datastore_type_registry.ts"
+    );
+
+    const typeName = `test-synced-${crypto.randomUUID().slice(0, 8)}`;
+
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test synced flag",
+      description: "Test extension for the synced flag",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        }),
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: () => ({
+          pullChanged: () => Promise.resolve(pullResult),
+          pushChanged: () => Promise.resolve(0),
+          markDirty: () => Promise.resolve(),
+          capabilities: () => ({ scopedSync: true }),
+        }),
+      }),
+    });
+
+    try {
+      await withTempDir(async (dir) => {
+        await initializeRepo(dir);
+
+        const markerPath = join(dir, ".swamp.yaml");
+        const existing = await Deno.readTextFile(markerPath);
+        await Deno.writeTextFile(
+          markerPath,
+          existing.trimEnd() + "\n" + [
+            "datastore:",
+            `  type: '${typeName}'`,
+            "  config:",
+            "    bucket: test-bucket",
+          ].join("\n") + "\n",
+        );
+
+        const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+        const lockResult = await acquireModelLocks(datastoreConfig, [
+          { modelType: "aws-ec2", modelId: "server-1" },
+        ], dir);
+        try {
+          assertEquals(lockResult.synced, expectedSynced);
+        } finally {
+          await lockResult.flush();
+        }
+      });
+    } finally {
+      datastoreTypeRegistry.invalidateType(typeName);
+    }
+  });
+}
 
 // ── Two-Phase Sync Tests ─────────────────────────────────────────────────────
 
