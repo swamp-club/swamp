@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater } from "@std/assert";
+import { assertEquals, assertGreater, assertRejects } from "@std/assert";
 import {
   classifyHealthStatus,
   HealthCollector,
@@ -244,4 +244,144 @@ Deno.test("HealthCollector: no transition when status unchanged", async () => {
   await collector.collect();
   await collector.collect();
   assertEquals(transitions.length, 0);
+});
+
+function countingChecker(): {
+  checker: ComponentHealthChecker;
+  calls: () => number;
+} {
+  let calls = 0;
+  const checker = new ComponentHealthChecker({
+    checkDatastore: (_signal) => {
+      calls++;
+      return Promise.resolve({
+        healthy: true,
+        message: "OK",
+        latencyMs: 1,
+        datastoreType: "filesystem",
+      });
+    },
+  });
+  return { checker, calls: () => calls };
+}
+
+Deno.test("HealthCollector: serves the cached snapshot within the max age", async () => {
+  const { checker, calls } = countingChecker();
+  let clock = 1_000;
+  const collector = new HealthCollector(makeDeps({
+    componentChecker: checker,
+    snapshotMaxAgeMs: 1_000,
+    now: () => clock,
+  }));
+
+  const first = await collector.collect();
+  clock += 999;
+  const second = await collector.collect();
+
+  assertEquals(calls(), 1);
+  assertEquals(second, first);
+});
+
+Deno.test("HealthCollector: collects again once the max age has passed", async () => {
+  const { checker, calls } = countingChecker();
+  let clock = 1_000;
+  const collector = new HealthCollector(makeDeps({
+    componentChecker: checker,
+    snapshotMaxAgeMs: 1_000,
+    now: () => clock,
+  }));
+
+  await collector.collect();
+  clock += 1_000;
+  await collector.collect();
+
+  assertEquals(calls(), 2);
+});
+
+Deno.test("HealthCollector: treats a backwards clock step as expired", async () => {
+  const { checker, calls } = countingChecker();
+  let clock = 10_000;
+  const collector = new HealthCollector(makeDeps({
+    componentChecker: checker,
+    snapshotMaxAgeMs: 1_000,
+    now: () => clock,
+  }));
+
+  await collector.collect();
+  clock -= 5_000;
+  await collector.collect();
+
+  assertEquals(calls(), 2);
+});
+
+Deno.test("HealthCollector: concurrent callers share one collection", async () => {
+  const { checker, calls } = countingChecker();
+  const collector = new HealthCollector(makeDeps({
+    componentChecker: checker,
+    snapshotMaxAgeMs: 1_000,
+    now: () => 0,
+  }));
+
+  await Promise.all([
+    collector.collect(),
+    collector.collect(),
+    collector.collect(),
+  ]);
+
+  assertEquals(calls(), 1);
+});
+
+Deno.test("HealthCollector: does not cache a failed collection", async () => {
+  let fail = true;
+  const collector = new HealthCollector(makeDeps({
+    isReady: () => {
+      if (fail) throw new Error("not yet");
+      return true;
+    },
+    snapshotMaxAgeMs: 1_000,
+    now: () => 0,
+  }));
+
+  await assertRejects(() => collector.collect(), Error, "not yet");
+  fail = false;
+  const snapshot = await collector.collect();
+
+  assertEquals(snapshot.ready, true);
+});
+
+Deno.test("HealthCollector: collects on every call without a max age", async () => {
+  const { checker, calls } = countingChecker();
+  const collector = new HealthCollector(makeDeps({
+    componentChecker: checker,
+    now: () => 0,
+  }));
+
+  await collector.collect();
+  await collector.collect();
+
+  assertEquals(calls(), 2);
+});
+
+Deno.test("HealthCollector: a cached snapshot does not re-emit transitions", async () => {
+  const transitions: HealthStatus[] = [];
+  let ready = true;
+  let clock = 0;
+  const collector = new HealthCollector(makeDeps({
+    isReady: () => ready,
+    snapshotMaxAgeMs: 1_000,
+    now: () => clock,
+    onHealthTransition: (_previous, current) => {
+      transitions.push(current);
+    },
+  }));
+
+  await collector.collect();
+  ready = false;
+  clock += 500;
+  await collector.collect();
+  assertEquals(transitions, []);
+
+  clock += 500;
+  await collector.collect();
+  assertEquals(transitions, ["unhealthy"]);
 });

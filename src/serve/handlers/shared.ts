@@ -550,6 +550,12 @@ const sessionLogger = getSwampLogger(["serve", "sessions"]);
 export const MAX_STREAM_SESSIONS_PER_TOKEN = 10;
 
 /**
+ * Open token-bound HTTP streams one principal may hold across all of its
+ * tokens, so minting more tokens does not raise the per-token bound.
+ */
+export const MAX_STREAM_SESSIONS_PER_PRINCIPAL = 20;
+
+/**
  * A long-lived HTTP response bound to a server token, such as the health
  * stream. It is a token session like a WebSocket: revoking, rotating or
  * expiring the token, or removing the principal's access, ends it.
@@ -568,8 +574,9 @@ interface StreamSession {
 /**
  * Registers a token-bound HTTP stream so the token's session lifecycle can end
  * it. Returns the function that unregisters it (safe to call more than once),
- * or null when the token already holds `MAX_STREAM_SESSIONS_PER_TOKEN` streams.
- * The count spans every mint of the name, so rotating does not reset it.
+ * or null when the token already holds `MAX_STREAM_SESSIONS_PER_TOKEN` streams
+ * or its principal holds `MAX_STREAM_SESSIONS_PER_PRINCIPAL`. The token count
+ * spans every mint of the name, so rotating does not reset it.
  */
 export function registerStreamSession(
   binding: TokenSessionBinding,
@@ -577,6 +584,12 @@ export function registerStreamSession(
 ): (() => void) | null {
   let streams = tokenStreams.get(binding.name);
   if (streams && streams.size >= MAX_STREAM_SESSIONS_PER_TOKEN) return null;
+  if (
+    principalStreamCount(binding.principalId) >=
+      MAX_STREAM_SESSIONS_PER_PRINCIPAL
+  ) {
+    return null;
+  }
   if (!streams) {
     streams = new Set();
     tokenStreams.set(binding.name, streams);
@@ -584,6 +597,16 @@ export function registerStreamSession(
   const session: StreamSession = { binding, handle };
   streams.add(session);
   return () => unregisterStream(session);
+}
+
+function principalStreamCount(principalId: string): number {
+  let count = 0;
+  for (const streams of tokenStreams.values()) {
+    for (const stream of streams) {
+      if (stream.binding.principalId === principalId) count++;
+    }
+  }
+  return count;
 }
 
 function unregisterStream(session: StreamSession): void {
