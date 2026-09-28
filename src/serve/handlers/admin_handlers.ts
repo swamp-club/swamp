@@ -211,27 +211,29 @@ function resolveManagedPathsFromContext(
 }
 
 /**
- * Marks what an extension handler changed in the datastore cache, and says
- * whether there is anything to push. Under managedConfig the only such file
- * is the config-tier lockfile: extension sources still go to the repo-local
- * pulled-extensions root (swamp-club#2429), so they are not marked here.
- * Without managedConfig nothing these handlers write is in the cache.
+ * Marks each file an extension handler changed in the datastore cache, and
+ * says whether there is anything to push. Under managedConfig the only such
+ * file today is the config-tier lockfile: extension sources still go to the
+ * repo-local pulled-extensions root (swamp-club#2612). Without managedConfig
+ * nothing these handlers write is in the cache.
  */
-async function markExtensionLockfile(
+async function markExtensionChanges(
   ctx: ConnectionContext,
   marker:
     | import("../../infrastructure/persistence/repo_marker_repository.ts").RepoMarkerData
     | null,
+  paths: readonly string[],
   logger: ReturnType<typeof getSwampLogger>,
 ): Promise<boolean> {
   if (!ctx.syncService || !marker?.datastore?.managedConfig) return false;
-  const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
   try {
     // Per path, not bare: a bare markDirty() turns the push into a walk of
     // the whole cache (swamp-club#2415).
-    await ctx.repoContext.markDirty?.(lockfilePath);
+    for (const path of paths) {
+      await ctx.repoContext.markDirty?.(path);
+    }
   } catch (error) {
-    logger.warn("Failed to mark the extension lockfile dirty: {error}", {
+    logger.warn("Failed to mark extension changes dirty: {error}", {
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -699,8 +701,9 @@ export async function handleExtensionInstall(
     );
     // Serve's datastore resolver is always resolved; use its lockfile
     // rather than the process-wide registry (swamp-club#2483).
+    const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
     const deps = await createExtensionInstallDeps(ctx.repoDir, logger, {
-      lockfilePath: resolveManagedPathsFromContext(ctx, marker).lockfilePath,
+      lockfilePath,
     });
 
     let result: Record<string, unknown> | undefined;
@@ -731,7 +734,7 @@ export async function handleExtensionInstall(
       payload: { data: result ?? {} },
     });
 
-    if (await markExtensionLockfile(ctx, marker, logger)) {
+    if (await markExtensionChanges(ctx, marker, [lockfilePath], logger)) {
       await pushChangedToRemote(ctx);
     }
   } catch (error) {
@@ -841,7 +844,7 @@ export async function handleExtensionPull(
       payload: { data: result ?? {} },
     });
 
-    if (await markExtensionLockfile(ctx, marker, logger)) {
+    if (await markExtensionChanges(ctx, marker, [lockfilePath], logger)) {
       await pushChangedToRemote(ctx);
     }
   } catch (error) {
@@ -909,7 +912,7 @@ export async function handleExtensionRm(
       payload: { data: result ?? {} },
     });
 
-    if (await markExtensionLockfile(ctx, marker, logger)) {
+    if (await markExtensionChanges(ctx, marker, [lockfilePath], logger)) {
       await pushChangedToRemote(ctx);
     }
   } catch (error) {
@@ -1086,7 +1089,8 @@ export async function handleExtensionUpdate(
     });
 
     if (
-      !payload?.checkOnly && await markExtensionLockfile(ctx, marker, logger)
+      !payload?.checkOnly &&
+      await markExtensionChanges(ctx, marker, [lockfilePath], logger)
     ) {
       await pushChangedToRemote(ctx);
     }

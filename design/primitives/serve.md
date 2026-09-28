@@ -83,7 +83,7 @@ it the default file is optional.
 | `--verify-on-enroll` | `SWAMP_VERIFY_ON_ENROLL` | `false` | Fleet probe on each enrolling worker; failures marked unverified |
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
-| `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore |
+| `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore or managedConfig |
 | `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
@@ -486,7 +486,7 @@ marks that peer's `running` tracker rows `interrupted` with reason
 `active-runs/` records. Only then does it remove the heartbeat, so a crash
 mid-reconcile leaves the heartbeat for another instance once the claim expires.
 When the datastore manages config, a `ConfigPoller` pulls `.swamp/config/` every
-`--datastore-poll-interval` (default 30 s). The `AccessDataPoller` pulls grants
+`--datastore-poll-interval` (default 30 s) and checks the extension lockfile. The `AccessDataPoller` pulls grants
 and groups at the same interval.
 
 **What does not replicate.** The `ActiveRunRegistry`, its event buffers, the
@@ -498,15 +498,20 @@ Instances may therefore see a grant change up to one poll interval apart (30 s
 by default).
 
 Extension registries are indexed at startup. With `managedConfig` active, the
-config poller pulls extension files (`config/pulled-extensions/`) separately from
-definition files (`config/models/`, `config/vaults/`, etc.). It calls
-`performServeReload` only when extension files changed. Definition-only changes
-(e.g. a model YAML edit) invalidate catalogs but do not reload extension
-registries. Extension sources are not pushed today (each repo keeps them in its
-own pulled root until swamp-club#2429), so a peer's `extension pull` changes
-only the lockfile and does not trigger this reload; each instance runs
-`extension install` for its own sources, then `swamp serve reload` or a restart
-so the new types register (see Known limits).
+config poller runs even without a sync service. After each pull of `config/` it
+hashes the config-tier lockfile and calls `performServeReload` when the hash
+differs from the last one it acted on. The baseline is the hash at boot. So a
+peer's `extension pull`, `update`, `rm` or pin reloads every instance within one
+poll interval. So does a CLI extension write on the same host, or the
+instance's own extension handler. Definition-only changes (e.g. a model YAML
+edit) invalidate catalogs but do not reload extension registries. A reload that
+overlaps another (`Reload already in progress`) is retried on the next poll. A
+failed reload is retried up to three times per lockfile version.
+
+The reload re-bundles from the instance's own pulled root. Extension sources are
+not pushed (each repo keeps them in its own pulled root until swamp-club#2612),
+so a peer's new extension registers only after `extension install` on each
+instance, followed by `swamp serve reload` or a restart (see Known limits).
 
 **Rolling restart.** On SIGTERM an instance stops accepting triggers, drains
 active runs for 30 s, aborts the rest and waits 5 s more. It marks those
@@ -557,10 +562,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   from datastore-only state without `kubectl exec`. Without it,
   `swamp serve reload --server` fails and new extensions need a full pod
   restart. The `ConfigPoller` refreshes definitions (models, workflows, vaults)
-  every `--datastore-poll-interval` (default 30 s) and reloads extension type registries only when extension files
-  under `config/pulled-extensions/` change, which peers' extension commands do
-  not do while sources stay in each repo (swamp-club#2429; see
-  [High availability](#high-availability)). SIGHUP (`swamp serve reload`) remains
+  every `--datastore-poll-interval` (default 30 s) and reloads extension type
+  registries when the config-tier lockfile changes. Sources a peer added still
+  need `extension install` on each pod while they stay in each repo
+  (swamp-club#2612; see [High availability](#high-availability)). SIGHUP (`swamp serve reload`) remains
   available for manual reloads. See
   [datastores §Managed Config](../enablers/datastores.md#managed-config-deployment-architecture)
   for the full deployment guide.
@@ -664,14 +669,18 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   reconciliation claims are skipped. Two instances on such a store can fire a
   schedule twice (`src/cli/commands/serve.ts`,
   `src/serve/boot_reconciliation.ts`).
-- The config poller reloads extension type registries only when
-  `config/pulled-extensions/` changes, which peers' extension commands do not
-  do while sources stay in each repo (swamp-club#2429). New or changed
-  extension types need `swamp serve reload` or a restart
+- The config poller reloads extension type registries when the config-tier
+  lockfile changes, but only from the instance's own pulled root: sources stay
+  in each repo (swamp-club#2612), and a removed extension's types are not
+  unregistered. Extension types a peer added need `extension install` on each
+  instance, then `swamp serve reload` or a restart
   (`src/cli/commands/serve.ts`, `ConfigPoller` wiring). After a successful
   `--server` operation, state-modifying extension commands (`pull`, `install`,
   `rm`, `update`) warn that `swamp serve reload` is needed
-  (`src/cli/remote_run.ts`, `warnServerReloadNeeded`).
+  (`src/cli/remote_run.ts`, `warnServerReloadNeeded`). The client cannot tell
+  whether the instance manages config. When it does, the instance's config
+  poller already reloads within one poll interval of the handler's lockfile
+  write, so the manual reload only makes the change take effect sooner.
 - Built-in webhook verification schemes are a closed set; other providers need
   a webhook extension (`src/serve/webhook_verifiers.ts`, #2204). Extension
   handlers are resolved per request, but the endpoint list is fixed at startup.

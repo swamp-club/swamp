@@ -19,11 +19,14 @@
 
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import {
   pullManagedConfigAtBoot,
   pushManagedConfigChanges,
+  pushManagedConfigPaths,
+  pushManagedLockfileIfChangedDeferred,
+  snapshotLockfileHash,
 } from "./managed_config_sync.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
@@ -153,6 +156,236 @@ Deno.test("pushManagedConfigChanges: passes undefined namespace for filesystem c
 
   assertEquals(pushCalls.length, 1);
   assertEquals(pushCalls[0].namespace, undefined);
+});
+
+function createRecordingSyncService(): {
+  service: DatastoreSyncService;
+  events: Array<
+    | { kind: "mark"; relPath: string | undefined }
+    | { kind: "push"; namespace?: string; hasSignal: boolean }
+  >;
+} {
+  const events: Array<
+    | { kind: "mark"; relPath: string | undefined }
+    | { kind: "push"; namespace?: string; hasSignal: boolean }
+  > = [];
+  const service = {
+    markDirty: (opts?: { relPath?: string }) => {
+      events.push({ kind: "mark", relPath: opts?.relPath });
+      return Promise.resolve();
+    },
+    pushChanged: (opts?: { namespace?: string; signal?: AbortSignal }) => {
+      events.push({
+        kind: "push",
+        namespace: opts?.namespace,
+        hasSignal: opts?.signal instanceof AbortSignal,
+      });
+      return Promise.resolve(1);
+    },
+    pullChanged: () => Promise.resolve(0),
+  } as unknown as DatastoreSyncService;
+  return { service, events };
+}
+
+const PATHS_REPO = resolve("swamp-paths-test-repo");
+const PATHS_CACHE = resolve("swamp-paths-test-cache");
+const PATHS_CONFIG: CustomDatastoreConfig = {
+  type: "@swamp/s3-datastore",
+  config: { bucket: "test" },
+  datastorePath: PATHS_CACHE,
+  cachePath: PATHS_CACHE,
+  namespace: "ns1",
+};
+const TIER_LOCKFILE = join(
+  PATHS_CACHE,
+  "ns1",
+  "config",
+  "upstream_extensions.json",
+);
+
+Deno.test("pushManagedConfigPaths: marks each path with its namespaced cache-relative key, then pushes", async () => {
+  const { service, events } = createRecordingSyncService();
+  const archive = join(PATHS_CACHE, "ns1", "config", "archives", "a.tgz");
+
+  await pushManagedConfigPaths(
+    service,
+    PATHS_CONFIG,
+    makeMarker({ managedConfig: true }),
+    PATHS_REPO,
+    [TIER_LOCKFILE, archive],
+  );
+
+  assertEquals(events, [
+    { kind: "mark", relPath: "ns1/config/upstream_extensions.json" },
+    { kind: "mark", relPath: "ns1/config/archives/a.tgz" },
+    { kind: "push", namespace: "ns1", hasSignal: true },
+  ]);
+});
+
+Deno.test("pushManagedConfigPaths: drops paths outside the namespace's cache tree", async () => {
+  const { service, events } = createRecordingSyncService();
+
+  await pushManagedConfigPaths(
+    service,
+    PATHS_CONFIG,
+    makeMarker({ managedConfig: true }),
+    PATHS_REPO,
+    [
+      // The in-repo lockfile: the mark hook would map it to an
+      // un-namespaced config/ key.
+      join(PATHS_REPO, ".swamp", "config", "upstream_extensions.json"),
+      join(PATHS_CACHE, "other-ns", "config", "upstream_extensions.json"),
+      join(PATHS_CACHE, "ns1"),
+    ],
+  );
+
+  assertEquals(events, []);
+});
+
+Deno.test("pushManagedConfigPaths: without a namespace, keys are relative to the cache root", async () => {
+  const { service, events } = createRecordingSyncService();
+
+  await pushManagedConfigPaths(
+    service,
+    { ...PATHS_CONFIG, namespace: undefined },
+    makeMarker({ managedConfig: true }),
+    PATHS_REPO,
+    [join(PATHS_CACHE, "config", "upstream_extensions.json")],
+  );
+
+  assertEquals(events, [
+    { kind: "mark", relPath: "config/upstream_extensions.json" },
+    { kind: "push", namespace: undefined, hasSignal: true },
+  ]);
+});
+
+Deno.test("pushManagedConfigPaths: no-op without managedConfig, a sync service or a cache", async () => {
+  const { service, events } = createRecordingSyncService();
+
+  await pushManagedConfigPaths(
+    service,
+    PATHS_CONFIG,
+    makeMarker({ managedConfig: false }),
+    PATHS_REPO,
+    [TIER_LOCKFILE],
+  );
+  await pushManagedConfigPaths(
+    undefined,
+    PATHS_CONFIG,
+    makeMarker({ managedConfig: true }),
+    PATHS_REPO,
+    [TIER_LOCKFILE],
+  );
+  await pushManagedConfigPaths(
+    service,
+    { ...PATHS_CONFIG, cachePath: undefined },
+    makeMarker({ managedConfig: true }),
+    PATHS_REPO,
+    [TIER_LOCKFILE],
+  );
+  await pushManagedConfigPaths(
+    service,
+    FS_CONFIG,
+    makeMarker({ managedConfig: true, type: "filesystem" }),
+    PATHS_REPO,
+    [TIER_LOCKFILE],
+  );
+
+  assertEquals(events, []);
+});
+
+Deno.test("pushManagedConfigPaths: a push error warns instead of throwing", async () => {
+  const { service, events } = createRecordingSyncService();
+  service.pushChanged = () => Promise.reject(new Error("S3 unreachable"));
+
+  await pushManagedConfigPaths(
+    service,
+    PATHS_CONFIG,
+    makeMarker({ managedConfig: true }),
+    PATHS_REPO,
+    [TIER_LOCKFILE],
+  );
+
+  assertEquals(events, [
+    { kind: "mark", relPath: "ns1/config/upstream_extensions.json" },
+  ]);
+});
+
+Deno.test("snapshotLockfileHash: null for a missing lockfile, stable for unchanged content", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    assertEquals(await snapshotLockfileHash(path), null);
+    await Deno.writeTextFile(path, "{}");
+    const hash = await snapshotLockfileHash(path);
+    assertEquals(await snapshotLockfileHash(path), hash);
+  });
+});
+
+function createRecordingPush() {
+  const calls: Array<{ repoDir: string; paths: readonly string[] }> = [];
+  const push = (
+    repoDir: string,
+    _marker: RepoMarkerData | null,
+    paths: readonly string[],
+  ) => {
+    calls.push({ repoDir, paths });
+    return Promise.resolve();
+  };
+  return { calls, push };
+}
+
+Deno.test("pushManagedLockfileIfChangedDeferred: pushes the lockfile only when its content changed", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(path, "{}");
+    const before = await snapshotLockfileHash(path);
+    const marker = makeMarker({ managedConfig: true });
+    const { calls, push } = createRecordingPush();
+
+    await pushManagedLockfileIfChangedDeferred(dir, marker, path, before, push);
+    assertEquals(calls, []);
+
+    await Deno.writeTextFile(path, '{"@acme/a":{}}');
+    await pushManagedLockfileIfChangedDeferred(dir, marker, path, before, push);
+    assertEquals(calls, [{ repoDir: dir, paths: [path] }]);
+  });
+});
+
+Deno.test("pushManagedLockfileIfChangedDeferred: a lockfile the command created counts as changed", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const before = await snapshotLockfileHash(path);
+    await Deno.writeTextFile(path, "{}");
+    const { calls, push } = createRecordingPush();
+
+    await pushManagedLockfileIfChangedDeferred(
+      dir,
+      makeMarker({ managedConfig: true }),
+      path,
+      before,
+      push,
+    );
+
+    assertEquals(calls, [{ repoDir: dir, paths: [path] }]);
+  });
+});
+
+Deno.test("pushManagedLockfileIfChangedDeferred: no-op without managedConfig", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(path, "{}");
+    const { calls, push } = createRecordingPush();
+
+    await pushManagedLockfileIfChangedDeferred(
+      dir,
+      makeMarker({ managedConfig: false }),
+      path,
+      null,
+      push,
+    );
+
+    assertEquals(calls, []);
+  });
 });
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

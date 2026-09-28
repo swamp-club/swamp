@@ -183,15 +183,25 @@ export async function computeFileContentHash(path: string): Promise<string> {
   return `sha256:${encodeHex(new Uint8Array(digest))}`;
 }
 
-async function readFileIfExists(path: string): Promise<string> {
+/**
+ * {@link computeFileContentHash}, or `null` when the file does not exist.
+ * The config poller and extension writers compare lockfile versions with it.
+ */
+export async function computeFileContentHashIfExists(
+  path: string,
+): Promise<string | null> {
   try {
     return await computeFileContentHash(path);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      return "missing";
+      return null;
     }
     throw error;
   }
+}
+
+async function readFileIfExists(path: string): Promise<string> {
+  return await computeFileContentHashIfExists(path) ?? "missing";
 }
 
 /**

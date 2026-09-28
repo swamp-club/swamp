@@ -24,7 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
+import { pushManagedConfigPathsDeferred } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -121,7 +121,7 @@ export const extensionInstallCommand = withRemoteOptions(
 
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
-  await pushManagedConfigChangesDeferred(repoDir, marker);
+  await pushManagedConfigPathsDeferred(repoDir, marker, [deps.lockfilePath]);
 
   cliCtx.logger.debug("Extension install command completed");
 });

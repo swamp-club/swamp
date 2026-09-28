@@ -52,6 +52,10 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
 import {
+  pushManagedLockfileIfChangedDeferred,
+  snapshotLockfileHash,
+} from "../managed_config_sync.ts";
+import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -263,7 +267,7 @@ export const extensionSearchCommand = withRemoteOptions(
     // Refuses to record into a guessed managed config base, except when
     // installing the repo's own datastore extension, as `extension pull`
     // allows (swamp-club#2483, #445).
-    const { lockfilePath } = await resolveManagedLockfileForWrite(
+    const { lockfilePath, publish } = await resolveManagedLockfileForWrite(
       repoDir,
       marker,
       {
@@ -281,6 +285,7 @@ export const extensionSearchCommand = withRemoteOptions(
       primarySkillsDirRelative,
     );
 
+    const lockfileHashBefore = await snapshotLockfileHash(lockfilePath);
     const lockfileRepository = await LockfileRepository.create(lockfilePath);
     const apiKey = identity.bearerToken;
     const pullCtx: PullContext = {
@@ -303,5 +308,14 @@ export const extensionSearchCommand = withRemoteOptions(
       { name: selected.name, version: null },
       pullCtx,
     );
+
+    if (publish) {
+      await pushManagedLockfileIfChangedDeferred(
+        repoDir,
+        marker,
+        lockfilePath,
+        lockfileHashBefore,
+      );
+    }
   }
 });
