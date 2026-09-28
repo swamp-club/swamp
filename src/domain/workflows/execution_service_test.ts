@@ -78,6 +78,12 @@ import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import type { ExportResult } from "@opentelemetry/core";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { getTracer } from "../../infrastructure/tracing/mod.ts";
+import {
+  type SpanRecorder,
+  withRecordedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -4625,6 +4631,385 @@ Deno.test("manual_approval suspension does not mark job span as ERROR", async ()
     await provider.shutdown();
     otelApi.trace.disable();
   }
+});
+
+// span parentage tests (swamp-club#2589)
+
+function spanIdOf(span: ReadableSpan): string {
+  return span.spanContext().spanId;
+}
+
+/**
+ * Starts a `test.method` span per step, standing in for swamp.model.method,
+ * which the real executor starts inside the step. Optionally holds every step
+ * until `release()` is called.
+ */
+class MethodSpanStepExecutor implements StepExecutor {
+  private readonly gate = Promise.withResolvers<void>();
+  constructor(private readonly gated = false) {}
+
+  release(): void {
+    this.gate.resolve();
+  }
+
+  async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    const span = getTracer().startSpan("test.method", {
+      attributes: { "job.name": ctx.jobName, "step.name": ctx.stepName },
+    });
+    try {
+      if (this.gated) await this.gate.promise;
+      return { executed: true, step: step.name };
+    } finally {
+      span.end();
+    }
+  }
+}
+
+async function newTracedService(
+  tempDir: string,
+  workflows: Workflow[],
+  executor: StepExecutor,
+  runRepo = new InMemoryWorkflowRunRepository(),
+) {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  for (const workflow of workflows) await workflowRepo.save(workflow);
+  const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    undefined,
+    catalogStore,
+  );
+  return { service, runRepo };
+}
+
+/** Asserts each step span sits under its job's span, and each method under its step. */
+function assertStepsAndMethodsNest(
+  recorder: SpanRecorder,
+  jobSpan: ReadableSpan,
+  jobName: string,
+  stepNames: string[],
+): void {
+  for (const stepName of stepNames) {
+    const stepSpan = recorder.find(
+      "swamp.workflow.step",
+      "step.name",
+      stepName,
+    );
+    assertEquals(stepSpan.attributes["job.name"], jobName);
+    assertEquals(stepSpan.parentSpanId, spanIdOf(jobSpan), stepName);
+    const method = recorder.find("test.method", "step.name", stepName);
+    assertEquals(method.parentSpanId, spanIdOf(stepSpan), stepName);
+  }
+}
+
+Deno.test("run(): job, step and method spans nest under the run span", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      // build runs two steps concurrently; deploy starts after build.
+      const workflow = Workflow.create({
+        name: "nested-spans",
+        jobs: [
+          Job.create({
+            name: "build",
+            steps: [modelStep("compile"), modelStep("lint")],
+          }),
+          Job.create({
+            name: "deploy",
+            dependsOn: [{
+              job: "build",
+              condition: TriggerCondition.succeeded(),
+            }],
+            steps: [modelStep("push")],
+          }),
+        ],
+      });
+      const { service } = await newTracedService(
+        tempDir,
+        [workflow],
+        new MethodSpanStepExecutor(),
+      );
+
+      const run = await service.execute(workflow.name);
+      assertEquals(run.status, "succeeded");
+
+      const [runSpan] = recorder.named("swamp.workflow.run");
+      assertEquals(recorder.named("swamp.workflow.run").length, 1);
+      const build = recorder.find("swamp.workflow.job", "job.name", "build");
+      const deploy = recorder.find("swamp.workflow.job", "job.name", "deploy");
+      assertEquals(build.parentSpanId, spanIdOf(runSpan));
+      assertEquals(deploy.parentSpanId, spanIdOf(runSpan));
+      assertStepsAndMethodsNest(recorder, build, "build", ["compile", "lint"]);
+      assertStepsAndMethodsNest(recorder, deploy, "deploy", ["push"]);
+      const [evaluate] = recorder.named("swamp.workflow.evaluate");
+      assertEquals(evaluate.parentSpanId, spanIdOf(runSpan));
+
+      const traceIds = new Set(
+        recorder.ended.map((s) => s.spanContext().traceId),
+      );
+      assertEquals(traceIds.size, 1);
+      assert(recorder.allEnded(), "every started span was ended");
+    });
+  });
+});
+
+Deno.test("run(): each forEach iteration's method span nests under its own step span", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "each-spans",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [modelStep("build", { forEach: EACH_TARGET })],
+          }),
+        ],
+      });
+      const { service } = await newTracedService(
+        tempDir,
+        [workflow],
+        new MethodSpanStepExecutor(),
+      );
+
+      const run = await service.execute(workflow.name, {
+        inputs: { targets: ["a", "b"] },
+      });
+      assertEquals(run.status, "succeeded");
+
+      const main = recorder.find("swamp.workflow.job", "job.name", "main");
+      assertStepsAndMethodsNest(recorder, main, "main", ["build-a", "build-b"]);
+      assert(recorder.allEnded(), "every started span was ended");
+    });
+  });
+});
+
+Deno.test("run(): a nested workflow's run span nests under the calling step span", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const child = Workflow.create({
+        name: "child-spans",
+        jobs: [
+          Job.create({ name: "child-job", steps: [modelStep("child-step")] }),
+        ],
+      });
+      const parent = Workflow.create({
+        name: "parent-spans",
+        jobs: [
+          Job.create({
+            name: "parent-job",
+            steps: [
+              Step.create({
+                name: "call-child",
+                task: StepTask.workflow("child-spans"),
+              }),
+            ],
+          }),
+        ],
+      });
+      const { service } = await newTracedService(
+        tempDir,
+        [child, parent],
+        new MethodSpanStepExecutor(),
+      );
+
+      const run = await service.execute(parent.name);
+      assertEquals(run.status, "succeeded");
+
+      const callChild = recorder.find(
+        "swamp.workflow.step",
+        "step.name",
+        "call-child",
+      );
+      const childRun = recorder.find(
+        "swamp.workflow.run",
+        "workflow.name",
+        "child-spans",
+      );
+      assertEquals(childRun.parentSpanId, spanIdOf(callChild));
+      const childJob = recorder.find(
+        "swamp.workflow.job",
+        "job.name",
+        "child-job",
+      );
+      assertEquals(childJob.parentSpanId, spanIdOf(childRun));
+      assertStepsAndMethodsNest(recorder, childJob, "child-job", [
+        "child-step",
+      ]);
+      const traceIds = new Set(
+        recorder.ended.map((s) => s.spanContext().traceId),
+      );
+      assertEquals(traceIds.size, 1);
+      assert(recorder.allEnded(), "every started span was ended");
+    });
+  });
+});
+
+// Early exit with tracing on. A consumer break returns only run() — the job
+// merge then waits for its jobs to finish — so these check the run wrapper
+// still reaches run()'s finally. The abort test below is the path that
+// returns the job and step wrappers themselves.
+
+Deno.test("run(): abandoning the stream mid-step with tracing on releases the log sink and ends every span", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "abandon-spans",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [modelStep("first"), modelStep("second")],
+          }),
+        ],
+      });
+      const executor = new MethodSpanStepExecutor(true);
+      const { service } = await newTracedService(tempDir, [workflow], executor);
+
+      const baseline = runFileSink.activeCount;
+      let started = 0;
+      for await (const event of service.run(workflow.name)) {
+        if (event.kind === "step_started" && ++started === 2) {
+          // Both steps are in flight. Let them finish so the job merge that
+          // run()'s return() waits on can drain, then disconnect.
+          executor.release();
+          break;
+        }
+      }
+
+      assertEquals(started, 2);
+      assertEquals(runFileSink.activeCount, baseline);
+      assertEquals(recorder.named("swamp.workflow.run").length, 1);
+      assertEquals(recorder.named("swamp.workflow.step").length, 2);
+      assert(recorder.allEnded(), "every started span was ended");
+    });
+  });
+});
+
+Deno.test("resume(): abandoning the stream mid-step with tracing on releases the log sink and ends every span", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "abandon-resume-spans",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "gate",
+                task: StepTask.manualApproval("Approve before continuing"),
+              }),
+              modelStep("after", onStep("gate", TriggerCondition.succeeded())),
+            ],
+          }),
+        ],
+      });
+      const executor = new MethodSpanStepExecutor(true);
+      const { service, runRepo } = await newTracedService(
+        tempDir,
+        [workflow],
+        executor,
+      );
+
+      const suspended = await service.execute(workflow.name);
+      assertEquals(suspended.status, "suspended");
+      const toApprove = await runRepo.findById(workflow.id, suspended.id);
+      toApprove!.getJob("main")!.getStep("gate")!.succeed();
+      await runRepo.save(workflow.id, toApprove!);
+
+      const baseline = runFileSink.activeCount;
+      const spansBeforeResume = recorder.started.length;
+      let stepStarted = false;
+      for await (const event of service.resume(workflow.name, suspended.id)) {
+        if (event.kind === "step_started" && event.stepId === "after") {
+          stepStarted = true;
+          executor.release();
+          break;
+        }
+      }
+
+      assertEquals(stepStarted, true);
+      assertEquals(runFileSink.activeCount, baseline);
+      const resumedSteps = recorder.started.slice(spansBeforeResume).filter(
+        (s) =>
+          s.name === "swamp.workflow.step" &&
+          s.attributes["step.name"] === "after",
+      );
+      assertEquals(resumedSteps.length, 1);
+      assert(recorder.allEnded(), "every started span was ended");
+    });
+  });
+});
+
+Deno.test("run(): an abort mid-step with tracing on ends the in-flight step and job spans", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      // build-a is in flight when the abort fires; build-b and build-c are
+      // queued behind step concurrency and never start.
+      const workflow = Workflow.create({
+        name: "abort-spans",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              modelStep("build", { forEach: EACH_TARGET, concurrency: 1 }),
+              modelStep("rollback", onStep("build", TriggerCondition.failed())),
+            ],
+          }),
+        ],
+      });
+      const executor = new AbortingStepExecutor("build-a");
+      const { service } = await setupRetry(
+        tempDir,
+        workflow,
+        undefined,
+        executor,
+      );
+
+      const baseline = runFileSink.activeCount;
+      const { run } = await runUntilAborted(
+        service,
+        workflow,
+        executor.controller.signal,
+        { targets: ["a", "b", "c"] },
+      );
+
+      // Same outcome as the untraced abort cleanup test.
+      assertEquals(run.status, "cancelled");
+      assertCancelledBeforeStart(run, "main", ["build-b", "build-c"]);
+      assertEquals(
+        run.getJob("main")!.getStep("rollback")!.status,
+        "succeeded",
+      );
+      assertEquals(runFileSink.activeCount, baseline);
+
+      // The aborted merge does not wait for its drain tasks, so the in-flight
+      // step's generator can finish unwinding after run() returns.
+      await waitFor(
+        () => recorder.allEnded(),
+        "every started span to be ended",
+      );
+      const buildA = recorder.find(
+        "swamp.workflow.step",
+        "step.name",
+        "build-a",
+      );
+      const mainJobIds = recorder.named("swamp.workflow.job")
+        .filter((s) => s.attributes["job.name"] === "main")
+        .map(spanIdOf);
+      assert(mainJobIds.includes(buildA.parentSpanId!), "build-a under main");
+      for (const queued of ["build-b", "build-c"]) {
+        assertEquals(
+          recorder.started.some((s) =>
+            s.name === "swamp.workflow.step" &&
+            s.attributes["step.name"] === queued
+          ),
+          false,
+          `${queued} never started a step span`,
+        );
+      }
+    });
+  });
 });
 
 // guard tests

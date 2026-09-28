@@ -28,7 +28,9 @@ export {
   shutdownLogs,
 } from "./otel_logs_init.ts";
 export {
+  bindGeneratorToSpan,
   getTracer,
+  type Span,
   SpanStatusCode,
   withGeneratorSpan,
   withServerSpan,
