@@ -603,11 +603,14 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   output is its `report-<name>` item), and
   `/dashboard/workflows/<name>/runs/<runId>/data/<dataName>[/versions/<n>]` and
   `…/runs/<runId>/reports/<reportName>` for what a run produced. Run links pin
-  the version that run recorded, not the item's latest. Every artifact view
-  reads through `data.get`, so it gets the same per-model data authorization as
-  the CLI; run links authorize as `data:*`. Report Markdown is rendered with raw
-  HTML dropped, unsafe link protocols removed, and images shown as links, since
-  extension code produces it and the page holds a session that can run methods. On desktop the sidebar collapses to an icon-only rail
+  the version that run recorded, not the item's latest, and run data links
+  carry the artifact's data id (`?id=`), since version numbers count per model
+  and two models can record the same name and version in one run. Every
+  artifact view reads through `data.get`, so it gets the same per-model data
+  authorization as the CLI; run links authorize as `data:*`. Report Markdown is
+  rendered with raw HTML dropped, unsafe link protocols removed, and images
+  shown as links, since extension code produces it and the page holds a session
+  that can run methods. On desktop the sidebar collapses to an icon-only rail
   (remembered in `localStorage`); at 768px and below it becomes an off-canvas
   drawer opened from a top-bar menu button.
 

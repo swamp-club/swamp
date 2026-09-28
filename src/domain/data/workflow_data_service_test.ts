@@ -750,7 +750,7 @@ Deno.test("WorkflowDataService.findByNameInWorkflowRun: a run that wrote a name 
   assertEquals(later, null);
 });
 
-Deno.test("WorkflowDataService.findAllForWorkflowRun: name fallback loads the recorded version from the single owner with that name", async () => {
+Deno.test("WorkflowDataService.findAllForWorkflowRun: a same-named item with a different id is not the run's data", async () => {
   const modelType = ModelType.create("aws/ec2/vpc");
   // The run recorded an id that no longer matches any stored item.
   const recreated = await createTestData("vpc-state");
@@ -775,12 +775,10 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun: name fallback loads the re
   );
 
   const result = await service.findAllForWorkflowRun(run);
-  assertEquals(result.length, 1);
-  assertEquals(result[0].data.version, 1);
-  assertEquals(result[0].modelId, TEST_MODEL_ID);
+  assertEquals(result.length, 0);
 });
 
-Deno.test("WorkflowDataService.findAllForWorkflowRun: name fallback skips a name that several models hold rather than guessing", async () => {
+Deno.test("WorkflowDataService.findAllForWorkflowRun: a name several models hold is not guessed", async () => {
   const modelType = ModelType.create("aws/ec2/vpc");
   const otherModelId = "550e8400-e29b-41d4-a716-446655440004";
   const mine = await createTestData("report-swamp-method-summary");
@@ -808,15 +806,16 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun: name fallback skips a name
   assertEquals(result.length, 0);
 });
 
-Deno.test("WorkflowDataService.findAllForWorkflowRun: data renamed after the run still resolves the historical version under its old name", async () => {
+Deno.test("WorkflowDataService.findAllForWorkflowRun: data renamed after the run no longer resolves under its old name", async () => {
   const modelType = ModelType.create("aws/ec2/vpc");
   const otherModelId = "550e8400-e29b-41d4-a716-446655440004";
   const v1 = await createTestData("vpc-state");
   // A rename saves the data under the new name with a new id, and the
-  // latest projection follows the rename, so the run's id is no longer
-  // indexed.
+  // latest projection follows the rename, so neither the run's id nor its
+  // name is indexed for that model.
   const renamed = await createTestData("vpc-main");
-  // Another model holds an unrelated item with the old name and version.
+  // Another model holds an unrelated item with the old name and version;
+  // it must not be returned in place of the renamed one.
   const unrelated = await createTestData("vpc-state");
 
   const run = createTestRun([{
@@ -829,21 +828,169 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun: data renamed after the run
     }],
   }]);
 
+  const findByNameCalls: string[] = [];
+  const repo = createMockDataRepo(
+    [
+      { data: renamed, modelType, modelId: TEST_MODEL_ID },
+      { data: unrelated, modelType, modelId: otherModelId },
+    ],
+    [{ data: v1, modelType, modelId: TEST_MODEL_ID }],
+  );
+  const findByName = repo.findByName.bind(repo);
+  repo.findByName = (type, modelId, name, version) => {
+    findByNameCalls.push(modelId);
+    return findByName(type, modelId, name, version);
+  };
+
+  const service = new WorkflowDataService(createMockDefinitionRepo(), repo);
+
+  const result = await service.findAllForWorkflowRun(run);
+  // Only owners whose latest data has the name are asked, and the
+  // unrelated item's id does not match, so nothing is returned.
+  assertEquals(findByNameCalls, [otherModelId]);
+  assertEquals(result.length, 0);
+});
+
+Deno.test("WorkflowDataService.findByNameInWorkflowRun: dataId tells apart two models that wrote the same name and version", async () => {
+  const modelType = ModelType.create("command/shell");
+  const otherModelId = "550e8400-e29b-41d4-a716-446655440004";
+  const tags = { type: "report", reportName: "@swamp/method-summary" };
+  const mine = await createTestData("report-swamp-method-summary", tags);
+  const theirs = await createTestData("report-swamp-method-summary", tags);
+
+  const run = createTestRun([
+    {
+      stepName: "a",
+      artifacts: [{
+        dataId: mine.id,
+        name: "report-swamp-method-summary",
+        version: 1,
+        tags,
+      }],
+    },
+    {
+      stepName: "b",
+      artifacts: [{
+        dataId: theirs.id,
+        name: "report-swamp-method-summary",
+        version: 1,
+        tags,
+      }],
+    },
+  ]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo([
+      { data: mine, modelType, modelId: TEST_MODEL_ID },
+      { data: theirs, modelType, modelId: otherModelId },
+    ]),
+  );
+
+  const a = await service.findByNameInWorkflowRun(
+    run,
+    "report-swamp-method-summary",
+    1,
+    mine.id,
+  );
+  assertEquals(a?.modelId, TEST_MODEL_ID);
+  assertEquals(a?.stepName, "a");
+
+  const b = await service.findByNameInWorkflowRun(
+    run,
+    "report-swamp-method-summary",
+    1,
+    theirs.id,
+  );
+  assertEquals(b?.modelId, otherModelId);
+  assertEquals(b?.stepName, "b");
+
+  const none = await service.findByNameInWorkflowRun(
+    run,
+    "report-swamp-method-summary",
+    1,
+    TEST_GC_DATA_ID,
+  );
+  assertEquals(none, null);
+});
+
+Deno.test("WorkflowDataService.findByNameInWorkflowRun: without a version, returns the run's last write of the name", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const v1 = await createTestData("vpc-state");
+  const v2 = v1.withNewVersion({ version: 2 });
+  const v3 = v1.withNewVersion({ version: 3 });
+  const v4 = v1.withNewVersion({ version: 4 });
+
+  const run = createTestRun([
+    {
+      stepName: "create-a",
+      artifacts: [{
+        dataId: v1.id,
+        name: "vpc-state",
+        version: 2,
+        tags: { type: "resource" },
+      }],
+    },
+    {
+      stepName: "create-b",
+      artifacts: [{
+        dataId: v1.id,
+        name: "vpc-state",
+        version: 3,
+        tags: { type: "resource" },
+      }],
+    },
+  ]);
+
   const service = new WorkflowDataService(
     createMockDefinitionRepo(),
     createMockDataRepo(
+      [{ data: v4, modelType, modelId: TEST_MODEL_ID }],
       [
-        { data: renamed, modelType, modelId: TEST_MODEL_ID },
-        { data: unrelated, modelType, modelId: otherModelId },
+        { data: v2, modelType, modelId: TEST_MODEL_ID },
+        { data: v3, modelType, modelId: TEST_MODEL_ID },
       ],
-      [{ data: v1, modelType, modelId: TEST_MODEL_ID }],
     ),
   );
 
-  const result = await service.findAllForWorkflowRun(run);
-  assertEquals(result.length, 1);
-  assertEquals(result[0].data.id, v1.id);
-  assertEquals(result[0].data.name, "vpc-state");
-  assertEquals(result[0].data.version, 1);
-  assertEquals(result[0].modelId, TEST_MODEL_ID);
+  const result = await service.findByNameInWorkflowRun(run, "vpc-state");
+  assertEquals(result?.data.version, 3);
+  assertEquals(result?.stepName, "create-b");
+});
+
+Deno.test("WorkflowDataService.findByNameInWorkflowRun: resolves only the refs that match, not the whole run", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const wanted = await createTestData("vpc-state");
+  const others = await Promise.all(
+    ["a", "b", "c"].map((n) => createTestData(`other-${n}`)),
+  );
+
+  const run = createTestRun([{
+    stepName: "create",
+    artifacts: [wanted, ...others].map((d) => ({
+      dataId: d.id,
+      name: d.name,
+      version: 1,
+      tags: { type: "resource" },
+    })),
+  }]);
+
+  const repo = createMockDataRepo(
+    [wanted, ...others].map((data) => ({
+      data,
+      modelType,
+      modelId: TEST_MODEL_ID,
+    })),
+  );
+  const looked: string[] = [];
+  const findByName = repo.findByName.bind(repo);
+  repo.findByName = (type, modelId, name, version) => {
+    looked.push(name);
+    return findByName(type, modelId, name, version);
+  };
+
+  const service = new WorkflowDataService(createMockDefinitionRepo(), repo);
+  const result = await service.findByNameInWorkflowRun(run, "vpc-state");
+  assertEquals(result?.data.name, "vpc-state");
+  assertEquals(looked, ["vpc-state"]);
 });

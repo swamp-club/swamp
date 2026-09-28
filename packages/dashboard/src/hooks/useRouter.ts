@@ -28,7 +28,10 @@ import {
   type RouteState,
 } from "../routes.ts";
 
-let currentState: RouteState = parseRoute(location.pathname);
+let currentState: RouteState = parseRoute(
+  location.pathname,
+  location.search,
+);
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -59,7 +62,7 @@ export function navigateTo(next: RouteState): void {
 }
 
 function onPopState() {
-  currentState = parseRoute(location.pathname);
+  currentState = parseRoute(location.pathname, location.search);
   notify();
 }
 

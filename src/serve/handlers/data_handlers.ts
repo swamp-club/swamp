@@ -164,6 +164,7 @@ export async function handleDataGet(
         workflowName: payload.workflowName,
         runId: payload.runId,
         version: payload.version,
+        dataId: payload.dataId,
         includeContent: payload.includeContent ?? true,
         repoDir: ctx.repoDir,
       }),

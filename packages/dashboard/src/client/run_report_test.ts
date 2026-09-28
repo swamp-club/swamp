@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  findArtifactWithTwin,
   resolveRunReport,
   type RunArtifactRef,
   type RunArtifacts,
@@ -228,4 +229,31 @@ Deno.test("runReportNames: lists each recorded report once, without -json twins"
     "@swamp/method-summary",
     "@swamp/workflow-summary",
   ]);
+});
+
+Deno.test("findArtifactWithTwin: pairs each report with the twin from its own step", () => {
+  const a = withJsonTwin(
+    reportRef("report-swamp-method-summary", "@swamp/method-summary", 1),
+  );
+  const b = withJsonTwin(
+    reportRef("report-swamp-method-summary", "@swamp/method-summary", 1),
+  );
+  const run: RunArtifacts = {
+    jobs: [{
+      name: "main",
+      steps: [
+        { name: "a", dataArtifacts: a },
+        { name: "b", dataArtifacts: b },
+      ],
+    }],
+  };
+
+  const second = findArtifactWithTwin(run, b[0].dataId, 1);
+  assertEquals(second?.artifact.stepName, "b");
+  assertEquals(second?.twin?.ref.dataId, b[1].dataId);
+
+  const first = findArtifactWithTwin(run, a[0].dataId);
+  assertEquals(first?.twin?.ref.dataId, a[1].dataId);
+
+  assertEquals(findArtifactWithTwin(run, "missing"), null);
 });

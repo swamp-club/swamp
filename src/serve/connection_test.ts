@@ -1648,6 +1648,29 @@ Deno.test("validateServerRequest accepts data.get with optional fields", () => {
   assertEquals(typeof validateServerRequest(input), "object");
 });
 
+Deno.test("validateServerRequest keeps a data.get dataId", () => {
+  const dataId = crypto.randomUUID();
+  const input = {
+    type: "data.get",
+    id: "req-dg-3",
+    payload: { workflowName: "deploy", runId: "r", dataName: "x", dataId },
+  };
+  const result = validateServerRequest(input);
+  if (typeof result === "string" || result.type !== "data.get") {
+    throw new Error(`expected a data.get request, got ${String(result)}`);
+  }
+  assertEquals(result.payload.dataId, dataId);
+});
+
+Deno.test("validateServerRequest rejects a data.get dataId that is not a UUID", () => {
+  const input = {
+    type: "data.get",
+    id: "req-dg-4",
+    payload: { workflowName: "deploy", dataName: "x", dataId: "../x" },
+  };
+  assertEquals(typeof validateServerRequest(input), "string");
+});
+
 Deno.test("validateServerRequest accepts data.query", () => {
   const input = {
     type: "data.query",

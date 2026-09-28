@@ -32,6 +32,12 @@ export type DetailView =
     runId: string;
     dataName: string;
     version?: number;
+    /**
+     * The run artifact's data id. Version numbers count per model, so two
+     * models can record the same name and version in one run; the id
+     * tells them apart. Carried as `?id=` in the URL.
+     */
+    dataId?: string;
   }
   | {
     kind: "runReport";
@@ -79,7 +85,7 @@ function versionSuffix(version: number | undefined): string {
   return version === undefined ? "" : `/versions/${version}`;
 }
 
-export function parseRoute(pathname: string): RouteState {
+export function parseRoute(pathname: string, search = ""): RouteState {
   const raw = pathname.startsWith(BASE)
     ? pathname.slice(BASE.length)
     : pathname;
@@ -119,6 +125,7 @@ export function parseRoute(pathname: string): RouteState {
     const runId = decodeURIComponent(segments[3]);
     if (segments[4] === "data") {
       const version = parseVersion(segments, 6);
+      const dataId = new URLSearchParams(search).get("id") || undefined;
       return {
         view: "workflows",
         detail: {
@@ -127,6 +134,7 @@ export function parseRoute(pathname: string): RouteState {
           runId,
           dataName: decodeURIComponent(segments[5]),
           ...(version !== undefined ? { version } : {}),
+          ...(dataId !== undefined ? { dataId } : {}),
         },
       };
     }
@@ -202,7 +210,11 @@ export function buildPath(state: RouteState): string {
           encodeURIComponent(state.detail.workflowName)
         }/runs/${encodeURIComponent(state.detail.runId)}/data/${
           encodeURIComponent(state.detail.dataName)
-        }${versionSuffix(state.detail.version)}`;
+        }${versionSuffix(state.detail.version)}${
+          state.detail.dataId
+            ? `?id=${encodeURIComponent(state.detail.dataId)}`
+            : ""
+        }`;
       case "runReport":
         return `${BASE}/workflows/${
           encodeURIComponent(state.detail.workflowName)

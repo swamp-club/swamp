@@ -123,3 +123,32 @@ export function runReportNames(run: RunArtifacts): string[] {
   }
   return [...names].sort();
 }
+
+/** Where an artifact was recorded: the same step, or workflow scope. */
+function sameLocation(a: RunArtifact, b: RunArtifact): boolean {
+  return a.jobName === b.jobName && a.stepName === b.stepName;
+}
+
+/**
+ * Finds the run artifact with `dataId` (optionally at `version`), and the
+ * `-json` twin recorded alongside it in the same step or at workflow scope.
+ * Prefers a twin at the same version, since both are written together.
+ */
+export function findArtifactWithTwin(
+  run: RunArtifacts,
+  dataId: string,
+  version?: number,
+): { artifact: RunArtifact; twin?: RunArtifact } | null {
+  const all = runArtifacts(run);
+  const artifact = all.find((a) =>
+    a.ref.dataId === dataId &&
+    (version === undefined || a.ref.version === version)
+  );
+  if (!artifact) return null;
+  const twins = all.filter((a) =>
+    a.ref.name === `${artifact.ref.name}-json` && sameLocation(a, artifact)
+  );
+  const twin = twins.find((t) => t.ref.version === artifact.ref.version) ??
+    twins[0];
+  return { artifact, twin };
+}

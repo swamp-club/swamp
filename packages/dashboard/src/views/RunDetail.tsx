@@ -487,6 +487,7 @@ function ArtifactBadge(
     runId: run.id,
     dataName: ref.name,
     version: ref.version,
+    dataId: ref.dataId,
   };
   if (reportName && isReportOutput(artifact, all)) {
     const resolved = resolveRunReport(run, reportName);

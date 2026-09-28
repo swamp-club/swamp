@@ -89,6 +89,8 @@ export interface DataGetInput {
   workflowName?: string;
   runId?: string;
   version?: number;
+  /** With `workflowName`: the run artifact's data id (see DataGetPayload). */
+  dataId?: string;
   includeContent: boolean;
   repoDir: string;
 }
@@ -165,6 +167,7 @@ export interface DataGetDeps {
     run: WorkflowRunInfo,
     dataName: string,
     version?: number,
+    dataId?: string,
   ) => Promise<WorkflowDataItemInfo | null>;
   getContent: (
     modelType: ModelType,
@@ -233,7 +236,7 @@ export function createDataGetDeps(
     },
     findDataByName: (modelType, modelId, name, version) =>
       dataRepo.findByName(modelType, modelId, name, version),
-    findDataInWorkflowRun: async (run, dataNameArg, version) => {
+    findDataInWorkflowRun: async (run, dataNameArg, version, dataId) => {
       const allWorkflows = await workflowRepo.findAll();
       for (const wf of allWorkflows) {
         const fullRun = await runRepo.findById(
@@ -245,6 +248,7 @@ export function createDataGetDeps(
             fullRun,
             dataNameArg,
             version,
+            dataId,
           );
         }
       }
@@ -353,7 +357,12 @@ async function* workflowScopedGet(
     return;
   }
 
-  const item = await deps.findDataInWorkflowRun(run, actualDataName, version);
+  const item = await deps.findDataInWorkflowRun(
+    run,
+    actualDataName,
+    version,
+    input.dataId,
+  );
   if (!item) {
     const versionInfo = version ? ` (version ${version})` : "";
     const activeStatuses = new Set(["running", "pending", "suspended"]);

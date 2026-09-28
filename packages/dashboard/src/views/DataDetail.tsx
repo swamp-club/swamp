@@ -28,6 +28,7 @@ import {
   prettyJson,
 } from "../client/content_kind.ts";
 import {
+  findArtifactWithTwin,
   resolveRunReport,
   type RunArtifacts,
   runReportNames,
@@ -51,9 +52,12 @@ type DataSource =
     runId: string;
     dataName: string;
     version?: number;
+    /** Tells apart same-named items of different models in one run. */
+    dataId?: string;
   };
 
 interface DataMeta {
+  id?: string;
   name: string;
   modelName: string;
   modelType: string;
@@ -97,6 +101,7 @@ export function DataDetail({ target, onBack }: DataDetailProps) {
       runId: target.runId,
       dataName: target.dataName,
       version: target.version,
+      dataId: target.dataId,
     };
   return (
     <DataItemDetail
@@ -114,6 +119,9 @@ function dataGetPayload(
   dataName: string,
   version: number | undefined,
   includeContent: boolean,
+  dataId: string | undefined = source.kind === "run"
+    ? source.dataId
+    : undefined,
 ): Record<string, unknown> {
   const base = source.kind === "model"
     ? { modelIdOrName: source.modelName, dataName }
@@ -121,6 +129,7 @@ function dataGetPayload(
   return {
     ...base,
     ...(version !== undefined ? { version } : {}),
+    ...(source.kind === "run" && dataId !== undefined ? { dataId } : {}),
     includeContent,
   };
 }
@@ -143,6 +152,7 @@ function pinnedLink(
       runId: source.runId,
       dataName: source.dataName,
       version,
+      ...(source.dataId !== undefined ? { dataId: source.dataId } : {}),
     };
 }
 
@@ -227,16 +237,36 @@ function DataItemDetail(
   const withContent = extractObject<DataMeta>(contentReq.data);
 
   // A report's Markdown has a structured -json twin written alongside it.
+  // On a model it shares the Markdown's version. In a run, the twin is
+  // located from the run's own refs (same step), so it is pinned by id.
   const isReport = meta?.tags?.type === "report" &&
     contentPlanFor(meta.contentType, 0).kind === "markdown";
+  const runReq = useConditionalRequest<unknown>(
+    "workflow.history.get",
+    meta && isReport && source.kind === "run"
+      ? { workflowIdOrName: source.runId }
+      : null,
+  );
+  const runTwin = meta && source.kind === "run" && runReq.data
+    ? findArtifactWithTwin(
+      extractObject<RunArtifacts>(runReq.data) ?? {},
+      source.dataId ?? meta.id ?? "",
+      meta.version,
+    )?.twin
+    : undefined;
   const twinReq = useConditionalRequest<unknown>(
     "data.get",
-    meta && isReport
+    !meta || !isReport
+      ? null
+      : source.kind === "model"
+      ? dataGetPayload(source, `${meta.name}-json`, meta.version, true)
+      : runTwin
       ? dataGetPayload(
         source,
-        `${meta.name}-json`,
-        source.kind === "model" ? meta.version : undefined,
+        runTwin.ref.name,
+        runTwin.ref.version,
         true,
+        runTwin.ref.dataId,
       )
       : null,
   );
@@ -515,6 +545,7 @@ function RunReportDetail(
           runId: target.runId,
           dataName: ref.name,
           version: ref.version,
+          dataId: ref.dataId,
         }}
         title={target.reportName}
         onBack={onBack}
@@ -541,7 +572,7 @@ function RunReportDetail(
               This run produced {target.reportName} more than once. Choose one:
               <ul style={{ marginTop: 8 }}>
                 {resolution.candidates.map((c) => (
-                  <li key={`${c.ref.name}-${c.ref.version}`}>
+                  <li key={`${c.ref.dataId}-${c.ref.version}`}>
                     <DetailLink
                       to={{
                         kind: "runData",
@@ -549,6 +580,7 @@ function RunReportDetail(
                         runId: target.runId,
                         dataName: c.ref.name,
                         version: c.ref.version,
+                        dataId: c.ref.dataId,
                       }}
                     >
                       {c.ref.name} v{c.ref.version}

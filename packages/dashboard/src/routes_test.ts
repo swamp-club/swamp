@@ -302,6 +302,26 @@ Deno.test("parseRoute: run data item, with and without a version", () => {
   );
 });
 
+Deno.test("parseRoute: run data id comes from the query string", () => {
+  assertEquals(
+    parseRoute(
+      "/dashboard/workflows/wf/runs/r-1/data/report-x/versions/1",
+      "?id=5f0c",
+    ),
+    {
+      view: "workflows",
+      detail: {
+        kind: "runData",
+        workflowName: "wf",
+        runId: "r-1",
+        dataName: "report-x",
+        version: 1,
+        dataId: "5f0c",
+      },
+    },
+  );
+});
+
 Deno.test("parseRoute: run report", () => {
   assertEquals(
     parseRoute(
@@ -413,8 +433,20 @@ Deno.test("round-trip: data, run data and run report", () => {
       },
     },
   ];
+  states.push({
+    view: "workflows",
+    detail: {
+      kind: "runData",
+      workflowName: "wf",
+      runId: "r-1",
+      dataName: "d",
+      version: 1,
+      dataId: "550e8400-e29b-41d4-a716-446655440001",
+    },
+  });
   for (const state of states) {
-    assertEquals(parseRoute(buildPath(state)), state);
+    const [pathname, query = ""] = buildPath(state).split("?");
+    assertEquals(parseRoute(pathname, query ? `?${query}` : ""), state);
   }
 });
 

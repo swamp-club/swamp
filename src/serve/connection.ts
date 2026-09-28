@@ -307,6 +307,7 @@ const DataGetRequestSchema = z.object({
     workflowName: z.string().optional(),
     runId: z.string().optional(),
     version: z.number().optional(),
+    dataId: z.string().uuid().optional(),
     includeContent: z.boolean().optional(),
   }),
 });
