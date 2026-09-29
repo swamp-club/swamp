@@ -1410,17 +1410,18 @@ principal, goes only to the audit log.
 
 Within one serve process, the cancel serializes with a resume, approve or
 reject of the same run through `ActiveRunRegistry.reserve`. That is a claim on
-the run id that makes `register` refuse it until released; it is released in
-a `finally`. The cancel finds and authorizes the run first, then reserves
-the id and reads the run again before it saves, so it never saves over a
-resume. Only an allowed caller reserves, so a refused one can neither hold the
-run nor learn from the busy reply that it exists (swamp-club#2649). A resume that registered first is aborted through the registry
-instead. A resume that read the run before the cancel re-reads it, finds it
-cancelled, and refuses. Approve and reject reserve the run they resolved, so
-an approval cannot put a cancelled run back to `suspended` and auto-resume it.
-An operation refused by a reservation gets "Another operation on this run is
-in progress; try again". A local CLI resume or approve, or a second serve
-instance on a shared datastore, is not covered by the reservation.
+the run id that makes `register` refuse it until released; it is released in a
+`finally`. The cancel finds and authorizes the run first, then reserves the id
+and reads the run again before it saves, so it never saves over a resume. Only
+an allowed caller reserves, so a refused one can neither hold the run nor
+learn from the busy reply that it exists (swamp-club#2649). A resume that
+registered first is aborted through the registry instead. A resume that read
+the run before the cancel re-reads it, finds it cancelled, and refuses.
+Approve and reject reserve the run they resolved, so an approval cannot put a
+cancelled run back to `suspended` and auto-resume it. An operation refused by
+a reservation gets "Another operation on this run is in progress; try again".
+A local CLI resume or approve, or a second serve instance on a shared
+datastore, is not covered by the reservation.
 
 Model method runs cancel the same way, with
 `swamp model cancel <model> [--all] [--reason <reason>]`.
