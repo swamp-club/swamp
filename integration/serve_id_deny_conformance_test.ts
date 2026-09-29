@@ -811,3 +811,28 @@ Deno.test("serve id-deny conformance: an empty name is authorized as the every-r
     }
   });
 });
+
+Deno.test("serve id-deny conformance: an empty data model name takes the every-model form, as libswamp reads it", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, [
+      grant({ actions: ACTIONS, resource: { kind: "data", pattern: "dev-*" } }),
+    ]);
+
+    // data.get: authorized as "*", never as a model named "".
+    const got = errorFrame(
+      await sendRequest(
+        ctx,
+        request("data.get", { modelIdOrName: "", dataName: "state" }),
+      ),
+    );
+    assertEquals(got?.error?.code, "unauthorized");
+    assert(got!.error!.message.endsWith("data:*"), got!.error!.message);
+
+    // data.list: takes the any-grant path whose results are filtered per
+    // item, not a named check on "".
+    const listed = errorFrame(
+      await sendRequest(ctx, request("data.list", { modelIdOrName: "" })),
+    );
+    assertNotEquals(listed?.error?.code, "unauthorized");
+  });
+});

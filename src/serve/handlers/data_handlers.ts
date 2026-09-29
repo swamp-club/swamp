@@ -138,7 +138,8 @@ export async function handleDataGet(
   // first and authorizes the model's canonical name (swamp-club#2674).
   let model: { idOrName: string; byId: boolean } | undefined;
   if (payload.workflowName || !payload.modelIdOrName) {
-    const resourceName = payload.modelIdOrName ?? "*";
+    // An empty name reads as absent, exactly as libswamp reads it.
+    const resourceName = payload.modelIdOrName || "*";
     const dataFields = resourceName !== "*"
       ? await resolveDataFields(ctx.repoContext.definitionRepo, resourceName)
       : {};
@@ -334,7 +335,9 @@ export async function handleDataList(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const resourceName = payload.modelIdOrName ?? "*";
+  // An empty name reads as absent, exactly as libswamp reads it, so it takes
+  // the "*" form and its per-item filtering.
+  const resourceName = payload.modelIdOrName || "*";
   let model: { idOrName: string; byId: boolean } | undefined;
   if (resourceName !== "*") {
     const target = await resolveModelTarget(
