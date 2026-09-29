@@ -17,11 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
-import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
+import {
+  VaultConfigParseError,
+  YamlVaultConfigRepository,
+} from "./yaml_vault_config_repository.ts";
+import { UserError } from "../../domain/errors.ts";
+import { assertPathEquals } from "./path_test_helpers.ts";
 
 Deno.test("YamlVaultConfigRepository - normal vault types resolve correctly", async () => {
   const dir = await Deno.makeTempDir();
@@ -253,5 +264,157 @@ Deno.test("YamlVaultConfigRepository - rejects malformed YAML config", async (t)
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
+  });
+});
+
+async function withVaultDir(
+  fn: (repoDir: string, vaultsDir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-vault-repo-test-" });
+  try {
+    await fn(dir, join(dir, "vaults"));
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+async function writeVaultFile(
+  vaultsDir: string,
+  type: string,
+  id: string,
+  content: string,
+): Promise<string> {
+  const typeDir = join(vaultsDir, ...type.split("/"));
+  await ensureDir(typeDir);
+  const path = join(typeDir, `${id}.yaml`);
+  await Deno.writeTextFile(path, content);
+  return path;
+}
+
+const BROKEN_YAML = "name: [broken\n  : : :\n";
+
+function validVault(id: string, name: string, type = "local_encryption") {
+  return VaultConfig.fromData({
+    id,
+    name,
+    type,
+    config: {},
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+}
+
+Deno.test("YamlVaultConfigRepository: a file that is not YAML throws VaultConfigParseError naming the file, type and id", async () => {
+  await withVaultDir(async (repoDir, vaultsDir) => {
+    const path = await writeVaultFile(
+      vaultsDir,
+      "local_encryption",
+      "vault-1",
+      BROKEN_YAML,
+    );
+    const repo = new YamlVaultConfigRepository(repoDir);
+
+    const error = await assertRejects(
+      () => repo.findById("local_encryption", "vault-1"),
+      VaultConfigParseError,
+    );
+
+    assertInstanceOf(error, UserError);
+    assertPathEquals(error.path, path);
+    assertEquals(error.vaultType, "local_encryption");
+    assertEquals(error.vaultId, "vault-1");
+    assertStringIncludes(error.message, "Invalid vault config in");
+    assertStringIncludes(
+      error.message,
+      "swamp vault edit vault-1 --type local_encryption",
+    );
+  });
+});
+
+Deno.test("YamlVaultConfigRepository: a file missing required fields throws VaultConfigParseError listing them", async () => {
+  await withVaultDir(async (repoDir, vaultsDir) => {
+    await writeVaultFile(vaultsDir, "mock", "bad", "name: bad-vault\n");
+    const repo = new YamlVaultConfigRepository(repoDir);
+
+    const error = await assertRejects(
+      () => repo.findAll(),
+      VaultConfigParseError,
+    );
+
+    assertEquals(error.vaultId, "bad");
+    assertStringIncludes(error.message, "id:");
+    assertStringIncludes(error.message, "createdAt:");
+  });
+});
+
+Deno.test("YamlVaultConfigRepository: the parse error derives a namespaced vault type from its two directories", async () => {
+  await withVaultDir(async (repoDir, vaultsDir) => {
+    await writeVaultFile(vaultsDir, "@openbao/vault", "vault-1", BROKEN_YAML);
+    const repo = new YamlVaultConfigRepository(repoDir);
+
+    const error = await assertRejects(
+      () => repo.findById("@openbao/vault", "vault-1"),
+      VaultConfigParseError,
+    );
+
+    assertEquals(error.vaultType, "@openbao/vault");
+    assertEquals(error.vaultId, "vault-1");
+  });
+});
+
+Deno.test("YamlVaultConfigRepository: findByName finds a valid vault whatever broken files sit beside it", async () => {
+  await withVaultDir(async (repoDir, vaultsDir) => {
+    const repo = new YamlVaultConfigRepository(repoDir);
+    await repo.save(validVault("vault-b", "good-vault"));
+    // Broken files that sort before and after the valid one.
+    await writeVaultFile(vaultsDir, "local_encryption", "vault-a", BROKEN_YAML);
+    await writeVaultFile(vaultsDir, "local_encryption", "vault-c", BROKEN_YAML);
+
+    const found = await repo.findByName("good-vault");
+
+    assertEquals(found?.id, "vault-b");
+  });
+});
+
+Deno.test("YamlVaultConfigRepository: findByName with no match reports a file that did not parse", async () => {
+  await withVaultDir(async (repoDir, vaultsDir) => {
+    const repo = new YamlVaultConfigRepository(repoDir);
+    await repo.save(validVault("vault-b", "good-vault"));
+    await writeVaultFile(vaultsDir, "local_encryption", "vault-a", BROKEN_YAML);
+
+    const error = await assertRejects(
+      () => repo.findByName("missing"),
+      VaultConfigParseError,
+    );
+
+    assertEquals(error.vaultId, "vault-a");
+  });
+});
+
+Deno.test("YamlVaultConfigRepository: findByName with skipUnparseable reports no broken file", async () => {
+  await withVaultDir(async (repoDir, vaultsDir) => {
+    const repo = new YamlVaultConfigRepository(repoDir);
+    await writeVaultFile(vaultsDir, "local_encryption", "vault-a", BROKEN_YAML);
+    await writeVaultFile(vaultsDir, "local_encryption", "vault-b", BROKEN_YAML);
+
+    assertEquals(await repo.findByName("missing", true), null);
+  });
+});
+
+Deno.test("YamlVaultConfigRepository: getPath rejects an id that leaves the type directory", async () => {
+  await withVaultDir((repoDir) => {
+    const repo = new YamlVaultConfigRepository(repoDir);
+
+    for (const id of ["../outside", "../../etc/passwd", "nested/id"]) {
+      assertThrows(
+        () => repo.getPath("local_encryption", id),
+        UserError,
+        "Invalid vault id",
+      );
+    }
+    return Promise.resolve();
   });
 });

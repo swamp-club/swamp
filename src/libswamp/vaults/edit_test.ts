@@ -31,7 +31,10 @@ import {
 import type { VaultConfigData } from "../../domain/vaults/vault_config.ts";
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import {
+  VaultConfigParseError,
+  YamlVaultConfigRepository,
+} from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import { LocalEncryptionVaultProvider } from "../../domain/vaults/local_encryption_vault_provider.ts";
 
@@ -908,5 +911,417 @@ Deno.test("createVaultEditDeps: an empty base_dir falls back to the repo dir, as
       base_dir: repoDir,
     });
     assertEquals(await renamed.get("API_KEY"), "s3cret");
+  });
+});
+
+// --- vaults whose config does not parse (swamp-club#2693) ---
+
+const BROKEN_YAML = "name: [broken\n  : : :\n";
+const BROKEN_ID = "broken-id";
+
+/**
+ * A repo with a valid local_encryption vault `my-vault` (id vault-1, secrets
+ * in the repo dir) and a broken local_encryption vault file BROKEN_ID.
+ */
+async function withBrokenVaultRepo(
+  fn: (ctx: {
+    repoDir: string;
+    repo: YamlVaultConfigRepository;
+    brokenPath: string;
+    opened: string[];
+    deps: VaultEditDeps;
+  }) => Promise<void>,
+): Promise<void> {
+  await withTempDir(async (repoDir) => {
+    const repo = new YamlVaultConfigRepository(repoDir);
+    await repo.save(
+      VaultConfig.fromData({
+        ...existingData,
+        type: "local_encryption",
+        config: { auto_generate: true },
+      }),
+    );
+    const brokenPath = repo.getPath("local_encryption", BROKEN_ID);
+    await Deno.writeTextFile(brokenPath, BROKEN_YAML);
+    const opened: string[] = [];
+    const deps: VaultEditDeps = {
+      ...createVaultEditDeps(repoDir, repo),
+      prepareEditor: (path) =>
+        Promise.resolve({
+          editor: "Neovim",
+          waitsForExit: true,
+          open: () => {
+            opened.push(path);
+            return Promise.resolve({ editor: "Neovim", path });
+          },
+        }),
+    };
+    await fn({ repoDir, repo, brokenPath, opened, deps });
+  });
+}
+
+function lastEvent(events: VaultEditEvent[]): VaultEditEvent {
+  return events[events.length - 1];
+}
+
+function completedData(event: VaultEditEvent) {
+  assertEquals(event.kind, "completed");
+  return (event as Extract<VaultEditEvent, { kind: "completed" }>).data;
+}
+
+Deno.test("vaultEdit: editor opens a vault whose config does not parse, by id and type", async () => {
+  await withBrokenVaultRepo(async ({ brokenPath, opened, deps }) => {
+    const events = await collect<VaultEditEvent>(
+      vaultEdit(createLibSwampContext(), deps, {
+        vaultNameOrId: BROKEN_ID,
+        vaultType: "local_encryption",
+      }),
+    );
+
+    const data = completedData(lastEvent(events));
+    assertEquals(data.status, "opened");
+    assertEquals(data.name, BROKEN_ID);
+    assertEquals(data.renamedFrom, undefined);
+    assertPathEquals(opened[0], brokenPath);
+  });
+});
+
+Deno.test("vaultEdit: without a type, a vault whose config does not parse reports the file", async () => {
+  await withBrokenVaultRepo(async ({ opened, deps }) => {
+    const error = await assertRejects(
+      () =>
+        collect<VaultEditEvent>(
+          vaultEdit(createLibSwampContext(), deps, {
+            vaultNameOrId: BROKEN_ID,
+          }),
+        ),
+      VaultConfigParseError,
+    );
+
+    assertEquals(error.vaultId, BROKEN_ID);
+    assertEquals(opened, []);
+  });
+});
+
+Deno.test("vaultEdit: a name that matches no vault reports the broken file, not not-found", async () => {
+  await withBrokenVaultRepo(async ({ deps }) => {
+    const error = await assertRejects(
+      () =>
+        collect<VaultEditEvent>(
+          vaultEdit(createLibSwampContext(), deps, {
+            vaultNameOrId: "missing",
+            vaultType: "local_encryption",
+          }),
+        ),
+      VaultConfigParseError,
+    );
+
+    assertEquals(error.vaultId, BROKEN_ID);
+  });
+});
+
+Deno.test("vaultEdit: with two broken vault files, the one requested opens", async () => {
+  await withBrokenVaultRepo(async ({ repo, opened, deps }) => {
+    // Sorts before BROKEN_ID, so a name lookup reports it first.
+    await Deno.writeTextFile(
+      repo.getPath("local_encryption", "another-broken"),
+      BROKEN_YAML,
+    );
+
+    const events = await collect<VaultEditEvent>(
+      vaultEdit(createLibSwampContext(), deps, {
+        vaultNameOrId: BROKEN_ID,
+        vaultType: "local_encryption",
+      }),
+    );
+
+    assertEquals(completedData(lastEvent(events)).name, BROKEN_ID);
+    assertPathEquals(opened[0], repo.getPath("local_encryption", BROKEN_ID));
+  });
+});
+
+Deno.test("vaultEdit: a valid vault beside a broken one resolves by name and by id", async () => {
+  await withBrokenVaultRepo(async ({ repo, opened, deps }) => {
+    for (
+      const input of [
+        { vaultNameOrId: "my-vault" },
+        { vaultNameOrId: "vault-1", vaultType: "local_encryption" },
+      ]
+    ) {
+      const events = await collect<VaultEditEvent>(
+        vaultEdit(createLibSwampContext(), deps, input),
+      );
+      assertEquals(completedData(lastEvent(events)).name, "my-vault");
+    }
+    assertEquals(opened.length, 2);
+    assertPathEquals(opened[0], repo.getPath("local_encryption", "vault-1"));
+  });
+});
+
+Deno.test("vaultEdit: an editor rename beside a broken vault moves the secrets", async () => {
+  await withBrokenVaultRepo(async ({ repoDir, repo, deps }) => {
+    await new LocalEncryptionVaultProvider("my-vault", {
+      auto_generate: true,
+      base_dir: repoDir,
+    }).put("API_KEY", "s3cret");
+    const path = repo.getPath("local_encryption", "vault-1");
+    const renaming: VaultEditDeps = {
+      ...deps,
+      prepareEditor: () =>
+        Promise.resolve({
+          editor: "Neovim",
+          waitsForExit: true,
+          open: async () => {
+            const text = await Deno.readTextFile(path);
+            await Deno.writeTextFile(
+              path,
+              text.replace("name: my-vault", "name: renamed"),
+            );
+            return { editor: "Neovim", path };
+          },
+        }),
+    };
+
+    const events = await collect<VaultEditEvent>(
+      vaultEdit(createLibSwampContext(), renaming, {
+        vaultNameOrId: "my-vault",
+      }),
+    );
+
+    const data = completedData(lastEvent(events));
+    assertEquals(data.renamedFrom, "my-vault");
+    assertEquals(data.secretsMoved, true);
+    const secrets = new LocalEncryptionVaultProvider("renamed", {
+      auto_generate: true,
+      base_dir: repoDir,
+    });
+    assertEquals(await secrets.get("API_KEY"), "s3cret");
+  });
+});
+
+Deno.test("vaultEdit: an editor rename whose name check fails is reverted without moving secrets", async () => {
+  const { deps, saved, moves } = makeEditorDeps(
+    (d) => ({ ...d, name: "renamed", config: { prefix: "NEW_" } }),
+    {
+      findByName: (name) =>
+        name === "my-vault"
+          ? Promise.resolve(testVaultConfig)
+          : Promise.reject(new Error("permission denied")),
+    },
+  );
+
+  const error = errorOf(await runEditor(deps));
+
+  assertStringIncludes(
+    error.message,
+    "Could not check that the name is free: permission denied",
+  );
+  assertStringIncludes(error.message, "changed back to 'my-vault'");
+  assertEquals(moves, []);
+  assertEquals(saved[saved.length - 1].name, "my-vault");
+  assertEquals(saved[saved.length - 1].config, { prefix: "NEW_" });
+});
+
+function runRepair(
+  deps: VaultEditDeps,
+  content: string,
+  authorizeRepair?: (
+    target: { id: string; type: string },
+    after: { id: string; name: string; type: string },
+  ) => boolean | Promise<boolean>,
+): Promise<VaultEditEvent[]> {
+  return collect<VaultEditEvent>(
+    vaultEdit(createLibSwampContext(), deps, {
+      vaultNameOrId: BROKEN_ID,
+      vaultType: "local_encryption",
+      stdinContent: content,
+      authorizeRepair,
+    }),
+  );
+}
+
+const REPAIRED_YAML =
+  "name: fixed-vault\ntype: local_encryption\nconfig:\n  auto_generate: true\n";
+
+Deno.test("vaultEdit: a stdin update of a broken vault without authorizeRepair reports the file", async () => {
+  await withBrokenVaultRepo(async ({ brokenPath, deps }) => {
+    await assertRejects(
+      () => runRepair(deps, REPAIRED_YAML),
+      VaultConfigParseError,
+    );
+    assertEquals(await Deno.readTextFile(brokenPath), BROKEN_YAML);
+  });
+});
+
+Deno.test("vaultEdit: a denied repair writes nothing", async () => {
+  await withBrokenVaultRepo(async ({ brokenPath, deps }) => {
+    const calls: string[] = [];
+    const events = await runRepair(deps, REPAIRED_YAML, (target, after) => {
+      calls.push(`${target.type}/${target.id} -> ${after.name}`);
+      return false;
+    });
+
+    assertEquals(errorOf(lastEvent(events)).code, "forbidden");
+    assertEquals(calls, [`local_encryption/${BROKEN_ID} -> fixed-vault`]);
+    assertEquals(await Deno.readTextFile(brokenPath), BROKEN_YAML);
+  });
+});
+
+Deno.test("vaultEdit: an allowed repair saves the vault with the id from its file name", async () => {
+  await withBrokenVaultRepo(async ({ repo, deps }) => {
+    const events = await runRepair(
+      deps,
+      `id: other-id\ncreatedAt: '2020-02-02T00:00:00.000Z'\n${REPAIRED_YAML}`,
+      () => true,
+    );
+
+    const data = completedData(lastEvent(events));
+    assertEquals(data.status, "updated");
+    assertEquals(data.name, "fixed-vault");
+    assertEquals(data.repaired, true);
+    assertEquals(data.secretsMoved, false);
+    const reread = await repo.findById("local_encryption", BROKEN_ID);
+    assertEquals(reread?.id, BROKEN_ID);
+    assertEquals(reread?.name, "fixed-vault");
+    assertEquals(reread?.createdAt.toISOString(), "2020-02-02T00:00:00.000Z");
+  });
+});
+
+Deno.test("vaultEdit: a repair without a usable createdAt records the current time", async () => {
+  await withBrokenVaultRepo(async ({ repo, deps }) => {
+    const before = Date.now();
+    await runRepair(
+      deps,
+      `createdAt: not-a-date\n${REPAIRED_YAML}`,
+      () => true,
+    );
+
+    const reread = await repo.findById("local_encryption", BROKEN_ID);
+    assertEquals((reread?.createdAt.getTime() ?? 0) >= before, true);
+  });
+});
+
+Deno.test("vaultEdit: a repair is validated like an update and writes nothing when invalid", async () => {
+  await withBrokenVaultRepo(async ({ brokenPath, deps }) => {
+    const cases: Array<[string, string, string]> = [
+      [
+        "name: fixed-vault\ntype: env\nconfig: {}\n",
+        "validation_failed",
+        "Cannot change the type",
+      ],
+      [
+        "name: Bad_Name\ntype: local_encryption\nconfig: {}\n",
+        "validation_failed",
+        "Invalid vault name",
+      ],
+      [
+        "name: my-vault\ntype: local_encryption\nconfig: {}\n",
+        "already_exists",
+        "my-vault",
+      ],
+      ["- not\n- a mapping\n", "validation_failed", "expected a YAML mapping"],
+      [
+        "name: [unclosed\n",
+        "validation_failed",
+        "Invalid vault YAML from stdin",
+      ],
+    ];
+    for (const [content, code, text] of cases) {
+      const events = await runRepair(deps, content, () => true);
+      const error = errorOf(lastEvent(events));
+      assertEquals(error.code, code, content);
+      assertStringIncludes(error.message, text);
+    }
+    assertEquals(await Deno.readTextFile(brokenPath), BROKEN_YAML);
+  });
+});
+
+Deno.test("vaultEdit: a repair checks the vault type's config schema", async () => {
+  const brokenPath = "/fake/path/vault.yaml";
+  const broken = new VaultConfigParseError(
+    brokenPath,
+    "@acme/vault",
+    BROKEN_ID,
+    "bad",
+  );
+  const saved: VaultConfigData[] = [];
+  const deps = makeDeps({
+    getVaultPath: () => brokenPath,
+    findByName: (_name, skipUnparseable) =>
+      skipUnparseable ? Promise.resolve(null) : Promise.reject(broken),
+    findById: () => Promise.reject(broken),
+    readConfigData: () => Promise.reject(broken),
+    saveConfigData: (data) => {
+      saved.push(data);
+      return Promise.resolve();
+    },
+    getConfigSchema: () => Promise.resolve(z.object({ url: z.string() })),
+  });
+
+  const events = await collect<VaultEditEvent>(
+    vaultEdit(createLibSwampContext(), deps, {
+      vaultNameOrId: BROKEN_ID,
+      vaultType: "@acme/vault",
+      stdinContent: "name: fixed-vault\ntype: '@acme/vault'\nconfig: {}\n",
+      authorizeRepair: () => true,
+    }),
+  );
+
+  const error = errorOf(lastEvent(events));
+  assertStringIncludes(
+    error.message,
+    "Invalid config for vault type '@acme/vault'",
+  );
+  assertEquals(saved, []);
+});
+
+Deno.test("vaultEdit: a repair does not overwrite a file that was repaired meanwhile", async () => {
+  await withBrokenVaultRepo(async ({ brokenPath, deps }) => {
+    const fixedMeanwhile =
+      `id: ${BROKEN_ID}\nname: someone-else\ntype: local_encryption\n` +
+      `config: {}\ncreatedAt: '2026-01-01T00:00:00.000Z'\n`;
+    const events = await runRepair(deps, REPAIRED_YAML, async () => {
+      await Deno.writeTextFile(brokenPath, fixedMeanwhile);
+      return true;
+    });
+
+    assertStringIncludes(
+      errorOf(lastEvent(events)).message,
+      "was repaired while this edit ran",
+    );
+    assertEquals(await Deno.readTextFile(brokenPath), fixedMeanwhile);
+  });
+});
+
+Deno.test("vaultEdit: a stdin repair succeeds while another vault is also broken", async () => {
+  await withBrokenVaultRepo(async ({ repo, deps }) => {
+    const otherPath = repo.getPath("local_encryption", "another-broken");
+    await Deno.writeTextFile(otherPath, BROKEN_YAML);
+
+    const events = await runRepair(deps, REPAIRED_YAML, () => true);
+
+    assertEquals(completedData(lastEvent(events)).repaired, true);
+    assertEquals(
+      (await repo.findById("local_encryption", BROKEN_ID))?.name,
+      "fixed-vault",
+    );
+    assertEquals(await Deno.readTextFile(otherPath), BROKEN_YAML);
+  });
+});
+
+Deno.test("vaultEdit: an argument that is not a valid id keeps the broken file's error", async () => {
+  await withBrokenVaultRepo(async ({ deps }) => {
+    const error = await assertRejects(
+      () =>
+        collect<VaultEditEvent>(
+          vaultEdit(createLibSwampContext(), deps, {
+            vaultNameOrId: "../elsewhere",
+            vaultType: "local_encryption",
+          }),
+        ),
+      VaultConfigParseError,
+    );
+
+    assertEquals(error.vaultId, BROKEN_ID);
   });
 });

@@ -73,7 +73,11 @@ import type {
 } from "../protocol.ts";
 import { acquireVaultSync } from "../../cli/repo_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import type { Principal } from "../../domain/access/principal.ts";
+import {
+  type Principal,
+  principalToString,
+} from "../../domain/access/principal.ts";
+import { VaultConfigParseError } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
@@ -822,15 +826,27 @@ export async function handleVaultEdit(
   // name-or-id: a grant matches the resource name, so an id would sidestep
   // name-scoped denies (swamp-club#2426, swamp-club#2674).
   let resolved: VaultEditConfigInfo | null = null;
+  // Set when the requested vault's own file does not parse. Its stored name
+  // cannot be read, so replacing it needs admin authority as well as write
+  // on the name it is given.
+  let repairTarget: { id: string; type: string } | null = null;
   try {
     resolved = await findVaultByNameOrId(
       vaultConfigRepo,
       payload.vaultNameOrId,
       payload.vaultType,
     );
-  } catch {
-    // A vault that cannot be loaded is authorized by the requested name and
-    // then reported as not found.
+  } catch (error) {
+    // Any other vault that cannot be loaded is authorized by the requested
+    // name and then reported as not found.
+    if (
+      error instanceof VaultConfigParseError &&
+      payload.vaultType !== undefined &&
+      error.vaultType === payload.vaultType &&
+      error.vaultId === payload.vaultNameOrId
+    ) {
+      repairTarget = { id: error.vaultId, type: error.vaultType };
+    }
   }
   const vaultName = resolved?.name ?? payload.vaultNameOrId;
   if (rejectReservedVault(socket, requestId, vaultName)) return;
@@ -841,7 +857,11 @@ export async function handleVaultEdit(
       fields: {},
     }, ctx).allowed
   ) return;
-  if (!resolved) {
+  const target: VaultEditConfigInfo | null = resolved ??
+    (repairTarget
+      ? { id: repairTarget.id, name: repairTarget.id, type: repairTarget.type }
+      : null);
+  if (!target) {
     const typeHint = payload.vaultType ? ` of type '${payload.vaultType}'` : "";
     sendError(
       socket,
@@ -851,7 +871,7 @@ export async function handleVaultEdit(
     );
     return;
   }
-  if (payload.vaultType && resolved.type !== payload.vaultType) {
+  if (resolved && payload.vaultType && resolved.type !== payload.vaultType) {
     sendError(
       socket,
       requestId,
@@ -860,7 +880,6 @@ export async function handleVaultEdit(
     );
     return;
   }
-  const target = resolved;
 
   try {
     const libCtx = createLibSwampContext();
@@ -875,13 +894,36 @@ export async function handleVaultEdit(
         stdinContent: payload.content,
         // Every save is authorized against the edited vault too, so a rename
         // needs write on the new name, as vault.create requires for the name
-        // it creates.
-        authorizeUpdate: (_before, after) =>
+        // it creates. A repair request was authorized by id only, so if the
+        // file parses again by now its stored name is checked as well.
+        authorizeUpdate: (before, after) =>
+          (!repairTarget ||
+            authorizeOrReject(socket, requestId, principal, "write", {
+              kind: "data",
+              name: before.name,
+              fields: {},
+            }, ctx).allowed) &&
           authorizeOrReject(socket, requestId, principal, "write", {
             kind: "data",
             name: after.name,
             fields: {},
           }, ctx).allowed,
+        ...(repairTarget
+          ? {
+            authorizeRepair: (_target, after) =>
+              authorizeOrReject(socket, requestId, principal, "admin", {
+                kind: "access",
+                name: "*",
+                fields: {},
+              }, ctx).allowed &&
+              !rejectReservedVault(socket, requestId, after.name) &&
+              authorizeOrReject(socket, requestId, principal, "write", {
+                kind: "data",
+                name: after.name,
+                fields: {},
+              }, ctx).allowed,
+          }
+          : {}),
       }),
       {
         resolving: () => {},
@@ -898,6 +940,20 @@ export async function handleVaultEdit(
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
+    }
+
+    if (repairTarget && result?.repaired === true) {
+      // vault.edit is audited against every vault, so record which one an
+      // admin replaced.
+      logger.info(
+        "Repaired vault {type}/{id} as {name} for {principal}",
+        {
+          type: target.type,
+          id: target.id,
+          name: result.name,
+          principal: principal ? principalToString(principal) : "(none)",
+        },
+      );
     }
 
     send(socket, {
