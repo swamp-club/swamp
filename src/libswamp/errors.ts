@@ -68,6 +68,13 @@ export function alreadyExists(entityType: string, name: string): SwampError {
   };
 }
 
+export function forbidden(message: string): SwampError {
+  return {
+    code: "forbidden",
+    message,
+  };
+}
+
 export function validationFailed(
   message: string,
   details?: unknown,

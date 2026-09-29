@@ -43,8 +43,13 @@ class LogVaultEditRenderer implements Renderer<VaultEditEvent> {
       },
       completed: (e) => {
         const data = e.data;
-        logger
-          .info`Opening vault config in ${data.editor}: ${data.name} (${data.type}) at ${data.path}`;
+        if (data.status === "opened") {
+          logger
+            .info`Opening vault config in ${data.editor}: ${data.name} (${data.type}) at ${data.path}`;
+        } else {
+          logger
+            .info`Updated vault config from stdin: ${data.name} (${data.type}) at ${data.path}`;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);

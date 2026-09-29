@@ -297,7 +297,9 @@ have their own sections. The group also has:
 - `swamp vault get <vault>` / `swamp vault describe <vault>`: show a vault's
   configuration
 - `swamp vault edit [vault]`: open the vault YAML in `$EDITOR` (interactive
-  search when no name is given)
+  search when no name is given), or update it from YAML piped on stdin. With
+  `--server`, stdin is required: the server never opens an editor, and it
+  authorizes the vault by name, plus the new name on a rename
 - `swamp vault search [keyword]`: browse configured vaults
 - `swamp vault type-search [keyword]`: browse registered vault types
   (built-in and extension)

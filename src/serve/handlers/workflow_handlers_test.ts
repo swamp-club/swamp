@@ -19,8 +19,12 @@
 
 import { assertEquals } from "@std/assert";
 import { dirname } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
+import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { evaluateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import {
   applyTriggerOverrides,
+  handleWorkflowEdit,
   handleWorkflowHistoryGet,
   handleWorkflowRunSearch,
   handleWorkflowSearch,
@@ -651,5 +655,267 @@ Deno.test("handleWorkflowHistoryGet: forwards reason and entity type for an unkn
       reason: "not_found",
       entityType: "Workflow run or workflow",
     });
+  });
+});
+
+// --- handleWorkflowEdit (swamp-club#2426) ---
+
+const WORKFLOW_EDITOR: Principal = { kind: "user", id: "editor" };
+
+function workflowGrant(overrides: Partial<Grant>): Grant {
+  return {
+    id: crypto.randomUUID(),
+    subject: { kind: "user", name: "editor" },
+    effect: "allow",
+    actions: ["write"],
+    resource: { kind: "workflow", pattern: "*" },
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function editSocket(): WebSocket & { sent: string[] } {
+  const sent: string[] = [];
+  return {
+    readyState: WebSocket.OPEN,
+    send(data: string) {
+      sent.push(data);
+    },
+    sent,
+    close() {},
+  } as unknown as WebSocket & { sent: string[] };
+}
+
+/** An edit context over a real workflow repository in `repoDir`. */
+function workflowEditCtx(
+  repoDir: string,
+  workflowRepo: YamlWorkflowRepository,
+  grants?: Grant[],
+): ConnectionContext {
+  const ctx: Record<string, unknown> = {
+    repoDir,
+    repoContext: { workflowRepo },
+    datastoreConfig: { type: "filesystem" },
+    datastoreResolver: {},
+    authConfig: { ...searchAuthBase, mode: grants ? "token" : "none" },
+  };
+  if (grants) {
+    ctx.policySnapshotLoader = {
+      decisionService: new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], evaluateGrantCondition),
+      ),
+    } as unknown as PolicySnapshotLoader;
+  }
+  return ctx as unknown as ConnectionContext;
+}
+
+async function withWorkflowRepo(
+  fn: (dir: string, repo: YamlWorkflowRepository) => Promise<void>,
+): Promise<void> {
+  const tempDir = await Deno.makeTempDir({
+    prefix: "swamp-workflow-edit-test-",
+  });
+  try {
+    await fn(tempDir, new YamlWorkflowRepository(tempDir));
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+async function saveEditWorkflow(
+  repo: YamlWorkflowRepository,
+  name: string,
+  tags: Record<string, string> = {},
+): Promise<Workflow> {
+  const workflow = Workflow.create({
+    name,
+    tags,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "write",
+            task: StepTask.model("writer", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+  await repo.save(workflow);
+  return workflow;
+}
+
+function workflowYaml(
+  workflow: Workflow,
+  overrides: Record<string, unknown> = {},
+): string {
+  // A JSON round trip drops the undefined fields stringifyYaml rejects.
+  const data = JSON.parse(JSON.stringify(workflow.toData()));
+  return stringifyYaml({ ...data, ...overrides });
+}
+
+function sentFrames(socket: { sent: string[] }) {
+  return socket.sent.map((raw) => JSON.parse(raw));
+}
+
+Deno.test("handleWorkflowEdit: rejects a request without content instead of opening an editor on the server", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await saveEditWorkflow(repo, "no-content-wf");
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      workflowEditCtx(dir, repo),
+      "req-no-content",
+      { workflowIdOrName: "no-content-wf" },
+      new AbortController(),
+      null,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].error.code, "invalid_request");
+  });
+});
+
+Deno.test("handleWorkflowEdit: a request by id cannot sidestep a name-scoped deny", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "prod-deploy");
+    const ctx = workflowEditCtx(dir, repo, [
+      workflowGrant({}),
+      workflowGrant({
+        effect: "deny",
+        resource: { kind: "workflow", pattern: "prod-*" },
+      }),
+    ]);
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      ctx,
+      "req-by-id",
+      {
+        workflowIdOrName: workflow.id,
+        content: workflowYaml(workflow, { description: "edited" }),
+      },
+      new AbortController(),
+      WORKFLOW_EDITOR,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals(
+      (await repo.findByName("prod-deploy"))?.description,
+      undefined,
+    );
+  });
+});
+
+Deno.test("handleWorkflowEdit: a tag-conditioned deny applies to the edited workflow", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "tagged-wf", {
+      env: "prod",
+    });
+    const ctx = workflowEditCtx(dir, repo, [
+      workflowGrant({}),
+      workflowGrant({ effect: "deny", condition: 'tags.env == "prod"' }),
+    ]);
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      ctx,
+      "req-tag-deny",
+      { workflowIdOrName: "tagged-wf", content: workflowYaml(workflow) },
+      new AbortController(),
+      WORKFLOW_EDITOR,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+  });
+});
+
+Deno.test("handleWorkflowEdit: a retag into a denied scope sends one error and writes nothing", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "retag-wf", {
+      env: "dev",
+    });
+    const ctx = workflowEditCtx(dir, repo, [
+      workflowGrant({}),
+      workflowGrant({ effect: "deny", condition: 'tags.env == "prod"' }),
+    ]);
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      ctx,
+      "req-retag-denied",
+      {
+        workflowIdOrName: "retag-wf",
+        content: workflowYaml(workflow, { tags: { env: "prod" } }),
+      },
+      new AbortController(),
+      WORKFLOW_EDITOR,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals((await repo.findByName("retag-wf"))?.tags, { env: "dev" });
+  });
+});
+
+Deno.test("handleWorkflowEdit: an allowed rename saves the edited workflow", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "old-name");
+    const ctx = workflowEditCtx(dir, repo, [workflowGrant({})]);
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      ctx,
+      "req-rename",
+      {
+        workflowIdOrName: "old-name",
+        content: workflowYaml(workflow, { name: "new-name" }),
+      },
+      new AbortController(),
+      WORKFLOW_EDITOR,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "workflow.edit");
+    assertEquals((await repo.findByName("new-name"))?.id, workflow.id);
+  });
+});
+
+Deno.test("handleWorkflowEdit: reports an unknown workflow as not found", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      workflowEditCtx(dir, repo),
+      "req-missing",
+      { workflowIdOrName: "no-such-wf", content: "name: no-such-wf\n" },
+      new AbortController(),
+      null,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].error.code, "not_found");
   });
 });

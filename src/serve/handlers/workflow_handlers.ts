@@ -43,6 +43,7 @@ import {
   workflowCreate,
   workflowDelete,
   workflowEdit,
+  type WorkflowEditTarget,
   workflowEvaluate,
   workflowGet,
   workflowHistoryGet,
@@ -140,10 +141,12 @@ import {
   lockTimeoutErrorForClient,
   paginate,
   pushChangedToRemote,
+  rejectEditWithoutContent,
   sanitizeErrorForClient,
   send,
   sendError,
   subscribeUntilDetach,
+  wasRequestErrored,
 } from "./shared.ts";
 import { resolveDataFields } from "./data_handlers.ts";
 import type { ResourceReadPolicy } from "../../domain/workflows/step_output_resolver.ts";
@@ -160,6 +163,7 @@ import {
 } from "../serve_config.ts";
 import type { TriggerOverride } from "../../libswamp/mod.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -170,17 +174,34 @@ export async function resolveWorkflowFields(
   workflowRepo: WorkflowRepository,
   idOrName: string,
 ): Promise<Record<string, unknown>> {
-  const fields: Record<string, unknown> = { name: idOrName };
+  const workflow = await resolveWorkflow(workflowRepo, idOrName);
+  return workflow
+    ? workflowAccessFields({ name: workflow.name, tags: workflow.tags })
+    : { name: idOrName };
+}
+
+/**
+ * Finds a workflow by name, then by id. Returns null when neither matches or
+ * the lookup fails.
+ */
+export async function resolveWorkflow(
+  workflowRepo: WorkflowRepository,
+  idOrName: string,
+): Promise<Workflow | null> {
   try {
-    const workflow = await workflowRepo.findByName(idOrName) ??
+    return await workflowRepo.findByName(idOrName) ??
       await workflowRepo.findById(createWorkflowId(idOrName));
-    if (workflow) {
-      fields.name = workflow.name;
-      const tags = workflow.tags;
-      if (tags && Object.keys(tags).length > 0) fields.tags = tags;
-    }
   } catch {
-    // Fall back to name-only fields on lookup failure
+    return null;
+  }
+}
+
+function workflowAccessFields(
+  target: WorkflowEditTarget,
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = { name: target.name };
+  if (target.tags && Object.keys(target.tags).length > 0) {
+    fields.tags = target.tags;
   }
   return fields;
 }
@@ -1736,17 +1757,34 @@ export async function handleWorkflowEdit(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
+  if (rejectEditWithoutContent(socket, requestId, payload.content)) return;
+
+  // Authorize the workflow the edit will act on, by its canonical name, not
+  // the raw id-or-name: a grant matches the resource name, so an id would
+  // sidestep name-scoped denies (swamp-club#2426, swamp-club#2674).
+  const workflow = await resolveWorkflow(
     ctx.repoContext.workflowRepo,
     payload.workflowIdOrName,
   );
+  const target: WorkflowEditTarget = workflow
+    ? { name: workflow.name, tags: { ...workflow.tags } }
+    : { name: payload.workflowIdOrName, tags: {} };
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "workflow",
-      name: payload.workflowIdOrName,
-      fields: workflowFields,
+      name: target.name,
+      fields: workflowAccessFields(target),
     }, ctx).allowed
   ) return;
+  if (!workflow) {
+    sendError(
+      socket,
+      requestId,
+      "not_found",
+      `Workflow not found: ${payload.workflowIdOrName}`,
+    );
+    return;
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1757,9 +1795,19 @@ export async function handleWorkflowEdit(
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
+      // Workflow ids are UUIDs, which workflowEdit looks up by id only, so
+      // the edit acts on the workflow authorized above.
       workflowEdit(libCtx, deps, {
-        workflowIdOrName: payload.workflowIdOrName,
+        workflowIdOrName: workflow.id,
         stdinContent: payload.content,
+        // An edit that renames or retags the workflow must also be allowed
+        // for the edited workflow.
+        authorizeUpdate: (_before, after) =>
+          authorizeOrReject(socket, requestId, principal, "write", {
+            kind: "workflow",
+            name: after.name,
+            fields: workflowAccessFields(after),
+          }, ctx).allowed,
       }),
       {
         resolving: () => {},
@@ -1802,6 +1850,8 @@ export async function handleWorkflowEdit(
       }
     }
   } catch (error) {
+    // A denied rename or retag was already reported by authorizeOrReject.
+    if (wasRequestErrored(socket, requestId)) return;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_edit_failed", message);
   }

@@ -30,6 +30,12 @@ import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
 } from "../../domain/datastore/datastore_sync_service.ts";
+import type { Grant } from "../../domain/models/access/grant_model.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import { evaluateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
+import type { Principal } from "../../domain/access/principal.ts";
 
 const TEST_TYPE = ModelType.create("test/lock-check");
 
@@ -351,5 +357,240 @@ Deno.test("handleModelEdit: works without syncService (local-only mode)", async 
     const response = JSON.parse(socket.sent[0]);
     assertEquals(response.type, "model.edit");
     assertEquals(response.payload.data.status, "updated");
+  });
+});
+
+// --- handleModelEdit authorization (swamp-club#2426) ---
+
+const EDITOR: Principal = { kind: "user", id: "editor" };
+
+function grant(overrides: Partial<Grant>): Grant {
+  return {
+    id: crypto.randomUUID(),
+    subject: { kind: "user", name: "editor" },
+    effect: "allow",
+    actions: ["write"],
+    resource: { kind: "model", pattern: "*" },
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+/** An edit context that enforces `grants` for token principals. */
+function createPolicyEditCtx(
+  repoDir: string,
+  definitionRepo: YamlDefinitionRepository,
+  grants: Grant[],
+): ConnectionContext {
+  const ctx = createEditCtx(repoDir, definitionRepo);
+  return {
+    ...ctx,
+    authConfig: { ...ctx.authConfig, mode: "token" },
+    policySnapshotLoader: {
+      decisionService: new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], evaluateGrantCondition),
+      ),
+    } as unknown as PolicySnapshotLoader,
+  };
+}
+
+async function saveEditModel(
+  repo: YamlDefinitionRepository,
+  name: string,
+  tags: Record<string, string> = {},
+): Promise<Definition> {
+  const definition = Definition.create({ name, globalArguments: {}, tags });
+  await repo.save(EDIT_TEST_TYPE, definition);
+  return definition;
+}
+
+function editYaml(
+  definition: Definition,
+  overrides: Record<string, unknown> = {},
+): string {
+  return stringifyYaml({
+    id: definition.id,
+    name: definition.name,
+    type: "command/shell",
+    version: 1,
+    tags: definition.tags,
+    globalArguments: {},
+    methods: {},
+    ...overrides,
+  });
+}
+
+function frames(socket: { sent: string[] }) {
+  return socket.sent.map((raw) => JSON.parse(raw));
+}
+
+Deno.test("handleModelEdit: rejects a request without content instead of opening an editor on the server", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    await saveEditModel(repo, "no-content-model");
+    const socket = createMockSocket();
+
+    await handleModelEdit(
+      socket,
+      createEditCtx(dir, repo),
+      "req-no-content",
+      { modelIdOrName: "no-content-model" },
+      new AbortController(),
+      null,
+    );
+
+    const sent = frames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals(sent[0].error.code, "invalid_request");
+  });
+});
+
+Deno.test("handleModelEdit: a request by id cannot sidestep a name-scoped deny", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "prod-db");
+    const ctx = createPolicyEditCtx(dir, repo, [
+      grant({}),
+      grant({
+        effect: "deny",
+        resource: { kind: "model", pattern: "prod-*" },
+      }),
+    ]);
+    const socket = createMockSocket();
+
+    await handleModelEdit(
+      socket,
+      ctx,
+      "req-by-id",
+      {
+        modelIdOrName: definition.id,
+        content: editYaml(definition, { tags: { edited: "true" } }),
+      },
+      new AbortController(),
+      EDITOR,
+    );
+
+    const sent = frames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    const reread = await repo.findByNameGlobal("prod-db");
+    assertEquals(reread?.definition.tags, {});
+  });
+});
+
+Deno.test("handleModelEdit: a tag-conditioned deny applies to the edited model", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "tagged-model", {
+      env: "prod",
+    });
+    const ctx = createPolicyEditCtx(dir, repo, [
+      grant({}),
+      grant({ effect: "deny", condition: 'tags.env == "prod"' }),
+    ]);
+    const socket = createMockSocket();
+
+    await handleModelEdit(
+      socket,
+      ctx,
+      "req-tag-deny",
+      { modelIdOrName: "tagged-model", content: editYaml(definition) },
+      new AbortController(),
+      EDITOR,
+    );
+
+    const sent = frames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+  });
+});
+
+Deno.test("handleModelEdit: a rename into a denied name sends one error and writes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "dev-x");
+    const ctx = createPolicyEditCtx(dir, repo, [
+      grant({}),
+      grant({
+        effect: "deny",
+        resource: { kind: "model", pattern: "prod-*" },
+      }),
+    ]);
+    const socket = createMockSocket();
+
+    await handleModelEdit(
+      socket,
+      ctx,
+      "req-rename-denied",
+      {
+        modelIdOrName: "dev-x",
+        content: editYaml(definition, { name: "prod-x" }),
+      },
+      new AbortController(),
+      EDITOR,
+    );
+
+    const sent = frames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals(
+      (await repo.findByNameGlobal("dev-x"))?.definition.id,
+      definition.id,
+    );
+    assertEquals(await repo.findByNameGlobal("prod-x"), null);
+  });
+});
+
+Deno.test("handleModelEdit: an allowed rename saves the edited model", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "dev-y");
+    const ctx = createPolicyEditCtx(dir, repo, [grant({})]);
+    const socket = createMockSocket();
+
+    await handleModelEdit(
+      socket,
+      ctx,
+      "req-rename-allowed",
+      {
+        modelIdOrName: definition.id,
+        content: editYaml(definition, { name: "dev-z" }),
+      },
+      new AbortController(),
+      EDITOR,
+    );
+
+    const sent = frames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "model.edit");
+    assertEquals(sent[0].payload.data.name, "dev-z");
+    assertEquals(
+      (await repo.findByNameGlobal("dev-z"))?.definition.id,
+      definition.id,
+    );
+  });
+});
+
+Deno.test("handleModelEdit: reports an unknown model as not found", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const socket = createMockSocket();
+
+    await handleModelEdit(
+      socket,
+      createEditCtx(dir, repo),
+      "req-missing",
+      { modelIdOrName: "no-such-model", content: "name: no-such-model\n" },
+      new AbortController(),
+      null,
+    );
+
+    const sent = frames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].error.code, "not_found");
   });
 });

@@ -634,6 +634,8 @@ export interface VaultCreatePayload {
 export interface VaultEditPayload {
   vaultNameOrId: string;
   vaultType?: string;
+  /** The new vault YAML. The server never opens an editor. */
+  content?: string;
 }
 
 export interface VaultAuditTrailPayload {

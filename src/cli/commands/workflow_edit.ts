@@ -40,6 +40,7 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
+import { requireRemoteEditContent } from "../remote_edit_content.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -78,7 +79,10 @@ export const workflowEditCommand = withRemoteOptions(
         server,
         options,
       );
-      const content = await readStdin();
+      const content = requireRemoteEditContent(
+        await readStdin(),
+        "swamp workflow edit",
+      );
       const response = await requestServerResponse<WorkflowEditResponse>(
         { server, token },
         {

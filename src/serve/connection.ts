@@ -1186,6 +1186,7 @@ const VaultEditRequestSchema = z.object({
   payload: z.object({
     vaultNameOrId: z.string().min(1),
     vaultType: z.string().optional(),
+    content: z.string().optional(),
   }),
 });
 

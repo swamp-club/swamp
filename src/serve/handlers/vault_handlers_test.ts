@@ -24,6 +24,7 @@ import {
   handleVaultAnnotate,
   handleVaultCreate,
   handleVaultDelete,
+  handleVaultEdit,
   isReservedVaultName,
 } from "./vault_handlers.ts";
 import { buildMarkDirtyHook } from "../../cli/repo_context.ts";
@@ -37,6 +38,13 @@ import type {
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import "../../domain/vaults/vault_types.ts";
+import { VaultConfig } from "../../domain/vaults/vault_config.ts";
+import type { Grant } from "../../domain/models/access/grant_model.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
+import type { Principal } from "../../domain/access/principal.ts";
+import { evaluateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 
 Deno.test("isReservedVaultName: returns true for _token-secrets", () => {
   assertEquals(isReservedVaultName("_token-secrets"), true);
@@ -383,5 +391,284 @@ Deno.test("handleVaultAnnotate: removeLabels removes only the named labels", asy
     const svc = await VaultService.fromRepository(dir);
     const annotation = await svc.getAnnotation(TEST_VAULT_NAME, "test-key");
     assertEquals(annotation?.labels, { env: "prod" });
+  });
+});
+
+// --- handleVaultEdit (swamp-club#2426) ---
+
+const VAULT_EDITOR: Principal = { kind: "user", id: "editor" };
+
+function vaultGrant(overrides: Partial<Grant>): Grant {
+  return {
+    id: crypto.randomUUID(),
+    subject: { kind: "user", name: "editor" },
+    effect: "allow",
+    actions: ["write"],
+    resource: { kind: "data", pattern: "*" },
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+interface VaultEditRun {
+  frames: Array<Record<string, unknown> & { type: string }>;
+  events: VaultSyncEvent[];
+  read: (id: string) => Promise<VaultConfig | null>;
+}
+
+/**
+ * Seeds `vaults` into a real repository context for `repoDir`, then runs one
+ * vault.edit request built by `payloadFor` from the seeded configs.
+ */
+async function runVaultEdit(
+  repoDir: string,
+  cacheRoot: string,
+  vaults: VaultConfig[],
+  payloadFor: (vaults: VaultConfig[]) => Parameters<typeof handleVaultEdit>[3],
+  options: { grants?: Grant[] } = {},
+): Promise<VaultEditRun> {
+  const events: VaultSyncEvent[] = [];
+  const service: DatastoreSyncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => {
+      events.push({ kind: "push" });
+      return Promise.resolve(0);
+    },
+    markDirty: (opts) => {
+      events.push({ kind: "mark", relPath: opts?.relPath });
+      return Promise.resolve();
+    },
+  };
+  const repoContext = createRepositoryContext({
+    repoDir,
+    enableIndexing: false,
+    markDirty: buildMarkDirtyHook(service, cacheRoot, repoDir),
+  });
+  try {
+    for (const vault of vaults) {
+      await repoContext.vaultConfigRepo.save(vault);
+    }
+    events.length = 0;
+    const base = createAnnotateCtx(repoDir, service);
+    const ctx: ConnectionContext = {
+      ...base,
+      repoContext,
+      ...(options.grants
+        ? {
+          authConfig: { ...base.authConfig, mode: "token" as const },
+          policySnapshotLoader: {
+            decisionService: new GrantBasedAccessDecisionService(
+              new PolicySnapshot(options.grants, [], evaluateGrantCondition),
+            ),
+          } as unknown as PolicySnapshotLoader,
+        }
+        : {}),
+    };
+    const socket = createMockSocket();
+    await handleVaultEdit(
+      socket,
+      ctx,
+      "req-edit",
+      payloadFor(vaults),
+      new AbortController(),
+      options.grants ? VAULT_EDITOR : null,
+    );
+    const repo = repoContext.vaultConfigRepo;
+    return {
+      frames: socket.sent.map((raw) => JSON.parse(raw)),
+      events,
+      read: (id) => repo.findById("local_encryption", id),
+    };
+  } finally {
+    repoContext.catalogStore.close();
+  }
+}
+
+function localVault(name: string): VaultConfig {
+  return VaultConfig.create(
+    crypto.randomUUID(),
+    name,
+    "local_encryption",
+    {},
+  );
+}
+
+function vaultYaml(
+  vault: VaultConfig,
+  overrides: Record<string, unknown> = {},
+): string {
+  return stringifyYaml({
+    ...vault.toData(),
+    ...overrides,
+  } as unknown as Record<string, unknown>);
+}
+
+Deno.test("handleVaultEdit: rejects a request without content instead of opening an editor on the server", async () => {
+  await withTempDir(async (dir) => {
+    const { frames } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [localVault("plain-vault")],
+      () => ({ vaultNameOrId: "plain-vault" }),
+    );
+
+    assertEquals(frames.length, 1);
+    assertEquals(
+      (frames[0].error as { code: string }).code,
+      "invalid_request",
+    );
+  });
+});
+
+Deno.test("handleVaultEdit: updates the managed vault config and pushes it by path", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const cacheRoot = join(dir, "cache");
+    await Deno.mkdir(repoDir, { recursive: true });
+    // Keyed by this run's temp dir, so it cannot leak into another test.
+    registerManagedConfig(repoDir, true, join(cacheRoot, "config"));
+    const vault = localVault("managed-vault");
+
+    const { frames, events, read } = await runVaultEdit(
+      repoDir,
+      cacheRoot,
+      [vault],
+      () => ({
+        vaultNameOrId: "managed-vault",
+        content: vaultYaml(vault, { auditReads: true }),
+      }),
+    );
+
+    assertEquals(frames.length, 1);
+    assertEquals(frames[0].type, "vault.edit");
+    assertEquals(
+      (frames[0].payload as { data: { status: string } }).data.status,
+      "updated",
+    );
+    assertEquals((await read(vault.id))?.auditReads, true);
+    assertEquals(events.length, 2);
+    const [mark, push] = events;
+    assertEquals(push, { kind: "push" });
+    assertEquals(mark, {
+      kind: "mark",
+      relPath: `config/vaults/local_encryption/${vault.id}.yaml`,
+    });
+  });
+});
+
+Deno.test("handleVaultEdit: a request by id cannot sidestep a name-scoped deny", async () => {
+  await withTempDir(async (dir) => {
+    const vault = localVault("prod-secrets");
+
+    const { frames, read } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [vault],
+      () => ({
+        vaultNameOrId: vault.id,
+        content: vaultYaml(vault, { auditReads: true }),
+      }),
+      {
+        grants: [
+          vaultGrant({}),
+          vaultGrant({
+            effect: "deny",
+            resource: { kind: "data", pattern: "prod-*" },
+          }),
+        ],
+      },
+    );
+
+    assertEquals(frames.length, 1);
+    assertEquals(frames[0].type, "error");
+    assertEquals((await read(vault.id))?.auditReads, false);
+  });
+});
+
+Deno.test("handleVaultEdit: a rename into a denied name sends one error and writes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const vault = localVault("dev-secrets");
+
+    const { frames, read } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [vault],
+      () => ({
+        vaultNameOrId: "dev-secrets",
+        content: vaultYaml(vault, { name: "prod-secrets" }),
+      }),
+      {
+        grants: [
+          vaultGrant({}),
+          vaultGrant({
+            effect: "deny",
+            resource: { kind: "data", pattern: "prod-*" },
+          }),
+        ],
+      },
+    );
+
+    assertEquals(frames.length, 1);
+    assertEquals(frames[0].type, "error");
+    assertEquals((await read(vault.id))?.name, "dev-secrets");
+  });
+});
+
+Deno.test("handleVaultEdit: refuses a reserved vault", async () => {
+  await withTempDir(async (dir) => {
+    const { frames } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [],
+      () => ({
+        vaultNameOrId: "_token-secrets",
+        content: "name: _token-secrets\n",
+      }),
+    );
+
+    assertEquals(frames.length, 1);
+    assertEquals((frames[0].error as { code: string }).code, "forbidden");
+  });
+});
+
+Deno.test("handleVaultEdit: reports a rejected edit with its specific message", async () => {
+  await withTempDir(async (dir) => {
+    const vault = localVault("typed-vault");
+
+    const { frames, read } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [vault],
+      () => ({
+        vaultNameOrId: "typed-vault",
+        content: vaultYaml(vault, { type: "aws-sm" }),
+      }),
+    );
+
+    assertEquals(frames.length, 1);
+    const error = frames[0].error as { code: string; message: string };
+    assertEquals(error.code, "vault_edit_failed");
+    assert(
+      error.message.includes("Cannot change the type"),
+      `expected the specific message, got ${error.message}`,
+    );
+    assertEquals((await read(vault.id))?.type, "local_encryption");
+  });
+});
+
+Deno.test("handleVaultEdit: reports an unknown vault as not found", async () => {
+  await withTempDir(async (dir) => {
+    const { frames } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [],
+      () => ({ vaultNameOrId: "no-such-vault", content: "name: x\n" }),
+    );
+
+    assertEquals(frames.length, 1);
+    assertEquals((frames[0].error as { code: string }).code, "not_found");
   });
 });

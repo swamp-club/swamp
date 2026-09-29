@@ -1276,6 +1276,27 @@ export function sendError(
   });
 }
 
+/**
+ * Rejects an edit request (`model.edit`, `workflow.edit`, `vault.edit`) that
+ * carries no content. The edit generators fall back to opening an editor,
+ * which on serve would launch on the server host, so remote edits must send
+ * the new YAML (swamp-club#2426). Returns true when the request was rejected.
+ */
+export function rejectEditWithoutContent(
+  socket: WebSocket,
+  requestId: string,
+  content: string | undefined,
+): boolean {
+  if (content !== undefined) return false;
+  sendError(
+    socket,
+    requestId,
+    "invalid_request",
+    "Edits over the server need the new YAML in the request content; the server does not open an editor",
+  );
+  return true;
+}
+
 export function wasRequestErrored(
   socket: WebSocket,
   requestId: string,

@@ -1067,7 +1067,8 @@ and extensions that clear only the marks a push handled.
 that no hooked repository covers. Each marks exactly those files, by path, after
 writing:
 
-- `vault.create` and `vault.migrate` mark the vault config file, because
+- `vault.create`, `vault.edit` and `vault.migrate` mark the vault config file,
+  because
   `YamlVaultConfigRepository` has no hook. `vault.migrate` also marks the old
   config it removed, so the scoped push deletes the remote copy. Otherwise the
   config poller would bring it back as a second config with the same name.
@@ -1081,9 +1082,9 @@ writing:
 Without managedConfig, the vault config is repo-local and the hook drops the mark
 (rule 5). The extension handlers do not push at all then, since nothing they
 write is in the cache. Handlers that never write into the cache do not push:
-`vault.put`, `vault.annotate`, `vault.delete` and `vault.edit`. Secrets and
-annotations live in the always-local `.swamp/secrets`, and vault audit entries
-go to the repo-local `.swamp/audit`.
+`vault.put`, `vault.annotate` and `vault.delete`. Secrets and annotations live
+in the always-local `.swamp/secrets`, and vault audit entries go to the
+repo-local `.swamp/audit`.
 
 Mark files, not shared directories. A directory mark makes the scoped walk
 delete remotely every index entry under it that is missing locally. That
