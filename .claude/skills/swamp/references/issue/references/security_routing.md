@@ -16,5 +16,6 @@ checks GitHub's Private Vulnerability Reporting (PVR) status first.
 ## Why Refuse Instead of Falling Back
 
 A security report routed to a public issue tracker leaks the vulnerability to
-anyone watching the repo before the publisher can react. The CLI treats refusal
-as the correct outcome — exit 0, with explicit guidance — rather than a failure.
+anyone watching the repo before the publisher can react. The CLI refuses and
+fails with a user error (exit 1, `code: "pvr-disabled"`) whose message tells the
+reporter to contact the publisher privately — nothing is filed anywhere.

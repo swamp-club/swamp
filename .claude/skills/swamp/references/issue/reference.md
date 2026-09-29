@@ -188,15 +188,15 @@ Feature requests and security reports use a linear flow (no version check):
 
 Map the failure to the right fix rather than retrying blindly:
 
-| Failure signal                                  | Likely cause                | Fix                                                                                     |
-| ----------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------- |
-| Lab submission returns 401 / "unauthorized"     | Auth token expired          | Run `swamp auth login` and retry                                                        |
-| Lab submission times out or 5xx                 | swamp.club outage           | Retry with `--email` to fall back to email submission                                   |
-| `gh` handoff errors with auth failure           | `GH_TOKEN` unset or invalid | Run `gh auth login` (or export a valid `GH_TOKEN`); re-run — CLI will retry `gh`        |
-| `gh` not installed                              | Missing binary              | No action needed — CLI falls back to `method: "browser"` automatically                  |
-| `status: "refused"` with "extension not pulled" | Extension not local         | `swamp extension pull <name>`, then retry                                               |
-| `status: "refused"` with "no repository"        | Publisher declared no repo  | Do not retry; relay the guidance field to the user (points at publisher's profile page) |
-| `status: "refused"` on `security` command       | PVR disabled on target repo | Do not retry as a public issue; relay guidance to contact publisher privately           |
+| Failure signal                                     | Likely cause                | Fix                                                                                    |
+| -------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------- |
+| Lab submission returns 401 / "unauthorized"        | Auth token expired          | Run `swamp auth login` and retry                                                       |
+| Lab submission times out or 5xx                    | swamp.club outage           | Retry with `--email` to fall back to email submission                                  |
+| `gh` handoff errors with auth failure              | `GH_TOKEN` unset or invalid | Run `gh auth login` (or export a valid `GH_TOKEN`); re-run — CLI will retry `gh`       |
+| `gh` not installed                                 | Missing binary              | No action needed — CLI falls back to `method: "browser"` automatically                 |
+| Error `code: "not-pulled"`                         | Extension not local         | `swamp extension pull <name>`, then retry                                              |
+| Error `code: "no-repository"`                      | Publisher declared no repo  | Do not retry; relay the error message to the user (points at publisher's profile page) |
+| Error `code: "pvr-disabled"` on `security` command | PVR disabled on target repo | Do not retry as a public issue; relay the message to contact publisher privately       |
 
 ## Requirements
 
