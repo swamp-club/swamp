@@ -25,6 +25,7 @@ import {
   type CheckValidationContext,
   DefaultModelValidationService,
   type EnvVarUsageDetail,
+  type ExpressionPathError,
   type ForeignTemplateDetail,
 } from "../../domain/models/validation_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -49,6 +50,8 @@ export interface ValidationItemData {
   name: string;
   passed: boolean;
   error?: string;
+  /** The failed expressions behind an `Expression paths` failure. */
+  expressionErrors?: readonly ExpressionPathError[];
 }
 
 /** A warning surfaced during validation (does not cause failure). */
@@ -93,6 +96,7 @@ interface ValidationResult {
   name: string;
   passed: boolean;
   error?: string;
+  expressionErrors?: readonly ExpressionPathError[];
 }
 
 /** Raw warning from the domain service. */
@@ -234,6 +238,7 @@ function toValidationItemData(
     name: r.name,
     passed: r.passed,
     error: r.error,
+    expressionErrors: r.expressionErrors,
   }));
 }
 

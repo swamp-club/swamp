@@ -206,3 +206,120 @@ Deno.test("JsonModelValidateRenderer - includes the templates of a template synt
     console.log = originalLog;
   }
 });
+
+const SHARED_REMEDY =
+  "If this is another service's template syntax, build it with CEL string concatenation.";
+
+const expressionPathsFailureData = {
+  modelId: "def-1",
+  modelName: "argo-step",
+  type: "command/shell",
+  validations: [
+    { name: "Definition schema", passed: true },
+    {
+      name: "Expression paths",
+      passed: false,
+      error: "- {{workflow.id}}\n  ...",
+      expressionErrors: [
+        {
+          expression: "{{workflow.id}}",
+          error: 'Expression uses {{...}} at "env.HOST"',
+          suggestion: 'Add "$" prefix: ${{...}}.',
+          remedy: SHARED_REMEDY,
+        },
+        {
+          expression: "{{workflow.name}}",
+          error: 'Expression uses {{...}} at "env.WF"',
+          suggestion: 'Add "$" prefix: ${{...}}.',
+          remedy: SHARED_REMEDY,
+        },
+        {
+          expression: "${{ model.vpc.resource.x }}",
+          error: 'Path not found at "globalArguments.id"',
+          availableKeys: ["attributes", "name"],
+        },
+      ],
+    },
+  ],
+  warnings: [],
+  passed: false,
+};
+
+Deno.test("ModelValidateRenderer - log mode aligns each Expression paths entry and prints the shared remedy once (swamp-club#2493)", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelValidateRenderer("log");
+    await consumeStream(
+      toStream([{ kind: "completed", data: expressionPathsFailureData }]),
+      renderer.handlers(),
+    );
+    const lines = stripAnsiCode(logs.join("\n")).split("\n");
+    const start = lines.indexOf("  ✗ Expression paths");
+    const end = lines.findIndex((l) => l.startsWith("Summary:"));
+    assertEquals(lines.slice(start + 1, end), [
+      "    → {{workflow.id}}",
+      '      Expression uses {{...}} at "env.HOST"',
+      '      Add "$" prefix: ${{...}}.',
+      "    → {{workflow.name}}",
+      '      Expression uses {{...}} at "env.WF"',
+      '      Add "$" prefix: ${{...}}.',
+      "    → ${{ model.vpc.resource.x }}",
+      '      Path not found at "globalArguments.id"',
+      "      Available: attributes, name",
+      `    ${SHARED_REMEDY}`,
+    ]);
+    assertEquals(renderer.passed(), false);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("ModelValidateRenderer - log mode prints a failure without entries on the arrow line", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelValidateRenderer("log");
+    await consumeStream(
+      toStream([{
+        kind: "completed",
+        data: {
+          ...expressionPathsFailureData,
+          validations: [
+            { name: "Global arguments", passed: false, error: "Required" },
+          ],
+        },
+      }]),
+      renderer.handlers(),
+    );
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "  ✗ Global arguments\n    → Required");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonModelValidateRenderer - includes the entries of a failed Expression paths check", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelValidateRenderer("json");
+    await consumeStream(
+      toStream([{ kind: "completed", data: expressionPathsFailureData }]),
+      renderer.handlers(),
+    );
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(
+      parsed.validations[1].expressionErrors,
+      expressionPathsFailureData.validations[1].expressionErrors,
+    );
+  } finally {
+    console.log = originalLog;
+  }
+});

@@ -398,3 +398,25 @@ Deno.test("modelValidate all models never adds the Auto-definition note", async 
   }
   assertEquals(data.models[0].warnings, []);
 });
+
+Deno.test("modelValidate passes the entries of a failed Expression paths check through (swamp-club#2493)", async () => {
+  const expressionErrors = [{
+    expression: "{{self.name}}",
+    error: 'Expression uses {{...}} instead of ${{...}} at "globalArguments.x"',
+    suggestion: 'Add "$" prefix: ${{...}}.',
+    remedy: "shared remedy",
+  }];
+  const data = await validateSingleData({
+    validateModel: () =>
+      Promise.resolve({
+        results: [{
+          name: "Expression paths",
+          passed: false,
+          error: "x",
+          expressionErrors,
+        }],
+        warnings: [],
+      }),
+  });
+  assertEquals(data.validations[0].expressionErrors, expressionErrors);
+});

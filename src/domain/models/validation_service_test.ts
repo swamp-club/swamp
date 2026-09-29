@@ -562,6 +562,53 @@ Deno.test("validateModel reports a dropped $ on a swamp expression with both rem
   assertEquals(warnings, []);
 });
 
+Deno.test("validateModel carries each Expression paths error and prints each shared remedy once (swamp-club#2493)", async () => {
+  const { expressionPaths } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: {
+      message: "{{self.name}} {{self.version}} ${self.name}",
+    },
+  });
+  assertEquals(expressionPaths?.passed, false);
+  const entries = expressionPaths?.expressionErrors ?? [];
+  assertEquals(entries.map((e) => e.expression), [
+    "{{self.name}}",
+    "{{self.version}}",
+    "${self.name}",
+  ]);
+  assertEquals(entries.map((e) => e.suggestion), [
+    'Add "$" prefix: ${{...}}.',
+    'Add "$" prefix: ${{...}}.',
+    "Use double braces: ${{...}}.",
+  ]);
+  assertStringIncludes(entries[0].remedy ?? "", '${{ "{" + "{name}" + "}" }}');
+  assertEquals(entries[1].remedy, entries[0].remedy);
+  assertStringIncludes(entries[2].remedy ?? "", '${{ "$" + "{name}" }}');
+
+  const error = expressionPaths?.error ?? "";
+  const lines = error.split("\n");
+  assertEquals(lines.filter((l) => l.startsWith("- ")), [
+    "- {{self.name}}",
+    "- {{self.version}}",
+    "- ${self.name}",
+  ]);
+  assertEquals(lines.filter((l) => l === entries[0].remedy).length, 1);
+  assertEquals(lines.filter((l) => l === entries[2].remedy).length, 1);
+  assertEquals(lines.slice(-2), [entries[0].remedy, entries[2].remedy]);
+});
+
+Deno.test("validateModel leaves an unclosed ${{ without a shared remedy", async () => {
+  const { expressionPaths } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "${{ self.name" },
+  });
+  assertEquals(expressionPaths?.passed, false);
+  const entries = expressionPaths?.expressionErrors ?? [];
+  assertEquals(entries.length, 1);
+  assertEquals(entries[0].remedy, undefined);
+  assertStringIncludes(entries[0].suggestion ?? "", "CEL string concatenation");
+});
+
 Deno.test("validateModel keeps a colliding vendor root like {{env.name}} an error with both remedies", async () => {
   const { expressionPaths } = await validateWith(testExprModel, {
     name: "test-definition",
