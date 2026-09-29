@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, unreachable } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  unreachable,
+} from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
@@ -441,4 +446,115 @@ Deno.test("vaultMigrate: yields error event on secret copy failure", async () =>
   >;
   assertEquals(last.kind, "error");
   assertStringIncludes(last.error.message, "Network timeout");
+});
+
+// Key-source rule for local_encryption targets (swamp-club#2690).
+
+Deno.test("vaultMigrate: an untrusted local_encryption target cannot name its own key source", async () => {
+  for (
+    const targetConfig of [
+      { base_dir: "/elsewhere" },
+      { key_file: "/k" },
+      { ssh_key_path: "~/.ssh/id_ed25519" },
+      { auto_generate: false },
+    ]
+  ) {
+    const field = Object.keys(targetConfig)[0];
+    const providers: string[] = [];
+    const saved: VaultConfig[] = [];
+    const deps = makeDeps({
+      // The real registry resolves types case-insensitively.
+      getVaultTypeInfo: (type) =>
+        type.toLowerCase() === "local_encryption"
+          ? {
+            type,
+            name: "Local Encryption",
+            description: "local_encryption vault",
+            isBuiltIn: true,
+          }
+          : undefined,
+      createProvider: (_type, name) => {
+        providers.push(name);
+        return new MockVaultProvider(name);
+      },
+      saveConfig: (config) => {
+        saved.push(config);
+        return Promise.resolve();
+      },
+    });
+    const input = {
+      vaultName: "my-vault",
+      targetType: "LOCAL_ENCRYPTION",
+      targetConfig,
+      repoDir: "/repo",
+    };
+
+    const previewError = await assertRejects(() =>
+      vaultMigratePreview(createLibSwampContext(), deps, input)
+    ) as { code: string; message: string };
+    assertEquals(previewError.code, "validation_failed", field);
+    assertStringIncludes(previewError.message, `Cannot set ${field}`);
+    assertEquals(previewError.message.includes("/"), false, field);
+
+    const error = await assertRejects(() =>
+      collect<VaultMigrateEvent>(
+        vaultMigrate(createLibSwampContext(), deps, input),
+      )
+    ) as { code: string };
+    assertEquals(error.code, "validation_failed", field);
+    assertEquals(providers, [], field);
+    assertEquals(saved, [], field);
+  }
+});
+
+Deno.test("vaultMigrate: an untrusted local_encryption target gets the server's key source", async () => {
+  let createdProviderConfig: Record<string, unknown> | undefined;
+  let savedConfig: VaultConfig | null = null;
+  const deps = makeDeps({
+    createProvider: (_type, name, config) => {
+      createdProviderConfig = config as Record<string, unknown>;
+      return new MockVaultProvider(name);
+    },
+    saveConfig: (config) => {
+      savedConfig = config;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultMigrateEvent>(
+    vaultMigrate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "local_encryption",
+      targetConfig: {},
+      repoDir: "/repo",
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  const expected = { auto_generate: true, base_dir: "/repo" };
+  assertEquals(createdProviderConfig, expected);
+  assertEquals(savedConfig!.config, expected);
+});
+
+Deno.test("vaultMigrate: a trusted local_encryption target may name its own key source", async () => {
+  let savedConfig: VaultConfig | null = null;
+  const deps = makeDeps({
+    saveConfig: (config) => {
+      savedConfig = config;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultMigrateEvent>(
+    vaultMigrate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "local_encryption",
+      targetConfig: { key_file: "/k", auto_generate: true },
+      repoDir: "/repo",
+      trustKeySource: true,
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(savedConfig!.config, { key_file: "/k", auto_generate: true });
 });

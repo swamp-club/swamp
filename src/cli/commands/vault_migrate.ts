@@ -317,6 +317,9 @@ Both the source and target vaults must be different types.`,
       targetType: toType,
       targetConfig,
       repoDir,
+      // A local user owns this host, so the target may name its own key
+      // source; over --server the server chooses it (swamp-club#2690).
+      trustKeySource: true,
     });
   } catch (error) {
     if ("code" in (error as Record<string, unknown>)) {
@@ -374,6 +377,7 @@ Both the source and target vaults must be different types.`,
       targetType: toType,
       targetConfig,
       repoDir,
+      trustKeySource: true,
     }),
     renderer.handlers(),
   );

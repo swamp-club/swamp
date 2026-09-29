@@ -803,6 +803,9 @@ export async function handleVaultCreate(
         config: payload.config,
         repoDir: ctx.repoDir,
         auditReads: payload.auditReads,
+        // No trustKeySource: the client does not own this host, so a
+        // local_encryption vault gets the server's key source
+        // (swamp-club#2690).
       }),
       {
         creating: () => {},
@@ -942,6 +945,10 @@ export async function handleVaultEdit(
         vaultType: target.type,
         byId: true,
         stdinContent: payload.content,
+        // No trustKeySource: the client does not own this host, so a
+        // local_encryption vault keeps its stored key source, and a repair
+        // gets the defaults under this repo (swamp-club#2690).
+        repoDir: ctx.repoDir,
         // Every save is authorized against the edited vault too, so a rename
         // needs write on the new name, as vault.create requires for the name
         // it creates. A repair request was authorized by id only, so if the

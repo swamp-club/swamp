@@ -203,6 +203,9 @@ export const vaultCreateCommand = withRemoteOptions(
         config,
         repoDir,
         auditReads: options.auditReads,
+        // A local user owns this host, so the vault may name its own key
+        // source; over --server the server chooses it (swamp-club#2690).
+        trustKeySource: true,
       }),
       renderer.handlers(),
     );

@@ -35,6 +35,12 @@ import {
   moveLocalEncryptionSecrets,
 } from "../../domain/vaults/local_encryption_vault_provider.ts";
 import {
+  findChangedKeySourceFields,
+  findNonDefaultKeySourceFields,
+  isLocalEncryptionType,
+  withServerDefaultKeySource,
+} from "../../domain/vaults/local_encryption_key_source.ts";
+import {
   isValidVaultName,
   VAULT_NAME_RULE,
 } from "../../domain/vaults/vault_name.ts";
@@ -121,6 +127,19 @@ export interface VaultEditInput {
     target: { id: string; type: string },
     after: VaultEditConfigInfo,
   ) => Promise<boolean> | boolean;
+  /**
+   * Accept stdin updates that change a local_encryption vault's key source
+   * (base_dir, key_file, ssh_key_path, auto_generate). Only a caller that
+   * already owns the host sets this: the local CLI. Without it an update
+   * must keep the stored values, and a repair gets the server defaults
+   * (swamp-club#2690).
+   */
+  trustKeySource?: boolean;
+  /**
+   * The repository the server defaults point at. A repair of a
+   * local_encryption vault without `trustKeySource` needs it.
+   */
+  repoDir?: string;
 }
 
 /** Lookups used to resolve a vault by name or id. */
@@ -353,6 +372,26 @@ async function* updateVaultFromStdin(
     }
   }
 
+  if (!input.trustKeySource && isLocalEncryptionType(existing.type)) {
+    // The key source names files on this host, so a caller that does not
+    // own it must leave it as stored.
+    const changed = findChangedKeySourceFields(
+      updated.config,
+      existing.config,
+    );
+    if (changed.length > 0) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Cannot change ${changed.join(", ")} of vault '${existing.name}' ` +
+            `remotely: keep the stored values, or edit the vault on the ` +
+            `host running swamp.`,
+        ),
+      };
+      return;
+    }
+  }
+
   if (input.authorizeUpdate) {
     const allowed = await input.authorizeUpdate(
       { id: existing.id, name: existing.name, type: existing.type },
@@ -452,6 +491,7 @@ function isBrokenTarget(
  */
 async function* repairVaultFromStdin(
   deps: VaultEditDeps,
+  input: VaultEditInput,
   authorizeRepair: NonNullable<VaultEditInput["authorizeRepair"]>,
   target: VaultEditConfigInfo,
   filePath: string,
@@ -484,7 +524,7 @@ async function* repairVaultFromStdin(
     yield { kind: "error", error: stdinError(parsed.error.message) };
     return;
   }
-  const repaired = parsed.data;
+  let repaired = parsed.data;
 
   if (repaired.type !== target.type) {
     yield {
@@ -524,6 +564,41 @@ async function* repairVaultFromStdin(
       };
       return;
     }
+  }
+
+  if (!input.trustKeySource && isLocalEncryptionType(repaired.type)) {
+    // The stored key source cannot be read, so a caller that does not own
+    // the host gets the server defaults. Without the repository they point
+    // at, nothing is written.
+    if (input.repoDir === undefined) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Cannot repair vault '${target.id}' remotely: the server's key ` +
+            `source is not known.`,
+        ),
+      };
+      return;
+    }
+    const refused = findNonDefaultKeySourceFields(
+      repaired.config,
+      input.repoDir,
+    );
+    if (refused.length > 0) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Cannot set ${refused.join(", ")} when repairing vault ` +
+            `'${target.id}' remotely: the server's key source is used. ` +
+            `Leave these fields out.`,
+        ),
+      };
+      return;
+    }
+    repaired = {
+      ...repaired,
+      config: withServerDefaultKeySource(repaired.config, input.repoDir),
+    };
   }
 
   const allowed = await authorizeRepair(
@@ -726,6 +801,7 @@ export async function* vaultEdit(
         ctx.logger.debug`Repairing vault from stdin: ${config.id}`;
         yield* repairVaultFromStdin(
           deps,
+          input,
           input.authorizeRepair,
           config,
           filePath,

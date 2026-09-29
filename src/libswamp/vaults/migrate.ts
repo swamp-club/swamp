@@ -24,6 +24,11 @@ import {
   vaultTypeRegistry,
 } from "../../domain/vaults/vault_type_registry.ts";
 import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
+import {
+  findNonDefaultKeySourceFields,
+  isLocalEncryptionType,
+  withServerDefaultKeySource,
+} from "../../domain/vaults/local_encryption_key_source.ts";
 import { createVaultProvider } from "../../domain/vaults/vault_provider_factory.ts";
 import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
@@ -67,6 +72,13 @@ export interface VaultMigrateInput {
   targetType: string;
   targetConfig?: Record<string, unknown>;
   repoDir: string;
+  /**
+   * Accept a local_encryption target config that names its own key source.
+   * Only a caller that already owns the host sets this: the local CLI.
+   * Without it, such fields are refused unless they match the server
+   * defaults, which are always applied (swamp-club#2690).
+   */
+  trustKeySource?: boolean;
 }
 
 /** Dependencies for the vault migrate operation. */
@@ -183,6 +195,7 @@ export async function vaultMigratePreview(
     input.targetConfig,
     targetTypeInfo,
     input.repoDir,
+    input.trustKeySource,
   );
 
   // Verify we can create a provider for the target type (catches config issues early)
@@ -212,6 +225,7 @@ function resolveTargetConfig(
   providedConfig: Record<string, unknown> | undefined,
   typeInfo: VaultTypeInfo,
   repoDir: string,
+  trustKeySource: boolean | undefined,
 ): Record<string, unknown> {
   if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
     const config = providedConfig ?? {};
@@ -224,6 +238,20 @@ function resolveTargetConfig(
       }
     }
     return config;
+  }
+
+  if (providedConfig && !trustKeySource && isLocalEncryptionType(targetType)) {
+    // The key source names files on this host, so a caller that does not
+    // own it gets the server defaults.
+    const refused = findNonDefaultKeySourceFields(providedConfig, repoDir);
+    if (refused.length > 0) {
+      throw validationFailed(
+        `Cannot set ${refused.join(", ")} for the migrated vault: a ` +
+          `local_encryption vault migrated remotely uses the server's key ` +
+          `source. Leave these fields out.`,
+      );
+    }
+    return withServerDefaultKeySource(providedConfig, repoDir);
   }
 
   if (providedConfig) {
@@ -288,6 +316,7 @@ export async function* vaultMigrate(
         input.targetConfig,
         targetTypeInfo,
         input.repoDir,
+        input.trustKeySource,
       );
 
       // Create target provider

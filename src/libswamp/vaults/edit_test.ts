@@ -862,7 +862,9 @@ Deno.test("createVaultEditDeps: stdin rename of a local_encryption vault keeps i
     const events = await collect<VaultEditEvent>(
       vaultEdit(createLibSwampContext(), createVaultEditDeps(repoDir), {
         vaultNameOrId: "my-vault",
-        // The edited base_dir must not steer where the secrets move.
+        // A trusted caller may change base_dir, but the edited value must
+        // still not steer where the secrets move.
+        trustKeySource: true,
         stdinContent: `name: renamed\ntype: local_encryption\nconfig:\n` +
           `  auto_generate: true\n  base_dir: ${JSON.stringify(elsewhere)}\n`,
       }),
@@ -1136,6 +1138,8 @@ function runRepair(
       vaultType: "local_encryption",
       stdinContent: content,
       authorizeRepair,
+      // These cover repair itself; the key-source rule has its own tests.
+      trustKeySource: true,
     }),
   );
 }
@@ -1323,5 +1327,194 @@ Deno.test("vaultEdit: an argument that is not a valid id keeps the broken file's
     );
 
     assertEquals(error.vaultId, BROKEN_ID);
+  });
+});
+
+// Key-source rule for local_encryption vaults (swamp-club#2690).
+
+const storedLocalVault: VaultConfigData = {
+  id: "vault-1",
+  name: "my-vault",
+  type: "local_encryption",
+  config: { auto_generate: true, base_dir: "/srv/repo" },
+  createdAt: "2026-01-01T00:00:00.000Z",
+};
+
+/** Stdin deps for `storedLocalVault`, recording saves and secret moves. */
+function makeLocalStdinDeps(stored: VaultConfigData = storedLocalVault) {
+  const moves: string[] = [];
+  const { deps, saved } = makeStdinDeps({
+    readConfigData: () => Promise.resolve({ ...stored }),
+    moveSecrets: (_stored, toName) => {
+      moves.push(toName);
+      return Promise.resolve(null);
+    },
+  });
+  return { deps, saved, moves };
+}
+
+function localYaml(name: string, config: Record<string, unknown>): string {
+  const lines = Object.entries(config).map(([k, v]) =>
+    `  ${k}: ${JSON.stringify(v)}`
+  );
+  return `name: ${name}\ntype: local_encryption\nconfig:\n${
+    lines.join("\n")
+  }\n`;
+}
+
+Deno.test("vaultEdit: an untrusted stdin update cannot change a local_encryption key source", async () => {
+  const changes: Record<string, Record<string, unknown>> = {
+    base_dir: { auto_generate: true, base_dir: "/elsewhere" },
+    key_file: { auto_generate: true, base_dir: "/srv/repo", key_file: "/k" },
+    ssh_key_path: {
+      auto_generate: true,
+      base_dir: "/srv/repo",
+      ssh_key_path: "~/.ssh/id_ed25519",
+    },
+    auto_generate: { auto_generate: false, base_dir: "/srv/repo" },
+  };
+  for (const [field, config] of Object.entries(changes)) {
+    const { deps, saved, moves } = makeLocalStdinDeps();
+    const authorized: string[] = [];
+
+    const error = errorOf(
+      await runStdin(deps, localYaml("renamed", config), {
+        authorizeUpdate: (_before, after) => {
+          authorized.push(after.name);
+          return true;
+        },
+      }),
+    );
+
+    assertEquals(error.code, "validation_failed", field);
+    assertStringIncludes(error.message, `Cannot change ${field} of vault`);
+    assertEquals(error.message.includes("/"), false, field);
+    assertEquals(saved, [], field);
+    assertEquals(moves, [], field);
+    assertEquals(authorized, [], field);
+  }
+});
+
+Deno.test("vaultEdit: an untrusted stdin update that drops a stored key-source field is refused", async () => {
+  const { deps, saved } = makeLocalStdinDeps();
+
+  const error = errorOf(
+    await runStdin(deps, localYaml("my-vault", { base_dir: "/srv/repo" })),
+  );
+
+  assertStringIncludes(error.message, "Cannot change auto_generate of vault");
+  assertEquals(saved, []);
+});
+
+Deno.test("vaultEdit: an untrusted stdin update keeping the stored key source can rename the vault", async () => {
+  const { deps, saved, moves } = makeLocalStdinDeps();
+
+  const last = await runStdin(
+    deps,
+    `auditReads: true\n${localYaml("renamed", storedLocalVault.config)}`,
+  );
+
+  assertEquals(last.kind, "completed");
+  assertEquals(moves, ["renamed"]);
+  assertEquals(saved.length, 1);
+  assertEquals(saved[0].name, "renamed");
+  assertEquals(saved[0].auditReads, true);
+  assertEquals(saved[0].config, storedLocalVault.config);
+});
+
+Deno.test("vaultEdit: the key-source rule matches the local_encryption type in any case", async () => {
+  const { deps, saved } = makeLocalStdinDeps({
+    ...storedLocalVault,
+    type: "LOCAL_ENCRYPTION",
+  });
+
+  const error = errorOf(
+    await runStdin(
+      deps,
+      "name: my-vault\ntype: LOCAL_ENCRYPTION\nconfig:\n  auto_generate: true\n  base_dir: /elsewhere\n",
+    ),
+  );
+
+  assertStringIncludes(error.message, "Cannot change base_dir of vault");
+  assertEquals(saved, []);
+});
+
+Deno.test("vaultEdit: a trusted stdin update may change a local_encryption key source", async () => {
+  const { deps, saved } = makeLocalStdinDeps();
+
+  const last = await runStdin(
+    deps,
+    localYaml("my-vault", { auto_generate: true, key_file: "/k" }),
+    { trustKeySource: true },
+  );
+
+  assertEquals(last.kind, "completed");
+  assertEquals(saved[0].config, { auto_generate: true, key_file: "/k" });
+});
+
+Deno.test("vaultEdit: an untrusted repair gets the server's key source", async () => {
+  await withBrokenVaultRepo(async ({ repoDir, repo, deps }) => {
+    const events = await collect<VaultEditEvent>(
+      vaultEdit(createLibSwampContext(), deps, {
+        vaultNameOrId: BROKEN_ID,
+        vaultType: "local_encryption",
+        stdinContent: `name: fixed-vault\ntype: local_encryption\n` +
+          `config:\n  base_dir: ${JSON.stringify(repoDir)}\n`,
+        authorizeRepair: () => true,
+        repoDir,
+      }),
+    );
+
+    assertEquals(completedData(lastEvent(events)).repaired, true);
+    const reread = await repo.findById("local_encryption", BROKEN_ID);
+    assertEquals(reread?.config, { auto_generate: true, base_dir: repoDir });
+  });
+});
+
+Deno.test("vaultEdit: an untrusted repair that names its own key source writes nothing", async () => {
+  await withBrokenVaultRepo(async ({ repoDir, brokenPath, deps }) => {
+    for (
+      const config of [
+        "  base_dir: /elsewhere\n",
+        "  key_file: /k\n",
+        "  ssh_key_path: ~/.ssh/id_ed25519\n",
+        "  auto_generate: false\n",
+      ]
+    ) {
+      const events = await collect<VaultEditEvent>(
+        vaultEdit(createLibSwampContext(), deps, {
+          vaultNameOrId: BROKEN_ID,
+          vaultType: "local_encryption",
+          stdinContent: `name: fixed-vault\ntype: local_encryption\n` +
+            `config:\n${config}`,
+          authorizeRepair: () => true,
+          repoDir,
+        }),
+      );
+
+      const error = errorOf(lastEvent(events));
+      assertEquals(error.code, "validation_failed", config);
+      assertStringIncludes(error.message, "Leave these fields out", config);
+      assertEquals(await Deno.readTextFile(brokenPath), BROKEN_YAML, config);
+    }
+  });
+});
+
+Deno.test("vaultEdit: an untrusted repair without the repo dir writes nothing", async () => {
+  await withBrokenVaultRepo(async ({ brokenPath, deps }) => {
+    const events = await collect<VaultEditEvent>(
+      vaultEdit(createLibSwampContext(), deps, {
+        vaultNameOrId: BROKEN_ID,
+        vaultType: "local_encryption",
+        stdinContent: REPAIRED_YAML,
+        authorizeRepair: () => true,
+      }),
+    );
+
+    assertStringIncludes(
+      errorOf(lastEvent(events)).message,
+      "the server's key source is not known",
+    );
+    assertEquals(await Deno.readTextFile(brokenPath), BROKEN_YAML);
   });
 });

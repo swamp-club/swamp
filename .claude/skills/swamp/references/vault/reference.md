@@ -84,6 +84,10 @@ name. Renaming a vault breaks references to its old name:
 cat dev-secrets.yaml | swamp vault edit dev-secrets --json
 ```
 
+Over `--server`, a `local_encryption` vault's `base_dir`, `key_file`,
+`ssh_key_path` and `auto_generate` must keep their stored values, and
+`vault create` / `vault migrate` refuse them and apply the server's defaults.
+
 If a vault's YAML no longer parses, address it by id with `--type`; see
 [troubleshooting](references/troubleshooting.md#vault-config-file-does-not-parse).
 
