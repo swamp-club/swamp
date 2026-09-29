@@ -120,7 +120,10 @@ export function createModelOutputLogsDeps(
       if (result.status === "ambiguous") {
         return {
           status: "ambiguous" as const,
-          matches: result.matches.map((m) => ({ id: m.id })),
+          matches: result.matches.map((m) => ({
+            id: m.id,
+            match: { output: m.match.output, type: m.match.type },
+          })),
         };
       }
       return { status: "not_found" as const };

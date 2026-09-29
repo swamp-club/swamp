@@ -275,8 +275,15 @@ check (swamp-club#2673):
   owners of the latest output or run it returns.
 - An output whose model was deleted is authorized on its model id; a run
   whose workflow was deleted, on its recorded workflow name (without tags).
-- A prefix matching several outputs or runs, or nothing, is authorized as
-  sent. The ambiguity error lists the matching ids.
+- A prefix matching several outputs or runs is authorized on the owners of
+  each match, looked up once per model or recorded workflow. The ambiguity
+  error lists only the matches whose owners the caller may all read. Each
+  distinct owner is decided and audited once, however many matches share
+  it, so the audit log grows with the owners involved, not with the size of
+  the history. When none is readable, the read is
+  refused as a unique prefix of the first match would be (swamp-club#2743).
+  Without enforcement, serve lists every match, as the CLI does.
+- A prefix matching nothing is authorized as sent.
 - `model.output.data` and `model.output.logs` return data artifact content, so
   they also need a `data` read on the owning models, as `data.get` does
   (swamp-club#2739). The other five return output or run metadata or the run

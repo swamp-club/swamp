@@ -35,12 +35,14 @@ import type { PartialMatchResult } from "./run_lookup.ts";
 
 /**
  * What a run-or-workflow argument names. A workflow carries its latest run,
- * found as it resolves, so the read never looks one up afterwards.
+ * found as it resolves, so the read never looks one up afterwards. An
+ * ambiguous prefix carries every run it matched, in the order of `ids`, so
+ * serve can authorize each one's workflows (swamp-club#2743).
  */
 export type RunReference =
   | { kind: "run"; run: WorkflowRun }
   | { kind: "workflow"; workflow: Workflow; latest: WorkflowRun | null }
-  | { kind: "ambiguous"; ids: string[] }
+  | { kind: "ambiguous"; ids: string[]; runs: WorkflowRun[] }
   | { kind: "not_found" };
 
 /** Lookups a run-or-workflow argument resolves through. */
@@ -66,7 +68,11 @@ export async function resolveRunReference(
       return { kind: "run", run: result.match };
     }
     if (result.status === "ambiguous" && result.matches) {
-      return { kind: "ambiguous", ids: result.matches.map((m) => m.id) };
+      return {
+        kind: "ambiguous",
+        ids: result.matches.map((m) => m.id),
+        runs: result.matches.map((m) => m.run),
+      };
     }
   }
   const workflow = await deps.findWorkflow(runIdOrWorkflow);

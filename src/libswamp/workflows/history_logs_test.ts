@@ -126,7 +126,10 @@ Deno.test("workflowHistoryLogs yields error on ambiguous ID", async () => {
     matchRunByPartialId: () =>
       Promise.resolve({
         status: "ambiguous" as const,
-        matches: [{ id: "run-1" }, { id: "run-2" }],
+        matches: [
+          { id: "run-1", run: makeRun(makeWorkflow()) },
+          { id: "run-2", run: makeRun(makeWorkflow()) },
+        ],
       }),
   });
   const events = await collect<WorkflowHistoryLogsEvent>(

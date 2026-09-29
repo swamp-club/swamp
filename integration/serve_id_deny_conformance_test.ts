@@ -1192,42 +1192,104 @@ Deno.test("serve id-deny conformance: a run of a deleted workflow is authorized 
   });
 });
 
-Deno.test("serve id-deny conformance: an ambiguous output prefix is authorized as sent", async () => {
+const PROD_OUTPUT = "abc00000-0000-4000-8000-000000000001";
+const DEV_OUTPUT = "abc11111-0000-4000-8000-000000000001";
+const PROD_RUN = "abd00000-0000-4000-8000-000000000001";
+const DEV_RUN = "abd11111-0000-4000-8000-000000000001";
+
+/** Every output or run read, with the payload field its prefix goes in. */
+const AMBIGUOUS_READS = [
+  ["model.output.get", "outputIdOrModelName", "abc"],
+  ["model.output.data", "outputIdArg", "abc"],
+  ["model.output.logs", "outputIdArg", "abc"],
+  ["model.method.history.get", "outputIdOrModelName", "abc"],
+  ["model.method.history.logs", "outputIdOrModelName", "abc"],
+  ["workflow.history.get", "workflowIdOrName", "abd"],
+  ["workflow.history.logs", "runIdOrWorkflow", "abd"],
+] as const;
+
+/** The ids an ambiguity error lists, or fails if the reply is not one. */
+function ambiguousIds(frames: Frame[], prefix: string): string[] {
+  const message = errorFrame(frames)?.error?.message ?? "";
+  const [head, ...ids] = message.split("\n");
+  assertEquals(
+    head,
+    `Ambiguous ID prefix "${prefix}" matches:`,
+    JSON.stringify(frames),
+  );
+  return ids.map((id) => id.trim()).sort();
+}
+
+Deno.test("serve id-deny conformance: an ambiguous prefix lists only the outputs and runs the caller may read (swamp-club#2743)", async () => {
   await withFixtures(async (f) => {
-    await saveOutput(
-      f.repo,
-      f.prodModel,
-      "abc00000-0000-4000-8000-000000000001",
-    );
-    await saveOutput(
-      f.repo,
-      f.devModel,
-      "abc11111-0000-4000-8000-000000000001",
-    );
-    // Allowed on the raw prefix: the caller only learns it is ambiguous.
-    const ambiguous = await sendRequest(
-      f.ctx,
-      request("model.output.get", { outputIdOrModelName: "abc" }),
-    );
-    assertStringIncludes(
-      errorFrame(ambiguous)!.error!.message,
-      'Ambiguous ID prefix "abc"',
-    );
+    await saveOutput(f.repo, f.prodModel, PROD_OUTPUT);
+    await saveOutput(f.repo, f.devModel, DEV_OUTPUT);
+    await saveRun(f.repo, f.prodWorkflow, PROD_RUN);
+    await saveRun(f.repo, f.devWorkflow, DEV_RUN);
+    for (const [type, field, prefix] of AMBIGUOUS_READS) {
+      const frames = await sendRequest(
+        f.ctx,
+        request(type, { [field]: prefix }),
+      );
+      assertEquals(
+        ambiguousIds(frames, prefix),
+        [prefix === "abc" ? DEV_OUTPUT : DEV_RUN],
+        type,
+      );
+      // Unauthenticated serve, like the CLI, still lists every match.
+      assertEquals(
+        ambiguousIds(
+          await sendRequest(f.admin, request(type, { [field]: prefix })),
+          prefix,
+        ),
+        prefix === "abc" ? [PROD_OUTPUT, DEV_OUTPUT] : [PROD_RUN, DEV_RUN],
+        type,
+      );
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: an ambiguous prefix matching only denied outputs or runs is refused on their owner (swamp-club#2743)", async () => {
+  await withFixtures(async (f) => {
+    await saveOutput(f.repo, f.prodModel, PROD_OUTPUT);
+    await saveOutput(f.repo, f.prodModel, DEV_OUTPUT);
+    await saveRun(f.repo, f.prodWorkflow, PROD_RUN);
+    await saveRun(f.repo, f.prodWorkflow, DEV_RUN);
+    for (const [type, field, prefix] of AMBIGUOUS_READS) {
+      assertDenied(
+        await sendRequest(f.ctx, request(type, { [field]: prefix })),
+        prefix === "abc" ? "model:prod-db" : "workflow:prod-flow",
+      );
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: a data deny drops an output from an ambiguous data or logs read only (swamp-club#2743)", async () => {
+  await withFixtures(async (f) => {
     const ctx = createServeCtx(f.repo, [
-      ...GRANTS,
+      grant({ actions: ACTIONS, resource: { kind: "model", pattern: "*" } }),
+      grant({ actions: ACTIONS, resource: { kind: "data", pattern: "*" } }),
       grant({
         effect: "deny",
         actions: ACTIONS,
-        resource: { kind: "model", pattern: "abc" },
+        resource: { kind: "data", pattern: "prod-*" },
       }),
     ]);
-    assertDenied(
-      await sendRequest(
-        ctx,
-        request("model.output.get", { outputIdOrModelName: "abc" }),
-      ),
-      "model:abc",
-    );
+    await saveOutput(f.repo, f.prodModel, PROD_OUTPUT);
+    await saveOutput(f.repo, f.devModel, DEV_OUTPUT);
+    for (const [type, field, prefix] of AMBIGUOUS_READS) {
+      if (prefix !== "abc") continue;
+      const content = type === "model.output.data" ||
+        type === "model.output.logs";
+      assertEquals(
+        ambiguousIds(
+          await sendRequest(ctx, request(type, { [field]: prefix })),
+          prefix,
+        ),
+        content ? [DEV_OUTPUT] : [PROD_OUTPUT, DEV_OUTPUT],
+        type,
+      );
+    }
   });
 });
 

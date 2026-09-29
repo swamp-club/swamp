@@ -174,7 +174,10 @@ export async function createModelOutputGetDeps(
       if (result.status === "ambiguous") {
         return {
           status: "ambiguous",
-          matches: result.matches.map((m) => ({ id: m.id })),
+          matches: result.matches.map((m) => ({
+            id: m.id,
+            match: m.match,
+          })),
         };
       }
       return { status: "not_found" };
