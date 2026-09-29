@@ -171,6 +171,7 @@ import {
   emitRunCancelAudit,
   getConnectionSourceIp,
   isRestrictedCommand,
+  MAX_CANCEL_REASON_LENGTH,
   MAX_PREDICATE_LENGTH,
   MAX_QUERY_RESULTS,
   send,
@@ -795,7 +796,7 @@ const WorkflowCancelRequestSchema = z.object({
   payload: z.object({
     runId: z.string().min(1).max(256),
     workflowIdOrName: z.string().optional(),
-    reason: z.string().max(1024).optional(),
+    reason: z.string().max(MAX_CANCEL_REASON_LENGTH).optional(),
   }),
 });
 

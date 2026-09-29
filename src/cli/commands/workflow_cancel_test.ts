@@ -33,6 +33,7 @@ import {
   isServeOwnedRun,
   SERVER_CANCEL_TIMEOUT_MS,
   serverCancelFailure,
+  serverCancelRejection,
 } from "./workflow_cancel.ts";
 import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
 import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
@@ -468,4 +469,62 @@ Deno.test("serverCancelFailure: other failures are reported as a connection erro
 
   assertEquals(error.message.startsWith("Could not connect to "), true);
   assertEquals(error.message.endsWith(": connection refused"), true);
+});
+
+Deno.test("serverCancelRejection: shows the message of a JSON refusal on its own", () => {
+  const notFound = serverCancelRejection(
+    404,
+    "Not Found",
+    JSON.stringify({
+      status: "not_found",
+      message: "No cancellable workflow-run with id r1",
+    }),
+  );
+  assertEquals(notFound instanceof UserError, true);
+  assertEquals(notFound.message, "No cancellable workflow-run with id r1");
+
+  const conflict = serverCancelRejection(
+    409,
+    "Conflict",
+    JSON.stringify({
+      status: "conflict",
+      message: "Another operation on this run is in progress; try again",
+    }),
+  );
+  assertEquals(
+    conflict.message,
+    "Another operation on this run is in progress; try again",
+  );
+});
+
+Deno.test("serverCancelRejection: keeps the status for a plain-text refusal", () => {
+  assertEquals(
+    serverCancelRejection(401, "Unauthorized", "Unauthorized: token required")
+      .message,
+    "Server returned 401: Unauthorized: token required",
+  );
+  assertEquals(
+    serverCancelRejection(429, "Too Many Requests", "Too Many Requests")
+      .message,
+    "Server returned 429: Too Many Requests",
+  );
+});
+
+Deno.test("serverCancelRejection: falls back to the raw body when JSON has no message", () => {
+  assertEquals(
+    serverCancelRejection(500, "Internal Server Error", '{"status":"error"}')
+      .message,
+    'Server returned 500: {"status":"error"}',
+  );
+  assertEquals(
+    serverCancelRejection(500, "Internal Server Error", "[]").message,
+    "Server returned 500: []",
+  );
+});
+
+Deno.test("serverCancelRejection: uses the status text for an empty body", () => {
+  assertEquals(
+    serverCancelRejection(502, "Bad Gateway", "").message,
+    "Server returned 502: Bad Gateway",
+  );
 });

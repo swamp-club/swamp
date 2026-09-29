@@ -398,7 +398,13 @@ All of this is in `handleRunAttach`
 - HTTP cancel routes (admin only) call `cancelExecution`. It aborts the run's
   controller and waits up to `CANCEL_GRACE_MS = 5_000` for completion. It
   returns `cancelled` if the run left the registry in time, otherwise
-  `cancellation_requested` (`src/cli/commands/serve.ts`).
+  `cancellation_requested` (`src/cli/commands/serve.ts`). A run it cannot find
+  gets 404 `No cancellable <type> with id <id>`. The single-run route takes an
+  optional JSON body `{"reason": "..."}` (at most `MAX_CANCEL_REASON_LENGTH`
+  characters, read after auth with an 8 KiB cap), recorded through
+  `cancelReasonFor` as `<reason> (cancelled by <principal>)`. A workflow-run
+  response carries that `reason`; a method-run response does not, because
+  method runs record no cancel reason.
 - The WebSocket `cancel` request is keyed by request id. If that id is an
   in-flight request, its controller is aborted. Otherwise `handleCancelRun`
   checks for a `run` grant on the run's resource and calls

@@ -22,10 +22,13 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   assertOffLoopbackSecurity,
   cancelExecution,
+  cancelSuccessBody,
   collectServeExtraArgs,
+  MAX_CANCEL_BODY_BYTES,
   parseDatastorePollInterval,
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
+  readCancelRequestReason,
   reapOrphanedWorkflowRuns,
   shouldWarnGroupRefreshIgnored,
   validateWebSocketOrigin,
@@ -1240,9 +1243,125 @@ Deno.test("cancelExecution: keeps not_found when the fallback finds nothing", as
       Promise.resolve({ status: "not_found", message: "hidden" }),
   });
   assertEquals(result.status, "not_found");
+  assertEquals(result.message, "No cancellable workflow-run with id gone");
+});
+
+Deno.test("cancelExecution: the not_found message names a method-run", async () => {
+  const result = await cancelExecution("method-run", "gone", {
+    cancelRegistry: new RunCancelRegistry(),
+  });
+  assertEquals(result.status, "not_found");
+  assertEquals(result.message, "No cancellable method-run with id gone");
+});
+
+// --- readCancelRequestReason ---
+
+function cancelRequest(body?: string): Request {
+  return new Request("http://localhost/api/v1/cancel/workflow-run/r1", {
+    method: "POST",
+    body,
+  });
+}
+
+Deno.test("readCancelRequestReason: an empty or missing body gives no reason", async () => {
+  assertEquals(await readCancelRequestReason(cancelRequest()), { ok: true });
+  assertEquals(await readCancelRequestReason(cancelRequest("")), { ok: true });
+  assertEquals(await readCancelRequestReason(cancelRequest("  \n")), {
+    ok: true,
+  });
+});
+
+Deno.test("readCancelRequestReason: returns the reason from a JSON object", async () => {
   assertEquals(
-    result.message,
-    "No active workflow-run with id gone in this serve instance",
+    await readCancelRequestReason(
+      cancelRequest(JSON.stringify({ reason: "deploy window closed" })),
+    ),
+    { ok: true, reason: "deploy window closed" },
+  );
+});
+
+Deno.test("readCancelRequestReason: an object without a reason, or an empty one, gives no reason", async () => {
+  assertEquals(await readCancelRequestReason(cancelRequest("{}")), {
+    ok: true,
+  });
+  assertEquals(
+    await readCancelRequestReason(
+      cancelRequest(JSON.stringify({ reason: "" })),
+    ),
+    { ok: true },
+  );
+});
+
+Deno.test("readCancelRequestReason: refuses a body that is not a JSON object with 400", async () => {
+  for (const body of ["not json", "[]", "null", '"text"', "42"]) {
+    const result = await readCancelRequestReason(cancelRequest(body));
+    assertEquals(result.ok, false, body);
+    if (!result.ok) assertEquals(result.status, 400, body);
+  }
+});
+
+Deno.test("readCancelRequestReason: refuses a non-string reason with 400", async () => {
+  const result = await readCancelRequestReason(
+    cancelRequest(JSON.stringify({ reason: 7 })),
+  );
+  assertEquals(result, {
+    ok: false,
+    status: 400,
+    message: "reason must be a string",
+  });
+});
+
+Deno.test("readCancelRequestReason: accepts 1024 characters and refuses 1025 with 400", async () => {
+  assertEquals(
+    await readCancelRequestReason(
+      cancelRequest(JSON.stringify({ reason: "x".repeat(1024) })),
+    ),
+    { ok: true, reason: "x".repeat(1024) },
+  );
+  const result = await readCancelRequestReason(
+    cancelRequest(JSON.stringify({ reason: "x".repeat(1025) })),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.status, 400);
+    assertStringIncludes(result.message, "1024");
+  }
+});
+
+Deno.test("readCancelRequestReason: refuses an oversized body with 413", async () => {
+  const result = await readCancelRequestReason(
+    cancelRequest("x".repeat(MAX_CANCEL_BODY_BYTES + 1)),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.status, 413);
+});
+
+// --- cancelSuccessBody ---
+
+Deno.test("cancelSuccessBody: a workflow run reports the reason serve applied", () => {
+  for (const status of ["cancelled", "cancellation_requested"] as const) {
+    assertEquals(
+      cancelSuccessBody(
+        { status, executionType: "workflow-run", executionId: "r1" },
+        "x (cancelled by user:alice)",
+      ),
+      {
+        status,
+        executionType: "workflow-run",
+        executionId: "r1",
+        reason: "x (cancelled by user:alice)",
+      },
+    );
+  }
+});
+
+Deno.test("cancelSuccessBody: a method run reports no reason, since it records none", () => {
+  assertEquals(
+    cancelSuccessBody(
+      { status: "cancelled", executionType: "method-run", executionId: "m1" },
+      "x (cancelled by user:alice)",
+    ),
+    { status: "cancelled", executionType: "method-run", executionId: "m1" },
   );
 });
 

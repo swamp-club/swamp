@@ -113,6 +113,30 @@ export function serverCancelFailure(
   );
 }
 
+/**
+ * The error for a `--server` cancel the server refused. Serve answers most
+ * refusals with a JSON `{status, message}` body, whose message is shown on its
+ * own; plain-text answers (401, 429) keep the status for context.
+ */
+export function serverCancelRejection(
+  status: number,
+  statusText: string,
+  text: string,
+): UserError {
+  try {
+    const body: unknown = JSON.parse(text);
+    if (typeof body === "object" && body !== null) {
+      const message = (body as Record<string, unknown>).message;
+      if (typeof message === "string" && message !== "") {
+        return new UserError(message);
+      }
+    }
+  } catch {
+    // Not JSON: fall through to the raw text.
+  }
+  return new UserError(`Server returned ${status}: ${text || statusText}`);
+}
+
 export function isServeOwnedRun(run: WorkflowRun): boolean {
   return run.instanceId !== undefined;
 }
@@ -281,10 +305,6 @@ export const workflowCancelCommand = withRemoteOptions(
           "--all is not supported with --server",
         );
       }
-      if (options.reason) {
-        cliCtx.logger
-          .warn`--reason is ignored with --server (the cancel endpoint does not accept a reason)`;
-      }
       const token = await resolveServerTokenFromOptions(
         server,
         options,
@@ -292,19 +312,24 @@ export const workflowCancelCommand = withRemoteOptions(
       const cancelUrl = buildCancelUrl(server, options.run as string);
       const headers: Record<string, string> = {};
       if (token) headers["Authorization"] = `Bearer ${token}`;
+      let requestBody: string | undefined;
+      if (options.reason) {
+        headers["Content-Type"] = "application/json";
+        requestBody = JSON.stringify({ reason: options.reason });
+      }
       let body: Record<string, unknown>;
       try {
         const response = await fetch(cancelUrl, {
           method: "POST",
           headers,
+          body: requestBody,
           signal: AbortSignal.timeout(SERVER_CANCEL_TIMEOUT_MS),
         });
         if (!response.ok) {
-          const text = await response.text();
-          throw new UserError(
-            `Server returned ${response.status}: ${
-              text || response.statusText
-            }`,
+          throw serverCancelRejection(
+            response.status,
+            response.statusText,
+            await response.text(),
           );
         }
         body = await response.json();
@@ -322,17 +347,30 @@ export const workflowCancelCommand = withRemoteOptions(
         );
       }
       const runId = options.run as string;
+      // The reason the server applied; an older serve reports none.
+      const recordedReason = typeof body.reason === "string"
+        ? body.reason
+        : undefined;
+      if (options.reason && recordedReason === undefined) {
+        cliCtx.logger
+          .warn`The server did not confirm the reason; it may predate cancel reasons over HTTP`;
+      }
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
           runId: body.executionId ?? runId,
           status: body.status,
-          reason: options.reason ?? "Cancelled by user",
+          ...(recordedReason !== undefined ? { reason: recordedReason } : {}),
         }));
-      } else if (body.status === "cancelled") {
-        cliCtx.logger.info`Cancelled run ${runId} on server`;
       } else {
-        cliCtx.logger
-          .warn`Cancellation requested for run ${runId} on server (run may still be active — check health endpoint to confirm)`;
+        if (body.status === "cancelled") {
+          cliCtx.logger.info`Cancelled run ${runId} on server`;
+        } else {
+          cliCtx.logger
+            .warn`Cancellation requested for run ${runId} on server (run may still be active — check health endpoint to confirm)`;
+        }
+        if (recordedReason !== undefined) {
+          cliCtx.logger.info`Reason: ${recordedReason}`;
+        }
       }
       return;
     }
