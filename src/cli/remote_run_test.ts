@@ -2390,3 +2390,127 @@ Deno.test("formatCommandTarget: shell-quotes a repo dir that needs it", () => {
     ` --repo-dir 'my repo'"'"'s dir'`,
   );
 });
+
+/**
+ * A serve run whose workflow starts a nested workflow, then drops the
+ * connection. It reattaches only by the ids in `attachable` and answers
+ * not_found for any other, as serve does for an id it does not know.
+ */
+function nestedRunServer(attachable: string[]) {
+  return scriptedServer((request, reply, socket) => {
+    if (request.type === "workflow.run") {
+      reply({
+        type: "event",
+        id: request.id,
+        event: {
+          kind: "started",
+          runId: "run-parent",
+          workflowName: "parent",
+          seq: 1,
+        },
+      });
+      reply({
+        type: "event",
+        id: request.id,
+        event: {
+          kind: "started",
+          runId: "run-child",
+          parentRunId: "run-parent",
+          workflowName: "child",
+          seq: 2,
+        },
+      });
+      setTimeout(() => socket.close(), 20);
+      return;
+    }
+    if (request.type === "run.attach") {
+      const { runId } = (request as unknown as { payload: { runId: string } })
+        .payload;
+      if (!attachable.includes(runId)) {
+        reply({
+          type: "error",
+          id: request.id,
+          error: {
+            code: "not_found",
+            message: `No active run with id '${runId}'`,
+          },
+        });
+        return;
+      }
+      reply({
+        type: "run.attached",
+        id: request.id,
+        payload: {
+          runId,
+          kind: "workflow-run",
+          startedAt: "2026-08-01T00:00:00Z",
+        },
+      });
+      reply({
+        type: "event",
+        id: request.id,
+        event: { kind: "completed", status: "succeeded", seq: 3 },
+      });
+      reply({ type: "done", id: request.id });
+    }
+  });
+}
+
+function attachedRunIds(
+  server: ReturnType<typeof scriptedServer>,
+): string[] {
+  return server.received
+    .filter((r) => (r as { type: string }).type === "run.attach")
+    .map((r) => (r as { payload: { runId: string } }).payload.runId);
+}
+
+Deno.test({
+  name:
+    "remote run: reconnects by the run it started, not a nested workflow's run (swamp-club#2470)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = nestedRunServer(["run-parent"]);
+    try {
+      const events: string[] = [];
+      for await (
+        const event of runWorkflowOverServer({
+          server: server.url,
+          payload: { workflowIdOrName: "parent" },
+        })
+      ) {
+        events.push(event.kind);
+      }
+      assertEquals(events, ["started", "started", "completed"]);
+      assertEquals(attachedRunIds(server), ["run-parent"]);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: reconnects by the nested run's id when an older serve does not know the parent's (swamp-club#2470)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // A serve older than swamp-club#2470 rekeys the run on the nested child.
+    const server = nestedRunServer(["run-child"]);
+    try {
+      const events: string[] = [];
+      for await (
+        const event of runWorkflowOverServer({
+          server: server.url,
+          payload: { workflowIdOrName: "parent" },
+        })
+      ) {
+        events.push(event.kind);
+      }
+      assertEquals(events, ["started", "started", "completed"]);
+      assertEquals(attachedRunIds(server), ["run-parent", "run-child"]);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});

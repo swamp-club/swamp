@@ -1231,3 +1231,47 @@ Deno.test("ScheduledExecutionService: a throwing authorizer refuses the run and 
     true,
   );
 });
+
+Deno.test("ScheduledExecutionService: a nested workflow's started event does not retarget the run (swamp-club#2470)", async () => {
+  const wf = createTestWorkflow("nested-started-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+  let aborted = false;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: (_input, signal, onEvent) => {
+      onEvent({ kind: "started", runId: "parent-1" } as WorkflowRunEvent);
+      onEvent(
+        {
+          kind: "started",
+          runId: "child-1",
+          parentRunId: "parent-1",
+        } as WorkflowRunEvent,
+      );
+      return new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          resolve();
+        }, { once: true });
+      });
+    },
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_started"),
+    "schedule_started event",
+  );
+
+  assertEquals(service.cancelByRunId("child-1"), false);
+  assertEquals(service.cancelByRunId("parent-1"), true);
+  await waitFor(() => aborted, "the parent run to be aborted");
+  await service.stop();
+
+  const started = events.filter((e) => e.kind === "schedule_started");
+  assertEquals(started.length, 1);
+  assertEquals(
+    started[0].kind === "schedule_started" && started[0].runId,
+    "parent-1",
+  );
+});

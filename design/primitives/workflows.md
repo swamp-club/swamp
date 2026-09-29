@@ -1345,6 +1345,26 @@ A `RunCancelRegistry` in the serve layer tracks AbortControllers for every
 execution path (scheduled, WebSocket ad-hoc, webhook). The cancel API checks
 both the registry and the `ScheduledExecutionService` running map.
 
+**Nested workflows.** Cancelling a run cancels the child runs its workflow
+steps started. `runWorkflowStep` passes the step's abort signal to the child's
+`run()`, so the child's steps stop and the child records itself cancelled. The
+parent step fails, and the parent run is cancelled. After an abort, the job
+runner stops reading a step's events, so the nested step drains the child
+without forwarding its events. The parent waits for its nested steps to settle,
+at most `CLEANUP_GRACE_TIMEOUT_MS`, before it records its own cancellation.
+Only the child's terminal event is kept out of the parent's stream. Its other
+events, including `started`, pass through. A nested `started` event carries
+`parentRunId`, so the consumers that track a run by id act only on the started
+event without it: the active-run registry rekey, `RunCancelRegistry`, the
+scheduled and webhook runners, and the `workflow run` fallback cancel. A child
+run is therefore not registered on its own, and serve cancels it through the
+parent run's id. The registry does record each nested child against its parent
+(`ActiveRunRegistry.addNestedRun`), but only `run.attach` resolves a child id
+to the parent's entry (`findForAttach`). That keeps reconnects working for
+clients that track the child's id. A `--server` client reattaches by the run it
+started. If serve answers `not_found`, the client retries with the last run id
+any event carried, which is what an older serve keyed the run on.
+
 **Suspended runs.** A suspended run has no process driving it, so it is in
 none of those registries. When they all miss, the cancel API falls back to a
 persisted run: it finds the run by id alone among suspended runs, cancels it,

@@ -159,3 +159,7 @@ applies to the total wall-clock time of the run, not individual steps.
 
 `swamp workflow cancel <workflow>` cancels an in-flight run from another
 terminal or via `--server`.
+
+Cancelling a run also cancels the child runs of its nested workflow steps. Over
+`--server`, cancel the parent's run id. A child run is not cancellable by its
+own id there.

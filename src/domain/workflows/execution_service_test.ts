@@ -14608,3 +14608,304 @@ Deno.test("run(): a failed step that threw a primitive still reports its own err
     }
   });
 });
+
+/**
+ * Cancels the run when the step named `blockAt` starts, as a user cancelling
+ * mid-step would, and records whether that step's own signal saw the abort.
+ * A step whose signal saw it rejects as an aborted method does; one whose
+ * signal did not returns at once, so the test fails rather than hangs.
+ */
+class CancelMidStepExecutor extends MockStepExecutor {
+  readonly controller = new AbortController();
+  readonly sawAbort: boolean[] = [];
+
+  constructor(private readonly blockAt: string) {
+    super();
+  }
+
+  override execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    if (ctx.stepName !== this.blockAt) return super.execute(step, ctx);
+    this.controller.abort();
+    this.sawAbort.push(ctx.signal.aborted);
+    if (ctx.signal.aborted) {
+      return Promise.reject(
+        new DOMException("The operation was aborted.", "AbortError"),
+      );
+    }
+    return Promise.resolve({ executed: true, step: step.name });
+  }
+}
+
+function nestedCancelWorkflows(
+  parentSteps: Step[] = [
+    Step.create({
+      name: "call-child",
+      task: StepTask.workflow("nested-cancel-child"),
+    }),
+  ],
+): { parent: Workflow; child: Workflow } {
+  const child = Workflow.create({
+    name: "nested-cancel-child",
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({
+            name: "slow",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const parent = Workflow.create({
+    name: "nested-cancel-parent",
+    jobs: [Job.create({ name: "main", steps: parentSteps })],
+  });
+  return { parent, child };
+}
+
+async function setupNestedCancel(
+  tempDir: string,
+  workflows: Workflow[],
+  executor: StepExecutor,
+): Promise<{
+  service: WorkflowExecutionService;
+  runRepo: InMemoryWorkflowRunRepository;
+  tracker: RecordingRunTracker;
+}> {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  for (const workflow of workflows) await workflowRepo.save(workflow);
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const tracker = new RecordingRunTracker();
+  const service = serviceWithTracker(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    new CatalogStore(join(tempDir, "_catalog.db")),
+    tracker,
+  );
+  return { service, runRepo, tracker };
+}
+
+Deno.test("run(): cancelling mid nested workflow aborts the child's step and cancels both runs (swamp-club#2470)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedCancelWorkflows();
+    const executor = new CancelMidStepExecutor("slow");
+    const { service, runRepo, tracker } = await setupNestedCancel(
+      tempDir,
+      [parent, child],
+      executor,
+    );
+
+    const { run, events } = await finishedRun(
+      service.run(parent.name, { signal: executor.controller.signal }),
+    );
+
+    assertEquals(executor.sawAbort, [true]);
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("call-child")!.status, "failed");
+
+    // The child saved itself cancelled before run() returned.
+    const childRuns = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRuns.length, 1);
+    const childRun = childRuns[0];
+    assertEquals(childRun.status, "cancelled");
+    assertEquals(tracker.completions, [
+      { runId: childRun.id, status: "cancelled" },
+      { runId: run.id, status: "cancelled" },
+    ]);
+
+    // Only the parent's own terminal event reaches the parent stream.
+    const cancelled = events.filter((e) => e.kind === "cancelled");
+    assertEquals(cancelled.length, 1);
+    assertEquals(
+      cancelled[0].kind === "cancelled" && cancelled[0].run.id,
+      run.id,
+    );
+  });
+});
+
+Deno.test("run(): a cancelled nested workflow beside a sibling step still saves itself cancelled before the parent (swamp-club#2470)", async () => {
+  await withTempDir(async (tempDir) => {
+    // With a sibling in its level the step streams are merged, and the merge
+    // stops reading them once the signal aborts.
+    const { parent, child } = nestedCancelWorkflows([
+      Step.create({
+        name: "call-child",
+        task: StepTask.workflow("nested-cancel-child"),
+      }),
+      Step.create({
+        name: "sibling",
+        task: StepTask.model("test-model", "run"),
+      }),
+    ]);
+    const executor = new CancelMidStepExecutor("slow");
+    const { service, runRepo, tracker } = await setupNestedCancel(
+      tempDir,
+      [parent, child],
+      executor,
+    );
+
+    const { run, events } = await finishedRun(
+      service.run(parent.name, { signal: executor.controller.signal }),
+    );
+
+    assertEquals(executor.sawAbort, [true]);
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("call-child")!.status, "failed");
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRun.status, "cancelled");
+    assertEquals(tracker.completions, [
+      { runId: childRun.id, status: "cancelled" },
+      { runId: run.id, status: "cancelled" },
+    ]);
+    assertEquals(events.filter((e) => e.kind === "cancelled").length, 1);
+  });
+});
+
+Deno.test("run(): a nested workflow's started event names the run whose step called it (swamp-club#2470)", async () => {
+  await withTempDir(async (tempDir) => {
+    const leaf = Workflow.create({
+      name: "nested-started-leaf",
+      jobs: [
+        Job.create({
+          name: "leaf-job",
+          steps: [
+            Step.create({
+              name: "leaf-step",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const middle = Workflow.create({
+      name: "nested-started-middle",
+      jobs: [
+        Job.create({
+          name: "middle-job",
+          steps: [
+            Step.create({
+              name: "call-leaf",
+              task: StepTask.workflow(leaf.name),
+            }),
+          ],
+        }),
+      ],
+    });
+    const top = Workflow.create({
+      name: "nested-started-top",
+      jobs: [
+        Job.create({
+          name: "top-job",
+          steps: [
+            Step.create({
+              name: "call-middle",
+              task: StepTask.workflow(middle.name),
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service } = await setupNestedCancel(
+      tempDir,
+      [top, middle, leaf],
+      new MockStepExecutor(),
+    );
+
+    const { run, events } = await finishedRun(service.run(top.name));
+
+    assertEquals(run.status, "succeeded");
+    const started = events.flatMap((e) =>
+      e.kind === "started"
+        ? [{
+          workflowName: e.workflowName,
+          runId: e.runId,
+          parentRunId: e.parentRunId,
+        }]
+        : []
+    );
+    assertEquals(started.map((s) => s.workflowName), [
+      top.name,
+      middle.name,
+      leaf.name,
+    ]);
+    assertEquals(started[0].runId, run.id);
+    assertEquals(started[0].parentRunId, undefined);
+    assertEquals(started[1].parentRunId, run.id);
+    assertEquals(started[2].parentRunId, started[1].runId);
+  });
+});
+
+Deno.test("run(): a cancelled nested workflow fails an allowFailure step and the parent run is cancelled (swamp-club#2470)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedCancelWorkflows([
+      Step.create({
+        name: "call-child",
+        task: StepTask.workflow("nested-cancel-child"),
+        allowFailure: true,
+      }),
+    ]);
+    const executor = new CancelMidStepExecutor("slow");
+    const { service, runRepo } = await setupNestedCancel(
+      tempDir,
+      [parent, child],
+      executor,
+    );
+
+    const { run } = await finishedRun(
+      service.run(parent.name, { signal: executor.controller.signal }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.getStep("call-child")!.status, "failed");
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRun.status, "cancelled");
+  });
+});
+
+Deno.test("resume(): cancelling mid nested workflow aborts the child's step and cancels both runs (swamp-club#2470)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedCancelWorkflows([
+      Step.create({
+        name: "gate",
+        task: StepTask.manualApproval("go?"),
+      }),
+      Step.create({
+        name: "call-child",
+        task: StepTask.workflow("nested-cancel-child"),
+        ...onStep("gate", TriggerCondition.succeeded()),
+      }),
+      Step.create({
+        name: "sibling",
+        task: StepTask.model("test-model", "run"),
+        ...onStep("gate", TriggerCondition.succeeded()),
+      }),
+    ]);
+    const executor = new CancelMidStepExecutor("slow");
+    const { service, runRepo, tracker } = await setupNestedCancel(
+      tempDir,
+      [parent, child],
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, parent);
+
+    const { run, events } = await finishedRun(
+      service.resume(parent.name, suspended.id, {
+        signal: executor.controller.signal,
+      }),
+    );
+
+    assertEquals(executor.sawAbort, [true]);
+    assertEquals(run.status, "cancelled");
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRun.status, "cancelled");
+    assertEquals(tracker.completions.slice(-2), [
+      { runId: childRun.id, status: "cancelled" },
+      { runId: run.id, status: "cancelled" },
+    ]);
+    assertEquals(events.filter((e) => e.kind === "cancelled").length, 1);
+  });
+});

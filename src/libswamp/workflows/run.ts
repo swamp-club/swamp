@@ -90,6 +90,12 @@ export type WorkflowRunEvent =
   | {
     kind: "started";
     runId: string;
+    /**
+     * Set on the started event of a nested workflow's run: the id of the run
+     * whose step called it. Consumers that track a run by id act only on a
+     * started event without it.
+     */
+    parentRunId?: string;
     workflowName: string;
     jobs: WorkflowRunJobInfo[];
   }
@@ -559,6 +565,9 @@ export function mapWorkflowExecutionEvent(
       return {
         kind: "started",
         runId: event.runId,
+        ...(event.parentRunId !== undefined
+          ? { parentRunId: event.parentRunId }
+          : {}),
         workflowName: event.workflowName,
         jobs: event.jobs.map((j) => ({
           id: j.id,

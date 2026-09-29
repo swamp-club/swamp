@@ -1265,3 +1265,44 @@ Deno.test("WebhookService: rejections carry the source address and configured wo
     sourceIp: "198.51.100.7",
   });
 });
+
+Deno.test("WebhookService: a nested workflow's started event does not retarget the run (swamp-club#2470)", async () => {
+  const calls: unknown[] = [];
+  const { service, events } = await triggerService({
+    executeWorkflow: ((
+      _repoDir: string,
+      _repoContext: unknown,
+      _datastoreConfig: unknown,
+      _input: unknown,
+      _signal: AbortSignal,
+      onEvent: (event: unknown) => void,
+    ) => {
+      calls.push(true);
+      onEvent({ kind: "started", runId: "parent-1" });
+      onEvent({ kind: "started", runId: "child-1", parentRunId: "parent-1" });
+      onEvent({ kind: "completed", run: { status: "succeeded" } });
+      return Promise.resolve();
+    }) as unknown as NonNullable<
+      ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+    >,
+  });
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_completed"),
+    "run completed",
+  );
+  await service.stop();
+
+  assertEquals(calls.length, 1);
+  const started = events.filter((e) => e.kind === "webhook_started");
+  assertEquals(started.length, 1);
+  assertEquals(
+    started[0].kind === "webhook_started" && started[0].runId,
+    "parent-1",
+  );
+  const completed = events.find((e) => e.kind === "webhook_completed");
+  assertEquals(
+    completed?.kind === "webhook_completed" && completed.runId,
+    "parent-1",
+  );
+});

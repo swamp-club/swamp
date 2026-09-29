@@ -65,6 +65,8 @@ export class ActiveRunRegistry {
   readonly #maxRunDurationMs: number | undefined;
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #reserved = new Set<string>();
+  /** Nested child run id -> the registered run whose workflow started it. */
+  readonly #nested = new Map<string, string>();
 
   constructor(options?: ActiveRunRegistryOptions) {
     this.#maxConcurrent = Math.max(1, options?.maxConcurrent ?? 100);
@@ -142,6 +144,9 @@ export class ActiveRunRegistry {
 
   deregister(runId: string): void {
     this.#runs.delete(runId);
+    for (const [childId, parentId] of this.#nested) {
+      if (parentId === runId) this.#nested.delete(childId);
+    }
     const timer = this.#timers.get(runId);
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -155,6 +160,9 @@ export class ActiveRunRegistry {
     if (this.#runs.has(newId)) return false;
     this.#runs.delete(oldId);
     this.#runs.set(newId, { ...run, runId: newId });
+    for (const [childId, parentId] of this.#nested) {
+      if (parentId === oldId) this.#nested.set(childId, newId);
+    }
     const timer = this.#timers.get(oldId);
     if (timer !== undefined) {
       this.#timers.delete(oldId);
@@ -165,6 +173,29 @@ export class ActiveRunRegistry {
 
   get(runId: string): ActiveRun | undefined {
     return this.#runs.get(runId);
+  }
+
+  /**
+   * Records that a nested workflow step of the registered run `parentId`
+   * started the child run `childId`. The child is not registered: it is
+   * cancelled through its parent, and only {@link findForAttach} resolves it.
+   */
+  addNestedRun(parentId: string, childId: string): void {
+    if (!this.#runs.has(parentId) || this.#runs.has(childId)) return;
+    this.#nested.set(childId, parentId);
+  }
+
+  /**
+   * The run a client reattaches to by `runId`: a registered run, or the one
+   * whose nested workflow step started the child run `runId`. A client older
+   * than swamp-club#2470 tracks the child's id once a nested step starts, so
+   * its reconnect names the child.
+   */
+  findForAttach(runId: string): ActiveRun | undefined {
+    const run = this.#runs.get(runId);
+    if (run) return run;
+    const parentId = this.#nested.get(runId);
+    return parentId === undefined ? undefined : this.#runs.get(parentId);
   }
 
   /** `reason` becomes the cancelled run's `cancel_reason`. */

@@ -46,6 +46,13 @@ export type WorkflowExecutionEvent =
   | {
     kind: "started";
     runId: string;
+    /**
+     * Set when a nested workflow step started this run: the id of the run
+     * whose step called it. The parent forwards its child's events into its
+     * own stream, so consumers that track a run by id act only on a started
+     * event without it.
+     */
+    parentRunId?: string;
     workflowName: string;
     logPath: string;
     jobs: WorkflowJobInfo[];
