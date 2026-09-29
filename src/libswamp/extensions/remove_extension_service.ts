@@ -31,6 +31,7 @@ import {
   resolvePulledExtensionsRoot,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
@@ -150,8 +151,21 @@ export class RemoveExtensionService {
    *
    * Ordering: path validation → catalog tombstone-save → lockfile
    * remove → filesystem delete → empty-dir prune.
+   *
+   * Runs under the checkout's pulled-extensions lock, so it cannot
+   * interleave with an install or another removal. The lockfile
+   * snapshot is refreshed first under the lock, so the entry removed
+   * and the other entries' claims are the ones on disk
+   * (swamp-club#2709).
    */
   async execute(name: string): Promise<RemoveExtensionResult> {
+    return await pulledExtensionsLock.withLock(this.repoDir, async () => {
+      await this.lockfileRepository.refresh();
+      return await this.removeLocked(name);
+    });
+  }
+
+  private async removeLocked(name: string): Promise<RemoveExtensionResult> {
     // 1. Idempotency check — surface a clean error if the extension
     //    isn't installed. Both the catalog AND the lockfile must
     //    confirm absence before we treat it as not-installed; either

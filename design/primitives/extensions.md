@@ -167,7 +167,10 @@ each takes a repo-wide lock (`.swamp/.extension-install.lock`) around
 inspecting, installing and loading. A process that then finds the extension
 already installed by another loads it rather than failing, and reports the
 type missing only when the loaded extension does not provide it
-(`src/domain/extensions/extension_auto_resolver.ts`).
+(`src/domain/extensions/extension_auto_resolver.ts`). The install itself also
+takes the per-checkout pulled-extensions lock (see
+[Concurrency Safety](#concurrency-safety)), which serializes it against
+explicit installs and removals.
 
 ### Lockfile
 
@@ -1340,6 +1343,77 @@ Extensions with no lockfile entry have no pin and still resolve latest.
 All changes to `upstream_extensions.json` take an advisory lockfile
 (`upstream_extensions.json.lock`) with retries (10 attempts, 100ms backoff) and
 use atomic writes, so concurrent operations cannot corrupt it.
+
+That lock covers a single entry write. The rest of an install or removal (the
+copies into the pulled root and skills dirs, orphan pruning, the catalog save)
+is serialized per checkout by the **pulled-extensions lock**
+(`src/infrastructure/persistence/pulled_extensions_lock.ts`, swamp-club#2709).
+Without it, two installs, or an install and an `extension rm`, can leave a mix
+of two versions' files, prune files the other just wrote, or record an entry
+that does not match the tree.
+
+A section takes two layers: an in-process first-come-first-served mutex keyed
+by the checkout, so concurrent `swamp serve` requests queue without polling,
+then a `FileLock` on `.swamp/pulled-extensions.lock` for other processes. Its
+TTL (30s) and heartbeat clear a crashed holder. A waiter's 180s budget covers
+both layers: time queued behind a section in its own process, then time waiting
+for another process's file lock. Past it, the waiter gets a `LockTimeoutError`
+naming the lock file (and, when another process holds it, that holder). A
+waiter that times out gives up its place in the queue without blocking the
+sections behind it. `tryWithLock` reports busy instead of waiting.
+
+Where it is held:
+
+- **Install**: `installExtension` takes it around apply only. Prepare
+  (registry lookup, download, checksum and safety checks) runs before it, so
+  the extension's own download never holds up another process (a dependency's
+  does; see below), and a `ConflictError` leaves the
+  section before the CLI's conflict prompt. Every install path goes through
+  `installExtension`: pull, update, the lockfile restore in
+  `extension install`, auto-resolve, and the `swamp serve` admin handlers. One
+  exception: when `extension install` migrates an entry from a legacy layout,
+  it deletes the old-layout paths (`sweepLegacyPaths`) after `installExtension`
+  returns, outside the lock. Those paths lie outside every extension's own
+  subtree (`.swamp/pulled-extensions/<ext-name>/`, where names are scoped as
+  `@x/...`), so no current-layout install writes them.
+- **Catalog save**: `InstallExtensionService` runs its catalog save and the
+  `DuplicateTypeError` rollback in the same section, through
+  `installExtension`'s `underLock` hook.
+- **Removal**: `RemoveExtensionService.execute` runs entirely under it.
+  `extension rm`'s preview and confirmation prompt stay outside.
+- **Dependencies**: dependency installs run under the parent's section, their
+  registry lookups and downloads included. Whether a dependency needs
+  installing is only known from the lockfile read under the lock.
+
+Each section calls `LockfileRepository.refresh()` first, so the prior entry it
+prunes against, and the other entries' claims `rm` checks, are the ones on
+disk rather than the snapshot taken when the command started.
+
+The lock is reentrant through an `AsyncLocalStorage` lease: a section entered
+while the caller's lease for the same checkout is active runs inline. The lease
+is deactivated when its section exits, so a promise created inside it that
+enters a section afterwards has to take the lock.
+
+**Lock order.** Take locks in this order, and never take an outer one while
+holding an inner one:
+
+1. the datastore global lock, when held (e.g. model validate, workflow
+   evaluate);
+2. `.swamp/.extension-install.lock` (auto-resolve, see
+   [Auto-resolve safety](#auto-resolve-safety));
+3. `.swamp/pulled-extensions.lock`;
+4. `upstream_extensions.json.lock` (innermost).
+
+Work that needs the datastore global lock around an install (swamp-club#2495)
+takes it before the pulled-extensions lock, never inside apply.
+
+The auto-resolve lock stays separate. It covers inspecting, downloading,
+installing and loading, so a process that loses the race loads what the winner
+installed. The pulled-extensions lock covers only the local changes, so an
+explicit install is not held up by another process's download.
+
+Reconcile from disk and bundle eviction do not take the lock. A reconcile that
+reads a tree mid-copy is corrected by the next one.
 
 ## File Extraction (Per-Extension Layout)
 

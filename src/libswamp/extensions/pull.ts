@@ -35,6 +35,8 @@ import { ExtensionApiClient } from "../../infrastructure/http/extension_api_clie
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
+import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
@@ -191,9 +193,10 @@ export interface InstallContext {
    * installExtension() call may have written between constructions, and
    * the snapshot would be stale relative to disk. Construct a fresh
    * context per install via `createInstallContext` /
-   * `createExtensionPullDeps`. installExtension() reads the snapshot
-   * exactly once per install, at the start of applyInstall() (formerly
-   * upstreamMapBefore via readUpstreamExtensions).
+   * `createExtensionPullDeps`. installExtension() refreshes the
+   * snapshot from disk under the pulled-extensions lock just before
+   * applyInstall() reads it (swamp-club#2709), so the prior entry apply
+   * prunes against is the one on disk.
    */
   lockfileRepository: LockfileRepository;
   /**
@@ -320,10 +323,7 @@ export interface ExtensionPullDeps {
    * leave this unset — `extensionPull` falls back to the real
    * `installExtension` automatically.
    */
-  installExtensionFn?: (
-    ref: ExtensionRef,
-    ctx: InstallContext,
-  ) => Promise<InstallResult | undefined>;
+  installExtensionFn?: InstallExtensionFn;
   /**
    * W2 service deps. When BOTH are provided, `extensionPull` routes
    * through {@link InstallExtensionService} — phase 8 fires (synchronous
@@ -825,6 +825,31 @@ export function computeOrphanDiff(
   });
 }
 
+/** What {@link InstallOptions.underLock} receives. */
+export interface AppliedInstall {
+  result: InstallResult;
+  /** The extension's lockfile entry before apply, read under the lock. */
+  priorEntry: UpstreamExtensionEntry | null;
+}
+
+/** Options for {@link installExtension}. */
+export interface InstallOptions {
+  /**
+   * Runs after a successful apply, in the same pulled-extensions lock
+   * section, so a caller can extend that section (e.g. the catalog save
+   * in InstallExtensionService) without holding the lock across
+   * prepare. Not passed to dependency installs.
+   */
+  underLock?: (applied: AppliedInstall) => Promise<void>;
+}
+
+/** Signature of {@link installExtension}, for callers' test seams. */
+export type InstallExtensionFn = (
+  ref: ExtensionRef,
+  ctx: InstallContext,
+  options?: InstallOptions,
+) => Promise<InstallResult | undefined>;
+
 /**
  * Core install logic: download, verify, extract, copy, track.
  * No rendering — returns structured data for callers to present.
@@ -832,12 +857,17 @@ export function computeOrphanDiff(
  * Recursively installs dependencies.
  *
  * Runs {@link prepareInstall} (network I/O and a private temp dir only),
- * then {@link applyInstall} (changes to the repo and lockfile), and
- * always disposes the prepared install afterwards.
+ * then, holding the checkout's pulled-extensions lock, refreshes the
+ * lockfile snapshot and runs {@link applyInstall} (changes to the repo
+ * and lockfile) and `options.underLock`. Always disposes the prepared
+ * install afterwards. A ConflictError leaves the locked section before
+ * it reaches the caller, so the lock is never held across the CLI's
+ * conflict prompt (swamp-club#2709).
  */
 export async function installExtension(
   ref: ExtensionRef,
   ctx: InstallContext,
+  options?: InstallOptions,
 ): Promise<InstallResult | undefined> {
   if (ctx.alreadyPulled.has(ref.name)) {
     return undefined;
@@ -853,7 +883,13 @@ export async function installExtension(
 
   const prepared = await prepareInstall(ref, ctx);
   try {
-    return await applyInstall(prepared, ctx);
+    return await pulledExtensionsLock.withLock(ctx.repoDir, async () => {
+      await ctx.lockfileRepository.refresh();
+      const priorEntry = ctx.lockfileRepository.getEntry(ref.name);
+      const result = await applyInstall(prepared, ctx);
+      await options?.underLock?.({ result, priorEntry });
+      return result;
+    });
   } finally {
     await prepared.dispose();
   }
@@ -1586,12 +1622,20 @@ export async function applyInstall(
     },
   );
 
+  // A dependency cycle must not reinstall this extension over the tree
+  // just written. installExtension() marks it before prepare; mark it
+  // here too so a caller running prepare and apply directly is covered.
+  ctx.alreadyPulled.add(ref.name);
+
   // Dependency installs do network I/O from inside apply, at two
   // points: the ctx.getExtension() call that resolves an unpinned
   // dependency's version and channel, and the nested installExtension()
   // call, whose prepareInstall() fetches registry info, the archive and
-  // its checksum. A lock taken around apply covers both (swamp-club#2709
-  // decides whether to prepare dependencies before taking it).
+  // its checksum. Both run under this install's pulled-extensions lease,
+  // and the nested apply runs inline in it. Whether a dependency needs
+  // installing is only known from the lockfile read under the lock, so
+  // preparing dependencies before taking it would download speculatively
+  // (swamp-club#2709).
   const dependencyResults: InstallResult[] = [];
   if (manifest.dependencies.length > 0) {
     for (const dep of manifest.dependencies) {

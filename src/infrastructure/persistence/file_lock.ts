@@ -113,22 +113,7 @@ export class FileLock implements DistributedLock {
         );
       }
 
-      const info = buildLockInfo(this.ttlMs, nonce);
-      const content = JSON.stringify(info, null, 2);
-
-      try {
-        // Atomic check-and-create
-        const file = await Deno.open(this.lockPath, {
-          createNew: true,
-          write: true,
-        });
-        await file.write(new TextEncoder().encode(content));
-        file.close();
-
-        this.nonce = nonce;
-        this.held = true;
-        this.startHeartbeat();
-
+      if (await this.tryCreate(nonce)) {
         if (retryCount > 0) {
           const waitMs = Date.now() - startTime;
           const logger = getSwampLogger(["datastore", "lock"]);
@@ -136,57 +121,19 @@ export class FileLock implements DistributedLock {
             .info`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
         }
         return;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.AlreadyExists)) {
-          throw error;
-        }
       }
 
       retryCount++;
 
-      // Lock file exists — check if stale.
-      // Best-effort: if we accidentally delete a fresh lock, the nonce
-      // fencing in extend() ensures the old holder self-revokes.
-      const existing = await this.readLockFile();
-      if (existing) {
-        const isStale = isProcessDead(existing.pid) ||
-          Date.now() - new Date(existing.acquiredAt).getTime() > existing.ttlMs;
-        if (isStale) {
-          try {
-            await Deno.remove(this.lockPath);
-          } catch {
-            // Another process may have already cleaned it up
-          }
-          continue; // Retry atomic create (timeout checked at top of loop)
-        }
+      const holder = await this.clearStaleHolder();
+      if (holder === "cleared") continue; // Retry create (timeout checked at top of loop)
 
-        if (!contentionLogged) {
-          const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
-          const logger = getSwampLogger(["datastore", "lock"]);
-          logger
-            .warn`Waiting for lock ${this.lockPath} held by ${existing.holder} (pid ${existing.pid}, acquired ${ageMs}ms ago)`;
-          contentionLogged = true;
-        }
-      } else {
-        // Lock file exists on disk but is unreadable (0 bytes, corrupt
-        // JSON, or partial write). A live holder's file is briefly empty
-        // between create and write, and during each heartbeat rewrite, so
-        // only a file untouched for a full TTL is stale: removing a fresh
-        // one lets two holders in at once (swamp-club#2571).
-        const mtime = await this.readLockFileMtime();
-        if (mtime === null) continue; // Removed meanwhile — retry create
-        if (Date.now() - mtime > this.ttlMs) {
-          const logger = getSwampLogger(["datastore", "lock"]);
-          logger
-            .warn`Removing unreadable lock file ${this.lockPath}`;
-          try {
-            await Deno.remove(this.lockPath);
-          } catch {
-            // Another process may have already cleaned it up
-          }
-          continue;
-        }
-        // Fresh: a holder is mid-write. Back off like any held lock.
+      if (holder !== "unreadable" && !contentionLogged) {
+        const ageMs = Date.now() - new Date(holder.acquiredAt).getTime();
+        const logger = getSwampLogger(["datastore", "lock"]);
+        logger
+          .warn`Waiting for lock ${this.lockPath} held by ${holder.holder} (pid ${holder.pid}, acquired ${ageMs}ms ago)`;
+        contentionLogged = true;
       }
 
       // Jittered exponential backoff, clamped to remaining budget
@@ -202,6 +149,22 @@ export class FileLock implements DistributedLock {
       }
       currentBackoff = Math.min(currentBackoff * 2, MAX_BACKOFF_MS);
     }
+  }
+
+  /**
+   * Makes one attempt to take the lock, without waiting. Returns true
+   * and starts the heartbeat when it is taken; returns false while a
+   * live holder has it. A stale holder is cleared the same way
+   * {@link acquire} clears one, and the create is retried once. Never
+   * throws {@link LockTimeoutError}.
+   */
+  async tryAcquire(): Promise<boolean> {
+    this.releasing = false;
+    await ensureDir(dirname(this.lockPath));
+    const nonce = crypto.randomUUID();
+    if (await this.tryCreate(nonce)) return true;
+    if (await this.clearStaleHolder() !== "cleared") return false;
+    return await this.tryCreate(nonce);
   }
 
   async release(): Promise<void> {
@@ -258,6 +221,76 @@ export class FileLock implements DistributedLock {
       }
     }
     return true;
+  }
+
+  /**
+   * Atomically creates the lock file for `nonce`. Returns false when it
+   * already exists; on success marks the lock held and starts the
+   * heartbeat.
+   */
+  private async tryCreate(nonce: string): Promise<boolean> {
+    const content = JSON.stringify(buildLockInfo(this.ttlMs, nonce), null, 2);
+    try {
+      const file = await Deno.open(this.lockPath, {
+        createNew: true,
+        write: true,
+      });
+      await file.write(new TextEncoder().encode(content));
+      file.close();
+    } catch (error) {
+      if (error instanceof Deno.errors.AlreadyExists) return false;
+      throw error;
+    }
+    this.nonce = nonce;
+    this.held = true;
+    this.startHeartbeat();
+    return true;
+  }
+
+  /**
+   * Inspects an existing lock file and removes it when its holder is
+   * stale. Returns "cleared" when the caller should retry the create
+   * (removed, or gone meanwhile), the live holder's info, or
+   * "unreadable" for a fresh file a holder is still writing.
+   *
+   * Best-effort: if we accidentally delete a fresh lock, the nonce
+   * fencing in extend() ensures the old holder self-revokes.
+   */
+  private async clearStaleHolder(): Promise<
+    "cleared" | "unreadable" | LockInfo
+  > {
+    const existing = await this.readLockFile();
+    if (existing) {
+      const isStale = isProcessDead(existing.pid) ||
+        Date.now() - new Date(existing.acquiredAt).getTime() > existing.ttlMs;
+      if (!isStale) return existing;
+      try {
+        await Deno.remove(this.lockPath);
+      } catch {
+        // Another process may have already cleaned it up
+      }
+      return "cleared";
+    }
+    // Lock file exists on disk but is unreadable (0 bytes, corrupt
+    // JSON, or partial write). A live holder's file is briefly empty
+    // between create and write, and during each heartbeat rewrite, so
+    // only a file untouched for a full TTL is stale: removing a fresh
+    // one lets two holders in at once (swamp-club#2571).
+    const mtime = await this.readLockFileMtime();
+    if (mtime === null) return "cleared"; // Removed meanwhile
+    if (Date.now() - mtime > this.ttlMs) {
+      const logger = getSwampLogger(["datastore", "lock"]);
+      logger
+        .warn`Removing unreadable lock file ${this.lockPath}`;
+      try {
+        await Deno.remove(this.lockPath);
+      } catch {
+        // Another process may have already cleaned it up
+      }
+      return "cleared";
+    }
+    // Fresh: a holder is mid-write. Back off like any held lock.
+    return "unreadable";
   }
 
   private async extend(): Promise<void> {

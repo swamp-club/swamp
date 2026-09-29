@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ExtensionRef, InstallContext, InstallResult } from "./pull.ts";
+import type {
+  InstallContext,
+  InstallExtensionFn,
+  InstallResult,
+} from "./pull.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
@@ -65,10 +69,7 @@ export class UpgradeExtensionService {
      * `pull.ts`. Tests inject a stub when exercising upgrade against
      * a pre-staged on-disk subtree.
      */
-    installExtensionFn?: (
-      ref: ExtensionRef,
-      ctx: InstallContext,
-    ) => Promise<InstallResult | undefined>;
+    installExtensionFn?: InstallExtensionFn;
   }) {
     this.installService = new InstallExtensionService(args);
   }

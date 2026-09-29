@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { stubInstallExtension } from "./install_test_helpers.ts";
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -192,7 +193,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               ref.version ?? v1Cal,
@@ -203,7 +204,7 @@ Deno.test(
               ref.version ?? v1Cal,
               [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
             );
-          },
+          }),
         });
         await installSvc.execute(
           { name: extName, version: v1Cal },
@@ -224,7 +225,7 @@ Deno.test(
         const upgradeSvc = new UpgradeExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               ref.version ?? v2Cal,
@@ -235,7 +236,7 @@ Deno.test(
               ref.version ?? v2Cal,
               [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
             );
-          },
+          }),
         });
         await upgradeSvc.execute(
           extName,
@@ -291,7 +292,7 @@ Deno.test(
         const svc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               ref.version ?? v1Cal,
@@ -302,7 +303,7 @@ Deno.test(
               ref.version ?? v1Cal,
               [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
             );
-          },
+          }),
         });
         await svc.execute(
           { name: extName, version: v1Cal },
@@ -320,7 +321,7 @@ Deno.test(
         const svc2 = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               ref.version ?? v2Cal,
@@ -331,7 +332,7 @@ Deno.test(
               ref.version ?? v2Cal,
               [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
             );
-          },
+          }),
         });
         // Should not throw.
         await svc2.execute(
