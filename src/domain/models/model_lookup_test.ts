@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { z } from "zod";
 import {
   findDefinitionByIdGlobal,
@@ -293,6 +294,62 @@ Deno.test("findDefinitionByIdGlobal finds a definition whose type is not registe
     await repo.save(type, definition);
 
     const byName = await findDefinitionByIdOrName(repo, "orphan-model");
+    const byId = await findDefinitionByIdGlobal(repo, definition.id);
+
+    assertEquals(byName?.definition.id, definition.id);
+    assertEquals(byId?.definition.id, definition.id);
+    assertEquals(byId?.type.normalized, byName?.type.normalized);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal reports the type a file declares, as the name lookup does", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    // Filed under command/shell but declaring another type, as a hand-edited
+    // or synced file can be.
+    const shell = ModelType.create("command/shell");
+    const definition = Definition.create({
+      name: "misfiled",
+      globalArguments: {},
+    });
+    await repo.save(shell, definition);
+    const path = repo.getPath(shell, definition.id);
+    await Deno.writeTextFile(
+      path,
+      (await Deno.readTextFile(path)).replace(
+        "type: command/shell",
+        "type: test/declared-type",
+      ),
+    );
+
+    const byName = await findDefinitionByIdOrName(repo, "misfiled");
+    const byId = await findDefinitionByIdGlobal(repo, definition.id);
+
+    assertEquals(byName?.type.normalized, "test/declared-type");
+    assertEquals(byId?.type.normalized, byName?.type.normalized);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal finds an auto-definition of an unregistered type", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, "auto-definitions");
+    const type = ModelType.create("test/unregistered-auto");
+    const definition = Definition.create({
+      name: "auto-orphan",
+      globalArguments: {},
+    });
+    await new YamlDefinitionRepository(dir, undefined, autoDir, false).save(
+      type,
+      definition,
+    );
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+
+    const byName = await findDefinitionByIdOrName(repo, "auto-orphan");
     const byId = await findDefinitionByIdGlobal(repo, definition.id);
 
     assertEquals(byName?.definition.id, definition.id);

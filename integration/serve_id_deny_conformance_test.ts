@@ -745,3 +745,33 @@ Deno.test("serve id-deny conformance: a run started by UUID is recorded under th
     ]);
   });
 });
+
+Deno.test("serve id-deny conformance: a run's cancel fails, rather than proceeding, when its resource cannot be looked up", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, GRANTS, { detached: true });
+    const { runId, controller } = registerRun(ctx, {
+      kind: "workflow-run",
+      resourceName: "dev-flow",
+      resourceId: f.devWorkflow.id,
+    });
+    const failing = () => Promise.reject(new Error("repository unavailable"));
+    ctx.repoContext = {
+      ...ctx.repoContext,
+      workflowRepo: {
+        ...ctx.repoContext.workflowRepo,
+        findById: failing,
+        findByName: failing,
+      },
+    } as ConnectionContext["repoContext"];
+
+    const frames = await sendRequest(
+      ctx,
+      { type: "cancel", id: runId },
+      undefined,
+      { awaitRuns: false },
+    );
+
+    assertEquals(errorFrame(frames)?.error?.code, "run_cancel_failed");
+    assertEquals(controller.signal.aborted, false);
+  });
+});

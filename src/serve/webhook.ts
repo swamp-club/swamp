@@ -507,6 +507,11 @@ export interface WebhookRunAuthorization {
   readonly allowed: boolean;
   /** The workflow to run: exactly the value authorization decided on. */
   readonly workflowIdOrName: string;
+  /**
+   * The id of the workflow authorization decided on, when it exists; the run
+   * record carries it so cancel and attach authorize that workflow.
+   */
+  readonly workflowId?: string;
   readonly reason?: string;
 }
 
@@ -1066,8 +1071,9 @@ export class WebhookService {
                 runId,
                 {
                   // The workflow the run resolved to, not the configured
-                  // id-or-name, so cancel and attach authorize its name.
+                  // id-or-name, so cancel and attach authorize it.
                   resourceName: event.workflowName,
+                  resourceId: authorization.workflowId,
                   runKind: "workflow-run",
                   startedAt: new Date().toISOString(),
                 },

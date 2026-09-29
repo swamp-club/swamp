@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ModelType } from "./model_type.ts";
+import { ModelType } from "./model_type.ts";
 import { modelRegistry } from "./model.ts";
 import type { Definition, DefinitionId } from "../definitions/definition.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
@@ -121,14 +121,23 @@ export async function findDefinitionByIdGlobal(
   for (const type of modelRegistry.types()) {
     const definition = await definitionRepo.findById(type, definitionId);
     if (definition) {
-      return { definition, type };
+      // Report the type the file declares, as a lookup by name does, so a
+      // caller that authorizes by name and acts by id sees one type even if
+      // the file sits in another type's directory.
+      return {
+        definition,
+        type: definition.type ? ModelType.create(definition.type) : type,
+      };
     }
   }
 
   // A definition whose type is not registered — an uninstalled extension's,
   // say — is still found by name through a walk of the definitions on disk.
-  // Walk them for the id too, so a lookup by id finds every definition a
-  // lookup by name finds.
+  // Walk them for the id too, auto-definitions included, so a lookup by id
+  // finds every definition a lookup by name finds.
+  if (definitionRepo.findByIdGlobal) {
+    return await definitionRepo.findByIdGlobal(definitionId);
+  }
   const all = await definitionRepo.findAllGlobal();
   return all.find((entry) => entry.definition.id === definitionId) ?? null;
 }

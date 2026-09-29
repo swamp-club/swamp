@@ -604,6 +604,20 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return results;
   }
 
+  async findByIdGlobal(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    // Primary definitions first, as findByNameGlobal searches them first.
+    for (const dir of [this.baseDir, this.secondaryBaseDir]) {
+      if (!dir) continue;
+      const results: { definition: Definition; type: ModelType }[] = [];
+      await this.collectAllDefinitions(dir, [], results);
+      const found = results.find((entry) => entry.definition.id === id);
+      if (found) return found;
+    }
+    return null;
+  }
+
   /**
    * Recursively collects all definition files from nested directory structures.
    */

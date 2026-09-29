@@ -96,6 +96,7 @@ import {
   handleWorkflowValidate,
 } from "./handlers/workflow_handlers.ts";
 import {
+  authorizeResolved,
   resolveModelTarget,
   resolveModelTargetById,
   resolveWorkflowTarget,
@@ -103,7 +104,6 @@ import {
   type ResourceResolution,
   unresolvedAccessResource,
 } from "./handlers/resource_resolution.ts";
-import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import {
   handleVaultAnnotate,
   handleVaultAuditTrail,
@@ -3796,15 +3796,24 @@ async function handleCancelRun(
   principal: Principal | null,
 ): Promise<void> {
   const resourceKind = run.kind === "method-run" ? "model" : "workflow";
-  const resource = await resolveRunResource(
+  const resolution = await resolveRunResource(
     ctx,
     resourceKind,
     run.resourceName,
     run.resourceId,
   );
   if (
-    authorizeOrReject(socket, requestId, principal, "run", resource, ctx)
-      .allowed
+    authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "run",
+      resolution,
+      run.resourceName,
+      resourceKind,
+      ctx,
+      "run_cancel_failed",
+    )
   ) {
     const cancelled = ctx.activeRunRegistry!.cancel(
       requestId,
@@ -3830,14 +3839,15 @@ async function handleCancelRun(
  * the id recorded at registration when there is one, so a rename during the
  * run cannot point the check at another resource that took the old name.
  * Records without an id — from older instances — resolve their recorded
- * name. A run whose resource is gone is authorized on its recorded name.
+ * name. A run whose resource is gone is authorized on its recorded name; a
+ * lookup that fails is reported as failed, never treated as gone.
  */
 async function resolveRunResource(
   ctx: ConnectionContext,
   resourceKind: "model" | "workflow",
   resourceName: string,
   resourceId: string | undefined,
-): Promise<AccessResource> {
+): Promise<ResourceResolution> {
   const { definitionRepo, workflowRepo } = ctx.repoContext;
   let resolution: ResourceResolution;
   if (resourceKind === "model") {
@@ -3849,9 +3859,12 @@ async function resolveRunResource(
       ? await resolveWorkflowTargetById(workflowRepo, resourceId)
       : await resolveWorkflowTarget(workflowRepo, resourceName);
   }
-  return resolution.status === "found"
-    ? resolution.resource
-    : unresolvedAccessResource(resourceKind, resourceName);
+  return resolution.status === "missing"
+    ? {
+      status: "missing",
+      resource: unresolvedAccessResource(resourceKind, resourceName),
+    }
+    : resolution;
 }
 
 async function handleRunAttach(
@@ -3873,15 +3886,24 @@ async function handleRunAttach(
         const resourceKind = result.record.runKind === "method-run"
           ? "model"
           : "workflow";
-        const resource = await resolveRunResource(
+        const resolution = await resolveRunResource(
           ctx,
           resourceKind,
           result.record.resourceName,
           result.record.resourceId,
         );
         if (
-          !authorizeOrReject(socket, requestId, principal, "run", resource, ctx)
-            .allowed
+          !authorizeResolved(
+            socket,
+            requestId,
+            principal,
+            "run",
+            resolution,
+            result.record.resourceName,
+            resourceKind,
+            ctx,
+            "run_attach_failed",
+          )
         ) return;
 
         const heartbeatData = await ctx.controlPlaneStore.get(
@@ -3923,15 +3945,24 @@ async function handleRunAttach(
   }
 
   const resourceKind = run.kind === "method-run" ? "model" : "workflow";
-  const resource = await resolveRunResource(
+  const resolution = await resolveRunResource(
     ctx,
     resourceKind,
     run.resourceName,
     run.resourceId,
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "run", resource, ctx)
-      .allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "run",
+      resolution,
+      run.resourceName,
+      resourceKind,
+      ctx,
+      "run_attach_failed",
+    )
   ) return;
 
   send(socket, {

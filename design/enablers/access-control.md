@@ -239,13 +239,18 @@ is named with that UUID.
   reports its usual not-found, and can only ever act on a resource whose id is
   that exact string.
 - A workflow file that fails to parse is authorized on the name the file
-  declares, since operations such as validate still find it.
-- A failed lookup fails the request. It is never treated as "not found".
+  declares, since operations such as validate still find it. Its tags cannot
+  be read, so rules conditioned on tags do not match it; name selectors do.
+- A failed lookup fails the request, after the raw string is authorized so a
+  refused caller learns nothing more. It is never treated as "not found".
 - Run cancel and attach authorize the resource the run was started on. Serve
   records its canonical name and id when the run starts, and resolves it by id
   when a cancel or attach arrives, so a rename during the run cannot redirect
-  the check. Records from older instances, which carry only a name, resolve
-  that name.
+  the check. Webhook-triggered runs do the same. Records from older instances,
+  which carry only a name, resolve that name.
+- A model is reported with the type its definition file declares, whether it
+  is found by name or by id, so authorization and execution always see the
+  same type.
 
 Direct type execution (`model.method.run` with a type and a definition name),
 output and run-id lookups, `*` resources, and vaults authorize differently
