@@ -688,11 +688,13 @@ export class ReconcileFromDiskService {
       string,
       { kind: KindDir; baseDir: string }
     >();
+    const walkedDirs: string[] = [];
     for (const kindDir of KIND_DIRS) {
       const dir = kindDir === "datastores"
         ? this.onDiskDatastores.get(extensionName)?.datastoresDir ??
           join(extRoot, kindDir)
         : join(extRoot, kindDir);
+      walkedDirs.push(dir);
       const files = await collectTsFiles(dir);
       for (const absolutePath of files) {
         onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
@@ -713,6 +715,7 @@ export class ReconcileFromDiskService {
       transitions,
       cache,
       "pulled",
+      walkedDirs,
     );
   }
 
@@ -722,6 +725,7 @@ export class ReconcileFromDiskService {
     transitions: ReconcileTransition[],
     cache: FreshnessCache,
     originType: "local" | "pulled",
+    walkedDirs?: readonly string[],
   ): Promise<Extension> {
     let ext = extension;
 
@@ -827,13 +831,33 @@ export class ReconcileFromDiskService {
     const onDiskCanonical = new Set(
       [...onDiskSources.keys()].map(canonicalizePath),
     );
+    const walkedPrefixes = walkedDirs?.map((d) => {
+      const c = canonicalizePath(d);
+      return c.endsWith("/") ? c : `${c}/`;
+    });
     for (const [loc, source] of ext.sources) {
       if (source.state.tag === "Tombstoned") continue;
       if (onDiskCanonical.has(loc.canonicalPath)) continue;
 
       const fromState = source.state.tag;
 
-      if (originType === "pulled") {
+      if (
+        originType === "pulled" && walkedPrefixes !== undefined &&
+        !walkedPrefixes.some((p) => loc.canonicalPath.startsWith(p))
+      ) {
+        // Outside every dir walked for this lockfile entry — e.g. the
+        // pre-migration `.swamp/pulled-extensions/` copy of a managed
+        // repo's extension. The lockfile does not vouch for it, so it is
+        // tombstoned rather than kept as EntryPointUnreadable, which
+        // would leave a failure row for doctor forever (swamp-club#2490).
+        ext = markSourceMissing(ext, { location: loc, bundleOnDisk: null });
+        transitions.push({
+          source: loc,
+          fromState,
+          toState: "Tombstoned",
+          reason: "pulled source outside the extension's walked dirs",
+        });
+      } else if (originType === "pulled") {
         // Pulled: lockfile is canonical. Source missing but lockfile
         // entry present → EntryPointUnreadable (re-fetch is W4).
         // This path only fires if the lockfile has the entry —

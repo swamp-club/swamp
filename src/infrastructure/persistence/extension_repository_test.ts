@@ -1425,3 +1425,117 @@ Deno.test("ExtensionRepository: saveAll with pruneUnreachable false keeps rows o
     );
   });
 });
+
+// ===== swamp-club#2490: stale-source prune in saveAll =====
+
+function withPruningRepository(
+  fn: (
+    repo: ExtensionRepository,
+    catalog: ExtensionCatalogStore,
+    repoRoot: string,
+  ) => void,
+): void {
+  const { repoRoot, dbPath } = makeTempLayout();
+  const { repository, catalog } = makeStubRepository({
+    dbPath,
+    repoRoot,
+    // Only files that really exist count, so seeded rows whose source was
+    // never written are stale.
+    sourceExists: (p) => {
+      try {
+        Deno.statSync(p);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
+  try {
+    fn(repository, catalog, repoRoot);
+  } finally {
+    catalog.close();
+    Deno.removeSync(repoRoot, { recursive: true });
+  }
+}
+
+/** Seeds a typed row whose source file does not exist but whose bundle
+ *  does. Returns the bundle path. */
+function seedStaleRow(
+  catalog: ExtensionCatalogStore,
+  repoRoot: string,
+  type: string,
+): string {
+  const bundle = join(repoRoot, ".swamp", "bundles", "stale.js");
+  ensureDirSync(join(repoRoot, ".swamp", "bundles"));
+  Deno.writeTextFileSync(bundle, "export const model = {};");
+  catalog.upsertWithIdentity({
+    source_path: `${repoRoot}/.swamp/pulled-extensions/@scope/gone/models/x.ts`,
+    type_normalized: type,
+    kind: "model",
+    bundle_path: bundle,
+    version: "1.0.0",
+    description: "",
+    extends_type: "",
+    source_mtime: "",
+    source_fingerprint: "fp",
+    state: "Indexed",
+    extension_name: "@scope/gone",
+    extension_version: "1.0.0",
+  });
+  return bundle;
+}
+
+function bundleExists(path: string): boolean {
+  try {
+    Deno.statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test("ExtensionRepository.saveAll: prunes a typed row whose source is missing and evicts its bundle", () => {
+  withPruningRepository((repo, cat, repoRoot) => {
+    const bundle = seedStaleRow(cat, repoRoot, "@dup/x");
+    // Another extension claims the type the stale row still holds.
+    const b = pulledExtension({
+      repoRoot,
+      name: "@scope/b",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+    });
+    repo.saveAll([b]);
+    assertEquals(cat.findAll().map((r) => r.extension_name), ["@scope/b"]);
+    assertFalse(bundleExists(bundle));
+  });
+});
+
+Deno.test("ExtensionRepository.saveAll: pruneUnreachable false skips the stale-source prune", () => {
+  withPruningRepository((repo, cat, repoRoot) => {
+    const bundle = seedStaleRow(cat, repoRoot, "@stale/x");
+    repo.saveAll([], { pruneUnreachable: false });
+    assertEquals(cat.findAll().length, 1);
+    assert(bundleExists(bundle));
+  });
+});
+
+Deno.test("ExtensionRepository.saveAll: a rolled-back save keeps the stale row and its bundle", () => {
+  withPruningRepository((repo, cat, repoRoot) => {
+    const bundle = seedStaleRow(cat, repoRoot, "@stale/x");
+    const b = pulledExtension({
+      repoRoot,
+      name: "@scope/b",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/y" }],
+    });
+    const c = pulledExtension({
+      repoRoot,
+      name: "@scope/c",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/y" }],
+    });
+    assertThrows(() => repo.saveAll([b, c]), DuplicateTypeError);
+    assertEquals(cat.findAll().map((r) => r.extension_name), ["@scope/gone"]);
+    assert(bundleExists(bundle));
+  });
+});

@@ -31,10 +31,14 @@ import {
 import { computeChecksum } from "../models/checksum.ts";
 import {
   type BundleResult,
+  collectSeenSources,
   computeSourceFingerprint,
   createFreshnessCache,
-  findStaleFiles as findStaleFilesShared,
   type FreshnessCache,
+  type FreshnessScan,
+  removeUnseenCatalogRows,
+  scanCatalogFreshness,
+  type TypelessRow,
 } from "./bundle_freshness.ts";
 import {
   BUNDLE_LAYOUT_VERSION,
@@ -51,6 +55,7 @@ import {
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
+import { evictRemovedBundles } from "./bundle_eviction.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 import type {
   BundleIndexResult,
@@ -187,6 +192,18 @@ export function extractExtensionNameFromPath(
   if (name.includes("..") || name.includes("\0")) return undefined;
   return name;
 }
+
+/**
+ * Row states of a source that exists but could not be bundled, validated
+ * or read. Unlike `CATALOG_FAILURE_STATES`, this includes
+ * `ValidationFailed` and leaves out `OrphanedBundleOnly`, whose source is
+ * gone.
+ */
+const LOCAL_OVERRIDE_FAILURE_STATES: ReadonlySet<string> = new Set([
+  "ValidationFailed",
+  "BundleBuildFailed",
+  "EntryPointUnreadable",
+]);
 
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
@@ -554,13 +571,22 @@ export class ExtensionLoader {
     }
 
     if (catalog.isPopulated(this.adapter.kind)) {
-      const staleFiles = await this.findStaleFiles(
+      const scan = await this.scanFreshness(
         dir,
         catalog,
         options?.additionalDirs,
       );
+      const staleFiles = scan.stale;
+      evictRemovedBundles(scan.removed, catalog);
+      // Read after the scan: its own removals may have reset the marker.
+      const healPending = !catalog.isTypelessHealDone(
+        this.adapter.catalogKinds[0],
+      );
+      const heal = healPending && !this.hasLiveLocalFailure(catalog);
 
-      if (staleFiles.length === 0) {
+      if (staleFiles.length === 0 && (!heal || scan.typeless.length === 0)) {
+        if (this.repoDir) this.settleTypeConflicts(catalog);
+        if (heal) catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
         this.registerLazyFromCatalog(catalog);
         return result;
       }
@@ -575,9 +601,13 @@ export class ExtensionLoader {
 
       const kindDir = extensionKindToKindDir(this.adapter.kind);
       const typesNeedingExtensionAttach = new Set<string>();
+      // Rows written typeless in this pass: the row that outranked one may
+      // give its type up later in the same pass, and they are not in
+      // `scan.typeless`, which holds only rows that were already fresh.
+      const outrankedRows: TypelessRow[] = [];
       for (const { absolutePath, relativePath, baseDir } of staleFiles) {
         try {
-          const { registeredType, extensionTarget } = await this
+          const { registeredType, extensionTarget, outranked } = await this
             .rebundleAndUpdateCatalog(
               absolutePath,
               relativePath,
@@ -591,6 +621,7 @@ export class ExtensionLoader {
           if (extensionTarget) {
             typesNeedingExtensionAttach.add(extensionTarget);
           }
+          if (outranked) outrankedRows.push(outranked);
           result.loaded.push(relativePath);
         } catch (error) {
           result.failed.push({ file: relativePath, error: String(error) });
@@ -629,7 +660,21 @@ export class ExtensionLoader {
       }
 
       if (this.repoDir) {
-        catalog.resolveOriginConflicts(this.repoDir);
+        this.settleTypeConflicts(catalog);
+      }
+
+      // Checked again: a rebundle in this pass may have just recorded a
+      // local failure, fixed the one that blocked the heal above, or
+      // re-armed the heal by changing the type a row claims.
+      if (
+        !catalog.isTypelessHealDone(this.adapter.catalogKinds[0]) &&
+        !this.hasLiveLocalFailure(catalog)
+      ) {
+        await this.healTypelessRows(catalog, [
+          ...scan.typeless,
+          ...outrankedRows,
+        ]);
+        catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
       }
 
       if (this.adapter.attachPendingExtensionsForType) {
@@ -730,8 +775,22 @@ export class ExtensionLoader {
       dir,
       options?.additionalDirs,
     );
+    // The same unseen-row removal the warm path applies, so rows the
+    // scan no longer reaches (an old pulled root, an extension that is
+    // no longer installed) do not outlive a cold pass (swamp-club#2490).
+    const additionalSet = new Set(options?.additionalDirs ?? []);
+    const seen = await collectSeenSources(
+      [dir, ...(options?.additionalDirs ?? [])],
+      (d) => this.discoverFiles(d, "", additionalSet.has(d)),
+    );
+    const removedUnseen = removeUnseenCatalogRows(
+      catalog,
+      this.adapter.catalogKinds.flatMap((k) => catalog.findByKind(k)),
+      seen,
+    );
+    evictRemovedBundles(removedUnseen, catalog);
     if (this.repoDir) {
-      catalog.resolveOriginConflicts(this.repoDir);
+      this.settleTypeConflicts(catalog);
     }
     if (options?.indexOnly) {
       this.registerLazyFromCatalog(catalog);
@@ -762,20 +821,48 @@ export class ExtensionLoader {
     const catalog = this.requireRepository("loadSingleType").getCatalogStore();
     installZodGlobal();
 
+    const kind = this.adapter.catalogKinds[0];
     // Use the in-memory lazy entry when available — avoids a SQLite read
     // that contends under concurrent process startups.
-    const entry = lazyEntry
-      ? {
-        type_normalized: typeNormalized,
-        bundle_path: lazyEntry.bundlePath,
-        source_path: lazyEntry.sourcePath,
-        source_fingerprint: lazyEntry.sourceFingerprint,
+    let entry:
+      | {
+        type_normalized: string;
+        bundle_path: string;
+        source_path: string;
+        source_fingerprint?: string;
       }
-      : catalog.findByType(typeNormalized, this.adapter.catalogKinds[0]);
+      | undefined = lazyEntry
+        ? {
+          type_normalized: typeNormalized,
+          bundle_path: lazyEntry.bundlePath,
+          source_path: lazyEntry.sourcePath,
+          source_fingerprint: lazyEntry.sourceFingerprint,
+        }
+        : catalog.findByType(typeNormalized, kind);
     if (!entry) {
       throw new Error(
         `No catalog entry for ${this.adapter.kind} type: ${typeNormalized}`,
       );
+    }
+
+    // A row whose source is gone must never be imported: its bundle, if
+    // any, is old code, and rebuilding a missing bundle fails with ENOENT
+    // (swamp-club#2490). Drop such rows until a live one turns up; with
+    // none left, return so the registry reports the type as not found.
+    // Bounded by the rows claiming the type, so a delete that silently
+    // fails cannot loop forever. They are counted only once a source is
+    // missing, so the common case adds no SQLite read to a lazy load.
+    let remaining: number | undefined;
+    while (!this.sourceExistsOnDisk(entry.source_path)) {
+      remaining ??= catalog.findAllByType(typeNormalized, kind).length + 1;
+      this.logger
+        .debug`Dropping catalog row for ${typeNormalized}: source ${entry.source_path} is missing`;
+      catalog.removeByRawSourcePath(entry.source_path);
+      evictRemovedBundles([entry], catalog);
+      entry = --remaining > 0
+        ? catalog.findByType(typeNormalized, kind)
+        : undefined;
+      if (!entry) return;
     }
 
     await this.importAndRegisterBundle(entry);
@@ -1043,6 +1130,145 @@ export class ExtensionLoader {
     return js;
   }
 
+  /**
+   * True when another live row already claims `typeNormalized` and wins
+   * it over `sourcePath`: local outranks pulled, a pulled row that already
+   * holds the type keeps it against another pulled row, and two locals
+   * fall back to the smaller path.
+   */
+  private isOutrankedForType(
+    catalog: ExtensionCatalogStore,
+    typeNormalized: string,
+    sourcePath: string,
+  ): boolean {
+    const self = this.contributorFor(sourcePath);
+    return catalog.findAllByType(typeNormalized, this.adapter.catalogKinds[0])
+      .some((row) => {
+        if ((row.state ?? "Indexed") === "Tombstoned") return false;
+        const other = this.contributorFor(row.source_path);
+        if (other.sourcePath === self.sourcePath) return false;
+        // The incumbent keeps it, so pulling another extension that
+        // provides the same type never takes it away.
+        if (self.pulled && other.pulled) return true;
+        return compareExtensionPrecedence(other, self) < 0;
+      });
+  }
+
+  /**
+   * Settles every type conflict the loader's own catalog writes can
+   * leave: pulled-vs-pulled first, keeping the earliest-indexed row, then
+   * pulled-vs-local, where local wins. In that order a local override
+   * always ends up the only claimant, however many pulled rows were typed
+   * the same (swamp-club#2490). Two different pulled extensions claiming
+   * one type are reported, since that choice is made silently here.
+   */
+  private settleTypeConflicts(catalog: ExtensionCatalogStore): void {
+    if (!this.repoDir) return;
+    for (
+      const { winner, winnerName, loserName } of catalog
+        .settlePulledTypeConflicts(this.repoDir)
+    ) {
+      // Without both names there is no extension to tell the user to rm.
+      if (winnerName && loserName && winnerName !== loserName) {
+        this.logger
+          .warn`Extensions ${winnerName} and ${loserName} both provide ${winner.kind} type ${winner.type_normalized}; keeping ${winnerName}, which provided it first. To use ${loserName} instead, run 'swamp extension rm ${winnerName}'`;
+      }
+    }
+    catalog.resolveOriginConflicts(this.repoDir);
+  }
+
+  /**
+   * Restores the type of Indexed rows that claim none (swamp-club#2490).
+   * A row's type is cleared while another row claims it; once that row is
+   * gone the type is never re-derived, because the row's fingerprint still
+   * matches. Each row's EXISTING bundle is imported to learn its exported
+   * type (this works for wrapped exports, which source-text extraction
+   * misses), and the type is written back only when no row claims it,
+   * for at most one row per type, chosen by
+   * {@link compareExtensionPrecedence}: a local row before a pulled one,
+   * then the smallest canonical path, the Extension aggregate's I2
+   * tie-break.
+   *
+   * Catalog-only: nothing is registered here, so a pulled row can never
+   * take a type from a local override in the registry, and a failure
+   * leaves the row as it was.
+   *
+   * Callers skip the heal, leaving its marker unset, while
+   * {@link hasLiveLocalFailure} holds: a failed row claims no type, so a
+   * broken local override would otherwise hand its type to the pulled
+   * row it shadows.
+   */
+  private async healTypelessRows(
+    catalog: ExtensionCatalogStore,
+    typeless: readonly TypelessRow[],
+  ): Promise<void> {
+    const kind = this.adapter.catalogKinds[0];
+    const candidates = new Map<string, string[]>();
+    for (const { absolutePath, row } of typeless) {
+      if (!row.bundle_path) continue;
+      let typeNormalized: string;
+      try {
+        const module = await this.importBundleByPath({
+          bundlePath: row.bundle_path,
+          sourcePath: absolutePath,
+          sourceFingerprint: row.source_fingerprint || undefined,
+        });
+        const exported = module[this.adapter.primaryExportKey];
+        if (!exported) continue;
+        const parsed = this.adapter.validatePrimaryExport(exported);
+        if (!parsed.success) continue;
+        typeNormalized = this.adapter.normalizeType(
+          parsed.data as Record<string, unknown>,
+        );
+      } catch (error) {
+        this.logger
+          .debug`Could not revalidate typeless catalog row ${row.source_path}: ${error}`;
+        continue;
+      }
+      const rows = candidates.get(typeNormalized);
+      if (rows) rows.push(row.source_path);
+      else candidates.set(typeNormalized, [row.source_path]);
+    }
+
+    for (const [typeNormalized, sourcePaths] of candidates) {
+      const [{ sourcePath: winner }] = sourcePaths
+        .map((sourcePath) => ({
+          sourcePath,
+          contributor: this.contributorFor(sourcePath),
+        }))
+        .sort((a, b) =>
+          compareExtensionPrecedence(a.contributor, b.contributor)
+        );
+      // Check and write together, so two processes cannot each restore
+      // a different candidate.
+      catalog.runInTransaction(() => {
+        if (catalog.findByType(typeNormalized, kind)) return;
+        catalog.setTypeNormalized(winner, typeNormalized);
+      });
+    }
+  }
+
+  /**
+   * True when a local row of this kind is in a failed state and its source
+   * still exists. Its type is unknown — failed rows claim none — so it may
+   * be the override of any typeless pulled row, and the typeless-row heal
+   * must wait until it is fixed or removed (swamp-club#2490).
+   */
+  private hasLiveLocalFailure(catalog: ExtensionCatalogStore): boolean {
+    const failed = catalog.findByKind(this.adapter.catalogKinds[0]).find((
+      row,
+    ) =>
+      LOCAL_OVERRIDE_FAILURE_STATES.has(row.state ?? "Indexed") &&
+      !this.contributorFor(row.source_path).pulled &&
+      this.sourceExistsOnDisk(row.source_path)
+    );
+    if (failed) {
+      this.logger
+        .debug`Deferring the typeless-row heal while local source ${failed.source_path} is ${failed.state}`;
+    }
+    return failed !== undefined;
+  }
+
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
     const skippedExtensions = new Set<string>();
     for (const kind of this.adapter.catalogKinds) {
@@ -1262,7 +1488,13 @@ export class ExtensionLoader {
     denoPath: string,
     baseDir: string,
     catalog: ExtensionCatalogStore,
-  ): Promise<{ registeredType?: string; extensionTarget?: string }> {
+  ): Promise<
+    {
+      registeredType?: string;
+      extensionTarget?: string;
+      outranked?: TypelessRow;
+    }
+  > {
     const source = await Deno.readTextFile(absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
       return {};
@@ -1330,9 +1562,17 @@ export class ExtensionLoader {
       }
       const validated = parsed.data as Record<string, unknown>;
       const typeNormalized = this.adapter.normalizeType(validated);
+      // Never write a type another row outranks this one for: two pulled
+      // rows sharing a type would make every later save fail I-Repo-1
+      // before the settle step runs (swamp-club#2490).
+      const outranked = this.isOutrankedForType(
+        catalog,
+        typeNormalized,
+        absolutePath,
+      );
 
       catalog.upsert({
-        type_normalized: typeNormalized,
+        type_normalized: outranked ? "" : typeNormalized,
         kind: this.adapter.catalogKinds[0],
         bundle_path: bundlePath,
         source_path: canonicalizePath(absolutePath),
@@ -1344,6 +1584,21 @@ export class ExtensionLoader {
         state: "Indexed",
       });
 
+      if (outranked) {
+        return {
+          outranked: {
+            absolutePath,
+            relativePath,
+            baseDir,
+            row: {
+              source_path: canonicalizePath(absolutePath),
+              bundle_path: bundlePath,
+              source_fingerprint: effectiveFingerprint,
+              type_normalized: "",
+            },
+          },
+        };
+      }
       if (!this.adapter.hasType(typeNormalized)) {
         this.adapter.register(
           typeNormalized,
@@ -1623,15 +1878,13 @@ export class ExtensionLoader {
     }
   }
 
-  private async findStaleFiles(
+  private async scanFreshness(
     dir: string,
     catalog: ExtensionCatalogStore,
     additionalDirs?: string[],
-  ): Promise<
-    Array<{ absolutePath: string; relativePath: string; baseDir: string }>
-  > {
+  ): Promise<FreshnessScan> {
     const additionalSet = new Set(additionalDirs ?? []);
-    return await findStaleFilesShared({
+    return await scanCatalogFreshness({
       modelsDir: dir,
       additionalDirs,
       catalog,

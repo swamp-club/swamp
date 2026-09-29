@@ -2568,3 +2568,304 @@ Deno.test("removeByRawSourcePath: deletes by exact stored PK without canonicaliz
   );
   store.close();
 });
+
+// ── swamp-club#2490: stale-source prune, pulled settle, typeless heal ──
+
+const LEGACY = "/repo/.swamp/pulled-extensions";
+const MANAGED = "/repo/.swamp/config/pulled-extensions";
+
+function withStore(fn: (store: ExtensionCatalogStore) => void): void {
+  const store = new ExtensionCatalogStore(makeTempDbPath());
+  try {
+    fn(store);
+  } finally {
+    store.close();
+  }
+}
+
+Deno.test("pruneStaleSources: drops a typed row whose source is missing", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: `${LEGACY}/@a/b/models/x.ts` }));
+    const pruned = store.pruneStaleSources({
+      canonicalRepoRoot: "/repo",
+      sourceExists: () => false,
+    });
+    assertEquals(pruned.map((r) => r.source_path), [
+      `${LEGACY}/@a/b/models/x.ts`,
+    ]);
+    assertEquals(store.count(), 0);
+  });
+});
+
+Deno.test("pruneStaleSources: keeps a typeless row whose source is missing", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ type_normalized: "" }));
+    store.pruneStaleSources({
+      canonicalRepoRoot: "/repo",
+      sourceExists: () => false,
+    });
+    assertEquals(store.count(), 1);
+  });
+});
+
+Deno.test("pruneStaleSources: drops an extension row whose base type is set and source is missing", () => {
+  withStore((store) => {
+    store.upsert(
+      makeRow({ kind: "extension", type_normalized: "", extends_type: "a/b" }),
+    );
+    store.pruneStaleSources({
+      canonicalRepoRoot: "/repo",
+      sourceExists: () => false,
+    });
+    assertEquals(store.count(), 0);
+  });
+});
+
+Deno.test("pruneStaleSources: keeps failure-state, protected and present rows", () => {
+  withStore((store) => {
+    for (const state of ["BundleBuildFailed", "EntryPointUnreadable"]) {
+      store.upsert(
+        makeRow({ source_path: `/repo/extensions/models/${state}.ts`, state }),
+      );
+    }
+    store.upsert(makeRow({ source_path: "/repo/extensions/models/kept.ts" }));
+    store.upsert(makeRow({ source_path: "/repo/extensions/models/live.ts" }));
+    store.pruneStaleSources({
+      canonicalRepoRoot: "/repo",
+      protectedPaths: new Set([
+        canonicalizePath("/repo/extensions/models/kept.ts"),
+      ]),
+      sourceExists: (p) => p.endsWith("live.ts"),
+    });
+    assertEquals(store.count(), 4);
+  });
+});
+
+Deno.test("pruneStaleSources: drops rows under the inactive pulled root, except datastores", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: `${LEGACY}/@a/b/models/x.ts` }));
+    store.upsert(
+      makeRow({
+        kind: "datastore",
+        type_normalized: "@a/ds",
+        source_path: `${LEGACY}/@a/ds/datastores/d.ts`,
+      }),
+    );
+    store.upsert(makeRow({
+      type_normalized: "@a/b/y",
+      source_path: `${MANAGED}/@a/b/models/y.ts`,
+    }));
+    store.pruneStaleSources({
+      canonicalRepoRoot: "/repo",
+      activePulledRoot: MANAGED,
+      sourceExists: () => true,
+    });
+    assertEquals(
+      store.findAll().map((r) => r.source_path).sort(),
+      [
+        `${MANAGED}/@a/b/models/y.ts`,
+        `${LEGACY}/@a/ds/datastores/d.ts`,
+      ].sort(),
+    );
+  });
+});
+
+Deno.test("pruneStaleSources: keeps both pulled roots when the active root is unknown", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: `${LEGACY}/@a/b/models/x.ts` }));
+    store.upsert(makeRow({
+      type_normalized: "@a/b/y",
+      source_path: `${MANAGED}/@a/b/models/y.ts`,
+    }));
+    store.pruneStaleSources({
+      canonicalRepoRoot: "/repo",
+      sourceExists: () => true,
+    });
+    assertEquals(store.count(), 2);
+  });
+});
+
+Deno.test("pruneStaleSources: keeps both pulled roots when the active root matches neither", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: `${LEGACY}/@a/b/models/x.ts` }));
+    store.upsert(makeRow({
+      type_normalized: "@a/b/y",
+      source_path: `${MANAGED}/@a/b/models/y.ts`,
+    }));
+    // The managed root, spelled differently from the repo root it was
+    // derived from.
+    store.pruneStaleSources({
+      canonicalRepoRoot: "/repo",
+      activePulledRoot: "/elsewhere/.swamp/config/pulled-extensions",
+      sourceExists: () => true,
+    });
+    assertEquals(store.count(), 2);
+  });
+});
+
+Deno.test("pruneStaleSources: matches the active root in Windows canonical form", () => {
+  const windows = canonicalizePathFor("C:\\Users\\Me\\Repo", true);
+  withStore((store) => {
+    store.upsert(makeRow({
+      source_path: `${windows}/.swamp/pulled-extensions/@a/b/models/x.ts`,
+    }));
+    store.upsert(makeRow({
+      type_normalized: "@a/b/y",
+      source_path:
+        `${windows}/.swamp/config/pulled-extensions/@a/b/models/y.ts`,
+    }));
+    store.pruneStaleSources({
+      canonicalRepoRoot: windows,
+      activePulledRoot: `${windows}/.swamp/config/pulled-extensions`,
+      sourceExists: () => true,
+    });
+    assertEquals(store.findAll().map((r) => r.type_normalized), ["@a/b/y"]);
+  });
+});
+
+Deno.test("settlePulledTypeConflicts: the earliest-inserted pulled row keeps the type", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: `${MANAGED}/@z/b/models/x.ts` }));
+    store.upsert(makeRow({ source_path: `${MANAGED}/@a/b/models/x.ts` }));
+    // A rebundle updates the row in place and keeps its seniority.
+    store.upsert(makeRow({
+      source_path: `${MANAGED}/@z/b/models/x.ts`,
+      version: "2026.02.01.1",
+    }));
+    const cleared = store.settlePulledTypeConflicts("/repo");
+    assertEquals(cleared.length, 1);
+    assertEquals(cleared[0].winner.source_path, `${MANAGED}/@z/b/models/x.ts`);
+    assertEquals(
+      store.findAllByType("@myorg/echo", "model").map((r) => r.source_path),
+      [`${MANAGED}/@z/b/models/x.ts`],
+    );
+  });
+});
+
+Deno.test("settlePulledTypeConflicts: names each extension in full", () => {
+  withStore((store) => {
+    store.upsert(makeRow({
+      source_path: `${LEGACY}/@swamp/aws/cur/models/cur.ts`,
+    }));
+    store.upsert(makeRow({ source_path: `${LEGACY}/@aaa/cur/models/cur.ts` }));
+    const [conflict] = store.settlePulledTypeConflicts("/repo");
+    assertEquals(conflict.winnerName, "@swamp/aws/cur");
+    assertEquals(conflict.loserName, "@aaa/cur");
+  });
+});
+
+Deno.test("settlePulledTypeConflicts: prefers the stored extension_name", () => {
+  withStore((store) => {
+    store.upsertWithIdentity({
+      ...makeRow({ source_path: `${LEGACY}/@swamp/aws/cur/models/cur.ts` }),
+      extension_name: "@swamp/aws/cur",
+      extension_version: "2026.01.15.1",
+    });
+    store.upsertWithIdentity({
+      ...makeRow({ source_path: `${LEGACY}/@swamp/aws/ec2/models/cur.ts` }),
+      extension_name: "@swamp/aws/ec2",
+      extension_version: "2026.01.15.1",
+    });
+    const [conflict] = store.settlePulledTypeConflicts("/repo");
+    assertEquals(conflict.winnerName, "@swamp/aws/cur");
+    assertEquals(conflict.loserName, "@swamp/aws/ec2");
+  });
+});
+
+Deno.test("settlePulledTypeConflicts: ignores local and extension rows", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: `${MANAGED}/@a/b/models/x.ts` }));
+    store.upsert(makeRow({ source_path: "/repo/extensions/models/x.ts" }));
+    store.upsert(makeRow({
+      kind: "extension",
+      source_path: `${MANAGED}/@z/b/models/e.ts`,
+    }));
+    assertEquals(store.settlePulledTypeConflicts("/repo"), []);
+  });
+});
+
+Deno.test("settle then resolveOriginConflicts leaves only the local override typed", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: `${LEGACY}/@a/b/models/x.ts` }));
+    store.upsert(makeRow({ source_path: `${LEGACY}/@z/b/models/x.ts` }));
+    store.upsert(makeRow({ source_path: "/repo/extensions/models/x.ts" }));
+    store.settlePulledTypeConflicts("/repo");
+    store.resolveOriginConflicts("/repo");
+    assertEquals(
+      store.findAllByType("@myorg/echo", "model").map((r) => r.source_path),
+      ["/repo/extensions/models/x.ts"],
+    );
+  });
+});
+
+Deno.test("typeless heal marker: cleared by deleting a typed row of that kind", () => {
+  withStore((store) => {
+    store.markTypelessHealDone("model");
+    store.markTypelessHealDone("vault");
+    store.upsert(makeRow({ type_normalized: "", source_path: "/repo/a.ts" }));
+    store.removeBySourcePath("/repo/a.ts");
+    assertEquals(store.isTypelessHealDone("model"), true);
+
+    store.upsert(makeRow({ source_path: "/repo/b.ts" }));
+    store.removeByRawSourcePath("/repo/b.ts");
+    assertEquals(store.isTypelessHealDone("model"), false);
+    assertEquals(store.isTypelessHealDone("vault"), true);
+
+    store.markTypelessHealDone("model");
+    store.upsert(makeRow({ source_path: "/repo/dir/c.ts" }));
+    assertEquals(store.removeBySourcePrefix("/repo/dir/"), 1);
+    assertEquals(store.isTypelessHealDone("model"), false);
+  });
+});
+
+Deno.test("typeless heal marker: cleared when an upsert changes the type a row claims", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: "/repo/a.ts" }));
+    store.markTypelessHealDone("model");
+
+    // Rewriting the same type, or typing a typeless row, frees nothing.
+    store.upsert(makeRow({ source_path: "/repo/a.ts" }));
+    store.upsert(makeRow({ type_normalized: "", source_path: "/repo/b.ts" }));
+    store.upsert(
+      makeRow({ source_path: "/repo/b.ts", type_normalized: "@a/b" }),
+    );
+    assertEquals(store.isTypelessHealDone("model"), true);
+
+    store.upsert(
+      makeRow({ source_path: "/repo/a.ts", type_normalized: "@a/v2" }),
+    );
+    assertEquals(store.isTypelessHealDone("model"), false);
+
+    store.markTypelessHealDone("model");
+    store.upsertWithIdentity({
+      ...makeRow({ source_path: "/repo/a.ts", type_normalized: "@a/v3" }),
+      extension_name: "@a/ext",
+      extension_version: "1.0.0",
+    });
+    assertEquals(store.isTypelessHealDone("model"), false);
+  });
+});
+
+Deno.test("setTypeNormalized: writes only the type column", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ type_normalized: "", source_fingerprint: "fp" }));
+    store.setTypeNormalized("/repo/extensions/models/echo.ts", "@a/restored");
+    const row = store.findByType("@a/restored", "model");
+    assertEquals(row?.source_fingerprint, "fp");
+    assertEquals(row?.bundle_path, "/repo/.swamp/bundles/echo.js");
+  });
+});
+
+Deno.test("hasRowWithBundlePath: exact bundle path match", () => {
+  withStore((store) => {
+    store.upsert(makeRow());
+    assertEquals(
+      store.hasRowWithBundlePath("/repo/.swamp/bundles/echo.js"),
+      true,
+    );
+    assertEquals(
+      store.hasRowWithBundlePath("/repo/.swamp/bundles/other.js"),
+      false,
+    );
+  });
+});

@@ -192,6 +192,9 @@ export async function reloadPulledExtensions(
           !row.source_path || !row.bundle_path ||
           rebundled.has(row.source_path)
         ) continue;
+        // A deleted source has nothing to re-bundle. Its row is dropped
+        // when the type is next loaded (swamp-club#2490).
+        if (await sourceIsMissing(row.source_path)) continue;
         try {
           const kindDir = extensionKindToKindDir(
             row.kind as Parameters<typeof extensionKindToKindDir>[0],
@@ -613,4 +616,13 @@ export function createExtensionDiscoverer(
 
     return discovered;
   };
+}
+
+async function sourceIsMissing(sourcePath: string): Promise<boolean> {
+  try {
+    await Deno.stat(sourcePath);
+    return false;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound;
+  }
 }

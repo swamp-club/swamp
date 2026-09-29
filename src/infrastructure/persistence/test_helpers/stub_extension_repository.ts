@@ -51,12 +51,19 @@ import type { UpstreamExtensionsMap } from "../upstream_extensions.ts";
  *   orphan-DELETE semantics). Tests for the lockfile fallback override
  *   this. Internally constructed into a {@link LockfileRepository}
  *   with a sentinel path so reads serve from the in-memory cache.
+ * @param sourceExists Whether a row's source file exists, for saveAll's
+ *   stale-source prune. Defaults to "always", since fixtures use
+ *   fictitious source paths; tests of the prune pass their own.
+ * @param activePulledRoot The repo's active pulled root. Defaults to
+ *   unknown, which skips the inactive-root prune.
  */
 export function makeStubRepository(args: {
   dbPath: string;
   repoRoot?: string;
   lockedVersions?: UpstreamExtensionsMap;
   localManifestIdentity?: LocalManifestIdentity | null;
+  sourceExists?: (sourcePath: string) => boolean;
+  activePulledRoot?: () => string | undefined;
 }): { repository: ExtensionRepository; catalog: ExtensionCatalogStore } {
   const catalog = new ExtensionCatalogStore(args.dbPath);
   const lockfileRepository = new LockfileRepository(
@@ -68,6 +75,8 @@ export function makeStubRepository(args: {
     lockfileRepository,
     repoRoot: args.repoRoot ?? "/test/repo",
     localManifestIdentity: args.localManifestIdentity,
+    sourceExists: args.sourceExists ?? (() => true),
+    activePulledRoot: args.activePulledRoot ?? (() => undefined),
   });
   return { repository, catalog };
 }

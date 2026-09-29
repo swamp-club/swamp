@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  activePulledExtensionsRoot,
   bundleNamespace,
   getManagedConfigBase,
   getSwampConfigDir,
@@ -433,6 +434,31 @@ Deno.test("isManagedConfig: returns true when registered as active", () => {
     "/repo/active-test-1/.swamp/config",
   );
   assertEquals(isManagedConfig("/repo/active-test-1"), true);
+});
+
+// --- activePulledExtensionsRoot (swamp-club#2490) ---
+
+Deno.test("activePulledExtensionsRoot: undefined when no managed status is recorded", () => {
+  const repo = `/repo/active-root-${crypto.randomUUID()}`;
+  assertEquals(activePulledExtensionsRoot(repo), undefined);
+});
+
+Deno.test("activePulledExtensionsRoot: legacy root when registered as unmanaged", () => {
+  const repo = `/repo/active-root-${crypto.randomUUID()}`;
+  registerManagedConfig(repo, false);
+  assertPathEquals(
+    activePulledExtensionsRoot(repo)!,
+    swampPath(repo, "pulled-extensions"),
+  );
+});
+
+Deno.test("activePulledExtensionsRoot: managed root when registered as managed", () => {
+  const repo = `/repo/active-root-${crypto.randomUUID()}`;
+  registerManagedConfig(repo, true, "/cache/ns/config");
+  assertPathEquals(
+    activePulledExtensionsRoot(repo)!,
+    swampPath(repo, "config", "pulled-extensions"),
+  );
 });
 
 // --- managed config provenance (swamp-club#2483) ---

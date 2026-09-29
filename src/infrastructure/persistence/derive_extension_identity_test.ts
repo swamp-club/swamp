@@ -32,6 +32,62 @@ Deno.test("deriveExtensionIdentity: pulled extension at /repo/.swamp/pulled-exte
   );
 });
 
+Deno.test("deriveExtensionIdentity: pulled extension under the managed .swamp/config/pulled-extensions root", () => {
+  // managedConfig repos extract to `.swamp/config/pulled-extensions/`
+  // (swamp-club#2490). Rows there must derive the same identity as the
+  // legacy root, or `extension rm` never finds them.
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/config/pulled-extensions/@swamp/aws/cur/models/report_definition.ts",
+      "/repo",
+    ),
+    { name: "@swamp/aws/cur", version: "" },
+  );
+});
+
+Deno.test("deriveExtensionIdentity: managed root honours knownNames", () => {
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/config/pulled-extensions/@org/foo/webhooks/models/hook.ts",
+      "/repo",
+      ["@org/foo/webhooks"],
+    ),
+    { name: "@org/foo/webhooks", version: "" },
+  );
+});
+
+Deno.test("deriveExtensionIdentity: managed root wins over the local extensions/<kind> rule", () => {
+  // An extension named `@org/extensions` puts an `extensions/models`
+  // segment pair in the path; the pulled rule must match first.
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/config/pulled-extensions/@org/extensions/models/x.ts",
+      "/repo",
+    ),
+    { name: "@org/extensions", version: "" },
+  );
+});
+
+Deno.test("deriveExtensionIdentity: managed root with no kind segment returns null", () => {
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/config/pulled-extensions/no-kind/file.ts",
+      "/repo",
+    ),
+    null,
+  );
+});
+
+Deno.test("deriveExtensionIdentity: Windows canonical form for the managed root", () => {
+  assertEquals(
+    deriveExtensionIdentity(
+      "c:/users/foo/repo/.swamp/config/pulled-extensions/@scope/foo/models/x.ts",
+      "c:/users/foo/repo",
+    ),
+    { name: "@scope/foo", version: "" },
+  );
+});
+
 Deno.test("deriveExtensionIdentity: pulled scoped extension with multi-segment name", () => {
   // pull.ts joins the per-extension subtree under
   // `.swamp/pulled-extensions/<ref.name>/<type>/`. ref.name can have

@@ -168,3 +168,44 @@ Deno.test("WebhookTypeRegistry.invalidateType: removes lazy and loaded types", (
   assertEquals(registry.has("@myorg/a"), false);
   assertEquals(registry.has("@myorg/b"), false);
 });
+
+Deno.test("WebhookTypeRegistry.ensureTypeLoaded: drops the lazy entry when the loader does not promote", async () => {
+  const registry = new WebhookTypeRegistry();
+  registry.registerLazy(lazy("@myorg/stale"));
+
+  let calls = 0;
+  registry.setTypeLoader(() => {
+    calls++;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/stale");
+
+  assertEquals(calls, 1);
+  assertEquals(registry.isLazy("@myorg/stale"), false);
+  assertEquals(registry.has("@myorg/stale"), false);
+  assertEquals(registry.get("@myorg/stale"), undefined);
+
+  await registry.ensureTypeLoaded("@myorg/stale");
+  assertEquals(calls, 1);
+});
+
+Deno.test("WebhookTypeRegistry.ensureTypeLoaded: keeps a type the loader promoted", async () => {
+  const registry = new WebhookTypeRegistry();
+  registry.registerLazy(lazy("@myorg/hook"));
+
+  let calls = 0;
+  registry.setTypeLoader((type) => {
+    calls++;
+    registry.promoteFromLazy(info(type));
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/hook");
+  await registry.ensureTypeLoaded("@myorg/hook");
+
+  assertEquals(calls, 1);
+  assertEquals(registry.has("@myorg/hook"), true);
+  assertEquals(registry.isLazy("@myorg/hook"), false);
+  assertEquals(registry.get("@myorg/hook")?.name, "@myorg/hook webhook");
+});

@@ -24,6 +24,7 @@ import { getLogger } from "@logtape/logtape";
 import { canonicalizePath } from "./canonicalize_path.ts";
 import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import { isPulledExtensionPath } from "../../domain/extensions/extension_precedence.ts";
+import { CATALOG_FAILURE_STATES } from "../../domain/extensions/bundle_freshness.ts";
 
 const logger = getLogger(["swamp", "persistence", "extension-catalog"]);
 
@@ -65,6 +66,15 @@ const DEDUP_NON_CANONICAL_MIGRATION_KEY =
   "migration_applied:dedup-non-canonical-source-paths-v1";
 
 /**
+ * Per-kind `bundle_meta` key prefix recording that the loader has
+ * revalidated the kind's typeless Indexed rows (swamp-club#2490). Absent
+ * on the first run after upgrade, and cleared whenever a row that claims
+ * a type is deleted, since that row may have been the reason another row
+ * lost its type.
+ */
+const TYPELESS_ROW_HEAL_KEY_PREFIX = "migration_applied:typeless-row-heal-v1:";
+
+/**
  * Bundle layout version stored in `bundle_meta`. Bumped whenever the
  * on-disk bundle path scheme changes; loaders compare this against the
  * catalog's current value via {@link ExtensionRepository.invalidationGuards}
@@ -98,6 +108,34 @@ export interface OriginConflict {
   readonly kind: ExtensionKind;
   readonly pulledSourcePath: string;
   readonly localSourcePath: string;
+}
+
+/**
+ * Reported when {@link ExtensionCatalogStore.settlePulledTypeConflicts}
+ * clears a pulled row's type because another pulled row wins the same
+ * `(kind, type)`.
+ */
+export interface PulledTypeConflict {
+  readonly winner: ExtensionTypeRow;
+  readonly loser: ExtensionTypeRow;
+  /** The winner's extension name, e.g. `@swamp/aws/cur`, when derivable. */
+  readonly winnerName?: string;
+  /** The loser's extension name, when derivable. */
+  readonly loserName?: string;
+}
+
+/**
+ * The row's owning extension name. A row the loader has only just inserted
+ * has no `extension_name` yet, so fall back to deriving it from the path,
+ * which reads the full name (`@swamp/aws/cur`), not just its scope.
+ */
+function pulledExtensionName(
+  row: ExtensionTypeRow,
+  canonicalRoot: string,
+): string | undefined {
+  return row.extension_name ||
+    deriveExtensionIdentity(canonicalizePath(row.source_path), canonicalRoot)
+      ?.name;
 }
 
 /**
@@ -737,6 +775,9 @@ export class ExtensionCatalogStore {
     try {
       this.db.exec("DELETE FROM bundle_types");
       this.db.exec("DELETE FROM bundle_meta WHERE key LIKE 'populated:%'");
+      this.db.exec(
+        `DELETE FROM bundle_meta WHERE key LIKE '${TYPELESS_ROW_HEAL_KEY_PREFIX}%'`,
+      );
       this.markDataMigrationApplied();
       this.db.exec("COMMIT");
       logger
@@ -812,6 +853,7 @@ export class ExtensionCatalogStore {
     const MAX_RETRIES = 5;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
+        this.resetTypelessHealOnRetype(params[0], row.type_normalized);
         const stmt = this.db.prepare(sql);
         stmt.run(...params);
         return;
@@ -852,9 +894,9 @@ export class ExtensionCatalogStore {
    */
   removeBySourcePath(sourcePath: string): void {
     const stmt = this.db.prepare(
-      "DELETE FROM bundle_types WHERE source_path = ?",
+      "DELETE FROM bundle_types WHERE source_path = ? RETURNING kind, type_normalized",
     );
-    stmt.run(canonicalizePath(sourcePath));
+    this.resetTypelessHealFor(stmt.all(canonicalizePath(sourcePath)));
   }
 
   /**
@@ -866,9 +908,10 @@ export class ExtensionCatalogStore {
    * {@link canonicalizePath} lowercases, breaking PK lookups).
    */
   removeByRawSourcePath(rawSourcePath: string): void {
-    this.db.prepare(
-      "DELETE FROM bundle_types WHERE source_path = ?",
-    ).run(rawSourcePath);
+    const stmt = this.db.prepare(
+      "DELETE FROM bundle_types WHERE source_path = ? RETURNING kind, type_normalized",
+    );
+    this.resetTypelessHealFor(stmt.all(rawSourcePath));
   }
 
   /**
@@ -893,10 +936,68 @@ export class ExtensionCatalogStore {
    */
   removeBySourcePrefix(sourcePrefix: string): number {
     const stmt = this.db.prepare(
-      "DELETE FROM bundle_types WHERE source_path LIKE ? ESCAPE '\\'",
+      "DELETE FROM bundle_types WHERE source_path LIKE ? ESCAPE '\\' RETURNING kind, type_normalized",
     );
-    const result = stmt.run(likePrefixPattern(sourcePrefix));
-    return Number(result.changes);
+    const deleted = stmt.all(likePrefixPattern(sourcePrefix));
+    this.resetTypelessHealFor(deleted);
+    return deleted.length;
+  }
+
+  /**
+   * Clears the typeless-row heal marker for the kind of every deleted row
+   * that claimed a type: that row may have been the reason another row of
+   * the same kind lost its type (swamp-club#2490).
+   */
+  private resetTypelessHealFor(deleted: Record<string, unknown>[]): void {
+    const kinds = new Set<string>();
+    for (const row of deleted) {
+      if (String(row.type_normalized ?? "").length > 0) {
+        kinds.add(String(row.kind));
+      }
+    }
+    if (kinds.size === 0) return;
+    const stmt = this.db.prepare("DELETE FROM bundle_meta WHERE key = ?");
+    for (const kind of kinds) {
+      stmt.run(`${TYPELESS_ROW_HEAL_KEY_PREFIX}${kind}`);
+    }
+  }
+
+  /**
+   * Clears the typeless-row heal marker when an upsert is about to change
+   * the type an existing row claims: the type it gives up may be the one
+   * another row of its kind lost to it, just as when the row is deleted
+   * (swamp-club#2490).
+   */
+  private resetTypelessHealOnRetype(
+    sourcePath: string,
+    newType: string,
+  ): void {
+    const previous = this.db.prepare(
+      "SELECT kind, type_normalized FROM bundle_types WHERE source_path = ?",
+    ).get(sourcePath) as Record<string, unknown> | undefined;
+    if (previous && previous.type_normalized !== newType) {
+      this.resetTypelessHealFor([previous]);
+    }
+  }
+
+  /**
+   * True once the loader has revalidated this kind's typeless Indexed rows
+   * since the last deletion of a row that claimed a type.
+   */
+  isTypelessHealDone(kind: ExtensionKind): boolean {
+    const row = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = ?",
+    ).get(`${TYPELESS_ROW_HEAL_KEY_PREFIX}${kind}`) as
+      | { value: string }
+      | undefined;
+    return row?.value === "true";
+  }
+
+  /** Records that this kind's typeless Indexed rows have been revalidated. */
+  markTypelessHealDone(kind: ExtensionKind): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
+    ).run(`${TYPELESS_ROW_HEAL_KEY_PREFIX}${kind}`);
   }
 
   /**
@@ -974,6 +1075,19 @@ export class ExtensionCatalogStore {
       | Record<string, unknown>
       | undefined;
     return row ? this.mapRow(row) : undefined;
+  }
+
+  /** Returns every row claiming `typeNormalized` for `kind`. */
+  findAllByType(
+    typeNormalized: string,
+    kind: ExtensionKind,
+  ): ExtensionTypeRow[] {
+    const stmt = this.db.prepare(
+      "SELECT * FROM bundle_types WHERE type_normalized = ? AND kind = ? ORDER BY source_path",
+    );
+    return (stmt.all(typeNormalized, kind) as Record<string, unknown>[]).map((
+      r,
+    ) => this.mapRow(r));
   }
 
   /**
@@ -1215,8 +1329,10 @@ export class ExtensionCatalogStore {
         extension_version  = excluded.extension_version,
         last_error         = excluded.last_error
     `);
+    const sourcePath = canonicalizePath(row.source_path);
+    this.resetTypelessHealOnRetype(sourcePath, row.type_normalized);
     stmt.run(
-      canonicalizePath(row.source_path),
+      sourcePath,
       row.type_normalized,
       row.kind,
       row.bundle_path,
@@ -1387,6 +1503,138 @@ export class ExtensionCatalogStore {
       "UPDATE bundle_types SET type_normalized = '' WHERE source_path = ?",
     );
     stmt.run(sourcePath);
+  }
+
+  /** True when any row's `bundle_path` equals `bundlePath` exactly. */
+  hasRowWithBundlePath(bundlePath: string): boolean {
+    return this.db.prepare(
+      "SELECT 1 FROM bundle_types WHERE bundle_path = ? LIMIT 1",
+    ).get(bundlePath) !== undefined;
+  }
+
+  /**
+   * Writes `type_normalized` on the row stored at exactly
+   * `rawSourcePath`, leaving every other column untouched. Used by the
+   * loader's typeless-row heal, which must not disturb the row's
+   * fingerprint (swamp-club#2490).
+   */
+  setTypeNormalized(rawSourcePath: string, typeNormalized: string): void {
+    this.db.prepare(
+      "UPDATE bundle_types SET type_normalized = ? WHERE source_path = ?",
+    ).run(typeNormalized, rawSourcePath);
+  }
+
+  /**
+   * Deletes rows that can only mislead type resolution (swamp-club#2490):
+   *
+   *   - (a) a row that claims a type (or, for `kind = 'extension'`, a
+   *     base type) whose source file is missing — importing it crashes
+   *     with ENOENT, or silently runs a stale bundle;
+   *   - (b) when `activePulledRoot` is known and is one of the two
+   *     pulled roots, a row under the other
+   *     pulled root (`.swamp/pulled-extensions/` vs
+   *     `.swamp/config/pulled-extensions/`), which a managedConfig
+   *     migration copies rather than moves. Datastore rows are exempt:
+   *     the on-disk datastore chooser may load from either root, and
+   *     `purgeUnchosenPulledDatastoreRows` owns them.
+   *
+   * Rows in `protectedPaths` (canonical), Tombstoned rows, and rows in
+   * a failure state ({@link CATALOG_FAILURE_STATES}, kept so doctor can
+   * report them) are never deleted. Deletes by the raw stored path so
+   * keys written on another OS still match. Returns the deleted rows.
+   */
+  pruneStaleSources(args: {
+    canonicalRepoRoot: string;
+    activePulledRoot?: string;
+    protectedPaths?: ReadonlySet<string>;
+    sourceExists: (sourcePath: string) => boolean;
+  }): ExtensionTypeRow[] {
+    const sep = args.canonicalRepoRoot.endsWith("/") ? "" : "/";
+    const legacyRoot =
+      `${args.canonicalRepoRoot}${sep}.swamp/pulled-extensions/`;
+    const managedRoot =
+      `${args.canonicalRepoRoot}${sep}.swamp/config/pulled-extensions/`;
+    let inactiveRoot: string | undefined;
+    if (args.activePulledRoot !== undefined) {
+      const active = canonicalizePath(args.activePulledRoot);
+      const activeWithSep = active.endsWith("/") ? active : `${active}/`;
+      // An active root spelled unlike either one names no inactive root,
+      // so rule (b) is skipped rather than aimed at the wrong root.
+      if (activeWithSep === managedRoot) inactiveRoot = legacyRoot;
+      else if (activeWithSep === legacyRoot) inactiveRoot = managedRoot;
+    }
+
+    const pruned: ExtensionTypeRow[] = [];
+    for (const row of this.findAll()) {
+      const state = row.state ?? "Indexed";
+      if (state === "Tombstoned" || CATALOG_FAILURE_STATES.has(state)) {
+        continue;
+      }
+      const canonical = canonicalizePath(row.source_path);
+      if (args.protectedPaths?.has(canonical)) continue;
+
+      const inactive = inactiveRoot !== undefined &&
+        row.kind !== "datastore" && canonical.startsWith(inactiveRoot);
+      const claimsType = row.kind === "extension"
+        ? row.extends_type.length > 0
+        : row.type_normalized.length > 0;
+      if (inactive || (claimsType && !args.sourceExists(row.source_path))) {
+        this.removeByRawSourcePath(row.source_path);
+        pruned.push(row);
+      }
+    }
+    return pruned;
+  }
+
+  /**
+   * Settles pulled-vs-pulled type conflicts the way
+   * {@link resolveOriginConflicts} settles pulled-vs-local ones: among
+   * pulled, non-Tombstoned, non-extension rows sharing a
+   * `(kind, type_normalized)`, the earliest-inserted row keeps the type
+   * and the others are cleared. That is the row an older binary's
+   * unordered `findByType` returned, so upgrading never moves a type to
+   * an extension pulled later; `upsert` keeps a row's rowid, so a
+   * rebundle does not reset its seniority.
+   *
+   * Loader-only (swamp-club#2490): the loader's own catalog writes can
+   * type two pulled rows the same, and I-Repo-1 would then reject every
+   * later save. `ExtensionRepository.saveAll` does not call this, so a
+   * conflicting install still fails with DuplicateTypeError.
+   */
+  settlePulledTypeConflicts(repoRoot: string): PulledTypeConflict[] {
+    const canonicalRoot = canonicalizePath(repoRoot);
+    const groups = new Map<string, ExtensionTypeRow[]>();
+    const rows = this.db.prepare(
+      "SELECT * FROM bundle_types ORDER BY rowid",
+    ).all() as Record<string, unknown>[];
+    for (const row of rows.map((r) => this.mapRow(r))) {
+      if ((row.state ?? "Indexed") === "Tombstoned") continue;
+      if (row.type_normalized.length === 0) continue;
+      if (row.kind === "extension") continue;
+      if (
+        !isPulledExtensionPath(canonicalizePath(row.source_path), canonicalRoot)
+      ) continue;
+      const key = `${row.kind}::${row.type_normalized}`;
+      const group = groups.get(key);
+      if (group) group.push(row);
+      else groups.set(key, [row]);
+    }
+
+    const cleared: PulledTypeConflict[] = [];
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      const [winner, ...losers] = group;
+      for (const loser of losers) {
+        this.clearTypeNormalized(loser.source_path);
+        cleared.push({
+          winner,
+          loser,
+          winnerName: pulledExtensionName(winner, canonicalRoot),
+          loserName: pulledExtensionName(loser, canonicalRoot),
+        });
+      }
+    }
+    return cleared;
   }
 
   getFailedLocalSourcePaths(): string[] {

@@ -136,6 +136,12 @@ export class ReportRegistry {
     if (!promise) {
       const loader = this.typeLoader;
       promise = loader(name).then(() => {
+        // A loader that skipped a stale or broken bundle never promoted
+        // the type; drop the lazy entry so later lookups report it as
+        // unknown instead of retrying (swamp-club#2490).
+        if (!this.reports.has(name)) {
+          this.lazyTypes.delete(name);
+        }
         this.typeLoadPromises.delete(name);
       }).catch((err) => {
         this.typeLoadPromises.delete(name);

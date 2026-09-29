@@ -331,3 +331,44 @@ Deno.test("VaultTypeRegistry.invalidateType: no-op for unknown type", () => {
   registry.invalidateType("@myorg/nonexistent");
   assertEquals(registry.has("@myorg/nonexistent"), false);
 });
+
+Deno.test("VaultTypeRegistry.ensureTypeLoaded: drops the lazy entry when the loader does not promote", async () => {
+  const registry = new VaultTypeRegistry();
+  registry.registerLazy(createLazyVaultEntry("@myorg/stale"));
+
+  let callCount = 0;
+  registry.setTypeLoader(() => {
+    callCount++;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/stale");
+
+  assertEquals(callCount, 1);
+  assertEquals(registry.isLazy("@myorg/stale"), false);
+  assertEquals(registry.has("@myorg/stale"), false);
+  assertEquals(registry.get("@myorg/stale"), undefined);
+
+  await registry.ensureTypeLoaded("@myorg/stale");
+  assertEquals(callCount, 1);
+});
+
+Deno.test("VaultTypeRegistry.ensureTypeLoaded: keeps a type the loader promoted", async () => {
+  const registry = new VaultTypeRegistry();
+  registry.registerLazy(createLazyVaultEntry("@myorg/custom"));
+
+  let callCount = 0;
+  registry.setTypeLoader((type) => {
+    callCount++;
+    registry.promoteFromLazy(createVaultTypeInfo(type));
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/custom");
+  await registry.ensureTypeLoaded("@myorg/custom");
+
+  assertEquals(callCount, 1);
+  assertEquals(registry.has("@myorg/custom"), true);
+  assertEquals(registry.isLazy("@myorg/custom"), false);
+  assertEquals(registry.get("@myorg/custom")?.name, "@myorg/custom vault");
+});
