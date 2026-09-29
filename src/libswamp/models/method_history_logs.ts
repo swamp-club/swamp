@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  Definition,
-  DefinitionId,
-} from "../../domain/definitions/definition.ts";
+import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { ModelOutput } from "../../domain/models/model_output.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
 import {
   findDefinitionByIdOrName,
   isPartialId,
@@ -37,6 +33,11 @@ import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import {
+  type OutputReference,
+  type OutputReferenceDeps,
+  resolveOutputReference,
+} from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Log file data. */
@@ -73,28 +74,16 @@ export interface ModelMethodHistoryLogsInput {
   outputIdOrModelName: string;
   tail?: number;
   repoDir: string;
-}
-
-/** Partial ID match result. */
-interface PartialMatchResult {
-  status: "found" | "not_found" | "ambiguous";
-  match?: ModelOutput;
-  matches?: Array<{ id: string }>;
+  /**
+   * The argument, already resolved with resolveOutputReference. The read acts
+   * on exactly this and does not look the argument up again.
+   */
+  reference?: OutputReference<ModelOutput>;
 }
 
 /** Dependencies for the model method history logs operation. */
-export interface ModelMethodHistoryLogsDeps {
-  isPartialId: (value: string) => boolean;
-  matchOutputByPartialId: (
-    idPrefix: string,
-  ) => Promise<PartialMatchResult>;
-  findDefinition: (
-    idOrName: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  findLatestOutput: (
-    type: ModelType,
-    definitionId: string,
-  ) => Promise<ModelOutput | null>;
+export interface ModelMethodHistoryLogsDeps
+  extends OutputReferenceDeps<ModelOutput> {
   getModelName: (
     definitionId: string,
   ) => Promise<string>;
@@ -125,7 +114,7 @@ export async function createModelMethodHistoryLogsDeps(
     matchOutputByPartialId: async (idPrefix: string) => {
       const allOutputs = await outputRepo.findAllGlobal();
       const result = matchByPartialId(
-        allOutputs.map((o) => ({ id: o.output.id, item: o.output })),
+        allOutputs.map((o) => ({ id: o.output.id, item: o })),
         idPrefix,
       );
       if (result.status === "found") {
@@ -139,7 +128,7 @@ export async function createModelMethodHistoryLogsDeps(
       }
       return { status: "not_found" as const };
     },
-    findDefinition: (idOrName: string) =>
+    findDefinitionByIdOrName: (idOrName: string) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
     findLatestOutput: (type, definitionId) =>
       outputRepo.findLatestByDefinition(type, definitionId as DefinitionId),
@@ -172,34 +161,23 @@ export async function* modelMethodHistoryLogs(
     (async function* () {
       yield { kind: "resolving" };
 
-      let output: ModelOutput | undefined;
-
-      if (deps.isPartialId(input.outputIdOrModelName)) {
-        const result = await deps.matchOutputByPartialId(
-          input.outputIdOrModelName,
-        );
-
-        if (result.status === "found" && result.match) {
-          output = result.match;
-        } else if (result.status === "ambiguous" && result.matches) {
+      const reference = input.reference ??
+        await resolveOutputReference(deps, input.outputIdOrModelName);
+      let output: ModelOutput;
+      switch (reference.kind) {
+        case "output":
+          output = reference.match.output;
+          break;
+        case "ambiguous":
           yield {
             kind: "error",
             error: validationFailed(
               `Ambiguous ID prefix "${input.outputIdOrModelName}" matches:\n` +
-                result.matches.map((m) => `  ${m.id}`).join("\n"),
+                reference.ids.map((id) => `  ${id}`).join("\n"),
             ),
           };
           return;
-        }
-        // not_found: fall through to model name lookup
-      }
-
-      if (!output) {
-        const definitionResult = await deps.findDefinition(
-          input.outputIdOrModelName,
-        );
-
-        if (!definitionResult) {
+        case "not_found":
           yield {
             kind: "error",
             error: {
@@ -213,24 +191,18 @@ export async function* modelMethodHistoryLogs(
             },
           };
           return;
-        }
-
-        const latestOutput = await deps.findLatestOutput(
-          definitionResult.type,
-          definitionResult.definition.id,
-        );
-        if (!latestOutput) {
-          yield {
-            kind: "error",
-            error: notFound(
-              "Run",
-              `for model: ${definitionResult.definition.name}`,
-            ),
-          };
-          return;
-        }
-
-        output = latestOutput;
+        case "model":
+          if (!reference.latest) {
+            yield {
+              kind: "error",
+              error: notFound(
+                "Run",
+                `for model: ${reference.definition.name}`,
+              ),
+            };
+            return;
+          }
+          output = reference.latest;
       }
 
       // Read log file

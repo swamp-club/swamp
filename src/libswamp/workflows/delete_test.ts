@@ -193,3 +193,51 @@ Deno.test("workflowDelete: yields error when workflow not found", async () => {
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_found");
 });
+
+Deno.test("workflowDelete: a UUID is looked up by name first", async () => {
+  const deleted: string[] = [];
+  const impostor = {
+    id: "00000000-0000-4000-8000-000000000000",
+    name: testWorkflow.id,
+  } as unknown as Workflow;
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(impostor),
+    deleteWorkflow: (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    },
+  });
+
+  await collect<WorkflowDeleteEvent>(
+    workflowDelete(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+    }),
+  );
+
+  assertEquals(deleted, [impostor.id]);
+});
+
+Deno.test("workflowDelete: with byId deletes the workflow with that id, never a same-named one", async () => {
+  const deleted: string[] = [];
+  const impostor = {
+    id: "00000000-0000-4000-8000-000000000000",
+    name: testWorkflow.id,
+  } as unknown as Workflow;
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(impostor),
+    findById: () => Promise.resolve(testWorkflow),
+    deleteWorkflow: (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    },
+  });
+
+  await collect<WorkflowDeleteEvent>(
+    workflowDelete(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+      byId: true,
+    }),
+  );
+
+  assertEquals(deleted, [testWorkflow.id]);
+});

@@ -224,6 +224,73 @@ collection operations.
 Implementation: `src/domain/access/resource_selector.ts`,
 `src/domain/access/grant_based_access_decision_service.ts`.
 
+#### Requests by id match the resource's name
+
+Selectors match names, never ids. A request may name a model or workflow by
+name or by UUID, so serve resolves it first and authorizes the resource it
+resolves to: its canonical name and full fields (`modelType` and tags for a
+model, `ns` and tags for its data, tags for a workflow). A request by the UUID
+of `prod-db` is therefore denied by `deny model:prod-*` just as a request by
+name is. The operation then acts on exactly that resource: it is handed the
+resolved id and the authorized name, and accepts only a resource with both.
+Ids alone are not enough — a resource may be named with another's UUID, and a
+copied file keeps its id — so neither can redirect the action.
+
+- A string that matches nothing is authorized as sent. The operation then
+  reports its usual not-found, and can only ever act on a resource whose id is
+  that exact string.
+- A workflow file that fails to parse is authorized on the name the file
+  declares, since operations such as validate still find it. Its tags cannot
+  be read, so rules conditioned on tags do not match it; name selectors do.
+- A failed lookup fails the request, after the raw string is authorized so a
+  refused caller learns nothing more. It is never treated as "not found".
+- Run cancel and attach authorize the resource the run was started on. Serve
+  records its canonical name and id when the run starts, and resolves it by id
+  when a cancel or attach arrives, so a rename during the run cannot redirect
+  the check. Webhook-triggered runs do the same. Records from older instances,
+  which carry only a name, resolve that name.
+- A model is reported with the type its definition file declares, whether it
+  is found by name or by id, so authorization and execution always see the
+  same type.
+
+Reads of a method output or a workflow run (`model.output.get`, `.data`,
+`.logs`, `model.method.history.get` and `.logs`, `workflow.history.get` and
+`.logs`) take an output or run id prefix — 3+ hex characters, matched across
+every model or workflow before any name — or a model or workflow name or id,
+which reads its latest output or run. Serve resolves the argument to the
+output or run the read will return, authorizes its owners, and hands the read
+that same resolved output or run, so nothing is looked up again after the
+check (swamp-club#2673):
+
+- An output is authorized on every definition declaring its model id. Ids
+  are not unique, and a copied definition shares the original's outputs and
+  data, so a deny on any of them refuses the read. Definitions of
+  unregistered types and auto-definitions count.
+- A run is authorized on the workflow recorded on it, by its recorded name.
+  When no workflow still has both the recorded name and id — the workflow
+  was renamed, or only a copy sharing its id remains — the workflow now
+  found by that id is authorized too. A run's recorded name identifies its
+  workflow exactly, unlike an output, whose data every copy shares.
+- A read by model or workflow name authorizes that model or workflow and the
+  owners of the latest output or run it returns.
+- An output whose model was deleted is authorized on its model id; a run
+  whose workflow was deleted, on its recorded workflow name (without tags).
+- A prefix matching several outputs or runs, or nothing, is authorized as
+  sent. The ambiguity error lists the matching ids.
+- `model.output.data` and `model.output.logs` return data artifact content, so
+  they also need a `data` read on the owning models, as `data.get` does
+  (swamp-club#2739). The other five return output or run metadata or the run
+  log file and need only the `model` or `workflow` read.
+
+Direct type execution (`model.method.run` with a type and a definition name),
+`*` resources, and vaults authorize differently today; swamp-club#2672, #2675
+and #2676 track them.
+
+Implementation: `src/serve/handlers/resource_resolution.ts`. Guards:
+`integration/serve_id_deny_conformance_test.ts`, which covers every request
+type that names a resource, and
+`integration/serve_canonical_authorization_rules_test.ts`.
+
 ### Actions
 
 | Action    | Typical operations                                     |

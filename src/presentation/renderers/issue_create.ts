@@ -24,15 +24,9 @@ import type {
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import {
-  escapeLogTemplate,
-  getSwampLogger,
-} from "../../infrastructure/logging/logger.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
-import type {
-  RefusalReason,
-  RepositoryDispatchResult,
-} from "../../cli/commands/extension_report_dispatcher.ts";
+import type { RepositoryDispatchResult } from "../../cli/commands/extension_report_dispatcher.ts";
 import {
   formatRedactionDetails,
   formatRedactionSummary,
@@ -271,46 +265,8 @@ export function createIssueCommentRenderer(
 
 // ---- Extension-scoped rendering ----
 
-export interface ExtensionRefusalData {
-  extensionName: string;
-  reason: RefusalReason;
-  guidance: string;
-}
-
-/**
- * Renders a refusal as informational output — never error-styled.
- * Exit code stays 0; the guidance itself communicates the "can't do
- * that here" outcome.
- */
-export function renderExtensionRefusal(
-  data: ExtensionRefusalData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(
-      JSON.stringify(
-        {
-          status: "refused",
-          extensionName: data.extensionName,
-          reason: data.reason,
-          guidance: data.guidance,
-        },
-        null,
-        2,
-      ),
-    );
-    return;
-  }
-  // Split the guidance into lines so the renderer prints each as its own
-  // log line — readable on terminals that wrap long single-line logs.
-  const logger = getSwampLogger(["issue", "create"]);
-  for (const line of data.guidance.split("\n")) {
-    logger.info(escapeLogTemplate(line));
-  }
-}
-
 export interface ExtensionRepositoryHandoffData {
-  result: RepositoryDispatchResult;
+  result: Extract<RepositoryDispatchResult, { kind: "handoff" }>;
   extensionName: string;
 }
 
@@ -320,18 +276,6 @@ export function renderExtensionRepositoryHandoff(
   mode: OutputMode,
 ): void {
   const result = data.result;
-
-  if (result.kind === "refused") {
-    renderExtensionRefusal(
-      {
-        extensionName: data.extensionName,
-        reason: result.reason,
-        guidance: result.guidance,
-      },
-      mode,
-    );
-    return;
-  }
 
   if (mode === "json") {
     console.log(

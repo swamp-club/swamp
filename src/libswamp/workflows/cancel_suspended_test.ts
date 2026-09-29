@@ -24,6 +24,7 @@ import {
   CANCEL_SUSPENDED_NOT_FOUND,
   CANCEL_SUSPENDED_NOT_SUSPENDED,
   type CancelTargetWorkflow,
+  locateSuspendedRunToCancel,
   workflowCancelSuspended,
   type WorkflowCancelSuspendedDeps,
   type WorkflowCancelSuspendedEvent,
@@ -245,6 +246,7 @@ Deno.test("workflowCancelSuspended: reveals a non-suspended status only after au
     workflowIdOrName: "deploy",
     reason: "r",
   });
+  assertEquals(deniedEvent?.kind, "error");
   if (deniedEvent?.kind === "error") {
     assertEquals(deniedEvent.error.code, CANCEL_SUSPENDED_NOT_FOUND);
   }
@@ -259,4 +261,101 @@ Deno.test("workflowCancelSuspended: falls back to the run's workflow name when t
 
   assertEquals(last?.kind, "completed");
   assertEquals(h.authorized, [{ id: wf.id, name: "deploy" }]);
+});
+
+Deno.test("locateSuspendedRunToCancel: returns the run's workflow for an allowed caller", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+  const h = harness([wf], [run]);
+
+  const located = await locateSuspendedRunToCancel(h.deps, { runId: run.id });
+
+  assertEquals(located, {
+    workflowId: wf.id,
+    workflow: { id: wf.id, name: "deploy" },
+  });
+  assertEquals(h.authorized, [{ id: wf.id, name: "deploy" }]);
+  assertEquals(h.saved.length, 0);
+  assertEquals(run.status, "suspended");
+});
+
+Deno.test("locateSuspendedRunToCancel: denied, missing and mismatched runs are all null", async () => {
+  const deploy = makeWorkflow("deploy");
+  const other = makeWorkflow("other");
+  const run = suspendedServeRun(deploy);
+
+  const denied = harness([deploy, other], [run], () => false);
+  const missing = harness([deploy, other], [run]);
+  const mismatched = harness([deploy, other], [run]);
+
+  assertEquals(
+    await locateSuspendedRunToCancel(denied.deps, { runId: run.id }),
+    null,
+  );
+  assertEquals(
+    await locateSuspendedRunToCancel(missing.deps, {
+      runId: crypto.randomUUID(),
+    }),
+    null,
+  );
+  assertEquals(
+    await locateSuspendedRunToCancel(mismatched.deps, {
+      runId: run.id,
+      workflowIdOrName: "other",
+    }),
+    null,
+  );
+  assertEquals(mismatched.authorized, []);
+  for (const h of [denied, missing, mismatched]) {
+    assertEquals(h.saved.length, 0);
+  }
+});
+
+Deno.test("workflowCancelSuspended: loads a located run from its workflow alone", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+  const h = harness([wf], [run]);
+  h.deps.runRepo.findGlobalByStatus = () => {
+    throw new Error("a located run must not be searched for");
+  };
+  h.deps.workflowRepo.findByName = () => {
+    throw new Error("a located run must not be looked up by name");
+  };
+
+  const last = await cancel(h.deps, {
+    runId: run.id,
+    workflowId: wf.id,
+    reason: "r",
+  });
+
+  assertEquals(last?.kind, "completed");
+  assertEquals(h.saved[0].status, "cancelled");
+  assertEquals(h.authorized, [{ id: wf.id, name: "deploy" }]);
+});
+
+Deno.test("workflowCancelSuspended: a caller refused after the run was located gets not found", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+  // Allowed when the run is located, refused on the cancel's own read, as
+  // when a grant is revoked in between.
+  let calls = 0;
+  const h = harness([wf], [run], () => ++calls === 1);
+
+  const located = await locateSuspendedRunToCancel(h.deps, { runId: run.id });
+  assertEquals(located?.workflowId, wf.id);
+
+  const last = await cancel(h.deps, {
+    runId: run.id,
+    workflowId: located!.workflowId,
+    reason: "r",
+  });
+
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, CANCEL_SUSPENDED_NOT_FOUND);
+    assertEquals(last.error.message, `No cancellable run with id ${run.id}`);
+  }
+  assertEquals(calls, 2);
+  assertEquals(h.saved.length, 0);
+  assertEquals(run.status, "suspended");
 });

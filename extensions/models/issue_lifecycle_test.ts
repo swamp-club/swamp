@@ -368,8 +368,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.09.23.2", () => {
-  assertEquals(model.version, "2026.09.23.2");
+Deno.test("model: version is 2026.09.29.1", () => {
+  assertEquals(model.version, "2026.09.29.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -2175,6 +2175,9 @@ Deno.test("issue_lifecycle: rollbackOnFailure matches the pinned method set", ()
     "complete",
     "skip_notify",
     "summarize",
+    "link_issue",
+    "unlink_issue",
+    "mark_duplicate",
   ];
   const doesNotRollBack = ["review", "post_attestation", "notify"];
 

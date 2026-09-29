@@ -26,12 +26,17 @@ export type { StalenessState };
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  type DefinitionLookupResult,
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../../domain/models/model_lookup.ts";
 import { redactSensitiveValues } from "../../domain/models/sensitive_field_extractor.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
+import { type LookupOptions, selectLookup } from "../lookup_by_id.ts";
 import {
   type MethodDescribeData,
   toMethodDescribeData,
@@ -76,13 +81,21 @@ export type ModelGetEvent =
   | { kind: "completed"; data: ModelGetData }
   | { kind: "error"; error: SwampError };
 
+type ModelGetLookupResult = {
+  definition: Definition;
+  type: ModelType;
+  autoCreated?: boolean;
+} | null;
+
 /** Dependencies for the model get operation. */
 export interface ModelGetDeps {
-  lookupDefinition: (
-    idOrName: string,
-  ) => Promise<
-    { definition: Definition; type: ModelType; autoCreated?: boolean } | null
-  >;
+  /** Looks up by name, then by exact id. */
+  lookupDefinition: (idOrName: string) => Promise<ModelGetLookupResult>;
+  /** Looks up by exact id only; required for a `byId` request. */
+  lookupDefinitionById?: (
+    id: string,
+    expectedName?: string,
+  ) => Promise<ModelGetLookupResult>;
   getModelDef: (
     type: ModelType,
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
@@ -96,22 +109,23 @@ export async function createModelGetDeps(
   await modelRegistry.ensureLoaded();
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(repoDir);
+  const withAutoCreated = async (
+    result: DefinitionLookupResult | null,
+  ): Promise<ModelGetLookupResult> => {
+    if (!result) return null;
+    const autoCreated = await definitionRepo.isAutoDefinition(
+      result.definition,
+      result.type,
+    );
+    return { ...result, autoCreated };
+  };
   return {
-    lookupDefinition: async (idOrName) => {
-      const result = await findDefinitionByIdOrName(definitionRepo, idOrName);
-      if (!result) return null;
-      const primaryPath = definitionRepo.getPath(
-        result.type,
-        result.definition.id,
-      );
-      let autoCreated = false;
-      try {
-        await Deno.stat(primaryPath);
-      } catch {
-        autoCreated = true;
-      }
-      return { ...result, autoCreated };
-    },
+    lookupDefinition: async (idOrName) =>
+      withAutoCreated(await findDefinitionByIdOrName(definitionRepo, idOrName)),
+    lookupDefinitionById: async (id, expectedName) =>
+      withAutoCreated(
+        await findDefinitionByIdGlobal(definitionRepo, id, expectedName),
+      ),
     getModelDef: async (type) => {
       await modelRegistry.ensureTypeLoaded(type);
       return modelRegistry.get(type);
@@ -124,6 +138,7 @@ export async function* modelGet(
   _ctx: LibSwampContext,
   deps: ModelGetDeps,
   modelIdOrName: string,
+  options: LookupOptions = {},
 ): AsyncIterable<ModelGetEvent> {
   yield* withGeneratorSpan(
     "swamp.model.get",
@@ -131,7 +146,14 @@ export async function* modelGet(
     (async function* () {
       yield { kind: "resolving" };
 
-      const result = await deps.lookupDefinition(modelIdOrName);
+      const lookup = selectLookup(
+        "model get",
+        options.byId,
+        deps.lookupDefinition,
+        deps.lookupDefinitionById,
+        options.expectedName,
+      );
+      const result = await lookup(modelIdOrName);
       if (!result) {
         yield { kind: "error", error: notFound("Model", modelIdOrName) };
         return;

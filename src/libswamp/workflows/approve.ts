@@ -52,6 +52,17 @@ export type WorkflowApproveEvent =
 
 export interface WorkflowApproveInput {
   workflowIdOrName: string;
+  /**
+   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
+   * and look it up by id only, so the decision lands on the workflow the
+   * caller authorized.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
   stepName: string;
   reason?: string;
   runId?: string;
@@ -95,6 +106,7 @@ export async function* workflowApprove(
           deps.runRepo,
           input.workflowIdOrName,
           input.runId,
+          { byId: input.byId, expectedName: input.expectedName },
         );
       } catch (error) {
         yield {

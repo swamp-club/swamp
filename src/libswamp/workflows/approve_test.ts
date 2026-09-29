@@ -31,9 +31,9 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 
-function makeWorkflow(gateNames: string[]): Workflow {
+function makeWorkflow(gateNames: string[], name = "gated"): Workflow {
   return Workflow.create({
-    name: "gated",
+    name,
     jobs: [
       Job.create({
         name: "main",
@@ -127,5 +127,91 @@ Deno.test("workflowApprove: reports allGatesDecided false while a sibling gate s
   assertEquals(second?.kind, "completed");
   if (second?.kind === "completed") {
     assertEquals(second.data.allGatesDecided, true);
+  }
+});
+
+/**
+ * Deps holding `target` and an impostor workflow named with `target`'s id,
+ * each with its own suspended run, and recording which workflow's run was
+ * saved.
+ */
+function makeCollidingDeps(): {
+  deps: WorkflowApproveDeps;
+  target: Workflow;
+  targetRun: WorkflowRun;
+  impostorRun: WorkflowRun;
+  savedFor: string[];
+} {
+  const target = makeWorkflow(["gate"]);
+  const impostor = makeWorkflow(["gate"], target.id);
+  const targetRun = suspendAtGates(target, ["gate"]);
+  const impostorRun = suspendAtGates(impostor, ["gate"]);
+  const workflows = [target, impostor];
+  const runs = new Map<string, WorkflowRun>([
+    [target.id, targetRun],
+    [impostor.id, impostorRun],
+  ]);
+  const savedFor: string[] = [];
+  return {
+    target,
+    targetRun,
+    impostorRun,
+    savedFor,
+    deps: {
+      workflowRepo: {
+        findByName: (name: string) =>
+          Promise.resolve(workflows.find((w) => w.name === name) ?? null),
+        findById: (id: string) =>
+          Promise.resolve(workflows.find((w) => w.id === id) ?? null),
+      } as unknown as WorkflowApproveDeps["workflowRepo"],
+      runRepo: {
+        findById: (wfId: string) => Promise.resolve(runs.get(wfId) ?? null),
+        findAllByWorkflowId: (wfId: string) =>
+          Promise.resolve(runs.has(wfId) ? [runs.get(wfId)!] : []),
+        save: (wfId: string) => {
+          savedFor.push(wfId);
+          return Promise.resolve();
+        },
+      } as unknown as WorkflowApproveDeps["runRepo"],
+    },
+  };
+}
+
+Deno.test("workflowApprove: byId approves the workflow whose id matches, not one named with that id", async () => {
+  const { deps, target, targetRun, savedFor } = makeCollidingDeps();
+
+  const events = await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), deps, {
+      workflowIdOrName: target.id,
+      byId: true,
+      stepName: "gate",
+      decidedBy: "approver",
+    }),
+  );
+  const last = events.at(-1);
+
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals(last.data.runId, targetRun.id);
+    assertEquals(last.data.workflowName, "gated");
+  }
+  assertEquals(savedFor, [target.id]);
+});
+
+Deno.test("workflowApprove: without byId a workflow named with the id wins", async () => {
+  const { deps, target, impostorRun } = makeCollidingDeps();
+
+  const events = await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), deps, {
+      workflowIdOrName: target.id,
+      stepName: "gate",
+      decidedBy: "approver",
+    }),
+  );
+  const last = events.at(-1);
+
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals(last.data.runId, impostorRun.id);
   }
 });

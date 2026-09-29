@@ -55,6 +55,7 @@ import {
   createWorkflowRunId,
   type WorkflowId,
 } from "./workflow_id.ts";
+import { findWorkflowById } from "./workflow_lookup.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -2269,6 +2270,17 @@ export class WorkflowExecutionService {
   async *run(
     idOrName: string,
     options?: {
+      /**
+       * Treat `idOrName` as a workflow id the caller already resolved, and
+       * look it up by id only, so the run executes the workflow the caller
+       * authorized rather than one named with that id.
+       */
+      byId?: boolean;
+      /**
+       * With `byId`, the name the caller authorized: ids are not guaranteed
+       * unique, so only a workflow with this name and the id is run.
+       */
+      expectedName?: string;
       lastEvaluated?: boolean;
       inputs?: Record<string, unknown>;
       runtimeTags?: Record<string, string>;
@@ -2345,7 +2357,13 @@ export class WorkflowExecutionService {
 
       try {
         // Look up workflow
-        const found = await this.lookupWorkflow(idOrName);
+        const found = options?.byId
+          ? await findWorkflowById(
+            this.workflowRepo,
+            idOrName,
+            options.expectedName,
+          )
+          : await this.lookupWorkflow(idOrName);
         if (!found) {
           throw new Error(`Workflow not found: ${idOrName}`);
         }
@@ -2594,12 +2612,7 @@ export class WorkflowExecutionService {
 
       const sortedJobs = this.sortService.sort(jobNodes);
 
-      // Resolve effective job-level concurrency:
-      // workflow.concurrency capped by SWAMP_MAX_CONCURRENT_STEPS
-      const jobConcurrency = resolveEffectiveConcurrency(
-        workflow.concurrency,
-        readGlobalConcurrencyLimit(),
-      );
+      const jobConcurrency = resolveJobConcurrency(workflow);
 
       // Track per-step model info and data handles for the workflow-scope
       // report context. Built up by intercepting the events the service
@@ -3168,7 +3181,7 @@ export class WorkflowExecutionService {
         dependencies: job.getDependencyNames(),
       }));
       const sortedJobs = this.sortService.sort(jobNodes);
-      const jobConcurrency = resolvedWorkflow.concurrency;
+      const jobConcurrency = resolveJobConcurrency(resolvedWorkflow);
 
       const modelInfoByStep = new Map<
         string,
@@ -5654,6 +5667,18 @@ function readGlobalConcurrencyLimit(): number | undefined {
   if (!raw) return undefined;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Effective job-level concurrency for a workflow: `workflow.concurrency`
+ * capped by SWAMP_MAX_CONCURRENT_STEPS. Fresh runs and resumes share it so
+ * both bound a level's parallel jobs the same way.
+ */
+function resolveJobConcurrency(workflow: Workflow): number | undefined {
+  return resolveEffectiveConcurrency(
+    workflow.concurrency,
+    readGlobalConcurrencyLimit(),
+  );
 }
 
 function resolveEffectiveConcurrency(

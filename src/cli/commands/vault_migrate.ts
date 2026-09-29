@@ -52,6 +52,7 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS } from "../../domain/vaults/local_encryption_key_source.ts";
 import type { VaultMigrateResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -67,7 +68,11 @@ Copies all secrets from the current backend to a new one, then updates
 the vault configuration. The vault name stays the same, so all existing
 vault references continue to work without modification.
 
-Both the source and target vaults must be different types.`,
+Both the source and target vaults must be different types.
+
+With --server, a local_encryption target cannot set its key-source fields
+(${LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS.join(", ")}) to anything other
+than the server's defaults. Leave them out and the server's defaults are used.`,
     )
     .arguments("<vault_name:string>")
     .option("--to-type <type:string>", "Target vault type")
@@ -317,6 +322,9 @@ Both the source and target vaults must be different types.`,
       targetType: toType,
       targetConfig,
       repoDir,
+      // A local user owns this host, so the target may name its own key
+      // source; over --server the server chooses it (swamp-club#2690).
+      trustKeySource: true,
     });
   } catch (error) {
     if ("code" in (error as Record<string, unknown>)) {
@@ -374,6 +382,7 @@ Both the source and target vaults must be different types.`,
       targetType: toType,
       targetConfig,
       repoDir,
+      trustKeySource: true,
     }),
     renderer.handlers(),
   );

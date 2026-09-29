@@ -58,6 +58,13 @@ export interface DetachedResumeRequest {
   /** Workflow id or name, resolved the same way as `workflow resume`. */
   workflowIdOrName: string;
   runId?: string;
+  /**
+   * Treat `workflowIdOrName` as a workflow id the caller already resolved
+   * and authorized, and look it up by id only.
+   */
+  byId?: boolean;
+  /** With `byId`, the workflow name the caller authorized. */
+  expectedName?: string;
   /** Resume from a failed step instead of a decided approval gate. */
   from?: string;
   /**
@@ -94,16 +101,23 @@ export async function startDetachedResume(
 
   let resolvedRun: WorkflowRun;
   let workflowName: string;
+  let workflowId: string;
   try {
     const result = await resolveResumableRun(
       workflowRepo,
       runRepo,
       request.workflowIdOrName,
       request.runId,
-      { fromStep: request.from, suspendedOnly: request.suspendedOnly },
+      {
+        fromStep: request.from,
+        suspendedOnly: request.suspendedOnly,
+        byId: request.byId,
+        expectedName: request.expectedName,
+      },
     );
     resolvedRun = result.run;
     workflowName = result.workflowName;
+    workflowId = result.workflowId;
   } catch (error) {
     return {
       ok: false,
@@ -126,7 +140,8 @@ export async function startDetachedResume(
     registry.register({
       runId,
       kind: "workflow-resume",
-      resourceName: request.workflowIdOrName,
+      resourceName: workflowName,
+      resourceId: workflowId,
       buffer,
       controller: runController,
       startedAt,
@@ -301,7 +316,8 @@ export async function startDetachedResume(
 
   if (ctx.controlPlaneStore && ctx.instanceId) {
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
-      resourceName: request.workflowIdOrName,
+      resourceName: workflowName,
+      resourceId: workflowId,
       runKind: "workflow-resume",
       startedAt: startedAt.toISOString(),
     });

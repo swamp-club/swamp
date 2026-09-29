@@ -53,9 +53,10 @@ import {
 import { RunEventBuffer } from "../src/serve/run_event_buffer.ts";
 import { startDetachedResume } from "../src/serve/resume_launcher.ts";
 import {
-  cancelSuspendedRunInServe,
+  cancelSuspendedRunAndPush,
   SUSPENDED_RUN_BUSY_MESSAGE,
 } from "../src/serve/suspended_run_cancel.ts";
+import { createSyncGate, type SyncGate } from "../src/serve/sync_gate.ts";
 import { RunCancelRegistry } from "../src/serve/run_cancel_registry.ts";
 import { cancelExecution } from "../src/cli/commands/serve.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
@@ -70,6 +71,7 @@ import {
 } from "../src/domain/access/grant_file_reconciler.ts";
 import { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_loader.ts";
 import { validateGrantCondition } from "../src/infrastructure/cel/grant_condition_environment.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
@@ -271,6 +273,33 @@ async function loadRun(h: Harness): Promise<WorkflowRun | null> {
   );
 }
 
+/** Counts the reservations taken on the harness's registry. */
+function countReservations(h: Harness): () => number {
+  const reserve = h.registry.reserve.bind(h.registry);
+  let count = 0;
+  h.registry.reserve = (runId: string) => {
+    count++;
+    return reserve(runId);
+  };
+  return () => count;
+}
+
+/**
+ * Gives the harness a real sync gate and counts its exclusive acquisitions.
+ * Returns the gate and the count.
+ */
+function withGate(h: Harness): { gate: SyncGate; acquisitions: () => number } {
+  const gate = createSyncGate();
+  const acquire = gate.acquire.bind(gate);
+  let count = 0;
+  gate.acquire = (signal?: AbortSignal) => {
+    count++;
+    return acquire(signal);
+  };
+  (h.ctx as { syncGate?: SyncGate }).syncGate = gate;
+  return { gate, acquisitions: () => count };
+}
+
 /**
  * A resume registered under the run's id. Once aborted it finishes; with
  * `leaves` it also leaves the registry, as a resume does after saving the run
@@ -370,7 +399,7 @@ Deno.test({
         cancelRegistry: new RunCancelRegistry(),
         activeRunRegistry: h.registry,
         cancelSuspended: (id) =>
-          cancelSuspendedRunInServe(
+          cancelSuspendedRunAndPush(
             h.ctx,
             { runId: id, reason: "cancelled via serve API" },
             () => true,
@@ -384,7 +413,7 @@ Deno.test({
         cancelRegistry: new RunCancelRegistry(),
         activeRunRegistry: h.registry,
         cancelSuspended: (id) =>
-          cancelSuspendedRunInServe(h.ctx, { runId: id, reason: "r" }, () =>
+          cancelSuspendedRunAndPush(h.ctx, { runId: id, reason: "r" }, () =>
             true),
       });
       assertEquals(again.status, "not_found");
@@ -449,7 +478,7 @@ Deno.test({
         activeRunRegistry: h.registry,
         reason: "cancelled by user:admin",
         cancelSuspended: (id) =>
-          cancelSuspendedRunInServe(
+          cancelSuspendedRunAndPush(
             h.ctx,
             { runId: id, reason: "cancelled by user:admin" },
             () => true,
@@ -566,7 +595,7 @@ Deno.test({
 
       let threw = false;
       try {
-        await cancelSuspendedRunInServe(
+        await cancelSuspendedRunAndPush(
           ctx,
           { runId: h.runId, reason: "r" },
           () => true,
@@ -579,6 +608,139 @@ Deno.test({
       const release = h.registry.reserve(h.runId);
       assertEquals(release !== null, true);
       release?.();
+      assertEquals((await loadRun(h))?.status, "suspended");
+    }),
+});
+
+Deno.test({
+  ...testOpts,
+  name:
+    "serve cancel: a refused caller gets not found, not busy, while another operation holds the run",
+  fn: () =>
+    withHarness(async (h) => {
+      const release = h.registry.reserve(h.runId);
+      if (!release) throw new Error("expected a reservation");
+      try {
+        const notFound = [{
+          code: "workflow_cancel_failed",
+          message: `No cancellable run with id ${h.runId}`,
+        }];
+        const denied = await cancelOverWs(h, OUTSIDER);
+        assertEquals(denied.map((r) => r.error), notFound);
+        const named = await cancelOverWs(h, OUTSIDER, {
+          workflowIdOrName: h.workflow.name,
+        });
+        assertEquals(named.map((r) => r.error), notFound);
+        const mismatched = await cancelOverWs(h, OUTSIDER, {
+          workflowIdOrName: h.other.name,
+        });
+        assertEquals(mismatched.map((r) => r.error), notFound);
+
+        // An allowed caller still learns the run is busy.
+        const allowed = await cancelOverWs(h, OPERATOR);
+        assertEquals(allowed.map((r) => r.error?.message), [
+          SUSPENDED_RUN_BUSY_MESSAGE,
+        ]);
+        assertEquals((await loadRun(h))?.status, "suspended");
+      } finally {
+        release();
+      }
+    }),
+});
+
+Deno.test({
+  ...testOpts,
+  name:
+    "serve cancel: a refused or unknown run id never reserves the id or takes the sync gate",
+  fn: () =>
+    withHarness(async (h) => {
+      const reservations = countReservations(h);
+      const { gate, acquisitions } = withGate(h);
+      // Held by another handler for the whole test: a cancel that queued on
+      // it would not reply until the gate's wait timed out.
+      await gate.acquire();
+      try {
+        const denied = await cancelOverWs(h, OUTSIDER);
+        const named = await cancelOverWs(h, OUTSIDER, {
+          workflowIdOrName: h.workflow.name,
+        });
+        const missingId = crypto.randomUUID();
+        const missing = await cancelOverWs(h, OPERATOR, { runId: missingId });
+
+        assertEquals(denied.map((r) => r.error?.code), [
+          "workflow_cancel_failed",
+        ]);
+        assertEquals(named.map((r) => r.error?.code), [
+          "workflow_cancel_failed",
+        ]);
+        assertEquals(missing.map((r) => r.error?.message), [
+          `No cancellable run with id ${missingId}`,
+        ]);
+        assertEquals(acquisitions(), 1);
+        assertEquals(gate.waiters, 0);
+        assertEquals(reservations(), 0);
+        assertEquals((await loadRun(h))?.status, "suspended");
+      } finally {
+        gate.release();
+      }
+    }),
+});
+
+Deno.test({
+  ...testOpts,
+  name:
+    "serve cancel: an allowed cancel waits for the sync gate before it saves",
+  fn: () =>
+    withHarness(async (h) => {
+      const { gate } = withGate(h);
+      await gate.acquire();
+      let released = false;
+      try {
+        const pending = cancelOverWs(h, OPERATOR);
+        await waitFor(
+          () => gate.waiters === 1,
+          "the cancel to queue on the gate",
+        );
+        assertEquals((await loadRun(h))?.status, "suspended");
+
+        gate.release();
+        released = true;
+        const replies = await pending;
+
+        assertEquals(replies[0].payload?.data.status, "cancelled");
+        assertEquals((await loadRun(h))?.status, "cancelled");
+      } finally {
+        if (!released) gate.release();
+      }
+    }),
+});
+
+Deno.test({
+  ...testOpts,
+  name:
+    "serve cancel: a run registered after the lookup missed it is routed as active",
+  fn: () =>
+    withHarness(async (h) => {
+      // A resume registers under the run's id while the lookup runs, and the
+      // lookup misses the run.
+      const runRepo = h.ctx.repoContext.workflowRunRepo;
+      const racing = Object.create(runRepo);
+      racing.findGlobalByStatus = () => {
+        h.registry.register(registeredResume(h));
+        return Promise.resolve([]);
+      };
+      const ctx = {
+        ...h.ctx,
+        repoContext: { ...h.ctx.repoContext, workflowRunRepo: racing },
+      } as ConnectionContext;
+
+      const result = await cancelSuspendedRunAndPush(
+        ctx,
+        { runId: h.runId, reason: "r" },
+        () => true,
+      );
+
+      assertEquals(result, { status: "active" });
       assertEquals((await loadRun(h))?.status, "suspended");
     }),
 });

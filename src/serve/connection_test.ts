@@ -368,6 +368,52 @@ Deno.test("handleMessage cancel of another connection's run records who cancelle
   assertEquals(audit[0].detail, "workflow=deploy");
 });
 
+Deno.test("handleMessage cancel refused for lack of a run grant is silent and audited", async () => {
+  const registry = new ActiveRunRegistry();
+  const runController = new AbortController();
+  registry.register({
+    runId: "run-8",
+    kind: "workflow-run",
+    resourceName: "deploy",
+    buffer: new RunEventBuffer(10),
+    controller: runController,
+    startedAt: new Date(),
+    completion: Promise.resolve(),
+    principalId: "user:someone-else",
+  });
+  const audit: AuditEvent[] = [];
+  const ctx = {
+    ...makeCtx(modeTokenConfig, [
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        resource: { kind: "workflow", pattern: "other" },
+        actions: ["run"],
+      }),
+    ]),
+    activeRunRegistry: registry,
+    instanceId: "inst-1",
+    auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
+  } as unknown as ConnectionContext;
+  const mock = createMockSocket();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type: "cancel", id: "run-8" })),
+    testPrincipal,
+  );
+
+  await waitFor(() => audit.length >= 1, "denial audited");
+  // Like a cancel of an unknown id: no frame, so nothing confirms the run
+  // exists or names its workflow.
+  assertEquals(mock.sent, []);
+  assertEquals(runController.signal.aborted, false);
+  assertEquals(audit.length, 1);
+  assertEquals(audit[0].outcome, "denied");
+  assertEquals(audit[0].resourceName, "deploy");
+});
+
 // ── handleMessage: duplicate request ID ─────────────────────────────────
 
 Deno.test("handleMessage rejects duplicate request ID", () => {
@@ -3301,7 +3347,7 @@ Deno.test("validateServerRequest: vault.audit-trail keeps action", () => {
 
 /** A ctx whose repos hold one workflow and one run in the given status. */
 function makeResumeCtx(runId: string, runStatus: string): ConnectionContext {
-  const workflow = { id: "wf-1", name: "deploy", tags: {} };
+  const workflow = { id: crypto.randomUUID(), name: "deploy", tags: {} };
   return {
     ...makeCtx(modeNoneConfig),
     repoContext: {

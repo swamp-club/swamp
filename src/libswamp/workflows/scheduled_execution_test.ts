@@ -419,6 +419,73 @@ Deno.test("ScheduledExecutionService.drain: returns at the timeout and stop then
   assertEquals(executor.signals[0].aborted, true);
 });
 
+// ── Cancel reason (swamp-club#2651) ─────────────────────────────────
+
+/** A service with one scheduled run in flight, run-1. */
+async function withRunInFlight(
+  fn: (
+    service: ScheduledExecutionService,
+    signal: AbortSignal,
+  ) => void | Promise<void>,
+): Promise<void> {
+  const executor = createBlockingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  await service.start();
+  try {
+    service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" });
+    await waitFor(() => executor.signals.length === 1, "run started");
+    await fn(service, executor.signals[0]);
+  } finally {
+    await service.stop();
+  }
+}
+
+function abortMessage(signal: AbortSignal): string | undefined {
+  return signal.reason instanceof Error ? signal.reason.message : undefined;
+}
+
+Deno.test("ScheduledExecutionService.cancelByRunId: aborts the run with the reason given", async () => {
+  await withRunInFlight((service, signal) => {
+    assertEquals(
+      service.cancelByRunId("run-1", "cancelled by user:alice"),
+      true,
+    );
+    assertEquals(abortMessage(signal), "cancelled by user:alice");
+  });
+});
+
+Deno.test("ScheduledExecutionService.cancelByRunId: leaves the run alone for an unknown id", async () => {
+  await withRunInFlight((service, signal) => {
+    assertEquals(
+      service.cancelByRunId("run-9", "cancelled by user:alice"),
+      false,
+    );
+    assertEquals(signal.aborted, false);
+  });
+});
+
+Deno.test("ScheduledExecutionService.cancelAllRuns: aborts every run with the reason given", async () => {
+  await withRunInFlight((service, signal) => {
+    assertEquals(service.cancelAllRuns("cancelled by user:bob"), 1);
+    assertEquals(abortMessage(signal), "cancelled by user:bob");
+  });
+});
+
+Deno.test("ScheduledExecutionService: cancels with the default reason when none is given", async () => {
+  await withRunInFlight((service, signal) => {
+    assertEquals(service.cancelByRunId("run-1"), true);
+    assertEquals(abortMessage(signal), "cancelled by user");
+  });
+  await withRunInFlight((service, signal) => {
+    assertEquals(service.cancelAllRuns(), 1);
+    assertEquals(abortMessage(signal), "cancelled by user");
+  });
+});
+
 Deno.test("ScheduledExecutionService.drain: drops queued runs but keeps their pending entries", async () => {
   const executor = createBlockingExecutor();
   const deleted: string[] = [];

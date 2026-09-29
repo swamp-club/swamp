@@ -51,6 +51,7 @@ import {
   WebhookService,
 } from "../src/serve/webhook.ts";
 import { hmacSha256Hex } from "../src/serve/webhook_verifiers.ts";
+import { createTriggerAuthorizer } from "../src/serve/trigger_authorizer.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -84,10 +85,13 @@ function gatedWorkflow(name: string): Workflow {
  * event the service emitted.
  */
 async function runWebhook(
-  flag: string,
+  flag: string | ((workflow: Workflow | undefined) => string),
   route: string,
   workflow: Workflow | undefined,
   settled: (events: readonly WebhookEvent[]) => boolean,
+  extraDeps: (
+    repoContext: ConstructorParameters<typeof WebhookService>[0]["repoContext"],
+  ) => Partial<ConstructorParameters<typeof WebhookService>[0]> = () => ({}),
 ): Promise<WebhookEvent[]> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-webhook-outcome-" });
   try {
@@ -124,9 +128,14 @@ async function runWebhook(
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
-      endpoints: [await parseWebhookFlag(flag)],
+      endpoints: [
+        await parseWebhookFlag(
+          typeof flag === "string" ? flag : flag(workflow),
+        ),
+      ],
       syncService,
       syncGate: undefined,
+      ...extraDeps(repoContext),
     });
 
     const events: WebhookEvent[] = [];
@@ -233,5 +242,55 @@ Deno.test({
         JSON.stringify(events)
       }`,
     );
+  },
+});
+
+Deno.test({
+  name: "WebhookService: a run records the workflow's name and id for cancel " +
+    "and attach, whatever the endpoint names it by",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const records: Record<string, unknown>[] = [];
+    const store = {
+      put: (key: string, data: Uint8Array) => {
+        if (key.startsWith("active-runs/")) {
+          records.push(JSON.parse(new TextDecoder().decode(data)));
+        }
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+    };
+    const workflow = gatedWorkflow("gated-by-id");
+    await runWebhook(
+      (wf) => `/hooks/by-id:${wf!.id}:shhh`,
+      "/hooks/by-id",
+      workflow,
+      () => records.length > 0,
+      (repoContext) => {
+        // The real trigger authorizer, so the run records the id of the
+        // workflow it decided on.
+        const authorize = createTriggerAuthorizer({
+          authMode: "none",
+          workflowRepo: repoContext.workflowRepo,
+        });
+        return {
+          instanceId: "instance-a",
+          controlPlaneStore: store as unknown as ConstructorParameters<
+            typeof WebhookService
+          >[0]["controlPlaneStore"],
+          authorizeRun: (request) =>
+            authorize(
+              { kind: "user", id: "webhook" },
+              request.workflowIdOrName,
+            ),
+        };
+      },
+    );
+
+    assertEquals(records[0].resourceName, "gated-by-id");
+    assertEquals(records[0].resourceId, workflow.id);
   },
 });

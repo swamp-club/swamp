@@ -1495,3 +1495,93 @@ Deno.test("mapWorkflowExecutionEvent: carries a nested run's parentRunId on star
     jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
   });
 });
+
+// --- byId lookup tests ---
+
+Deno.test("workflowRun: byId looks the workflow up by id only and passes byId to the execution service", async () => {
+  const target = createTestWorkflow();
+  const run = WorkflowRun.create(target);
+  run.start();
+  run.complete();
+
+  const captured: { options?: Record<string, unknown> } = {};
+  const calls: { idOrName?: string } = {};
+  const deps = createTestDepsWithCapture(target, [], captured);
+  await deps.workflowRepo.save(target);
+  deps.lookupWorkflow = () => {
+    throw new Error("name-first lookup must not be used with byId");
+  };
+  const service = createCapturingFakeService([
+    {
+      kind: "started",
+      runId: run.id,
+      workflowName: target.name,
+      logPath: "/tmp/log",
+      jobs: [],
+    },
+    { kind: "completed", run },
+  ], captured);
+  deps.createExecutionService = (_wr, _rr, _rd, _cs) =>
+    ({
+      ...service,
+      run(idOrName: string, options?: Record<string, unknown>) {
+        calls.idOrName = idOrName;
+        return service.run(idOrName, options);
+      },
+    }) as unknown as ReturnType<WorkflowRunDeps["createExecutionService"]>;
+
+  const events = await collect(workflowRun(createLibSwampContext(), deps, {
+    workflowIdOrName: target.id,
+    byId: true,
+  }));
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(calls.idOrName, target.id);
+  assertEquals(captured.options?.byId, true);
+});
+
+Deno.test("workflowRun: byId does not fall back to the name-first lookup", async () => {
+  const workflow = createTestWorkflow();
+  let lookupCalls = 0;
+  const deps = createTestDeps(workflow, []);
+  await deps.workflowRepo.save(workflow);
+  deps.lookupWorkflow = () => {
+    lookupCalls++;
+    return Promise.resolve(workflow);
+  };
+
+  const events = await collect(workflowRun(createLibSwampContext(), deps, {
+    workflowIdOrName: workflow.name,
+    byId: true,
+  }));
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, "workflow_not_found");
+  }
+  assertEquals(lookupCalls, 0);
+});
+
+Deno.test("workflowRun: without byId uses the name-first lookup and passes no byId", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+  const captured: { options?: Record<string, unknown> } = {};
+  const deps = createTestDepsWithCapture(workflow, [
+    { kind: "completed", run },
+  ], captured);
+  const looked: string[] = [];
+  deps.lookupWorkflow = (_repo, idOrName) => {
+    looked.push(idOrName);
+    return Promise.resolve(workflow);
+  };
+
+  await collect(workflowRun(createLibSwampContext(), deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  assertEquals(looked, ["test-workflow"]);
+  assertEquals(captured.options?.byId, undefined);
+});

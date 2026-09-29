@@ -44,7 +44,14 @@ export class RegistryCapacityError extends Error {
 export interface ActiveRun {
   readonly runId: string;
   readonly kind: RunKind;
+  /** The canonical name of the model or workflow the run was authorized on. */
   readonly resourceName: string;
+  /**
+   * The id of that model or workflow, when it resolved. Cancel and attach
+   * authorize against the resource with this id, so a rename during the run
+   * cannot point them at a different resource that took the old name.
+   */
+  readonly resourceId?: string;
   readonly buffer: RunEventBuffer;
   readonly controller: AbortController;
   readonly startedAt: Date;

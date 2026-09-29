@@ -80,6 +80,7 @@ import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import type { ExportResult } from "@opentelemetry/core";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { getTracer } from "../../infrastructure/tracing/mod.ts";
 import {
   type SpanRecorder,
@@ -5819,6 +5820,185 @@ Deno.test("suspend: resumed run skips completed sibling steps", async () => {
     // already completed during the initial run and must NOT re-execute.
     assertEquals(executor.executedSteps, ["post-gate/release"]);
   });
+});
+
+/**
+ * Highest number of jobs open at once, read from the order of job_started and
+ * job_completed events. A job's generator yields job_started before any I/O,
+ * and a concurrency-limited merge only pulls a job once it holds a permit, so
+ * this count is the job-level parallelism the merge allowed.
+ */
+function maxOpenJobs(events: WorkflowExecutionEvent[]): number {
+  let open = 0;
+  let max = 0;
+  for (const event of events) {
+    if (event.kind === "job_started") {
+      open++;
+      max = Math.max(max, open);
+    } else if (event.kind === "job_completed") {
+      open--;
+    }
+  }
+  return max;
+}
+
+const FAN_OUT_JOBS = ["job-a", "job-b", "job-c"];
+
+function fanOutJobs(dependsOnGate: boolean): Job[] {
+  return FAN_OUT_JOBS.map((name) =>
+    Job.create({
+      name,
+      steps: [
+        Step.create({
+          name: `${name}-work`,
+          task: StepTask.model("test-model", "run"),
+        }),
+      ],
+      dependsOn: dependsOnGate
+        ? [{ job: "gate", condition: TriggerCondition.succeeded() }]
+        : [],
+    })
+  );
+}
+
+/**
+ * Runs a workflow whose manual-approval gate is followed by three parallel
+ * jobs until it suspends, approves the gate, and resumes it. Returns the
+ * resume's events, the resumed run, and the steps the resume executed.
+ */
+async function resumeGatedFanOut(
+  tempDir: string,
+  concurrency?: number,
+): Promise<{
+  events: WorkflowExecutionEvent[];
+  run: WorkflowRun | undefined;
+  executedSteps: string[];
+}> {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new MockStepExecutor();
+
+  const workflow = Workflow.create({
+    name: "gated-fan-out",
+    concurrency,
+    jobs: [
+      Job.create({
+        name: "gate",
+        steps: [
+          Step.create({
+            name: "approval",
+            task: StepTask.manualApproval("Go?"),
+          }),
+        ],
+      }),
+      ...fanOutJobs(true),
+    ],
+  });
+  await workflowRepo.save(workflow);
+
+  const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    undefined,
+    catalogStore,
+  );
+
+  const suspended = await service.execute(workflow.name);
+  assertEquals(suspended.status, "suspended");
+
+  const toApprove = await runRepo.findById(workflow.id, suspended.id);
+  toApprove!.getJob("gate")!.getStep("approval")!.succeed();
+  await runRepo.save(workflow.id, toApprove!);
+
+  executor.executedSteps = [];
+  const events: WorkflowExecutionEvent[] = [];
+  let run: WorkflowRun | undefined;
+  for await (const event of service.resume(workflow.name, suspended.id)) {
+    events.push(event);
+    if (event.kind === "completed") run = event.run;
+  }
+  return { events, run, executedSteps: executor.executedSteps };
+}
+
+Deno.test("resume: caps parallel jobs at SWAMP_MAX_CONCURRENT_STEPS", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: "1" },
+    () =>
+      withTempDir(async (tempDir) => {
+        const { events, run, executedSteps } = await resumeGatedFanOut(tempDir);
+
+        assertEquals(run?.status, "succeeded");
+        assertEquals(
+          executedSteps.toSorted(),
+          FAN_OUT_JOBS.map((name) => `${name}/${name}-work`),
+        );
+        assertEquals(maxOpenJobs(events), 1);
+      }),
+  );
+});
+
+Deno.test("resume: runs a level's jobs in parallel without a concurrency cap", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: undefined },
+    () =>
+      withTempDir(async (tempDir) => {
+        const { events, run } = await resumeGatedFanOut(tempDir);
+
+        assertEquals(run?.status, "succeeded");
+        assertEquals(maxOpenJobs(events), FAN_OUT_JOBS.length);
+      }),
+  );
+});
+
+Deno.test("resume: caps a workflow's concurrency at SWAMP_MAX_CONCURRENT_STEPS", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: "2" },
+    () =>
+      withTempDir(async (tempDir) => {
+        const { events, run } = await resumeGatedFanOut(tempDir, 3);
+
+        assertEquals(run?.status, "succeeded");
+        assertEquals(maxOpenJobs(events), 2);
+      }),
+  );
+});
+
+Deno.test("run: caps parallel jobs at SWAMP_MAX_CONCURRENT_STEPS", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: "1" },
+    () =>
+      withTempDir(async (tempDir) => {
+        const workflowRepo = new InMemoryWorkflowRepository();
+        const runRepo = new InMemoryWorkflowRunRepository();
+        const workflow = Workflow.create({
+          name: "fan-out",
+          jobs: fanOutJobs(false),
+        });
+        await workflowRepo.save(workflow);
+
+        const service = new WorkflowExecutionService(
+          workflowRepo,
+          runRepo,
+          tempDir,
+          new MockStepExecutor(),
+          undefined,
+          new CatalogStore(join(tempDir, "_catalog.db")),
+        );
+
+        const events: WorkflowExecutionEvent[] = [];
+        let run: WorkflowRun | undefined;
+        for await (const event of service.run(workflow.name)) {
+          events.push(event);
+          if (event.kind === "completed") run = event.run;
+        }
+
+        assertEquals(run?.status, "succeeded");
+        assertEquals(maxOpenJobs(events), 1);
+      }),
+  );
 });
 
 Deno.test("suspend: sibling step failure is recorded during drain", async () => {

@@ -21,6 +21,10 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import type { BatchDeleteFilter } from "./data_delete_service.ts";
 import { DataDeleteService } from "./data_delete_service.ts";
 import { ModelType } from "../models/model_type.ts";
+import { Definition } from "../definitions/definition.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+// Registers the built-in model types the by-id lookup walks.
+import "../models/models.ts";
 
 const MODEL_TYPE = ModelType.create("test/example");
 
@@ -298,4 +302,96 @@ Deno.test("DataDeleteService.batchPreviewDelete: throws when no items match", as
     Error,
     'No data matching prefix "run-" found for model my-model',
   );
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+/**
+ * Saves a target definition and a decoy definition NAMED with the target's
+ * id, so a name-first lookup of the target's id resolves the decoy.
+ */
+async function saveTargetAndDecoy(repo: YamlDefinitionRepository) {
+  const type = ModelType.create("command/shell");
+  const target = Definition.create({ name: "target-model" });
+  const decoy = Definition.create({ name: target.id });
+  await repo.save(type, target);
+  await repo.save(type, decoy);
+  return { target, decoy };
+}
+
+function makeServiceWithRepo(dir: string) {
+  const dataRepo = new FakeDataRepository();
+  dataRepo.versionsByName.set("my-data", [1, 2]);
+  const definitionRepo = new YamlDefinitionRepository(dir);
+  const service = new DataDeleteService(dataRepo as never, definitionRepo);
+  return { service, dataRepo, definitionRepo };
+}
+
+Deno.test("DataDeleteService.delete: byId acts on the definition whose id matches, not one named with it", async () => {
+  await withTempDir(async (dir) => {
+    const { service, dataRepo, definitionRepo } = makeServiceWithRepo(dir);
+    const { target } = await saveTargetAndDecoy(definitionRepo);
+
+    const result = await service.delete(target.id, "my-data", undefined, {
+      byId: true,
+    });
+
+    assertEquals(result.modelId, target.id);
+    assertEquals(result.modelName, "target-model");
+    assertEquals(dataRepo.deleteCalls.map((c) => c.modelId), [target.id]);
+  });
+});
+
+Deno.test("DataDeleteService.delete: without byId the name match wins", async () => {
+  await withTempDir(async (dir) => {
+    const { service, dataRepo, definitionRepo } = makeServiceWithRepo(dir);
+    const { target, decoy } = await saveTargetAndDecoy(definitionRepo);
+
+    const result = await service.delete(target.id, "my-data");
+
+    assertEquals(result.modelId, decoy.id);
+    assertEquals(dataRepo.deleteCalls.map((c) => c.modelId), [decoy.id]);
+  });
+});
+
+Deno.test("DataDeleteService.previewDelete: byId previews the definition whose id matches", async () => {
+  await withTempDir(async (dir) => {
+    const { service, dataRepo, definitionRepo } = makeServiceWithRepo(dir);
+    const { target } = await saveTargetAndDecoy(definitionRepo);
+
+    const preview = await service.previewDelete(target.id, "my-data", {
+      byId: true,
+    });
+
+    assertEquals(preview.modelId, target.id);
+    assertEquals(preview.modelName, "target-model");
+    assertEquals(preview.versionsCount, 2);
+    assertEquals(dataRepo.deleteCalls.length, 0);
+  });
+});
+
+Deno.test("DataDeleteService.delete: byId with a name rejects as model not found", async () => {
+  await withTempDir(async (dir) => {
+    const { service, dataRepo, definitionRepo } = makeServiceWithRepo(dir);
+    await saveTargetAndDecoy(definitionRepo);
+
+    await assertRejects(
+      () =>
+        service.delete("target-model", "my-data", undefined, { byId: true }),
+      Error,
+      "Model not found: target-model",
+    );
+    assertEquals(dataRepo.deleteCalls.length, 0);
+  });
 });

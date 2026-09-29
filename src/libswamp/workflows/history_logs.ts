@@ -17,12 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { isPartialId } from "../../domain/models/model_lookup.ts";
-import { createRunMatcher, type PartialMatchResult } from "./run_lookup.ts";
+import { createRunMatcher } from "./run_lookup.ts";
 import { readLogFile } from "../../presentation/output/log_file_reader.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
@@ -32,6 +31,11 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import {
+  resolveRunReference,
+  type RunReference,
+  type RunReferenceDeps,
+} from "./run_reference.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Log file data. */
 export interface LogData {
@@ -66,16 +70,15 @@ export interface WorkflowHistoryLogsInput {
   runIdOrWorkflow: string;
   tail?: number;
   repoDir: string;
+  /**
+   * The argument, already resolved with resolveRunReference. The read acts
+   * on exactly this and does not look the argument up again.
+   */
+  reference?: RunReference;
 }
 
 /** Dependencies for the workflow history logs operation. */
-export interface WorkflowHistoryLogsDeps {
-  isPartialId: (value: string) => boolean;
-  matchRunByPartialId: (
-    runIdOrWorkflow: string,
-  ) => Promise<PartialMatchResult>;
-  findWorkflow: (nameOrId: string) => Promise<Workflow | null>;
-  findLatestRun: (workflowId: string) => Promise<WorkflowRun | null>;
+export interface WorkflowHistoryLogsDeps extends RunReferenceDeps {
   readLogFile: (
     path: string,
     options?: { tail?: number },
@@ -104,8 +107,7 @@ export function createWorkflowHistoryLogsDeps(
     findWorkflow: async (nameOrId: string) =>
       await workflowRepo.findByName(nameOrId) ??
         await workflowRepo.findById(createWorkflowId(nameOrId)),
-    findLatestRun: (workflowId: string) =>
-      runRepo.findLatestByWorkflowId(createWorkflowId(workflowId)),
+    findLatestRun: (workflowId) => runRepo.findLatestByWorkflowId(workflowId),
     readLogFile,
     toRelativePath,
   };
@@ -123,32 +125,23 @@ export async function* workflowHistoryLogs(
     (async function* () {
       yield { kind: "resolving" };
 
-      let run: WorkflowRun | undefined;
-
-      // Try partial ID matching first if input looks like an ID
-      if (deps.isPartialId(input.runIdOrWorkflow)) {
-        const result = await deps.matchRunByPartialId(input.runIdOrWorkflow);
-
-        if (result.status === "found" && result.match) {
-          run = result.match;
-        } else if (result.status === "ambiguous" && result.matches) {
+      const reference = input.reference ??
+        await resolveRunReference(deps, input.runIdOrWorkflow);
+      let run: WorkflowRun;
+      switch (reference.kind) {
+        case "run":
+          run = reference.run;
+          break;
+        case "ambiguous":
           yield {
             kind: "error",
             error: validationFailed(
               `Ambiguous ID prefix "${input.runIdOrWorkflow}" matches:\n` +
-                result.matches.map((m) => `  ${m.id}`).join("\n"),
+                reference.ids.map((id) => `  ${id}`).join("\n"),
             ),
           };
           return;
-        }
-        // not_found: fall through to workflow name lookup
-      }
-
-      // If not found as run ID, try as workflow name and get latest run
-      if (!run) {
-        const workflow = await deps.findWorkflow(input.runIdOrWorkflow);
-
-        if (!workflow) {
+        case "not_found":
           yield {
             kind: "error",
             error: {
@@ -162,18 +155,18 @@ export async function* workflowHistoryLogs(
             },
           };
           return;
-        }
-
-        const latestRun = await deps.findLatestRun(workflow.id);
-        if (!latestRun) {
-          yield {
-            kind: "error",
-            error: notFound("Run", `for workflow: ${workflow.name}`),
-          };
-          return;
-        }
-
-        run = latestRun;
+        case "workflow":
+          if (!reference.latest) {
+            yield {
+              kind: "error",
+              error: notFound(
+                "Run",
+                `for workflow: ${reference.workflow.name}`,
+              ),
+            };
+            return;
+          }
+          run = reference.latest;
       }
 
       // Read log file

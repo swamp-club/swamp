@@ -520,3 +520,132 @@ Deno.test("resolveSuspendedRun: approve and reject still resolve a suspended run
   );
   assertEquals(result.run.id, run.id);
 });
+
+/**
+ * Repos holding two workflows, where `impostor` is named with `target`'s id,
+ * so a name-first lookup of that id picks the impostor and an id-only lookup
+ * picks the target.
+ */
+function collidingRepos(runsByWorkflow: Map<string, WorkflowRun[]>): {
+  target: Workflow;
+  impostor: Workflow;
+  workflowRepo: WorkflowRepository;
+  runRepo: WorkflowRunRepository;
+} {
+  const target = createWorkflow("target-wf");
+  const impostor = createWorkflow(target.id);
+  const workflows = [target, impostor];
+  return {
+    target,
+    impostor,
+    workflowRepo: {
+      findByName: (name: string) =>
+        Promise.resolve(workflows.find((w) => w.name === name) ?? null),
+      findById: (id: WorkflowId) =>
+        Promise.resolve(workflows.find((w) => w.id === id) ?? null),
+      findAll: () => Promise.resolve(workflows),
+      save: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+      getPath: () => "",
+    } as unknown as WorkflowRepository,
+    runRepo: {
+      findAllByWorkflowId: (wfId: WorkflowId) =>
+        Promise.resolve(runsByWorkflow.get(wfId as string) ?? []),
+      findById: (wfId: WorkflowId, runId: WorkflowRunId) =>
+        Promise.resolve(
+          (runsByWorkflow.get(wfId as string) ?? []).find((r) =>
+            r.id === (runId as string)
+          ) ?? null,
+        ),
+      save: () => Promise.resolve(),
+    } as unknown as WorkflowRunRepository,
+  };
+}
+
+function withRuns(
+  build: (target: Workflow, impostor: Workflow) => [WorkflowRun, WorkflowRun],
+) {
+  const runs = new Map<string, WorkflowRun[]>();
+  const repos = collidingRepos(runs);
+  const [targetRun, impostorRun] = build(repos.target, repos.impostor);
+  runs.set(repos.target.id, [targetRun]);
+  runs.set(repos.impostor.id, [impostorRun]);
+  return { ...repos, targetRun, impostorRun };
+}
+
+Deno.test("resolveSuspendedRun: byId resolves the workflow whose id matches, not one named with that id", async () => {
+  const { target, workflowRepo, runRepo, targetRun } = withRuns((t, i) => [
+    createSuspendedRun(t),
+    createSuspendedRun(i),
+  ]);
+
+  const result = await resolveSuspendedRun(
+    workflowRepo,
+    runRepo,
+    target.id,
+    undefined,
+    { byId: true },
+  );
+  assertEquals(result.workflowId, target.id);
+  assertEquals(result.workflowName, "target-wf");
+  assertEquals(result.run.id, targetRun.id);
+});
+
+Deno.test("resolveSuspendedRun: without byId the name match wins over the id match", async () => {
+  const { target, impostor, workflowRepo, runRepo, impostorRun } = withRuns((
+    t,
+    i,
+  ) => [createSuspendedRun(t), createSuspendedRun(i)]);
+
+  const result = await resolveSuspendedRun(workflowRepo, runRepo, target.id);
+  assertEquals(result.workflowId, impostor.id);
+  assertEquals(result.run.id, impostorRun.id);
+});
+
+Deno.test("resolveSuspendedRun: byId does not fall back to a name lookup", async () => {
+  const wf = createWorkflow("named-wf");
+  const { workflowRepo, runRepo } = stubRepos(wf, [createSuspendedRun(wf)]);
+
+  await assertRejects(
+    () =>
+      resolveSuspendedRun(workflowRepo, runRepo, "named-wf", undefined, {
+        byId: true,
+      }),
+    Error,
+    "Workflow not found",
+  );
+});
+
+Deno.test("resolveResumableRun: byId with --from resolves the workflow whose id matches", async () => {
+  const { target, workflowRepo, runRepo, targetRun } = withRuns((t, i) => [
+    createFailedRun(t),
+    createFailedRun(i),
+  ]);
+
+  const result = await resolveResumableRun(
+    workflowRepo,
+    runRepo,
+    target.id,
+    undefined,
+    { ...FROM, byId: true },
+  );
+  assertEquals(result.workflowId, target.id);
+  assertEquals(result.run.id, targetRun.id);
+});
+
+Deno.test("resolveResumableRun: byId bare resume resolves the workflow whose id matches", async () => {
+  const { target, workflowRepo, runRepo, targetRun } = withRuns((t, i) => [
+    createSuspendedRun(t),
+    createSuspendedRun(i),
+  ]);
+
+  const result = await resolveResumableRun(
+    workflowRepo,
+    runRepo,
+    target.id,
+    undefined,
+    { byId: true },
+  );
+  assertEquals(result.workflowId, target.id);
+  assertEquals(result.run.id, targetRun.id);
+});

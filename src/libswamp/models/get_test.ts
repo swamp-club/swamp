@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -366,4 +366,79 @@ Deno.test("modelGet: describes a definition whose typeVersion is malformed", asy
   assertEquals(data.typeVersion, "1.0.0");
   assertEquals(data.currentTypeVersion, "2026.06.01.1");
   assertEquals(data.staleness, "invalid");
+});
+
+Deno.test("modelGet: byId resolves through lookupDefinitionById, never the name-first lookup", async () => {
+  const id = crypto.randomUUID();
+  const calls: string[] = [];
+  const deps: ModelGetDeps = {
+    lookupDefinition: (idOrName) => {
+      calls.push(`name:${idOrName}`);
+      return Promise.resolve({
+        definition: { ...testDefinition, id: "decoy", name: id },
+        type: testModelType,
+      } as unknown as Awaited<ReturnType<ModelGetDeps["lookupDefinition"]>>);
+    },
+    lookupDefinitionById: (lookupId) => {
+      calls.push(`id:${lookupId}`);
+      return Promise.resolve({
+        definition: { ...testDefinition, id },
+        type: testModelType,
+      } as unknown as Awaited<ReturnType<ModelGetDeps["lookupDefinition"]>>);
+    },
+    getModelDef: () => undefined,
+  };
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, id, { byId: true }),
+  );
+
+  assertEquals(completedData(events).id, id);
+  assertEquals(calls, [`id:${id}`]);
+});
+
+Deno.test("modelGet: byId without lookupDefinitionById fails instead of falling back to name lookup", async () => {
+  let nameLookups = 0;
+  const deps: ModelGetDeps = {
+    lookupDefinition: () => {
+      nameLookups++;
+      return Promise.resolve({
+        definition: testDefinition,
+        type: testModelType,
+      } as unknown as Awaited<ReturnType<ModelGetDeps["lookupDefinition"]>>);
+    },
+    getModelDef: () => undefined,
+  };
+
+  await assertRejects(
+    () =>
+      collect<ModelGetEvent>(
+        modelGet(createLibSwampContext(), deps, crypto.randomUUID(), {
+          byId: true,
+        }),
+      ),
+    Error,
+    "none is wired",
+  );
+  assertEquals(nameLookups, 0);
+});
+
+Deno.test("modelGet: without byId uses the name-first lookup", async () => {
+  let idLookups = 0;
+  const deps: ModelGetDeps = {
+    ...makeDeps({
+      lookupResult: { definition: testDefinition, type: testModelType },
+    }),
+    lookupDefinitionById: () => {
+      idLookups++;
+      return Promise.resolve(null);
+    },
+  };
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "my-model"),
+  );
+
+  assertEquals(completedData(events).id, "def-1");
+  assertEquals(idLookups, 0);
 });

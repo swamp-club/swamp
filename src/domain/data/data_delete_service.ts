@@ -20,7 +20,10 @@
 import type { Data } from "./data.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../models/model_lookup.ts";
 
 /**
  * Result of a data delete operation.
@@ -81,6 +84,35 @@ function matchesFilter(
   }
 }
 
+/** How a data operation resolves its model reference. */
+export interface ModelRefOptions {
+  /**
+   * Treat the model reference as a definition id the caller already
+   * resolved, and look it up by id only.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the model name the caller authorized: ids are not
+   * guaranteed unique, so only a model with this name and the id matches.
+   */
+  expectedName?: string;
+}
+
+/**
+ * Resolves the model a data operation targets: by name then exact id, or by
+ * id only when the caller already resolved it and must act on exactly that
+ * model.
+ */
+function lookupModel(
+  definitionRepo: DefinitionRepository,
+  modelRef: string,
+  options: ModelRefOptions,
+) {
+  return options.byId
+    ? findDefinitionByIdGlobal(definitionRepo, modelRef, options.expectedName)
+    : findDefinitionByIdOrName(definitionRepo, modelRef);
+}
+
 /**
  * Service for deleting data instances.
  *
@@ -103,10 +135,12 @@ export class DataDeleteService {
     modelRef: string,
     dataName: string,
     version?: number,
+    options: ModelRefOptions = {},
   ): Promise<DeleteResult> {
-    const lookup = await findDefinitionByIdOrName(
+    const lookup = await lookupModel(
       this.definitionRepo,
       modelRef,
+      options,
     );
     if (!lookup) {
       throw new Error(`Model not found: ${modelRef}`);
@@ -148,10 +182,12 @@ export class DataDeleteService {
   async previewDelete(
     modelRef: string,
     dataName: string,
+    options: ModelRefOptions = {},
   ): Promise<DeletePreview> {
-    const lookup = await findDefinitionByIdOrName(
+    const lookup = await lookupModel(
       this.definitionRepo,
       modelRef,
+      options,
     );
     if (!lookup) {
       throw new Error(`Model not found: ${modelRef}`);

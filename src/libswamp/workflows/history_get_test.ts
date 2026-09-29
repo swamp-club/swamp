@@ -245,3 +245,43 @@ Deno.test("workflowHistoryGet: partial ID not found falls back to workflow name"
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.id, "run-1");
 });
+
+Deno.test("workflowHistoryGet: acts on a passed reference without looking the argument up", async () => {
+  const refused = () =>
+    Promise.reject(new Error("the argument must not be looked up again"));
+  const deps = makeDeps({
+    isPartialId: () => {
+      throw new Error("the argument must not be parsed again");
+    },
+    matchRunByPartialId: refused,
+    findWorkflow: refused,
+    findLatestRun: refused,
+  });
+  const run = runWithOneStep();
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "abd", {
+      reference: { kind: "run", run },
+    }),
+  );
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.id, run.id);
+});
+
+Deno.test("workflowHistoryGet: reports a passed workflow with no runs as today", async () => {
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), makeDeps(), "my-workflow", {
+      reference: { kind: "workflow", workflow: testWorkflow, latest: null },
+    }),
+  );
+  const error = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "error" }
+  >;
+  assertEquals(
+    error.error.message,
+    "Workflow run not found: no runs for workflow: my-workflow",
+  );
+});

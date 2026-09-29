@@ -69,6 +69,44 @@ export interface DefinitionRepository {
   findAllGlobal(): Promise<{ definition: Definition; type: ModelType }[]>;
 
   /**
+   * Finds a definition by id wherever it is stored — every type's directory,
+   * auto-definitions included — whether or not its type is registered, with
+   * the type the file declares. Optional: without it, a lookup by id only
+   * searches the registered types and the primary definitions.
+   *
+   * @param id - The definition ID
+   * @returns The definition and its type if found, or null
+   */
+  findByIdGlobal?(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType } | null>;
+
+  /**
+   * Finds every definition that declares `id` wherever it is stored — every
+   * type's directory, auto-definitions included — with the type each file
+   * declares. Ids are not guaranteed unique (a copied file keeps its id), so
+   * a caller authorizing what is stored under an id must see all of them.
+   * Optional: without it, callers fall back to {@link findAllGlobal}.
+   *
+   * @param id - The definition ID
+   * @returns Every definition declaring the id, primary definitions first
+   */
+  findAllByIdGlobal?(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType }[]>;
+
+  /**
+   * Finds a definition by id from where the repository last saw it, without
+   * scanning, with the type the file declares. Optional; null when there is
+   * no such hint or the file no longer declares the id.
+   *
+   * @param id - The definition ID
+   */
+  findByIdCached?(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType } | null>;
+
+  /**
    * Saves a definition.
    *
    * @param type - The model type
@@ -77,12 +115,14 @@ export interface DefinitionRepository {
   save(type: ModelType, definition: Definition): Promise<void>;
 
   /**
-   * Deletes a definition.
+   * Deletes a definition, whether it lives in the definitions directory or
+   * the auto-definitions directory. Only files declaring `id` are removed.
+   * Deleting a definition that does not exist is a no-op.
    *
    * @param type - The model type
    * @param id - The definition ID
    */
-  delete(type: ModelType, id: DefinitionId): Promise<void>;
+  delete(type: ModelType, id: DefinitionId, name?: string): Promise<void>;
 
   /**
    * Generates a new unique ID.

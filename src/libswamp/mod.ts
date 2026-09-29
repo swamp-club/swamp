@@ -289,9 +289,20 @@ export {
   type ModelOutputGetData,
   type ModelOutputGetDeps,
   type ModelOutputGetEvent,
+  type ModelOutputGetOptions,
   type OutputInfo,
   type ProvenanceData,
 } from "./models/output_get.ts";
+export {
+  type OutputIdReference,
+  type OutputIdReferenceDeps,
+  type OutputMatchResult,
+  type OutputReference,
+  type OutputReferenceDeps,
+  resolveOutputIdReference,
+  resolveOutputReference,
+  type TypedOutput,
+} from "./models/output_reference.ts";
 export {
   createModelMethodDescribeDeps,
   modelMethodDescribe,
@@ -339,6 +350,9 @@ export {
   CANCEL_SUSPENDED_NOT_SUSPENDED,
   type CancelTargetWorkflow,
   createWorkflowCancelSuspendedDeps,
+  type LocatedSuspendedRun,
+  type LocateSuspendedRunInput,
+  locateSuspendedRunToCancel,
   workflowCancelSuspended,
   type WorkflowCancelSuspendedData,
   type WorkflowCancelSuspendedDeps,
@@ -714,6 +728,11 @@ export {
   type WorkflowHistoryLogsEvent,
   type WorkflowHistoryLogsInput,
 } from "./workflows/history_logs.ts";
+export {
+  resolveRunReference,
+  type RunReference,
+  type RunReferenceDeps,
+} from "./workflows/run_reference.ts";
 
 // Model validate operations
 export {

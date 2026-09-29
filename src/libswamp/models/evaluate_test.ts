@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
@@ -195,4 +195,73 @@ Deno.test("isModelEvaluateAllData: returns true for AllData, false for ItemData"
     hadExpressions: false,
   };
   assertEquals(isModelEvaluateAllData(itemData), false);
+});
+
+Deno.test("modelEvaluate: byId resolves through lookupDefinitionById, never the name-first lookup", async () => {
+  const id = crypto.randomUUID();
+  const calls: string[] = [];
+  const byIdDefinition = Definition.create({
+    id,
+    name: "by-id-model",
+    version: 1,
+  });
+  const modelType = ModelType.create("aws/ec2");
+  const deps = makeDeps({
+    lookupDefinition: (idOrName) => {
+      calls.push(`name:${idOrName}`);
+      return Promise.reject(new Error("name-first lookup must not be used"));
+    },
+    lookupDefinitionById: (lookupId) => {
+      calls.push(`id:${lookupId}`);
+      return Promise.resolve({ definition: byIdDefinition, type: modelType });
+    },
+    evaluateDefinition: (definition, type) =>
+      Promise.resolve({
+        definition,
+        type,
+        hadExpressions: false,
+        authoredExpressions: new Set<string>(),
+      }),
+  });
+
+  const events = await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, {
+      modelIdOrName: id,
+      byId: true,
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    ModelEvaluateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  const data = completed.data as ModelEvaluateItemData;
+  assertEquals(data.id, id);
+  assertEquals(data.name, "by-id-model");
+  assertEquals(calls, [`id:${id}`]);
+});
+
+Deno.test("modelEvaluate: byId without lookupDefinitionById fails instead of falling back to name lookup", async () => {
+  let nameLookups = 0;
+  const fallback = makeDeps();
+  const deps = makeDeps({
+    lookupDefinition: (idOrName) => {
+      nameLookups++;
+      return fallback.lookupDefinition(idOrName);
+    },
+  });
+
+  await assertRejects(
+    () =>
+      collect<ModelEvaluateEvent>(
+        modelEvaluate(createLibSwampContext(), deps, {
+          modelIdOrName: crypto.randomUUID(),
+          byId: true,
+        }),
+      ),
+    Error,
+    "none is wired",
+  );
+  assertEquals(nameLookups, 0);
 });

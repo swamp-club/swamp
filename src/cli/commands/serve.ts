@@ -41,7 +41,6 @@ import {
   RUN_CANCEL_GRACE_MS,
   type SuspendedRunCancelResult,
 } from "../../serve/suspended_run_cancel.ts";
-import { withSyncGate } from "../../serve/sync_gate.ts";
 import { createTriggerAuthorizer } from "../../serve/trigger_authorizer.ts";
 import {
   auditScheduledEvent,
@@ -63,6 +62,7 @@ import {
   cancelActor,
   cancelReasonFor,
   closeConnectionsForPrincipal,
+  type ConnectionContext,
   emitRunCancelAudit,
   emitSystemAuditEvent,
   listTokenSessions,
@@ -105,7 +105,10 @@ import {
   clearRateLimit,
   rateLimitKey,
 } from "../../serve/rate_limiter.ts";
-import { parsePrincipal } from "../../domain/access/principal.ts";
+import {
+  parsePrincipal,
+  type Principal,
+} from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { getActiveTelemetryContext } from "../telemetry_integration.ts";
@@ -413,6 +416,72 @@ export interface CancelDeps {
    * Tried only for a workflow-run that no registry holds.
    */
   cancelSuspended?: (id: string) => Promise<SuspendedRunCancelResult>;
+}
+
+export interface CancelAuthorizationRequest {
+  principal: Principal;
+  collectives: readonly string[];
+  groups: readonly string[];
+  sourceIp: string;
+  /** The run to cancel; absent for a bulk cancel. */
+  execution?: { type: ExecutionType; id: string };
+}
+
+/**
+ * Checks that an authenticated caller of the HTTP cancel endpoint holds
+ * `admin`. Returns the 403 response to send, after auditing the refusal as
+ * `denied`, or undefined when the cancel may go ahead.
+ */
+export function authorizeCancelRequest(
+  ctx: Pick<
+    ConnectionContext,
+    "auditEmitter" | "instanceId" | "resolvedUserNames"
+  >,
+  policySnapshotLoader:
+    | Pick<PolicySnapshotLoader, "decisionService">
+    | undefined,
+  request: CancelAuthorizationRequest,
+): Response | undefined {
+  const auditRefusal = (detail: string) =>
+    emitRunCancelAudit(ctx, {
+      action: request.execution ? "cancel" : "cancel.all",
+      resourceKind: request.execution?.type === "method-run"
+        ? "model"
+        : request.execution
+        ? "workflow"
+        : "execution",
+      resourceName: request.execution?.id ?? "*",
+      principal: request.principal,
+      sourceIp: request.sourceIp,
+      requestId: crypto.randomUUID(),
+      outcome: "denied",
+      detail,
+    });
+  if (!policySnapshotLoader) {
+    auditRefusal("access_not_configured");
+    return Response.json({
+      status: "error",
+      message:
+        "Authorization enforcement is enabled but no policy snapshot is available",
+    }, { status: 403 });
+  }
+  const decision = policySnapshotLoader.decisionService.decide(
+    {
+      principal: request.principal,
+      collectives: [...request.collectives],
+      groups: [...request.groups],
+    },
+    "admin",
+    { kind: "access", name: "*", fields: {} },
+  );
+  if (!decision || decision.effect !== "allow") {
+    auditRefusal("admin required");
+    return Response.json({
+      status: "error",
+      message: "Access denied: cancel requires admin permission",
+    }, { status: 403 });
+  }
+  return undefined;
 }
 
 const CHAIN_RECONSTRUCT_LOOKBACK_DAYS = 14;
@@ -5123,48 +5192,23 @@ export const serveCommand = new Command()
 
               const cancelPrincipal = parsePrincipal(authResult.principalId);
               cancelAuditPrincipal = cancelPrincipal;
-              const auditRefusal = (detail: string) =>
-                emitRunCancelAudit(connectionCtx, {
-                  action: cancelMatch ? "cancel" : "cancel.all",
-                  resourceKind: cancelMatch?.[1] === "method-run"
-                    ? "model"
-                    : cancelMatch
-                    ? "workflow"
-                    : "execution",
-                  resourceName: cancelMatch?.[2] ?? "*",
+              const refusal = authorizeCancelRequest(
+                connectionCtx,
+                policySnapshotLoader,
+                {
                   principal: cancelPrincipal,
+                  collectives: authResult.collectives,
+                  groups: authResult.groups,
                   sourceIp: cancelRemoteAddr,
-                  requestId: crypto.randomUUID(),
-                  outcome: "denied",
-                  detail,
-                });
-              if (!policySnapshotLoader) {
-                auditRefusal("access_not_configured");
-                return Response.json({
-                  status: "error",
-                  message:
-                    "Authorization enforcement is enabled but no policy snapshot is available",
-                }, { status: 403 });
-              }
-              {
-                const service = policySnapshotLoader.decisionService;
-                const decision = service.decide(
-                  {
-                    principal: cancelPrincipal,
-                    collectives: [...authResult.collectives],
-                    groups: [...authResult.groups],
-                  },
-                  "admin",
-                  { kind: "access", name: "*", fields: {} },
-                );
-                if (!decision || decision.effect !== "allow") {
-                  auditRefusal("admin required");
-                  return Response.json({
-                    status: "error",
-                    message: "Access denied: cancel requires admin permission",
-                  }, { status: 403 });
-                }
-              }
+                  execution: cancelMatch
+                    ? {
+                      type: cancelMatch[1] as ExecutionType,
+                      id: cancelMatch[2],
+                    }
+                    : undefined,
+                },
+              );
+              if (refusal) return refusal;
             }
           }
           if (cancelMatch) {
@@ -5206,14 +5250,10 @@ export const serveCommand = new Command()
                   // The endpoint already required admin on every resource, so
                   // the run's own workflow needs no further check.
                   cancelSuspended: (id) =>
-                    withSyncGate(
-                      connectionCtx.syncGate,
-                      () =>
-                        cancelSuspendedRunAndPush(
-                          connectionCtx,
-                          { runId: id, reason },
-                          () => true,
-                        ),
+                    cancelSuspendedRunAndPush(
+                      connectionCtx,
+                      { runId: id, reason },
+                      () => true,
                     ),
                 },
               );

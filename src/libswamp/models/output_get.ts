@@ -25,7 +25,6 @@ import {
   findDefinitionByIdOrName,
   isPartialId,
   matchByPartialId,
-  type PartialIdResult,
 } from "../../domain/models/model_lookup.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
@@ -34,6 +33,11 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
+import {
+  type OutputReference,
+  type OutputReferenceDeps,
+  resolveOutputReference,
+} from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -120,15 +124,7 @@ export type ModelOutputGetEvent =
   | { kind: "error"; error: SwampError };
 
 /** Dependencies for the model output get operation. */
-export interface ModelOutputGetDeps {
-  findAllOutputsGlobal: () => Promise<GlobalOutputInfo[]>;
-  findDefinitionByIdOrName: (
-    idOrName: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  findLatestOutputByDefinition: (
-    type: ModelType,
-    definitionId: string,
-  ) => Promise<OutputInfo | null>;
+export interface ModelOutputGetDeps extends OutputReferenceDeps<OutputInfo> {
   findOutputsByDefinition: (
     type: ModelType,
     definitionId: string,
@@ -137,12 +133,16 @@ export interface ModelOutputGetDeps {
     type: ModelType,
     definitionId: string,
   ) => Promise<Definition | null>;
-  matchByPartialId: (
-    items: Array<{ id: string; item: GlobalOutputInfo }>,
-    partialId: string,
-  ) => PartialIdResult<GlobalOutputInfo>;
-  isPartialId: (value: string) => boolean;
   modelTypes: () => ModelType[];
+}
+
+/** Options for {@link modelOutputGet}. */
+export interface ModelOutputGetOptions {
+  /**
+   * The argument, already resolved with resolveOutputReference. The read acts
+   * on exactly this and does not look the argument up again.
+   */
+  reference?: OutputReference<OutputInfo>;
 }
 
 /** Wires real infrastructure into ModelOutputGetDeps. */
@@ -161,17 +161,32 @@ export async function createModelOutputGetDeps(
     dsPath(SWAMP_SUBDIRS.outputs),
   );
   return {
-    findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
+    isPartialId,
+    matchOutputByPartialId: async (idPrefix) => {
+      const outputs = await outputRepo.findAllGlobal();
+      const result = matchByPartialId(
+        outputs.map((o) => ({ id: o.output.id, item: o })),
+        idPrefix,
+      );
+      if (result.status === "found") {
+        return { status: "found", match: result.match };
+      }
+      if (result.status === "ambiguous") {
+        return {
+          status: "ambiguous",
+          matches: result.matches.map((m) => ({ id: m.id })),
+        };
+      }
+      return { status: "not_found" };
+    },
     findDefinitionByIdOrName: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    findLatestOutputByDefinition: (type, defId) =>
+    findLatestOutput: (type, defId) =>
       outputRepo.findLatestByDefinition(type, createDefinitionId(defId)),
     findOutputsByDefinition: (type, defId) =>
       outputRepo.findByDefinition(type, createDefinitionId(defId)),
     findDefinitionById: (type, defId) =>
       definitionRepo.findById(type, createDefinitionId(defId)),
-    matchByPartialId,
-    isPartialId,
     modelTypes: () => [...modelRegistry.types()],
   };
 }
@@ -181,6 +196,7 @@ export async function* modelOutputGet(
   _ctx: LibSwampContext,
   deps: ModelOutputGetDeps,
   outputIdOrModelName: string,
+  options: ModelOutputGetOptions = {},
 ): AsyncIterable<ModelOutputGetEvent> {
   yield* withGeneratorSpan(
     "swamp.model.output.get",
@@ -188,85 +204,57 @@ export async function* modelOutputGet(
     (async function* () {
       yield { kind: "resolving" };
 
-      if (deps.isPartialId(outputIdOrModelName)) {
-        yield* lookupByPartialId(deps, outputIdOrModelName);
-      } else {
-        yield* lookupByModelName(deps, outputIdOrModelName);
+      const reference = options.reference ??
+        await resolveOutputReference(deps, outputIdOrModelName);
+      switch (reference.kind) {
+        case "output": {
+          const { output, type } = reference.match;
+          const modelName = await resolveModelName(deps, output.definitionId);
+          yield {
+            kind: "completed",
+            data: toOutputData(output, type, modelName),
+          };
+          return;
+        }
+        case "ambiguous":
+          yield {
+            kind: "error",
+            error: {
+              code: "ambiguous_id",
+              message:
+                `Ambiguous ID prefix "${outputIdOrModelName}" matches:\n` +
+                reference.ids.map((id) => `  ${id}`).join("\n"),
+            },
+          };
+          return;
+        case "not_found":
+          yield {
+            kind: "error",
+            error: notFound("Output or model", outputIdOrModelName),
+          };
+          return;
+        case "model":
+          if (!reference.latest) {
+            yield {
+              kind: "error",
+              error: notFound(
+                "Output",
+                `no outputs for model: ${reference.definition.name}`,
+              ),
+            };
+            return;
+          }
+          yield {
+            kind: "completed",
+            data: toOutputData(
+              reference.latest,
+              reference.type,
+              reference.definition.name,
+            ),
+          };
       }
     })(),
   );
-}
-
-async function* lookupByPartialId(
-  deps: ModelOutputGetDeps,
-  partialId: string,
-): AsyncIterable<ModelOutputGetEvent> {
-  const allOutputs = await deps.findAllOutputsGlobal();
-  const matchResult = deps.matchByPartialId(
-    allOutputs.map((o) => ({ id: o.output.id, item: o })),
-    partialId,
-  );
-
-  if (matchResult.status === "found") {
-    const { output, type } = matchResult.match;
-
-    const modelName = await resolveModelName(deps, output.definitionId);
-
-    yield {
-      kind: "completed",
-      data: toOutputData(output, type, modelName),
-    };
-  } else if (matchResult.status === "ambiguous") {
-    yield {
-      kind: "error",
-      error: {
-        code: "ambiguous_id",
-        message: `Ambiguous ID prefix "${partialId}" matches:\n` +
-          matchResult.matches.map((m) => `  ${m.id}`).join("\n"),
-      },
-    };
-  } else {
-    // not_found - try as definition ID or name
-    yield* lookupByModelName(deps, partialId);
-  }
-}
-
-async function* lookupByModelName(
-  deps: ModelOutputGetDeps,
-  idOrName: string,
-): AsyncIterable<ModelOutputGetEvent> {
-  const definitionResult = await deps.findDefinitionByIdOrName(idOrName);
-  if (!definitionResult) {
-    yield {
-      kind: "error",
-      error: notFound("Output or model", idOrName),
-    };
-    return;
-  }
-
-  const latestOutput = await deps.findLatestOutputByDefinition(
-    definitionResult.type,
-    definitionResult.definition.id,
-  );
-  if (!latestOutput) {
-    yield {
-      kind: "error",
-      error: notFound(
-        "Output",
-        `no outputs for model: ${definitionResult.definition.name}`,
-      ),
-    };
-    return;
-  }
-
-  yield {
-    kind: "completed",
-    data: toOutputData(
-      latestOutput,
-      definitionResult.type,
-      definitionResult.definition.name,
-    ),
-  };
 }
 
 async function resolveModelName(

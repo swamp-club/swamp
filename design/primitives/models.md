@@ -266,7 +266,9 @@ way parameterized workflows that vary inputs per run always use current values.
 definition file. They are local runtime state, are not tracked in git, and do
 not appear in `swamp model search` results. `model get`, `model method run`
 and workflow references can find them by name. `model get` shows
-`Auto-created: yes` for them.
+`Auto-created: yes` for them. Saving an existing auto-definition, whether a lazy
+`typeVersion` upgrade or `model edit`, writes it back to
+`.swamp/auto-definitions/`; it never moves into `models/`.
 
 ### Choosing Between the Two
 

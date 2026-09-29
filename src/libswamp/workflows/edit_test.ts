@@ -486,3 +486,77 @@ Deno.test("workflowEdit: stdin update that keeps name and tags still asks author
   assertEquals(asked, true);
   assertEquals(saved, []);
 });
+
+Deno.test("workflowEdit: a UUID is looked up by name first", async () => {
+  const impostor = {
+    ...testWorkflow,
+    id: "00000000-0000-4000-8000-000000000000",
+    name: testWorkflow.id,
+  } as unknown as Workflow;
+  const paths: string[] = [];
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(impostor),
+    findById: () => Promise.resolve(testWorkflow),
+    getPath: (id) => {
+      paths.push(id);
+      return `/fake/${id}.yaml`;
+    },
+  });
+
+  await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+    }),
+  );
+
+  assertEquals(paths, [impostor.id]);
+});
+
+Deno.test("workflowEdit: with byId edits the workflow with that id, never a same-named one", async () => {
+  const impostor = {
+    ...testWorkflow,
+    id: "00000000-0000-4000-8000-000000000000",
+    name: testWorkflow.id,
+  } as unknown as Workflow;
+  const paths: string[] = [];
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(impostor),
+    findById: () => Promise.resolve(testWorkflow),
+    getPath: (id) => {
+      paths.push(id);
+      return `/fake/${id}.yaml`;
+    },
+  });
+
+  await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+      byId: true,
+    }),
+  );
+
+  assertEquals(paths, [testWorkflow.id]);
+});
+
+Deno.test("workflowEdit: with byId a broken workflow file is matched by id only", async () => {
+  const deps = makeDeps({
+    findBrokenWorkflow: () =>
+      Promise.resolve({
+        file: "/fake/broken.yaml",
+        name: testWorkflow.id,
+        id: null,
+        error: "bad",
+      }),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+      byId: true,
+    }),
+  );
+
+  const last = events.at(-1) as Extract<WorkflowEditEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "not_found");
+});

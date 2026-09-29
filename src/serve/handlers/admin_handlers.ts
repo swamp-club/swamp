@@ -1222,6 +1222,8 @@ export async function handleVaultMigrate(
     const repoDir = ctx.repoDir;
     const deps = await createVaultMigrateDeps(repoDir);
 
+    // No trustKeySource: the client does not own this host, so a
+    // local_encryption target gets the server's key source (swamp-club#2690).
     await vaultMigratePreview(libCtx, deps, {
       vaultName: payload.vaultName,
       targetType: payload.targetType,

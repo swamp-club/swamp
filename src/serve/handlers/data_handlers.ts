@@ -67,7 +67,6 @@ import type {
   SummarisePayload,
 } from "../protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
 import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
@@ -84,6 +83,11 @@ import {
   send,
   sendError,
 } from "./shared.ts";
+import {
+  authorizeResolved,
+  resolveModelTarget,
+  targetArgument,
+} from "./resource_resolution.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -109,23 +113,15 @@ export async function resolveDataFields(
   definitionRepo: DefinitionRepository,
   modelIdOrName: string,
 ): Promise<Record<string, unknown>> {
-  const fields: Record<string, unknown> = { name: modelIdOrName };
-  try {
-    const result = await findDefinitionByIdOrName(
-      definitionRepo,
-      modelIdOrName,
-    );
-    if (result) {
-      fields.name = result.definition.name;
-      const ns = ModelType.getUserNamespace(result.type.normalized);
-      if (ns) fields.ns = ns;
-      const tags = result.definition.tags;
-      if (tags && Object.keys(tags).length > 0) fields.tags = tags;
-    }
-  } catch {
-    // Fall back to name-only fields on lookup failure
-  }
-  return fields;
+  const target = await resolveModelTarget(
+    definitionRepo,
+    modelIdOrName,
+    "data",
+  );
+  // Fall back to name-only fields when nothing matches or the lookup fails.
+  return target.status === "found"
+    ? { ...target.resource.fields }
+    : { name: modelIdOrName };
 }
 
 export async function handleDataGet(
@@ -136,17 +132,47 @@ export async function handleDataGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const resourceName = payload.modelIdOrName ?? "*";
-  const dataFields = resourceName !== "*"
-    ? await resolveDataFields(ctx.repoContext.definitionRepo, resourceName)
-    : {};
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: resourceName,
-      fields: dataFields,
-    }, ctx).allowed
-  ) return;
+  // Scoped to a workflow, modelIdOrName names a data item rather than a
+  // model, and without either the request reads "*"; how those forms
+  // authorize is swamp-club#2675. A model-scoped read resolves its model
+  // first and authorizes the model's canonical name (swamp-club#2674).
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
+  if (payload.workflowName || !payload.modelIdOrName) {
+    // An empty name reads as absent, exactly as libswamp reads it.
+    const resourceName = payload.modelIdOrName || "*";
+    const dataFields = resourceName !== "*"
+      ? await resolveDataFields(ctx.repoContext.definitionRepo, resourceName)
+      : {};
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", {
+        kind: "data",
+        name: resourceName,
+        fields: dataFields,
+      }, ctx).allowed
+    ) return;
+  } else {
+    const target = await resolveModelTarget(
+      ctx.repoContext.definitionRepo,
+      payload.modelIdOrName,
+      "data",
+    );
+    if (
+      !authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        payload.modelIdOrName,
+        "data",
+        ctx,
+        "data_get_failed",
+      )
+    ) return;
+    model = targetArgument(target, payload.modelIdOrName);
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -161,7 +187,9 @@ export async function handleDataGet(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataGet(libCtx, deps, {
-        modelIdOrName: payload.modelIdOrName,
+        modelIdOrName: model?.idOrName ?? payload.modelIdOrName,
+        byId: model?.byId,
+        expectedName: model?.expectedName,
         dataName: payload.dataName,
         workflowName: payload.workflowName,
         runId: payload.runId,
@@ -310,19 +338,32 @@ export async function handleDataList(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const resourceName = payload.modelIdOrName ?? "*";
+  // An empty name reads as absent, exactly as libswamp reads it, so it takes
+  // the "*" form and its per-item filtering.
+  const resourceName = payload.modelIdOrName || "*";
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
   if (resourceName !== "*") {
-    const listFields = await resolveDataFields(
+    const target = await resolveModelTarget(
       ctx.repoContext.definitionRepo,
       resourceName,
+      "data",
     );
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "data",
-        name: resourceName,
-        fields: listFields,
-      }, ctx).allowed
+      !authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        resourceName,
+        "data",
+        ctx,
+        "data_list_failed",
+      )
     ) return;
+    model = targetArgument(target, resourceName);
   } else {
     if (
       !authorizeAnyOrReject(
@@ -350,7 +391,9 @@ export async function handleDataList(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataList(libCtx, deps, {
-        modelIdOrName: payload.modelIdOrName,
+        modelIdOrName: model?.idOrName ?? payload.modelIdOrName,
+        byId: model?.byId,
+        expectedName: model?.expectedName,
         workflowName: payload.workflowName,
         runId: payload.runId,
         typeFilter: payload.typeFilter,
@@ -546,18 +589,25 @@ export async function handleDataVersions(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const resourceName = payload.modelIdOrName;
-  const versionFields = await resolveDataFields(
+  const target = await resolveModelTarget(
     ctx.repoContext.definitionRepo,
-    resourceName,
+    payload.modelIdOrName,
+    "data",
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: resourceName,
-      fields: versionFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      payload.modelIdOrName,
+      "data",
+      ctx,
+      "data_versions_failed",
+    )
   ) return;
+  const model = targetArgument(target, payload.modelIdOrName);
 
   try {
     const libCtx = createLibSwampContext();
@@ -571,7 +621,9 @@ export async function handleDataVersions(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataVersions(libCtx, deps, {
-        modelIdOrName: payload.modelIdOrName,
+        modelIdOrName: model.idOrName,
+        byId: model.byId,
+        expectedName: model.expectedName,
         dataName: payload.dataName,
       }),
       {
@@ -620,17 +672,25 @@ export async function handleDataDelete(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const deleteFields = await resolveDataFields(
+  const target = await resolveModelTarget(
     ctx.repoContext.definitionRepo,
     payload.modelIdOrName,
+    "data",
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: payload.modelIdOrName,
-      fields: deleteFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "write",
+      target,
+      payload.modelIdOrName,
+      "data",
+      ctx,
+      "data_delete_failed",
+    )
   ) return;
+  const model = targetArgument(target, payload.modelIdOrName);
 
   try {
     const libCtx = createLibSwampContext();
@@ -644,7 +704,9 @@ export async function handleDataDelete(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataDelete(libCtx, deps, {
-        modelIdOrName: payload.modelIdOrName,
+        modelIdOrName: model.idOrName,
+        byId: model.byId,
+        expectedName: model.expectedName,
         dataName: payload.dataName,
         version: payload.version,
       }),
@@ -690,17 +752,25 @@ export async function handleDataRename(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const renameFields = await resolveDataFields(
+  const target = await resolveModelTarget(
     ctx.repoContext.definitionRepo,
     payload.modelIdOrName,
+    "data",
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: payload.modelIdOrName,
-      fields: renameFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "write",
+      target,
+      payload.modelIdOrName,
+      "data",
+      ctx,
+      "data_rename_failed",
+    )
   ) return;
+  const model = targetArgument(target, payload.modelIdOrName);
 
   try {
     const libCtx = createLibSwampContext();
@@ -714,7 +784,9 @@ export async function handleDataRename(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataRename(libCtx, deps, {
-        modelIdOrName: payload.modelIdOrName,
+        modelIdOrName: model.idOrName,
+        byId: model.byId,
+        expectedName: model.expectedName,
         oldName: payload.oldName,
         newName: payload.newName,
       }),

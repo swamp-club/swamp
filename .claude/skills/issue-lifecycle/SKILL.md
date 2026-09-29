@@ -5,9 +5,14 @@ description: >
   plan iteration against swamp-club lab issues. Use when the user wants to
   triage a swamp-club issue, generate an implementation plan, or iterate on
   a plan with feedback. Also handles retroactive lifecycle creation for
-  ad-hoc work via "prepare to ship". Triggers on "triage issue", "triage #",
-  "issue plan", "review plan", "iterate plan", "approve plan",
-  "issue lifecycle", "prepare to ship", "ready to ship".
+  ad-hoc work via "prepare to ship", carrying several issues through one
+  lifecycle when the same work fixes them (link_issue), and shipping a
+  duplicate of an already-shipped issue with its fix instead of closing it
+  (mark_duplicate). Triggers on "triage issue", "triage #", "issue plan",
+  "review plan", "iterate plan", "approve plan", "issue lifecycle",
+  "prepare to ship", "ready to ship", "link issue", "link #", "also fixes #",
+  "fixed by the same change", "mark duplicate", "duplicate of #",
+  "same issue as #", "close as duplicate".
 ---
 
 # Issue Lifecycle Skill
@@ -145,6 +150,15 @@ Agent:
 6. Proceed to verification (references/verification.md, from step 2)...
 ```
 
+## Several Issues, One Piece of Work
+
+When the work for one issue also fixes another, or an issue duplicates one that
+is already fixed, never close the extra issue. Read
+[references/linked-issues.md](references/linked-issues.md) and use `link_issue`
+on the primary issue's lifecycle, or `mark_duplicate` on the duplicate's own
+lifecycle when the other issue has already shipped. Linked issues move through
+status with the primary issue and ship with it.
+
 ## Repository Configuration
 
 This skill reads repo-specific conventions from `agent-constraints/` at the
@@ -261,6 +275,10 @@ swamp model @swamp/issue-lifecycle method run summarize issue-<N> \
   --input outcomeMet=true
 ```
 
+If the lifecycle carries linked issues, `summarize` also requires
+`linkedOutcomes`, with one entry per linked issue — see
+[references/linked-issues.md](references/linked-issues.md).
+
 ## Classification Types
 
 The `triage` method classifies issues into one of four types (matching
@@ -313,20 +331,20 @@ Read the `phase` field from the response. **Do NOT call `start` to resume** —
 
 Use this table to determine what to do next:
 
-| Phase            | Action                                                                     |
-| ---------------- | -------------------------------------------------------------------------- |
-| `triaging`       | Read [references/triage.md](references/triage.md)                          |
-| `classified`     | Read [references/planning.md](references/planning.md)                      |
-| `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)  |
-| `approved`       | Read [references/implementation.md](references/implementation.md)          |
-| `implementing`   | Run code conformance review, then verify                                   |
-| `verifying`      | Read [references/verification.md](references/verification.md)              |
-| `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed    |
-| `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)       |
-| `releasing`      | Check release build: `ship` when done, or `complete` as fallback           |
-| `notify`         | Run `notify` — it thanks external authors and skips team members by itself |
-| `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet     |
-| `done`           | Nothing to do — lifecycle is complete                                      |
+| Phase            | Action                                                                                             |
+| ---------------- | -------------------------------------------------------------------------------------------------- |
+| `triaging`       | Read [references/triage.md](references/triage.md); duplicate of a shipped issue → `mark_duplicate` |
+| `classified`     | Read [references/planning.md](references/planning.md)                                              |
+| `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)                          |
+| `approved`       | Read [references/implementation.md](references/implementation.md)                                  |
+| `implementing`   | Run code conformance review, then verify                                                           |
+| `verifying`      | Read [references/verification.md](references/verification.md)                                      |
+| `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed                            |
+| `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)                               |
+| `releasing`      | Check release build: `ship` when done, or `complete` as fallback                                   |
+| `notify`         | Run `notify` — it thanks external authors and skips team members by itself                         |
+| `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet                             |
+| `done`           | Nothing to do — lifecycle is complete                                                              |
 
 The canonical phase list lives in the `TRANSITIONS` constant in
 `extensions/models/_lib/schemas.ts`.
@@ -382,7 +400,8 @@ When a PR has already merged and the lifecycle just needs to be marked done:
 9. **File unrelated issues immediately.** If you discover a bug, code smell, or
    problem during investigation that is NOT related to the current issue, file
    it as a new swamp-club issue. Do not try to fix it in the current work span —
-   keep the scope focused.
+   keep the scope focused. An issue the same work genuinely fixes is related:
+   link it with `link_issue` rather than closing it.
 10. **Never use `deno run dev` for swamp commands.** All `swamp` invocations
     must use the installed binary. Run `which swamp` first — if it's missing,
     stop and tell the human.

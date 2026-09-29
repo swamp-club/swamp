@@ -39,6 +39,7 @@ import { UserError } from "../../domain/errors.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS } from "../../domain/vaults/local_encryption_key_source.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -71,7 +72,13 @@ async function promptVaultName(): Promise<string> {
 export const vaultCreateCommand = withRemoteOptions(
   new Command()
     .name("create")
-    .description("Create a new vault configuration")
+    .description(
+      `Create a new vault configuration
+
+With --server, a local_encryption vault cannot set its key-source fields
+(${LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS.join(", ")}) to anything other
+than the server's defaults. Leave them out and the server's defaults are used.`,
+    )
     .example(
       "Create a local vault",
       "swamp vault create local_encryption my-vault",
@@ -203,6 +210,9 @@ export const vaultCreateCommand = withRemoteOptions(
         config,
         repoDir,
         auditReads: options.auditReads,
+        // A local user owns this host, so the vault may name its own key
+        // source; over --server the server chooses it (swamp-club#2690).
+        trustKeySource: true,
       }),
       renderer.handlers(),
     );

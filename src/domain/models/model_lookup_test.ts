@@ -18,14 +18,20 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
+import { z } from "zod";
 import {
+  findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
+  findDefinitionsByIdGlobal,
   isPartialId,
   isUuid,
   matchByPartialId,
 } from "./model_lookup.ts";
 import { Definition } from "../definitions/definition.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "./model_type.ts";
+import { modelRegistry } from "./model.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 // Import models barrel to register all model types (needed for findDefinitionByIdOrName tests)
 import "./models.ts";
@@ -241,6 +247,217 @@ Deno.test("findDefinitionByIdOrName finds definition by UUID", async () => {
   });
 });
 
+Deno.test("findDefinitionByIdGlobal reports a loaded definition's own type, not the first type tried", async () => {
+  await withTempDir(async (dir) => {
+    // Registered after the built-in types, so a lookup that trusted any
+    // cached path would pair the definition with command/shell first.
+    const type = ModelType.create(
+      `test/lookup-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type,
+      version: "2026.01.01.1",
+      methods: {
+        noop: {
+          description: "noop",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    try {
+      const repo = new YamlDefinitionRepository(dir);
+      const definition = Definition.create({
+        name: "late-type-model",
+        globalArguments: {},
+      });
+      await repo.save(type, definition);
+      // Loading it populates the repository's id-to-path cache.
+      await repo.findById(type, definition.id);
+
+      const result = await findDefinitionByIdGlobal(repo, definition.id);
+
+      assertEquals(result?.definition.id, definition.id);
+      assertEquals(result?.type.normalized, type.normalized);
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal finds a definition whose type is not registered", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("test/unregistered-type");
+    const definition = Definition.create({
+      name: "orphan-model",
+      globalArguments: {},
+    });
+    await repo.save(type, definition);
+
+    const byName = await findDefinitionByIdOrName(repo, "orphan-model");
+    const byId = await findDefinitionByIdGlobal(repo, definition.id);
+
+    assertEquals(byName?.definition.id, definition.id);
+    assertEquals(byId?.definition.id, definition.id);
+    assertEquals(byId?.type.normalized, byName?.type.normalized);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal reports the type a file declares, as the name lookup does", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    // Filed under command/shell but declaring another type, as a hand-edited
+    // or synced file can be.
+    const shell = ModelType.create("command/shell");
+    const definition = Definition.create({
+      name: "misfiled",
+      globalArguments: {},
+    });
+    await repo.save(shell, definition);
+    const path = repo.getPath(shell, definition.id);
+    await Deno.writeTextFile(
+      path,
+      (await Deno.readTextFile(path)).replace(
+        "type: command/shell",
+        "type: test/declared-type",
+      ),
+    );
+
+    const byName = await findDefinitionByIdOrName(repo, "misfiled");
+    const byId = await findDefinitionByIdGlobal(repo, definition.id);
+
+    assertEquals(byName?.type.normalized, "test/declared-type");
+    assertEquals(byId?.type.normalized, byName?.type.normalized);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal finds an auto-definition of an unregistered type", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, "auto-definitions");
+    const type = ModelType.create("test/unregistered-auto");
+    const definition = Definition.create({
+      name: "auto-orphan",
+      globalArguments: {},
+    });
+    await new YamlDefinitionRepository(dir, undefined, autoDir, false).save(
+      type,
+      definition,
+    );
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+
+    const byName = await findDefinitionByIdOrName(repo, "auto-orphan");
+    const byId = await findDefinitionByIdGlobal(repo, definition.id);
+
+    assertEquals(byName?.definition.id, definition.id);
+    assertEquals(byId?.definition.id, definition.id);
+    assertEquals(byId?.type.normalized, byName?.type.normalized);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal answers a definition just found by name without scanning type directories", async () => {
+  await withTempDir(async (dir) => {
+    // Registered after the built-in types, so an uncached lookup would scan
+    // every earlier type's directory first.
+    const type = ModelType.create(
+      `test/late-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type,
+      version: "2026.01.01.1",
+      methods: {
+        noop: {
+          description: "noop",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    try {
+      const repo = new YamlDefinitionRepository(dir);
+      for (let i = 0; i < 5; i++) {
+        await repo.save(
+          ModelType.create("command/shell"),
+          Definition.create({ name: `shell-${i}`, globalArguments: {} }),
+        );
+      }
+      const definition = Definition.create({
+        name: "late-model",
+        globalArguments: {},
+      });
+      await repo.save(type, definition);
+      await findDefinitionByIdOrName(repo, "late-model");
+
+      const scanned: string[] = [];
+      const findAll = repo.findAll.bind(repo);
+      repo.findAll = (t) => {
+        scanned.push(t.normalized);
+        return findAll(t);
+      };
+      const byId = await findDefinitionByIdGlobal(repo, definition.id);
+      const otherType = await repo.findById(
+        ModelType.create("command/shell"),
+        definition.id,
+      );
+
+      assertEquals(byId?.definition.id, definition.id);
+      assertEquals(byId?.type.normalized, type.normalized);
+      assertEquals(otherType, null);
+      assertEquals(scanned, []);
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal with an expected name accepts only the definition with both the id and the name", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const shell = ModelType.create("command/shell");
+    const prod = Definition.create({ name: "prod-db", globalArguments: {} });
+    await repo.save(shell, prod);
+    // A copied file that kept prod-db's id, renamed.
+    const path = repo.getPath(shell, prod.id);
+    await Deno.writeTextFile(
+      join(dir, "models", shell.toDirectoryPath(), "safe-model.yaml"),
+      (await Deno.readTextFile(path)).replace(
+        "name: prod-db",
+        "name: safe-model",
+      ),
+    );
+    await repo.findByNameGlobal("safe-model");
+    await repo.findByNameGlobal("prod-db");
+
+    assertEquals(
+      (await findDefinitionByIdGlobal(repo, prod.id, "safe-model"))?.definition
+        .name,
+      "safe-model",
+    );
+    assertEquals(
+      (await findDefinitionByIdGlobal(repo, prod.id, "prod-db"))?.definition
+        .name,
+      "prod-db",
+    );
+    assertEquals(await findDefinitionByIdGlobal(repo, prod.id, "other"), null);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal returns null for a non-UUID without scanning", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(
+      ModelType.create("command/shell"),
+      Definition.create({ name: "not-an-id", globalArguments: {} }),
+    );
+    assertEquals(await findDefinitionByIdGlobal(repo, "not-an-id"), null);
+  });
+});
+
 Deno.test("findDefinitionByIdOrName returns null when not found", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
@@ -349,4 +566,28 @@ Deno.test("findDefinitionByIdOrName still resolves a definition by its UUID", as
     assertEquals(result?.definition.id, definition.id);
     assertEquals(result?.type.normalized, type.normalized);
   });
+});
+
+Deno.test("findDefinitionsByIdGlobal: without a repository all-by-id lookup, filters every definition", async () => {
+  const type = ModelType.create("test/lookup");
+  const id = crypto.randomUUID();
+  const a = Definition.create({ id, name: "a", globalArguments: {} });
+  const b = Definition.create({ id, name: "b", globalArguments: {} });
+  const other = Definition.create({ name: "other", globalArguments: {} });
+  const repo = {
+    findAllGlobal: () =>
+      Promise.resolve(
+        [a, b, other].map((definition) => ({ definition, type })),
+      ),
+  } as unknown as DefinitionRepository;
+  const found = await findDefinitionsByIdGlobal(repo, id);
+  assertEquals(found.map((entry) => entry.definition.name), ["a", "b"]);
+});
+
+Deno.test("findDefinitionsByIdGlobal: a string that is not a UUID matches nothing, without a scan", async () => {
+  const repo = {
+    findAllGlobal: () => Promise.reject(new Error("must not scan")),
+    findAllByIdGlobal: () => Promise.reject(new Error("must not scan")),
+  } as unknown as DefinitionRepository;
+  assertEquals(await findDefinitionsByIdGlobal(repo, "prod-db"), []);
 });
