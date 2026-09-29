@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   type ActiveTokenInfo,
   type CollectiveRefreshDeps,
@@ -95,6 +96,27 @@ function makeMockDeps(
   };
 }
 
+/**
+ * Wraps a listActiveTokens fake to count refresh cycles. Ticks run strictly
+ * one after another, so a second cycle starting proves the first finished.
+ */
+function countCycles(
+  listActiveTokens: () => Promise<ActiveTokenInfo[]>,
+): {
+  listActiveTokens: () => Promise<ActiveTokenInfo[]>;
+  firstCycleDone: () => Promise<void>;
+} {
+  let cycles = 0;
+  return {
+    listActiveTokens: () => {
+      cycles++;
+      return listActiveTokens();
+    },
+    firstCycleDone: () =>
+      waitFor(() => cycles >= 2, "the first refresh cycle to complete"),
+  };
+}
+
 Deno.test("CollectiveRefreshService: updates collectives when groups change", async () => {
   const deps = makeMockDeps({
     listActiveTokens: () =>
@@ -117,7 +139,10 @@ Deno.test("CollectiveRefreshService: updates collectives when groups change", as
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await waitFor(
+    () => deps.updatedConnections.has("user:u1"),
+    "the connection collectives update",
+  );
   await svc.dispose();
 
   assertEquals(deps.updatedTokens.get("tok-1"), ["new-group"]);
@@ -125,16 +150,18 @@ Deno.test("CollectiveRefreshService: updates collectives when groups change", as
 });
 
 Deno.test("CollectiveRefreshService: skips update when collectives unchanged", async () => {
+  const cycles = countCycles(() =>
+    Promise.resolve([
+      {
+        name: "tok-1",
+        principalId: "user:u1",
+        collectives: ["team-a"],
+        groups: [],
+      },
+    ])
+  );
   const deps = makeMockDeps({
-    listActiveTokens: () =>
-      Promise.resolve([
-        {
-          name: "tok-1",
-          principalId: "user:u1",
-          collectives: ["team-a"],
-          groups: [],
-        },
-      ]),
+    listActiveTokens: cycles.listActiveTokens,
     getUserInfo: () =>
       Promise.resolve({
         sub: "u1",
@@ -146,7 +173,7 @@ Deno.test("CollectiveRefreshService: skips update when collectives unchanged", a
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await cycles.firstCycleDone();
   await svc.dispose();
 
   assertEquals(deps.updatedTokens.size, 0);
@@ -155,17 +182,28 @@ Deno.test("CollectiveRefreshService: skips update when collectives unchanged", a
 
 Deno.test("CollectiveRefreshService: revokes token on 401 from userinfo", async () => {
   const deps = makeMockDeps({
+    // A revoked token is no longer active, as in the real token store.
     listActiveTokens: () =>
-      Promise.resolve([
-        { name: "tok-1", principalId: "user:u1", collectives: [], groups: [] },
-      ]),
+      Promise.resolve(
+        deps.revokedTokens.includes("tok-1") ? [] : [
+          {
+            name: "tok-1",
+            principalId: "user:u1",
+            collectives: [],
+            groups: [],
+          },
+        ],
+      ),
     getUserInfo: () =>
       Promise.reject(new Error("Userinfo request failed: 401 Unauthorized")),
   });
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await waitFor(
+    () => deps.closedPrincipals.length > 0,
+    "the principal's connections to close",
+  );
   await svc.dispose();
 
   assertEquals(deps.revokedTokens, ["tok-1"]);
@@ -173,22 +211,24 @@ Deno.test("CollectiveRefreshService: revokes token on 401 from userinfo", async 
 });
 
 Deno.test("CollectiveRefreshService: keeps snapshot on network error", async () => {
+  const cycles = countCycles(() =>
+    Promise.resolve([
+      {
+        name: "tok-1",
+        principalId: "user:u1",
+        collectives: ["existing"],
+        groups: [],
+      },
+    ])
+  );
   const deps = makeMockDeps({
-    listActiveTokens: () =>
-      Promise.resolve([
-        {
-          name: "tok-1",
-          principalId: "user:u1",
-          collectives: ["existing"],
-          groups: [],
-        },
-      ]),
+    listActiveTokens: cycles.listActiveTokens,
     getUserInfo: () => Promise.reject(new Error("Connection refused")),
   });
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await cycles.firstCycleDone();
   await svc.dispose();
 
   assertEquals(deps.revokedTokens.length, 0);
@@ -196,11 +236,13 @@ Deno.test("CollectiveRefreshService: keeps snapshot on network error", async () 
 });
 
 Deno.test("CollectiveRefreshService: skips token without stored access token", async () => {
+  const cycles = countCycles(() =>
+    Promise.resolve([
+      { name: "tok-1", principalId: "user:u1", collectives: [], groups: [] },
+    ])
+  );
   const deps = makeMockDeps({
-    listActiveTokens: () =>
-      Promise.resolve([
-        { name: "tok-1", principalId: "user:u1", collectives: [], groups: [] },
-      ]),
+    listActiveTokens: cycles.listActiveTokens,
     getAccessToken: () => Promise.resolve(null),
     getUserInfo: () => {
       throw new Error("should not be called");
@@ -209,7 +251,7 @@ Deno.test("CollectiveRefreshService: skips token without stored access token", a
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await cycles.firstCycleDone();
   await svc.dispose();
 
   assertEquals(deps.updatedTokens.size, 0);
@@ -227,9 +269,11 @@ Deno.test("CollectiveRefreshService: dispose stops the timer", async () => {
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 120));
+  await waitFor(() => refreshCallCount > 0, "the first refresh cycle");
   await svc.dispose();
   const countAtDispose = refreshCallCount;
+  // Proving no further ticks run has no event to poll for, so this waits
+  // several intervals; it can only pass wrongly, never flake.
   await new Promise((r) => setTimeout(r, 150));
   assertEquals(refreshCallCount, countAtDispose);
 });
@@ -262,7 +306,10 @@ Deno.test("CollectiveRefreshService: keeps collectives and groups separate", asy
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await waitFor(
+    () => storedGroups.length > 0,
+    "the token collectives and groups update",
+  );
   await svc.dispose();
 
   assertEquals(storedCollectives, ["coll-a", "coll-b"]);
@@ -270,7 +317,7 @@ Deno.test("CollectiveRefreshService: keeps collectives and groups separate", asy
 });
 
 Deno.test("CollectiveRefreshService: works with fallback getAccessToken (simulates _token-secrets → user vault fallback)", async () => {
-  let accessTokenCalls = 0;
+  const accessTokenNames: string[] = [];
   const deps = makeMockDeps({
     listActiveTokens: () =>
       Promise.resolve([
@@ -281,8 +328,8 @@ Deno.test("CollectiveRefreshService: works with fallback getAccessToken (simulat
           groups: [],
         },
       ]),
-    getAccessToken: (_tokenName: string): Promise<string | null> => {
-      accessTokenCalls++;
+    getAccessToken: (tokenName: string): Promise<string | null> => {
+      accessTokenNames.push(tokenName);
       return Promise.resolve("fallback-access-token");
     },
     getUserInfo: () =>
@@ -296,30 +343,37 @@ Deno.test("CollectiveRefreshService: works with fallback getAccessToken (simulat
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await waitFor(
+    () => deps.updatedTokens.has("tok-migrated"),
+    "the migrated token's collectives update",
+  );
   await svc.dispose();
 
-  assertEquals(accessTokenCalls, 1);
+  // Refresh cycles repeat every intervalMs, so assert which token was read
+  // rather than how many cycles fit before dispose.
+  assertEquals(new Set(accessTokenNames), new Set(["tok-migrated"]));
   assertEquals(deps.updatedTokens.get("tok-migrated"), ["new"]);
 });
 
 Deno.test("CollectiveRefreshService: skips token when getAccessToken returns null", async () => {
+  const cycles = countCycles(() =>
+    Promise.resolve([
+      {
+        name: "tok-no-access",
+        principalId: "user:u1",
+        collectives: ["existing"],
+        groups: [],
+      },
+    ])
+  );
   const deps = makeMockDeps({
-    listActiveTokens: () =>
-      Promise.resolve([
-        {
-          name: "tok-no-access",
-          principalId: "user:u1",
-          collectives: ["existing"],
-          groups: [],
-        },
-      ]),
+    listActiveTokens: cycles.listActiveTokens,
     getAccessToken: (): Promise<string | null> => Promise.resolve(null),
   });
 
   const svc = new CollectiveRefreshService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await cycles.firstCycleDone();
   await svc.dispose();
 
   assertEquals(deps.updatedTokens.size, 0);
