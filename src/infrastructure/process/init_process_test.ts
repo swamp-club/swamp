@@ -17,19 +17,63 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { isUnreapedInit } from "./init_process.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
+import { initializeLogging } from "../logging/logger.ts";
+import {
+  isPidOneOnLinux,
+  type ProcessIdentity,
+  warnIfRunningAsInit,
+} from "./init_process.ts";
 
-Deno.test("isUnreapedInit: true for PID 1 on Linux", () => {
-  assertEquals(isUnreapedInit({ os: "linux", pid: 1 }), true);
+/** Runs warnIfRunningAsInit for `identity` and returns what it logged. */
+async function captureWarning(identity: ProcessIdentity): Promise<LogRecord[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["process", "init"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+  try {
+    warnIfRunningAsInit(identity);
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  return records;
+}
+
+Deno.test("isPidOneOnLinux: true for PID 1 on Linux", () => {
+  assertEquals(isPidOneOnLinux({ os: "linux", pid: 1 }), true);
 });
 
-Deno.test("isUnreapedInit: false for any other Linux PID", () => {
-  assertEquals(isUnreapedInit({ os: "linux", pid: 2 }), false);
-  assertEquals(isUnreapedInit({ os: "linux", pid: 4242 }), false);
+Deno.test("isPidOneOnLinux: false for any other Linux PID", () => {
+  assertEquals(isPidOneOnLinux({ os: "linux", pid: 2 }), false);
+  assertEquals(isPidOneOnLinux({ os: "linux", pid: 4242 }), false);
 });
 
-Deno.test("isUnreapedInit: false for PID 1 outside Linux", () => {
-  assertEquals(isUnreapedInit({ os: "darwin", pid: 1 }), false);
-  assertEquals(isUnreapedInit({ os: "windows", pid: 1 }), false);
+Deno.test("isPidOneOnLinux: false for PID 1 outside Linux", () => {
+  assertEquals(isPidOneOnLinux({ os: "darwin", pid: 1 }), false);
+  assertEquals(isPidOneOnLinux({ os: "windows", pid: 1 }), false);
+});
+
+Deno.test("warnIfRunningAsInit: warns once with the remedies as PID 1 on Linux", async () => {
+  const records = await captureWarning({ os: "linux", pid: 1 });
+
+  assertEquals(records.length, 1);
+  assertEquals(records[0].level, "warning");
+  const message = records[0].message.map(String).join("");
+  assertStringIncludes(message, "PID 1 without an init");
+  assertStringIncludes(message, "docker run --init");
+  assertStringIncludes(message, "tini -s -- swamp");
+});
+
+Deno.test("warnIfRunningAsInit: logs nothing when not PID 1 on Linux", async () => {
+  assertEquals(await captureWarning({ os: "linux", pid: 7 }), []);
+  assertEquals(await captureWarning({ os: "darwin", pid: 1 }), []);
 });

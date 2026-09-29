@@ -158,7 +158,6 @@ export const workerConnectCommand = new Command()
       "worker",
       "connect",
     ]);
-    warnIfRunningAsInit();
 
     const url = urlArg ?? Deno.env.get("SWAMP_ORCHESTRATOR_URL");
     if (url === undefined) {
@@ -255,6 +254,9 @@ export const workerConnectCommand = new Command()
         concurrency = parsed;
       }
     }
+
+    // After argument validation, so a usage error is reported first.
+    warnIfRunningAsInit();
 
     let requestDrain: ((reason: WorkerExitReason) => void) | null = null;
     let signalCount = 0;
