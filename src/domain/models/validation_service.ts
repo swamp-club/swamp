@@ -54,7 +54,7 @@ import {
   formatAvailableKeys,
   validateSchemaPath,
 } from "../expressions/schema_path_validator.ts";
-import { freeRoots } from "../expressions/cel_grammar.ts";
+import { freeRoots, typeChecksAsConstant } from "../expressions/cel_grammar.ts";
 import { maskLiteralCalls } from "../expressions/cel_string_lexer.ts";
 
 /**
@@ -929,8 +929,13 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     // An expression that reads nothing, such as literal('{{host.name}}') or
-    // literal('{{a}}') + ' on-call', always evaluates to the same value.
-    if (freeRoots(celExpression)?.size === 0) {
+    // literal('{{a}}') + ' on-call', always evaluates to the same value, so it
+    // is valid when every function it calls exists: not now(), not
+    // literal(123).
+    if (
+      freeRoots(celExpression)?.size === 0 &&
+      typeChecksAsConstant(celExpression)
+    ) {
       return null;
     }
 

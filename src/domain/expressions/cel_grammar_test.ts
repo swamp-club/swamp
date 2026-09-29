@@ -20,8 +20,10 @@
 import { assertEquals } from "@std/assert";
 import {
   freeRoots,
+  isBlankConstant,
   parsesAsCel,
   transformHyphenatedModelRefs,
+  typeChecksAsConstant,
 } from "./cel_grammar.ts";
 
 Deno.test("transformHyphenatedModelRefs: rewrites hyphenated model names in code", () => {
@@ -69,4 +71,30 @@ Deno.test("freeRoots: reports the roots an expression reads", () => {
   );
   assertEquals(freeRoots("vault.get('v', 'k')"), new Set(["vault"]));
   assertEquals(freeRoots("not cel ("), undefined);
+});
+
+Deno.test("isBlankConstant: true only for the empty string and null", () => {
+  for (const cel of ["''", '""', "null", "literal('')", 'literal("")']) {
+    assertEquals(isBlankConstant(cel), true, cel);
+  }
+  for (const cel of ["' '", "literal(' ')", "'x'", "0", "false", "inputs.x"]) {
+    assertEquals(isBlankConstant(cel), false, cel);
+  }
+});
+
+Deno.test("typeChecksAsConstant: rejects calls the evaluator does not have", () => {
+  for (
+    const cel of [
+      "literal('{{a}}')",
+      "literal('{{a}}') + ' on-call'",
+      "size('abc')",
+    ]
+  ) {
+    assertEquals(typeChecksAsConstant(cel), true, cel);
+  }
+  for (
+    const cel of ["now()", "lookup('env', 'HOME')", "literal(123)", "'a'.foo()"]
+  ) {
+    assertEquals(typeChecksAsConstant(cel), false, cel);
+  }
 });

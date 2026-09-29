@@ -222,7 +222,7 @@ templating system (`${{ github.sha }}`, or `${{ inputs.version }}` when
 ### "Unsupported vault expression"
 
 **Symptom**:
-`Error: Unsupported vault expression <expr>: call vault.get(vaultName, secretKey) directly.`
+`Error: Unsupported vault expression "<expr>". Call vault.get(vaultName, secretKey) directly.`
 
 **Cause**: The expression reads the `vault` namespace in a form other than a
 direct `vault.get(vaultName, secretKey)` call, e.g.

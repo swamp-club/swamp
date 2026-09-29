@@ -66,6 +66,19 @@ export function transformHyphenatedModelRefs(expression: string): string {
 }
 
 /**
+ * The one function swamp adds to CEL: `literal('...')` returns its string
+ * unchanged, so a value can mix a swamp expression with another service's
+ * template text. Declared here so the evaluator and the type check below
+ * register the same signature.
+ */
+export const LITERAL_FUNCTION_SIGNATURE = "literal(string): string";
+
+/** The implementation of {@link LITERAL_FUNCTION_SIGNATURE}. */
+export function literal(text: string): string {
+  return text;
+}
+
+/**
  * The grammar evaluation parses. The top-level cel-js `parse` leaves optional
  * syntax (`.?`, `[?`) off, but the evaluator's environment enables it.
  */
@@ -73,6 +86,34 @@ const EVALUATION_GRAMMAR = new Environment({
   unlistedVariablesAreDyn: true,
   enableOptionalTypes: true,
 });
+
+/**
+ * The evaluation grammar with swamp's own function registered, for type
+ * checking. It knows CEL's standard functions and `literal`, but not the
+ * namespace receivers (`data.latest`, `file.contents`), so only expressions
+ * that read no root identifier are checked with it.
+ */
+const CONSTANT_CHECKER = new Environment({
+  unlistedVariablesAreDyn: true,
+  enableOptionalTypes: true,
+});
+CONSTANT_CHECKER.registerFunction(LITERAL_FUNCTION_SIGNATURE, literal);
+
+/**
+ * Whether an expression that reads no root identifier type-checks, so every
+ * function it calls exists with those argument types: `literal('{{a}}')` does,
+ * `now()` and `literal(123)` do not. Mixed int and double arithmetic, which
+ * the evaluator adds overloads for, does not check here, so such a constant
+ * is conservatively reported.
+ */
+export function typeChecksAsConstant(celExpression: string): boolean {
+  try {
+    return CONSTANT_CHECKER.check(transformHyphenatedModelRefs(celExpression))
+      .valid;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Parses text the way evaluation parses it: with optional syntax enabled,

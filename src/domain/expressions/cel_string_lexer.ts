@@ -287,7 +287,10 @@ function closesCall(text: string, from: number, end: number): boolean {
 
 /**
  * Whether `literal` at `at` names the global function: it is not part of a
- * longer identifier, and is not a member reached through `.`.
+ * longer identifier, and is not a member reached through `.`. Only
+ * whitespace in the same code segment is skipped looking for the `.`, so a
+ * comment between them (`x.//c\nliteral('a')`) reads as a bare call. That
+ * only ever masks a string literal's text, never a reference.
  */
 function isBareCallee(text: string, at: number, segmentStart: number): boolean {
   if (IDENTIFIER_CHAR.test(text[at + 7] ?? "")) return false;

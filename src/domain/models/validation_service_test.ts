@@ -2663,3 +2663,13 @@ Deno.test("validateModel accepts a valid CalVer typeVersion", async () => {
   const typeVersion = results.find((r) => r.name === "Type version")!;
   assertEquals(typeVersion.passed, true);
 });
+
+Deno.test("validateModel rejects a constant expression calling a function swamp does not have", async () => {
+  for (const message of ["${{ now() }}", "${{ literal(123) }}"]) {
+    const { expressionPaths } = await validateWith(testExprModel, {
+      name: "test-definition",
+      globalArguments: { message },
+    });
+    assertEquals(expressionPaths?.passed, false, message);
+  }
+});

@@ -22,6 +22,10 @@ import { getLogger } from "@logtape/logtape";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
 import { maskLiteralCalls } from "../../domain/expressions/cel_string_lexer.ts";
+import {
+  literal,
+  LITERAL_FUNCTION_SIGNATURE,
+} from "../../domain/expressions/cel_grammar.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
 
 /**
@@ -496,10 +500,7 @@ export class CelEvaluator {
     // literal('...') returns its string unchanged, so one value can mix a
     // swamp expression with another service's template text:
     // `${{ inputs.env }} on ${{ literal('{{host.name}}') }}`.
-    this.env.registerFunction(
-      "literal(string): string",
-      (text: string) => text,
-    );
+    this.env.registerFunction(LITERAL_FUNCTION_SIGNATURE, literal);
 
     // Register receiver methods for file namespace
     this.env.registerFunction(

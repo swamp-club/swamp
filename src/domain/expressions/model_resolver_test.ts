@@ -2401,3 +2401,31 @@ Deno.test("resolveVaultExpressions: ignores member access and comments", async (
     value,
   );
 });
+
+Deno.test("resolveVaultExpressions: a member reached across whitespace is not the vault namespace", async () => {
+  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
+  const value = `self . vault.get('a', 'b')`;
+  assertEquals(
+    await resolver.resolveVaultExpressions(
+      value,
+      undefined,
+      new VaultSecretBag(),
+    ),
+    value,
+  );
+});
+
+Deno.test("resolveVaultExpressions: a call inside another call's argument is not resolved twice", async () => {
+  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
+  // The outer call's bare first argument covers the inner call; only the
+  // outer one is a match, so the output is never spliced out of order.
+  await assertRejects(
+    () =>
+      resolver.resolveVaultExpressions(
+        `vault.get(vault.get('a','b'), 'c')`,
+        undefined,
+        new VaultSecretBag(),
+      ),
+    Error,
+  );
+});

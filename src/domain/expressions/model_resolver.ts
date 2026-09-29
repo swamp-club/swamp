@@ -39,7 +39,7 @@ import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
 import { freeRoots } from "./cel_grammar.ts";
-import { lexSegments } from "./cel_string_lexer.ts";
+import { findVaultGetCalls } from "./vault_reference_extractor.ts";
 import {
   type VaultRefreshOptions,
   VaultService,
@@ -1298,31 +1298,8 @@ export class ModelResolver {
     secretBag?: VaultSecretBag,
     celOptions?: VaultArgCelOptions,
   ): Promise<string> {
-    // Pattern to match vault.get(vaultName, secretKey) expressions.
-    // Handles both quoted and unquoted arguments. Quoted arguments may
-    // contain spaces (e.g. vault.get("infra", "Client ID")).
-    // Each argument uses alternation:
-    //   (['"`])(.+?)\1  — quoted: any chars up to the matching close quote
-    //   ([^\s,)]+)      — unquoted: non-whitespace, non-comma, non-paren
-    const vaultPattern =
-      /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/y;
-
-    // Only a call written as code counts: one that starts inside a string
-    // literal or a comment (`literal('vault.get(')`) is text, and a member
-    // such as `self.vault.get(...)` is not the vault namespace.
-    const matches: RegExpExecArray[] = [];
-    for (const seg of lexSegments(value)) {
-      if (seg.kind !== "code") continue;
-      let at = value.indexOf("vault", seg.start);
-      while (at !== -1 && at < seg.end) {
-        if (!/[.\w]/.test(value[at - 1] ?? "")) {
-          vaultPattern.lastIndex = at;
-          const match = vaultPattern.exec(value);
-          if (match) matches.push(match);
-        }
-        at = value.indexOf("vault", at + 5);
-      }
-    }
+    // Only calls written as code are resolved; see findVaultGetCalls.
+    const matches = findVaultGetCalls(value);
 
     if (matches.length === 0) {
       assertNoUnresolvedVault(value, value);
@@ -1459,7 +1436,7 @@ export class ModelResolver {
 function assertNoUnresolvedVault(resolved: string, original: string): void {
   if (freeRoots(resolved)?.has("vault")) {
     throw new UserError(
-      `Unsupported vault expression ${original}: call vault.get(vaultName, secretKey) directly.`,
+      `Unsupported vault expression "${original}". Call vault.get(vaultName, secretKey) directly.`,
     );
   }
 }
