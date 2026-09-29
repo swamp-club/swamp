@@ -27,9 +27,15 @@ import {
   type CodeConformanceReviewData,
   CodeConformanceReviewSchema,
   ContextSchema,
+  type DuplicateData,
+  DuplicateSchema,
   FeedbackSchema,
   GlobalArgsSchema,
   IssueType,
+  type LinkedIssueData,
+  LinkedIssuesSchema,
+  LinkedOutcomeSchema,
+  LinkRelationship,
   type PlanData,
   PlanSchema,
   PlanStepSchema,
@@ -53,8 +59,17 @@ import {
   recordLifecycle,
   recordLifecycleBestEffort,
   recordRipple,
+  recordRippleBestEffort,
   recordUpstreamChange,
 } from "./_lib/lifecycle_recorder.ts";
+import {
+  advanceLinked,
+  linkPrOnLinked,
+  mirrorMilestone,
+  readLinkedIssues,
+} from "./_lib/linked_issues.ts";
+import { upstreamStatusForPhase } from "./_lib/issue_status.ts";
+import type { SwampClubClient } from "./_lib/swamp_club.ts";
 
 /** Global args type for the issue-lifecycle model. */
 type GlobalArgs = {
@@ -88,7 +103,19 @@ export function buildNotifyMessage(
   author: string,
   prData: PullRequestData | null,
   planData: PlanData | null,
+  duplicate?: DuplicateData | null,
 ): string {
+  if (duplicate) {
+    const prText = duplicate.canonicalPrUrl
+      ? ` ([PR](${duplicate.canonicalPrUrl}))`
+      : "";
+    return (
+      `Thanks @${author} for reporting this! It turned out to be the same ` +
+      `problem as #${duplicate.canonicalIssueNumber}, which has been ` +
+      `fixed${prText} and shipped. We appreciate your contribution to swamp.`
+    );
+  }
+
   const mergedText = prData?.url ? `[merged](${prData.url})` : "merged";
 
   const summaryText = planData?.summary
@@ -127,13 +154,63 @@ function notifyUndecided(reason: string): Error {
   );
 }
 
+/** A client for this lifecycle's issue, or an error saying why there is none. */
+async function requireSwampClub(context: {
+  globalArgs: GlobalArgs;
+  logger: {
+    info: (msg: string, props: Record<string, unknown>) => void;
+    warning: (msg: string, props: Record<string, unknown>) => void;
+  };
+}): Promise<SwampClubClient> {
+  const sc = await createSwampClubClient(context.globalArgs, context.logger);
+  if (!sc) {
+    throw new Error(
+      "swamp-club is not reachable or credentials are missing. " +
+        "Set SWAMP_API_KEY or run `swamp auth login`.",
+    );
+  }
+  return sc;
+}
+
+/**
+ * Warn when the issue about to be linked is already related to another
+ * issue that has not shipped: another lifecycle may be carrying it. A
+ * warning, not a refusal — status walks only move forward, so a second
+ * carrier's transitions are no-ops, and `related_to` is also used by hand.
+ */
+async function warnIfCarriedElsewhere(
+  sc: SwampClubClient,
+  issue: FetchedIssue,
+  primary: number,
+  logger: { warning: (msg: string, props: Record<string, unknown>) => void },
+): Promise<void> {
+  for (const r of issue.relationships) {
+    if (r.type !== "related_to" && r.type !== "duplicate_of") continue;
+    if (r.otherIssueNumber === primary) continue;
+    const other = await sc.forIssue(r.otherIssueNumber).fetchIssue();
+    if (!other || other.status === "shipped" || other.status === "closed") {
+      continue;
+    }
+    logger.warning(
+      "#{issue} is already {type} #{other}, which is {status}; another " +
+        "lifecycle may be carrying it",
+      {
+        issue: issue.number,
+        type: r.type,
+        other: r.otherIssueNumber,
+        status: other.status,
+      },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Model Definition
 // ---------------------------------------------------------------------------
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.09.23.2",
+  version: "2026.09.29.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -327,6 +404,21 @@ export const model = {
         "globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
+    {
+      toVersion: "2026.09.29.1",
+      description:
+        "One lifecycle can carry several issues. New link_issue and " +
+        "unlink_issue methods and a linkedIssues resource: linked issues " +
+        "follow the primary's swamp-club status, receive its milestones as " +
+        "fixed-text entries, get the PR, and are covered by notify and " +
+        "summarize (new linkedOutcomes input). New mark_duplicate method and " +
+        "duplicate resource ship a duplicate of an already-shipped issue " +
+        "with that issue's PR instead of closing it. link_pr now records " +
+        "the PR on the swamp-club issue itself. No globalArguments changes; " +
+        "both new resources are optional, so existing instances need no " +
+        "migration.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
   ],
 
   resources: {
@@ -390,6 +482,23 @@ export const model = {
         "overwritten by subsequent link_pr calls so the record always " +
         "reflects the latest link.",
       schema: PullRequestSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
+    },
+    "linkedIssues": {
+      description:
+        "Issues this lifecycle carries alongside its own, written by " +
+        "link_issue and unlink_issue. They follow the primary's status and " +
+        "are covered by notify and summarize.",
+      schema: LinkedIssuesSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+    "duplicate": {
+      description:
+        "The shipped issue this one duplicates and the PR that fixed it, " +
+        "written by mark_duplicate.",
+      schema: DuplicateSchema,
       lifetime: "infinite" as const,
       garbageCollection: 5,
     },
@@ -975,6 +1084,10 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
@@ -1064,6 +1177,12 @@ export const model = {
             context.logger,
             "status transition to triaged",
             await sc.transitionStatus("triaged"),
+          );
+          await advanceLinked(
+            sc,
+            await readLinkedIssues(context.readResource),
+            "triaged",
+            context.logger,
           );
           await recordLifecycle(sc, {
             step: "classified",
@@ -1829,6 +1948,12 @@ export const model = {
             "status transition to in_progress",
             await sc.transitionStatus("in_progress"),
           );
+          await advanceLinked(
+            sc,
+            await readLinkedIssues(context.readResource),
+            "in_progress",
+            context.logger,
+          );
           await recordLifecycle(sc, {
             step: "plan_approved",
             targetStatus: "in_progress",
@@ -1865,6 +1990,10 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
@@ -1889,6 +2018,13 @@ export const model = {
           payload: {},
           isVerbose: false,
         });
+        await mirrorMilestone(
+          sc,
+          await readLinkedIssues(context.readResource),
+          issueNumber,
+          { step: "implementation_started" },
+          context.logger,
+        );
 
         return { dataHandles: [stateHandle] };
       },
@@ -1934,6 +2070,10 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
@@ -2028,6 +2168,12 @@ export const model = {
             context.logger,
             "status transition to in_progress",
             await sc.transitionStatus("in_progress"),
+          );
+          await advanceLinked(
+            sc,
+            await readLinkedIssues(context.readResource),
+            "in_progress",
+            context.logger,
           );
           await recordLifecycle(sc, {
             step: "fast_forwarded",
@@ -2144,6 +2290,10 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
@@ -2200,6 +2350,13 @@ export const model = {
           },
           isVerbose: false,
         });
+        await mirrorMilestone(
+          sc,
+          await readLinkedIssues(context.readResource),
+          issueNumber,
+          { step: "verification_passed", commit: args.commit },
+          context.logger,
+        );
 
         return { dataHandles: [verificationHandle, stateHandle] };
       },
@@ -2293,6 +2450,10 @@ export const model = {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
           };
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         // Validated before the client is built, so a malformed document
@@ -2375,6 +2536,18 @@ export const model = {
           );
         }
 
+        await mirrorMilestone(
+          sc,
+          await readLinkedIssues(context.readResource),
+          context.globalArgs.issueNumber,
+          {
+            step: "attestation_posted",
+            attestationId: result.id,
+            commit: attestation.subject.commit,
+          },
+          context.logger,
+        );
+
         return { dataHandles: [] };
       },
     },
@@ -2443,6 +2616,18 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
+        const linked = await readLinkedIssues(context.readResource);
+        if (sc) {
+          // Recorded on the issue itself so it shows while work is in
+          // progress and survives the shipped transition into the reporter's
+          // notification. Idempotent, so it runs before the entry post.
+          recordUpstreamChange(
+            context.logger,
+            "PR link on the issue",
+            await sc.linkPr(args.url),
+          );
+        }
+        await linkPrOnLinked(sc, linked, args.url, context.logger);
         await recordLifecycle(sc, {
           step: "pr_linked",
           targetStatus: "in_progress",
@@ -2451,6 +2636,13 @@ export const model = {
           payload: { url: args.url, attempt },
           isVerbose: false,
         });
+        await mirrorMilestone(
+          sc,
+          linked,
+          issueNumber,
+          { step: "pr_linked", url: args.url, attempt },
+          context.logger,
+        );
 
         return { dataHandles: [prHandle, stateHandle] };
       },
@@ -2536,6 +2728,13 @@ export const model = {
           },
           isVerbose: false,
         });
+        await mirrorMilestone(
+          sc,
+          await readLinkedIssues(context.readResource),
+          issueNumber,
+          { step: "pr_merged", url: prContent.url, attempt },
+          context.logger,
+        );
 
         return { dataHandles: handles };
       },
@@ -2618,6 +2817,13 @@ export const model = {
           payload: { url: prContent.url, attempt, reason: args.reason },
           isVerbose: false,
         });
+        await mirrorMilestone(
+          sc,
+          await readLinkedIssues(context.readResource),
+          issueNumber,
+          { step: "pr_failed", url: prContent.url, attempt },
+          context.logger,
+        );
 
         return { dataHandles: handles };
       },
@@ -2649,6 +2855,10 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
@@ -2673,6 +2883,8 @@ export const model = {
             "status transition to shipped",
             await sc.transitionStatus("shipped"),
           );
+          const linked = await readLinkedIssues(context.readResource);
+          await advanceLinked(sc, linked, "shipped", context.logger);
           await recordLifecycle(sc, {
             step: "shipped",
             targetStatus: "shipped",
@@ -2686,6 +2898,13 @@ export const model = {
             },
             isVerbose: false,
           });
+          await mirrorMilestone(
+            sc,
+            linked,
+            issueNumber,
+            { step: "shipped", releaseUrl: args.releaseUrl },
+            context.logger,
+          );
         }
 
         return { dataHandles: [stateHandle] };
@@ -2709,6 +2928,10 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
@@ -2735,6 +2958,8 @@ export const model = {
             "status transition to shipped",
             await sc.transitionStatus("shipped"),
           );
+          const linked = await readLinkedIssues(context.readResource);
+          await advanceLinked(sc, linked, "shipped", context.logger);
           await recordLifecycle(sc, {
             step: "complete",
             targetStatus: "shipped",
@@ -2743,6 +2968,13 @@ export const model = {
             payload: {},
             isVerbose: false,
           });
+          await mirrorMilestone(
+            sc,
+            linked,
+            issueNumber,
+            { step: "complete" },
+            context.logger,
+          );
         }
 
         return { dataHandles: [stateHandle] };
@@ -2791,6 +3023,10 @@ export const model = {
         const planData = await context.readResource("plan-main") as
           | PlanData
           | null;
+        const duplicate = await context.readResource("duplicate-main") as
+          | DuplicateData
+          | null;
+        const linked = await readLinkedIssues(context.readResource);
 
         const sc = await createSwampClubClient(
           context.globalArgs,
@@ -2829,7 +3065,7 @@ export const model = {
           );
         } else if (author && sc) {
           const body = args.message ??
-            buildNotifyMessage(author, prData, planData);
+            buildNotifyMessage(author, prData, planData, duplicate);
           // The ripple is this method's deliverable, not a courtesy, so a
           // failure raises. It runs before the state write, so the phase is
           // still `notify` and the re-run retries it with no duplicate.
@@ -2843,6 +3079,50 @@ export const model = {
             "Could not determine issue author — skipping notification",
             {},
           );
+        }
+
+        // Linked issues' authors are thanked after the primary's, and only
+        // best-effort: this method does not roll back, so raising after one
+        // ripple posted would make the re-run thank that author twice. The
+        // message leaves out the primary's plan summary, which may come from
+        // an issue the linked issue's reader cannot see.
+        if (sc && linked.length > 0) {
+          const roster = args.force ? [] : await sc.fetchEligibleAssignees();
+          if (!roster) {
+            context.logger.warning(
+              "Could not fetch the team roster, so no linked issue's author " +
+                "was thanked",
+              {},
+            );
+          } else {
+            for (const issue of linked) {
+              if (!issue.author || issue.author === "unknown") continue;
+              if (
+                isTeamMember(
+                  { author: issue.author, authorId: issue.authorId },
+                  roster,
+                )
+              ) continue;
+              const linkedSc = sc.forIssue(issue.issueNumber);
+              const posted = await recordRippleBestEffort(
+                linkedSc,
+                context.logger,
+                buildNotifyMessage(issue.author, prData, null),
+              );
+              if (!posted) continue;
+              await recordLifecycleBestEffort(linkedSc, context.logger, {
+                step: "contributor_notified",
+                targetStatus: "shipped",
+                summary: `Thanked @${issue.author}`,
+                emoji: "\u{1F64F}",
+                payload: {
+                  author: issue.author,
+                  primaryIssueNumber: issueNumber,
+                },
+                isVerbose: false,
+              });
+            }
+          }
         }
 
         const stateHandle = await context.writeResource("state", "state-main", {
@@ -2944,12 +3224,21 @@ export const model = {
         outcomeMet: z.boolean().describe(
           "Whether the delivered outcome addresses the original problem.",
         ),
+        linkedOutcomes: z.array(LinkedOutcomeSchema).optional().describe(
+          "One outcome per linked issue — required when the lifecycle " +
+            "carries linked issues, and must name each exactly once.",
+        ),
       }),
       execute: async (
         args: {
           originalProblem: string;
           deliveredOutcome: string;
           outcomeMet: boolean;
+          linkedOutcomes?: Array<{
+            issueNumber: number;
+            deliveredOutcome: string;
+            outcomeMet: boolean;
+          }>;
         },
         context: {
           globalArgs: GlobalArgs;
@@ -2962,16 +3251,54 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
         const handles = [];
+
+        // Every issue this lifecycle carried gets its own outcome, so none
+        // can be closed out on the strength of the primary's.
+        const linked = await readLinkedIssues(context.readResource);
+        const outcomes = args.linkedOutcomes ?? [];
+        const expected = new Set(linked.map((l) => l.issueNumber));
+        const named = outcomes.map((o) => o.issueNumber);
+        const missing = [...expected].filter((n) => !named.includes(n));
+        const extra = named.filter((n) => !expected.has(n));
+        const repeated = named.filter((n, i) => named.indexOf(n) !== i);
+        if (missing.length || extra.length || repeated.length) {
+          const problems = [
+            missing.length
+              ? `no outcome for linked issue(s) ${
+                missing.map((n) => `#${n}`).join(", ")
+              }`
+              : "",
+            extra.length
+              ? `outcome for issue(s) ${
+                extra.map((n) => `#${n}`).join(", ")
+              } that this lifecycle does not carry`
+              : "",
+            repeated.length
+              ? `more than one outcome for ${
+                [...new Set(repeated)].map((n) => `#${n}`).join(", ")
+              }`
+              : "",
+          ].filter(Boolean);
+          throw new Error(
+            `linkedOutcomes must name each linked issue exactly once: ` +
+              `${problems.join("; ")}.`,
+          );
+        }
 
         handles.push(
           await context.writeResource("summary", "summary-main", {
             originalProblem: args.originalProblem,
             deliveredOutcome: args.deliveredOutcome,
             outcomeMet: args.outcomeMet,
+            ...(outcomes.length ? { linkedOutcomes: outcomes } : {}),
             summarizedAt: new Date().toISOString(),
           }),
         );
@@ -3010,6 +3337,455 @@ export const model = {
           },
           isVerbose: false,
         });
+        // Best-effort for the same reason as mirrors: the posts cannot be
+        // taken back, and the primary's entry above is the audit record.
+        if (sc) {
+          for (const outcome of outcomes) {
+            await recordLifecycleBestEffort(
+              sc.forIssue(outcome.issueNumber),
+              context.logger,
+              {
+                step: "session_summarized",
+                targetStatus: "shipped",
+                summary: outcome.outcomeMet
+                  ? `Outcome met: ${outcome.deliveredOutcome}`
+                  : `Outcome NOT met: ${outcome.deliveredOutcome}`,
+                emoji: "\u{1F4DD}",
+                payload: {
+                  primaryIssueNumber: issueNumber,
+                  deliveredOutcome: outcome.deliveredOutcome,
+                  outcomeMet: outcome.outcomeMet,
+                },
+                isVerbose: false,
+              },
+            );
+          }
+        }
+
+        return { dataHandles: handles };
+      },
+    },
+
+    link_issue: {
+      rollbackOnFailure: true,
+      description:
+        "Carry another swamp-club issue with this lifecycle, because the " +
+        "same work fixes it. Creates the relationship in swamp-club " +
+        "(related_to from this issue, or duplicate_of from the linked " +
+        "issue), catches the linked issue up to this issue's status and PR, " +
+        "and from then on moves it with this issue. The phase is unchanged. " +
+        "Re-linking the same issue updates it in place.",
+      arguments: z.object({
+        issueNumber: z.number().int().positive().describe(
+          "The swamp-club issue to carry.",
+        ),
+        relationship: LinkRelationship.default("related_to").describe(
+          "related_to (shown as Sibling of) when the work also fixes it; " +
+            "duplicate_of when it reports the same problem as this issue.",
+        ),
+        reason: z.string().optional().describe(
+          "Why the issue is being carried with this one.",
+        ),
+      }),
+      execute: async (
+        args: {
+          issueNumber: number;
+          relationship: "related_to" | "duplicate_of";
+          reason?: string;
+        },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+          readResource: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
+        },
+      ) => {
+        const primary = context.globalArgs.issueNumber;
+        const target = args.issueNumber;
+        const relationship = args.relationship ?? "related_to";
+        if (target === primary) {
+          throw new Error(`Issue #${primary} cannot be linked to itself.`);
+        }
+
+        const sc = await requireSwampClub(context);
+        const linkedSc = sc.forIssue(target);
+        const primaryIssue = await sc.fetchIssue();
+        if (!primaryIssue) {
+          throw new Error(`Could not fetch issue #${primary} from swamp-club.`);
+        }
+        const linkedIssue = await linkedSc.fetchIssue();
+        if (!linkedIssue) {
+          throw new Error(
+            `swamp-club issue #${target} was not found, so it cannot be linked.`,
+          );
+        }
+        if (linkedIssue.status === "shipped") {
+          throw new Error(
+            `Issue #${target} has already shipped, so there is nothing for ` +
+              `this lifecycle to carry.`,
+          );
+        }
+        // A security fix must not be announced on a public issue before it
+        // ships, and a public issue must not be tracked under one whose
+        // milestones its reader cannot see.
+        if (
+          (primaryIssue.type === "security") !==
+            (linkedIssue.type === "security")
+        ) {
+          throw new Error(
+            `Issue #${primary} is ${primaryIssue.type} and #${target} is ` +
+              `${linkedIssue.type}. A security issue can only be linked to ` +
+              `another security issue.`,
+          );
+        }
+
+        await warnIfCarriedElsewhere(sc, linkedIssue, primary, context.logger);
+
+        const state = await context.readResource("state-main") as
+          | StateData
+          | null;
+        const phase = state?.phase ?? "triaging";
+        const pr = await context.readResource("pullRequest-main") as
+          | PullRequestData
+          | null;
+        const now = new Date().toISOString();
+
+        const entry: LinkedIssueData = {
+          issueNumber: target,
+          relationship,
+          title: linkedIssue.title,
+          author: linkedIssue.author,
+          authorId: linkedIssue.authorId,
+          reason: args.reason,
+          linkedAt: now,
+        };
+        const others = (await readLinkedIssues(context.readResource))
+          .filter((i) => i.issueNumber !== target);
+        const handle = await context.writeResource(
+          "linkedIssues",
+          "linkedIssues-main",
+          { issues: [...others, entry], updatedAt: now },
+        );
+
+        // Every write below is idempotent, so all of them run before the
+        // entry posts: a failure rolls back and the re-run converges.
+        recordUpstreamChange(
+          context.logger,
+          `${relationship} relationship between #${primary} and #${target}`,
+          relationship === "duplicate_of"
+            ? await linkedSc.addRelationship("duplicate_of", primary)
+            : await sc.addRelationship("related_to", target),
+        );
+        const reopened = linkedIssue.status === "closed";
+        const status = upstreamStatusForPhase(phase);
+        recordUpstreamChange(
+          context.logger,
+          `status transition of linked issue #${target} to ${status}`,
+          await linkedSc.walkStatusTo(status),
+        );
+        if (pr?.url) {
+          recordUpstreamChange(
+            context.logger,
+            `PR link on linked issue #${target}`,
+            await linkedSc.linkPr(pr.url),
+          );
+        }
+
+        const label = relationship === "duplicate_of" ? "duplicate" : "sibling";
+        await recordLifecycle(sc, {
+          step: "issue_linked",
+          targetStatus: status,
+          summary: `Carrying #${target} (${label}) with this issue`,
+          emoji: "\u{1F517}",
+          payload: {
+            linkedIssueNumber: target,
+            relationship,
+            reason: args.reason,
+          },
+          isVerbose: false,
+        });
+        // The linked issue's own note is best-effort, like every other entry
+        // on a linked issue: the primary's entry above is the audit record.
+        await recordLifecycleBestEffort(linkedSc, context.logger, {
+          step: "linked",
+          targetStatus: status,
+          summary: (relationship === "duplicate_of"
+            ? `Marked as a duplicate of #${primary}`
+            : `Fixed alongside #${primary}`) +
+            ` — the work is tracked there` +
+            (reopened ? " (reopened from closed)" : ""),
+          emoji: "\u{1F517}",
+          payload: { primaryIssueNumber: primary, relationship, reopened },
+          isVerbose: false,
+        });
+
+        context.logger.info(
+          "Linked #{linked} ({relationship}); it now moves with #{primary}",
+          { linked: target, relationship, primary },
+        );
+
+        return { dataHandles: [handle] };
+      },
+    },
+
+    unlink_issue: {
+      rollbackOnFailure: true,
+      description:
+        "Stop carrying a linked issue. Removes it from this lifecycle and " +
+        "deletes the swamp-club relationship. Its status is left where it " +
+        "is — swamp-club has no backward transitions — so close or " +
+        "re-triage it by hand if it should not stay in progress.",
+      arguments: z.object({
+        issueNumber: z.number().int().positive().describe(
+          "The linked issue to stop carrying.",
+        ),
+        reason: z.string().min(1).describe("Why the link is being removed."),
+      }),
+      execute: async (
+        args: { issueNumber: number; reason: string },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+          readResource: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
+        },
+      ) => {
+        const primary = context.globalArgs.issueNumber;
+        const target = args.issueNumber;
+        const linked = await readLinkedIssues(context.readResource);
+        const entry = linked.find((i) => i.issueNumber === target);
+        if (!entry) {
+          throw new Error(`Issue #${target} is not linked to #${primary}.`);
+        }
+
+        const sc = await requireSwampClub(context);
+        const linkedSc = sc.forIssue(target);
+        const handle = await context.writeResource(
+          "linkedIssues",
+          "linkedIssues-main",
+          {
+            issues: linked.filter((i) => i.issueNumber !== target),
+            updatedAt: new Date().toISOString(),
+          },
+        );
+
+        const linkedIssue = await linkedSc.fetchIssue();
+        if (!linkedIssue) {
+          throw new Error(`Could not fetch issue #${target} from swamp-club.`);
+        }
+        const relationship = linkedIssue.relationships.find((r) =>
+          r.type === entry.relationship && r.otherIssueNumber === primary
+        );
+        if (relationship) {
+          recordUpstreamChange(
+            context.logger,
+            `removal of the relationship between #${primary} and #${target}`,
+            await linkedSc.removeRelationship(relationship.id),
+          );
+        }
+
+        const state = await context.readResource("state-main") as
+          | StateData
+          | null;
+        await recordLifecycle(sc, {
+          step: "issue_unlinked",
+          targetStatus: upstreamStatusForPhase(state?.phase ?? "triaging"),
+          summary: `No longer carrying #${target}: ${args.reason}`,
+          emoji: "\u{2702}\u{FE0F}",
+          payload: { linkedIssueNumber: target, reason: args.reason },
+          isVerbose: false,
+        });
+        await recordLifecycleBestEffort(linkedSc, context.logger, {
+          step: "unlinked",
+          targetStatus: linkedIssue.status,
+          summary: `No longer carried by #${primary}. Its status stays ` +
+            `${linkedIssue.status} — close or re-triage this issue if ` +
+            `that is wrong.`,
+          emoji: "\u{2702}\u{FE0F}",
+          payload: { primaryIssueNumber: primary },
+          isVerbose: false,
+        });
+
+        context.logger.info("Unlinked #{linked}; its status is {status}", {
+          linked: target,
+          status: linkedIssue.status,
+        });
+
+        return { dataHandles: [handle] };
+      },
+    },
+
+    mark_duplicate: {
+      rollbackOnFailure: true,
+      description:
+        "Ship this issue as a duplicate of one that has already shipped, " +
+        "instead of closing it. Links it duplicate_of the canonical issue, " +
+        "records the canonical issue's PR on it, and walks it to shipped " +
+        "(reopening it first if it was closed), so its reporter gets the " +
+        "shipped notification. Transitions to notify. Refused while the " +
+        "canonical issue is still in flight — link it from that issue's " +
+        "lifecycle with link_issue instead.",
+      arguments: z.object({
+        of: z.number().int().positive().describe(
+          "The canonical issue this one duplicates. It must have shipped.",
+        ),
+        reason: z.string().min(1).describe(
+          "Why this issue is the same problem as the canonical one.",
+        ),
+        prUrl: z.url({ protocol: /^https?$/ }).optional().describe(
+          "The PR that fixed the canonical issue. Used only when swamp-club " +
+            "has none recorded for it, on the issue or in its lifecycle " +
+            "entries.",
+        ),
+      }),
+      execute: async (
+        args: { of: number; reason: string; prUrl?: string },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
+        const { issueNumber } = context.globalArgs;
+        const canonicalNumber = args.of;
+        if (canonicalNumber === issueNumber) {
+          throw new Error(
+            `Issue #${issueNumber} cannot be a duplicate of itself.`,
+          );
+        }
+
+        const sc = await requireSwampClub(context);
+        const canonical = await sc.forIssue(canonicalNumber).fetchIssue();
+        if (!canonical) {
+          throw new Error(
+            `swamp-club issue #${canonicalNumber} was not found.`,
+          );
+        }
+        if (canonical.status === "closed") {
+          throw new Error(
+            `Issue #${canonicalNumber} was closed without shipping, so ` +
+              `there is no fix to ship #${issueNumber} with.`,
+          );
+        }
+        if (canonical.status !== "shipped") {
+          throw new Error(
+            `Issue #${canonicalNumber} has not shipped yet (it is ` +
+              `${canonical.status}). Carry this issue with it instead, from ` +
+              `its lifecycle: swamp model @swamp/issue-lifecycle method run ` +
+              `link_issue issue-${canonicalNumber} --input ` +
+              `issueNumber=${issueNumber} --input relationship=duplicate_of`,
+          );
+        }
+        const duplicate = await sc.fetchIssue();
+        if (!duplicate) {
+          throw new Error(
+            `Could not fetch issue #${issueNumber} from swamp-club.`,
+          );
+        }
+
+        const foundPrUrl = canonical.githubPrUrl ?? canonical.lifecyclePrUrl;
+        if (foundPrUrl && args.prUrl && args.prUrl !== foundPrUrl) {
+          context.logger.warning(
+            "swamp-club already records {found} for #{canonical}, so the " +
+              "prUrl argument was not used",
+            { found: foundPrUrl, canonical: canonicalNumber },
+          );
+        }
+        const prUrl = foundPrUrl ?? args.prUrl;
+        if (!prUrl) {
+          context.logger.warning(
+            "No PR was found for #{canonical}, so #{issue} ships without " +
+              "one. Pass prUrl to record it.",
+            { canonical: canonicalNumber, issue: issueNumber },
+          );
+        }
+
+        const now = new Date().toISOString();
+        const handles = [
+          await context.writeResource("duplicate", "duplicate-main", {
+            canonicalIssueNumber: canonicalNumber,
+            canonicalTitle: canonical.title,
+            ...(prUrl ? { canonicalPrUrl: prUrl } : {}),
+            reason: args.reason,
+            markedAt: now,
+          }),
+          await context.writeResource("state", "state-main", {
+            phase: "notify",
+            issueNumber,
+            updatedAt: now,
+          }),
+        ];
+
+        // Idempotent writes first, the entry last. The PR goes on before the
+        // walk so it is already on the issue when swamp-club sends the
+        // shipped notification, which is where the reporter sees it.
+        recordUpstreamChange(
+          context.logger,
+          `duplicate_of relationship to #${canonicalNumber}`,
+          await sc.addRelationship("duplicate_of", canonicalNumber),
+        );
+        if (prUrl) {
+          recordUpstreamChange(
+            context.logger,
+            "PR link on the issue",
+            await sc.linkPr(prUrl),
+          );
+        }
+        const reopened = duplicate.status === "closed";
+        recordUpstreamChange(
+          context.logger,
+          "status transition to shipped",
+          await sc.walkStatusTo("shipped"),
+        );
+        // Names the canonical issue by number only: it may be restricted
+        // to admins while this one is public.
+        await recordLifecycle(sc, {
+          step: "duplicate_shipped",
+          targetStatus: "shipped",
+          summary: `Shipped as a duplicate of #${canonicalNumber}` +
+            (prUrl ? `: ${prUrl}` : " — no PR was found for it") +
+            (reopened ? " (reopened from closed)" : ""),
+          emoji: "\u{1F501}",
+          payload: {
+            canonicalIssueNumber: canonicalNumber,
+            prUrl,
+            reason: args.reason,
+            reopened,
+          },
+          isVerbose: false,
+        });
+
+        context.logger.info(
+          "Shipped #{issue} as a duplicate of #{canonical}",
+          { issue: issueNumber, canonical: canonicalNumber },
+        );
 
         return { dataHandles: handles };
       },

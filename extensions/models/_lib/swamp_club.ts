@@ -23,6 +23,11 @@
 
 import { join } from "@std/path";
 import type { IssueType } from "./schemas.ts";
+import {
+  type ForwardStatus,
+  parsePrNumber,
+  statusPath,
+} from "./issue_status.ts";
 
 export const LIFECYCLE_SUMMARY_MAX_CHARS = 2000;
 
@@ -54,6 +59,23 @@ export interface EligibleAssignee {
   username: string;
 }
 
+/** Relationship types swamp-club accepts between lab issues. */
+export type IssueRelationshipType =
+  | "parent_of"
+  | "blocked_by"
+  | "related_to"
+  | "duplicate_of";
+
+/** A relationship as seen from the fetched issue. */
+export interface FetchedRelationship {
+  id: string;
+  type: IssueRelationshipType;
+  /** `outgoing` when the fetched issue is the source. */
+  direction: "outgoing" | "incoming";
+  /** The issue on the other end. */
+  otherIssueNumber: number;
+}
+
 export interface FetchedIssue {
   number: number;
   type: IssueType;
@@ -65,6 +87,31 @@ export interface FetchedIssue {
   authorId?: string;
   comments: { author: string; body: string; createdAt: string }[];
   assignees: { userId: string; username: string }[];
+  /** The PR recorded on the issue itself, when one was ever sent. */
+  githubPrUrl?: string;
+  /**
+   * The PR named by the issue's lifecycle entries: the latest `pr_merged`,
+   * else the latest `pr_linked`. Before `link_pr` recorded the PR on the
+   * issue, this was the only place it was kept.
+   */
+  lifecyclePrUrl?: string;
+  relationships: FetchedRelationship[];
+}
+
+/** Pick the PR URL the lifecycle entries recorded, preferring the merge. */
+function prUrlFromEntries(
+  entries: { step?: unknown; payload?: unknown }[],
+): string | undefined {
+  const urlOf = (step: string) => {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.step !== step) continue;
+      const url = (entry.payload as { url?: unknown } | undefined)?.url;
+      if (typeof url === "string" && url.length > 0) return url;
+    }
+    return undefined;
+  };
+  return urlOf("pr_merged") ?? urlOf("pr_linked");
 }
 
 /**
@@ -92,6 +139,14 @@ export class SwampClubClient {
     this.issueNumber = issueNumber;
     this.log = logger?.warning.bind(logger) ?? (() => {});
     this.logInfo = logger?.info.bind(logger) ?? (() => {});
+  }
+
+  /** A client for another issue on the same server, with no new probe. */
+  forIssue(issueNumber: number): SwampClubClient {
+    return new SwampClubClient(this.baseUrl, this.#apiKey, issueNumber, {
+      info: this.logInfo,
+      warning: this.log,
+    });
   }
 
   /** Build the public lab URL for this issue. */
@@ -140,7 +195,16 @@ export class SwampClubClient {
             userId?: string;
             username?: string;
           }[];
+          githubPrUrl?: unknown;
         };
+        lifecycleEntries?: { step?: unknown; payload?: unknown }[];
+        relationships?: {
+          id?: unknown;
+          type?: unknown;
+          direction?: unknown;
+          sourceIssueNumber?: unknown;
+          targetIssueNumber?: unknown;
+        }[];
       };
       const issue = data?.issue;
       if (!issue || typeof issue.number !== "number") return null;
@@ -165,6 +229,29 @@ export class SwampClubClient {
           (a): a is { userId: string; username: string } =>
             typeof a.userId === "string" && typeof a.username === "string",
         ),
+        githubPrUrl: typeof issue.githubPrUrl === "string" &&
+            issue.githubPrUrl.length > 0
+          ? issue.githubPrUrl
+          : undefined,
+        lifecyclePrUrl: prUrlFromEntries(data.lifecycleEntries ?? []),
+        relationships: (data.relationships ?? []).flatMap((r) => {
+          if (
+            typeof r.id !== "string" || typeof r.type !== "string" ||
+            typeof r.sourceIssueNumber !== "number" ||
+            typeof r.targetIssueNumber !== "number"
+          ) return [];
+          const direction = r.direction === "incoming"
+            ? "incoming" as const
+            : "outgoing" as const;
+          return [{
+            id: r.id,
+            type: r.type as IssueRelationshipType,
+            direction,
+            otherIssueNumber: direction === "outgoing"
+              ? r.targetIssueNumber
+              : r.sourceIssueNumber,
+          }];
+        }),
       };
     } catch (err) {
       this.log("swamp-club fetch issue error: {error}", {
@@ -288,6 +375,101 @@ export class SwampClubClient {
       return { ok: true, noop: true };
     }
     return outcome;
+  }
+
+  /**
+   * Walk the issue forward to `target` one transition at a time, the only
+   * way swamp-club accepts. Re-reads the status first, so a re-run after a
+   * partial walk carries on from wherever the issue got to, and every step
+   * goes through `transitionStatus`, whose already-applied case is a no-op.
+   * Returns the first failed outcome, or ok when nothing needed to move.
+   */
+  async walkStatusTo(target: ForwardStatus): Promise<UpstreamOutcome> {
+    const issue = await this.fetchIssue() ?? await this.fetchIssue();
+    if (!issue) {
+      return {
+        ok: false,
+        reason: "unavailable",
+        detail: `could not read issue #${this.issueNumber} to find its status`,
+      };
+    }
+    for (const status of statusPath(issue.status, target)) {
+      const outcome = await this.transitionStatus(status);
+      if (!outcome.ok) return outcome;
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Record the pull request on the issue. swamp-club applies it through
+   * `issue.linkPr()` as a field of its own, so it is independent of the
+   * status and survives the later `shipped` transition, which is what puts
+   * the PR link in the reporter's shipped notification.
+   */
+  async linkPr(url: string): Promise<UpstreamOutcome> {
+    const githubPrNumber = parsePrNumber(url);
+    return await this.patchIssue(
+      githubPrNumber === undefined
+        ? { githubPrUrl: url }
+        : { githubPrUrl: url, githubPrNumber },
+    );
+  }
+
+  /**
+   * Relate this issue to another. swamp-club returns the existing link when
+   * the same one is added again, so a re-run is a no-op.
+   */
+  async addRelationship(
+    type: IssueRelationshipType,
+    targetIssueNumber: number,
+  ): Promise<UpstreamOutcome> {
+    return await this.sendRelationship("POST", { type, targetIssueNumber });
+  }
+
+  /** Remove a relationship by id. */
+  async removeRelationship(relationshipId: string): Promise<UpstreamOutcome> {
+    return await this.sendRelationship("DELETE", { relationshipId });
+  }
+
+  private async sendRelationship(
+    method: "POST" | "DELETE",
+    body: Record<string, unknown>,
+  ): Promise<UpstreamOutcome> {
+    try {
+      const url =
+        `${this.baseUrl}/api/v1/lab/issues/${this.issueNumber}/relationships`;
+      const res = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.#apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        this.log("swamp-club relationship {method} failed: {status} {text}", {
+          method,
+          status: res.status,
+          text,
+        });
+        return {
+          ok: false,
+          reason: "rejected",
+          status: res.status,
+          body: text,
+        };
+      }
+      await res.body?.cancel();
+      return { ok: true };
+    } catch (err) {
+      this.log("swamp-club relationship {method} error: {error}", {
+        method,
+        error: String(err),
+      });
+      return { ok: false, reason: "unavailable", detail: String(err) };
+    }
   }
 
   /**

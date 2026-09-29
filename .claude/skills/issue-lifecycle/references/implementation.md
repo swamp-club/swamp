@@ -84,9 +84,10 @@ swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR 
 ```
 
 This writes a `pullRequest-main` resource, transitions the phase to `pr_open`,
-and posts a `pr_linked` lifecycle entry on the swamp-club issue. The swamp-club
-status stays at `in_progress` — there is no new status for `pr_open`; the PR
-link is additional evidence attached to the in-progress state.
+records the PR on the swamp-club issue (and on every linked issue), and posts a
+`pr_linked` lifecycle entry. The swamp-club status stays at `in_progress` —
+there is no new status for `pr_open`; the PR link is additional evidence
+attached to the in-progress state.
 
 `link_pr` is **idempotent** — call it again with a new URL if:
 
@@ -187,4 +188,5 @@ swamp model @swamp/issue-lifecycle method run summarize issue-<N> \
 ```
 
 This transitions the phase to `done` and posts a `session_summarized` lifecycle
-entry.
+entry. When the lifecycle carries linked issues, also pass `linkedOutcomes` with
+one outcome per linked issue — see [linked-issues.md](linked-issues.md).

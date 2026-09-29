@@ -108,6 +108,26 @@ export async function recordRipple(
 }
 
 /**
+ * Submit a ripple that is a courtesy rather than the step's deliverable,
+ * logging a warning instead of raising. Returns whether it was posted.
+ * Used where a raise after an earlier ripple posted would make the re-run
+ * post that one twice.
+ */
+export async function recordRippleBestEffort(
+  sc: SwampClubClient | null,
+  logger: RecorderLogger,
+  body: string,
+): Promise<boolean> {
+  if (!sc) return false;
+  const outcome = await sc.submitComment(body);
+  if (outcome.ok) return true;
+  logger.warning("{message}", {
+    message: explain("contributor ripple", outcome),
+  });
+  return false;
+}
+
+/**
  * Interpret an outcome already produced by `transitionStatus` or
  * `updateType`. Raises on failure, so the two differ only in the benign rule
  * the client gives them and share one failure policy here.
