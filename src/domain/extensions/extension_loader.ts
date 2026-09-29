@@ -838,9 +838,11 @@ export class ExtensionLoader {
     // (swamp-club#2490). Drop such rows until a live one turns up; with
     // none left, return so the registry reports the type as not found.
     // Bounded by the rows claiming the type, so a delete that silently
-    // fails cannot loop forever.
-    let remaining = catalog.findAllByType(typeNormalized, kind).length + 1;
+    // fails cannot loop forever. They are counted only once a source is
+    // missing, so the common case adds no SQLite read to a lazy load.
+    let remaining: number | undefined;
     while (!this.sourceExistsOnDisk(entry.source_path)) {
+      remaining ??= catalog.findAllByType(typeNormalized, kind).length + 1;
       this.logger
         .debug`Dropping catalog row for ${typeNormalized}: source ${entry.source_path} is missing`;
       catalog.removeByRawSourcePath(entry.source_path);
@@ -1154,7 +1156,8 @@ export class ExtensionLoader {
       const { winner, winnerName, loserName } of catalog
         .settlePulledTypeConflicts(this.repoDir)
     ) {
-      if (winnerName !== loserName) {
+      // Without both names there is no extension to tell the user to rm.
+      if (winnerName && loserName && winnerName !== loserName) {
         this.logger
           .warn`Extensions ${winnerName} and ${loserName} both provide ${winner.kind} type ${winner.type_normalized}; keeping ${winnerName}, which provided it first. To use ${loserName} instead, run 'swamp extension rm ${winnerName}'`;
       }

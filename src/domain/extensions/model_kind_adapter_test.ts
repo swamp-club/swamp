@@ -767,6 +767,115 @@ Deno.test("attachPendingExtensionsForType: an extension that fails to import is 
   }
 });
 
+// ── Extension rows whose source is gone (swamp-club#2490) ──────────────
+
+/**
+ * Seeds three extension rows for `type`: `live` (source on disk, bundle
+ * live.js), `gone` (source missing, own bundle gone.js) and `shared`
+ * (source missing, but its bundle path is live.js). Every bundle file
+ * exists.
+ */
+async function seedStaleExtensionRows(
+  dir: string,
+  catalog: ExtensionCatalogStore,
+  type: string,
+): Promise<void> {
+  await Deno.writeTextFile(join(dir, "live.ts"), "");
+  await Deno.writeTextFile(join(dir, "live.js"), "");
+  await Deno.writeTextFile(join(dir, "gone.js"), "");
+  for (
+    const [name, bundle] of [
+      ["live", "live.js"],
+      ["gone", "gone.js"],
+      ["shared", "live.js"],
+    ]
+  ) {
+    catalog.upsert({
+      source_path: join(dir, `${name}.ts`),
+      type_normalized: type,
+      kind: "extension",
+      bundle_path: join(dir, bundle),
+      version: "",
+      description: "",
+      extends_type: type,
+      source_mtime: "",
+      source_fingerprint: `fp-${name}`,
+    });
+  }
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test("findExtensionsForType: drops rows whose source is gone and evicts their unshared bundles (swamp-club#2490)", async () => {
+  const type = `@test/stale-ext-${crypto.randomUUID().slice(0, 8)}`;
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2490_ext_" });
+  const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+  try {
+    await seedStaleExtensionRows(dir, catalog, type);
+
+    const rows = modelKindAdapter.findExtensionsForType!(catalog, type);
+
+    assertEquals(rows.map((r) => basename(r.source_path)), ["live.ts"]);
+    assertEquals(
+      catalog.findExtensionsForType(type).map((r) => basename(r.source_path)),
+      ["live.ts"],
+    );
+    // gone.js belonged only to a removed row; live.js is still referenced
+    // by the live row even though the removed `shared` row named it too.
+    assertEquals(await fileExists(join(dir, "gone.js")), false);
+    assertEquals(await fileExists(join(dir, "live.js")), true);
+  } finally {
+    catalog.close();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("attachPendingExtensionsForType: never imports a row whose source is gone (swamp-club#2490)", async () => {
+  const type = `@test/stale-attach-${crypto.randomUUID().slice(0, 8)}`;
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2490_attach_" });
+  const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+  clearAttachedExtensions();
+  registerTestModel(type, { get: true });
+  try {
+    await seedStaleExtensionRows(dir, catalog, type);
+
+    const imported: string[] = [];
+    const importFn = (paths: { sourcePath: string }) => {
+      const name = basename(paths.sourcePath, ".ts");
+      imported.push(name);
+      return Promise.resolve({
+        extension: makeExtension(type, [`${name}_method`]),
+      });
+    };
+    await modelKindAdapter.attachPendingExtensionsForType!(
+      type,
+      catalog,
+      importFn,
+      localContributor,
+    );
+
+    assertEquals(imported, ["live"]);
+    assertEquals(
+      catalog.findExtensionsForType(type).map((r) => basename(r.source_path)),
+      ["live.ts"],
+    );
+    assertEquals(await fileExists(join(dir, "gone.js")), false);
+  } finally {
+    catalog.close();
+    clearAttachedExtensions();
+    modelRegistry.invalidateType(type);
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
 // --- formatValidationError tests ---
 
 Deno.test("formatValidationError: missing execute reports method name", () => {
