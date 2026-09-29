@@ -103,13 +103,13 @@ export class YamlVaultConfigRepository {
    * Finds a vault config by name across all vault types. Files that do not
    * parse are skipped while a match may still come; vault names are unique,
    * so a parseable match is the vault. With no match, the first file that did
-   * not parse is reported, since it may be the vault asked for.
-   * `ignoreBrokenPath` names a file known not to parse (a vault being
-   * repaired), which is then not reported.
+   * not parse is reported, since it may be the vault asked for. With
+   * `skipUnparseable`, such files are never reported: a check whether a name
+   * is free treats a file that cannot be read as not holding it.
    */
   async findByName(
     name: string,
-    ignoreBrokenPath?: string,
+    skipUnparseable = false,
   ): Promise<VaultConfig | null> {
     const vaultDir = this.getVaultDir();
     let parseError: VaultConfigParseError | null = null;
@@ -126,12 +126,7 @@ export class YamlVaultConfigRepository {
           data = this.parseVaultConfig(content, entry.path);
         } catch (error) {
           if (!(error instanceof VaultConfigParseError)) throw error;
-          if (
-            ignoreBrokenPath === undefined ||
-            resolve(error.path) !== resolve(ignoreBrokenPath)
-          ) {
-            parseError ??= error;
-          }
+          if (!skipUnparseable) parseError ??= error;
           continue;
         }
         if (data.name === name) {

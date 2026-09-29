@@ -126,12 +126,12 @@ export interface VaultEditInput {
 /** Lookups used to resolve a vault by name or id. */
 export interface VaultEditLookupDeps {
   /**
-   * Finds a vault by name. `ignoreBrokenPath` names a vault file known not
-   * to parse, which then does not fail the lookup.
+   * Finds a vault by name. With `skipUnparseable`, vault files that do not
+   * parse never fail the lookup.
    */
   findByName: (
     name: string,
-    ignoreBrokenPath?: string,
+    skipUnparseable?: boolean,
   ) => Promise<VaultEditConfigInfo | null>;
   findById: (type: string, id: string) => Promise<VaultEditConfigInfo | null>;
   findAll: () => Promise<VaultEditConfigInfo[]>;
@@ -172,8 +172,8 @@ export function createVaultEditDeps(
   const repo = injectedRepo ?? new YamlVaultConfigRepository(repoDir);
   const editorService = new EditorService();
   return {
-    findByName: (name, ignoreBrokenPath) =>
-      repo.findByName(name, ignoreBrokenPath),
+    findByName: (name, skipUnparseable) =>
+      repo.findByName(name, skipUnparseable),
     findById: (type, id) => repo.findById(type, id),
     findAll: () => repo.findAll(),
     getVaultPath: (config) => repo.getPath(config.type, config.id),
@@ -240,7 +240,15 @@ export async function findVaultByNameOrId(
     // the id can still be looked up directly; if that finds nothing, the
     // broken file may be the vault that was named, so report it.
     if (!(error instanceof VaultConfigParseError) || !vaultType) throw error;
-    const byId = await deps.findById(vaultType, vaultNameOrId);
+    let byId: VaultEditConfigInfo | null;
+    try {
+      byId = await deps.findById(vaultType, vaultNameOrId);
+    } catch (idError) {
+      // The requested file's own parse error names it; anything else (such
+      // as an argument that is not a valid id) says less than the first.
+      if (idError instanceof VaultConfigParseError) throw idError;
+      throw error;
+    }
     if (byId) return byId;
     throw error;
   }
@@ -496,8 +504,9 @@ async function* repairVaultFromStdin(
     };
     return;
   }
-  // The file being repaired does not parse, so it cannot hold the name.
-  const clash = await deps.findByName(repaired.name, filePath);
+  // Files that do not parse, this one included, cannot hold the name;
+  // reporting them would stop any repair while another vault is broken.
+  const clash = await deps.findByName(repaired.name, true);
   if (clash && clash.id !== target.id) {
     yield { kind: "error", error: alreadyExists("Vault", repaired.name) };
     return;

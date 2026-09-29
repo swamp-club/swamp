@@ -1247,10 +1247,8 @@ Deno.test("vaultEdit: a repair checks the vault type's config schema", async () 
   const saved: VaultConfigData[] = [];
   const deps = makeDeps({
     getVaultPath: () => brokenPath,
-    findByName: (_name, ignoreBrokenPath) =>
-      ignoreBrokenPath === brokenPath
-        ? Promise.resolve(null)
-        : Promise.reject(broken),
+    findByName: (_name, skipUnparseable) =>
+      skipUnparseable ? Promise.resolve(null) : Promise.reject(broken),
     findById: () => Promise.reject(broken),
     readConfigData: () => Promise.reject(broken),
     saveConfigData: (data) => {
@@ -1292,5 +1290,38 @@ Deno.test("vaultEdit: a repair does not overwrite a file that was repaired meanw
       "was repaired while this edit ran",
     );
     assertEquals(await Deno.readTextFile(brokenPath), fixedMeanwhile);
+  });
+});
+
+Deno.test("vaultEdit: a stdin repair succeeds while another vault is also broken", async () => {
+  await withBrokenVaultRepo(async ({ repo, deps }) => {
+    const otherPath = repo.getPath("local_encryption", "another-broken");
+    await Deno.writeTextFile(otherPath, BROKEN_YAML);
+
+    const events = await runRepair(deps, REPAIRED_YAML, () => true);
+
+    assertEquals(completedData(lastEvent(events)).repaired, true);
+    assertEquals(
+      (await repo.findById("local_encryption", BROKEN_ID))?.name,
+      "fixed-vault",
+    );
+    assertEquals(await Deno.readTextFile(otherPath), BROKEN_YAML);
+  });
+});
+
+Deno.test("vaultEdit: an argument that is not a valid id keeps the broken file's error", async () => {
+  await withBrokenVaultRepo(async ({ deps }) => {
+    const error = await assertRejects(
+      () =>
+        collect<VaultEditEvent>(
+          vaultEdit(createLibSwampContext(), deps, {
+            vaultNameOrId: "../elsewhere",
+            vaultType: "local_encryption",
+          }),
+        ),
+      VaultConfigParseError,
+    );
+
+    assertEquals(error.vaultId, BROKEN_ID);
   });
 });

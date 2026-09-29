@@ -394,17 +394,13 @@ Deno.test("YamlVaultConfigRepository: findByName with no match reports a file th
   });
 });
 
-Deno.test("YamlVaultConfigRepository: findByName does not report the broken file it was told to ignore", async () => {
+Deno.test("YamlVaultConfigRepository: findByName with skipUnparseable reports no broken file", async () => {
   await withVaultDir(async (repoDir, vaultsDir) => {
     const repo = new YamlVaultConfigRepository(repoDir);
-    const path = await writeVaultFile(
-      vaultsDir,
-      "local_encryption",
-      "vault-a",
-      BROKEN_YAML,
-    );
+    await writeVaultFile(vaultsDir, "local_encryption", "vault-a", BROKEN_YAML);
+    await writeVaultFile(vaultsDir, "local_encryption", "vault-b", BROKEN_YAML);
 
-    assertEquals(await repo.findByName("missing", path), null);
+    assertEquals(await repo.findByName("missing", true), null);
   });
 });
 

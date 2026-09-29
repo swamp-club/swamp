@@ -820,3 +820,24 @@ Deno.test("handleVaultEdit: a valid vault resolves by id and type beside a broke
     assertEquals((await read(vault.id))?.auditReads, true);
   });
 });
+
+Deno.test("handleVaultEdit: an admin repairs one broken vault while another is broken too", async () => {
+  await withTempDir(async (dir) => {
+    const otherId = "0b0b0b0b-0000-4000-8000-000000000000";
+
+    const { frames, read, readRaw } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [],
+      repairPayload("fixed-vault"),
+      {
+        grants: [vaultGrant({}), ADMIN_GRANT],
+        brokenIds: [otherId, BROKEN_ID],
+      },
+    );
+
+    assertEquals(frames[0].type, "vault.edit");
+    assertEquals((await read(BROKEN_ID))?.name, "fixed-vault");
+    assertEquals(await readRaw(otherId), BROKEN_YAML);
+  });
+});
