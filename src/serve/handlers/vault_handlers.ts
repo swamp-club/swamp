@@ -873,8 +873,9 @@ export async function handleVaultEdit(
         vaultType: target.type,
         byId: true,
         stdinContent: payload.content,
-        // A rename must also be allowed for the new name, as vault.create
-        // requires for the name it creates.
+        // Every save is authorized against the edited vault too, so a rename
+        // needs write on the new name, as vault.create requires for the name
+        // it creates.
         authorizeUpdate: (_before, after) =>
           authorizeOrReject(socket, requestId, principal, "write", {
             kind: "data",

@@ -58,6 +58,10 @@ export const modelEditCommand = withRemoteOptions(
     .description("Edit a model definition file")
     .example("Edit a model", "swamp model edit my-server")
     .example("Interactive search", "swamp model edit")
+    .example(
+      "Update from stdin (required with --server)",
+      "cat my-server.yaml | swamp model edit my-server",
+    )
     .arguments("[model_id_or_name:model_name]")
     .option(
       "--repo-dir <dir:string>",

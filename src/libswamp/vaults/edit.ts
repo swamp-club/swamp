@@ -85,8 +85,9 @@ export interface VaultEditInput {
   /** New vault YAML. When set, the vault is updated instead of opened. */
   stdinContent?: string | null;
   /**
-   * Called before a stdin update that renames the vault is saved. Returning
-   * false leaves the file untouched. Serve uses it to authorize the new name.
+   * Called before every stdin update is saved, with the stored and the edited
+   * vault. Returning false leaves the file untouched. Serve uses it to
+   * authorize the edited vault.
    */
   authorizeUpdate?: (
     before: VaultEditConfigInfo,
@@ -178,8 +179,9 @@ function stdinError(detail: string): SwampError {
 }
 
 /**
- * Validates new vault YAML against the existing vault and saves it. The id is
- * kept, and the type cannot change because it is part of the storage path.
+ * Validates new vault YAML against the existing vault and saves it. The id and
+ * createdAt are kept, and the type cannot change because it is part of the
+ * storage path.
  * Messages carry no file paths: serve replaces any message with a path in it
  * by a generic error.
  */
@@ -212,10 +214,12 @@ async function* updateVaultFromStdin(
   }
 
   const fields = raw as Record<string, unknown>;
+  // id and createdAt are pinned: they record the vault's identity and
+  // creation, not configuration the edit may change.
   const parsed = VaultConfigDataSchema.safeParse({
     ...fields,
     id: existing.id,
-    createdAt: fields.createdAt ?? existing.createdAt,
+    createdAt: existing.createdAt,
   });
   if (!parsed.success) {
     yield { kind: "error", error: stdinError(parsed.error.message) };
@@ -265,7 +269,7 @@ async function* updateVaultFromStdin(
     }
   }
 
-  if (renamed && input.authorizeUpdate) {
+  if (input.authorizeUpdate) {
     const allowed = await input.authorizeUpdate(
       { id: existing.id, name: existing.name, type: existing.type },
       { id: updated.id, name: updated.name, type: updated.type },
@@ -274,7 +278,7 @@ async function* updateVaultFromStdin(
       yield {
         kind: "error",
         error: forbidden(
-          `Not allowed to rename vault '${existing.name}' to '${updated.name}'`,
+          `Not allowed to save vault '${existing.name}' as '${updated.name}'`,
         ),
       };
       return;

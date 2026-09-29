@@ -302,7 +302,7 @@ Deno.test("vaultEdit: stdin update saves the config, keeping id and createdAt", 
 
   const last = await runStdin(
     deps,
-    "id: other-id\nname: my-vault\ntype: env\nconfig:\n  prefix: NEW_\n",
+    "id: other-id\nname: my-vault\ntype: env\ncreatedAt: '1999-01-01T00:00:00.000Z'\nconfig:\n  prefix: NEW_\n",
   );
 
   assertEquals(last, {
@@ -438,20 +438,22 @@ Deno.test("vaultEdit: stdin rename denied by authorizeUpdate writes nothing", as
   assertEquals(saved, []);
 });
 
-Deno.test("vaultEdit: stdin update without a rename does not ask authorizeUpdate", async () => {
+Deno.test("vaultEdit: stdin update asks authorizeUpdate even without a rename", async () => {
   const { deps, saved } = makeStdinDeps();
-  let asked = false;
+  const asked: Array<[string, string]> = [];
 
-  const last = await runStdin(deps, "name: my-vault\ntype: env\n", {
-    authorizeUpdate: () => {
-      asked = true;
-      return false;
-    },
-  });
+  const error = errorOf(
+    await runStdin(deps, "name: my-vault\ntype: env\n", {
+      authorizeUpdate: (before, after) => {
+        asked.push([before.name, after.name]);
+        return false;
+      },
+    }),
+  );
 
-  assertEquals(last.kind, "completed");
-  assertEquals(asked, false);
-  assertEquals(saved.length, 1);
+  assertEquals(error.code, "forbidden");
+  assertEquals(asked, [["my-vault", "my-vault"]]);
+  assertEquals(saved, []);
 });
 
 Deno.test("vaultEdit: byId looks the vault up by id only", async () => {

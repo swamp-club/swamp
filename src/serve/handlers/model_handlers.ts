@@ -1685,8 +1685,10 @@ export async function handleModelEdit(
         modelIdOrName: resolved.definition.id,
         byId: true,
         stdinContent: payload.content,
-        // An edit that renames or retags the model must also be allowed for
-        // the edited model.
+        // Every save is authorized against the edited model too, so a rename
+        // or retag needs write on the result. It runs on every save rather
+        // than only on a detected change, so a concurrent retag between the
+        // lookup above and the save cannot skip it.
         authorizeUpdate: (_before, after) =>
           authorizeOrReject(
             socket,

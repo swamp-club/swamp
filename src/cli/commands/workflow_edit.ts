@@ -58,6 +58,10 @@ export const workflowEditCommand = withRemoteOptions(
     .description("Edit a workflow file")
     .example("Edit a workflow", "swamp workflow edit deploy-pipeline")
     .example("Interactive search", "swamp workflow edit")
+    .example(
+      "Update from stdin (required with --server)",
+      "cat deploy.yaml | swamp workflow edit deploy",
+    )
     .arguments("[workflow_id_or_name:workflow_name]")
     .option(
       "--repo-dir <dir:string>",

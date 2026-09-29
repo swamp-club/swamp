@@ -35,7 +35,6 @@ import {
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { forbidden, notFound, validationFailed } from "../errors.ts";
-import { sameTags } from "../same_tags.ts";
 import {
   type BrokenWorkflow,
   findBrokenWorkflow,
@@ -84,9 +83,10 @@ export interface WorkflowEditInput {
   workflowIdOrName: string;
   stdinContent?: string | null;
   /**
-   * Called before a stdin update that changes the workflow's name or tags is
-   * saved. Returning false leaves the file untouched. Serve uses it to
-   * authorize the edited workflow.
+   * Called before every stdin update is saved, with the stored and the edited
+   * workflow. Returning false leaves the file untouched. Serve uses it to
+   * authorize the edited workflow; it runs on every save, not only when the
+   * name or tags change, so a concurrent retag cannot slip past it.
    */
   authorizeUpdate?: (
     before: WorkflowEditTarget,
@@ -269,14 +269,8 @@ export async function* workflowEdit(
           const before = editTarget(workflow);
           const authorizeUpdate = input.authorizeUpdate;
           const beforeSave = authorizeUpdate
-            ? (candidate: Workflow) => {
-              const after = editTarget(candidate);
-              const unchanged = before.name === after.name &&
-                sameTags(before.tags, after.tags);
-              return Promise.resolve(
-                unchanged || authorizeUpdate(before, after),
-              );
-            }
+            ? (candidate: Workflow) =>
+              Promise.resolve(authorizeUpdate(before, editTarget(candidate)))
             : undefined;
           const updated = await deps.updateFromStdin(
             workflow,

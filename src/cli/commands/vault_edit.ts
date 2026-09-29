@@ -58,6 +58,10 @@ export const vaultEditCommand = withRemoteOptions(
     .description("Edit a vault configuration file")
     .example("Edit a vault", "swamp vault edit my-vault")
     .example("Interactive search", "swamp vault edit")
+    .example(
+      "Update from stdin (required with --server)",
+      "cat my-vault.yaml | swamp vault edit my-vault",
+    )
     .arguments("[vault_name_or_id:string]")
     .option(
       "--repo-dir <dir:string>",

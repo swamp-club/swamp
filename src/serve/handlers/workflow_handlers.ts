@@ -1800,8 +1800,10 @@ export async function handleWorkflowEdit(
       workflowEdit(libCtx, deps, {
         workflowIdOrName: workflow.id,
         stdinContent: payload.content,
-        // An edit that renames or retags the workflow must also be allowed
-        // for the edited workflow.
+        // Every save is authorized against the edited workflow too, so a
+        // rename or retag needs write on the result. It runs on every save
+        // rather than only on a detected change, so a concurrent retag
+        // between the lookup above and the save cannot skip it.
         authorizeUpdate: (_before, after) =>
           authorizeOrReject(socket, requestId, principal, "write", {
             kind: "workflow",

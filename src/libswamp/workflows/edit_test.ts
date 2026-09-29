@@ -457,7 +457,7 @@ Deno.test("workflowEdit: stdin retag denied by authorizeUpdate writes nothing", 
   assertEquals(saved, []);
 });
 
-Deno.test("workflowEdit: stdin update that keeps name and tags does not ask authorizeUpdate", async () => {
+Deno.test("workflowEdit: stdin update that keeps name and tags still asks authorizeUpdate", async () => {
   const candidate = {
     ...testWorkflow,
     tags: { team: "ops" },
@@ -476,7 +476,13 @@ Deno.test("workflowEdit: stdin update that keeps name and tags does not ask auth
     }),
   );
 
-  assertEquals(events[events.length - 1].kind, "completed");
-  assertEquals(asked, false);
-  assertEquals(saved.length, 1);
+  // Re-authorizing every save means a concurrent retag between the serve
+  // handler's lookup and the save cannot skip the check.
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.error.code, "forbidden");
+  assertEquals(asked, true);
+  assertEquals(saved, []);
 });

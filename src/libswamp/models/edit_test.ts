@@ -518,7 +518,7 @@ Deno.test("modelEdit: stdin retag denied by authorizeUpdate writes nothing", asy
   assertEquals(saved, []);
 });
 
-Deno.test("modelEdit: stdin update that keeps name and tags does not ask authorizeUpdate", async () => {
+Deno.test("modelEdit: stdin update that keeps name and tags still asks authorizeUpdate", async () => {
   const candidate = {
     ...testDefinition,
     name: "my-model",
@@ -538,9 +538,15 @@ Deno.test("modelEdit: stdin update that keeps name and tags does not ask authori
     }),
   );
 
-  assertEquals(events[events.length - 1].kind, "completed");
-  assertEquals(asked, false);
-  assertEquals(saved.length, 1);
+  // Re-authorizing every save means a concurrent retag between the serve
+  // handler's lookup and the save cannot skip the check.
+  const last = events[events.length - 1] as Extract<
+    ModelEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.error.code, "forbidden");
+  assertEquals(asked, true);
+  assertEquals(saved, []);
 });
 
 Deno.test("modelEdit: byId looks the definition up by id only", async () => {

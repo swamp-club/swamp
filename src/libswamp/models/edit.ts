@@ -39,7 +39,6 @@ import {
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { forbidden, notFound, validationFailed } from "../errors.ts";
-import { sameTags } from "../same_tags.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -104,12 +103,6 @@ function editTarget(
   };
 }
 
-/** Whether an edit leaves everything a grant can match on unchanged. */
-function sameGrantTarget(a: ModelEditTarget, b: ModelEditTarget): boolean {
-  return a.name === b.name && a.modelType === b.modelType &&
-    sameTags(a.tags, b.tags);
-}
-
 /** Input for the model edit operation. */
 export interface ModelEditInput {
   modelIdOrName: string;
@@ -121,9 +114,10 @@ export interface ModelEditInput {
    */
   byId?: boolean;
   /**
-   * Called before a stdin update that changes the model's name or tags is
-   * saved. Returning false leaves the file untouched. Serve uses it to
-   * authorize the edited definition.
+   * Called before every stdin update is saved, with the stored and the edited
+   * definition. Returning false leaves the file untouched. Serve uses it to
+   * authorize the edited definition; it runs on every save, not only when the
+   * name or tags change, so a concurrent retag cannot slip past it.
    */
   authorizeUpdate?: (
     before: ModelEditTarget,
@@ -255,13 +249,10 @@ export async function* modelEdit(
           const before = editTarget(definition, type);
           const authorizeUpdate = input.authorizeUpdate;
           const beforeSave = authorizeUpdate
-            ? (candidate: Definition) => {
-              const after = editTarget(candidate, type);
-              return Promise.resolve(
-                sameGrantTarget(before, after) ||
-                  authorizeUpdate(before, after),
-              );
-            }
+            ? (candidate: Definition) =>
+              Promise.resolve(
+                authorizeUpdate(before, editTarget(candidate, type)),
+              )
             : undefined;
           const updated = await deps.updateFromStdin(
             definition,
