@@ -211,6 +211,98 @@ function unvouchedGlobalArgsMessage(
 }
 
 /**
+ * Adopts a stored definition for a direct execution: verifies its type, then
+ * applies the caller's routed global arguments to it (saving when they
+ * differ) so the returned definition runs with the caller's own values.
+ * Shared by the lookup fast path and the locked re-check, where a caller that
+ * lost the auto-creation race adopts the winner's definition.
+ */
+async function adoptExistingDefinition(
+  deps: DirectExecutionDeps,
+  existing: { definition: Definition; type: ModelType },
+  typeArg: string,
+  definitionName: string,
+  resolvedType: ModelType,
+  modelDef: ModelDefinition,
+  routed: RoutedInputs,
+  authoredExpressions: AuthoredExpressions,
+): Promise<DirectExecutionResult> {
+  // Verify type matches
+  if (existing.type.normalized !== resolvedType.normalized) {
+    return {
+      ok: false,
+      error: validationFailed(
+        `Definition '${definitionName}' exists with type '${existing.type.normalized}' ` +
+          `but '${typeArg}' resolves to '${resolvedType.normalized}'. ` +
+          `Type mismatch — delete the existing definition or use a different name.`,
+      ),
+    };
+  }
+
+  const storedExpressions = collectAuthoredExpressions(
+    existing.definition.toData(),
+  );
+  const storedGlobal = existing.definition
+    .globalArguments as Record<string, unknown>;
+  const routedGlobal = routed.globalArguments;
+  const globalArgsDiffer = Object.keys(routedGlobal).length > 0 &&
+    !Object.entries(routedGlobal).every(([k, v]) =>
+      JSON.stringify(storedGlobal?.[k]) === JSON.stringify(v)
+    );
+
+  if (globalArgsDiffer) {
+    const unvouched = findUnvouchedGlobalArgExpressions(
+      routedGlobal,
+      authoredExpressions,
+    );
+    if (unvouched.length > 0) {
+      return {
+        ok: false,
+        error: validationFailed(
+          unvouchedGlobalArgsMessage(definitionName, unvouched),
+        ),
+      };
+    }
+    for (const key of Object.keys(storedGlobal ?? {})) {
+      if (!(key in routedGlobal)) {
+        existing.definition.removeGlobalArgument(key);
+      }
+    }
+    for (const [key, value] of Object.entries(routedGlobal)) {
+      existing.definition.setGlobalArgument(key, value);
+    }
+    const leakedArgs = findLiteralSensitiveGlobalArgs(
+      modelDef.globalArguments,
+      existing.definition.globalArguments,
+    );
+    if (leakedArgs.length > 0) {
+      return {
+        ok: false,
+        error: validationFailed(
+          literalSensitiveGlobalArgsMessage(leakedArgs),
+        ),
+      };
+    }
+    await deps.saveDefinition(existing.type, existing.definition);
+  }
+
+  return {
+    ok: true,
+    definition: existing.definition,
+    modelType: existing.type,
+    modelDef,
+    created: false,
+    definitionPath: deps.getDefinitionPath(
+      existing.type,
+      existing.definition.id,
+    ),
+    routedInputs: routed,
+    globalArgsUpdated: globalArgsDiffer,
+    authoredExpressions: storedExpressions,
+  };
+}
+
+/**
  * Resolves an existing definition by name or auto-creates one.
  * When the definition exists, verifies the type matches.
  *
@@ -293,79 +385,16 @@ export async function resolveOrCreateDefinition(
   const existing = await deps.lookupDefinition(definitionName);
 
   if (existing) {
-    // Verify type matches
-    if (existing.type.normalized !== resolvedType.normalized) {
-      return {
-        ok: false,
-        error: validationFailed(
-          `Definition '${definitionName}' exists with type '${existing.type.normalized}' ` +
-            `but '${typeArg}' resolves to '${resolvedType.normalized}'. ` +
-            `Type mismatch — delete the existing definition or use a different name.`,
-        ),
-      };
-    }
-
-    const storedExpressions = collectAuthoredExpressions(
-      existing.definition.toData(),
-    );
-    const storedGlobal = existing.definition
-      .globalArguments as Record<string, unknown>;
-    const routedGlobal = routed.globalArguments;
-    const globalArgsDiffer = Object.keys(routedGlobal).length > 0 &&
-      !Object.entries(routedGlobal).every(([k, v]) =>
-        JSON.stringify(storedGlobal?.[k]) === JSON.stringify(v)
-      );
-
-    if (globalArgsDiffer) {
-      const unvouched = findUnvouchedGlobalArgExpressions(
-        routedGlobal,
-        authoredExpressions,
-      );
-      if (unvouched.length > 0) {
-        return {
-          ok: false,
-          error: validationFailed(
-            unvouchedGlobalArgsMessage(definitionName, unvouched),
-          ),
-        };
-      }
-      for (const key of Object.keys(storedGlobal ?? {})) {
-        if (!(key in routedGlobal)) {
-          existing.definition.removeGlobalArgument(key);
-        }
-      }
-      for (const [key, value] of Object.entries(routedGlobal)) {
-        existing.definition.setGlobalArgument(key, value);
-      }
-      const leakedArgs = findLiteralSensitiveGlobalArgs(
-        modelDef.globalArguments,
-        existing.definition.globalArguments,
-      );
-      if (leakedArgs.length > 0) {
-        return {
-          ok: false,
-          error: validationFailed(
-            literalSensitiveGlobalArgsMessage(leakedArgs),
-          ),
-        };
-      }
-      await deps.saveDefinition(existing.type, existing.definition);
-    }
-
-    return {
-      ok: true,
-      definition: existing.definition,
-      modelType: existing.type,
+    return await adoptExistingDefinition(
+      deps,
+      existing,
+      typeArg,
+      definitionName,
+      resolvedType,
       modelDef,
-      created: false,
-      definitionPath: deps.getDefinitionPath(
-        existing.type,
-        existing.definition.id,
-      ),
-      routedInputs: routed,
-      globalArgsUpdated: globalArgsDiffer,
-      authoredExpressions: storedExpressions,
-    };
+      routed,
+      authoredExpressions,
+    );
   }
 
   // Validate provided global arguments but don't require missing ones.
@@ -449,36 +478,22 @@ export async function resolveOrCreateDefinition(
     const lock = createAutoDefinitionLock(lockDir, definitionName);
     try {
       return await lock.withLock(async () => {
-        // Re-check under lock — race losers adopt the winner's definition.
-        // Global-args reconciliation is skipped here: concurrent auto-creators
-        // share the same input line, so args are identical.
+        // Re-check under lock — race losers adopt the winner's definition,
+        // then apply their own global arguments to it: forEach iterations
+        // sharing one modelName can each pass different globalArgs, so a
+        // loser must not run with the winner's.
         const raceWinner = await deps.lookupDefinition(definitionName);
         if (raceWinner) {
-          if (raceWinner.type.normalized !== resolvedType.normalized) {
-            return {
-              ok: false,
-              error: validationFailed(
-                `Definition '${definitionName}' exists with type '${raceWinner.type.normalized}' ` +
-                  `but '${typeArg}' resolves to '${resolvedType.normalized}'. ` +
-                  `Type mismatch — delete the existing definition or use a different name.`,
-              ),
-            };
-          }
-          return {
-            ok: true,
-            definition: raceWinner.definition,
-            modelType: raceWinner.type,
+          return await adoptExistingDefinition(
+            deps,
+            raceWinner,
+            typeArg,
+            definitionName,
+            resolvedType,
             modelDef,
-            created: false,
-            definitionPath: deps.getDefinitionPath(
-              raceWinner.type,
-              raceWinner.definition.id,
-            ),
-            routedInputs: routed,
-            authoredExpressions: collectAuthoredExpressions(
-              raceWinner.definition.toData(),
-            ),
-          };
+            routed,
+            authoredExpressions,
+          );
         }
         return await createResult();
       });
