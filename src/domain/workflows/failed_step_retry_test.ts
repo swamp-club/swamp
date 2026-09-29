@@ -27,7 +27,7 @@ import { TriggerCondition } from "./trigger_condition.ts";
 import { Workflow } from "./workflow.ts";
 import { WorkflowRun } from "./workflow_run.ts";
 
-const MAX_CLIENT_ERROR_LENGTH = 200;
+const MAX_CLIENT_ERROR_LENGTH = 512;
 const ABSOLUTE_PATH = /(?:^|[\s"'`(])\/[a-z]/i;
 
 function step(name: string, dependsOn: string[] = []): Step {
@@ -232,6 +232,65 @@ Deno.test("selectRetryTemplates: refuses a pending step and suggests --from", ()
   const error = refusal(workflow, run);
   assertStringIncludes(error.message, `Step "lint" in job "build" is pending`);
   assertStringIncludes(error.message, "--from lint");
+});
+
+/** A forEach step named as written in the workflow, with its expression. */
+const EACH_TEMPLATE = "read-${{ self.plate }}";
+
+function createEachWorkflow(task: StepTask): Workflow {
+  return Workflow.create({
+    name: "each-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: EACH_TEMPLATE,
+            task,
+            forEach: { item: "plate", in: "${{ inputs.plates }}" },
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("selectRetryTemplates: shell-quotes the forEach template of a rejected approval", () => {
+  const workflow = createEachWorkflow(StepTask.manualApproval("Read it?"));
+  const run = WorkflowRun.create(workflow);
+  const job = run.getJob("main")!;
+  job.replaceExpandedSteps(EACH_TEMPLATE, ["read-a", "read-b"]);
+  const gate = job.getStep("read-a")!;
+  gate.recordApprovalDecision({
+    approved: false,
+    decidedAt: new Date().toISOString(),
+  });
+  gate.fail("Approval rejected");
+  job.getStep("read-b")!.succeed();
+  job.fail();
+  run.complete();
+  const error = refusal(workflow, run);
+  assertStringIncludes(
+    error.message,
+    `Add --from 'read-\${{ self.plate }}' to ask again.`,
+  );
+});
+
+Deno.test("selectRetryTemplates: shell-quotes a pending forEach template", () => {
+  const workflow = createEachWorkflow(StepTask.model("test-model", "run"));
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.getJob("main")!.start();
+  run.complete();
+  const error = refusal(workflow, run);
+  assertStringIncludes(
+    error.message,
+    `Step "${EACH_TEMPLATE}" in job "main" is pending`,
+  );
+  assertStringIncludes(
+    error.message,
+    `Add --from 'read-\${{ self.plate }}' to run it.`,
+  );
 });
 
 Deno.test("selectRetryTemplates: refuses a job left running by an expansion error", () => {

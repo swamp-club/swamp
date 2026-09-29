@@ -328,7 +328,7 @@ function abortReason(signal: AbortSignal): string {
  * run's stored inputs: a partial nested override (`--input creds.key=new`)
  * is complete only once merged. Keys not supplied are not re-checked. Throws
  * a UserError coded `input_validation_failed`, the code `workflow run` uses.
- * The run id comes before the detail so serve's 200-character error limit
+ * The run id comes before the detail so serve's 512-character error limit
  * cuts the detail.
  */
 function coerceResumeInputs(

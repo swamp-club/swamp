@@ -2841,10 +2841,10 @@ Deno.test("sanitizeErrorForClient: passes relative paths in user-facing errors",
   assertEquals(result, 'Extension file not found: "data/config.json"');
 });
 
-Deno.test("sanitizeErrorForClient: truncates long messages at 200 chars", () => {
-  const longMessage = "x".repeat(300);
+Deno.test("sanitizeErrorForClient: truncates long messages at 512 chars", () => {
+  const longMessage = "x".repeat(600);
   const result = sanitizeErrorForClient(new Error(longMessage));
-  assertEquals(result.length, 203); // 200 + "..."
+  assertEquals(result.length, 515); // 512 + "..."
   assertEquals(result.endsWith("..."), true);
 });
 

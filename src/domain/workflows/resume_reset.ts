@@ -563,7 +563,7 @@ export function planFailedRunResume(
  * Checks, before anything changes, that a suspended run can be resumed
  * against the current workflow. Throws a UserError that says how to clear
  * the run, which stays suspended, then names the job or step. The way out
- * comes first so serve's 200-character error limit cuts the detail, not the
+ * comes first so serve's 512-character error limit cuts the detail, not the
  * command. Mutates nothing.
  *
  * A suspended run has no reset set: resume re-enters every unfinished job.
