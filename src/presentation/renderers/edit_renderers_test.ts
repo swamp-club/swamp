@@ -189,3 +189,37 @@ Deno.test("vault edit renderer: json mode carries the previous name and whether 
   assertEquals(parsed.renamedFrom, "my-vault");
   assertEquals(parsed.secretsMoved, true);
 });
+
+const vaultRepaired = {
+  kind: "completed" as const,
+  data: {
+    ...vaultUpdated.data,
+    repaired: true,
+    secretsMoved: false,
+  },
+};
+
+Deno.test("vault edit renderer: log mode reports a repair and that secrets were not moved", () => {
+  const out = captureLog(() =>
+    createVaultEditRenderer("log").handlers().completed(vaultRepaired)
+  );
+
+  assertStringIncludes(
+    out,
+    'Repaired vault "my-vault": its previous config did not parse, so its stored secrets were not moved or checked',
+  );
+});
+
+Deno.test("vault edit renderer: json mode carries the repaired flag", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (message: string) => logs.push(message);
+  try {
+    createVaultEditRenderer("json").handlers().completed(vaultRepaired);
+  } finally {
+    console.log = originalLog;
+  }
+  const parsed = JSON.parse(logs[0]);
+  assertEquals(parsed.repaired, true);
+  assertEquals(parsed.secretsMoved, false);
+});

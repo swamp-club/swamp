@@ -19,7 +19,11 @@
 
 import type { z } from "zod";
 import { parse as parseYaml } from "@std/yaml";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { resolve } from "@std/path";
+import {
+  VaultConfigParseError,
+  YamlVaultConfigRepository,
+} from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
   VaultConfig,
   type VaultConfigData,
@@ -68,6 +72,11 @@ export interface VaultEditData {
   renamedFrom?: string;
   /** Whether a rename moved stored secrets to the new name. */
   secretsMoved?: boolean;
+  /**
+   * Whether the edit replaced a config that did not parse. Its stored secrets
+   * were not moved, since its previous name could not be read.
+   */
+  repaired?: boolean;
 }
 
 export type VaultEditEvent =
@@ -101,11 +110,29 @@ export interface VaultEditInput {
     before: VaultEditConfigInfo,
     after: VaultEditConfigInfo,
   ) => Promise<boolean> | boolean;
+  /**
+   * Allows a stdin update to replace a vault config that does not parse, when
+   * `vaultNameOrId` and `vaultType` name that file. Called with the broken
+   * vault's id and type and the edited vault before anything is written;
+   * returning false leaves the file untouched. Without it, such a vault is
+   * reported as invalid and cannot be updated from stdin.
+   */
+  authorizeRepair?: (
+    target: { id: string; type: string },
+    after: VaultEditConfigInfo,
+  ) => Promise<boolean> | boolean;
 }
 
 /** Lookups used to resolve a vault by name or id. */
 export interface VaultEditLookupDeps {
-  findByName: (name: string) => Promise<VaultEditConfigInfo | null>;
+  /**
+   * Finds a vault by name. `ignoreBrokenPath` names a vault file known not
+   * to parse, which then does not fail the lookup.
+   */
+  findByName: (
+    name: string,
+    ignoreBrokenPath?: string,
+  ) => Promise<VaultEditConfigInfo | null>;
   findById: (type: string, id: string) => Promise<VaultEditConfigInfo | null>;
   findAll: () => Promise<VaultEditConfigInfo[]>;
 }
@@ -145,7 +172,8 @@ export function createVaultEditDeps(
   const repo = injectedRepo ?? new YamlVaultConfigRepository(repoDir);
   const editorService = new EditorService();
   return {
-    findByName: (name) => repo.findByName(name),
+    findByName: (name, ignoreBrokenPath) =>
+      repo.findByName(name, ignoreBrokenPath),
     findById: (type, id) => repo.findById(type, id),
     findAll: () => repo.findAll(),
     getVaultPath: (config) => repo.getPath(config.type, config.id),
@@ -204,7 +232,18 @@ export async function findVaultByNameOrId(
   vaultNameOrId: string,
   vaultType?: string,
 ): Promise<VaultEditConfigInfo | null> {
-  const byName = await deps.findByName(vaultNameOrId);
+  let byName: VaultEditConfigInfo | null;
+  try {
+    byName = await deps.findByName(vaultNameOrId);
+  } catch (error) {
+    // A vault file that does not parse stops the name lookup. With a type,
+    // the id can still be looked up directly; if that finds nothing, the
+    // broken file may be the vault that was named, so report it.
+    if (!(error instanceof VaultConfigParseError) || !vaultType) throw error;
+    const byId = await deps.findById(vaultType, vaultNameOrId);
+    if (byId) return byId;
+    throw error;
+  }
   if (byName) return byName;
   if (vaultType) return await deps.findById(vaultType, vaultNameOrId);
   const allVaults = await deps.findAll();
@@ -372,6 +411,157 @@ async function* updateVaultFromStdin(
   };
 }
 
+/**
+ * Whether a lookup failed because the requested vault's own file does not
+ * parse: the error names the file at the requested type and id.
+ */
+function isBrokenTarget(
+  deps: VaultEditDeps,
+  error: unknown,
+  vaultNameOrId: string,
+  vaultType: string | undefined,
+): vaultType is string {
+  if (!(error instanceof VaultConfigParseError) || !vaultType) return false;
+  let path: string;
+  try {
+    path = deps.getVaultPath({
+      id: vaultNameOrId,
+      name: vaultNameOrId,
+      type: vaultType,
+    });
+  } catch {
+    return false;
+  }
+  return resolve(error.path) === resolve(path);
+}
+
+/**
+ * Replaces a vault config that does not parse with new vault YAML. The id
+ * comes from the file name and the type from its directory. Secrets are not
+ * moved: the vault's previous name cannot be read.
+ * Messages carry no file paths: serve replaces any message with a path in it
+ * by a generic error.
+ */
+async function* repairVaultFromStdin(
+  deps: VaultEditDeps,
+  authorizeRepair: NonNullable<VaultEditInput["authorizeRepair"]>,
+  target: VaultEditConfigInfo,
+  filePath: string,
+  content: string,
+): AsyncIterable<VaultEditEvent> {
+  let raw: unknown;
+  try {
+    raw = parseYaml(content);
+  } catch (error) {
+    yield { kind: "error", error: stdinError(errorMessage(error)) };
+    return;
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    yield { kind: "error", error: stdinError("expected a YAML mapping") };
+    return;
+  }
+
+  const fields = raw as Record<string, unknown>;
+  // The stored createdAt cannot be read; keep the one given if it is a date.
+  const createdAt = typeof fields.createdAt === "string" &&
+      !Number.isNaN(Date.parse(fields.createdAt))
+    ? fields.createdAt
+    : new Date().toISOString();
+  const parsed = VaultConfigDataSchema.safeParse({
+    ...fields,
+    id: target.id,
+    createdAt,
+  });
+  if (!parsed.success) {
+    yield { kind: "error", error: stdinError(parsed.error.message) };
+    return;
+  }
+  const repaired = parsed.data;
+
+  if (repaired.type !== target.type) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot change the type of vault '${target.id}' from '${target.type}' to '${repaired.type}'`,
+      ),
+    };
+    return;
+  }
+  if (!isValidVaultName(repaired.name)) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Invalid vault name: ${repaired.name}. ${VAULT_NAME_RULE}`,
+      ),
+    };
+    return;
+  }
+  // The file being repaired does not parse, so it cannot hold the name.
+  const clash = await deps.findByName(repaired.name, filePath);
+  if (clash && clash.id !== target.id) {
+    yield { kind: "error", error: alreadyExists("Vault", repaired.name) };
+    return;
+  }
+
+  const schema = await deps.getConfigSchema(repaired.type);
+  if (schema) {
+    const result = schema.safeParse(repaired.config);
+    if (!result.success) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Invalid config for vault type '${repaired.type}': ${result.error.message}`,
+        ),
+      };
+      return;
+    }
+  }
+
+  const allowed = await authorizeRepair(
+    { id: target.id, type: target.type },
+    { id: repaired.id, name: repaired.name, type: repaired.type },
+  );
+  if (!allowed) {
+    yield {
+      kind: "error",
+      error: forbidden(`Not allowed to repair vault '${target.id}'`),
+    };
+    return;
+  }
+
+  // Only a file that still does not parse is replaced: one repaired
+  // meanwhile is left as it is.
+  try {
+    const current = await deps.readConfigData(target);
+    if (!current) {
+      yield { kind: "error", error: notFound("Vault", target.id) };
+      return;
+    }
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Vault '${target.id}' was repaired while this edit ran; nothing was written.`,
+      ),
+    };
+    return;
+  } catch (error) {
+    if (!(error instanceof VaultConfigParseError)) throw error;
+  }
+
+  await deps.saveConfigData(repaired);
+  yield {
+    kind: "completed",
+    data: {
+      path: filePath,
+      status: "updated",
+      name: repaired.name,
+      type: repaired.type,
+      repaired: true,
+      secretsMoved: false,
+    },
+  };
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -407,9 +597,16 @@ async function reconcileEditorRename(
   if (!isValidVaultName(edited.name)) {
     reason = `Invalid vault name: ${edited.name}. ${VAULT_NAME_RULE}`;
   } else {
-    const clash = await deps.findByName(edited.name);
-    if (clash && clash.id !== stored.id) {
-      reason = `A vault named '${edited.name}' already exists.`;
+    // The config is already saved, so a lookup failure (such as another
+    // vault file that does not parse) reverts the rename rather than
+    // escaping with the config and the secrets disagreeing.
+    try {
+      const clash = await deps.findByName(edited.name);
+      if (clash && clash.id !== stored.id) {
+        reason = `A vault named '${edited.name}' already exists.`;
+      }
+    } catch (error) {
+      reason = `Could not check that the name is free: ${errorMessage(error)}`;
     }
   }
   if (!reason) {
@@ -458,9 +655,25 @@ export async function* vaultEdit(
 
       ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
 
-      const config = input.byId && vaultType
-        ? await deps.findById(vaultType, vaultNameOrId)
-        : await findVaultByNameOrId(deps, vaultNameOrId, vaultType);
+      const stdinContent = input.stdinContent ?? null;
+      let config: VaultEditConfigInfo | null;
+      // Set when the requested vault's own file does not parse: it can
+      // still be opened to fix it, or replaced when repair is authorized.
+      let broken = false;
+      try {
+        config = input.byId && vaultType
+          ? await deps.findById(vaultType, vaultNameOrId)
+          : await findVaultByNameOrId(deps, vaultNameOrId, vaultType);
+      } catch (error) {
+        if (
+          !isBrokenTarget(deps, error, vaultNameOrId, vaultType) ||
+          (stdinContent !== null && !input.authorizeRepair)
+        ) {
+          throw error;
+        }
+        broken = true;
+        config = { id: vaultNameOrId, name: vaultNameOrId, type: vaultType };
+      }
 
       // If type was specified, verify it matches
       if (config && vaultType && config.type !== vaultType) {
@@ -500,21 +713,35 @@ export async function* vaultEdit(
         return;
       }
 
-      if (input.stdinContent !== undefined && input.stdinContent !== null) {
+      if (broken && stdinContent !== null && input.authorizeRepair) {
+        ctx.logger.debug`Repairing vault from stdin: ${config.id}`;
+        yield* repairVaultFromStdin(
+          deps,
+          input.authorizeRepair,
+          config,
+          filePath,
+          stdinContent,
+        );
+        return;
+      }
+
+      if (stdinContent !== null) {
         ctx.logger.debug`Updating vault from stdin: ${config.name}`;
         yield* updateVaultFromStdin(
           deps,
           input,
           config,
           filePath,
-          input.stdinContent,
+          stdinContent,
         );
         return;
       }
 
       // A config that no longer parses can still be opened to fix it; there
       // is then no stored name to compare a rename against.
-      const stored = await deps.readConfigData(config).catch(() => null);
+      const stored = broken
+        ? null
+        : await deps.readConfigData(config).catch(() => null);
 
       ctx.logger.debug`Opening file: ${filePath}`;
       const launch = await deps.prepareEditor(filePath);

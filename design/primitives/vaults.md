@@ -307,6 +307,14 @@ have their own sections. The group also has:
     (stdin) or reverted (editor). Editor renames are seen only when the editor
     waits for the file to close, so `vault edit` passes the wait flag to GUI
     editors that have one
+  - A vault whose YAML no longer parses is repaired by id with `--type`: the
+    editor opens the file as it is, and a stdin update replaces it (the id
+    comes from the file name, the type from its directory). Name lookups skip
+    such files while a valid vault matches, and otherwise fail with a user
+    error naming the file and this repair command. A repair moves no secrets,
+    because the previous name cannot be read, and keeps a `createdAt` only
+    from the new YAML, so it is not trusted afterwards. Over `--server`, a
+    repair needs `admin` on `access:*` and `write` on the new name
 - `swamp vault search [keyword]`: browse configured vaults
 - `swamp vault type-search [keyword]`: browse registered vault types
   (built-in and extension)

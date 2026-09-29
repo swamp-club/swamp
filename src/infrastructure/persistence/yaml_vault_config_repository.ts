@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir, walk } from "@std/fs";
-import { join, resolve, SEPARATOR } from "@std/path";
+import { dirname, join, relative, resolve, SEPARATOR } from "@std/path";
 import { resolveEffectiveVaultsDir } from "./paths.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
@@ -30,11 +30,32 @@ import {
   type VaultConfigId,
 } from "../../domain/vaults/vault_config.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   createVaultCreated,
   createVaultDeleted,
   createVaultUpdated,
 } from "../../domain/events/types.ts";
+
+/**
+ * A vault config file that does not parse as YAML or does not match the vault
+ * config schema. It names the file and how to repair it, and carries the vault
+ * type and id derived from the file's location.
+ */
+export class VaultConfigParseError extends UserError {
+  constructor(
+    readonly path: string,
+    readonly vaultType: string,
+    readonly vaultId: string,
+    reason: string,
+  ) {
+    super(
+      `Invalid vault config in ${path}: ${reason}\n` +
+        `Repair it with 'swamp vault edit ${vaultId} --type ${vaultType}'.`,
+    );
+    this.name = "VaultConfigParseError";
+  }
+}
 
 /**
  * YAML-based repository for vault configurations.
@@ -79,10 +100,19 @@ export class YamlVaultConfigRepository {
   }
 
   /**
-   * Finds a vault config by name across all vault types.
+   * Finds a vault config by name across all vault types. Files that do not
+   * parse are skipped while a match may still come; vault names are unique,
+   * so a parseable match is the vault. With no match, the first file that did
+   * not parse is reported, since it may be the vault asked for.
+   * `ignoreBrokenPath` names a file known not to parse (a vault being
+   * repaired), which is then not reported.
    */
-  async findByName(name: string): Promise<VaultConfig | null> {
+  async findByName(
+    name: string,
+    ignoreBrokenPath?: string,
+  ): Promise<VaultConfig | null> {
     const vaultDir = this.getVaultDir();
+    let parseError: VaultConfigParseError | null = null;
     try {
       for await (
         const entry of walk(vaultDir, {
@@ -91,7 +121,19 @@ export class YamlVaultConfigRepository {
         })
       ) {
         const content = await Deno.readTextFile(entry.path);
-        const data = this.parseVaultConfig(content, entry.path);
+        let data: VaultConfigData;
+        try {
+          data = this.parseVaultConfig(content, entry.path);
+        } catch (error) {
+          if (!(error instanceof VaultConfigParseError)) throw error;
+          if (
+            ignoreBrokenPath === undefined ||
+            resolve(error.path) !== resolve(ignoreBrokenPath)
+          ) {
+            parseError ??= error;
+          }
+          continue;
+        }
         if (data.name === name) {
           return VaultConfig.fromData(data);
         }
@@ -102,6 +144,7 @@ export class YamlVaultConfigRepository {
       }
       throw error;
     }
+    if (parseError) throw parseError;
     return null;
   }
 
@@ -268,21 +311,52 @@ export class YamlVaultConfigRepository {
    * Gets the file path for a specific vault config.
    */
   getPath(vaultType: string, id: VaultConfigId): string {
-    return join(this.getTypeDir(vaultType), `${id}.yaml`);
+    const typeDir = this.getTypeDir(vaultType);
+    const path = join(typeDir, `${id}.yaml`);
+    // The id names one file in the type directory, never a path elsewhere.
+    if (resolve(dirname(path)) !== resolve(typeDir)) {
+      throw new UserError(`Invalid vault id: ${id}`);
+    }
+    return path;
   }
 
   /**
    * Parses YAML content and validates it against the VaultConfigData schema.
-   * Throws a descriptive error if the YAML is malformed or missing required fields.
+   * Throws a VaultConfigParseError if the YAML is malformed or missing
+   * required fields.
    */
   private parseVaultConfig(content: string, path: string): VaultConfigData {
-    const raw = parseYaml(content);
-    const result = VaultConfigDataSchema.safeParse(raw);
-    if (!result.success) {
-      throw new Error(
-        `Invalid vault config in ${path}: ${result.error.message}`,
+    let raw: unknown;
+    try {
+      raw = parseYaml(content);
+    } catch (error) {
+      throw this.parseError(
+        path,
+        error instanceof Error ? error.message : String(error),
       );
     }
+    const result = VaultConfigDataSchema.safeParse(raw);
+    if (!result.success) {
+      const reason = result.error.issues
+        .map((issue) =>
+          `${
+            issue.path.length > 0 ? issue.path.join(".") : "(root)"
+          }: ${issue.message}`
+        )
+        .join("; ");
+      throw this.parseError(path, reason);
+    }
     return result.data;
+  }
+
+  /**
+   * Builds the parse error for a vault file, deriving the vault type (which
+   * spans two directories for namespaced types) and id from its location.
+   */
+  private parseError(path: string, reason: string): VaultConfigParseError {
+    const segments = relative(this.getVaultDir(), path).split(SEPARATOR);
+    const file = segments.pop() ?? "";
+    const id = file.endsWith(".yaml") ? file.slice(0, -".yaml".length) : file;
+    return new VaultConfigParseError(path, segments.join("/"), id, reason);
   }
 }

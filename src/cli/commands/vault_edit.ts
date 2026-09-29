@@ -156,6 +156,9 @@ export const vaultEditCommand = withRemoteOptions(
       vaultNameOrId,
       vaultType,
       stdinContent,
+      // A local user can already write the vault file, so a config that no
+      // longer parses may be replaced from stdin.
+      authorizeRepair: () => true,
     }),
     renderer.handlers(),
   );

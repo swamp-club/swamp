@@ -84,6 +84,9 @@ name. Renaming a vault breaks references to its old name:
 cat dev-secrets.yaml | swamp vault edit dev-secrets --json
 ```
 
+If a vault's YAML no longer parses, address it by id with `--type`; see
+[troubleshooting](references/troubleshooting.md#vault-config-file-does-not-parse).
+
 ## Store Secrets
 
 **Interactive prompt (recommended for humans — value is hidden):**

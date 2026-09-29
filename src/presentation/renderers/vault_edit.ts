@@ -50,6 +50,10 @@ class LogVaultEditRenderer implements Renderer<VaultEditEvent> {
           logger
             .info`Updated vault config from stdin: ${data.name} (${data.type}) at ${data.path}`;
         }
+        if (data.repaired) {
+          logger
+            .info`Repaired vault ${data.name}: its previous config did not parse, so its stored secrets were not moved or checked`;
+        }
         if (data.renamedFrom !== undefined) {
           if (data.secretsMoved) {
             logger

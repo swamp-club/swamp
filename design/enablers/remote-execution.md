@@ -170,17 +170,17 @@ The `ServerRequest` union in `src/serve/protocol.ts` is the full list of client
 request types (107 members at last verification). The table shows only the
 families and the verb each handler asks `authorizeOrReject` for:
 
-| Family (`type` prefix)                                                       | Typical auth verb                                                                                                       |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `data.*`                                                                     | `read` for lookups; `write` for `delete` / `rename`                                                                     |
-| `model.*` (incl. `model.output.*`, `model.method.history.*`)                 | `read`; `write` for create/delete; `run` for `model.method.run`; conditional `admin` on some handlers                   |
-| `workflow.*` (incl. history, approvals)                                      | `read` for lookups and `workflow.approvals`; `run` for run/resume/approve/reject                                        |
-| `vault.*`                                                                    | `read` / `write`; conditional `admin` on some handlers                                                                  |
-| `access.*`                                                                   | `read` for `grant.list` / `group.list`; `access.can-i` needs an authenticated principal but no verb; the rest `admin` |
-| `audit.*`, `summarise`, `report.*`                                           | `read`                                                                                                                  |
-| `extension.*`, `doctor.*`, `worker.*`, `datastore.*`, `cluster.*`, `serve.*` | `admin`, except `read` for `extension.list` / `search` / `info` / `outdated` and `datastore.namespace.list`             |
-| `run.*` (`history`, `doctor`, `gc`, `attach`)                                | `admin` for history/doctor; `write` for `run.gc`; `run` on the attached resource for `run.attach`                       |
-| `cancel`                                                                     | `run` on the active run's resource (`src/serve/connection.ts`)                                                          |
+| Family (`type` prefix)                                                       | Typical auth verb                                                                                                            |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `data.*`                                                                     | `read` for lookups; `write` for `delete` / `rename`                                                                          |
+| `model.*` (incl. `model.output.*`, `model.method.history.*`)                 | `read`; `write` for create/delete; `run` for `model.method.run`; conditional `admin` on some handlers                        |
+| `workflow.*` (incl. history, approvals)                                      | `read` for lookups and `workflow.approvals`; `run` for run/resume/approve/reject                                             |
+| `vault.*`                                                                    | `read` / `write`; conditional `admin` on some handlers (`vault.edit` repair of an unparseable config: `admin` on `access:*`) |
+| `access.*`                                                                   | `read` for `grant.list` / `group.list`; `access.can-i` needs an authenticated principal but no verb; the rest `admin`        |
+| `audit.*`, `summarise`, `report.*`                                           | `read`                                                                                                                       |
+| `extension.*`, `doctor.*`, `worker.*`, `datastore.*`, `cluster.*`, `serve.*` | `admin`, except `read` for `extension.list` / `search` / `info` / `outdated` and `datastore.namespace.list`                  |
+| `run.*` (`history`, `doctor`, `gc`, `attach`)                                | `admin` for history/doctor; `write` for `run.gc`; `run` on the attached resource for `run.attach`                            |
+| `cancel`                                                                     | `run` on the active run's resource (`src/serve/connection.ts`)                                                               |
 
 Any type named in `--restricted-commands` needs `admin`, whatever its handler's
 own verb (`isRestrictedCommand` in `src/serve/connection.ts`).

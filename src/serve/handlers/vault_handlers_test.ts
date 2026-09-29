@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import {
   handleVaultAnnotate,
   handleVaultCreate,
@@ -417,6 +417,8 @@ interface VaultEditRun {
   frames: Array<Record<string, unknown> & { type: string }>;
   events: VaultSyncEvent[];
   read: (id: string) => Promise<VaultConfig | null>;
+  /** The vault file's text, for files that may not parse. */
+  readRaw: (id: string) => Promise<string>;
 }
 
 /**
@@ -428,7 +430,7 @@ async function runVaultEdit(
   cacheRoot: string,
   vaults: VaultConfig[],
   payloadFor: (vaults: VaultConfig[]) => Parameters<typeof handleVaultEdit>[3],
-  options: { grants?: Grant[] } = {},
+  options: { grants?: Grant[]; brokenIds?: string[] } = {},
 ): Promise<VaultEditRun> {
   const events: VaultSyncEvent[] = [];
   const service: DatastoreSyncService = {
@@ -450,6 +452,11 @@ async function runVaultEdit(
   try {
     for (const vault of vaults) {
       await repoContext.vaultConfigRepo.save(vault);
+    }
+    for (const id of options.brokenIds ?? []) {
+      const path = repoContext.vaultConfigRepo.getPath("local_encryption", id);
+      await Deno.mkdir(dirname(path), { recursive: true });
+      await Deno.writeTextFile(path, BROKEN_YAML);
     }
     events.length = 0;
     const base = createAnnotateCtx(repoDir, service);
@@ -481,11 +488,14 @@ async function runVaultEdit(
       frames: socket.sent.map((raw) => JSON.parse(raw)),
       events,
       read: (id) => repo.findById("local_encryption", id),
+      readRaw: (id) => Deno.readTextFile(repo.getPath("local_encryption", id)),
     };
   } finally {
     repoContext.catalogStore.close();
   }
 }
+
+const BROKEN_YAML = "name: [broken\n  : : :\n";
 
 function localVault(name: string): VaultConfig {
   return VaultConfig.create(
@@ -670,5 +680,143 @@ Deno.test("handleVaultEdit: reports an unknown vault as not found", async () => 
 
     assertEquals(frames.length, 1);
     assertEquals((frames[0].error as { code: string }).code, "not_found");
+  });
+});
+
+// --- repairing a vault whose config does not parse (swamp-club#2693) ---
+
+const BROKEN_ID = "0b0b0b0b-0000-4000-8000-000000000001";
+
+const ADMIN_GRANT = vaultGrant({
+  actions: ["admin"],
+  resource: { kind: "access", pattern: "*" },
+});
+
+function repairPayload(name: string) {
+  return () => ({
+    vaultNameOrId: BROKEN_ID,
+    vaultType: "local_encryption",
+    content: `name: ${name}\ntype: local_encryption\nconfig: {}\n`,
+  });
+}
+
+Deno.test("handleVaultEdit: an admin with write on the new name repairs a vault that does not parse", async () => {
+  await withTempDir(async (dir) => {
+    const { frames, read } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [],
+      repairPayload("fixed-vault"),
+      { grants: [vaultGrant({}), ADMIN_GRANT], brokenIds: [BROKEN_ID] },
+    );
+
+    assertEquals(frames.length, 1);
+    assertEquals(frames[0].type, "vault.edit");
+    const data = (frames[0].payload as { data: Record<string, unknown> })
+      .data;
+    assertEquals(data.repaired, true);
+    assertEquals(data.name, "fixed-vault");
+    assertEquals((await read(BROKEN_ID))?.name, "fixed-vault");
+  });
+});
+
+Deno.test("handleVaultEdit: write without admin cannot repair a vault that does not parse", async () => {
+  await withTempDir(async (dir) => {
+    const { frames, readRaw } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [],
+      repairPayload("fixed-vault"),
+      { grants: [vaultGrant({})], brokenIds: [BROKEN_ID] },
+    );
+
+    assertEquals(frames.length, 1);
+    assertStringIncludes(
+      (frames[0].error as { message: string }).message,
+      "does not have 'admin' on access:*",
+    );
+    assertEquals(await readRaw(BROKEN_ID), BROKEN_YAML);
+  });
+});
+
+Deno.test("handleVaultEdit: an admin cannot repair a vault into a name denied to them", async () => {
+  await withTempDir(async (dir) => {
+    const { frames, readRaw } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [],
+      repairPayload("prod-secrets"),
+      {
+        grants: [
+          vaultGrant({}),
+          ADMIN_GRANT,
+          vaultGrant({
+            effect: "deny",
+            resource: { kind: "data", pattern: "prod-*" },
+          }),
+        ],
+        brokenIds: [BROKEN_ID],
+      },
+    );
+
+    assertEquals(frames.length, 1);
+    assertStringIncludes(
+      (frames[0].error as { message: string }).message,
+      "is explicitly denied 'write' on data:prod-secrets",
+    );
+    assertEquals(await readRaw(BROKEN_ID), BROKEN_YAML);
+  });
+});
+
+Deno.test("handleVaultEdit: a broken vault file stays not found when the request names another vault", async () => {
+  await withTempDir(async (dir) => {
+    for (
+      const payload of [
+        // A name that matches nothing, with a type.
+        {
+          vaultNameOrId: "missing-vault",
+          vaultType: "local_encryption",
+          content: "name: missing-vault\n",
+        },
+        // The broken vault's id without a type.
+        { vaultNameOrId: BROKEN_ID, content: "name: fixed-vault\n" },
+      ]
+    ) {
+      const { frames, readRaw } = await runVaultEdit(
+        join(dir, crypto.randomUUID()),
+        join(dir, "cache"),
+        [],
+        () => payload,
+        { grants: [vaultGrant({}), ADMIN_GRANT], brokenIds: [BROKEN_ID] },
+      );
+
+      assertEquals(frames.length, 1);
+      assertEquals(
+        (frames[0].error as { code: string }).code,
+        "not_found",
+      );
+      assertEquals(await readRaw(BROKEN_ID), BROKEN_YAML);
+    }
+  });
+});
+
+Deno.test("handleVaultEdit: a valid vault resolves by id and type beside a broken one", async () => {
+  await withTempDir(async (dir) => {
+    const vault = localVault("good-vault");
+
+    const { frames, read } = await runVaultEdit(
+      join(dir, "repo"),
+      join(dir, "cache"),
+      [vault],
+      () => ({
+        vaultNameOrId: vault.id,
+        vaultType: "local_encryption",
+        content: vaultYaml(vault, { auditReads: true }),
+      }),
+      { grants: [vaultGrant({})], brokenIds: [BROKEN_ID] },
+    );
+
+    assertEquals(frames[0].type, "vault.edit");
+    assertEquals((await read(vault.id))?.auditReads, true);
   });
 });

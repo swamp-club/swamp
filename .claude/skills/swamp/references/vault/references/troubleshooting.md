@@ -165,6 +165,25 @@ swamp vault create @myorg/my-vault my-vault \
   --config '{"address": "https://example.com"}' --json
 ```
 
+### Vault Config File Does Not Parse
+
+**Symptom**: `Invalid vault config in <path>: ...` followed by
+`Repair it with 'swamp vault edit <id> --type <type>'`
+
+**Solution**: A file under `vaults/<type>/<id>.yaml` was hand-edited into
+invalid YAML or lost required fields. Commands that list every vault fail until
+it is fixed. Open it by id and type, or replace it from stdin:
+
+```bash
+swamp vault edit <id> --type <type>
+cat fixed.yaml | swamp vault edit <id> --type <type> --json
+```
+
+A stdin repair keeps the id from the file name and moves no secrets. If the
+vault had a different name before it broke, give it that name so its
+`local_encryption` secrets still match. Over `--server`, a repair needs `admin`
+on `access:*` plus `write` on the name.
+
 ### Expression Evaluation Errors
 
 **Symptom**: `Error evaluating vault expression: vault.get(dev-secrets, KEY)`
