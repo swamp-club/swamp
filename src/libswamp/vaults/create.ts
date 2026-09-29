@@ -27,6 +27,11 @@ import {
 } from "../../domain/vaults/vault_type_registry.ts";
 import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
 import {
+  findNonDefaultKeySourceFields,
+  isLocalEncryptionType,
+  withServerDefaultKeySource,
+} from "../../domain/vaults/local_encryption_key_source.ts";
+import {
   isValidVaultName,
   VAULT_NAME_RULE,
 } from "../../domain/vaults/vault_name.ts";
@@ -61,6 +66,14 @@ export interface VaultCreateInput {
   config?: Record<string, unknown>;
   repoDir: string;
   auditReads?: boolean;
+  /**
+   * Accept a local_encryption config that names its own key source (key
+   * file, SSH key, storage directory). Only a caller that already owns the
+   * host sets this: the local CLI. Without it, such fields are refused
+   * unless they match the server defaults, which are always applied
+   * (swamp-club#2690).
+   */
+  trustKeySource?: boolean;
 }
 
 /** Dependencies for the vault create operation. */
@@ -102,15 +115,13 @@ function resolveBuiltInProviderConfig(
   vaultType: string,
   repoDir: string,
 ): Record<string, unknown> {
-  switch (vaultType) {
-    case "local_encryption":
-      return {
-        auto_generate: true,
-        base_dir: repoDir,
-      };
-    default:
-      return {};
+  if (isLocalEncryptionType(vaultType)) {
+    return {
+      auto_generate: true,
+      base_dir: repoDir,
+    };
   }
+  return {};
 }
 
 /** Creates a new vault configuration. */
@@ -195,6 +206,31 @@ export async function* vaultCreate(
             return;
           }
         }
+      } else if (
+        input.config && !input.trustKeySource &&
+        isLocalEncryptionType(input.vaultType)
+      ) {
+        // The key source names files on this host, so a caller that does not
+        // own it gets the server defaults.
+        const refused = findNonDefaultKeySourceFields(
+          input.config,
+          input.repoDir,
+        );
+        if (refused.length > 0) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Cannot set ${refused.join(", ")} for vault '${input.name}': ` +
+                `a local_encryption vault created remotely uses the server's ` +
+                `key source. Leave these fields out, or run the command on the host running swamp.`,
+            ),
+          };
+          return;
+        }
+        providerConfig = withServerDefaultKeySource(
+          input.config,
+          input.repoDir,
+        );
       } else if (input.config) {
         // Built-in type with explicit config
         providerConfig = input.config;

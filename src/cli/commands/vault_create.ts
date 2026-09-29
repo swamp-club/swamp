@@ -87,7 +87,7 @@ export const vaultCreateCommand = withRemoteOptions(
     )
     .option(
       "--config <json:string>",
-      "Provider configuration as JSON",
+      "Provider configuration as JSON (with --server, a local_encryption vault always uses the server's key source)",
     )
     .option(
       "--audit-reads",
@@ -203,6 +203,9 @@ export const vaultCreateCommand = withRemoteOptions(
         config,
         repoDir,
         auditReads: options.auditReads,
+        // A local user owns this host, so the vault may name its own key
+        // source; over --server the server chooses it (swamp-club#2690).
+        trustKeySource: true,
       }),
       renderer.handlers(),
     );
