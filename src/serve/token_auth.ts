@@ -29,7 +29,11 @@ import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
-import { parsePrincipal } from "../domain/access/principal.ts";
+import {
+  parsePrincipal,
+  type Principal,
+  principalToString,
+} from "../domain/access/principal.ts";
 import { assertAuthenticatablePrincipal } from "../domain/access/service_principal.ts";
 
 const logger = getSwampLogger(["serve", "token-auth"]);
@@ -256,8 +260,10 @@ export async function authenticateServerToken(
     // a stored principal that does not parse (minted before mint validated
     // it, or hand-edited) must be a rejection, not a crash (swamp-club#2383).
     // A service principal never authenticates, whatever the stored record says.
+    let principal: Principal;
     try {
-      assertAuthenticatablePrincipal(parsePrincipal(token.principalId));
+      principal = parsePrincipal(token.principalId);
+      assertAuthenticatablePrincipal(principal);
     } catch (error) {
       logger.warn(
         "Token authentication rejected for {name} (invalid-principal): {error}",
@@ -273,7 +279,7 @@ export async function authenticateServerToken(
       };
     }
 
-    emitTokenUseAuditEvent(auditContext, split.name, token.principalId);
+    emitTokenUseAuditEvent(auditContext, split.name, principal);
     logger.info("Authenticated token {name} as {principal}", {
       name: split.name,
       principal: token.principalId,
@@ -300,7 +306,7 @@ export async function authenticateServerToken(
 function emitTokenUseAuditEvent(
   auditContext: TokenAuthAuditContext | undefined,
   tokenName: string,
-  principalId: string,
+  principal: Principal,
 ): void {
   if (!auditContext?.emitter) return;
   try {
@@ -312,9 +318,9 @@ function emitTokenUseAuditEvent(
       action: "auth.token.used",
       resourceKind: "server-token",
       resourceName: tokenName,
-      principalKind: "user",
-      principalId,
-      initiatedBy: principalId,
+      principalKind: principal.kind,
+      principalId: principal.id,
+      initiatedBy: principalToString(principal),
       sourceIp: auditContext.sourceIp ?? "unknown",
       requestId: auditContext.requestId ?? crypto.randomUUID(),
       detail: auditContext.ingress,
