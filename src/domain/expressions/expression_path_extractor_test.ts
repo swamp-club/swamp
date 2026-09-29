@@ -229,3 +229,10 @@ Deno.test("extractEnvReferences handles env mixed with model refs", () => {
   assertEquals(refs.length, 1);
   assertEquals(refs[0].variableName, "PREFIX");
 });
+
+Deno.test("path extractors: text passed through literal() is not a reference", () => {
+  const cel = "literal('{{model.a.resource.s.i}} {{self.name}} {{env.name}}')";
+  assertEquals(extractPathReferences(cel), []);
+  assertEquals(extractSelfReferences(cel), []);
+  assertEquals(extractEnvReferences(cel), []);
+});

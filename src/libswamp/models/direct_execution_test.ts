@@ -730,6 +730,53 @@ Deno.test("resolveOrCreateDefinition: refuses a literal sensitive global arg on 
   assertEquals(saved, false);
 });
 
+Deno.test("resolveOrCreateDefinition: refuses a constant expression for a sensitive global arg on update", async () => {
+  const modelDef = createTestModelDef(
+    z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+      region: z.string(),
+    }),
+    { run: z.object({}) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const existingDef = Definition.create({
+    name: "existing-model",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: {
+      apiKey: "${{ vault.get('v', 'k') }}",
+      region: "us-west-2",
+    },
+  });
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () =>
+        Promise.resolve({ definition: existingDef, type: resolvedType }),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "existing-model",
+    "run",
+    { apiKey: "${{ literal('SUPERSECRET123') }}", region: "us-east-1" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "apiKey");
+    assertStringIncludes(result.error.message, "constant expression");
+  }
+  assertEquals(saved, false);
+});
+
 Deno.test("resolveOrCreateDefinition: uses explicit globalArgs and treats inputs as method-only", async () => {
   const modelDef = createTestModelDef(
     z.object({ region: z.string(), account: z.string() }),

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { z } from "zod";
-import { containsExpression } from "../expressions/expression_parser.ts";
+import { freeRoots, isBlankConstant } from "../expressions/cel_grammar.ts";
+import {
+  isExpressionsOnly,
+  scanExpressions,
+} from "../expressions/expression_scanner.ts";
 import { extractFieldsWithMetadata } from "./zod_field_metadata.ts";
 
 /**
@@ -73,18 +77,25 @@ export function extractSensitiveFields(
 
 /**
  * Determines whether a string is composed solely of CEL template expressions
- * (one or more `${{ ... }}`) with only whitespace around or between them.
+ * (one or more `${{ ... }}`) with only whitespace around or between them,
+ * each of which reads something at runtime.
  *
  * Such a value carries no cleartext secret — the secret is resolved at runtime
  * from a vault/env reference. A string mixing a literal with an expression
  * (e.g. `prefix-${{ vault.get(...) }}`) is NOT expression-only: the literal
- * portion would still be persisted in cleartext.
+ * portion would still be persisted in cleartext. Neither is an expression
+ * that reads nothing, such as `${{ literal('hunter2') }}` or
+ * `${{ 'hunter2' }}`: its text is the secret, stored as written. The empty
+ * string and null carry no text, so they stay safe, and so does an
+ * expression that does not parse, which never evaluates to a value.
  */
-function isExpressionOnly(value: string): boolean {
-  if (!containsExpression(value)) {
+function isRuntimeExpressionOnly(value: string): boolean {
+  if (!isExpressionsOnly(value)) {
     return false;
   }
-  return value.replace(/\$\{\{.+?\}\}/gs, "").trim() === "";
+  return scanExpressions(value).every((span) =>
+    freeRoots(span.inner)?.size !== 0 || isBlankConstant(span.inner)
+  );
 }
 
 /**
@@ -92,8 +103,9 @@ function isExpressionOnly(value: string): boolean {
  * that would be persisted in cleartext.
  *
  * - `undefined`/`null` and empty/whitespace-only strings carry no secret.
- * - A string that is composed solely of `${{ ... }}` expressions (e.g. a
- *   `vault.get(...)` reference) is resolved at runtime and is safe.
+ * - A string that is composed solely of `${{ ... }}` expressions that read
+ *   something at runtime (e.g. a `vault.get(...)` reference) is safe. A
+ *   constant expression such as `${{ literal('hunter2') }}` is not.
  * - An array or plain object (record/map) is a literal secret iff any leaf
  *   value is one — an all-`vault.get(...)` map carries no cleartext; an empty
  *   container carries no secret.
@@ -110,7 +122,7 @@ function isLiteralSecret(value: unknown): boolean {
     if (value.trim() === "") {
       return false;
     }
-    return !isExpressionOnly(value);
+    return !isRuntimeExpressionOnly(value);
   }
   if (Array.isArray(value)) {
     return value.some(isLiteralSecret);
@@ -182,10 +194,13 @@ export function literalSensitiveGlobalArgsMessage(paths: string[]): string {
     ? `Global arguments ${fieldList} are`
     : `Global argument ${fieldList} is`;
   return (
-    `${subject} marked sensitive and cannot be set to a literal value — ` +
-    `it would be stored in cleartext in the definition YAML. Store the secret ` +
-    `in a vault and reference it with a vault.get expression, e.g. ` +
-    `--global-arg "apiKey=\${{ vault.get('my-vault', 'api-key') }}".`
+    `${subject} marked sensitive and cannot be set to a literal value or a ` +
+    `constant expression such as \${{ literal('...') }} — it would be stored ` +
+    `in cleartext in the definition YAML. Store the secret in a vault and ` +
+    `reference it with a vault.get expression, e.g. ` +
+    `--global-arg "apiKey=\${{ vault.get('my-vault', 'api-key') }}". If a ` +
+    `stored definition already holds the value, run \`swamp doctor secrets\` ` +
+    `to find it.`
   );
 }
 

@@ -19,9 +19,10 @@
 
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
-
-const WHOLE_EXPRESSION = /^\$\{\{\s*(.+?)\s*\}\}\s*$/s;
-const EMBEDDED_EXPRESSION = /\$\{\{\s*(.+?)\s*\}\}/gs;
+import {
+  matchSingleExpression,
+  scanExpressions,
+} from "../expressions/expression_scanner.ts";
 
 /**
  * Resolves a trigger's `inputs` value map by evaluating its CEL expressions
@@ -83,24 +84,28 @@ export class TriggerInputResolver {
     value: string,
     context: ExpressionContext,
   ): Promise<unknown> {
-    const whole = value.match(WHOLE_EXPRESSION);
+    const whole = matchSingleExpression(value);
     if (whole) {
-      return await this.celEvaluator.evaluateAsync(whole[1].trim(), context);
+      return await this.celEvaluator.evaluateAsync(whole.inner, context);
     }
 
-    const matches = [...value.matchAll(EMBEDDED_EXPRESSION)];
-    if (matches.length === 0) {
+    const spans = scanExpressions(value);
+    if (spans.length === 0) {
       return value;
     }
 
-    let result = value;
-    for (const match of matches) {
+    // Replace by position, so text inside one expression's string literal
+    // that looks like another expression is left alone.
+    let result = "";
+    let last = 0;
+    for (const span of spans) {
       const evaluated = await this.celEvaluator.evaluateAsync(
-        match[1].trim(),
+        span.inner,
         context,
       );
-      result = result.split(match[0]).join(String(evaluated));
+      result += value.slice(last, span.start) + String(evaluated);
+      last = span.end;
     }
-    return result;
+    return result + value.slice(last);
   }
 }

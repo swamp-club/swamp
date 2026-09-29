@@ -635,3 +635,29 @@ Deno.test("hasStepsNamespaceReference is not a step-output dependency", () => {
   // which it skips for step-output dependencies.
   assertEquals(hasStepOutputDependency("steps.build.outputs.image"), false);
 });
+
+Deno.test("dependency extractors: text passed through literal() is not a reference", () => {
+  const cel =
+    'literal(\'{{model.a.resource.s.i}} {{model.b.execution}} {{data.latest("c", "d")}} {{file.contents("e", "f")}} {{steps.x}} {{self.y}}\')';
+  assertEquals(extractDependencies(cel), []);
+  assertEquals(extractModelRefs(cel), []);
+  assertEquals(extractArtifactDependencies(cel), []);
+  assertEquals(extractResourceDependencies(cel), []);
+  assertEquals(extractDataFunctionDependencies(cel), []);
+  assertEquals(extractFileContentsDependencies(cel), []);
+  assertEquals(hasResourceDependency(cel), false);
+  assertEquals(hasExecutionDependency(cel), false);
+  assertEquals(hasDataFunctionDependency(cel), false);
+  assertEquals(hasFileContentsDependency(cel), false);
+  assertEquals(hasStepOutputDependency(cel), false);
+  assertEquals(hasStepsNamespaceReference(cel), false);
+  assertEquals(hasSelfReference(cel), false);
+  assertEquals(requiresModelNamespace({ v: `\${{ ${cel} }}` }), false);
+});
+
+Deno.test("dependency extractors: a non-literal argument to literal() is still a reference", () => {
+  const cel = "literal(model.a.resource.s.i.attributes.x)";
+  assertEquals(extractModelRefs(cel), ["a"]);
+  assertEquals(hasStepOutputDependency(cel), true);
+  assertEquals(requiresModelNamespace({ v: `\${{ ${cel} }}` }), true);
+});

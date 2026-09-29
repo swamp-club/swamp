@@ -42,10 +42,75 @@ Deno.test("containsExpression returns true for strings with expressions", () => 
   assertEquals(containsExpression("${{x}}"), true);
 });
 
-Deno.test("expressionSpans: returns each expression's offsets, ending at the first }}", () => {
+Deno.test("expressionSpans: returns each expression's offsets", () => {
   assertEquals(expressionSpans("a ${{ x }} b ${{ y }}"), [[2, 10], [13, 21]]);
-  assertEquals(expressionSpans('${{ "{{host.name}}" }}'), [[0, 18]]);
   assertEquals(expressionSpans("no expressions {{ here }}"), []);
+});
+
+Deno.test("expressionSpans: a }} inside a CEL string does not end the expression", () => {
+  assertEquals(expressionSpans('${{ "{{host.name}}" }}'), [[0, 22]]);
+  assertEquals(
+    expressionSpans("on ${{ literal('{{host.name}}') }}!"),
+    [[3, 34]],
+  );
+});
+
+Deno.test("extractExpressions: a value mixing a swamp expression with literal() text", () => {
+  const found = extractExpressions({
+    message:
+      "${{ inputs.env }} alert, crashed on ${{ literal('{{host.name}}') }}",
+  });
+  assertEquals(found.map((e) => e.celExpression), [
+    "inputs.env",
+    "literal('{{host.name}}')",
+  ]);
+  assertEquals(found[1].raw, "${{ literal('{{host.name}}') }}");
+});
+
+Deno.test("replaceExpressions: interpolates a literal() expression by its raw text", () => {
+  const value =
+    "${{ inputs.env }} alert, crashed on ${{ literal('{{host.name}}') }}";
+  const values = new Map<string, unknown>([
+    ["${{ inputs.env }}", "prod"],
+    ["${{ literal('{{host.name}}') }}", "{{host.name}}"],
+  ]);
+  assertEquals(
+    replaceExpressions({ message: value }, values),
+    { message: "prod alert, crashed on {{host.name}}" },
+  );
+});
+
+Deno.test("replaceExpressions: replaces by position, not every copy of a raw", () => {
+  // The second expression's raw also appears inside the first one's string.
+  const value = "${{ 'x ${{ a }}' }} ${{ a }}";
+  const values = new Map<string, unknown>([
+    ["${{ 'x ${{ a }}' }}", "x ${{ a }}"],
+    ["${{ a }}", "A"],
+  ]);
+  assertEquals(
+    replaceExpressions({ v: value }, values),
+    { v: "x ${{ a }} A" },
+  );
+});
+
+Deno.test("extractWholeFieldInputRef: reads the input of a whole-field expression", () => {
+  assertEquals(extractWholeFieldInputRef("${{ inputs.region }}  "), "region");
+  assertEquals(
+    extractWholeFieldInputRef("${{ literal('{{inputs.x}}') }}"),
+    null,
+  );
+});
+
+Deno.test("extractInputReferencesFromCel: ignores text passed through literal()", () => {
+  assertEquals(
+    [...extractInputReferencesFromCel("inputs.a + literal('{{inputs.b}}')")],
+    ["a"],
+  );
+  // A non-literal argument is a real reference.
+  assertEquals(
+    [...extractInputReferencesFromCel("literal(inputs.c)")],
+    ["c"],
+  );
 });
 
 Deno.test("containsExpression returns false for strings without expressions", () => {

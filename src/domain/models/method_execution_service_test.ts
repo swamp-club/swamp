@@ -2165,7 +2165,7 @@ Deno.test("execute - Proxy still throws for text it cannot tell apart from swamp
   const cases = {
     // GitHub Actions text in a namespace swamp also owns.
     version: "${{ inputs.version }}",
-    // A swamp expression cut short at the }} inside its string literal.
+    // A swamp expression with a }} inside its string literal.
     label: '${{ "a}}" + inputs.x }}',
     // A swamp input read with a computed key.
     region: "${{ inputs[env.STAGE] }}",

@@ -26,6 +26,18 @@ Model inputs support CEL expressions using `${{ <expression> }}` syntax.
 - **String concatenation:** `self.name + "-suffix"`
 - **Arithmetic:** `self.globalArguments.count * 2`
 - **Conditionals:** `self.globalArguments.enabled ? "yes" : "no"`
+- **Pass text through:** `literal('...')` returns its string unchanged, so one
+  value can mix a swamp expression with another service's template syntax:
+  `${{ inputs.env }} alert, crashed on ${{ literal('{{host.name}}') }}` →
+  `prod alert, crashed on {{host.name}}`. Also for shell text
+  (`${{ literal('${HOME}') }}`) and a literal `${{` (`${{ literal('${{') }}`).
+  Its string argument is never read as a reference.
+
+`literal()` cannot pass through `${{ ... }}` text that names a swamp namespace,
+such as GitHub Actions `${{ inputs.version }}` or `${{ steps.x.outputs.y }}`: in
+a global argument the method then fails with
+`Unresolved expression in globalArguments.<field>`. Put such text in a method
+argument instead, where `literal()` passes it through unchanged.
 
 ## Data Versioning Functions
 

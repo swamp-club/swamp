@@ -151,6 +151,9 @@ const arbSoundExpression = fc.constantFrom(
   '${{ "${HOME}" }}',
   '${{ "$" + "{{" }}',
   "${{ data.latest('m', 'rec').?attributes.?fmt.orValue('{{') }}",
+  '${{ "{{host.name}}" }}',
+  "${{ literal('{{host.name}}') }}",
+  "${{ literal('{{a}}') + ' on ' + literal('}}') }}",
 );
 
 /** Foreign text with no `$`, so it can never open or extend an expression. */

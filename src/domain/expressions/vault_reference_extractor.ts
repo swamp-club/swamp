@@ -17,10 +17,56 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
+import { lexSegments } from "./cel_string_lexer.ts";
+import { scanExpressions } from "./expression_scanner.ts";
 
-const VAULT_GET_PATTERN =
-  /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/g;
+/**
+ * One `vault.get(vaultName, secretKey)` call. Each argument is quoted or a
+ * bare token: `(['"`])(.+?)\1` reads a quoted argument, which may hold spaces
+ * (`vault.get("infra", "Client ID")`), and `([^\s,)]+)` a bare one.
+ * Groups: [1]=quote1, [2]=quoted vault, [3]=unquoted vault,
+ *         [4]=quote2, [5]=quoted key,   [6]=unquoted key
+ */
+const VAULT_GET_CALL =
+  /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/y;
+
+/**
+ * Finds the `vault.get(...)` calls written as code in a CEL expression, in
+ * order and without overlap. A call that starts inside a string literal or a
+ * comment is text (`literal('vault.get(')`), and one reached through a member
+ * (`self.vault.get(...)`, `self . vault.get(...)`) is not the vault
+ * namespace. The resolver that fetches secrets and the serve allowlist both
+ * read calls through this one matcher, so they always agree.
+ */
+export function findVaultGetCalls(celExpression: string): RegExpExecArray[] {
+  const calls: RegExpExecArray[] = [];
+  if (!celExpression.includes("vault")) return calls;
+  let last = 0;
+  for (const seg of lexSegments(celExpression)) {
+    if (seg.kind !== "code") continue;
+    let at = celExpression.indexOf("vault", seg.start);
+    while (at !== -1 && at < seg.end) {
+      if (at >= last && isNamespaceRoot(celExpression, at)) {
+        VAULT_GET_CALL.lastIndex = at;
+        const call = VAULT_GET_CALL.exec(celExpression);
+        if (call) {
+          calls.push(call);
+          last = at + call[0].length;
+        }
+      }
+      at = celExpression.indexOf("vault", at + 5);
+    }
+  }
+  return calls;
+}
+
+/** Whether `vault` at `at` is a root identifier rather than a member. */
+function isNamespaceRoot(text: string, at: number): boolean {
+  let i = at - 1;
+  if (i >= 0 && /\w/.test(text[i])) return false;
+  while (i >= 0 && /\s/.test(text[i])) i--;
+  return !(i >= 0 && text[i] === ".");
+}
 
 export interface VaultReference {
   vaultName: string;
@@ -55,10 +101,8 @@ function collectVaultReferences(
   onDynamic: (isDynamic: boolean) => void,
 ): void {
   if (typeof data === "string") {
-    for (const exprMatch of data.matchAll(EXPRESSION_PATTERN)) {
-      const celExpr = exprMatch[1];
-      VAULT_GET_PATTERN.lastIndex = 0;
-      for (const vaultMatch of celExpr.matchAll(VAULT_GET_PATTERN)) {
+    for (const span of scanExpressions(data)) {
+      for (const vaultMatch of findVaultGetCalls(span.inner)) {
         const vaultName = vaultMatch[2];
         const secretKey = vaultMatch[5];
 

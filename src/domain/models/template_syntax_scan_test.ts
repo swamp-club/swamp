@@ -18,10 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import {
-  scanTemplateSyntax,
-  type TemplateSyntaxFinding,
-} from "./template_syntax_scan.ts";
+import { scanTemplateSyntax } from "./template_syntax_scan.ts";
 
 const noInputs = { declaredInputs: new Set<string>() };
 
@@ -96,27 +93,30 @@ Deno.test("scanTemplateSyntax: real swamp expressions are not matched", () => {
   assertEquals(classify("plain text"), "none");
 });
 
-Deno.test("scanTemplateSyntax: double braces inside an expression are malformed, even when declared", () => {
-  const value = 'crashed on ${{ "{{host.name}}" }}';
-  const expected: TemplateSyntaxFinding[] = [{
-    path: "globalArguments.message",
-    text: "{{host.name}}",
-    form: "inside-expression",
-  }];
-  const plain = scanTemplateSyntax(
-    { globalArguments: { message: value } },
-    noInputs,
-  );
-  assertEquals(plain, { malformed: expected, foreign: [] });
-
-  const declared = scanTemplateSyntax(
-    { globalArguments: { message: value } },
-    {
-      declaredInputs: new Set(),
-      isDeclaredForeign: (path) => path === "globalArguments.message",
-    },
-  );
-  assertEquals(declared, { malformed: expected, foreign: [] });
+Deno.test("scanTemplateSyntax: double braces inside a quoted CEL string are sound, declared or not (swamp-club#2492)", () => {
+  for (
+    const value of [
+      'crashed on ${{ "{{host.name}}" }}',
+      "${{ inputs.env }} alert, crashed on ${{ literal('{{host.name}}') }}",
+    ]
+  ) {
+    assertEquals(
+      scanTemplateSyntax({ globalArguments: { message: value } }, noInputs),
+      { malformed: [], foreign: [] },
+      value,
+    );
+    assertEquals(
+      scanTemplateSyntax(
+        { globalArguments: { message: value } },
+        {
+          declaredInputs: new Set(),
+          isDeclaredForeign: (path) => path === "globalArguments.message",
+        },
+      ),
+      { malformed: [], foreign: [] },
+      value,
+    );
+  }
 });
 
 function unclosed(value: string): string[] {
@@ -208,43 +208,26 @@ Deno.test("scanTemplateSyntax: braces inside an expression that parses are fine"
   }
 });
 
-Deno.test("scanTemplateSyntax: a string cut short by }} stays inside-expression", () => {
+Deno.test("scanTemplateSyntax: a string holding }} no longer cuts its expression short", () => {
   const scan = scanTemplateSyntax(
     { v: 'x ${{ "{{a}} and {{b}}" }} ${{ self.name }}' },
     noInputs,
   );
-  assertEquals(scan.malformed, [{
-    path: "v",
-    text: "{{a}}",
-    form: "inside-expression",
-  }]);
+  assertEquals(scan.malformed, []);
 });
 
-Deno.test("scanTemplateSyntax: a string cut short with optional syntax stays inside-expression", () => {
+Deno.test("scanTemplateSyntax: a string holding }} is sound with optional syntax", () => {
   const scan = scanTemplateSyntax(
     { v: "${{ data.latest('m', 'r').?attributes.?x.orValue('{{a}}') }}" },
     noInputs,
   );
-  assertEquals(scan.malformed, [{
-    path: "v",
-    text: "{{a}}",
-    form: "inside-expression",
-  }]);
+  assertEquals(scan.malformed, []);
 });
 
-Deno.test("scanTemplateSyntax: a cut-short string is reported even when its braces match no {{...}}", () => {
-  for (
-    const [value, text] of [
-      ['x ${{ "${{ github.sha }}" }}', "${{ github.sha }}"],
-      ['${{ "{{}}" }}', "{{}}"],
-    ]
-  ) {
+Deno.test("scanTemplateSyntax: a string holding braces that match no {{...}} is sound", () => {
+  for (const value of ['x ${{ "${{ github.sha }}" }}', '${{ "{{}}" }}']) {
     const scan = scanTemplateSyntax({ v: value }, noInputs);
-    assertEquals(scan.malformed, [{
-      path: "v",
-      text,
-      form: "inside-expression",
-    }], value);
+    assertEquals(scan.malformed, [], value);
   }
 });
 
@@ -271,15 +254,10 @@ Deno.test("scanTemplateSyntax: a map literal cut short by its own }} is not repo
   assertEquals(classify("${{ 'a}b' + self.name } && ls }}"), "none");
 });
 
-Deno.test("scanTemplateSyntax: a cut-short expression with no {{ is reported by its own text", () => {
-  // A CEL comment hides the lone }, and a later }} recovers the string.
-  const value = "${{ a // }\n + 'x}}' }}";
-  const scan = scanTemplateSyntax({ v: value }, noInputs);
-  assertEquals(scan.malformed, [{
-    path: "v",
-    text: "${{ a // }\n + 'x}}",
-    form: "inside-expression",
-  }]);
+Deno.test("scanTemplateSyntax: a comment and a string holding }} leave the expression sound", () => {
+  // A CEL comment hides the lone }, and the string after it holds a }}.
+  const scan = scanTemplateSyntax({ v: "${{ a // }\n + 'x}}' }}" }, noInputs);
+  assertEquals(scan.malformed, []);
 });
 
 Deno.test("scanTemplateSyntax: unclosed expressions are reported in a declared field", () => {
@@ -298,9 +276,11 @@ Deno.test("scanTemplateSyntax: unclosed expressions are reported in a declared f
 });
 
 Deno.test("scanTemplateSyntax: bounds the closing }} tried for each expression", () => {
-  // Past the cap, a string that would recover later counts as unclosed.
   const closers = " }}".repeat(40);
-  assertEquals(unclosed("${{ '{{a}}" + closers + "' }}"), [
+  // A string that closes after many }} is one expression.
+  assertEquals(unclosed("${{ '{{a}}" + closers + "' }}"), []);
+  // A string that never closes is unclosed, however many }} follow it.
+  assertEquals(unclosed("${{ '{{a}}" + closers + '" }}'), [
     "${{ '{{a}}",
   ]);
   // Many unclosed expressions, each followed by many closers, are each

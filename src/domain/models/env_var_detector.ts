@@ -19,6 +19,8 @@
 
 import type { Definition } from "../definitions/definition.ts";
 import type { EnvVarUsageDetail } from "./validation_service.ts";
+import { maskLiteralCalls } from "../expressions/cel_string_lexer.ts";
+import { scanExpressions } from "../expressions/expression_scanner.ts";
 
 /**
  * Scans a definition for environment variable references in expressions.
@@ -59,9 +61,9 @@ function collectEnvVarUsages(
   usages: EnvVarUsageDetail[],
 ): void {
   if (typeof data === "string") {
-    const exprPattern = /\$\{\{\s*(.+?)\s*\}\}/gs;
-    for (const match of data.matchAll(exprPattern)) {
-      const celExpr = match[1];
+    for (const span of scanExpressions(data)) {
+      // A literal() argument is text, never an env reference.
+      const celExpr = maskLiteralCalls(span.inner);
       const envPattern = /\benv\.([a-zA-Z_][a-zA-Z0-9_]*)/g;
       for (const envMatch of celExpr.matchAll(envPattern)) {
         usages.push({

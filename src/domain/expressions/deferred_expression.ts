@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import type { ExpressionContext } from "./model_resolver.ts";
+import { matchSingleExpression } from "./expression_scanner.ts";
 
 /**
  * Zod v4 z.record() explicitly skips __proto__ keys, silently dropping
@@ -64,7 +65,10 @@ const record = protoSafeRecord(z.unknown());
 /** Only durable bindings cross a workflow boundary; services are rebuilt. */
 export const DeferredExpressionSchema = z.object({
   id: z.string().uuid(),
-  expression: z.string().regex(/^\$\{\{(?:(?!\}\})[\s\S])+\}\}$/),
+  expression: z.string().refine(
+    (value) => matchSingleExpression(value, { exact: true }) !== null,
+    { message: "expected exactly one ${{ ... }} expression" },
+  ),
   bindings: z.object({
     inputs: record.optional(),
     self: z.object({

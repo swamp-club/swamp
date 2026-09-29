@@ -145,3 +145,13 @@ Deno.test("extractVaultReferences: handles secret keys with spaces", () => {
     { vaultName: "infra", secretKey: "Client ID" },
   ]);
 });
+
+Deno.test("extractVaultReferences: reads only vault.get calls written as code", () => {
+  const result = extractVaultReferences({
+    a: "${{ 'vault.get(' + vault.get('a','b') }}",
+    b: '${{ literal(\'{{ vault.get("x", "y") }}\') }}',
+    c: "${{ self . vault.get('p', 'q') }}",
+  });
+  assertEquals(result.staticRefs, [{ vaultName: "a", secretKey: "b" }]);
+  assertEquals(result.hasDynamicRefs, false);
+});

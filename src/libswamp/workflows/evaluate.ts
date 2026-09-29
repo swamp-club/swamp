@@ -28,6 +28,7 @@ import {
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import {
+  containsExpression,
   extractExpressions,
   isAssertExprPath,
   isAssertMessagePath,
@@ -36,6 +37,8 @@ import {
   isTaskInputsPath,
   replaceExpressions,
 } from "../../domain/expressions/expression_parser.ts";
+import { maskLiteralCalls } from "../../domain/expressions/cel_string_lexer.ts";
+import { scanExpressions } from "../../domain/expressions/expression_scanner.ts";
 import {
   containsRuntimeExpression,
 } from "../../domain/expressions/expression_evaluation_service.ts";
@@ -227,11 +230,8 @@ async function evaluateWorkflowInternal(
   const forEachInExpressions = new Set<string>();
   for (const job of workflow.jobs) {
     for (const step of job.steps) {
-      if (step.forEach) {
-        const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/s);
-        if (match) {
-          forEachInExpressions.add(step.forEach.in);
-        }
+      if (step.forEach && containsExpression(step.forEach.in)) {
+        forEachInExpressions.add(step.forEach.in);
       }
     }
   }
@@ -249,7 +249,7 @@ async function evaluateWorkflowInternal(
       continue;
     }
     // Skip self.* expressions — they reference forEach variables resolved at runtime
-    if (expr.celExpression.match(/\bself\??\./)) {
+    if (maskLiteralCalls(expr.celExpression).match(/\bself\??\./)) {
       continue;
     }
     // Skip steps.* expressions — the namespace only exists once a run does
@@ -313,8 +313,8 @@ async function evaluateWorkflowInternal(
       }
 
       // Evaluate the forEach.in expression
-      const inMatch = stepData.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/s);
-      if (!inMatch) {
+      const inSpan = scanExpressions(stepData.forEach.in)[0];
+      if (!inSpan) {
         expandedSteps.push(stepData);
         continue;
       }
@@ -322,12 +322,12 @@ async function evaluateWorkflowInternal(
       // Async so data.* helpers that return Promises (latest, findByTag,
       // findBySpec, query, etc.) resolve before we iterate. cel-js
       // propagates Promises through its evaluator natively.
-      if (!authoredExpressions.has(inMatch[0])) {
+      if (!authoredExpressions.has(inSpan.raw)) {
         throw new UserError("forEach.in must be an authored expression");
       }
-      const items = await deps.evaluateCelAsync(inMatch[1], context);
+      const items = await deps.evaluateCelAsync(inSpan.inner, context);
       const itemName = stepData.forEach.item;
-      const nameHasExpression = /\$\{\{.+?\}\}/s.test(stepData.name);
+      const nameHasExpression = containsExpression(stepData.name);
 
       // Build one expanded step for a single forEach item: resolve every
       // available expression (self.* etc.) across the step name, task, AND
@@ -363,7 +363,7 @@ async function evaluateWorkflowInternal(
           // If any expression in the name could not be resolved, the raw name
           // would repeat across iterations — append a suffix to keep names
           // unique (matches ForEachExpansionService.resolveForEachStepName).
-          if (/\$\{\{.+?\}\}/s.test(expandedName)) {
+          if (containsExpression(expandedName)) {
             expandedName = `${expandedName}-${fallbackSuffix}`;
           }
         } else {

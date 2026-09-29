@@ -21,6 +21,11 @@ import { Environment, Optional } from "cel-js";
 import { getLogger } from "@logtape/logtape";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
+import { maskLiteralCalls } from "../../domain/expressions/cel_string_lexer.ts";
+import {
+  literal,
+  LITERAL_FUNCTION_SIGNATURE,
+} from "../../domain/expressions/cel_grammar.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
 
 /**
@@ -492,6 +497,11 @@ export class CelEvaluator {
     this.env.registerType("CelWorkersNamespace", CelWorkersNamespace);
     this.env.registerType("CelModelNamespace", CelModelNamespace);
 
+    // literal('...') returns its string unchanged, so one value can mix a
+    // swamp expression with another service's template text:
+    // `${{ inputs.env }} on ${{ literal('{{host.name}}') }}`.
+    this.env.registerFunction(LITERAL_FUNCTION_SIGNATURE, literal);
+
     // Register receiver methods for file namespace
     this.env.registerFunction(
       "CelFileNamespace.contents(string, string): dyn",
@@ -828,9 +838,10 @@ export class CelEvaluator {
    * model.*.file patterns. Warnings are deduplicated per expression.
    */
   private warnDeprecatedPatterns(expression: string): void {
-    // Match model.X.resource or model["X"].resource (and .file)
+    // Match model.X.resource or model["X"].resource (and .file). Text passed
+    // through literal() is not a reference, so it never warns.
     const pattern = /model(?:\.\w[\w-]*|\["[^"]+"\])\.(?:resource|file)\b/;
-    if (pattern.test(expression)) {
+    if (pattern.test(maskLiteralCalls(expression))) {
       if (!this.warnedPatterns.has(expression)) {
         this.warnedPatterns.add(expression);
         getLogger(["expressions"])

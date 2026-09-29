@@ -2327,3 +2327,105 @@ Deno.test("data.specInstanceNames() returns no names without a data query servic
     catalog.close();
   });
 });
+
+Deno.test("resolveVaultExpressions: vault.get text inside a literal() is left as text", async () => {
+  const fetched: string[] = [];
+  const resolver = createVaultResolver({
+    "v": { "real": "secret-1", "decoy": "secret-2" },
+  });
+  const inner = resolver as unknown as {
+    getVaultService: () => Promise<VaultService>;
+  };
+  const service = await inner.getVaultService();
+  const get = service.get.bind(service);
+  service.get = (vaultName: string, secretKey: string, ...rest: unknown[]) => {
+    fetched.push(secretKey);
+    return (get as (...a: unknown[]) => Promise<string>)(
+      vaultName,
+      secretKey,
+      ...rest,
+    );
+  };
+  const secretBag = new VaultSecretBag();
+  const result = await resolver.resolveVaultExpressions(
+    `literal('{{ vault.get("v", "decoy") }}') + vault.get('v', 'real')`,
+    undefined,
+    secretBag,
+  );
+  assertEquals(fetched, ["real"]);
+  assertEquals(
+    result.startsWith(
+      `literal('{{ vault.get("v", "decoy") }}') + "__SWAMP_VSEC_`,
+    ),
+    true,
+  );
+});
+
+Deno.test("resolveVaultExpressions: a call that starts inside a string does not swallow the real one", async () => {
+  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
+  const secretBag = new VaultSecretBag();
+  const result = await resolver.resolveVaultExpressions(
+    `literal('vault.get(') + vault.get('a','b')`,
+    undefined,
+    secretBag,
+  );
+  assertEquals(
+    result.startsWith(`literal('vault.get(') + "__SWAMP_VSEC_`),
+    true,
+  );
+});
+
+Deno.test("resolveVaultExpressions: a vault form only a direct call resolves is reported", async () => {
+  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
+  await assertRejects(
+    () =>
+      resolver.resolveVaultExpressions(
+        `cel.bind(v, vault, v.get('a', 'b'))`,
+        undefined,
+        new VaultSecretBag(),
+      ),
+    Error,
+    "Unsupported vault expression",
+  );
+});
+
+Deno.test("resolveVaultExpressions: ignores member access and comments", async () => {
+  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
+  const value = `self.vault.get('a', 'b') // vault.get('a', 'b')`;
+  assertEquals(
+    await resolver.resolveVaultExpressions(
+      value,
+      undefined,
+      new VaultSecretBag(),
+    ),
+    value,
+  );
+});
+
+Deno.test("resolveVaultExpressions: a member reached across whitespace is not the vault namespace", async () => {
+  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
+  const value = `self . vault.get('a', 'b')`;
+  assertEquals(
+    await resolver.resolveVaultExpressions(
+      value,
+      undefined,
+      new VaultSecretBag(),
+    ),
+    value,
+  );
+});
+
+Deno.test("resolveVaultExpressions: a call inside another call's argument is not resolved twice", async () => {
+  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
+  // The outer call's bare first argument covers the inner call; only the
+  // outer one is a match, so the output is never spliced out of order.
+  await assertRejects(
+    () =>
+      resolver.resolveVaultExpressions(
+        `vault.get(vault.get('a','b'), 'c')`,
+        undefined,
+        new VaultSecretBag(),
+      ),
+    Error,
+  );
+});

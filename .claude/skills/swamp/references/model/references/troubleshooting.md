@@ -8,6 +8,8 @@
   - ["Validation failed"](#validation-failed)
   - ["Expression evaluation failed"](#expression-evaluation-failed)
   - ["No such key" in CEL expressions](#no-such-key-in-cel-expressions)
+  - ["Unsupported vault expression"](#unsupported-vault-expression)
+  - [Sensitive argument set to a literal or constant expression](#marked-sensitive-and-cannot-be-set-to-a-literal-value-or-a-constant-expression)
   - ["Model type not found"](#model-type-not-found)
 - [Expression Debugging](#expression-debugging)
 - [Method Execution Issues](#method-execution-issues)
@@ -176,7 +178,9 @@ resolved (e.g., the referenced model has no resource data), and the method tried
 to use that field. Another templating system's text such as `${{ github.sha }}`
 is passed through and does not cause this. Text whose first name is a swamp
 namespace (`${{ inputs.version }}`, `${{ steps.x }}`, `${{ env.X }}`) is treated
-as swamp's, so a vendor's text of that shape does.
+as swamp's, so a vendor's text of that shape does — even when `literal()`
+produced it (`${{ literal('${{ inputs.version }}') }}`). Put such text in a
+method argument instead, where it passes through unchanged.
 
 **Solutions**:
 
@@ -214,6 +218,29 @@ templating system (`${{ github.sha }}`, or `${{ inputs.version }}` when
    (`--input <input>=<value>`, or the step's `inputs:`). For any other argument,
    `--input <argument>=<value>` on `model method run` or the step's `inputs:` in
    a workflow replaces the failing argument itself.
+
+### "Unsupported vault expression"
+
+**Symptom**:
+`Error: Unsupported vault expression "<expr>". Call vault.get(vaultName, secretKey) directly.`
+
+**Cause**: The expression reads the `vault` namespace in a form other than a
+direct `vault.get(vaultName, secretKey)` call, e.g.
+`cel.bind(v, vault, v.get('aws', 'key'))`. Only direct calls are resolved.
+
+**Solution**: Call `vault.get(...)` directly in the expression. `vault.get` text
+inside a string (`literal('vault.get(a, b)')`) is plain text and never resolved.
+
+### "marked sensitive and cannot be set to a literal value or a constant expression"
+
+**Cause**: A sensitive global argument holds a literal secret, or an expression
+that reads nothing — `${{ literal('hunter2') }}` or `${{ 'hunter2' }}` — which
+stores the secret in cleartext in the definition YAML. Reported on save, model
+create, method run and direct execution; `swamp doctor secrets` finds stored
+ones. Empty strings and null are allowed.
+
+**Solution**: Store the secret in a vault and reference it:
+`${{ vault.get('my-vault', 'api-key') }}`.
 
 ### "Model type not found"
 
