@@ -30,6 +30,7 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { containsExpression } from "../../domain/expressions/expression_parser.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
@@ -115,7 +116,11 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     if (
       event?.forEachTemplate !== undefined && event?.forEachIndex !== undefined
     ) {
-      const display = `${event.forEachTemplate}[${event.forEachIndex}]`;
+      // A templated name (`deploy-${{ self.env }}`) reads as the raw
+      // expression; its expanded step name is the label a reader can match.
+      const display = containsExpression(event.forEachTemplate)
+        ? stepId
+        : `${event.forEachTemplate}[${event.forEachIndex}]`;
       this.forEachDisplayNames.set(`${jobId}:${stepId}`, display);
       return display;
     }
