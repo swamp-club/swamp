@@ -47,6 +47,7 @@ import {
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
+  sanitizeErrorForClient,
   send,
   setConnectionCollectives,
   setConnectionCompression,
@@ -766,6 +767,20 @@ Deno.test("terminateTokenSessions: without an emitter it closes and records noth
 
   assertEquals(terminate(name, { audit: {} }), 1);
   assertEquals(session.closes.length, 1);
+});
+
+Deno.test("sanitizeErrorForClient: uses the message of a thrown SwampError (swamp-club#2716)", () => {
+  assertEquals(
+    sanitizeErrorForClient(notFound("Model", "missing")),
+    "Model not found: missing",
+  );
+});
+
+Deno.test("sanitizeErrorForClient: still scrubs a path inside a SwampError message", () => {
+  assertEquals(
+    sanitizeErrorForClient(validationFailed("Cannot read /Users/me/repo/x")),
+    "An internal error occurred",
+  );
 });
 
 Deno.test("clientErrorDetails: forwards reason and entity type from notFound", () => {

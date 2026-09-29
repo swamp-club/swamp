@@ -29,6 +29,17 @@ export interface SwampError {
   readonly details?: unknown;
 }
 
+/**
+ * True when a value has the shape of a `SwampError`. Some libswamp functions
+ * throw a `SwampError` rather than an `Error`, so a catch block that reads
+ * `error.message` must check for this shape first.
+ */
+export function isSwampError(value: unknown): value is SwampError {
+  return typeof value === "object" && value !== null &&
+    typeof (value as Record<string, unknown>).code === "string" &&
+    typeof (value as Record<string, unknown>).message === "string";
+}
+
 export function notAuthenticated(): SwampError {
   return {
     code: "not_authenticated",

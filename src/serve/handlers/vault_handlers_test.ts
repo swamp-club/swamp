@@ -220,6 +220,57 @@ Deno.test("handleVaultDelete: makes no datastore push, since nothing it writes i
   });
 });
 
+for (const force of [false, true]) {
+  Deno.test(
+    `handleVaultDelete: a missing vault${
+      force ? " with force" : ""
+    } replies not found without listing the configured vaults (swamp-club#2716)`,
+    async () => {
+      await withTempDir(async (dir) => {
+        await setupVault(dir);
+        const socket = createMockSocket();
+
+        await handleVaultDelete(
+          socket,
+          createAnnotateCtx(dir),
+          "req-delete",
+          { vaultName: "no-such-vault", key: "test-key", force },
+          new AbortController(),
+          null,
+        );
+
+        assertEquals(socket.sent.length, 1);
+        const response = JSON.parse(socket.sent[0]);
+        assertEquals(response.type, "error");
+        assertEquals(response.error.code, "vault_delete_failed");
+        assertEquals(response.error.message, "Vault not found: no-such-vault");
+        assertEquals(response.error.details, { reason: "not_found" });
+        assert(!socket.sent[0].includes(TEST_VAULT_NAME));
+      });
+    },
+  );
+}
+
+Deno.test("handleVaultDelete: a missing secret with force is a no-op success", async () => {
+  await withTempDir(async (dir) => {
+    await setupVault(dir);
+    const socket = createMockSocket();
+
+    await handleVaultDelete(
+      socket,
+      createAnnotateCtx(dir),
+      "req-delete",
+      { vaultName: TEST_VAULT_NAME, key: "no-such-key", force: true },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "vault.delete");
+    assertEquals(response.payload.data.noOp, true);
+  });
+});
+
 type VaultSyncEvent = { kind: "mark"; relPath?: string } | { kind: "push" };
 
 async function runVaultCreate(

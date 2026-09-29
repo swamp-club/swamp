@@ -36,6 +36,7 @@ import {
   createModelOutputLogsDeps,
   createModelValidateDeps,
   createTypeDescribeDeps,
+  isSwampError,
   modelCreate,
   modelDelete,
   modelDeletePreview,
@@ -110,10 +111,12 @@ import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config
 import {
   authorizeAnyOrReject,
   authorizeOrReject,
+  clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
   filterByAuthorization,
   isAdminOnlyModelType,
+  LibSwampStreamError,
   lockTimeoutErrorForClient,
   rejectEditWithoutContent,
   sanitizeErrorForClient,
@@ -1009,8 +1012,18 @@ export async function handleModelDelete(
       }
     }
   } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "model_delete_failed", message);
+    // modelDeletePreview throws a SwampError (e.g. notFound) rather than an
+    // Error; wrap it so the client gets its message and allow-listed reason.
+    const clientError = isSwampError(error)
+      ? new LibSwampStreamError(error)
+      : error;
+    sendError(
+      socket,
+      requestId,
+      "model_delete_failed",
+      sanitizeErrorForClient(clientError),
+      clientErrorDetails(clientError),
+    );
   }
 }
 

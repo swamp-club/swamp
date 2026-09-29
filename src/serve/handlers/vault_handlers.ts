@@ -36,6 +36,7 @@ import {
   createVaultPutDeps,
   createVaultReadSecretDeps,
   findVaultByNameOrId,
+  isSwampError,
   vaultAnnotate,
   vaultAuditTrail,
   vaultCreate,
@@ -82,7 +83,9 @@ import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
   authorizeOrReject,
+  clientErrorDetails,
   type ConnectionContext,
+  LibSwampStreamError,
   rejectEditWithoutContent,
   sanitizeErrorForClient,
   send,
@@ -388,6 +391,22 @@ export async function handleVaultDelete(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
+    } else if (isSwampError(error)) {
+      // vaultDeletePreview throws a SwampError for a missing vault. Its message
+      // lists every configured vault, but this request is authorized by write
+      // on data:vault and listing vaults needs read, so send a fixed message.
+      // Handled before the not-found branch below so force never turns a
+      // missing vault into a success.
+      const clientError = new LibSwampStreamError(error);
+      sendError(
+        socket,
+        requestId,
+        "vault_delete_failed",
+        error.code === "not_found"
+          ? `Vault not found: ${payload.vaultName}`
+          : sanitizeErrorForClient(clientError),
+        clientErrorDetails(clientError),
+      );
     } else if (
       error instanceof Error &&
       /not found|can't find|ResourceNotFoundException/i.test(error.message)
