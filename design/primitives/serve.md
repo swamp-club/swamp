@@ -542,6 +542,21 @@ edit) invalidate catalogs but do not reload extension registries. A reload that
 overlaps another (`Reload already in progress`) is retried on the next poll. A
 failed reload is retried up to three times per lockfile version.
 
+Every reload first unregisters the types of pulled extensions that are no
+longer installed (swamp-club#2742). Serve records which types each pulled
+extension registered, at boot and after every reload, because on the instance
+that ran `rm` the catalog rows and files are already gone. A pulled extension
+counts as installed when the config-tier lockfile or the transitional in-repo
+lockfile lists it, or, on an extension-backed datastore, when it is a datastore
+extension found on disk. This is the same rule the startup reconcile uses. On a
+peer, the reload also retires the removed extension's catalog rows, so the
+loader cannot register them again. The peer's files stay in its pulled root
+until swamp-club#2612. A type that another extension or a local source still
+provides stays registered. If one extension fails to unregister (for example,
+the pulled-extensions lock times out), the next reload retries it.
+`sweepRemovedPulledExtensions` in `src/serve/extension_reload.ts` implements
+this.
+
 The reload re-bundles from the instance's own pulled root. Extension sources are
 not pushed (each repo keeps them in its own pulled root until swamp-club#2612),
 so a peer's new extension registers only after `extension install` on each
@@ -714,8 +729,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `src/serve/boot_reconciliation.ts`).
 - The config poller reloads extension type registries when the config-tier
   lockfile changes, but only from the instance's own pulled root: sources stay
-  in each repo (swamp-club#2612), and a removed extension's types are not
-  unregistered. Extension types a peer added need `extension install` on each
+  in each repo (swamp-club#2612). A removed extension's types are unregistered,
+  but methods it added to a built-in or local model type stay attached until a
+  restart (swamp-club#2745). Extension types a peer added need `extension install` on each
   instance, then `swamp serve reload` or a restart
   (`src/cli/commands/serve.ts`, `ConfigPoller` wiring). After a successful
   `--server` operation, state-modifying extension commands (`pull`, `install`,

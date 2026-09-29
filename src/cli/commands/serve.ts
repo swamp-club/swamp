@@ -279,6 +279,7 @@ import {
   createExtensionDiscoverer,
   isReloading,
   performServeReload,
+  seedPulledTypeSnapshot,
   serveReloadStatus,
 } from "../../serve/extension_reload.ts";
 import {
@@ -2394,6 +2395,15 @@ export const serveCommand = new Command()
         undefined
       )
       : undefined;
+    // The pulled types that lockfile version registers, so a reload can
+    // unregister an extension removed since (swamp-club#2742).
+    await seedPulledTypeSnapshot(resolvedRepoDir, extensionLockfilePath)
+      .catch((error: unknown) => {
+        logger.warn(
+          "Could not record the pulled extension types at boot: {error}",
+          { error: error instanceof Error ? error.message : String(error) },
+        );
+      });
 
     // Re-enumerates pulled extension workflow dirs and, once the scheduler
     // exists, rescans schedules. Shared by `serve reload` and the config

@@ -31,6 +31,7 @@ import {
   RELOAD_IN_PROGRESS_ERROR,
   reloadPulledExtensions,
   resolveLockfilePath,
+  seedPulledTypeSnapshot,
   serveReloadStatus,
 } from "./extension_reload.ts";
 import {
@@ -49,6 +50,11 @@ import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
+import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
+import { pulledExtensionsLock } from "../infrastructure/persistence/pulled_extensions_lock.ts";
+import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../domain/repo/repo_path.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import "../domain/models/models.ts";
 
 Deno.test("isReloading: returns false when no reload is in progress", () => {
@@ -925,6 +931,272 @@ Deno.test("reloadPulledExtensions: does not re-bundle a catalogued row whose sou
         );
       } finally {
         await initializeLogging({ _reset: true });
+      }
+    },
+  );
+});
+
+// -- Removed extensions unregister on reload (swamp-club#2742) --------------
+
+/**
+ * A pulled model registered by a first reload, as `extension pull` leaves
+ * it on every instance. `pulledDir` is the extension's pulled root dir.
+ */
+async function withReloadedPulledModel(
+  fn: (args: {
+    repoDir: string;
+    lockfilePath: string;
+    catalog: ExtensionCatalogStore;
+    extName: string;
+    typeId: string;
+    sourcePath: string;
+    pulledDir: string;
+  }) => Promise<void>,
+): Promise<void> {
+  const id = crypto.randomUUID();
+  const extName = `@test/removed-${id}`;
+  const typeId = `@test/removed-model-${id}`;
+  await withPulledRepo([extName], async (repo) => {
+    const sourcePath = await repo.stage(
+      extName,
+      "noop",
+      pulledModelCode(typeId, "noop"),
+    );
+    const typeCatalog = new ExtensionCatalogStore(
+      swampPath(repo.repoDir, "_extension_catalog.db"),
+    );
+    const typeLoader = new ExtensionLoader(
+      stubDenoRuntime,
+      modelKindAdapter,
+      repo.repoDir,
+      undefined,
+      new ExtensionRepository({
+        catalog: typeCatalog,
+        lockfileRepository: await LockfileRepository.create(
+          repo.lockfilePath,
+        ),
+        repoRoot: repo.repoDir,
+      }),
+    );
+    modelRegistry.setTypeLoader((type, lazy) =>
+      typeLoader.loadSingleType(type, lazy)
+    );
+    try {
+      assertEquals(
+        await reloadPulledExtensions(
+          repo.repoDir,
+          repo.lockfilePath,
+          undefined,
+          stubDenoRuntime,
+        ),
+        1,
+      );
+      assertEquals(modelRegistry.has(typeId), true, "registered by the pull");
+      await fn({
+        ...repo,
+        extName,
+        typeId,
+        sourcePath,
+        pulledDir: canonicalizePath(
+          join(swampPath(repo.repoDir, "pulled-extensions"), extName) + "/",
+        ),
+      });
+    } finally {
+      modelRegistry.clearLoadersForTesting();
+      modelRegistry.invalidateType(typeId);
+      typeCatalog.close();
+    }
+  });
+}
+
+const removeLockfileEntries = (lockfilePath: string) =>
+  Deno.writeTextFile(lockfilePath, JSON.stringify({}));
+
+const reload = (repoDir: string, lockfilePath: string) =>
+  reloadPulledExtensions(repoDir, lockfilePath, undefined, stubDenoRuntime);
+
+Deno.test("reloadPulledExtensions: a peer unregisters an extension removed from the lockfile and retires its rows (swamp-club#2742)", async () => {
+  await withReloadedPulledModel(
+    async (
+      { repoDir, lockfilePath, catalog, typeId, sourcePath, pulledDir },
+    ) => {
+      assertEquals(catalog.findBySourcePathPrefix(pulledDir).length > 0, true);
+
+      await removeLockfileEntries(lockfilePath);
+      await reload(repoDir, lockfilePath);
+
+      assertEquals(modelRegistry.has(typeId), false, "type unregistered");
+      assertEquals(
+        catalog.findBySourcePathPrefix(pulledDir),
+        [],
+        "the peer's rows are retired",
+      );
+      assertEquals(
+        await Deno.stat(sourcePath).then(() => true, () => false),
+        true,
+        "the peer's source files stay (swamp-club#2612)",
+      );
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: the instance that ran rm unregisters the type from its snapshot (swamp-club#2742)", async () => {
+  await withReloadedPulledModel(
+    async (
+      { repoDir, lockfilePath, catalog, typeId, sourcePath, pulledDir },
+    ) => {
+      // `extension rm` on this checkout: rows, lockfile entry and files go.
+      catalog.removeBySourcePrefix(pulledDir);
+      await Deno.remove(sourcePath);
+      await removeLockfileEntries(lockfilePath);
+
+      await reload(repoDir, lockfilePath);
+
+      assertEquals(modelRegistry.has(typeId), false);
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: keeps a removed extension's type that a local source still provides (swamp-club#2742)", async () => {
+  await withReloadedPulledModel(
+    async ({ repoDir, lockfilePath, catalog, typeId }) => {
+      catalog.upsert({
+        type_normalized: typeId,
+        kind: "model",
+        bundle_path: "",
+        source_path: canonicalizePath(
+          join(repoDir, "extensions", "models", "local.ts"),
+        ),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+
+      await removeLockfileEntries(lockfilePath);
+      await reload(repoDir, lockfilePath);
+
+      assertEquals(modelRegistry.has(typeId), true);
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: keeps an extension re-installed before the sweep takes the lock (swamp-club#2742)", async () => {
+  await withReloadedPulledModel(
+    async ({ repoDir, lockfilePath, catalog, extName, typeId, pulledDir }) => {
+      const installed = await Deno.readTextFile(lockfilePath);
+      await removeLockfileEntries(lockfilePath);
+      const withLock = pulledExtensionsLock.withLock.bind(pulledExtensionsLock);
+      // A pull lands between the sweep's first check and its lock.
+      pulledExtensionsLock.withLock = async <T>(
+        dir: string,
+        fn: () => Promise<T>,
+      ): Promise<T> => {
+        await Deno.writeTextFile(lockfilePath, installed);
+        return await withLock(dir, fn);
+      };
+      try {
+        await reload(repoDir, lockfilePath);
+      } finally {
+        pulledExtensionsLock.withLock = withLock;
+      }
+
+      assertEquals(modelRegistry.has(typeId), true, `${extName} stays`);
+      assertEquals(catalog.findBySourcePathPrefix(pulledDir).length > 0, true);
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: retries a removed extension whose sweep failed on the next reload (swamp-club#2742)", async () => {
+  await withReloadedPulledModel(
+    async (
+      { repoDir, lockfilePath, catalog, typeId, sourcePath, pulledDir },
+    ) => {
+      catalog.removeBySourcePrefix(pulledDir);
+      await Deno.remove(sourcePath);
+      await removeLockfileEntries(lockfilePath);
+      const withLock = pulledExtensionsLock.withLock.bind(pulledExtensionsLock);
+      pulledExtensionsLock.withLock = () =>
+        Promise.reject(new Error("lock timeout"));
+      try {
+        await reload(repoDir, lockfilePath);
+      } finally {
+        pulledExtensionsLock.withLock = withLock;
+      }
+      assertEquals(modelRegistry.has(typeId), true, "failed sweep keeps it");
+
+      await reload(repoDir, lockfilePath);
+
+      assertEquals(modelRegistry.has(typeId), false, "retried and removed");
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: keeps an extension only the transitional in-repo lockfile records (swamp-club#2742)", async () => {
+  await withReloadedPulledModel(
+    async ({ repoDir, lockfilePath, catalog, extName, typeId, pulledDir }) => {
+      await new RepoMarkerRepository().write(RepoPath.create(repoDir), {
+        swampVersion: "0.1.0",
+        initializedAt: "2026-01-01T00:00:00.000Z",
+        tools: [],
+        datastore: { type: "@swamp/s3-datastore", managedConfig: true },
+      });
+      await ensureDir(swampPath(repoDir, "config"));
+      await Deno.writeTextFile(
+        swampPath(repoDir, "config", "upstream_extensions.json"),
+        await Deno.readTextFile(lockfilePath),
+      );
+      await removeLockfileEntries(lockfilePath);
+
+      await withMockedEnv(
+        { SWAMP_DATASTORE: undefined },
+        () => reload(repoDir, lockfilePath),
+      );
+
+      assertEquals(modelRegistry.has(typeId), true, `${extName} stays`);
+      assertEquals(catalog.findBySourcePathPrefix(pulledDir).length > 0, true);
+    },
+  );
+});
+
+Deno.test("seedPulledTypeSnapshot: a vault type registered at boot is unregistered once its extension is removed (swamp-club#2742)", async () => {
+  const id = crypto.randomUUID();
+  const extName = `@test/removed-vault-${id}`;
+  const vaultType = `@test/removed-vault-type-${id}`;
+  await withPulledRepo(
+    [extName],
+    async ({ repoDir, lockfilePath, catalog }) => {
+      const pulledDir = join(swampPath(repoDir, "pulled-extensions"), extName);
+      const sourcePath = canonicalizePath(join(pulledDir, "vaults", "v.ts"));
+      catalog.upsert({
+        type_normalized: vaultType,
+        kind: "vault",
+        bundle_path: "",
+        source_path: sourcePath,
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+      vaultTypeRegistry.registerLazy({
+        type: vaultType,
+        bundlePath: "",
+        sourcePath,
+        version: "",
+      });
+      try {
+        await seedPulledTypeSnapshot(repoDir, lockfilePath);
+        // The removal on this checkout drops the row with the lockfile entry.
+        catalog.removeBySourcePrefix(canonicalizePath(pulledDir + "/"));
+        await removeLockfileEntries(lockfilePath);
+
+        await reload(repoDir, lockfilePath);
+
+        assertEquals(vaultTypeRegistry.has(vaultType), false);
+      } finally {
+        vaultTypeRegistry.invalidateType(vaultType);
       }
     },
   );
