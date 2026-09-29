@@ -80,6 +80,7 @@ export type SubmitDestination =
 export async function resolveDestination(
   ctx: CommandContext,
   emailFlag?: boolean,
+  forExtension = false,
 ): Promise<SubmitDestination> {
   if (emailFlag) return { method: "email" };
 
@@ -89,9 +90,7 @@ export async function resolveDestination(
 
   // Not logged in — prompt (interactive only)
   if (ctx.outputMode === "json") {
-    throw new UserError(
-      "Not logged in. Run `swamp auth login` first, or use --email.",
-    );
+    throw notLoggedInError(forExtension);
   }
 
   const choice = await promptLoginOrEmail();
@@ -116,6 +115,19 @@ export interface SubmitIssueInput {
    * reach submitIssue.
    */
   swampLabTarget?: Extract<UsableExtensionTarget, { kind: "swamp-lab" }>;
+}
+
+/**
+ * The error for a report that needs Lab auth the user doesn't have.
+ * `--email` is only suggested when it can be used — it is rejected
+ * alongside `--extension`.
+ */
+function notLoggedInError(forExtension: boolean): UserError {
+  return new UserError(
+    forExtension
+      ? "Not logged in. Run `swamp auth login` first."
+      : "Not logged in. Run `swamp auth login` first, or use --email.",
+  );
 }
 
 /** Build a mailto: URL with pre-filled subject and body using RFC 6068 percent-encoding. */
@@ -265,9 +277,7 @@ export async function submitIssue(
   const renderer = createIssueCreateRenderer(ctx.outputMode);
 
   if (destination.method === "abort") {
-    throw new UserError(
-      "Not logged in. Run `swamp auth login` first, or use --email.",
-    );
+    throw notLoggedInError(input.swampLabTarget !== undefined);
   }
 
   // Redact sensitive content before any submission path.

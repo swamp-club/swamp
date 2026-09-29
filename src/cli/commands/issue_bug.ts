@@ -160,7 +160,11 @@ export const issueBugCommand = new Command()
     // Lab auth is only needed for the plain path and the `@swamp/*` path.
     // Third-party repository handoffs skip this step entirely.
     const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
-      ? await resolveDestination(ctx, options.email)
+      ? await resolveDestination(
+        ctx,
+        options.email,
+        extensionTarget !== undefined,
+      )
       : undefined;
     if (destination?.method === "abort") {
       await submitIssue(ctx, destination, {

@@ -154,7 +154,11 @@ export const issueFeatureCommand = new Command()
     }
 
     const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
-      ? await resolveDestination(ctx, options.email)
+      ? await resolveDestination(
+        ctx,
+        options.email,
+        extensionTarget !== undefined,
+      )
       : undefined;
     if (destination?.method === "abort") {
       await submitIssue(ctx, destination, {

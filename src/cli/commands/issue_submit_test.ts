@@ -66,21 +66,31 @@ const testCtx: CommandContext = {
   logger: getSwampLogger(["issue", "test"]),
 };
 
-async function makeRepo(manifest: string | null): Promise<string> {
+async function withRepo(
+  manifest: string | null,
+  fn: (repo: string) => Promise<void>,
+): Promise<void> {
   const repo = await Deno.makeTempDir({ prefix: "swamp_issue_submit_" });
-  await Deno.writeTextFile(join(repo, ".swamp.yaml"), "repo: {}\n");
-  await Deno.mkdir(join(repo, ".swamp"), { recursive: true });
-  if (manifest !== null) {
-    const extDir = join(repo, ".swamp", "pulled-extensions", "@adam/cfgmgmt");
-    await Deno.mkdir(extDir, { recursive: true });
-    await Deno.writeTextFile(join(extDir, "manifest.yaml"), manifest);
+  try {
+    await Deno.writeTextFile(join(repo, ".swamp.yaml"), "repo: {}\n");
+    await Deno.mkdir(join(repo, ".swamp"), { recursive: true });
+    if (manifest !== null) {
+      const extDir = join(repo, ".swamp", "pulled-extensions", "@adam/cfgmgmt");
+      await Deno.mkdir(extDir, { recursive: true });
+      await Deno.writeTextFile(join(extDir, "manifest.yaml"), manifest);
+    }
+    await fn(repo);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repo, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repo, { recursive: true });
+    }
   }
-  return repo;
 }
 
 Deno.test("resolveExtensionOrRefuse: throws a not-pulled UserError when the extension is not installed", async () => {
-  const repo = await makeRepo(null);
-  try {
+  await withRepo(null, async (repo) => {
     const error = await assertRejects(
       () => resolveExtensionOrRefuse("@adam/cfgmgmt", repo),
       UserError,
@@ -91,29 +101,25 @@ Deno.test("resolveExtensionOrRefuse: throws a not-pulled UserError when the exte
       "Report not filed against @adam/cfgmgmt.",
     );
     assertStringIncludes(error.message, "swamp extension pull @adam/cfgmgmt");
-  } finally {
-    await Deno.remove(repo, { recursive: true });
-  }
+  });
 });
 
 Deno.test("resolveExtensionOrRefuse: throws a no-repository UserError when the manifest declares no repository", async () => {
-  const repo = await makeRepo(
+  await withRepo(
     `manifestVersion: 1\nname: "@adam/cfgmgmt"\nversion: "2026.04.22.1"\nmodels:\n  - foo.yaml\n`,
+    async (repo) => {
+      const error = await assertRejects(
+        () => resolveExtensionOrRefuse("@adam/cfgmgmt", repo),
+        UserError,
+      );
+      assertEquals(error.code, "no-repository");
+      assertStringIncludes(
+        error.message,
+        "Report not filed against @adam/cfgmgmt.",
+      );
+      assertStringIncludes(error.message, "does not declare a repository");
+    },
   );
-  try {
-    const error = await assertRejects(
-      () => resolveExtensionOrRefuse("@adam/cfgmgmt", repo),
-      UserError,
-    );
-    assertEquals(error.code, "no-repository");
-    assertStringIncludes(
-      error.message,
-      "Report not filed against @adam/cfgmgmt.",
-    );
-    assertStringIncludes(error.message, "does not declare a repository");
-  } finally {
-    await Deno.remove(repo, { recursive: true });
-  }
 });
 
 Deno.test("dispatchExtensionRepositoryReport: throws a pvr-disabled UserError for a security report", async () => {
@@ -173,4 +179,24 @@ Deno.test("submitIssue: throws a UserError telling the user to log in when the d
     UserError,
   );
   assertStringIncludes(error.message, "swamp auth login");
+  assertStringIncludes(error.message, "--email");
+});
+
+Deno.test("submitIssue: leaves out the --email hint on the extension path, where --email is rejected", async () => {
+  const error = await assertRejects(
+    () =>
+      submitIssue(testCtx, { method: "abort" }, {
+        type: "bug",
+        title: "",
+        body: "",
+        swampLabTarget: {
+          kind: "swamp-lab",
+          extensionName: "@swamp/aws/ec2",
+          extensionVersion: "2026.04.22.1",
+        },
+      }),
+    UserError,
+  );
+  assertStringIncludes(error.message, "swamp auth login");
+  assertEquals(error.message.includes("--email"), false);
 });

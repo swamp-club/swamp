@@ -26,9 +26,9 @@ import {
   renderRedactionSkipped,
 } from "./issue_create.ts";
 import type { RepositoryDispatchResult } from "../../cli/commands/extension_report_dispatcher.ts";
+import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 
 type Handoff = Extract<RepositoryDispatchResult, { kind: "handoff" }>;
-import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 
 /** Captures console.log calls during `fn` and returns the concatenated output. */
 async function captureConsoleLog(
