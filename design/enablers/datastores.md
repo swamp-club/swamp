@@ -2000,7 +2000,7 @@ pushed (they stay in each repo's pulled root until swamp-club#2612), so a peer's
 new extension still needs `extension install` on each pod before it can
 register. A peer's `rm` unregisters the removed extension's types on every pod
 at the next reload, and retires its catalog rows on pods that still have them
-(swamp-club#2742; see
-[serve §High availability](../primitives/serve.md#high-availability)). Until swamp-club#2612,
+(swamp-club#2742; see [serve §High
+availability](../primitives/serve.md#high-availability)). Until swamp-club#2612,
 `--hot-reload` is therefore needed for extension registration as well as for
 trigger overrides and workflow reloading.

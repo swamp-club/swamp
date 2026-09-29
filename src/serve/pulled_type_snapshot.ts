@@ -24,7 +24,6 @@ import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import { removeAttachedExtensionsForType } from "../domain/extensions/model_kind_adapter.ts";
-import type { Extension } from "../domain/extensions/extension.ts";
 import type { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
 
@@ -83,18 +82,6 @@ export function capturePulledTypes(
     if (refs.length > 0) snapshot.set(name, refs);
   }
   return snapshot;
-}
-
-/** The types an Extension aggregate's typed Sources register. */
-export function pulledTypesOfExtension(extension: Extension): PulledTypeRef[] {
-  const refs: PulledTypeRef[] = [];
-  for (const source of extension.sources.values()) {
-    const state = source.state;
-    if (state.tag !== "Indexed" && state.tag !== "Bundled") continue;
-    if (!state.type || !isPulledTypeKind(source.kind)) continue;
-    refs.push({ kind: source.kind, type: state.type });
-  }
-  return refs;
 }
 
 /** Removes one pulled type from the registry of its kind. */

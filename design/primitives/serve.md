@@ -543,23 +543,24 @@ overlaps another (`Reload already in progress`) is retried on the next poll. A
 failed reload is retried up to three times per lockfile version.
 
 Every reload first unregisters the types of pulled extensions that are no
-longer installed (swamp-club#2742). Serve records which types each pulled
-extension registered, at boot and after every reload, because on the instance
-that ran `rm` the catalog rows and files are already gone. A pulled extension
-counts as installed when the config-tier lockfile or the transitional in-repo
-lockfile lists it, or, on an extension-backed datastore, when it is a datastore
-extension found on disk. This follows the startup reconcile's orphan rule,
-except that the reconcile spares on-disk datastore sources by directory and the
-sweep spares the whole extension. A missing lockfile skips the sweep until the
-next poll, because it reads as no entries and removing the last extension
-leaves an empty file. On a
-peer, the reload also retires the removed extension's catalog rows, so the
-loader cannot register them again. The peer's files stay in its pulled root
-until swamp-club#2612. A type that another extension or a local source still
-provides stays registered. If one extension fails to unregister (for example,
-the pulled-extensions lock times out), the next reload retries it.
-`sweepRemovedPulledExtensions` in `src/serve/extension_reload.ts` implements
-this.
+longer installed (swamp-club#2742). Serve records which types each installed
+pulled extension registered, at boot and after every reload, because on the
+instance that ran `rm` the catalog rows and files are already gone. A pulled
+extension counts as installed when the config-tier lockfile or the transitional
+in-repo lockfile lists it, or, on an extension-backed datastore, when it is a
+datastore extension found on disk. This follows the startup reconcile's orphan
+rule, except that the reconcile spares on-disk datastore sources by directory
+and the sweep spares the whole extension. Only sources under the extension's
+own directory in the pulled root are considered, so local and source-mounted
+extensions are never swept, whatever their name. A missing lockfile skips the
+sweep until the next poll, because it reads as no entries and removing the last
+extension leaves an empty file. On a peer, the reload also retires the removed
+extension's catalog rows, so the loader cannot register them again. The peer's
+files stay in its pulled root until swamp-club#2612. A type that another
+extension or a local source still provides stays registered. If one extension
+fails to unregister (for example, the pulled-extensions lock times out), the
+next reload retries it. `sweepRemovedPulledExtensions` in
+`src/serve/extension_reload.ts` implements this.
 
 The reload re-bundles from the instance's own pulled root. Extension sources are
 not pushed (each repo keeps them in its own pulled root until swamp-club#2612),
@@ -735,8 +736,8 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   lockfile changes, but only from the instance's own pulled root: sources stay
   in each repo (swamp-club#2612). A removed extension's types are unregistered,
   but methods it added to a built-in or local model type stay attached until a
-  restart (swamp-club#2745). Extension types a peer added need `extension install` on each
-  instance, then `swamp serve reload` or a restart
+  restart (swamp-club#2745). Extension types a peer added need
+  `extension install` on each instance, then `swamp serve reload` or a restart
   (`src/cli/commands/serve.ts`, `ConfigPoller` wiring). After a successful
   `--server` operation, state-modifying extension commands (`pull`, `install`,
   `rm`, `update`) warn that `swamp serve reload` is needed

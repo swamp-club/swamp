@@ -1330,3 +1330,70 @@ Deno.test("seedPulledTypeSnapshot: records extensions only the transitional in-r
     }
   });
 });
+
+Deno.test("reloadPulledExtensions: never sweeps local or source-mounted extensions missing from the lockfile (swamp-club#2742)", async () => {
+  const id = crypto.randomUUID();
+  const mountDir = await Deno.makeTempDir({ prefix: "swamp_2742_mount_" });
+  await withPulledRepo([], async ({ repoDir, lockfilePath, catalog }) => {
+    const extensions = [
+      // A repo whose top-level manifest names its local extensions.
+      {
+        name: `@acme/tools-${id}`,
+        source: join(repoDir, "extensions", "models", "tool.ts"),
+      },
+      // A per-subdirectory manifest under extensions/<kind>/<dir>/.
+      {
+        name: `@acme/sub-${id}`,
+        source: join(repoDir, "extensions", "models", "sub", "tool.ts"),
+      },
+      // An --extension-source mount outside the repo.
+      {
+        name: `@acme/mounted-${id}`,
+        source: join(mountDir, "models", "tool.ts"),
+      },
+    ].map(({ name, source }) => ({
+      name,
+      sourcePath: canonicalizePath(source),
+      typeId: `${name}/model`,
+    }));
+    for (const { name, sourcePath, typeId } of extensions) {
+      catalog.upsert({
+        type_normalized: typeId,
+        kind: "model",
+        bundle_path: "",
+        source_path: sourcePath,
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+      catalog.updateExtensionIdentity(sourcePath, name, "1.0.0");
+      modelRegistry.registerLazy({
+        type: ModelType.create(typeId),
+        bundlePath: "",
+        sourcePath,
+        version: "",
+      });
+    }
+    try {
+      await reload(repoDir, lockfilePath);
+
+      for (const { name, sourcePath, typeId } of extensions) {
+        assertEquals(modelRegistry.has(typeId), true, `${name} registered`);
+        assertEquals(
+          catalog.findBySourcePath(sourcePath) !== undefined,
+          true,
+          `${name} rows kept`,
+        );
+      }
+    } finally {
+      for (const { typeId } of extensions) modelRegistry.invalidateType(typeId);
+      if (Deno.build.os === "windows") {
+        await Deno.remove(mountDir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(mountDir, { recursive: true });
+      }
+    }
+  });
+});

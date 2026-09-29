@@ -21,15 +21,10 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
   capturePulledTypes,
-  pulledTypesOfExtension,
   unregisterPulledType,
 } from "./pulled_type_snapshot.ts";
 import type { ExtensionTypeRow } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
-import { makeExtension } from "../domain/extensions/extension.ts";
-import { makeSource } from "../domain/extensions/source.ts";
-import { makeSourceLocation } from "../domain/extensions/source_location.ts";
-import { makeBundleLocation } from "../domain/extensions/bundle_location.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
@@ -80,52 +75,6 @@ Deno.test("capturePulledTypes: records typed rows of registering kinds per exten
   assertEquals(snapshot.get("@a/one"), [
     { kind: "model", type: "@a/m" },
     { kind: "vault", type: "@a/v" },
-  ]);
-});
-
-Deno.test("pulledTypesOfExtension: returns only typed sources of registering kinds", () => {
-  const root = join(pulledRoot, "@a/one");
-  const bundle = makeBundleLocation("/b.js", "fp");
-  const source = (
-    file: string,
-    kind: ExtensionTypeRow["kind"],
-    state: Parameters<typeof makeSource>[0]["state"],
-  ) =>
-    makeSource({
-      id: makeSourceLocation(join(root, file), root),
-      kind,
-      fingerprint: "fp",
-      state,
-      sourceMtime: "",
-    });
-  const extension = makeExtension({
-    name: "@a/one",
-    version: "",
-    origin: "pulled",
-    extensionRoot: root,
-    sources: [
-      source("models/m.ts", "model", { tag: "Indexed", type: "@a/m", bundle }),
-      source("webhooks/w.ts", "webhook", {
-        tag: "Bundled",
-        type: "@a/w",
-        bundle,
-        loadedInProcess: true,
-      }),
-      source("models/x.ts", "extension", {
-        tag: "Indexed",
-        type: "@a/m",
-        bundle,
-      }),
-      source("models/f.ts", "model", {
-        tag: "BundleBuildFailed",
-        lastError: "boom",
-      }),
-    ],
-  });
-
-  assertEquals(pulledTypesOfExtension(extension), [
-    { kind: "model", type: "@a/m" },
-    { kind: "webhook", type: "@a/w" },
   ]);
 });
 

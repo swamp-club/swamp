@@ -38,7 +38,6 @@ import {
   modelKindAdapter,
   removeAttachedExtensionsForType,
 } from "../domain/extensions/model_kind_adapter.ts";
-import { tombstoneAll } from "../domain/extensions/extension.ts";
 import { extensionKindToKindDir } from "../domain/extensions/source_failure_recorder.ts";
 import { computeSourceFingerprint } from "../domain/extensions/bundle_freshness.ts";
 import { bundleExtension } from "../domain/models/bundle.ts";
@@ -78,7 +77,6 @@ import {
   capturePulledTypes,
   type PulledTypeRef,
   type PulledTypeSnapshot,
-  pulledTypesOfExtension,
   unregisterPulledType,
 } from "./pulled_type_snapshot.ts";
 
@@ -165,6 +163,11 @@ async function installedPulledNames(
   return names;
 }
 
+/** The canonical source-path prefix of one extension's pulled dir. */
+function pulledPrefix(pulledRoot: string, name: string): string {
+  return canonicalizePath(join(pulledRoot, name) + "/");
+}
+
 /** True when the lockfile exists. A missing one reads as no entries. */
 async function lockfileExists(lockfilePath: string): Promise<boolean> {
   try {
@@ -226,9 +229,18 @@ async function sweepRemovedPulledExtensions(args: {
     for (const name of previous?.keys() ?? []) {
       if (!installed.has(name)) candidates.add(name);
     }
+    // By location, not by origin: without the local manifest identity the
+    // repository reports every name outside @local/ as pulled, including
+    // manifest-named locals and source mounts.
     for (const extension of repository.loadAll()) {
-      if (extension.origin !== "pulled") continue;
-      if (!installed.has(extension.name)) candidates.add(extension.name);
+      if (installed.has(extension.name)) continue;
+      const prefix = pulledPrefix(pulledRoot, extension.name);
+      for (const source of extension.sources.values()) {
+        if (source.id.canonicalPath.startsWith(prefix)) {
+          candidates.add(extension.name);
+          break;
+        }
+      }
     }
   } catch (err) {
     logger.warn(
@@ -240,7 +252,7 @@ async function sweepRemovedPulledExtensions(args: {
 
   const unswept = new Map<string, readonly PulledTypeRef[]>();
   for (const name of candidates) {
-    const prefix = canonicalizePath(join(pulledRoot, name) + "/");
+    const prefix = pulledPrefix(pulledRoot, name);
     let refs: PulledTypeRef[] = [...(previous?.get(name) ?? [])];
     try {
       const removed = await pulledExtensionsLock.withLock(repoDir, async () => {
@@ -253,24 +265,13 @@ async function sweepRemovedPulledExtensions(args: {
           lockfilePath,
         );
         if (nowInstalled.has(name)) return false;
-        const extensions = repository.loadByName(name)
-          .filter((extension) => extension.origin === "pulled");
+        // Only the rows under this extension's pulled dir: an aggregate of
+        // the same name can also own local or source-mounted sources.
         refs = [
           ...refs,
-          ...extensions.flatMap(pulledTypesOfExtension),
           ...(capturePulledTypes(catalog, pulledRoot, [name]).get(name) ??
             []),
         ];
-        if (extensions.length > 0) {
-          // Scoped to this extension, as the reload's other catalog save
-          // is: the default prune would also delete live rows elsewhere,
-          // such as source-mounted extensions outside the repo.
-          repository.saveAll(extensions.map(tombstoneAll), {
-            pruneUnreachable: false,
-          });
-        }
-        // Rows the aggregate did not cover, such as rows without an
-        // extension name, which only the lockfile entry could identify.
         catalog.removeBySourcePrefix(prefix);
         return true;
       });
@@ -554,9 +555,12 @@ export async function reloadPulledExtensions(
       }
     }
 
-    const next = capturePulledTypes(catalog, pulledRoot, [
-      ...(swept.installed ?? Object.keys(entries)),
-    ]);
+    // Re-read: an extension installed while this reload ran must be in
+    // the snapshot, or an rm before the next reload would miss its types.
+    const installedNow = await lockfile.refresh()
+      .then(() => installedPulledNames(repoDir, lockfile, lockfilePath))
+      .catch(() => swept.installed ?? new Set(Object.keys(entries)));
+    const next = capturePulledTypes(catalog, pulledRoot, [...installedNow]);
     for (const [name, refs] of swept.unswept) {
       if (refs.length > 0 && !next.has(name)) next.set(name, [...refs]);
     }
