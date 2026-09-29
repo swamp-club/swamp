@@ -1600,18 +1600,20 @@ stale row never crashes a command (swamp-club#2490):
   with `DuplicateTypeError`.
 - **Typeless-row heal.** A row whose type was cleared for a conflict keeps an
   empty type after the winning row is gone, because its fingerprint still
-  matches. The per-kind `bundle_meta` marker `typeless-row-heal-v1:<kind>` is
-  absent after an upgrade and is cleared whenever a row that claims a type is
-  deleted or upserted with a different type. While it is absent, the next warm
-  pass imports the existing bundle of each seen, typeless `Indexed` row to learn
-  its type. It writes the type back only when no row claims it, for at most one
-  row per type: a local row before a pulled one, then the smallest path. The
-  pass then sets the marker. This writes the catalog only and never the registry, so a pulled
-  row cannot displace a local override. The heal is also skipped, with the
-  marker left unset, while the kind has a local row in a failed state whose
-  source still exists: a failed row claims no type, so a broken local override
-  would otherwise hand its type to the pulled row it shadows. The heal runs once
-  that row is fixed or its file is removed.
+  matches. The per-kind `bundle_meta` marker
+  `migration_applied:typeless-row-heal-v1:<kind>` is absent after an upgrade
+  and is cleared whenever a row that claims a type is deleted or upserted with
+  a different type. While it is absent, the next warm pass imports the existing
+  bundle of each seen, typeless `Indexed` row, and of each row it wrote
+  typeless in the same pass, to learn its type. It writes the type back only
+  when no row claims it, for at most one row per type: a local row before a
+  pulled one, then the smallest path. The pass then sets the marker. This
+  writes the catalog only and never the registry, so a pulled row cannot
+  displace a local override. The heal is also skipped, with the marker left
+  unset, while the kind has a local row in a failed state whose source still
+  exists: a failed row claims no type, so a broken local override would
+  otherwise hand its type to the pulled row it shadows. The heal runs once that
+  row is fixed or its file is removed.
 
 ### Atomic upgrade pattern
 
@@ -1727,11 +1729,11 @@ contract form two layers:
      incrementally, run by each loader's `buildIndex` once the catalog is
      populated. It deletes rows whose source it no longer sees, except those in
      a failure state; the cold path applies the same removal
-     (`removeUnseenCatalogRows`). A `BundleBuildFailed` row with a matching fingerprint counts as
-     stale and is retried on the next scan, not treated as a cache hit. A
-     transient build failure (e.g. npm deps unreachable on a cold cache at
-     first load) must recover when conditions change, not block the type
-     across restarts. Deterministic `ValidationFailed` rows stay excluded,
+     (`removeUnseenCatalogRows`). A `BundleBuildFailed` row with a matching
+     fingerprint counts as stale and is retried on the next scan, not treated
+     as a cache hit. A transient build failure (e.g. npm deps unreachable on a
+     cold cache at first load) must recover when conditions change, not block
+     the type across restarts. Deterministic `ValidationFailed` rows stay excluded,
      since re-bundling them only wastes work.
 
 The development workflow depends on warm-start incremental detection, so

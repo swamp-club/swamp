@@ -1255,11 +1255,18 @@ export class ExtensionLoader {
    * must wait until it is fixed or removed (swamp-club#2490).
    */
   private hasLiveLocalFailure(catalog: ExtensionCatalogStore): boolean {
-    return catalog.findByKind(this.adapter.catalogKinds[0]).some((row) =>
+    const failed = catalog.findByKind(this.adapter.catalogKinds[0]).find((
+      row,
+    ) =>
       LOCAL_OVERRIDE_FAILURE_STATES.has(row.state ?? "Indexed") &&
       !this.contributorFor(row.source_path).pulled &&
       this.sourceExistsOnDisk(row.source_path)
     );
+    if (failed) {
+      this.logger
+        .debug`Deferring the typeless-row heal while local source ${failed.source_path} is ${failed.state}`;
+    }
+    return failed !== undefined;
   }
 
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
