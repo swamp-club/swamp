@@ -19,7 +19,7 @@ RUN groupadd --gid 1000 swamp \
     && chown swamp:swamp /workspace
 
 COPY swamp /usr/local/bin/swamp
-RUN chmod +x /usr/local/bin/swamp
+RUN chmod +x /usr/local/bin/swamp && test -x /tini
 
 USER swamp
 WORKDIR /workspace
@@ -30,4 +30,10 @@ STOPSIGNAL SIGTERM
 # subcommands, not just `swamp serve`. A baked-in healthcheck would fail for
 # non-serve usage. Add your own in docker-compose or k8s when running serve.
 
-ENTRYPOINT ["swamp"]
+# swamp must not run as PID 1: Linux re-parents orphaned processes to PID 1,
+# and swamp only waits on the children it spawned itself, so every process a
+# step leaves behind would stay a zombie until the container exits. The base
+# image's tini reaps them and forwards signals to swamp. `-s` registers tini as
+# a child subreaper, so it still reaps (and stays quiet) when it is not PID 1,
+# e.g. under `docker run --init`.
+ENTRYPOINT ["/tini", "-s", "--", "swamp"]

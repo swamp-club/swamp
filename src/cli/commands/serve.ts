@@ -224,6 +224,7 @@ import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { setProcessGroupIsolation } from "../../infrastructure/process/process_group_policy.ts";
+import { warnIfRunningAsInit } from "../../infrastructure/process/init_process.ts";
 import { runShutdownDrain } from "../../serve/shutdown_drain.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
@@ -1899,6 +1900,7 @@ export const serveCommand = new Command()
     if (!isJson) {
       enableServeOutput();
     }
+    warnIfRunningAsInit();
 
     // Load config file and merge with CLI flags (four-level priority:
     // CLI flag > env var > config file > default)

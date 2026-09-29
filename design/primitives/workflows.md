@@ -1536,9 +1536,14 @@ signalled depends on whether swamp has a controlling terminal
   groups are outside swamp's own process group, so a supervisor that
   SIGKILLs swamp or its group directly (`timeout -s KILL`, `kill -9 -- -pgid`)
   leaves them running; stop swamp with SIGTERM or SIGINT so it terminates
-  them. In a container, run swamp under an init (`docker run --init`; the
-  image itself does not ship one yet, swamp-club#2652) so the processes it
-  kills are reaped.
+  them. In a container, run swamp under an init so the processes it kills
+  are reaped: Linux re-parents them to PID 1, and swamp waits only on the
+  children it spawned itself. A zombie still counts as a group member, so
+  without an init every cancel also waits the full grace. The official image
+  runs swamp under its base image's tini as a child subreaper
+  (`/tini -s -- swamp`); an image that runs swamp directly needs
+  `docker run --init` or tini. `swamp serve` and `swamp worker connect` log a
+  warning (log mode only) when they run as PID 1 on Linux.
 - **Interactive terminal**: the command stays in the terminal's foreground
   group, so it keeps `/dev/tty` prompts, and Ctrl-C reaches every process it
   started. A timeout or offline cancel signals only the direct child, so its

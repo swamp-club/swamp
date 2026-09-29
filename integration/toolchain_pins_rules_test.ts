@@ -124,6 +124,36 @@ Deno.test("Dockerfile base image matches the .tool-versions deno pin", async () 
   );
 });
 
+Deno.test("Dockerfile runs swamp under tini as a child subreaper", async () => {
+  const dockerfile = await Deno.readTextFile(DOCKERFILE);
+
+  const entrypoints = [...dockerfile.matchAll(/^ENTRYPOINT\s+(.+)$/gm)];
+  assertEquals(
+    entrypoints.length,
+    1,
+    `expected exactly one ENTRYPOINT line in ${repoRelative(DOCKERFILE)}, ` +
+      `found ${entrypoints.length} — if the Dockerfile changed shape, update ` +
+      `this test rather than deleting it`,
+  );
+
+  assertEquals(
+    JSON.parse(entrypoints[0][1]),
+    ["/tini", "-s", "--", "swamp"],
+    `${repoRelative(DOCKERFILE)} must start swamp through the base image's ` +
+      `tini. As PID 1, swamp never reaps the orphaned processes steps leave ` +
+      `behind, so they stay zombies until the container exits ` +
+      `(swamp-club#2652).`,
+  );
+
+  assertEquals(
+    /^RUN .*test -x \/tini\b/m.test(dockerfile),
+    true,
+    `${repoRelative(DOCKERFILE)} must check at build time that /tini exists, ` +
+      `so a base image without it fails the build instead of shipping an ` +
+      `image whose entrypoint cannot start`,
+  );
+});
+
 Deno.test("every setup-deno step reads the version from .tool-versions", async () => {
   const workflows = await readWorkflows();
   const offenders: string[] = [];
