@@ -305,6 +305,27 @@ swamp model validate my-shell --method create --json # Validate for a specific m
 }
 ```
 
+A failed `Expression paths` item also carries `expressionErrors`, one entry per
+failed expression. Read these rather than parsing `error`, which is the same
+content as text. `remedy` is the fix shared by every error of the same form, so
+several entries can carry the same one.
+
+```json
+{
+  "name": "Expression paths",
+  "passed": false,
+  "error": "- {{self.name}}\n  Expression uses {{...}} instead of ${{...}} at \"globalArguments.message\"\n  ...",
+  "expressionErrors": [
+    {
+      "expression": "{{self.name}}",
+      "error": "Expression uses {{...}} instead of ${{...}} at \"globalArguments.message\"",
+      "suggestion": "Add \"$\" prefix: ${{...}}.",
+      "remedy": "If this is another service's template syntax, build it with CEL string concatenation, ..."
+    }
+  ]
+}
+```
+
 **Output shape (all):**
 
 ```json

@@ -31,6 +31,11 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  distinctRemedies,
+  type ExpressionPathError,
+} from "../../domain/models/validation_service.ts";
+import { formatAvailableKeys } from "../../domain/expressions/schema_path_validator.ts";
 
 const checkmark = "\u2713";
 const cross = "\u2717";
@@ -46,10 +51,34 @@ function formatValidationLines(
       lines.push(`  ${green(checkmark)} ${v.name}`);
     } else {
       lines.push(`  ${red(cross)} ${v.name}`);
-      if (v.error) {
+      if (v.expressionErrors?.length) {
+        for (const line of formatExpressionErrorLines(v.expressionErrors)) {
+          lines.push(line);
+        }
+      } else if (v.error) {
         lines.push(`    ${red(arrow)} ${v.error}`);
       }
     }
+  }
+  return lines;
+}
+
+// The same layout as formatExpressionPathErrors in the domain, with the
+// renderer's indent and fail arrows. Keep the two in step.
+function formatExpressionErrorLines(
+  errors: readonly ExpressionPathError[],
+): string[] {
+  const lines: string[] = [];
+  for (const err of errors) {
+    lines.push(`    ${red(arrow)} ${err.expression}`);
+    lines.push(`      ${err.error}`);
+    if (err.suggestion) lines.push(`      ${err.suggestion}`);
+    if (err.availableKeys?.length) {
+      lines.push(`      Available: ${formatAvailableKeys(err.availableKeys)}`);
+    }
+  }
+  for (const remedy of distinctRemedies(errors)) {
+    lines.push(`    ${remedy}`);
   }
   return lines;
 }

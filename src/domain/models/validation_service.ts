@@ -70,19 +70,17 @@ function foreignTemplateRemedy(example: string): string {
  */
 const MALFORMED_EXPRESSION_MESSAGES: Record<
   TemplateSyntaxForm,
-  { issue: string; suggestion: string }
+  { issue: string; suggestion: string; remedy?: string }
 > = {
   "bare-double-brace": {
     issue: "Expression uses {{...}} instead of ${{...}}",
-    suggestion: `Add "$" prefix: \${{...}}. ${
-      foreignTemplateRemedy('${{ "{" + "{name}" + "}" }}')
-    }`,
+    suggestion: 'Add "$" prefix: ${{...}}.',
+    remedy: foreignTemplateRemedy('${{ "{" + "{name}" + "}" }}'),
   },
   "single-brace": {
     issue: "Expression uses ${...} instead of ${{...}}",
-    suggestion: `Use double braces: \${{...}}. ${
-      foreignTemplateRemedy('${{ "$" + "{name}" }}')
-    }`,
+    suggestion: "Use double braces: ${{...}}.",
+    remedy: foreignTemplateRemedy('${{ "$" + "{name}" }}'),
   },
   "inside-expression": {
     issue: "Template text {{...}} inside a ${{...}} expression cuts it short",
@@ -192,6 +190,12 @@ export class ValidationResult {
     readonly name: string,
     readonly passed: boolean,
     readonly error?: string,
+    /**
+     * The failed expressions behind an `Expression paths` failure, for
+     * renderers that lay them out. `error` is derived from these, so value
+     * equality on `error` covers them.
+     */
+    readonly expressionErrors?: readonly ExpressionPathError[],
   ) {}
 
   /**
@@ -204,8 +208,12 @@ export class ValidationResult {
   /**
    * Creates a failing validation result with an error message.
    */
-  static fail(name: string, error: string): ValidationResult {
-    return new ValidationResult(name, false, error);
+  static fail(
+    name: string,
+    error: string,
+    expressionErrors?: readonly ExpressionPathError[],
+  ): ValidationResult {
+    return new ValidationResult(name, false, error, expressionErrors);
   }
 
   /**
@@ -320,8 +328,47 @@ export interface ExpressionPathError {
   error: string;
   /** Optional suggestion for fixing the error */
   suggestion?: string;
+  /**
+   * Optional fix shared by every error of the same form, printed once after
+   * the list of errors rather than once per error.
+   */
+  remedy?: string;
   /** Optional available keys at the failure point */
   availableKeys?: string[];
+}
+
+/**
+ * The distinct remedies across expression path errors, in the order first
+ * seen. Each is printed once after the errors it applies to.
+ */
+export function distinctRemedies(
+  errors: readonly ExpressionPathError[],
+): string[] {
+  return [
+    ...new Set(
+      errors.flatMap((err) => err.remedy === undefined ? [] : [err.remedy]),
+    ),
+  ];
+}
+
+/**
+ * Formats expression path errors as plain text: each expression on a "- "
+ * line with its details indented under it, then each distinct remedy once.
+ * Renderers that indent it add their own indent to every line.
+ */
+export function formatExpressionPathErrors(
+  errors: readonly ExpressionPathError[],
+): string {
+  const lines: string[] = [];
+  for (const err of errors) {
+    lines.push(`- ${err.expression}`, `  ${err.error}`);
+    if (err.suggestion) lines.push(`  ${err.suggestion}`);
+    if (err.availableKeys?.length) {
+      lines.push(`  Available: ${formatAvailableKeys(err.availableKeys)}`);
+    }
+  }
+  for (const remedy of distinctRemedies(errors)) lines.push(remedy);
+  return lines.join("\n");
 }
 
 /**
@@ -758,11 +805,13 @@ export class DefaultModelValidationService implements ModelValidationService {
     foreign: ForeignTemplateDetail[],
   ): Promise<ValidationResult> {
     const errors: ExpressionPathError[] = malformed.map((m) => {
-      const { issue, suggestion } = MALFORMED_EXPRESSION_MESSAGES[m.form];
+      const { issue, suggestion, remedy } =
+        MALFORMED_EXPRESSION_MESSAGES[m.form];
       return {
         expression: m.text,
         error: `${issue} at "${m.path}"`,
         suggestion,
+        ...(remedy === undefined ? {} : { remedy }),
       };
     });
 
@@ -838,8 +887,11 @@ export class DefaultModelValidationService implements ModelValidationService {
       return ValidationResult.pass("Expression paths");
     }
 
-    const errorMessage = this.formatExpressionPathErrors(errors);
-    return ValidationResult.fail("Expression paths", errorMessage);
+    return ValidationResult.fail(
+      "Expression paths",
+      formatExpressionPathErrors(errors),
+      errors,
+    );
   }
 
   /**
@@ -1267,23 +1319,5 @@ export class DefaultModelValidationService implements ModelValidationService {
     return Promise.resolve(
       ValidationResult.fail("Check selection", errors.join("; ")),
     );
-  }
-
-  /**
-   * Formats expression path errors into a human-readable string.
-   */
-  private formatExpressionPathErrors(errors: ExpressionPathError[]): string {
-    return errors
-      .map((err) => {
-        const lines = [`  - ${err.expression}`, `    ${err.error}`];
-        if (err.suggestion) lines.push(`    ${err.suggestion}`);
-        if (err.availableKeys?.length) {
-          lines.push(
-            `    Available: ${formatAvailableKeys(err.availableKeys)}`,
-          );
-        }
-        return lines.join("\n");
-      })
-      .join("\n");
   }
 }

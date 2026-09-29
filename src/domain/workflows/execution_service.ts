@@ -1200,7 +1200,12 @@ export class DefaultStepExecutor implements StepExecutor {
     // Fail fast if validation fails
     const failures = validationResults.results.filter((r) => !r.passed);
     if (failures.length > 0) {
-      const errors = failures.map((f) => `  ${f.name}: ${f.error}`).join("\n");
+      // A multi-line error goes under its check name, every line indented.
+      const errors = failures.map((f) =>
+        f.error?.includes("\n")
+          ? `  ${f.name}:\n${f.error.replace(/^/gm, "    ")}`
+          : `  ${f.name}: ${f.error}`
+      ).join("\n");
       throw new Error(
         `Model validation failed for "${originalDefinition.name}":\n${errors}`,
       );

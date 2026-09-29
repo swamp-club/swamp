@@ -3617,6 +3617,15 @@ Deno.test({
       'Model validation failed for "dd-monitor"',
     );
     assertStringIncludes((error as Error).message, "{{self.name}}");
+    // The multi-line error sits under its check name, every line indented
+    // (swamp-club#2493).
+    assertStringIncludes(
+      (error as Error).message,
+      "  Expression paths:\n    - {{self.name}}\n" +
+        '      Expression uses {{...}} instead of ${{...}} at "methods.execute.arguments.value"\n' +
+        '      Add "$" prefix: ${{...}}.\n' +
+        "    If this is another service's template syntax",
+    );
   },
 });
 
