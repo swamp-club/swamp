@@ -245,6 +245,7 @@ Deno.test("workflowCancelSuspended: reveals a non-suspended status only after au
     workflowIdOrName: "deploy",
     reason: "r",
   });
+  assertEquals(deniedEvent?.kind, "error");
   if (deniedEvent?.kind === "error") {
     assertEquals(deniedEvent.error.code, CANCEL_SUSPENDED_NOT_FOUND);
   }

@@ -24,6 +24,7 @@ import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_wo
 import { evaluateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import {
   applyTriggerOverrides,
+  handleWorkflowCancel,
   handleWorkflowEdit,
   handleWorkflowHistoryGet,
   handleWorkflowRunSearch,
@@ -51,6 +52,9 @@ import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import type { ServeConfigFile } from "../serve_config.ts";
 import type { TriggerOverride } from "../../libswamp/mod.ts";
+import { type ActiveRun, ActiveRunRegistry } from "../active_run_registry.ts";
+import { RunEventBuffer } from "../run_event_buffer.ts";
+import { SUSPENDED_RUN_BUSY_MESSAGE } from "../suspended_run_cancel.ts";
 
 function makeWorkflowRepo(
   workflows: Map<string, Workflow>,
@@ -918,4 +922,174 @@ Deno.test("handleWorkflowEdit: reports an unknown workflow as not found", async 
     assertEquals(sent.length, 1);
     assertEquals(sent[0].error.code, "not_found");
   });
+});
+
+// ── workflow.cancel (swamp-club#2651) ────────────────────────────────
+
+interface CancelFrame {
+  type: string;
+  payload?: { data: { runId: string; workflowName: string; status: string } };
+  error?: { code: string; message: string };
+}
+
+/** A registered run of `deploy` whose abort runs `onAbort`. */
+function cancellableRun(
+  runId: string,
+  onAbort: () => void,
+  kind: ActiveRun["kind"] = "workflow-resume",
+): ActiveRun {
+  const controller = new AbortController();
+  controller.signal.addEventListener("abort", onAbort, { once: true });
+  return {
+    runId,
+    kind,
+    resourceName: "deploy",
+    buffer: new RunEventBuffer(10),
+    controller,
+    startedAt: new Date(),
+    completion: new Promise<void>(() => {}),
+    principalId: null,
+  };
+}
+
+function makeCancelCtx(registry: ActiveRunRegistry): ConnectionContext {
+  return {
+    authConfig: { ...searchAuthBase, mode: "none" },
+    activeRunRegistry: registry,
+    repoContext: {
+      workflowRepo: makeWorkflowRepo(
+        new Map([["deploy", Workflow.create({ name: "deploy" })]]),
+      ),
+    },
+  } as unknown as ConnectionContext;
+}
+
+async function cancelRun(
+  registry: ActiveRunRegistry,
+  runId: string,
+  workflowIdOrName?: string,
+): Promise<CancelFrame[]> {
+  const frames: CancelFrame[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: (data: string) => frames.push(JSON.parse(data)),
+  } as unknown as WebSocket;
+  await handleWorkflowCancel(
+    socket,
+    makeCancelCtx(registry),
+    "req-cancel",
+    { runId, workflowIdOrName },
+    new AbortController(),
+    null,
+  );
+  return frames;
+}
+
+function abortMessage(run: ActiveRun): string | undefined {
+  const reason = run.controller.signal.reason;
+  return reason instanceof Error ? reason.message : undefined;
+}
+
+Deno.test("handleWorkflowCancel: reports busy when another operation takes the id as the aborted run leaves", async () => {
+  const registry = new ActiveRunRegistry();
+  const runId = crypto.randomUUID();
+  const held: { release?: (() => void) | null } = {};
+  const run = cancellableRun(runId, () => {
+    registry.deregister(runId);
+    held.release = registry.reserve(runId);
+  });
+  registry.register(run);
+
+  try {
+    const frames = await cancelRun(registry, runId);
+
+    assertEquals(abortMessage(run), "cancelled by anonymous");
+    assertEquals(frames.length, 1);
+    assertEquals(frames[0].type, "error");
+    assertEquals(frames[0].error, {
+      code: "workflow_cancel_failed",
+      message: SUSPENDED_RUN_BUSY_MESSAGE,
+    });
+  } finally {
+    held.release?.();
+  }
+});
+
+/**
+ * A registry in which a resume registers `replacement` under the id just as
+ * the cancel reserves it: after the aborted run left, before the persisted
+ * cancel can claim the id.
+ */
+class ResumeRaceRegistry extends ActiveRunRegistry {
+  replacement: ActiveRun | undefined;
+
+  override reserve(runId: string): (() => void) | null {
+    if (this.replacement) {
+      this.register(this.replacement);
+      this.replacement = undefined;
+    }
+    return super.reserve(runId);
+  }
+}
+
+Deno.test("handleWorkflowCancel: aborts a run a resume registered again after the aborted run left", async () => {
+  const registry = new ResumeRaceRegistry();
+  const runId = crypto.randomUUID();
+  const run = cancellableRun(runId, () => registry.deregister(runId));
+  const replacement = cancellableRun(runId, () => {});
+  registry.register(run);
+  registry.replacement = replacement;
+
+  try {
+    const frames = await cancelRun(registry, runId);
+
+    assertEquals(abortMessage(run), "cancelled by anonymous");
+    assertEquals(abortMessage(replacement), "cancelled by anonymous");
+    assertEquals(frames.length, 1);
+    assertEquals(frames[0].payload?.data, {
+      runId,
+      workflowName: "deploy",
+      status: "cancellation_requested",
+    });
+  } finally {
+    registry.deregister(runId);
+  }
+});
+
+Deno.test("handleWorkflowCancel: does not abort a registered method run", async () => {
+  const registry = new ActiveRunRegistry();
+  const runId = crypto.randomUUID();
+  const run = cancellableRun(runId, () => {}, "method-run");
+  registry.register(run);
+
+  try {
+    const frames = await cancelRun(registry, runId);
+
+    assertEquals(run.controller.signal.aborted, false);
+    assertEquals(frames[0].error, {
+      code: "workflow_cancel_failed",
+      message: `No cancellable run with id ${runId}`,
+    });
+  } finally {
+    registry.deregister(runId);
+  }
+});
+
+Deno.test("handleWorkflowCancel: does not abort a run of another workflow than the payload names", async () => {
+  const registry = new ActiveRunRegistry();
+  const runId = crypto.randomUUID();
+  const run = cancellableRun(runId, () => {});
+  registry.register(run);
+
+  try {
+    const frames = await cancelRun(registry, runId, "other");
+
+    assertEquals(run.controller.signal.aborted, false);
+    assertEquals(frames[0].error, {
+      code: "workflow_cancel_failed",
+      message: `No cancellable run with id ${runId}`,
+    });
+  } finally {
+    registry.deregister(runId);
+  }
 });

@@ -1381,7 +1381,11 @@ in progress it travels as the abort reason passed to the registry that held it
 (`ActiveRunRegistry`, `RunCancelRegistry`, or the scheduled runs); the executor
 records the abort reason as `cancel_reason`. `cancelActor`,
 `cancelReasonFor` and `emitRunCancelAudit` in `src/serve/handlers/shared.ts`
-build both.
+build both. `cancelActor` names the principal through
+`resolveDisplayPrincipal`, as every serve audit event's `initiatedBy` does, so
+the two cannot name a caller differently. The HTTP endpoint's `admin` check
+and its `denied` audit are `authorizeCancelRequest` in
+`src/cli/commands/serve.ts`.
 
 Over WebSocket, the `workflow.cancel` request (`runId`, optional
 `workflowIdOrName` and `reason`) cancels a run in `ActiveRunRegistry` (one
