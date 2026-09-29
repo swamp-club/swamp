@@ -173,6 +173,56 @@ async function requireSwampClub(context: {
 }
 
 /**
+ * A security fix must not be announced on a public issue before it ships,
+ * and a public issue must not be tracked under one whose milestones its
+ * reader cannot see — so a security issue is only ever carried with another
+ * security issue. Returns the refusal, or null when the pair is allowed.
+ */
+function securityParityError(
+  primary: { number: number; type: string },
+  linked: { number: number; type: string },
+): string | null {
+  if ((primary.type === "security") === (linked.type === "security")) {
+    return null;
+  }
+  return `Issue #${primary.number} is ${primary.type} and #${linked.number} ` +
+    `is ${linked.type}. A security issue can only be linked to another ` +
+    `security issue.`;
+}
+
+/**
+ * Refuse a type change on the primary that would break security parity
+ * with an issue it already carries. `link_issue` checks the pair when it is
+ * formed; this covers the primary's type changing afterwards, in `triage`
+ * or `fast_forward`. Runs before any upstream write.
+ */
+async function assertLinkedParity(
+  sc: SwampClubClient,
+  primary: { number: number; type: string },
+  linked: LinkedIssueData[],
+): Promise<void> {
+  for (const entry of linked) {
+    const issue = await sc.forIssue(entry.issueNumber).fetchIssue();
+    if (!issue) {
+      throw new Error(
+        `Could not fetch linked issue #${entry.issueNumber} to check it can ` +
+          `stay linked to a ${primary.type} issue.`,
+      );
+    }
+    const refusal = securityParityError(primary, {
+      number: issue.number,
+      type: issue.type,
+    });
+    if (refusal) {
+      throw new Error(
+        `${refusal} Unlink #${entry.issueNumber} with unlink_issue before ` +
+          `making #${primary.number} ${primary.type}.`,
+      );
+    }
+  }
+}
+
+/**
  * Warn when the issue about to be linked is already related to another
  * issue that has not shipped: another lifecycle may be carrying it. A
  * warning, not a refusal — status walks only move forward, so a second
@@ -1164,6 +1214,12 @@ export const model = {
           context.logger,
         );
         if (sc) {
+          const linked = await readLinkedIssues(context.readResource);
+          await assertLinkedParity(
+            sc,
+            { number: issueNumber, type: args.type },
+            linked,
+          );
           // The entry post is the last fatal upstream action in this method:
           // rollback reverts the local write but cannot unsend an entry, so
           // anything that can raise must run before it or a re-run would post
@@ -1178,12 +1234,7 @@ export const model = {
             "status transition to triaged",
             await sc.transitionStatus("triaged"),
           );
-          await advanceLinked(
-            sc,
-            await readLinkedIssues(context.readResource),
-            "triaged",
-            context.logger,
-          );
+          await advanceLinked(sc, linked, "triaged", context.logger);
           await recordLifecycle(sc, {
             step: "classified",
             targetStatus: "triaged",
@@ -2152,6 +2203,12 @@ export const model = {
           context.logger,
         );
         if (sc) {
+          const linked = await readLinkedIssues(context.readResource);
+          await assertLinkedParity(
+            sc,
+            { number: issueNumber, type: "platform" },
+            linked,
+          );
           recordUpstreamChange(
             context.logger,
             "issue type update",
@@ -2169,12 +2226,7 @@ export const model = {
             "status transition to in_progress",
             await sc.transitionStatus("in_progress"),
           );
-          await advanceLinked(
-            sc,
-            await readLinkedIssues(context.readResource),
-            "in_progress",
-            context.logger,
-          );
+          await advanceLinked(sc, linked, "in_progress", context.logger);
           await recordLifecycle(sc, {
             step: "fast_forwarded",
             targetStatus: "in_progress",
@@ -3408,7 +3460,7 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
-          readResource: (
+          readResource?: (
             instanceName: string,
             version?: number,
           ) => Promise<Record<string, unknown> | null>;
@@ -3439,27 +3491,19 @@ export const model = {
               `this lifecycle to carry.`,
           );
         }
-        // A security fix must not be announced on a public issue before it
-        // ships, and a public issue must not be tracked under one whose
-        // milestones its reader cannot see.
-        if (
-          (primaryIssue.type === "security") !==
-            (linkedIssue.type === "security")
-        ) {
-          throw new Error(
-            `Issue #${primary} is ${primaryIssue.type} and #${target} is ` +
-              `${linkedIssue.type}. A security issue can only be linked to ` +
-              `another security issue.`,
-          );
-        }
+        const parity = securityParityError(
+          { number: primary, type: primaryIssue.type },
+          { number: target, type: linkedIssue.type },
+        );
+        if (parity) throw new Error(parity);
 
         await warnIfCarriedElsewhere(sc, linkedIssue, primary, context.logger);
 
-        const state = await context.readResource("state-main") as
+        const state = await context.readResource?.("state-main") as
           | StateData
           | null;
         const phase = state?.phase ?? "triaging";
-        const pr = await context.readResource("pullRequest-main") as
+        const pr = await context.readResource?.("pullRequest-main") as
           | PullRequestData
           | null;
         const now = new Date().toISOString();
@@ -3468,13 +3512,24 @@ export const model = {
           issueNumber: target,
           relationship,
           title: linkedIssue.title,
-          author: linkedIssue.author,
+          author: linkedIssue.author === "unknown"
+            ? undefined
+            : linkedIssue.author,
           authorId: linkedIssue.authorId,
           reason: args.reason,
           linkedAt: now,
         };
-        const others = (await readLinkedIssues(context.readResource))
-          .filter((i) => i.issueNumber !== target);
+        const existing = await readLinkedIssues(context.readResource);
+        // Changing how an issue is linked would leave the old relationship
+        // in swamp-club, where unlink_issue would no longer find it.
+        const previous = existing.find((i) => i.issueNumber === target);
+        if (previous && previous.relationship !== relationship) {
+          throw new Error(
+            `Issue #${target} is already linked as ${previous.relationship}. ` +
+              `Unlink it with unlink_issue before linking it as ${relationship}.`,
+          );
+        }
+        const others = existing.filter((i) => i.issueNumber !== target);
         const handle = await context.writeResource(
           "linkedIssues",
           "linkedIssues-main",
@@ -3568,7 +3623,7 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
-          readResource: (
+          readResource?: (
             instanceName: string,
             version?: number,
           ) => Promise<Record<string, unknown> | null>;
@@ -3610,7 +3665,7 @@ export const model = {
           );
         }
 
-        const state = await context.readResource("state-main") as
+        const state = await context.readResource?.("state-main") as
           | StateData
           | null;
         await recordLifecycle(sc, {

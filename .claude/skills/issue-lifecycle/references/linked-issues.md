@@ -54,8 +54,11 @@ change N's phase. It:
 - is idempotent, so linking M again updates it in place.
 
 It refuses to link N to itself, an issue that has already shipped, or a security
-issue with a non-security one (in either direction). It warns, but still links,
-when M is already related to another issue that has not shipped.
+issue with a non-security one (in either direction). The same rule holds
+afterwards: `triage` or `fast_forward` refuses to change N's type in a way that
+breaks it, until the linked issue is unlinked. Changing how an issue is linked
+(`related_to` to `duplicate_of`) also needs `unlink_issue` first. It warns, but
+still links, when M is already related to another issue that has not shipped.
 
 ## What moves with the primary issue
 

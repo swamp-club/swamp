@@ -34,7 +34,7 @@ const PR = "https://github.com/swamp-club/swamp/pull/501";
 interface Harness {
   club: FakeSwampClub;
   // The method contexts differ only in which optional members they read.
-  context: Parameters<typeof model.methods.link_issue.execute>[1];
+  context: Parameters<typeof model.methods.notify.execute>[1];
   store: Record<string, Record<string, unknown>>;
   warnings: string[];
 }
@@ -233,6 +233,106 @@ Deno.test("link_issue: warns when the issue is already tied to another unshipped
       context,
     );
     assertEquals(warnings.some((w) => w.includes("another")), true);
+  });
+});
+
+Deno.test("link_issue: refuses to change how an issue is linked", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1 });
+    club.addIssue({ number: 2 });
+    phase(store, "triaging");
+  }, async ({ club, context }) => {
+    await model.methods.link_issue.execute(
+      { issueNumber: 2, relationship: "related_to" },
+      context,
+    );
+    await assertRejects(
+      () =>
+        model.methods.link_issue.execute(
+          { issueNumber: 2, relationship: "duplicate_of" },
+          context,
+        ),
+      Error,
+      "already linked as related_to",
+    );
+    assertEquals(club.relationships.length, 1);
+  });
+});
+
+Deno.test("link_issue: stores no author when swamp-club reports none", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1 });
+    club.issues.set(2, {
+      ...club.addIssue({ number: 2 }),
+      authorUsername: undefined as unknown as string,
+    });
+    phase(store, "triaging");
+  }, async ({ context, store }) => {
+    await model.methods.link_issue.execute(
+      { issueNumber: 2, relationship: "related_to" },
+      context,
+    );
+    const [entry] = store["linkedIssues-main"].issues as LinkedIssueData[];
+    assertEquals(entry.author, undefined);
+  });
+});
+
+Deno.test("triage: refuses to make the primary security while it carries a public issue", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1 });
+    club.addIssue({ number: 2, type: "bug" });
+    carrying(store, { issueNumber: 2 });
+  }, async ({ club, context }) => {
+    await assertRejects(
+      () =>
+        model.methods.triage.execute(
+          { type: "security", confidence: "high", reasoning: "r" },
+          context,
+        ),
+      Error,
+      "Unlink #2",
+    );
+    assertEquals(club.issues.get(1)!.type, "feature");
+    assertEquals(club.issues.get(2)!.status, "open");
+    assertEquals(club.calls.some((c) => c.method !== "GET"), false);
+  });
+});
+
+Deno.test("triage: refuses to make the primary public while it carries a security issue", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1, type: "security" });
+    club.addIssue({ number: 2, type: "security" });
+    carrying(store, { issueNumber: 2 });
+  }, async ({ context }) => {
+    await assertRejects(
+      () =>
+        model.methods.triage.execute(
+          { type: "bug", confidence: "high", reasoning: "r" },
+          context,
+        ),
+      Error,
+      "security issue can only be linked",
+    );
+  });
+});
+
+Deno.test("fast_forward: refuses to make the primary platform while it carries a security issue", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1, type: "security", status: "triaged" });
+    club.addIssue({ number: 2, type: "security" });
+    carrying(store, { issueNumber: 2 });
+  }, async ({ club, context }) => {
+    await assertRejects(
+      () =>
+        model.methods.fast_forward.execute({
+          summary: "s",
+          steps: [{ order: 1, description: "d", files: ["a.ts"] }],
+          testingStrategy: "t",
+        }, context),
+      Error,
+      "Unlink #2",
+    );
+    assertEquals(club.issues.get(1)!.type, "security");
   });
 });
 
