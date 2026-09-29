@@ -20,6 +20,10 @@
 import { UserError } from "../../domain/errors.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
 import {
+  formatArchiveBytes,
+  MAX_EXTENSION_ARCHIVE_BYTES,
+} from "../../domain/extensions/extension_archive_limits.ts";
+import {
   type ClientIdentity,
   mergeIdentityHeaders,
 } from "./client_identity.ts";
@@ -495,7 +499,9 @@ export class ExtensionApiClient {
 
   /**
    * Download the extension archive for a specific version.
-   * Returns the raw archive bytes.
+   * Returns the raw archive bytes. Refuses archives larger than
+   * `MAX_EXTENSION_ARCHIVE_BYTES`, counting while reading so an oversize
+   * body is never buffered in full.
    */
   async downloadArchive(
     name: string,
@@ -523,7 +529,7 @@ export class ExtensionApiClient {
           `Failed to download extension archive (HTTP ${res.status}).`,
         );
       }
-      return new Uint8Array(await res.arrayBuffer());
+      return await readArchiveBody(res, `${name}@${version}`);
     } catch (error) {
       if (error instanceof UserError) throw error;
       if (error instanceof DOMException && error.name === "TimeoutError") {
@@ -850,4 +856,51 @@ export class ExtensionApiClient {
       );
     }
   }
+}
+
+/**
+ * Reads a download response body, refusing it once it exceeds
+ * `MAX_EXTENSION_ARCHIVE_BYTES`. A declared `Content-Length` over the limit is
+ * refused before reading; otherwise bytes are counted as they arrive, so a
+ * missing or understated length cannot force the whole body into memory.
+ */
+async function readArchiveBody(
+  res: Response,
+  label: string,
+): Promise<Uint8Array> {
+  const tooLarge = () =>
+    new UserError(
+      `Extension archive ${label} exceeds the ${
+        formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
+      } archive size limit.`,
+    );
+
+  const declared = Number(res.headers.get("content-length"));
+  if (declared > MAX_EXTENSION_ARCHIVE_BYTES) {
+    await res.body?.cancel();
+    throw tooLarge();
+  }
+  if (!res.body) return new Uint8Array();
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_EXTENSION_ARCHIVE_BYTES) {
+      await reader.cancel();
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }

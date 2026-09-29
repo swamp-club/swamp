@@ -34,6 +34,7 @@ import {
 } from "./push.ts";
 import type { SwampError } from "../errors.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
 function makeManifest(
   overrides?: Partial<ExtensionManifest>,
@@ -828,4 +829,25 @@ Deno.test("extensionPushPrepare: resolvedData excludes helper files that are not
   assertPathEquals(result.resolvedData.models[0].fileName, "models/echo.ts");
   assertEquals(result.counts.models, 1);
   await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+});
+
+Deno.test("extensionPushPrepare: rejects an archive over the archive size limit", async () => {
+  const input = makePrepareInput({
+    cachedArchive: new Uint8Array(MAX_EXTENSION_ARCHIVE_BYTES + 1),
+  });
+
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, makePrepareDeps(), input),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "50 MiB archive size limit");
+});
+
+Deno.test("extensionPushPrepare: accepts an archive exactly at the archive size limit", async () => {
+  const input = makePrepareInput({
+    cachedArchive: new Uint8Array(MAX_EXTENSION_ARCHIVE_BYTES),
+  });
+
+  const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
+  assertEquals(result.archiveBytes.byteLength, MAX_EXTENSION_ARCHIVE_BYTES);
 });

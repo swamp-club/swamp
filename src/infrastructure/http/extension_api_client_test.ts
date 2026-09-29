@@ -21,6 +21,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import { ExtensionApiClient } from "./extension_api_client.ts";
 import { UserError } from "../../domain/errors.ts";
+import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
 for (
   const visibility of [undefined, "public", "private", null, "PRIVATE", true]
@@ -1011,4 +1012,79 @@ Deno.test("ExtensionApiClient.checkResponse includes URL in error message", asyn
   assertStringIncludes(error.message, "Invalid path");
   assertStringIncludes(error.message, "/api/v1/extensions/");
   await server.shutdown();
+});
+
+/**
+ * Serves the registry download redirect and the archive body it points to,
+ * as the real registry + object store do.
+ */
+function serveArchive(body: () => BodyInit): Deno.HttpServer<Deno.NetAddr> {
+  return Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    if (new URL(req.url).pathname.endsWith("/download")) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: new URL("/blob", req.url).href },
+      });
+    }
+    return new Response(body());
+  });
+}
+
+Deno.test("ExtensionApiClient.downloadArchive returns the archive bytes under the size limit", async () => {
+  const payload = new Uint8Array([0x1F, 0x8B, 1, 2, 3]);
+  const server = serveArchive(() => payload);
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    assertEquals(
+      await client.downloadArchive("@test/ext", "2026.09.29.1"),
+      payload,
+    );
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.downloadArchive refuses a Content-Length over the archive size limit", async () => {
+  const server = serveArchive(() =>
+    new Uint8Array(MAX_EXTENSION_ARCHIVE_BYTES + 1)
+  );
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const error = await assertRejects(
+      () => client.downloadArchive("@test/ext", "2026.09.29.1"),
+      UserError,
+    );
+    assertStringIncludes(error.message, "@test/ext@2026.09.29.1");
+    assertStringIncludes(error.message, "50 MiB");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.downloadArchive stops reading a body with no Content-Length once it passes the limit", async () => {
+  // An endless chunked body: the download can only finish by giving up.
+  const chunk = new Uint8Array(1024 * 1024);
+  const server = serveArchive(() =>
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(chunk);
+      },
+    })
+  );
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const error = await assertRejects(
+      () => client.downloadArchive("@test/ext", "2026.09.29.1"),
+      UserError,
+    );
+    assertStringIncludes(error.message, "archive size limit");
+  } finally {
+    await server.shutdown();
+  }
 });

@@ -530,6 +530,7 @@ The safety analyzer scans all files before push. Issues are classified as
 | File too large              | Individual files must be under 1 MB                                                                                                                                                           |
 | Total size exceeded         | All files combined must be under 10 MB                                                                                                                                                        |
 | Too many files              | Maximum 150 files per extension                                                                                                                                                               |
+| Archive too large           | The built `.tar.gz` (after bundling) must be at most 50 MiB — larger archives cannot be installed                                                                                             |
 
 ### Warnings (prompted)
 

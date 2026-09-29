@@ -20,6 +20,10 @@
 import { basename, dirname, extname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
+import {
+  formatArchiveBytes,
+  MAX_EXTENSION_ARCHIVE_BYTES,
+} from "../../domain/extensions/extension_archive_limits.ts";
 import { extractBareSpecifierNames } from "../../domain/models/bundle.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
@@ -851,6 +855,16 @@ export async function extensionPushPrepare(
     const built = await bundleAndArchive(input, deps, denoPath, ctx);
     totalBundles = built.totalBundles;
     archiveBytes = built.archiveBytes;
+  }
+  // Same limit pull enforces, so a pushed archive is always installable.
+  if (archiveBytes.byteLength > MAX_EXTENSION_ARCHIVE_BYTES) {
+    throw validationFailed(
+      `Extension archive is ${
+        formatArchiveBytes(archiveBytes.byteLength)
+      }, over the ${
+        formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
+      } archive size limit. Reduce bundled dependencies or binaries.`,
+    );
   }
 
   // 12. Check version (skip in dry-run)
