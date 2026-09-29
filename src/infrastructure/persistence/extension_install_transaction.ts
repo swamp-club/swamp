@@ -271,6 +271,9 @@ export class ExtensionInstallTransaction {
         if (root.hasNew) {
           await ops.mkdir(root.new);
           await ops.mkdir(dirname(root.live));
+          if (root.role === "bundle") {
+            await ops.mkdir(dirname(supersededPath(root)));
+          }
         }
       }
     } catch (error) {
@@ -325,7 +328,16 @@ export class ExtensionInstallTransaction {
         ...this.#journal.roots.filter((r) => r.role === "extension"),
       ];
       for (const root of incoming) {
-        if (root.hasNew) await move(root.new, root.live, "dir");
+        if (!root.hasNew) continue;
+        // A bundle cache dir is rebuilt by loaders that do not take the
+        // lock. One recreated since phase 1 (or since begin, for a root
+        // that did not exist) is superseded, not a reason to abort.
+        if (
+          root.role === "bundle" && await this.#ops.lstat(root.live) === "dir"
+        ) {
+          await move(root.live, supersededPath(root), "dir");
+        }
+        await move(root.new, root.live, "dir");
       }
       await move(
         this.#journal.manifest.staged,
@@ -466,6 +478,14 @@ function extensionRootOf(journal: InstallJournal) {
   const ext = journal.roots.find((r) => r.role === "extension");
   if (!ext) throw new Error("journal has no extension root");
   return ext;
+}
+
+/**
+ * Where phase 2 moves a bundle cache dir a loader recreated mid-swap.
+ * Outside the slots recovery reads; deleted with the staging.
+ */
+function supersededPath(root: InstallJournal["roots"][number]): string {
+  return join(root.stagingDir, "superseded", String(root.index));
 }
 
 /** Renames `from` to `to` only when `from` is a `kind` and `to` is free. */

@@ -1565,7 +1565,11 @@ undone.
 `.swamp/<kind>-bundles/<ns>/` that the new version ships files for or that
 exists already. Skills are not swapped. A skill dir can be shared with the user
 or another extension, so skills keep the merge copy and `createdPaths` rules in
-[Multi-tool skill materialization](#multi-tool-skill-materialization).
+[Multi-tool skill materialization](#multi-tool-skill-materialization), and sit
+outside the guarantees below: a rolled-back install can leave the new version's
+content in a skill file it overwrote. Skill orphans are pruned only after the
+new lockfile entry lands, so a failed install never leaves an entry claiming a
+deleted skill file.
 
 **Staging.** Each root's new and old copies live in a staging dir next to it,
 so every rename stays on one filesystem:
@@ -1590,7 +1594,9 @@ it), and the nested entry roots carried over.
 
 **Swap.** Phase 1 moves each existing live root to `old/<i>`. Phase 2 moves
 each new root into place, bundles first, then the extension root (staged
-without `manifest.yaml`), then `manifest.yaml` last. The journal then records
+without `manifest.yaml`), then `manifest.yaml` last. A bundle cache dir that a
+loader outside the lock recreated since phase 1 is moved aside into staging
+first, not treated as a failure. The journal then records
 `swapped`. Any failed rename undoes the completed ones in reverse order,
 carrying on past a step that cannot be undone (a bundle dir a loader recreated)
 so the other roots still go back. Before
@@ -1662,8 +1668,10 @@ guard refuses, since an extra file changes the root's digest.
 root, keeping file and directory times so the nested entry's sources stay no
 newer than its pre-built bundles, and records it in the journal. A nested entry
 whose first path segment is a kind dir or `manifest.yaml` (`@a/b/models`) is
-refused: the parent's own files live there. Such a layout installed before this
-change; remove the nested entry to install the parent. The installed-extension digest (`filesChecksum`) leaves nested entry
+refused, whichever of the two is installed second: the parent's own files live
+there, and the swap would move them aside and commit would delete them. Such a
+layout installed before this change; remove one of the two to install the
+other. The installed-extension digest (`filesChecksum`) leaves nested entry
 roots out, so installing `@a/b/c` does not make `@a/b` look locally edited. A
 digest stored before this rule covered the nested root too. While a root has
 nested entries, the local-edits check and the `extension install` content check
@@ -1674,6 +1682,10 @@ mount one checkout on a shared volume can still interleave, and one host's
 recovery can roll back the other's install in flight. A crash-leftover
 staging dir under `.swamp/config/pulled-extensions` in a managed-config repo
 can be pushed by a full sync before the next install or removal recovers it.
+Rolling back an interrupted first install moves aside whatever is at the live
+root; if a swamp without this change, or another host, installed the extension
+there in between, recovery discards that install while its lockfile entry
+stays.
 
 ## Layout Migration
 
@@ -1942,8 +1954,9 @@ is one extension, never a multi-extension run.
 
 A crash during the file changes of an install is put right by the next install
 or removal: the journal lets recovery roll the swap forward or back (see
-[Install Transaction](#install-transaction)), so the tree is always one
-version's, never a mix.
+[Install Transaction](#install-transaction)), so the extension root and its
+bundle dirs are always one version's, never a mix. Skill files are outside that
+guarantee.
 
 Any failure other than `DuplicateTypeError` inside `repository.saveAll` (SQLite
 I/O error, OOM, process killed mid-commit) leaves the catalog in its pre-save

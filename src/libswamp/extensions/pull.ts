@@ -1401,6 +1401,21 @@ export async function applyInstall(
     Object.keys(ctx.lockfileRepository.getAllEntries()),
   );
   const nestedToCopy: string[] = [];
+  // The other direction: installed under an extension whose root it
+  // lives in, this one must not land on that extension's kind dir, or
+  // the swap would move the parent's files aside and commit would delete
+  // them.
+  for (const ancestor of await installedAncestors(ref.name, ctx)) {
+    const first = ref.name.slice(ancestor.length + 1).split("/")[0];
+    if (EXTENSION_ROOT_ENTRIES.has(first)) {
+      throw new UserError(
+        `Cannot install ${ref.name}: its files would go to ${first}/ inside ` +
+          `the root of the installed extension ${ancestor}, where ` +
+          `${ancestor} keeps its own files. Run ` +
+          `\`swamp extension rm ${ancestor}\` first.`,
+      );
+    }
+  }
   for (const relDir of nestedRelDirs) {
     const first = relDir.split("/")[0];
     if (EXTENSION_ROOT_ENTRIES.has(first)) {
@@ -1410,6 +1425,10 @@ export async function applyInstall(
           `${ref.name} keeps its own files. Run ` +
           `\`swamp extension rm ${ref.name}/${relDir}\` first.`,
       );
+    }
+    // A nested entry inside another one is copied with it.
+    if (nestedToCopy.some((outer) => relDir.startsWith(`${outer}/`))) {
+      continue;
     }
     if (await isPlainDir(join(absoluteExtRoot, relDir))) {
       nestedToCopy.push(relDir);
@@ -1642,10 +1661,8 @@ export async function applyInstall(
     // are NOT in the new version's extractedFiles[]. Those under a
     // swapped root are already out of the live tree (the swap replaced
     // the root whole) and are only reported. The rest (skills) are
-    // pruned here, BEFORE writeEntry persists the new entry, so a kill
-    // mid-prune leaves the lockfile pointing at the OLD version and the
-    // next install retries the diff. A path another lockfile entry also
-    // claims (a shared skill dir) is kept.
+    // pruned after writeEntry persists the new entry (see below). A path
+    // another lockfile entry also claims (a shared skill dir) is kept.
     const otherEntries = ctx.lockfileRepository.getAllEntries();
     const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles).filter(
       (f) => findClaimants(f, ref.name, otherEntries).length === 0,
@@ -1677,12 +1694,6 @@ export async function applyInstall(
         pruned.push(f);
       }
     }
-    if (toPrune.length > 0) {
-      for (const path of await pruneOrphanFiles(toPrune, repoDir)) {
-        pruned.push(path);
-      }
-    }
-
     await ctx.lockfileRepository.writeEntry(
       ref.name,
       version,
@@ -1697,6 +1708,16 @@ export async function applyInstall(
       },
     );
     lockfileWritten = true;
+
+    // Skill orphans are pruned once the entry naming the new files has
+    // landed, so a failed write rolls back to an entry whose skill files
+    // are all still there. A kill mid-prune leaves only untracked orphan
+    // files, never an entry claiming deleted ones.
+    if (toPrune.length > 0) {
+      for (const path of await pruneOrphanFiles(toPrune, repoDir)) {
+        pruned.push(path);
+      }
+    }
 
     // A dependency cycle must not reinstall this extension over the tree
     // just written. installExtension() marks it before prepare; mark it
@@ -1820,6 +1841,31 @@ export async function applyInstall(
     });
     throw error;
   }
+}
+
+/**
+ * Installed extensions whose root contains `name`'s: lockfile entries,
+ * and dirs on disk holding a manifest.yaml, whose name is a prefix of
+ * `name` at a segment boundary.
+ */
+async function installedAncestors(
+  name: string,
+  ctx: InstallContext,
+): Promise<string[]> {
+  const entries = new Set(Object.keys(ctx.lockfileRepository.getAllEntries()));
+  const pulledRoot = resolvePulledExtensionsRoot(ctx.repoDir);
+  const segments = name.split("/");
+  const ancestors: string[] = [];
+  for (let i = 2; i < segments.length; i++) {
+    const ancestor = segments.slice(0, i).join("/");
+    if (
+      entries.has(ancestor) ||
+      await pathExistsNoFollow(join(pulledRoot, ancestor, "manifest.yaml"))
+    ) {
+      ancestors.push(ancestor);
+    }
+  }
+  return ancestors;
 }
 
 /**

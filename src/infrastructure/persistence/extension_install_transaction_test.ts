@@ -745,27 +745,57 @@ Deno.test("ExtensionInstallTransaction.begin: a crash before the new dirs exist 
   });
 });
 
-Deno.test("ExtensionInstallTransaction.swap: a bundle dir recreated mid-swap does not strand the extension root", async () => {
+Deno.test("ExtensionInstallTransaction.swap: a bundle dir recreated mid-swap is superseded", async () => {
   await withFixture(async (f) => {
     await seedV1(f);
-    const before = await readTree(f.repoDir);
     let rebuilt = false;
     const ops = crashAware({
       rename: async (from, to) => {
-        if (
-          !rebuilt && to === f.bundleRoot &&
-          from.includes(`${STAGING_DIR_NAME}-`)
-        ) {
+        await defaultInstallFsOps.rename(from, to);
+        if (!rebuilt && from === f.bundleRoot) {
           rebuilt = true;
           // A loader outside the lock rebuilds the bundle cache dir
-          // between phase 1 and phase 2.
+          // right after phase 1 moved it aside.
           await writeFiles(f.bundleRoot, { "rebuilt.js": "cache" });
+        }
+      },
+    });
+    const tx = await beginV2(f, ops);
+    await tx.swap();
+    await tx.commit();
+    assert(rebuilt);
+    assertEquals(await readTree(f.extRoot), V2_TREE_EXT);
+    assertEquals(await readTree(f.bundleRoot), { "a.js": "v2 bundle" });
+    assertEquals(await exists(join(f.pulledRoot, STAGING_DIR_NAME)), false);
+  });
+});
+
+Deno.test("ExtensionInstallTransaction.swap: an undo step that fails does not stop the others", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    const before = await readTree(f.repoDir);
+    let undoing = false;
+    let failedUndo = false;
+    const ops = crashAware({
+      rename: async (from, to) => {
+        // The manifest rename fails, so the swap undoes; the first undo
+        // step (the extension root back to new/) fails too.
+        if (to.endsWith("manifest.yaml") && from.includes(STAGING_DIR_NAME)) {
+          undoing = true;
+          throw new Error("manifest rename failed");
+        }
+        if (undoing && !failedUndo) {
+          failedUndo = true;
+          throw new Error("undo failed");
         }
         await defaultInstallFsOps.rename(from, to);
       },
     });
     const tx = await beginV2(f, ops);
-    await assertRejects(() => tx.swap());
+    await assertRejects(() => tx.swap(), Error, "manifest rename failed");
+    assert(failedUndo);
+    // The bundle root went back even though the step before it failed.
+    assertEquals(await readTree(f.bundleRoot), { "a.js": "v1 bundle" });
     await tx.settle(new Error("swap failed"), () => Promise.resolve(null));
     assertEquals(await readTree(f.repoDir), before);
     assertEquals(await exists(join(f.pulledRoot, STAGING_DIR_NAME)), false);

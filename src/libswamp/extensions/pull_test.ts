@@ -2088,3 +2088,104 @@ Deno.test(
     });
   },
 );
+
+Deno.test(
+  "installExtension: refuses a nested entry that would land on its parent's kind dir",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/models`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, {
+          "models/c.ts": "export const c = 1;\n",
+        })),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      const tree = await installedTree(repoDir);
+
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, archives, child),
+        UserError,
+      );
+      assertStringIncludes(error.message, `swamp extension rm ${parent}`);
+      assertEquals(await installedTree(repoDir), tree);
+      assertEquals(lockfile.getEntry(child), null);
+    });
+  },
+);
+
+/** A lockfile whose next writeEntry fails, as a full disk would. */
+class FailingWriteLockfile extends LockfileRepository {
+  failNext = false;
+  override async writeEntry(
+    ...args: Parameters<LockfileRepository["writeEntry"]>
+  ): Promise<void> {
+    if (this.failNext) {
+      this.failNext = false;
+      throw new Error("disk full");
+    }
+    await super.writeEntry(...args);
+  }
+}
+
+Deno.test(
+  "installExtension: a failed lockfile write keeps the prior version's skill files",
+  async () => {
+    const repoDir = await Deno.makeTempDir({ prefix: "swamp_pull_skills_" });
+    try {
+      const lockfile = new FailingWriteLockfile(
+        join(repoDir, "upstream_extensions.json"),
+      );
+      const name = uniqueExtName();
+      const skill = `skill-${name.split("/").pop()}`;
+      const v1 = await buildSkillArchive({
+        ...swapSpec(name, V1_FILES),
+        skills: { [skill]: { "SKILL.md": "v1", "old.md": "old" } },
+      });
+      const v2 = await buildSkillArchive({
+        ...swapSpec(name, V2_FILES),
+        skills: { [skill]: { "SKILL.md": "v2" } },
+      });
+      // A skill dir the user already had: the install tracks its files
+      // one by one, so v2 dropping old.md makes it an orphan to prune.
+      const skillDir = join(repoDir, ".claude", "skills", skill);
+      await Deno.mkdir(skillDir, { recursive: true });
+      await Deno.writeTextFile(join(skillDir, "mine.md"), "user");
+      await installArchive(repoDir, lockfile, { [name]: v1 }, name, {
+        force: true,
+      });
+      const entry = lockfile.getEntry(name);
+      const oldSkillFile = join(skillDir, "old.md");
+      assertEquals(
+        entry?.files?.includes(relative(repoDir, oldSkillFile)),
+        true,
+      );
+
+      lockfile.failNext = true;
+      await assertRejects(
+        () =>
+          installArchive(repoDir, lockfile, { [name]: v2 }, name, {
+            force: true,
+          }),
+        Error,
+        "disk full",
+      );
+      await lockfile.refresh();
+      assertEquals(lockfile.getEntry(name), entry);
+      // Every path the prior entry claims is still there.
+      for (const file of entry?.files ?? []) {
+        assertEquals(await exists(join(repoDir, file)), true, file);
+      }
+      assertEquals(await Deno.readTextFile(oldSkillFile), "old");
+      assertEquals(
+        await Deno.readTextFile(
+          join(extRootOf(repoDir, name), "models", "old_only.ts"),
+        ),
+        V1_FILES["models/old_only.ts"],
+      );
+    } finally {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    }
+  },
+);
