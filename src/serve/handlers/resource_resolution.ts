@@ -702,20 +702,27 @@ function authorizeAmbiguous<T>(
     }
     return allowed;
   };
-  const readable: number[] = [];
+  // The first match's owners are decided last, and only once: through
+  // authorizeOrReject when nothing else is readable, so its refusal is the
+  // one replied, and otherwise silently. Matches sharing them follow suit.
+  const first = access.candidates[0];
+  const others = new Set<number>();
   for (let i = 1; i < access.candidates.length; i++) {
-    if (allows(access.candidates[i])) readable.push(i);
+    const owners = access.candidates[i];
+    if (owners !== first && allows(owners)) others.add(i);
   }
-  const first = access.candidates[0] ?? [];
-  if (readable.length === 0) {
+  if (others.size === 0) {
     for (const resource of first) {
       if (
         !authorizeOrReject(socket, requestId, principal, action, resource, ctx)
           .allowed
       ) return null;
     }
-    return access.narrow([0]);
+  } else if (!allows(first)) {
+    return access.narrow([...others]);
   }
-  if (allows(first)) readable.unshift(0);
+  const readable = access.candidates.flatMap((owners, i) =>
+    owners === first || others.has(i) ? [i] : []
+  );
   return access.narrow(readable);
 }

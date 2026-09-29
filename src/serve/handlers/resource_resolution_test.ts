@@ -792,6 +792,65 @@ Deno.test("authorizeReferenceAccess: an ambiguous prefix decides and audits each
   );
 });
 
+Deno.test("authorizeReferenceAccess: an ambiguous prefix whose matches all share a denied owner is refused and audited once", () => {
+  const { ctx, audit } = policyCtx();
+  const prod = [modelResource("prod-db")];
+  const { socket, sent } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const result = authorizeReferenceAccess(
+    socket,
+    "req-1",
+    PRINCIPAL,
+    "read",
+    {
+      status: "ambiguous",
+      resolved: [],
+      candidates: Array.from({ length: 1000 }, () => prod),
+      narrow: (readable: number[]) => readable,
+    },
+    "abc",
+    ["model"],
+    ctx,
+    "model_output_get_failed",
+  );
+  assertEquals(result, null);
+  assertEquals(sent.length, 1);
+  assertEquals(
+    audit.map((e) => [e.outcome, e.resourceName]),
+    [["denied", "prod-db"]],
+  );
+});
+
+Deno.test("authorizeReferenceAccess: matches sharing an allowed first owner are all listed", () => {
+  const { ctx, audit } = policyCtx();
+  const dev = [modelResource("dev-db")];
+  const prod = [modelResource("prod-db")];
+  const { socket, sent } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const result = authorizeReferenceAccess(
+    socket,
+    "req-1",
+    PRINCIPAL,
+    "read",
+    {
+      status: "ambiguous",
+      resolved: [],
+      candidates: [dev, prod, dev, prod],
+      narrow: (readable: number[]) => readable,
+    },
+    "abc",
+    ["model"],
+    ctx,
+    "model_output_get_failed",
+  );
+  assertEquals(result, [0, 2]);
+  assertEquals(sent, []);
+  assertEquals(
+    audit.map((e) => [e.outcome, e.resourceName]),
+    [["denied", "prod-db"]],
+  );
+});
+
 Deno.test("authorizeReferenceAccess: an ambiguous prefix with no readable match is refused as its first match would be", () => {
   const { ctx, audit } = policyCtx();
   const { result, sent } = authorizeAmbiguousNames(
