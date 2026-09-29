@@ -26,7 +26,11 @@ import type {
   AccessResource,
 } from "./access_decision_service.ts";
 import { type Action, ActionSchema } from "./action.ts";
-import { GrantBasedAccessDecisionService } from "./grant_based_access_decision_service.ts";
+import {
+  GrantBasedAccessDecisionService,
+  SERVICE_TRIGGER_DEFAULT_GRANT_ID,
+} from "./grant_based_access_decision_service.ts";
+import type { ResourceKind } from "./resource_selector.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
 
 const ACTIONS: readonly Action[] = ActionSchema.options;
@@ -151,5 +155,95 @@ Deno.test("GrantBasedAccessDecisionService: explain for approve differs only by 
         .filter((d) => !(d.effect === "allow" && d.impliedBy === "run"));
       assertEquals(explicit.explain(PRINCIPAL, "approve", RESOURCE), expected);
     }),
+  );
+});
+
+const arbServiceGrant: fc.Arbitrary<Grant> = fc.record({
+  subject: fc.constantFrom(
+    { kind: "service" as const, name: "scheduler" },
+    { kind: "service" as const, name: "webhook" },
+    { kind: "user" as const, name: "scheduler" },
+  ),
+  effect: fc.constantFrom("allow" as const, "deny" as const),
+  actions: fc.subarray([...ACTIONS], { minLength: 1 }),
+  kind: fc.constantFrom<ResourceKind>("workflow", "model"),
+  pattern: fc.constantFrom("*", "@acme/*", "@acme/deploy", "@other/*"),
+  condition: fc.constantFrom(undefined, "true", "false"),
+}).map(({ subject, effect, actions, kind, pattern, condition }) => ({
+  id: crypto.randomUUID(),
+  subject,
+  effect,
+  actions,
+  resource: { kind, pattern },
+  state: "active" as const,
+  source: "method" as const,
+  createdBy: { kind: "user" as const, id: "admin" },
+  createdAt: "2026-01-01T00:00:00Z",
+  ...(condition ? { condition } : {}),
+}));
+
+const arbPrincipal: fc.Arbitrary<AccessPrincipal> = fc.record({
+  kind: fc.constantFrom("user" as const, "worker" as const, "service" as const),
+  id: fc.constantFrom("scheduler", "webhook"),
+}).map(({ kind, id }) => ({
+  principal: { kind, id },
+  collectives: [],
+  groups: [],
+}));
+
+const arbResourceKind = fc.constantFrom<ResourceKind>("workflow", "model");
+
+Deno.test("GrantBasedAccessDecisionService: the service default only ever allows a service principal to run a workflow", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbServiceGrant, { maxLength: 12 }),
+      arbPrincipal,
+      fc.constantFrom(...ACTIONS),
+      arbResourceKind,
+      (grants, principal, action, kind) => {
+        const service = new GrantBasedAccessDecisionService(
+          new PolicySnapshot(grants, [], literalEvaluator),
+        );
+        const resource = { ...RESOURCE, kind };
+        const decision = service.decide(principal, action, resource);
+        if (decision?.grantId === SERVICE_TRIGGER_DEFAULT_GRANT_ID) {
+          assertEquals(principal.principal.kind, "service");
+          assertEquals(action, "run");
+          assertEquals(kind, "workflow");
+        }
+      },
+    ),
+  );
+});
+
+Deno.test("GrantBasedAccessDecisionService: a matching deny always beats the service default", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbServiceGrant, { maxLength: 12 }),
+      fc.constantFrom("scheduler", "webhook"),
+      (grants, id) => {
+        const deny: Grant = {
+          id: crypto.randomUUID(),
+          subject: { kind: "service", name: id },
+          effect: "deny",
+          actions: ["run"],
+          resource: { kind: "workflow", pattern: "*" },
+          state: "active",
+          source: "method",
+          createdBy: { kind: "user", id: "admin" },
+          createdAt: "2026-01-01T00:00:00Z",
+        };
+        const service = new GrantBasedAccessDecisionService(
+          new PolicySnapshot([...grants, deny], [], literalEvaluator),
+        );
+        const decision = service.decide(
+          { principal: { kind: "service", id }, collectives: [], groups: [] },
+          "run",
+          RESOURCE,
+        );
+        assert(decision !== null);
+        assertEquals(decision.effect, "deny");
+      },
+    ),
   );
 });

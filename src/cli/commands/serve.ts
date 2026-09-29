@@ -42,6 +42,19 @@ import {
   type SuspendedRunCancelResult,
 } from "../../serve/suspended_run_cancel.ts";
 import { withSyncGate } from "../../serve/sync_gate.ts";
+import { createTriggerAuthorizer } from "../../serve/trigger_authorizer.ts";
+import {
+  auditScheduledEvent,
+  auditWebhookEvent,
+  createScheduledRunAuthorizer,
+  createWebhookRunAuthorizer,
+} from "../../serve/trigger_audit.ts";
+import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.ts";
+import { principalToString } from "../../domain/access/principal.ts";
+import {
+  SCHEDULER_PRINCIPAL,
+  WEBHOOK_PRINCIPAL,
+} from "../../domain/access/service_principal.ts";
 import {
   collectClusterInstances,
   redactServeOptions,
@@ -4176,6 +4189,14 @@ export const serveCommand = new Command()
       triggerOverrides = new Map(Object.entries(merged.triggerOverrides));
     }
 
+    // Scheduled and webhook runs have no client behind them; they run as
+    // built-in service principals and are authorized per run (#2464).
+    const triggerAuthorizer = createTriggerAuthorizer({
+      authMode: authConfig.mode,
+      policySnapshotLoader,
+      workflowRepo: repoContext.workflowRepo,
+    });
+
     let scheduledExecution: ScheduledExecutionService | null = null;
     if (enableSchedule) {
       if (triggerOverrides && triggerOverrides.size > 0) {
@@ -4188,6 +4209,11 @@ export const serveCommand = new Command()
         workflowRepo: repoContext.workflowRepo,
         repoDir: resolvedRepoDir,
         triggerOverrides,
+        initiatedBy: principalToString(SCHEDULER_PRINCIPAL),
+        authorizeRun: createScheduledRunAuthorizer(
+          triggerAuthorizer,
+          connectionCtx,
+        ),
         executeWorkflow: (input, signal, onEvent) =>
           executeWorkflowWithLocks(
             resolvedRepoDir,
@@ -4198,7 +4224,11 @@ export const serveCommand = new Command()
             onEvent,
             syncService,
             runTracker,
-            { syncGate, triggerSource: "schedule" },
+            {
+              syncGate,
+              triggerSource: "schedule",
+              initiatedBy: input.initiatedBy,
+            },
           ),
         pendingRunHook: {
           enqueue: async (entry) => {
@@ -4273,6 +4303,8 @@ export const serveCommand = new Command()
       });
 
       await scheduledExecution.start((event) => {
+        // Audit before the output branch so --json mode audits too.
+        auditScheduledEvent(connectionCtx, event);
         if (isJson) {
           console.log(JSON.stringify(event));
         } else {
@@ -4602,9 +4634,17 @@ export const serveCommand = new Command()
         runTracker,
         instanceId,
         controlPlaneStore,
+        initiatedBy: principalToString(WEBHOOK_PRINCIPAL),
+        authorizeRun: createWebhookRunAuthorizer(
+          triggerAuthorizer,
+          connectionCtx,
+        ),
       });
 
+      const webhookRejections = new WebhookRejectionCoalescer();
       webhookService.setEventHandler((event) => {
+        // Audit before the output branch so --json mode audits too.
+        auditWebhookEvent(connectionCtx, event, webhookRejections);
         if (isJson) {
           console.log(JSON.stringify(event));
         } else {
@@ -4860,14 +4900,17 @@ export const serveCommand = new Command()
         },
       },
       traceHttpRequests(async (req, info) => {
-        // WebSocket upgrade (check first — upgrade requests are also GETs)
-        const upgrade = req.headers.get("upgrade") ?? "";
-        if (upgrade.toLowerCase() === "websocket") {
-          const remoteAddr = trustProxy
+        const clientAddress = () =>
+          trustProxy
             ? (req.headers.get("x-forwarded-for")
               ?.split(",")[0]?.trim() ??
               info.remoteAddr.hostname)
             : info.remoteAddr.hostname;
+
+        // WebSocket upgrade (check first — upgrade requests are also GETs)
+        const upgrade = req.headers.get("upgrade") ?? "";
+        if (upgrade.toLowerCase() === "websocket") {
+          const remoteAddr = clientAddress();
 
           const originCheck = validateWebSocketOrigin(
             req.headers.get("origin"),
@@ -5008,7 +5051,10 @@ export const serveCommand = new Command()
 
         // Webhook endpoints (POST only, checked before health)
         if (webhookService && req.method === "POST") {
-          const webhookResponse = await webhookService.handleRequest(req);
+          const webhookResponse = await webhookService.handleRequest(
+            req,
+            clientAddress(),
+          );
           if (webhookResponse) return webhookResponse;
         }
 

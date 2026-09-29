@@ -39,15 +39,20 @@ swamp serve --auth-mode oauth \
 Grants control what authenticated users can do. Default deny — no matching grant
 means denied.
 
-| Concept    | Format                                                  |
-| ---------- | ------------------------------------------------------- |
-| Subjects   | `user:<id>`, `group:<name>`, `idp-group:<collective>`   |
-| Effects    | `allow`, `deny` (deny wins)                             |
-| Actions    | `run`, `read`, `write`, `approve`, `admin`              |
-| Resources  | `workflow:@acme/*`, `model:hello`, `data:*`, `access:*` |
-| Conditions | CEL expressions via `--when 'tags.env == "staging"'`    |
+| Concept    | Format                                                                                        |
+| ---------- | --------------------------------------------------------------------------------------------- |
+| Subjects   | `user:<id>`, `group:<name>`, `idp-group:<collective>`, `service:scheduler`, `service:webhook` |
+| Effects    | `allow`, `deny` (deny wins)                                                                   |
+| Actions    | `run`, `read`, `write`, `approve`, `admin`                                                    |
+| Resources  | `workflow:@acme/*`, `model:hello`, `data:*`, `access:*`                                       |
+| Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                          |
 
 Admin on `access:*` implies all actions (superuser).
+
+Scheduled runs act as `service:scheduler` and webhook runs as `service:webhook`
+(recorded as the run's `initiatedBy`). Both may `run` any workflow unless a deny
+grant matches, so restrict them with deny grants (e.g. `deny run` on
+`workflow:deploy` for `service:webhook`). No token can be minted for them.
 
 `approve` decides manual approval gates. By default a `run` grant also permits
 `approve`, so any principal that can run a workflow can clear its gates. To stop

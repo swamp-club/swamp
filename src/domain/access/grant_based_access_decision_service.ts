@@ -29,6 +29,7 @@ import type { Action } from "./action.ts";
 import type { PolicySnapshot } from "./policy_snapshot.ts";
 import { principalToString } from "./principal.ts";
 import type { PrincipalContext } from "./principal_context.ts";
+import type { Subject } from "./subject.ts";
 import {
   type ResourceKind,
   resourceSelectorMatches,
@@ -166,6 +167,45 @@ function toDecision(grant: Grant, match: ActionMatch): AccessDecision {
   };
 }
 
+/**
+ * Grant id reported for the built-in allow that lets a service principal run
+ * a workflow when no grant decides the request. It is computed, never stored,
+ * so no reconcile loop, reload or fleet version skew can remove it.
+ */
+export const SERVICE_TRIGGER_DEFAULT_GRANT_ID =
+  "builtin:service-trigger-default";
+
+/**
+ * The built-in decision for scheduled and webhook runs: a service principal
+ * may `run` a workflow unless a deny grant matches. It covers no other action
+ * or resource kind, so it never implies `approve`.
+ */
+function serviceTriggerDefault(
+  accessPrincipal: AccessPrincipal,
+  action: Action,
+  resource: AccessResource,
+): AccessDecision | null {
+  if (
+    accessPrincipal.principal.kind !== "service" || action !== "run" ||
+    resource.kind !== "workflow"
+  ) {
+    return null;
+  }
+  return {
+    effect: "allow",
+    grantId: SERVICE_TRIGGER_DEFAULT_GRANT_ID,
+    subject: { kind: "service", name: accessPrincipal.principal.id },
+  };
+}
+
+/** The subject a synthetic decision is attributed to. */
+function budgetExceededSubject(accessPrincipal: AccessPrincipal): Subject {
+  return {
+    kind: accessPrincipal.principal.kind === "service" ? "service" : "user",
+    name: accessPrincipal.principal.id,
+  };
+}
+
 export class GrantBasedAccessDecisionService implements AccessDecisionService {
   #snapshot: PolicySnapshot;
   readonly #runImpliesApprove: boolean;
@@ -245,7 +285,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
           return {
             effect: "deny",
             grantId: "aggregate-budget-exceeded",
-            subject: { kind: "user", name: principal.principal.id },
+            subject: budgetExceededSubject(principal),
           };
         }
       }
@@ -263,7 +303,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
           return {
             effect: "deny",
             grantId: "aggregate-budget-exceeded",
-            subject: { kind: "user", name: principal.principal.id },
+            subject: budgetExceededSubject(principal),
           };
         }
       }
@@ -272,7 +312,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       }
     }
 
-    return null;
+    return serviceTriggerDefault(principal, action, resource);
   }
 
   explain(
@@ -312,6 +352,10 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       }
     }
 
+    if (denyDecisions.length === 0 && allowDecisions.length === 0) {
+      const builtin = serviceTriggerDefault(principal, action, resource);
+      if (builtin) return [builtin];
+    }
     return [...denyDecisions, ...allowDecisions];
   }
 

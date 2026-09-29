@@ -28,7 +28,10 @@ import type {
   AccessPrincipal,
   AccessResource,
 } from "./access_decision_service.ts";
-import { GrantBasedAccessDecisionService } from "./grant_based_access_decision_service.ts";
+import {
+  GrantBasedAccessDecisionService,
+  SERVICE_TRIGGER_DEFAULT_GRANT_ID,
+} from "./grant_based_access_decision_service.ts";
 import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
 
@@ -1174,4 +1177,129 @@ Deno.test("hasAnyGrantForKind: run does not imply approve when runImpliesApprove
     service.hasAnyGrantForKind(makePrincipal("adam"), "run", "workflow"),
     true,
   );
+});
+
+function makeServicePrincipal(id: string): AccessPrincipal {
+  return { principal: { kind: "service", id }, collectives: [], groups: [] };
+}
+
+Deno.test("decide: service principal may run a workflow with no grants", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  const result = service.decide(
+    makeServicePrincipal("webhook"),
+    "run",
+    makeResource(),
+  );
+  assertEquals(result, {
+    effect: "allow",
+    grantId: SERVICE_TRIGGER_DEFAULT_GRANT_ID,
+    subject: { kind: "service", name: "webhook" },
+  });
+});
+
+Deno.test("decide: service default covers only run on workflows", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  const scheduler = makeServicePrincipal("scheduler");
+  for (const action of ["read", "write", "approve", "admin"] as const) {
+    assertEquals(service.decide(scheduler, action, makeResource()), null);
+  }
+  assertEquals(
+    service.decide(scheduler, "run", makeResource({ kind: "model" })),
+    null,
+  );
+});
+
+Deno.test("decide: a deny grant on a service principal beats the default", () => {
+  const deny = makeGrant({
+    subject: { kind: "service", name: "scheduler" },
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "@acme/deploy" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny], [], celEvaluator),
+  );
+  const result = service.decide(
+    makeServicePrincipal("scheduler"),
+    "run",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "deny");
+  assertEquals(result?.grantId, deny.id);
+});
+
+Deno.test("decide: a conditioned deny allowlists service runs", () => {
+  const deny = makeGrant({
+    subject: { kind: "service", name: "webhook" },
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+    condition: 'name != "@acme/allowed"',
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny], [], celEvaluator),
+  );
+  const webhook = makeServicePrincipal("webhook");
+  assertEquals(service.decide(webhook, "run", makeResource())?.effect, "deny");
+  assertEquals(
+    service.decide(
+      webhook,
+      "run",
+      makeResource({
+        name: "@acme/allowed",
+        fields: { name: "@acme/allowed", tags: {}, collective: "" },
+      }),
+    )?.grantId,
+    SERVICE_TRIGGER_DEFAULT_GRANT_ID,
+  );
+});
+
+Deno.test("decide: user and worker principals get no service default", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  assertEquals(
+    service.decide(makePrincipal("scheduler"), "run", makeResource()),
+    null,
+  );
+  assertEquals(
+    service.decide(
+      {
+        principal: { kind: "worker", id: "scheduler" },
+        collectives: [],
+        groups: [],
+      },
+      "run",
+      makeResource(),
+    ),
+    null,
+  );
+});
+
+Deno.test("explain: reports the service default when no grant matches", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  const decisions = service.explain(
+    makeServicePrincipal("scheduler"),
+    "run",
+    makeResource(),
+  );
+  assertEquals(decisions.map((d) => d.grantId), [
+    SERVICE_TRIGGER_DEFAULT_GRANT_ID,
+  ]);
+});
+
+Deno.test("explain: omits the service default when a deny matches", () => {
+  const deny = makeGrant({
+    subject: { kind: "service", name: "scheduler" },
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny], [], celEvaluator),
+  );
+  const decisions = service.explain(
+    makeServicePrincipal("scheduler"),
+    "run",
+    makeResource(),
+  );
+  assertEquals(decisions.map((d) => d.grantId), [deny.id]);
 });

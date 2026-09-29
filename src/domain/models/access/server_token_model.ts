@@ -28,6 +28,7 @@ import {
 import { generateOpaqueToken } from "../../remote/session_credential.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 import { parsePrincipal } from "../../access/principal.ts";
+import { assertAuthenticatablePrincipal } from "../../access/service_principal.ts";
 
 export const SERVER_TOKEN_MODEL_TYPE = ModelType.create(
   "swamp/server-token",
@@ -142,8 +143,9 @@ async function mint(
   context: MethodContext,
 ): Promise<MethodResult> {
   // A token whose principal serve cannot parse will be rejected on every
-  // connection, so refuse it at mint time (swamp-club#2383).
-  parsePrincipal(args.principalId);
+  // connection, so refuse it at mint time (swamp-club#2383). Service
+  // principals act only in-process and never hold a credential.
+  assertAuthenticatablePrincipal(parsePrincipal(args.principalId));
   if (!context.vaultService) {
     throw new Error("Minting a server token requires a vault service");
   }

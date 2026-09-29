@@ -420,7 +420,13 @@ a `schedule` and applies `triggers.*` overrides from `serve.yaml`. Each fire
 calls its injected `executeWorkflow`, which serve wires to
 `executeWorkflowWithLocks` with `triggerSource: "schedule"`
 (`src/cli/commands/serve.ts`). A fire is skipped with a `schedule_skipped` event
-while the workflow's previous run is still in progress.
+while the workflow's previous run is still in progress. Each run acts as the
+built-in `service:scheduler` principal, recorded as its `initiatedBy`, and is
+authorized when it starts executing (a refusal emits `schedule_denied` and the
+run never starts); see
+[access-control](../enablers/access-control.md#service-principals). Starts and
+skips are audited as `workflow.schedule.fire` and `workflow.schedule.skipped`
+([serve-audit](../enablers/serve-audit.md#trigger-events)).
 
 If the control-plane store supports `putIfAbsent`, each fire first races to
 create `fire-records/<workflowId>/<fireTime>` (ISO time truncated to the
@@ -448,7 +454,12 @@ redacted headers, and a missing type or failing hook returns a generic `500`
 before anything is queued. Hooks run inline with no timeout.
 
 A verified request becomes a pending run before it executes, so a crash between
-receipt and completion is replayed at next boot (`src/serve/webhook.ts`).
+receipt and completion is replayed at next boot (`src/serve/webhook.ts`). Each
+run acts as the built-in `service:webhook` principal, recorded as its
+`initiatedBy`, and is authorized when it starts executing. The sender's
+response does not change: a refused run was already acknowledged as queued, and
+emits `webhook_denied`. Starts and pre-queue rejections are audited as
+`workflow.webhook.fire` and `workflow.webhook.rejected`.
 Secrets may be `@env=VAR`, `@file=/path` or `@vault=<vault>:<key>` references,
 resolved at startup and again on hot-reload.
 

@@ -112,8 +112,10 @@ Deno.test("serverTokenModel: mint after expire succeeds with fresh credentials",
 for (
   const [principalId, expected] of [
     ["agent:swamp-resumer", 'Invalid principal kind "agent"'],
-    ["adam", 'expected "user:<id>" or "worker:<id>"'],
+    ["adam", 'expected "user:<id>", "worker:<id>" or "service:<id>"'],
     ["user:", "id cannot be empty"],
+    ["service:scheduler", "built-in service principal"],
+    ["service:webhook", "built-in service principal"],
   ]
 ) {
   Deno.test(`serverTokenModel: mint rejects principal ${principalId} before writing anything`, async () => {

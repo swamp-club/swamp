@@ -19,9 +19,15 @@
 
 import { z } from "zod";
 
-export const PrincipalKindSchema = z.enum(["user", "worker"]);
+export const PrincipalKindSchema = z.enum(["user", "worker", "service"]);
 
 export type PrincipalKind = z.infer<typeof PrincipalKindSchema>;
+
+/** Joins quoted items as `"a", "b" or "c"` for error messages. */
+function describeAlternatives(items: readonly string[]): string {
+  const quoted = items.map((item) => `"${item}"`);
+  return `${quoted.slice(0, -1).join(", ")} or ${quoted[quoted.length - 1]}`;
+}
 
 export const PrincipalSchema = z.object({
   kind: PrincipalKindSchema,
@@ -34,7 +40,11 @@ export function parsePrincipal(value: string): Principal {
   const colonIndex = value.indexOf(":");
   if (colonIndex === -1) {
     throw new Error(
-      `Invalid principal "${value}": expected "user:<id>" or "worker:<id>"`,
+      `Invalid principal "${value}": expected ${
+        describeAlternatives(
+          PrincipalKindSchema.options.map((k) => `${k}:<id>`),
+        )
+      }`,
     );
   }
   const kind = value.slice(0, colonIndex);
@@ -45,7 +55,9 @@ export function parsePrincipal(value: string): Principal {
   const parsed = PrincipalKindSchema.safeParse(kind);
   if (!parsed.success) {
     throw new Error(
-      `Invalid principal kind "${kind}": expected "user" or "worker"`,
+      `Invalid principal kind "${kind}": expected ${
+        describeAlternatives(PrincipalKindSchema.options)
+      }`,
     );
   }
   return { kind: parsed.data, id };

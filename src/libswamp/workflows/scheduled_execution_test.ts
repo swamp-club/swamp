@@ -1057,3 +1057,177 @@ Deno.test("normalizeFireTime: truncates milliseconds and replaces colons for Win
     "2026-12-31T23-59-59Z",
   );
 });
+
+Deno.test("ScheduledExecutionService: records initiatedBy and emits schedule_started with runId and fireTime", async () => {
+  const wf = createTestWorkflow("attributed-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+  const inputs: WorkflowRunInput[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    initiatedBy: "service:scheduler",
+    executeWorkflow: (input, _signal, onEvent) => {
+      inputs.push(input);
+      onEvent({ kind: "started", runId: "run-1" } as WorkflowRunEvent);
+      return Promise.resolve();
+    },
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_started"),
+    "schedule_started event",
+  );
+  await service.stop();
+
+  assertEquals(inputs[0].initiatedBy, "service:scheduler");
+  const fired = events.find((e) => e.kind === "schedule_fired");
+  const started = events.find((e) => e.kind === "schedule_started");
+  assertEquals(started?.kind === "schedule_started" && started.runId, "run-1");
+  assertEquals(
+    started?.kind === "schedule_started" && started.replayed,
+    false,
+  );
+  assertEquals(
+    started?.kind === "schedule_started" && fired?.kind === "schedule_fired" &&
+      started.fireTime === fired.fireTime,
+    true,
+  );
+});
+
+Deno.test("ScheduledExecutionService: skipped fires carry the fire time", async () => {
+  const wf = createTestWorkflow("skip-time-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    cronFireDedup: () => Promise.resolve(false),
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_skipped"),
+    "schedule_skipped event",
+  );
+  await service.stop();
+
+  const skipped = events.find((e) => e.kind === "schedule_skipped");
+  assertEquals(
+    skipped?.kind === "schedule_skipped" &&
+      !Number.isNaN(Date.parse(skipped.fireTime)),
+    true,
+  );
+});
+
+Deno.test("ScheduledExecutionService: a refused run never reaches the executor", async () => {
+  const wf = createTestWorkflow("refused-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+  let executions = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executions++;
+      return Promise.resolve();
+    },
+    authorizeRun: (request) =>
+      Promise.resolve({
+        allowed: false,
+        workflowIdOrName: request.workflowName,
+        reason: "denied",
+      }),
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_denied"),
+    "schedule_denied event",
+  );
+  await service.stop();
+
+  assertEquals(executions, 0);
+  const denied = events.find((e) => e.kind === "schedule_denied");
+  assertEquals(denied?.kind === "schedule_denied" && denied.reason, "denied");
+  assertEquals(
+    denied?.kind === "schedule_denied" && typeof denied.fireTime,
+    "string",
+  );
+});
+
+Deno.test("ScheduledExecutionService: replayed runs are authorized and run the authorized workflow", async () => {
+  const requests: { workflowName: string; replayed: boolean }[] = [];
+  const executed: string[] = [];
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: (input, _signal, onEvent) => {
+      executed.push(input.workflowIdOrName);
+      onEvent({ kind: "started", runId: "run-r" } as WorkflowRunEvent);
+      return Promise.resolve();
+    },
+    authorizeRun: (request) => {
+      requests.push({
+        workflowName: request.workflowName,
+        replayed: request.replayed,
+      });
+      return Promise.resolve({
+        allowed: true,
+        workflowIdOrName: "canonical-wf",
+      });
+    },
+  });
+
+  await service.start((e) => events.push(e));
+  service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf-id" });
+  await waitFor(() => executed.length === 1, "replayed run executed");
+  await service.stop();
+
+  assertEquals(requests, [{ workflowName: "wf-id", replayed: true }]);
+  assertEquals(executed, ["canonical-wf"]);
+  const started = events.find((e) => e.kind === "schedule_started");
+  assertEquals(started?.kind === "schedule_started" && started.replayed, true);
+  assertEquals(
+    started?.kind === "schedule_started" && started.workflowName,
+    "canonical-wf",
+  );
+  assertEquals(
+    started?.kind === "schedule_started" && started.fireTime,
+    undefined,
+  );
+});
+
+Deno.test("ScheduledExecutionService: a throwing authorizer refuses the run and the queue keeps going", async () => {
+  const executed: string[] = [];
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: (input) => {
+      executed.push(input.workflowIdOrName);
+      return Promise.resolve();
+    },
+    authorizeRun: (request) =>
+      request.workflowName === "broken"
+        ? Promise.reject(new Error("policy exploded"))
+        : Promise.resolve({
+          allowed: true,
+          workflowIdOrName: request.workflowName,
+        }),
+  });
+
+  await service.start((e) => events.push(e));
+  service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "broken" });
+  service.enqueueForReplay({ pendingRunId: "p-2", workflowIdOrName: "fine" });
+  await waitFor(() => executed.length === 1, "second run executed");
+  await service.stop();
+
+  assertEquals(executed, ["fine"]);
+  const denied = events.find((e) => e.kind === "schedule_denied");
+  assertEquals(
+    denied?.kind === "schedule_denied" &&
+      denied.reason.includes("policy exploded"),
+    true,
+  );
+});

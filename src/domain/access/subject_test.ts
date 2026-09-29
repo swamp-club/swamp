@@ -60,7 +60,7 @@ Deno.test("parseSubject: rejects invalid kind", () => {
   assertThrows(
     () => parseSubject("worker:build-1"),
     Error,
-    'expected "user", "group", or "idp-group"',
+    'expected "user", "group", "idp-group", or "service"',
   );
 });
 
@@ -68,4 +68,11 @@ Deno.test("subjectToString: roundtrips with parseSubject", () => {
   const original = "idp-group:platform-eng";
   const parsed = parseSubject(original);
   assertEquals(subjectToString(parsed), original);
+});
+
+Deno.test("parseSubject: parses service subject", () => {
+  assertEquals(parseSubject("service:scheduler"), {
+    kind: "service",
+    name: "scheduler",
+  });
 });

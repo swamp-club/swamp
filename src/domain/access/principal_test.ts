@@ -55,7 +55,7 @@ Deno.test("parsePrincipal: rejects invalid kind", () => {
   assertThrows(
     () => parsePrincipal("group:admins"),
     Error,
-    'expected "user" or "worker"',
+    'expected "user", "worker" or "service"',
   );
 });
 
@@ -63,4 +63,9 @@ Deno.test("principalToString: roundtrips with parsePrincipal", () => {
   const original = "worker:my-worker";
   const parsed = parsePrincipal(original);
   assertEquals(principalToString(parsed), original);
+});
+
+Deno.test("parsePrincipal: parses service principal", () => {
+  const p = parsePrincipal("service:scheduler");
+  assertEquals(p, { kind: "service", id: "scheduler" });
 });

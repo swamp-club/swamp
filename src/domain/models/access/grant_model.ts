@@ -68,7 +68,7 @@ async function readGrant(context: MethodContext): Promise<Grant | null> {
 
 const CreateArgsSchema = z.object({
   subject: z.string().min(1).describe(
-    'Grant subject (e.g. "user:adam", "group:release-managers")',
+    'Grant subject (e.g. "user:adam", "group:release-managers", "service:scheduler")',
   ),
   effect: EffectSchema,
   actions: z.array(ActionSchema).min(1),

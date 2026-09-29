@@ -64,7 +64,7 @@ Deno.test("accessTokenMintCommand: rejects an unsupported principal kind before 
         "/nonexistent-swamp-repo",
       ]),
     UserError,
-    'Invalid --principal value "agent:swamp-resumer": Invalid principal kind "agent": expected "user" or "worker"',
+    'Invalid --principal value "agent:swamp-resumer": Invalid principal kind "agent": expected "user", "worker" or "service"',
   );
 });
 
@@ -98,4 +98,27 @@ Deno.test("accessTokenMintCommand: --principal help text names both valid kinds"
   );
   assertStringIncludes(principalOpt!.description, "user:<id>");
   assertStringIncludes(principalOpt!.description, "worker:<id>");
+});
+
+Deno.test("accessTokenMintCommand: rejects a service principal before contacting --server", async () => {
+  const { accessTokenMintCommand } = await import("./access_token_mint.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("mint", accessTokenMintCommand);
+
+  await assertRejects(
+    () =>
+      root.parse([
+        "mint",
+        "scheduler-token",
+        "--principal",
+        "service:scheduler",
+        "--server",
+        "ws://localhost:0",
+        "--token",
+        "dummy.token",
+      ]),
+    UserError,
+    "built-in service principal",
+  );
 });

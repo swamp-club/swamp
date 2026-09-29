@@ -196,7 +196,7 @@ export async function resolveWorkflow(
   }
 }
 
-function workflowAccessFields(
+export function workflowAccessFields(
   target: WorkflowEditTarget,
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = { name: target.name };
