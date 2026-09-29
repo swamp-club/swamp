@@ -21,12 +21,13 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { consumeStream, type IssueCreateEvent } from "../../libswamp/mod.ts";
 import {
   createIssueCreateRenderer,
-  renderExtensionRefusal,
   renderExtensionRepositoryHandoff,
   renderRedactionNotice,
   renderRedactionSkipped,
 } from "./issue_create.ts";
 import type { RepositoryDispatchResult } from "../../cli/commands/extension_report_dispatcher.ts";
+
+type Handoff = Extract<RepositoryDispatchResult, { kind: "handoff" }>;
 import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 
 /** Captures console.log calls during `fn` and returns the concatenated output. */
@@ -98,40 +99,9 @@ Deno.test("issue_create renderer (json): extension-lab variant serialises method
   assertEquals(parsed.number, 42);
 });
 
-// ---- renderExtensionRefusal ----
-
-Deno.test("renderExtensionRefusal (log): emits guidance lines, runs without error", () => {
-  renderExtensionRefusal(
-    {
-      extensionName: "@adam/cfgmgmt",
-      reason: "no-repository",
-      guidance: "Line 1\nLine 2",
-    },
-    "log",
-  );
-});
-
-Deno.test("renderExtensionRefusal (json): emits structured refusal payload", async () => {
-  const out = await captureConsoleLog(() => {
-    renderExtensionRefusal(
-      {
-        extensionName: "@adam/cfgmgmt",
-        reason: "pvr-disabled",
-        guidance: "Contact publisher",
-      },
-      "json",
-    );
-  });
-  const parsed = JSON.parse(out);
-  assertEquals(parsed.status, "refused");
-  assertEquals(parsed.reason, "pvr-disabled");
-  assertEquals(parsed.extensionName, "@adam/cfgmgmt");
-  assertStringIncludes(parsed.guidance, "Contact publisher");
-});
-
 // ---- renderExtensionRepositoryHandoff ----
 
-function handoffIssueGh(): RepositoryDispatchResult {
+function handoffIssueGh(): Handoff {
   return {
     kind: "handoff",
     method: "gh",
@@ -144,8 +114,8 @@ function handoffIssueGh(): RepositoryDispatchResult {
 }
 
 function handoffAdvisoryBrowser(
-  opts: Partial<Extract<RepositoryDispatchResult, { kind: "handoff" }>> = {},
-): RepositoryDispatchResult {
+  opts: Partial<Handoff> = {},
+): Handoff {
   return {
     kind: "handoff",
     method: "browser",
@@ -219,25 +189,6 @@ Deno.test("renderExtensionRepositoryHandoff (log): advisory runs without error",
     },
     "log",
   );
-});
-
-Deno.test("renderExtensionRepositoryHandoff (json): refused result delegates to refusal renderer", async () => {
-  const out = await captureConsoleLog(() => {
-    renderExtensionRepositoryHandoff(
-      {
-        result: {
-          kind: "refused",
-          reason: "pvr-disabled",
-          guidance: "no go",
-        },
-        extensionName: "@adam/cfgmgmt",
-      },
-      "json",
-    );
-  });
-  const parsed = JSON.parse(out);
-  assertEquals(parsed.status, "refused");
-  assertEquals(parsed.reason, "pvr-disabled");
 });
 
 // ---- renderRedactionNotice / renderRedactionSkipped ----

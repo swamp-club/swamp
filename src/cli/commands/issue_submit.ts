@@ -38,7 +38,6 @@ import {
 } from "../../libswamp/mod.ts";
 import {
   createIssueCreateRenderer,
-  renderExtensionRefusal,
   renderExtensionRepositoryHandoff,
   renderRedactionNotice,
   renderRedactionSkipped,
@@ -51,14 +50,16 @@ import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 import {
+  type DispatcherDeps,
   dispatchRepositoryReport,
   type ExtensionTarget,
+  type RefusalReason,
   resolveExtensionTarget,
 } from "./extension_report_dispatcher.ts";
 import { collectReporterContext } from "../../infrastructure/process/reporter_context_collector.ts";
 import { VERSION } from "./version.ts";
 
-/** Extension target after refusals have been rendered out — never "refused". */
+/** Extension target after refusals have been thrown — never "refused". */
 export type UsableExtensionTarget = Exclude<
   ExtensionTarget,
   { kind: "refused" }
@@ -156,30 +157,36 @@ async function promptLoginOrEmail(): Promise<"login" | "email"> {
 }
 
 /**
- * Extension pre-flight: resolves the target, renders any refusal, and
- * returns a usable target for the caller to act on. Returns null when
- * the refusal was rendered and the subcommand should exit.
+ * Builds the error for a report swamp could not file. The reason becomes
+ * the error code so `--json` callers can branch on it.
+ */
+function refusalError(
+  extensionName: string,
+  reason: RefusalReason,
+  guidance: string,
+): UserError {
+  return new UserError(
+    `Report not filed against ${extensionName}.\n\n${guidance}`,
+    reason,
+  );
+}
+
+/**
+ * Extension pre-flight: resolves the target and returns a usable target
+ * for the caller to act on. Throws a UserError when the report can't be
+ * filed against the extension.
  *
  * Call this BEFORE {@link resolveDestination} — refusals and repository
  * handoffs don't need Lab auth, so auth-checking the user up-front would
  * spuriously fail commands that were never going to touch the Lab.
  */
 export async function resolveExtensionOrRefuse(
-  ctx: CommandContext,
   extensionName: string,
   repoDir: string,
-): Promise<UsableExtensionTarget | null> {
+): Promise<UsableExtensionTarget> {
   const target = await resolveExtensionTarget(repoDir, extensionName);
   if (target.kind === "refused") {
-    renderExtensionRefusal(
-      {
-        extensionName: target.extensionName,
-        reason: target.reason,
-        guidance: target.guidance,
-      },
-      ctx.outputMode,
-    );
-    return null;
+    throw refusalError(target.extensionName, target.reason, target.guidance);
   }
   return target;
 }
@@ -198,6 +205,7 @@ export async function dispatchExtensionRepositoryReport(
     body: string;
     noRedact?: boolean;
   },
+  deps: Omit<DispatcherDeps, "logger"> = {},
 ): Promise<void> {
   // Redact sensitive content before dispatching to a third-party repo.
   let title = input.title;
@@ -228,8 +236,11 @@ export async function dispatchExtensionRepositoryReport(
       reporterContext,
       outputMode: ctx.outputMode,
     },
-    { logger: ctx.logger },
+    { ...deps, logger: ctx.logger },
   );
+  if (result.kind === "refused") {
+    throw refusalError(target.extensionName, result.reason, result.guidance);
+  }
   renderExtensionRepositoryHandoff(
     { result, extensionName: target.extensionName },
     ctx.outputMode,
@@ -254,9 +265,9 @@ export async function submitIssue(
   const renderer = createIssueCreateRenderer(ctx.outputMode);
 
   if (destination.method === "abort") {
-    libCtx.logger
-      .info`Run "swamp auth login" first, then retry this command.`;
-    return;
+    throw new UserError(
+      "Not logged in. Run `swamp auth login` first, or use --email.",
+    );
   }
 
   // Redact sensitive content before any submission path.

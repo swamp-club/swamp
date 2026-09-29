@@ -10,7 +10,7 @@ the command to run from inside a swamp repo (or pass `--repo-dir <path>`).
 | --------------------------- | --------------------------------------------------- |
 | `@swamp/*`                  | swamp.club Lab, tagged with extension metadata      |
 | Third-party with repository | Publisher's repo (via `gh` CLI or browser handoff)  |
-| Third-party without repo    | Refused cleanly; points at publisher's profile page |
+| Third-party without repo    | Not filed; error points at publisher's profile page |
 
 ## Examples
 
@@ -22,7 +22,8 @@ swamp issue security --extension @adam/cfgmgmt --title "..." --body "..." --json
 
 ## Refusal Semantics
 
-Output shapes differ by routing path (`extension-lab`, `gh` handoff, browser
-handoff, refusal). Refusals exit **0**, not as errors — the CLI is honoring the
-user's intent when the target can't accept reports. See
+When swamp can't file the report, the command fails with a user error (exit
+**1**) whose message starts `Report not filed against <name>.` and carries the
+guidance. With `--json` the error is `{"error": "...", "code": "<reason>"}` on
+stderr, where `code` is `not-pulled`, `no-repository`, or `pvr-disabled`. See
 [output_shapes.md](output_shapes.md) for the full shape catalog.

@@ -153,13 +153,10 @@ export const issueSecurityCommand = new Command()
 
     let extensionTarget: UsableExtensionTarget | undefined;
     if (options.extension) {
-      const resolved = await resolveExtensionOrRefuse(
-        ctx,
+      extensionTarget = await resolveExtensionOrRefuse(
         options.extension,
         resolveRepoDir(options.repoDir),
       );
-      if (resolved === null) return;
-      extensionTarget = resolved;
     }
 
     const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"

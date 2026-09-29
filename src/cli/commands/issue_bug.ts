@@ -151,13 +151,10 @@ export const issueBugCommand = new Command()
     // (they never touch swamp-club).
     let extensionTarget: UsableExtensionTarget | undefined;
     if (options.extension) {
-      const resolved = await resolveExtensionOrRefuse(
-        ctx,
+      extensionTarget = await resolveExtensionOrRefuse(
         options.extension,
         resolveRepoDir(options.repoDir),
       );
-      if (resolved === null) return; // refusal rendered
-      extensionTarget = resolved;
     }
 
     // Lab auth is only needed for the plain path and the `@swamp/*` path.

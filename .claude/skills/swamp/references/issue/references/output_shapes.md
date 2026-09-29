@@ -83,19 +83,15 @@ to assert on results programmatically.
 }
 ```
 
-**Refused** (extension not pulled, publisher declared no repo, or PVR disabled
-for a security report):
+**Not filed** (extension not pulled, publisher declared no repo, or PVR disabled
+for a security report) — exit **1**, error on stderr:
 
 ```json
 {
-  "status": "refused",
-  "reason": "...",
-  "guidance": "..."
+  "error": "Report not filed against <name>.\n\n<guidance>",
+  "code": "not-pulled | no-repository | pvr-disabled"
 }
 ```
-
-Refusals exit **0**, not as errors — the CLI is honoring the user's intent when
-the target can't accept reports.
 
 ## Security-Specific Variants
 
@@ -104,7 +100,7 @@ For `swamp issue security --extension` against a third-party GitHub repo, the
 status:
 
 - PVR enabled → `variant: "advisory"`, URL points at the advisory form.
-- PVR disabled → `status: "refused"` with guidance to contact the publisher
-  privately.
+- PVR disabled → not filed: exit 1 with `code: "pvr-disabled"` and guidance to
+  contact the publisher privately.
 - Check failed or `gh` unavailable → `variant: "advisory"` with a `fallbackUrl`
   field pointing at the public issue URL.
