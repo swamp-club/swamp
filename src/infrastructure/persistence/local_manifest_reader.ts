@@ -61,6 +61,52 @@ export function readLocalManifestIdentity(
 export function readManifestIdentityAt(
   manifestPath: string,
 ): LocalManifestIdentity | null {
+  const obj = readManifestObjectAt(manifestPath);
+  if (obj === null) return null;
+  const name = obj.name;
+  const version = obj.version;
+
+  if (typeof name !== "string" || name.length === 0) {
+    if (version !== undefined) {
+      logger
+        .warn`Manifest at ${manifestPath} declares version but not name — both are required to override synthetic identity`;
+    }
+    return null;
+  }
+
+  if (typeof version !== "string" || version.length === 0) {
+    logger
+      .warn`Manifest at ${manifestPath} declares name but not version — both are required to override synthetic identity`;
+    return null;
+  }
+
+  return { name, version };
+}
+
+/**
+ * Reads a `manifest.yaml` at an arbitrary path and returns its top-level
+ * `dependencies` — the extension refs it declares. Returns an empty array
+ * on missing file, malformed YAML, or when `dependencies` is absent or not
+ * an array. Non-string items are dropped. Like
+ * {@link readManifestIdentityAt}, it does NOT validate the full manifest
+ * schema, so an older installed manifest never blocks a caller.
+ */
+export function readManifestDependenciesAt(manifestPath: string): string[] {
+  const obj = readManifestObjectAt(manifestPath);
+  if (obj === null || !Array.isArray(obj.dependencies)) return [];
+  return obj.dependencies.filter((dep): dep is string =>
+    typeof dep === "string"
+  );
+}
+
+/**
+ * Reads and parses a `manifest.yaml` into its top-level object. Returns
+ * `null` on a missing file (silent), and on an unreadable file, malformed
+ * YAML or a non-object document (warning logged).
+ */
+function readManifestObjectAt(
+  manifestPath: string,
+): Record<string, unknown> | null {
   let raw: string;
   try {
     raw = Deno.readTextFileSync(manifestPath);
@@ -83,23 +129,5 @@ export function readManifestIdentityAt(
     return null;
   }
 
-  const obj = parsed as Record<string, unknown>;
-  const name = obj.name;
-  const version = obj.version;
-
-  if (typeof name !== "string" || name.length === 0) {
-    if (version !== undefined) {
-      logger
-        .warn`Manifest at ${manifestPath} declares version but not name — both are required to override synthetic identity`;
-    }
-    return null;
-  }
-
-  if (typeof version !== "string" || version.length === 0) {
-    logger
-      .warn`Manifest at ${manifestPath} declares name but not version — both are required to override synthetic identity`;
-    return null;
-  }
-
-  return { name, version };
+  return parsed as Record<string, unknown>;
 }

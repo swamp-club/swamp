@@ -1949,3 +1949,421 @@ Deno.test(
     }
   },
 );
+
+/**
+ * Lays down a current-layout extension on disk — one model file plus the
+ * installed `manifest.yaml` copy declaring `dependencies` — and returns
+ * its lockfile entry. The entry omits `filesChecksum` and the manifest
+ * version matches the pin, so only the dependency check can move the
+ * entry off `up_to_date`.
+ */
+async function seedExtensionWithDependencies(
+  tmpDir: string,
+  name: string,
+  dependencies: string[],
+): Promise<{ version: string; pulledAt: string; files: string[] }> {
+  const extRoot = join(tmpDir, ".swamp", "pulled-extensions", name);
+  await ensureDir(join(extRoot, "models"));
+  await Deno.writeTextFile(join(extRoot, "models", "main.ts"), "// installed");
+  const depLines = dependencies.map((d) => `  - "${d}"\n`).join("");
+  await Deno.writeTextFile(
+    join(extRoot, "manifest.yaml"),
+    `# generated header\nname: "${name}"\nversion: "1.0.0"\n` +
+      (dependencies.length > 0 ? `dependencies:\n${depLines}` : ""),
+  );
+  return {
+    version: "1.0.0",
+    pulledAt: "2026-01-01T00:00:00Z",
+    files: [
+      `.swamp/pulled-extensions/${name}/models/main.ts`,
+      `.swamp/pulled-extensions/${name}/manifest.yaml`,
+    ],
+  };
+}
+
+/**
+ * Stub `installExtensionFn` that records each ref it is called with and
+ * simulates installExtension's dependency loop: it seeds `dependency` on
+ * disk and records its lockfile entry.
+ */
+function makeInstallRecordingDependency(
+  tmpDir: string,
+  lockfilePath: string,
+  dependency: string,
+  calls: string[],
+): InstallExtensionFn {
+  return async (ref) => {
+    calls.push(ref.name);
+    const depEntry = await seedExtensionWithDependencies(
+      tmpDir,
+      dependency,
+      [],
+    );
+    const upstream = await readUpstreamExtensions(lockfilePath);
+    upstream[dependency] = depEntry;
+    await Deno.writeTextFile(lockfilePath, JSON.stringify(upstream, null, 2));
+    return undefined;
+  };
+}
+
+Deno.test(
+  "extensionInstall: re-pulls a parent whose declared dependency has no lockfile entry (swamp-club#2646)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/parent": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/parent",
+            ["@test/dep"],
+          ),
+        }),
+      );
+
+      const calls: string[] = [];
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: makeInstallRecordingDependency(
+            tmpDir,
+            lockfilePath,
+            "@test/dep",
+            calls,
+          ),
+        }),
+      );
+
+      assertEquals(calls, ["@test/parent"]);
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.installed, 1);
+        assertEquals(completed.data.upToDate, 0);
+        assertEquals(completed.data.entries[0].status, "installed");
+      }
+      const upstream = await readUpstreamExtensions(lockfilePath);
+      assertEquals(upstream["@test/dep"]?.version, "1.0.0");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: a parent whose declared dependencies are all recorded stays up to date",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/parent": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/parent",
+            ["@test/dep"],
+          ),
+          "@test/dep": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/dep",
+            [],
+          ),
+        }),
+      );
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            Promise.reject(new Error("should not be called for up-to-date")),
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.upToDate, 2);
+        assertEquals(completed.data.installed, 0);
+        assertEquals(completed.data.failed, 0);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: a constrained dependency ref is matched by name",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/parent": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/parent",
+            ["@test/dep@^1.0.0"],
+          ),
+          "@test/dep": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/dep",
+            [],
+          ),
+        }),
+      );
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            Promise.reject(new Error("should not be called for up-to-date")),
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.upToDate, 2);
+        assertEquals(completed.data.failed, 0);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: a manifest with no dependencies stays up to date",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/solo": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/solo",
+            [],
+          ),
+        }),
+      );
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            Promise.reject(new Error("should not be called for up-to-date")),
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.upToDate, 1);
+        assertEquals(completed.data.failed, 0);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: a dependency installed earlier in the same run does not re-pull a second parent",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/first": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/first",
+            ["@test/shared"],
+          ),
+          "@test/second": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/second",
+            ["@test/shared"],
+          ),
+        }),
+      );
+
+      const calls: string[] = [];
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: makeInstallRecordingDependency(
+            tmpDir,
+            lockfilePath,
+            "@test/shared",
+            calls,
+          ),
+        }),
+      );
+
+      assertEquals(calls, ["@test/first"]);
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.installed, 1);
+        assertEquals(completed.data.upToDate, 1);
+        assertEquals(completed.data.entries[1].name, "@test/second");
+        assertEquals(completed.data.entries[1].status, "up_to_date");
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: a parent written before its dependency failed is retried on the next run",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      // Parent recorded in the lockfile but absent from disk, dependency
+      // unrecorded — the state before the first restore.
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/parent": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [
+              ".swamp/pulled-extensions/@test/parent/models/main.ts",
+              ".swamp/pulled-extensions/@test/parent/manifest.yaml",
+            ],
+          },
+        }),
+      );
+
+      // First run: installExtension writes the parent, then its
+      // dependency install throws.
+      const ctx = createLibSwampContext({});
+      const first = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: async () => {
+            await seedExtensionWithDependencies(tmpDir, "@test/parent", [
+              "@test/dep",
+            ]);
+            throw new Error("simulated dependency install failure");
+          },
+        }),
+      );
+      const firstCompleted = first.find((e) => e.kind === "completed");
+      if (firstCompleted?.kind === "completed") {
+        assertEquals(firstCompleted.data.failed, 1);
+      }
+
+      // Second run: the parent is intact on disk, but its dependency is
+      // still unrecorded, so it is re-pulled rather than up to date.
+      const calls: string[] = [];
+      const second = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: makeInstallRecordingDependency(
+            tmpDir,
+            lockfilePath,
+            "@test/dep",
+            calls,
+          ),
+        }),
+      );
+
+      assertEquals(calls, ["@test/parent"]);
+      const completed = second.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.installed, 1);
+        assertEquals(completed.data.upToDate, 0);
+        assertEquals(completed.data.failed, 0);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: an unparsable declared dependency fails only its entry",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/parent": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/parent",
+            ["acme/dep"],
+          ),
+          "@test/other": await seedExtensionWithDependencies(
+            tmpDir,
+            "@test/other",
+            [],
+          ),
+        }),
+      );
+
+      const calls: string[] = [];
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: (ref) => {
+            calls.push(ref.name);
+            return Promise.reject(
+              new Error(`Invalid extension name: "acme/dep"`),
+            );
+          },
+        }),
+      );
+
+      assertEquals(calls, ["@test/parent"]);
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.failed, 1);
+        assertEquals(completed.data.upToDate, 1);
+        assertEquals(completed.data.entries[0].status, "failed");
+        assertEquals(completed.data.entries[1].status, "up_to_date");
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);

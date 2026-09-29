@@ -22,7 +22,10 @@ import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/pa
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
-import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
+import {
+  readManifestDependenciesAt,
+  readManifestIdentityAt,
+} from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { assertContainedPath } from "../../infrastructure/persistence/safe_path.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -137,7 +140,8 @@ export interface ExtensionInstallDeps {
  * Reads upstream_extensions.json and re-pulls any extension whose files
  * are missing from disk, whose installed version disagrees with the
  * lockfile pin, whose content has drifted from the recorded
- * filesChecksum, or which still sits at a legacy on-disk layout (gen-1
+ * filesChecksum, which declares a dependency with no lockfile entry, or
+ * which still sits at a legacy on-disk layout (gen-1
  * `extensions/<type>/…` or gen-2 flat `.swamp/pulled-extensions/<type>/…`).
  * Analogous to `npm install` but also performs layout migration on legacy
  * repos — a single call brings the repo to the current per-extension
@@ -225,6 +229,23 @@ export async function* extensionInstall(
               // Degrade gracefully on I/O errors — don't block install.
             }
           }
+
+          // Dependency check: every dependency the installed manifest
+          // declares needs a lockfile entry. A dependency install that
+          // failed after the parent was written, or a hand-edited
+          // lockfile, leaves the parent intact and the dependency
+          // unrecorded. Re-pulling the parent runs installExtension's
+          // dependency loop, which installs it (swamp-club#2646).
+          if (
+            needs === "up_to_date" &&
+            await hasUnrecordedDependency(
+              join(extRoot, "manifest.yaml"),
+              lockfileRepository,
+              deps.lockfilePath,
+            )
+          ) {
+            needs = "install";
+          }
         }
 
         if (needs === "up_to_date") {
@@ -305,6 +326,42 @@ export async function* extensionInstall(
       };
     })(),
   );
+}
+
+/**
+ * Returns true when the manifest at `manifestPath` declares a dependency
+ * with no lockfile entry. Dependencies are matched by name, so a
+ * constrained ref (`@x/y@^1.0.0`) is satisfied by any recorded version —
+ * the same rule installExtension's dependency loop applies.
+ *
+ * `snapshot` is the lockfile as the restore read it at the start, and
+ * installs made earlier in the same run are not in it. A dependency the
+ * snapshot lacks is looked up again in the lockfile on disk, so a
+ * dependency another parent just installed is not re-pulled.
+ *
+ * A dependency that does not parse as an extension ref counts as
+ * unrecorded rather than throwing: the re-pull then fails on the same
+ * ref inside the caller's per-entry try, so it is reported as that
+ * entry's failure instead of aborting the whole restore.
+ */
+async function hasUnrecordedDependency(
+  manifestPath: string,
+  snapshot: LockfileRepository,
+  lockfilePath: string,
+): Promise<boolean> {
+  let current: LockfileRepository | undefined;
+  for (const dep of readManifestDependenciesAt(manifestPath)) {
+    let depName: string;
+    try {
+      depName = parseExtensionRef(dep).name;
+    } catch {
+      return true;
+    }
+    if (snapshot.getEntry(depName) !== null) continue;
+    current ??= await LockfileRepository.create(lockfilePath);
+    if (current.getEntry(depName) === null) return true;
+  }
+  return false;
 }
 
 /**
