@@ -160,3 +160,16 @@ export function assertContainedPath(
     throw new PathTraversalError(relativePath, boundary, resolvedPath);
   }
 }
+
+/**
+ * Returns true when `name` is exactly one safe path segment: a non-empty
+ * string that is not `.` or `..` and contains no separator or NUL. Use it
+ * before joining an identifier read back from persisted data (such as a run
+ * ID from a run record) onto a directory — `assertSafePath` alone accepts a
+ * path equal to its boundary, so `""`, `.` or `..` would slip through.
+ */
+export function isSinglePathSegment(name: unknown): name is string {
+  return typeof name === "string" && name !== "" && name !== "." &&
+    name !== ".." && !name.includes("/") && !name.includes("\\") &&
+    !name.includes("\0");
+}

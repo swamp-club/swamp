@@ -1348,3 +1348,150 @@ Deno.test("YamlWorkflowRunRepository.findGlobalById: returns null when the disco
     assertEquals(await repo.findGlobalById(run.id), null);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the IDs of the runs it deletes, including on a dry run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.cancel("test");
+    await repo.save(workflow.id, finished);
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+    // An unparseable (empty) run file is deleted too; its ID comes from the
+    // filename.
+    const emptyId = crypto.randomUUID();
+    await Deno.writeTextFile(
+      join(
+        dir,
+        ".swamp",
+        "workflow-runs",
+        workflow.id,
+        `workflow-run-${emptyId}.yaml`,
+      ),
+      "",
+    );
+    const cutoff = new Date(Date.now() + 60_000);
+
+    const preview = await repo.deleteOlderThan(cutoff, { dryRun: true });
+    assertEquals(preview.deletedRunIds.sort(), [finished.id, emptyId].sort());
+    assertEquals((await repo.listRunIds()).size, 3);
+
+    const result = await repo.deleteOlderThan(cutoff);
+    assertEquals(result.deletedRunIds.sort(), [finished.id, emptyId].sort());
+    assertEquals(await repo.listRunIds(), new Set([running.id]));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.listRunIds: lists run IDs across workflows and ignores other files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    assertEquals(await repo.listRunIds(), new Set());
+
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const otherWorkflowId = createWorkflowId(crypto.randomUUID());
+    const otherRunId = crypto.randomUUID();
+    const otherDir = join(dir, ".swamp", "workflow-runs", otherWorkflowId);
+    await ensureDir(otherDir);
+    await Deno.writeTextFile(
+      join(otherDir, `workflow-run-${otherRunId}.yaml`),
+      "",
+    );
+    await Deno.writeTextFile(
+      join(otherDir, `workflow-run-${otherRunId}.log`),
+      "",
+    );
+
+    assertEquals(await repo.listRunIds(), new Set([run.id, otherRunId]));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: never reports a run ID that is not one path segment", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    for (const badId of ["", "..", "a/b"]) {
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      run.cancel("test");
+      await repo.save(workflow.id, run);
+      // Rewrite the persisted ID as a tampered or corrupt record would.
+      const path = repo.getPath(workflow.id, run.id);
+      const content = await Deno.readTextFile(path);
+      await Deno.writeTextFile(
+        path,
+        content.replace(`id: ${run.id}`, `id: ${JSON.stringify(badId)}`),
+      );
+    }
+    // Empty (unparseable) files whose filename yields "." or "..".
+    await Deno.writeTextFile(join(runsDir, "workflow-run-..yaml"), "");
+    await Deno.writeTextFile(join(runsDir, "workflow-run-...yaml"), "");
+
+    const result = await repo.deleteOlderThan(new Date(Date.now() + 60_000));
+
+    assertEquals(result.deleted, 5);
+    // The filename fallback yields the real run IDs for the three tampered
+    // records; the two dot names are dropped.
+    assertEquals(result.deletedRunIds.length, 3);
+    assertEquals(result.deletedRunIds.includes(""), false);
+    assertEquals(result.deletedRunIds.includes(".."), false);
+    assertEquals(result.deletedRunIds.includes("."), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the deleted file's run ID, not the ID in its body", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.cancel("test");
+    await repo.save(workflow.id, finished);
+    // The body names another, live run.
+    const liveRunId = crypto.randomUUID();
+    const path = repo.getPath(workflow.id, finished.id);
+    const content = await Deno.readTextFile(path);
+    await Deno.writeTextFile(
+      path,
+      content.replace(`id: ${finished.id}`, `id: ${liveRunId}`),
+    );
+
+    const result = await repo.deleteOlderThan(new Date(Date.now() + 60_000));
+
+    assertEquals(result.deletedRunIds, [finished.id]);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.listRunIdsForWorkflow: lists one workflow's run IDs from filenames, including empty files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    assertEquals(await repo.listRunIdsForWorkflow(workflow.id), []);
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const emptyId = crypto.randomUUID();
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await Deno.writeTextFile(join(runsDir, `workflow-run-${emptyId}.yaml`), "");
+    await Deno.writeTextFile(join(runsDir, "workflow-run-..yaml"), "");
+    // Another workflow's run is not included.
+    const otherDir = join(dir, ".swamp", "workflow-runs", crypto.randomUUID());
+    await ensureDir(otherDir);
+    await Deno.writeTextFile(
+      join(otherDir, `workflow-run-${crypto.randomUUID()}.yaml`),
+      "",
+    );
+
+    assertEquals(
+      (await repo.listRunIdsForWorkflow(workflow.id)).sort(),
+      [run.id, emptyId].sort(),
+    );
+  });
+});

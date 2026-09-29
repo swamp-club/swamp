@@ -156,6 +156,18 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
   for one invocation.
 - **Terminal runs only**: only succeeded, failed or cancelled runs are deleted.
   Running and suspended workflow runs are never deleted, however old.
+- **Run snapshots**: each collected run's evaluated-workflow snapshot
+  (`.swamp/workflows-evaluated/runs/{run-id}/`) goes with it. A snapshot with
+  no run record is an orphan and is removed once it is older than both the
+  workflow-run retention and one hour (`MIN_ORPHAN_SNAPSHOT_AGE_MS`); the age
+  guard exists because the snapshot is written before the run record's first
+  save. `swamp workflow delete` removes the snapshots of the runs it deletes,
+  after the runs. Run IDs always come from the `workflow-run-{run-id}.yaml`
+  filenames, never from a record's body, and must be a single path segment.
+  Orphan detection compares against the run records in the same datastore, so
+  `workflow-runs` and `workflows-evaluated` must resolve to the same datastore
+  (the default); split across tiers, snapshots of runs recorded elsewhere look
+  orphaned once past retention.
 - **Run logs**: an output's run log goes with it, found through the output's
   recorded `logFile`. Run logs are always written under the repo-local
   `.swamp/outputs/`, even when outputs are stored in a datastore. A `logFile`
@@ -256,7 +268,8 @@ Real files, not symlinks, tracked in git.
 .swamp/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 ```
 
-`swamp run gc` covers the `workflow-runs/` and `outputs/` directories (see
+`swamp run gc` covers the `workflow-runs/` and `outputs/` directories, plus the
+per-run snapshots under `workflows-evaluated/runs/` (see
 [Run Garbage Collection](#run-garbage-collection) above).
 
 See [datastores.md](../enablers/datastores.md) for how the datastore path is

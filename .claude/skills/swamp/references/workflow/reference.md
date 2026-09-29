@@ -504,9 +504,10 @@ apiKey: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
   `swamp vault delete <vault> <key>`. An input used only inside `vault.get`
   needs no placeholder default.
 - If a secret was already passed as an input: rotate it, then remove the runs
-  (`swamp run gc --older-than` for finished runs, or `swamp workflow delete`)
-  and the affected `.swamp/definitions-evaluated/` files and model data
-  (`swamp data delete <model> <data_name>`), which neither command removes.
+  (`swamp run gc --older-than` for finished runs, or `swamp workflow delete`),
+  which also removes each run's `.swamp/workflows-evaluated/runs/<run-id>/`
+  snapshot, and the affected `.swamp/definitions-evaluated/` files and model
+  data (`swamp data delete <model> <data_name>`), which neither command removes.
   Suspended and running runs are never removed by `run gc`.
 
 ## Evaluate Workflows

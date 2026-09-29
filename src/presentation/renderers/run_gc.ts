@@ -42,7 +42,8 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
     return {
       collecting: () => {},
       completed: (e) => {
-        const total = e.data.workflowRunsDeleted + e.data.outputsDeleted;
+        const total = e.data.workflowRunsDeleted + e.data.outputsDeleted +
+          e.data.evaluatedSnapshotsDeleted;
         const totalBytes = formatBytes(e.data.totalBytesReclaimed);
         if (e.data.dryRun) {
           logger
@@ -50,6 +51,8 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
             formatBytes(e.data.workflowRunBytesReclaimed)
           }), ${e.data.outputsDeleted} output(s) (${
             formatBytes(e.data.outputBytesReclaimed)
+          }), ${e.data.evaluatedSnapshotsDeleted} run snapshot(s) (${
+            formatBytes(e.data.evaluatedSnapshotBytesReclaimed)
           }), total: ${total} items (${totalBytes})`;
           return;
         }
@@ -58,6 +61,8 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
           formatBytes(e.data.workflowRunBytesReclaimed)
         }), ${e.data.outputsDeleted} output(s) (${
           formatBytes(e.data.outputBytesReclaimed)
+        }), ${e.data.evaluatedSnapshotsDeleted} run snapshot(s) (${
+          formatBytes(e.data.evaluatedSnapshotBytesReclaimed)
         }), total: ${total} items (${totalBytes})`;
       },
       error: (e) => {
@@ -78,6 +83,9 @@ class JsonRunGcRenderer implements Renderer<RunGcEvent> {
             workflowRunBytesReclaimed: e.data.workflowRunBytesReclaimed,
             outputsDeleted: e.data.outputsDeleted,
             outputBytesReclaimed: e.data.outputBytesReclaimed,
+            evaluatedSnapshotsDeleted: e.data.evaluatedSnapshotsDeleted,
+            evaluatedSnapshotBytesReclaimed:
+              e.data.evaluatedSnapshotBytesReclaimed,
             totalBytesReclaimed: e.data.totalBytesReclaimed,
             dryRun: e.data.dryRun,
           },
@@ -114,6 +122,9 @@ export function renderRunGcPreview(
         workflowRunBytesReclaimable: preview.workflowRunBytesReclaimable,
         outputsToDelete: preview.outputsToDelete,
         outputBytesReclaimable: preview.outputBytesReclaimable,
+        evaluatedSnapshotsToDelete: preview.evaluatedSnapshotsToDelete,
+        evaluatedSnapshotBytesReclaimable:
+          preview.evaluatedSnapshotBytesReclaimable,
         totalBytesReclaimable: preview.totalBytesReclaimable,
       },
       null,
@@ -121,13 +132,16 @@ export function renderRunGcPreview(
     ));
   } else {
     const logger = getSwampLogger(["run", "gc"]);
-    const total = preview.workflowRunsToDelete + preview.outputsToDelete;
+    const total = preview.workflowRunsToDelete + preview.outputsToDelete +
+      preview.evaluatedSnapshotsToDelete;
     if (total === 0) return;
     logger
       .info`Run GC preview: ${preview.workflowRunsToDelete} workflow run(s) (${
       formatBytes(preview.workflowRunBytesReclaimable)
     }), ${preview.outputsToDelete} output(s) (${
       formatBytes(preview.outputBytesReclaimable)
+    }), ${preview.evaluatedSnapshotsToDelete} run snapshot(s) (${
+      formatBytes(preview.evaluatedSnapshotBytesReclaimable)
     }), total: ${formatBytes(preview.totalBytesReclaimable)} reclaimable`;
   }
 }

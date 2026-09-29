@@ -1564,6 +1564,9 @@ of the definition as loaded from disk (`definitionFingerprint`), and one of the
 evaluated workflow (`fingerprint`), whose per-run snapshot is stored in
 `.swamp/workflows-evaluated/runs/{runId}/`. Evaluation resolves expressions such
 as `inputs.*`, so the evaluated fingerprint also changes with the run's inputs.
+The snapshot shares its run's lifetime: `swamp run gc` removes it with the run
+(and sweeps orphaned snapshots older than retention), and `swamp workflow
+delete` removes the snapshots of the runs it deletes.
 On recovery, the current definition's fingerprint is compared with the stored
 definition fingerprint. If they differ, recovery is refused, and the refusal
 tells the operator to start a new run with `swamp workflow run`. There is no

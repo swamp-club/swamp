@@ -59,7 +59,7 @@ export const runGcCommand = withRemoteOptions(
   new Command()
     .name("gc")
     .description(
-      "Garbage-collect old workflow runs and model method outputs. Running and suspended runs are never deleted regardless of age.",
+      "Garbage-collect old workflow runs, their evaluated-workflow snapshots, and model method outputs. Orphaned snapshots are removed once past retention. Running and suspended runs are never deleted regardless of age.",
     )
     .example("Preview what would be collected", "swamp run gc --dry-run")
     .example("Run GC with default 30-day retention", "swamp run gc --force")
@@ -106,7 +106,7 @@ export const runGcCommand = withRemoteOptions(
     const renderer = createRunGcRenderer(cliCtx.outputMode);
     renderer.handlers().completed({
       kind: "completed",
-      data: response.data as unknown as RunGcData,
+      data: runGcDataFromServer(response.data),
     });
     return;
   }
@@ -138,7 +138,8 @@ export const runGcCommand = withRemoteOptions(
   ) {
     const preview = await runGcPreview(ctx, deps, gcInput);
     if (
-      preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0
+      preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0 &&
+      preview.evaluatedSnapshotsToDelete === 0
     ) {
       cliCtx.logger.info("Nothing to clean up.");
       return;
@@ -160,3 +161,18 @@ export const runGcCommand = withRemoteOptions(
     renderer.handlers(),
   );
 });
+
+/**
+ * Reads a `run.gc` server response as RunGcData. A server older than the
+ * CLI omits fields added since (such as `evaluatedSnapshotsDeleted`); they
+ * default to 0 so the renderer never prints `undefined` or `NaN`.
+ */
+export function runGcDataFromServer(data: Record<string, unknown>): RunGcData {
+  const result = data as unknown as RunGcData;
+  return {
+    ...result,
+    evaluatedSnapshotsDeleted: result.evaluatedSnapshotsDeleted ?? 0,
+    evaluatedSnapshotBytesReclaimed: result.evaluatedSnapshotBytesReclaimed ??
+      0,
+  };
+}

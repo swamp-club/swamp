@@ -28,13 +28,17 @@ import { z } from "zod";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
-import { assertSafePath } from "./safe_path.ts";
+import { assertSafePath, isSinglePathSegment } from "./safe_path.ts";
 import {
   isFilenameSafeName,
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  RunSnapshotInfo,
+  RunSnapshotRepository,
+} from "../../domain/workflows/repositories.ts";
 
 export interface EvaluatedWorkflowCache {
   workflow: Workflow;
@@ -77,7 +81,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
  * (or workflow-{uuid}.yaml for legacy/non-filename-safe names).
  * This directory contains workflows with all expressions resolved.
  */
-export class YamlEvaluatedWorkflowRepository {
+export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   private readonly baseDir: string;
   private readonly idToActualPath = new Map<WorkflowId, string>();
 
@@ -331,8 +335,7 @@ export class YamlEvaluatedWorkflowRepository {
   }
 
   async saveForRun(runId: string, workflow: Workflow): Promise<void> {
-    const dir = join(this.baseDir, "runs", runId);
-    await assertSafePath(dir, this.baseDir);
+    const dir = await this.runDir(runId);
     await ensureDir(dir);
 
     const targetPath = join(dir, "evaluated-workflow.yaml");
@@ -344,8 +347,7 @@ export class YamlEvaluatedWorkflowRepository {
   }
 
   async findByRunId(runId: string): Promise<Workflow | null> {
-    const dir = join(this.baseDir, "runs", runId);
-    await assertSafePath(dir, this.baseDir);
+    const dir = await this.runDir(runId);
     const targetPath = join(dir, "evaluated-workflow.yaml");
     try {
       const content = await Deno.readTextFile(targetPath);
@@ -361,9 +363,53 @@ export class YamlEvaluatedWorkflowRepository {
     return null;
   }
 
+  async listRunSnapshots(): Promise<RunSnapshotInfo[]> {
+    const runsDir = join(this.baseDir, "runs");
+    const snapshots: RunSnapshotInfo[] = [];
+    try {
+      for await (const entry of Deno.readDir(runsDir)) {
+        if (
+          !entry.isDirectory || entry.name.startsWith(".") ||
+          !isSinglePathSegment(entry.name)
+        ) continue;
+        // An unknown mtime counts as fresh, so the orphan age guard never
+        // collects a snapshot whose age it cannot establish.
+        try {
+          const stat = await Deno.stat(
+            join(runsDir, entry.name, "evaluated-workflow.yaml"),
+          );
+          snapshots.push({
+            runId: entry.name,
+            modifiedAt: stat.mtime ?? new Date(),
+            sizeBytes: stat.size,
+          });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+          // The snapshot file is missing (partial write or concurrent
+          // delete) — fall back to the directory itself so the empty
+          // directory is still collectable.
+          try {
+            const dirStat = await Deno.stat(join(runsDir, entry.name));
+            snapshots.push({
+              runId: entry.name,
+              modifiedAt: dirStat.mtime ?? new Date(),
+              sizeBytes: 0,
+            });
+          } catch (dirError) {
+            if (!(dirError instanceof Deno.errors.NotFound)) throw dirError;
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return [];
+      throw error;
+    }
+    return snapshots;
+  }
+
   async deleteForRun(runId: string): Promise<void> {
-    const dir = join(this.baseDir, "runs", runId);
-    await assertSafePath(dir, this.baseDir);
+    const dir = await this.runDir(runId);
+    await this.notifyDirty(dir);
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {
@@ -371,6 +417,22 @@ export class YamlEvaluatedWorkflowRepository {
         throw error;
       }
     }
+  }
+
+  /**
+   * Resolves `runs/<runId>/`. The run ID must be a single path segment:
+   * `""`, `.` or `..` would resolve to `runs/` or the repository base itself,
+   * which `assertSafePath` accepts because it equals or sits inside the base.
+   */
+  private async runDir(runId: string): Promise<string> {
+    if (!isSinglePathSegment(runId)) {
+      throw new Error(
+        `Invalid run ID for a workflow snapshot path: ${JSON.stringify(runId)}`,
+      );
+    }
+    const dir = join(this.baseDir, "runs", runId);
+    await assertSafePath(dir, this.baseDir);
+    return dir;
   }
 
   private resolveWritePath(workflow: Workflow): string {

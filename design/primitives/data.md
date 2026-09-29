@@ -219,7 +219,7 @@ versions:
 | `swamp data gc`                 | Phase 1: whole names whose `lifetime` expired. Phase 2: per-name version GC              | `src/domain/data/data_lifecycle_service.ts` `deleteExpiredData`                |
 | `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a model                     | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
 | `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                 | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |
-| `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records; never `data/`                               | `src/domain/data/run_lifecycle_service.ts`                                     |
+| `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records and their run snapshots; never `data/`       | `src/domain/data/run_lifecycle_service.ts`                                     |
 
 Post-run GC applies both count and duration caps; its failures warn and never
 fail the run. `swamp data gc` phase 2 collects by count or duration.

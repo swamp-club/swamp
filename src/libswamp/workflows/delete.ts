@@ -26,6 +26,7 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { isSinglePathSegment } from "../../infrastructure/persistence/safe_path.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
@@ -75,6 +76,10 @@ export interface WorkflowDeleteDeps {
   pathExists: (path: string) => Promise<boolean>;
   countRuns: (workflowId: WorkflowId) => Promise<number>;
   deleteRuns: (workflowId: WorkflowId) => Promise<number>;
+  /** Lists a workflow's run IDs from the run filenames. */
+  listRunIds: (workflowId: WorkflowId) => Promise<string[]>;
+  /** Deletes the per-run evaluated-workflow snapshots of the given runs. */
+  deleteRunSnapshots: (runIds: readonly string[]) => Promise<void>;
   deleteEvaluated: (workflowId: WorkflowId) => Promise<void>;
   deleteWorkflow: (workflowId: WorkflowId) => Promise<void>;
 }
@@ -125,6 +130,16 @@ export function createWorkflowDeleteDeps(
     },
     deleteRuns: (workflowId) =>
       workflowRunRepo.deleteAllByWorkflowId(workflowId),
+    listRunIds: (workflowId) =>
+      workflowRunRepo.listRunIdsForWorkflow(workflowId),
+    deleteRunSnapshots: async (runIds) => {
+      for (const runId of runIds) {
+        // listRunIds already filters, but the IDs come from the filesystem;
+        // skip any that cannot name a snapshot directory.
+        if (!isSinglePathSegment(runId)) continue;
+        await evaluatedWorkflowRepo.deleteForRun(runId);
+      }
+    },
     deleteEvaluated: (workflowId) => evaluatedWorkflowRepo.delete(workflowId),
     deleteWorkflow: (workflowId) => workflowRepo.delete(workflowId),
   };
@@ -196,9 +211,17 @@ export async function* workflowDelete(
 
       const workflowPath = deps.getPath(workflow.id);
 
+      // Collect the run IDs (from the run filenames) before the runs are
+      // deleted; the snapshots go after the runs, so a failed run delete
+      // never leaves surviving runs without their snapshots.
+      const runIds = await deps.listRunIds(workflow.id);
+
       // Delete runs
       ctx.logger.debug`Deleting workflow runs`;
       const runsDeleted = await deps.deleteRuns(workflow.id);
+
+      ctx.logger.debug`Deleting run snapshots`;
+      await deps.deleteRunSnapshots(runIds);
 
       // Delete evaluated workflow
       ctx.logger.debug`Deleting evaluated workflow`;

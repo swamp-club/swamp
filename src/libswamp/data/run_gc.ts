@@ -27,6 +27,7 @@ import {
 export { DEFAULT_OUTPUT_RETENTION_DAYS, DEFAULT_WORKFLOW_RUN_RETENTION_DAYS };
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
@@ -40,6 +41,9 @@ export interface RunGcData {
   workflowRunBytesReclaimed: number;
   outputsDeleted: number;
   outputBytesReclaimed: number;
+  /** Per-run evaluated-workflow snapshots removed with their runs or as orphans. */
+  evaluatedSnapshotsDeleted: number;
+  evaluatedSnapshotBytesReclaimed: number;
   totalBytesReclaimed: number;
   dryRun: boolean;
 }
@@ -93,6 +97,8 @@ export interface RunGcPreview {
   workflowRunBytesReclaimable: number;
   outputsToDelete: number;
   outputBytesReclaimable: number;
+  evaluatedSnapshotsToDelete: number;
+  evaluatedSnapshotBytesReclaimable: number;
   totalBytesReclaimable: number;
 }
 
@@ -122,7 +128,17 @@ export function createRunGcDeps(
     dsPath(SWAMP_SUBDIRS.outputs),
     markDirty,
   );
-  const service = new DefaultRunLifecycleService(workflowRunRepo, outputRepo);
+  const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.workflowsEvaluated),
+    markDirty,
+  );
+  const service = new DefaultRunLifecycleService(
+    workflowRunRepo,
+    outputRepo,
+    evaluatedWorkflowRepo,
+    () => workflowRunRepo.listRunIds(),
+  );
   return {
     gcAll: (options) => service.gcAll(options),
   };
@@ -146,8 +162,10 @@ export async function runGcPreview(
     workflowRunBytesReclaimable: result.workflowRunBytesReclaimed,
     outputsToDelete: result.outputsDeleted,
     outputBytesReclaimable: result.outputBytesReclaimed,
+    evaluatedSnapshotsToDelete: result.snapshotsDeleted,
+    evaluatedSnapshotBytesReclaimable: result.snapshotBytesReclaimed,
     totalBytesReclaimable: result.workflowRunBytesReclaimed +
-      result.outputBytesReclaimed,
+      result.outputBytesReclaimed + result.snapshotBytesReclaimed,
   };
 }
 
@@ -177,8 +195,10 @@ export async function* runGc(
           workflowRunBytesReclaimed: result.workflowRunBytesReclaimed,
           outputsDeleted: result.outputsDeleted,
           outputBytesReclaimed: result.outputBytesReclaimed,
+          evaluatedSnapshotsDeleted: result.snapshotsDeleted,
+          evaluatedSnapshotBytesReclaimed: result.snapshotBytesReclaimed,
           totalBytesReclaimed: result.workflowRunBytesReclaimed +
-            result.outputBytesReclaimed,
+            result.outputBytesReclaimed + result.snapshotBytesReclaimed,
           dryRun: result.dryRun,
         },
       };

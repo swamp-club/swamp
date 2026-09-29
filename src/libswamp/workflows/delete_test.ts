@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -43,6 +43,8 @@ function makeDeps(
     pathExists: () => Promise.resolve(true),
     countRuns: () => Promise.resolve(0),
     deleteRuns: () => Promise.resolve(0),
+    listRunIds: () => Promise.resolve([]),
+    deleteRunSnapshots: () => Promise.resolve(),
     deleteEvaluated: () => Promise.resolve(),
     deleteWorkflow: () => Promise.resolve(),
     ...overrides,
@@ -120,6 +122,57 @@ Deno.test("workflowDelete: yields completed after successful deletion", async ()
   assertEquals(completed.data.name, "deploy-workflow");
   assertEquals(completed.data.runsDeleted, 3);
   assertEquals(workflowDeleted, true);
+});
+
+Deno.test("workflowDelete: collects run IDs first, deletes the runs, then their snapshots", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    listRunIds: (workflowId) => {
+      calls.push(`list:${workflowId}`);
+      return Promise.resolve(["run-a", "run-b"]);
+    },
+    deleteRuns: () => {
+      calls.push("runs");
+      return Promise.resolve(2);
+    },
+    deleteRunSnapshots: (runIds) => {
+      calls.push(`snapshots:${runIds.join(",")}`);
+      return Promise.resolve();
+    },
+  });
+
+  await collect<WorkflowDeleteEvent>(
+    workflowDelete(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-workflow",
+    }),
+  );
+
+  assertEquals(calls, [
+    `list:${testWorkflow.id}`,
+    "runs",
+    "snapshots:run-a,run-b",
+  ]);
+});
+
+Deno.test("workflowDelete: a failed run delete leaves the snapshots in place", async () => {
+  let snapshotsDeleted = false;
+  const deps = makeDeps({
+    listRunIds: () => Promise.resolve(["run-a"]),
+    deleteRuns: () => Promise.reject(new Error("disk error")),
+    deleteRunSnapshots: () => {
+      snapshotsDeleted = true;
+      return Promise.resolve();
+    },
+  });
+
+  await assertRejects(() =>
+    collect<WorkflowDeleteEvent>(
+      workflowDelete(createLibSwampContext(), deps, {
+        workflowIdOrName: "deploy-workflow",
+      }),
+    )
+  );
+  assertEquals(snapshotsDeleted, false);
 });
 
 Deno.test("workflowDelete: yields error when workflow not found", async () => {

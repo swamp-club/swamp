@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { YamlEvaluatedWorkflowRepository } from "./yaml_evaluated_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -203,5 +203,125 @@ Deno.test("YamlEvaluatedWorkflowRepository: clear calls markDirty with directory
     );
   } finally {
     await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("YamlEvaluatedWorkflowRepository: listRunSnapshots returns an empty list when no run has a snapshot", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    assertEquals(await repo.listRunSnapshots(), []);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("YamlEvaluatedWorkflowRepository: listRunSnapshots lists run snapshots and skips files and dot-prefixed entries", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    const runId = crypto.randomUUID();
+    await repo.saveForRun(runId, provenanceWorkflow());
+
+    const runsDir = join(tempDir, ".swamp", "workflows-evaluated", "runs");
+    await Deno.writeTextFile(join(runsDir, "stray.yaml"), "x");
+    await Deno.mkdir(join(runsDir, ".tmp-entry"));
+    const emptyRunId = crypto.randomUUID();
+    await Deno.mkdir(join(runsDir, emptyRunId));
+    const old = new Date("2020-01-01T00:00:00Z");
+    await Deno.utime(
+      join(runsDir, runId, "evaluated-workflow.yaml"),
+      old,
+      old,
+    );
+
+    const snapshots = await repo.listRunSnapshots();
+    const byId = new Map(snapshots.map((s) => [s.runId, s]));
+    assertEquals([...byId.keys()].sort(), [runId, emptyRunId].sort());
+    assertEquals(byId.get(runId)?.modifiedAt.getTime(), old.getTime());
+    assertEquals((byId.get(runId)?.sizeBytes ?? 0) > 0, true);
+    assertEquals(byId.get(emptyRunId)?.sizeBytes, 0);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("YamlEvaluatedWorkflowRepository: deleteForRun marks the run directory dirty before removing it", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const calls: Array<string | undefined> = [];
+    let existedWhenMarked = false;
+    const runId = crypto.randomUUID();
+    const runDir = join(
+      tempDir,
+      ".swamp",
+      "workflows-evaluated",
+      "runs",
+      runId,
+    );
+    const markDirty = async (relPath?: string) => {
+      calls.push(relPath);
+      if (relPath === runDir) {
+        existedWhenMarked = await Deno.stat(runDir).then(
+          () => true,
+          () => false,
+        );
+      }
+    };
+    const repo = new YamlEvaluatedWorkflowRepository(
+      tempDir,
+      undefined,
+      markDirty,
+    );
+    await repo.saveForRun(runId, provenanceWorkflow());
+
+    await repo.deleteForRun(runId);
+
+    assertEquals(calls.at(-1), runDir);
+    assertEquals(existedWhenMarked, true);
+    assertEquals(await repo.listRunSnapshots(), []);
+    // A missing snapshot is ignored.
+    await repo.deleteForRun(runId);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("YamlEvaluatedWorkflowRepository: snapshot methods reject run IDs that are not one path segment", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    const keptRunId = crypto.randomUUID();
+    await repo.saveForRun(keptRunId, provenanceWorkflow());
+    await repo.save(provenanceWorkflow());
+
+    for (const runId of ["", ".", "..", "a/b", "../outputs"]) {
+      await assertRejects(
+        () => repo.deleteForRun(runId),
+        Error,
+        "Invalid run ID",
+      );
+      await assertRejects(
+        () => repo.saveForRun(runId, provenanceWorkflow()),
+        Error,
+        "Invalid run ID",
+      );
+      await assertRejects(
+        () => repo.findByRunId(runId),
+        Error,
+        "Invalid run ID",
+      );
+    }
+
+    // Nothing outside a single run directory was touched.
+    assertEquals((await repo.listRunSnapshots()).map((s) => s.runId), [
+      keptRunId,
+    ]);
+    assertEquals(
+      (await repo.findByName("provenance-workflow"))?.name,
+      "provenance-workflow",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
   }
 });
