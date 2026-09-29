@@ -34,6 +34,7 @@ function prepareEditor(editor: string) {
 function makeDeps(overrides: Partial<ModelEditDeps> = {}): ModelEditDeps {
   return {
     lookupDefinition: () => Promise.resolve(null),
+    lookupDefinitionById: () => Promise.resolve(null),
     resolveSymlink: () => Promise.resolve(null),
     getDefinitionPath: () => "/fake/path/definition.yaml",
     prepareEditor: prepareEditor("VS Code"),
@@ -433,4 +434,145 @@ Deno.test("modelEdit: a failed re-read after the editor closes is not reported",
   );
 
   assertEquals(completedData(events).warnings, undefined);
+});
+
+type TestDefinition =
+  import("../../domain/definitions/definition.ts").Definition;
+
+/**
+ * Deps whose stdin update parses to `candidate`, runs `beforeSave` like the
+ * real repository-backed dep, and records whether it saved.
+ */
+function makeAuthorizeDeps(candidate: TestDefinition) {
+  const saved: TestDefinition[] = [];
+  const deps = makeDeps({
+    lookupDefinition: () =>
+      Promise.resolve({ definition: testDefinition, type: testModelType }),
+    updateFromStdin: async (_definition, _type, _content, beforeSave) => {
+      if (beforeSave && !(await beforeSave(candidate))) return null;
+      saved.push(candidate);
+      return candidate;
+    },
+  });
+  return { deps, saved };
+}
+
+Deno.test("modelEdit: stdin rename asks authorizeUpdate with the edited name, type and tags", async () => {
+  const candidate = {
+    ...testDefinition,
+    name: "renamed-model",
+    tags: { env: "prod" },
+  } as unknown as TestDefinition;
+  const { deps, saved } = makeAuthorizeDeps(candidate);
+  const asked: unknown[] = [];
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "name: renamed-model\n",
+      authorizeUpdate: (before, after) => {
+        asked.push({ before, after });
+        return true;
+      },
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(asked, [{
+    before: {
+      name: "my-model",
+      modelType: "aws/s3-bucket",
+      tags: { env: "prod" },
+    },
+    after: {
+      name: "renamed-model",
+      modelType: "aws/s3-bucket",
+      tags: { env: "prod" },
+    },
+  }]);
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("modelEdit: stdin retag denied by authorizeUpdate writes nothing", async () => {
+  const candidate = {
+    ...testDefinition,
+    name: "my-model",
+    tags: { env: "dev" },
+  } as unknown as TestDefinition;
+  const { deps, saved } = makeAuthorizeDeps(candidate);
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "tags:\n  env: dev\n",
+      authorizeUpdate: () => false,
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "forbidden");
+  assertEquals(saved, []);
+});
+
+Deno.test("modelEdit: stdin update that keeps name and tags still asks authorizeUpdate", async () => {
+  const candidate = {
+    ...testDefinition,
+    name: "my-model",
+    tags: { env: "prod" },
+  } as unknown as TestDefinition;
+  const { deps, saved } = makeAuthorizeDeps(candidate);
+  let asked = false;
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "name: my-model\n",
+      authorizeUpdate: () => {
+        asked = true;
+        return false;
+      },
+    }),
+  );
+
+  // Re-authorizing every save means a concurrent retag between the serve
+  // handler's lookup and the save cannot skip the check.
+  const last = events[events.length - 1] as Extract<
+    ModelEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.error.code, "forbidden");
+  assertEquals(asked, true);
+  assertEquals(saved, []);
+});
+
+Deno.test("modelEdit: byId looks the definition up by id only", async () => {
+  const lookups: string[] = [];
+  const deps = makeDeps({
+    lookupDefinition: (idOrName) => {
+      lookups.push(`idOrName:${idOrName}`);
+      return Promise.resolve(null);
+    },
+    lookupDefinitionById: (id) => {
+      lookups.push(`id:${id}`);
+      return Promise.resolve({
+        definition: testDefinition,
+        type: testModelType,
+      });
+    },
+  });
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: testDefinition.id,
+      byId: true,
+      stdinContent: "name: my-model\n",
+    }),
+  );
+
+  assertEquals(lookups, [`id:${testDefinition.id}`]);
+  assertEquals(events[events.length - 1].kind, "completed");
 });

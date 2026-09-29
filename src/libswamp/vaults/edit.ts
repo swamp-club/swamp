@@ -17,15 +17,31 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { z } from "zod";
+import { parse as parseYaml } from "@std/yaml";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { join } from "@std/path";
+import {
+  VaultConfig,
+  type VaultConfigData,
+  VaultConfigDataSchema,
+} from "../../domain/vaults/vault_config.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import {
+  isValidVaultName,
+  VAULT_NAME_RULE,
+} from "../../domain/vaults/vault_name.ts";
 import {
   type EditorLaunch,
   EditorService,
 } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound, validationFailed } from "../errors.ts";
+import {
+  alreadyExists,
+  forbidden,
+  notFound,
+  validationFailed,
+} from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Minimal vault config shape needed by the generator. */
@@ -40,8 +56,8 @@ export interface VaultEditConfigInfo {
  */
 export interface VaultEditData {
   path: string;
-  editor: string;
-  status: "opened";
+  editor?: string;
+  status: "opened" | "updated";
   name: string;
   type: string;
 }
@@ -59,28 +75,63 @@ export type VaultEditEvent =
 export interface VaultEditInput {
   vaultNameOrId: string;
   vaultType?: string;
+  /**
+   * Treat `vaultNameOrId` as an id already resolved by the caller, and look it
+   * up by id only. Requires `vaultType`. Vault names can look like ids, so a
+   * name-first lookup could land on a different vault than the one the caller
+   * authorized.
+   */
+  byId?: boolean;
+  /** New vault YAML. When set, the vault is updated instead of opened. */
+  stdinContent?: string | null;
+  /**
+   * Called before every stdin update is saved, with the stored and the edited
+   * vault. Returning false leaves the file untouched. Serve uses it to
+   * authorize the edited vault.
+   */
+  authorizeUpdate?: (
+    before: VaultEditConfigInfo,
+    after: VaultEditConfigInfo,
+  ) => Promise<boolean> | boolean;
 }
 
-/** Dependencies for the vault edit operation. */
-export interface VaultEditDeps {
+/** Lookups used to resolve a vault by name or id. */
+export interface VaultEditLookupDeps {
   findByName: (name: string) => Promise<VaultEditConfigInfo | null>;
   findById: (type: string, id: string) => Promise<VaultEditConfigInfo | null>;
   findAll: () => Promise<VaultEditConfigInfo[]>;
+}
+
+/** Dependencies for the vault edit operation. */
+export interface VaultEditDeps extends VaultEditLookupDeps {
   getVaultPath: (config: VaultEditConfigInfo) => string;
   fileExists: (path: string) => Promise<boolean>;
   prepareEditor: (path: string) => Promise<EditorLaunch>;
+  readConfigData: (
+    config: VaultEditConfigInfo,
+  ) => Promise<VaultConfigData | null>;
+  saveConfigData: (data: VaultConfigData) => Promise<void>;
+  /**
+   * The schema a vault type's config must satisfy, or undefined when the type
+   * declares none. Mirrors `vault create`: only extension types are checked.
+   */
+  getConfigSchema: (type: string) => Promise<z.ZodTypeAny | undefined>;
 }
 
 /** Wires real infrastructure into VaultEditDeps. */
-export function createVaultEditDeps(repoDir: string): VaultEditDeps {
-  const repo = new YamlVaultConfigRepository(repoDir);
+export function createVaultEditDeps(
+  repoDir: string,
+  injectedRepo?: YamlVaultConfigRepository,
+): VaultEditDeps {
+  // The repository resolves the effective vaults dir, which is the datastore
+  // config tier under managedConfig (swamp-club#2426).
+  const repo = injectedRepo ?? new YamlVaultConfigRepository(repoDir);
   const editorService = new EditorService();
   return {
     findByName: (name) => repo.findByName(name),
     findById: (type, id) => repo.findById(type, id),
     findAll: () => repo.findAll(),
-    getVaultPath: (config) =>
-      join(repoDir, "vaults", config.type, `${config.id}.yaml`),
+    getVaultPath: (config) => repo.getPath(config.type, config.id),
     fileExists: async (path) => {
       try {
         await Deno.stat(path);
@@ -91,10 +142,162 @@ export function createVaultEditDeps(repoDir: string): VaultEditDeps {
       }
     },
     prepareEditor: (path) => editorService.prepareOpenFile(path),
+    readConfigData: async (config) =>
+      (await repo.findById(config.type, config.id))?.toData() ?? null,
+    saveConfigData: (data) => repo.save(VaultConfig.fromData(data)),
+    getConfigSchema: async (type) => {
+      await vaultTypeRegistry.ensureLoaded();
+      await vaultTypeRegistry.ensureTypeLoaded(type);
+      const typeInfo = vaultTypeRegistry.get(type);
+      if (!typeInfo || typeInfo.isBuiltIn || !typeInfo.createProvider) {
+        return undefined;
+      }
+      return typeInfo.configSchema;
+    },
   };
 }
 
-/** Edits a vault configuration file in the user's editor. */
+/**
+ * Finds a vault by name, falling back to its id. With a type the id lookup is
+ * direct; without one every vault is scanned. Shared by `vault edit` and the
+ * serve handler so both resolve the same vault.
+ */
+export async function findVaultByNameOrId(
+  deps: VaultEditLookupDeps,
+  vaultNameOrId: string,
+  vaultType?: string,
+): Promise<VaultEditConfigInfo | null> {
+  const byName = await deps.findByName(vaultNameOrId);
+  if (byName) return byName;
+  if (vaultType) return await deps.findById(vaultType, vaultNameOrId);
+  const allVaults = await deps.findAll();
+  return allVaults.find((v) => v.id === vaultNameOrId) ?? null;
+}
+
+function stdinError(detail: string): SwampError {
+  return validationFailed(`Invalid vault YAML from stdin: ${detail}`);
+}
+
+/**
+ * Validates new vault YAML against the existing vault and saves it. The id and
+ * createdAt are kept, and the type cannot change because it is part of the
+ * storage path.
+ * Messages carry no file paths: serve replaces any message with a path in it
+ * by a generic error.
+ */
+async function* updateVaultFromStdin(
+  deps: VaultEditDeps,
+  input: VaultEditInput,
+  config: VaultEditConfigInfo,
+  filePath: string,
+  content: string,
+): AsyncIterable<VaultEditEvent> {
+  let raw: unknown;
+  try {
+    raw = parseYaml(content);
+  } catch (error) {
+    yield {
+      kind: "error",
+      error: stdinError(error instanceof Error ? error.message : String(error)),
+    };
+    return;
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    yield { kind: "error", error: stdinError("expected a YAML mapping") };
+    return;
+  }
+
+  const existing = await deps.readConfigData(config);
+  if (!existing) {
+    yield { kind: "error", error: notFound("Vault", config.name) };
+    return;
+  }
+
+  const fields = raw as Record<string, unknown>;
+  // id and createdAt are pinned: they record the vault's identity and
+  // creation, not configuration the edit may change.
+  const parsed = VaultConfigDataSchema.safeParse({
+    ...fields,
+    id: existing.id,
+    createdAt: existing.createdAt,
+  });
+  if (!parsed.success) {
+    yield { kind: "error", error: stdinError(parsed.error.message) };
+    return;
+  }
+  const updated = parsed.data;
+
+  if (updated.type !== existing.type) {
+    yield {
+      kind: "error",
+      error: validationFailed(
+        `Cannot change the type of vault '${existing.name}' from '${existing.type}' to '${updated.type}'`,
+      ),
+    };
+    return;
+  }
+
+  const renamed = updated.name !== existing.name;
+  if (renamed) {
+    if (!isValidVaultName(updated.name)) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Invalid vault name: ${updated.name}. ${VAULT_NAME_RULE}`,
+        ),
+      };
+      return;
+    }
+    const clash = await deps.findByName(updated.name);
+    if (clash && clash.id !== existing.id) {
+      yield { kind: "error", error: alreadyExists("Vault", updated.name) };
+      return;
+    }
+  }
+
+  const schema = await deps.getConfigSchema(updated.type);
+  if (schema) {
+    const result = schema.safeParse(updated.config);
+    if (!result.success) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Invalid config for vault type '${updated.type}': ${result.error.message}`,
+        ),
+      };
+      return;
+    }
+  }
+
+  if (input.authorizeUpdate) {
+    const allowed = await input.authorizeUpdate(
+      { id: existing.id, name: existing.name, type: existing.type },
+      { id: updated.id, name: updated.name, type: updated.type },
+    );
+    if (!allowed) {
+      yield {
+        kind: "error",
+        error: forbidden(
+          `Not allowed to save vault '${existing.name}' as '${updated.name}'`,
+        ),
+      };
+      return;
+    }
+  }
+
+  await deps.saveConfigData(updated);
+  yield {
+    kind: "completed",
+    data: {
+      path: filePath,
+      status: "updated",
+      name: updated.name,
+      type: updated.type,
+    },
+  };
+}
+
+/** Edits a vault configuration file via stdin update or editor. */
 export async function* vaultEdit(
   ctx: LibSwampContext,
   deps: VaultEditDeps,
@@ -110,18 +313,9 @@ export async function* vaultEdit(
 
       ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
 
-      // Try to find by name first
-      let config = await deps.findByName(vaultNameOrId);
-
-      // If not found by name, try to find by ID
-      if (!config) {
-        if (vaultType) {
-          config = await deps.findById(vaultType, vaultNameOrId);
-        } else {
-          const allVaults = await deps.findAll();
-          config = allVaults.find((v) => v.id === vaultNameOrId) ?? null;
-        }
-      }
+      const config = input.byId && vaultType
+        ? await deps.findById(vaultType, vaultNameOrId)
+        : await findVaultByNameOrId(deps, vaultNameOrId, vaultType);
 
       // If type was specified, verify it matches
       if (config && vaultType && config.type !== vaultType) {
@@ -158,6 +352,18 @@ export async function* vaultEdit(
             filePath,
           ),
         };
+        return;
+      }
+
+      if (input.stdinContent !== undefined && input.stdinContent !== null) {
+        ctx.logger.debug`Updating vault from stdin: ${config.name}`;
+        yield* updateVaultFromStdin(
+          deps,
+          input,
+          config,
+          filePath,
+          input.stdinContent,
+        );
         return;
       }
 

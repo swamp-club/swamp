@@ -382,3 +382,107 @@ Deno.test("workflowEdit: yields not_found when workflow genuinely missing (UUID)
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_found");
 });
+
+/**
+ * Deps whose stdin update parses to `candidate`, runs `beforeSave` like the
+ * real repository-backed dep, and records whether it saved.
+ */
+function makeAuthorizeDeps(candidate: Workflow) {
+  const saved: Workflow[] = [];
+  const current = {
+    ...testWorkflow,
+    tags: { team: "ops" },
+  } as unknown as Workflow;
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(current),
+    findById: () => Promise.resolve(current),
+    updateFromStdin: async (_workflow, _content, beforeSave) => {
+      if (beforeSave && !(await beforeSave(candidate))) return null;
+      saved.push(candidate);
+      return candidate;
+    },
+  });
+  return { deps, saved };
+}
+
+Deno.test("workflowEdit: stdin rename asks authorizeUpdate with the edited name and tags", async () => {
+  const candidate = {
+    ...testWorkflow,
+    name: "renamed-workflow",
+    tags: { team: "ops" },
+  } as unknown as Workflow;
+  const { deps, saved } = makeAuthorizeDeps(candidate);
+  const asked: unknown[] = [];
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+      stdinContent: "name: renamed-workflow\n",
+      authorizeUpdate: (before, after) => {
+        asked.push({ before, after });
+        return true;
+      },
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(asked, [{
+    before: { name: "deploy-workflow", tags: { team: "ops" } },
+    after: { name: "renamed-workflow", tags: { team: "ops" } },
+  }]);
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("workflowEdit: stdin retag denied by authorizeUpdate writes nothing", async () => {
+  const candidate = {
+    ...testWorkflow,
+    tags: { team: "prod" },
+  } as unknown as Workflow;
+  const { deps, saved } = makeAuthorizeDeps(candidate);
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+      stdinContent: "tags:\n  team: prod\n",
+      authorizeUpdate: () => false,
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "forbidden");
+  assertEquals(saved, []);
+});
+
+Deno.test("workflowEdit: stdin update that keeps name and tags still asks authorizeUpdate", async () => {
+  const candidate = {
+    ...testWorkflow,
+    tags: { team: "ops" },
+  } as unknown as Workflow;
+  const { deps, saved } = makeAuthorizeDeps(candidate);
+  let asked = false;
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+      stdinContent: "name: deploy-workflow\n",
+      authorizeUpdate: () => {
+        asked = true;
+        return false;
+      },
+    }),
+  );
+
+  // Re-authorizing every save means a concurrent retag between the serve
+  // handler's lookup and the save cannot skip the check.
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.error.code, "forbidden");
+  assertEquals(asked, true);
+  assertEquals(saved, []);
+});

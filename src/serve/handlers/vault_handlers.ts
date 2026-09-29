@@ -35,6 +35,7 @@ import {
   createVaultListKeysDeps,
   createVaultPutDeps,
   createVaultReadSecretDeps,
+  findVaultByNameOrId,
   vaultAnnotate,
   vaultAuditTrail,
   vaultCreate,
@@ -43,6 +44,7 @@ import {
   vaultDeletePreview,
   vaultDescribe,
   vaultEdit,
+  type VaultEditConfigInfo,
   vaultGet,
   vaultInspect,
   vaultListKeys,
@@ -77,9 +79,11 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
+  rejectEditWithoutContent,
   sanitizeErrorForClient,
   send,
   sendError,
+  wasRequestErrored,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
@@ -810,23 +814,74 @@ export async function handleVaultEdit(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (rejectEditWithoutContent(socket, requestId, payload.content)) return;
+
+  const vaultConfigRepo = ctx.repoContext.vaultConfigRepo;
+
+  // Authorize the vault the edit will act on, by its name, not the raw
+  // name-or-id: a grant matches the resource name, so an id would sidestep
+  // name-scoped denies (swamp-club#2426, swamp-club#2674).
+  let resolved: VaultEditConfigInfo | null = null;
+  try {
+    resolved = await findVaultByNameOrId(
+      vaultConfigRepo,
+      payload.vaultNameOrId,
+      payload.vaultType,
+    );
+  } catch {
+    // A vault that cannot be loaded is authorized by the requested name and
+    // then reported as not found.
+  }
+  const vaultName = resolved?.name ?? payload.vaultNameOrId;
+  if (rejectReservedVault(socket, requestId, vaultName)) return;
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "data",
-      name: payload.vaultNameOrId,
+      name: vaultName,
       fields: {},
     }, ctx).allowed
   ) return;
+  if (!resolved) {
+    const typeHint = payload.vaultType ? ` of type '${payload.vaultType}'` : "";
+    sendError(
+      socket,
+      requestId,
+      "not_found",
+      `Vault not found: ${payload.vaultNameOrId}${typeHint}`,
+    );
+    return;
+  }
+  if (payload.vaultType && resolved.type !== payload.vaultType) {
+    sendError(
+      socket,
+      requestId,
+      "vault_edit_failed",
+      `Vault '${payload.vaultNameOrId}' found but has type '${resolved.type}', not '${payload.vaultType}'`,
+    );
+    return;
+  }
+  const target = resolved;
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createVaultEditDeps(ctx.repoDir);
+    const deps = createVaultEditDeps(ctx.repoDir, vaultConfigRepo);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       vaultEdit(libCtx, deps, {
-        vaultNameOrId: payload.vaultNameOrId,
-        vaultType: payload.vaultType,
+        vaultNameOrId: target.id,
+        vaultType: target.type,
+        byId: true,
+        stdinContent: payload.content,
+        // Every save is authorized against the edited vault too, so a rename
+        // needs write on the new name, as vault.create requires for the name
+        // it creates.
+        authorizeUpdate: (_before, after) =>
+          authorizeOrReject(socket, requestId, principal, "write", {
+            kind: "data",
+            name: after.name,
+            fields: {},
+          }, ctx).allowed,
       }),
       {
         resolving: () => {},
@@ -851,9 +906,34 @@ export async function handleVaultEdit(
       payload: { data: result ?? {} },
     });
 
-    // No datastore push: vault.edit only opens the repo-local vaults/ file,
-    // which is outside the datastore cache (swamp-club#2415, swamp-club#2426).
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        // Mark the file the edit wrote, by path, as handleVaultCreate does: a
+        // bare markDirty() turns the push into a walk of the whole cache
+        // (swamp-club#2415). Under managedConfig the file is in the
+        // datastore's config tier; otherwise it is repo-local and the hook
+        // drops the mark.
+        await ctx.repoContext.markDirty?.(
+          vaultConfigRepo.getPath(target.type, target.id),
+        );
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn(
+          "Failed to push vault edit to remote datastore: {error}",
+          {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          },
+        );
+      }
+    }
   } catch (error) {
+    // A denied rename was already reported by authorizeOrReject.
+    if (wasRequestErrored(socket, requestId)) return;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_edit_failed", message);
   }

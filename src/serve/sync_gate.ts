@@ -154,9 +154,11 @@ export function pollerGateTiming(pollIntervalMs: number): PollerGateTiming {
  *
  * `vault.put` is absent on purpose: `acquireVaultSync`'s flush is a documented
  * no-op because vault secrets live in always-local `.swamp/secrets` and never
- * enter the datastore. `vault.annotate`, `vault.delete` and `vault.edit` no
- * longer push either, for the same reason (swamp-club#2415); they stay gated
- * only because ungating them is a separate change.
+ * enter the datastore. `vault.annotate` and `vault.delete` no longer push
+ * either, for the same reason (swamp-club#2415); they stay gated only because
+ * ungating them is a separate change. `vault.edit` pushes: it writes the vault
+ * config, which is in the datastore's config tier under managedConfig
+ * (swamp-club#2426).
  */
 export const SYNC_GATED_REQUESTS: ReadonlySet<string> = new Set([
   "access.reload",

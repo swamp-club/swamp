@@ -40,6 +40,7 @@ import {
   modelDelete,
   modelDeletePreview,
   modelEdit,
+  type ModelEditTarget,
   modelEvaluate,
   modelGet,
   modelMethodDescribe,
@@ -82,6 +83,7 @@ import type {
   ModelValidatePayload,
 } from "../protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
 import {
@@ -113,10 +115,12 @@ import {
   filterByAuthorization,
   isAdminOnlyModelType,
   lockTimeoutErrorForClient,
+  rejectEditWithoutContent,
   sanitizeErrorForClient,
   send,
   sendError,
   subscribeUntilDetach,
+  wasRequestErrored,
 } from "./shared.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 
@@ -1624,13 +1628,49 @@ export async function handleModelEdit(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (rejectEditWithoutContent(socket, requestId, payload.content)) return;
+
+  // Authorize the model the edit will act on, by its canonical name and full
+  // fields, not the raw id-or-name: a grant matches the resource name, so an
+  // id would sidestep name-scoped denies (swamp-club#2426, swamp-club#2674).
+  let resolved: Awaited<ReturnType<typeof findDefinitionByIdOrName>> = null;
+  try {
+    resolved = await findDefinitionByIdOrName(
+      ctx.repoContext.definitionRepo,
+      payload.modelIdOrName,
+    );
+  } catch {
+    // A model that cannot be loaded is authorized by the requested name and
+    // then reported as not found.
+  }
+  const current: ModelEditTarget | null = resolved
+    ? {
+      name: resolved.definition.name,
+      modelType: resolved.type.normalized,
+      tags: { ...resolved.definition.tags },
+    }
+    : null;
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "model",
-      name: payload.modelIdOrName,
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "write",
+      current
+        ? modelEditResource(current)
+        : { kind: "model", name: payload.modelIdOrName, fields: {} },
+      ctx,
+    ).allowed
   ) return;
+  if (!resolved) {
+    sendError(
+      socket,
+      requestId,
+      "not_found",
+      `Model not found: ${payload.modelIdOrName}`,
+    );
+    return;
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1642,8 +1682,22 @@ export async function handleModelEdit(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       modelEdit(libCtx, deps, {
-        modelIdOrName: payload.modelIdOrName,
+        modelIdOrName: resolved.definition.id,
+        byId: true,
         stdinContent: payload.content,
+        // Every save is authorized against the edited model too, so a rename
+        // or retag needs write on the result. It runs on every save rather
+        // than only on a detected change, so a concurrent retag between the
+        // lookup above and the save cannot skip it.
+        authorizeUpdate: (_before, after) =>
+          authorizeOrReject(
+            socket,
+            requestId,
+            principal,
+            "write",
+            modelEditResource(after),
+            ctx,
+          ).allowed,
       }),
       {
         resolving: () => {},
@@ -1686,9 +1740,20 @@ export async function handleModelEdit(
       }
     }
   } catch (error) {
+    // A denied rename or retag was already reported by authorizeOrReject.
+    if (wasRequestErrored(socket, requestId)) return;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_edit_failed", message);
   }
+}
+
+function modelEditResource(target: ModelEditTarget): AccessResource {
+  const fields: Record<string, unknown> = {
+    modelType: target.modelType,
+    name: target.name,
+  };
+  if (Object.keys(target.tags).length > 0) fields.tags = target.tags;
+  return { kind: "model", name: target.name, fields };
 }
 
 export async function handleModelTypeDescribe(

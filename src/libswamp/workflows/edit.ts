@@ -34,7 +34,7 @@ import {
 } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound, validationFailed } from "../errors.ts";
+import { forbidden, notFound, validationFailed } from "../errors.ts";
 import {
   type BrokenWorkflow,
   findBrokenWorkflow,
@@ -72,10 +72,30 @@ export type WorkflowEditEvent =
   | { kind: "completed"; data: WorkflowEditData }
   | { kind: "error"; error: SwampError };
 
+/** What a grant can match on for a workflow being edited. */
+export interface WorkflowEditTarget {
+  name: string;
+  tags: Record<string, string>;
+}
+
 /** Input for the workflow edit operation. */
 export interface WorkflowEditInput {
   workflowIdOrName: string;
   stdinContent?: string | null;
+  /**
+   * Called before every stdin update is saved, with the stored and the edited
+   * workflow. Returning false leaves the file untouched. Serve uses it to
+   * authorize the edited workflow; it runs on every save, not only when the
+   * name or tags change, so a concurrent retag cannot slip past it.
+   */
+  authorizeUpdate?: (
+    before: WorkflowEditTarget,
+    after: WorkflowEditTarget,
+  ) => Promise<boolean> | boolean;
+}
+
+function editTarget(workflow: Workflow): WorkflowEditTarget {
+  return { name: workflow.name, tags: { ...workflow.tags } };
 }
 
 /** Dependencies for the workflow edit operation. */
@@ -87,10 +107,15 @@ export interface WorkflowEditDeps {
   resolveSymlink: (name: string) => Promise<string | null>;
   fileExists: (path: string) => Promise<boolean>;
   prepareEditor: (path: string) => Promise<EditorLaunch>;
+  /**
+   * Parses the new YAML and saves it. `beforeSave` runs after parsing; when it
+   * returns false nothing is written and the call resolves to null.
+   */
   updateFromStdin: (
     workflow: Workflow,
     content: string,
-  ) => Promise<Workflow>;
+    beforeSave?: (updated: Workflow) => Promise<boolean>,
+  ) => Promise<Workflow | null>;
 }
 
 /** Wires real infrastructure into WorkflowEditDeps. */
@@ -124,10 +149,11 @@ export function createWorkflowEditDeps(
       }
     },
     prepareEditor: (path) => editorService.prepareOpenFile(path),
-    updateFromStdin: async (workflow, content) => {
+    updateFromStdin: async (workflow, content, beforeSave) => {
       const yamlData = parseYaml(content) as WorkflowData;
       yamlData.id = workflow.id;
       const updated = Workflow.fromData(yamlData);
+      if (beforeSave && !(await beforeSave(updated))) return null;
       await workflowRepo.save(updated);
       return updated;
     },
@@ -240,7 +266,26 @@ export async function* workflowEdit(
         }
 
         try {
-          const updated = await deps.updateFromStdin(workflow, stdinContent);
+          const before = editTarget(workflow);
+          const authorizeUpdate = input.authorizeUpdate;
+          const beforeSave = authorizeUpdate
+            ? (candidate: Workflow) =>
+              Promise.resolve(authorizeUpdate(before, editTarget(candidate)))
+            : undefined;
+          const updated = await deps.updateFromStdin(
+            workflow,
+            stdinContent,
+            beforeSave,
+          );
+          if (!updated) {
+            yield {
+              kind: "error",
+              error: forbidden(
+                `Not allowed to save workflow '${workflow.name}' with the edited name or tags`,
+              ),
+            };
+            return;
+          }
 
           yield {
             kind: "completed",

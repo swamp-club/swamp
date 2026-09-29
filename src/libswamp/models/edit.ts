@@ -26,7 +26,10 @@ import {
   type DefinitionId,
 } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../../domain/models/model_lookup.ts";
 import { CalVer } from "../../domain/models/calver.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
@@ -35,7 +38,7 @@ import {
 } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound, validationFailed } from "../errors.ts";
+import { forbidden, notFound, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -82,10 +85,44 @@ function typeVersionWarning(definition: Definition): string | undefined {
     `until it is corrected or removed.`;
 }
 
+/** What a grant can match on for a model definition being edited. */
+export interface ModelEditTarget {
+  name: string;
+  modelType: string;
+  tags: Record<string, string>;
+}
+
+function editTarget(
+  definition: Definition,
+  type: ModelType,
+): ModelEditTarget {
+  return {
+    name: definition.name,
+    modelType: type.normalized,
+    tags: { ...definition.tags },
+  };
+}
+
 /** Input for the model edit operation. */
 export interface ModelEditInput {
   modelIdOrName: string;
   stdinContent?: string | null;
+  /**
+   * Treat `modelIdOrName` as a definition id already resolved by the caller,
+   * and look it up by id only, so the edit acts on the model the caller
+   * authorized.
+   */
+  byId?: boolean;
+  /**
+   * Called before every stdin update is saved, with the stored and the edited
+   * definition. Returning false leaves the file untouched. Serve uses it to
+   * authorize the edited definition; it runs on every save, not only when the
+   * name or tags change, so a concurrent retag cannot slip past it.
+   */
+  authorizeUpdate?: (
+    before: ModelEditTarget,
+    after: ModelEditTarget,
+  ) => Promise<boolean> | boolean;
 }
 
 /** Dependencies for the model edit operation. */
@@ -93,14 +130,22 @@ export interface ModelEditDeps {
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
+  lookupDefinitionById: (
+    id: string,
+  ) => Promise<{ definition: Definition; type: ModelType } | null>;
   resolveSymlink: (name: string) => Promise<string | null>;
   getDefinitionPath: (type: ModelType, id: DefinitionId) => string;
   prepareEditor: (path: string) => Promise<EditorLaunch>;
+  /**
+   * Parses the new YAML and saves it. `beforeSave` runs after parsing; when it
+   * returns false nothing is written and the call resolves to null.
+   */
   updateFromStdin: (
     definition: Definition,
     type: ModelType,
     content: string,
-  ) => Promise<Definition>;
+    beforeSave?: (updated: Definition) => Promise<boolean>,
+  ) => Promise<Definition | null>;
 }
 
 /** Wires real infrastructure into ModelEditDeps. */
@@ -114,6 +159,7 @@ export function createModelEditDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
+    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
     resolveSymlink: async (name) => {
       const symlinkPath = join(repoDir, "models", name, "definition.yaml");
       try {
@@ -124,10 +170,11 @@ export function createModelEditDeps(
     },
     getDefinitionPath: (type, id) => definitionRepo.getPath(type, id),
     prepareEditor: (path) => editorService.prepareOpenFile(path),
-    updateFromStdin: async (definition, type, content) => {
+    updateFromStdin: async (definition, type, content, beforeSave) => {
       const yamlData = parseYaml(content) as DefinitionData;
       yamlData.id = definition.id;
       const updated = DefinitionClass.fromData(yamlData);
+      if (beforeSave && !(await beforeSave(updated))) return null;
       await definitionRepo.save(type, updated);
       return updated;
     },
@@ -155,7 +202,9 @@ export async function* modelEdit(
 
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
       try {
-        const result = await deps.lookupDefinition(modelIdOrName);
+        const result = input.byId
+          ? await deps.lookupDefinitionById(modelIdOrName)
+          : await deps.lookupDefinition(modelIdOrName);
         if (result) {
           definition = result.definition;
           modelType = result.type;
@@ -196,11 +245,30 @@ export async function* modelEdit(
         }
 
         try {
+          const type = modelType;
+          const before = editTarget(definition, type);
+          const authorizeUpdate = input.authorizeUpdate;
+          const beforeSave = authorizeUpdate
+            ? (candidate: Definition) =>
+              Promise.resolve(
+                authorizeUpdate(before, editTarget(candidate, type)),
+              )
+            : undefined;
           const updated = await deps.updateFromStdin(
             definition,
             modelType,
             stdinContent,
+            beforeSave,
           );
+          if (!updated) {
+            yield {
+              kind: "error",
+              error: forbidden(
+                `Not allowed to save model '${definition.name}' with the edited name or tags`,
+              ),
+            };
+            return;
+          }
 
           const warning = typeVersionWarning(updated);
           yield {

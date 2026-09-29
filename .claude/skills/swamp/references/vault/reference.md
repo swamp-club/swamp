@@ -74,6 +74,14 @@ After creation, edit the config if needed:
 swamp vault edit dev-secrets
 ```
 
+To edit without an editor (scripts, agents, or `--server`, which never opens an
+editor on the server), pipe the full vault YAML on stdin. The id is kept and the
+type cannot change. Renaming a vault breaks references to its old name:
+
+```bash
+cat dev-secrets.yaml | swamp vault edit dev-secrets --json
+```
+
 ## Store Secrets
 
 **Interactive prompt (recommended for humans — value is hidden):**

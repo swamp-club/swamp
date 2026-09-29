@@ -1107,6 +1107,7 @@ export {
   type ModelEditDeps,
   type ModelEditEvent,
   type ModelEditInput,
+  type ModelEditTarget,
 } from "./models/edit.ts";
 
 // Workflow edit operations
@@ -1117,17 +1118,20 @@ export {
   type WorkflowEditDeps,
   type WorkflowEditEvent,
   type WorkflowEditInput,
+  type WorkflowEditTarget,
 } from "./workflows/edit.ts";
 
 // Vault edit operations
 export {
   createVaultEditDeps,
+  findVaultByNameOrId,
   vaultEdit,
   type VaultEditConfigInfo,
   type VaultEditData,
   type VaultEditDeps,
   type VaultEditEvent,
   type VaultEditInput,
+  type VaultEditLookupDeps,
 } from "./vaults/edit.ts";
 
 // Model delete operations

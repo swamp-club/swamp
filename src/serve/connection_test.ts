@@ -3579,6 +3579,30 @@ Deno.test("validateServerRequest accepts vault.edit", () => {
   );
 });
 
+Deno.test("validateServerRequest accepts vault.edit with content", () => {
+  const result = validateServerRequest({
+    type: "vault.edit",
+    id: "r1",
+    payload: { vaultNameOrId: "my-vault", content: "name: my-vault\n" },
+  });
+  assertEquals(typeof result, "object");
+  assertEquals(
+    (result as { payload: { content?: string } }).payload.content,
+    "name: my-vault\n",
+  );
+});
+
+Deno.test("validateServerRequest rejects vault.edit with non-string content", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "vault.edit",
+      id: "r1",
+      payload: { vaultNameOrId: "my-vault", content: 42 },
+    }),
+    "string",
+  );
+});
+
 Deno.test("validateServerRequest accepts vault.audit-trail", () => {
   assertEquals(
     typeof validateServerRequest({ type: "vault.audit-trail", id: "r1" }),
@@ -3813,7 +3837,7 @@ Deno.test("authorizeOrReject: worker.token.create requires admin on access:*", (
   );
 });
 
-Deno.test("authorizeOrReject: model.edit requires write on model:<name>", () => {
+Deno.test("authorizeOrReject: model.edit requires write on model:<name>", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const ctx = makeCtx(modeTokenConfig, []);
@@ -3825,11 +3849,13 @@ Deno.test("authorizeOrReject: model.edit requires write on model:<name>", () => 
     makeEvent(JSON.stringify({
       type: "model.edit",
       id: "me-1",
-      payload: { modelIdOrName: "test-model" },
+      payload: { modelIdOrName: "test-model", content: "name: test-model\n" },
     })),
     testPrincipal,
   );
 
+  // The handler resolves the model before authorizing it (swamp-club#2426).
+  await waitFor(() => mock.sent.length >= 1, "model.edit response sent");
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");

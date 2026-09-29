@@ -40,6 +40,7 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
+import { requireRemoteEditContent } from "../remote_edit_content.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -57,6 +58,10 @@ export const modelEditCommand = withRemoteOptions(
     .description("Edit a model definition file")
     .example("Edit a model", "swamp model edit my-server")
     .example("Interactive search", "swamp model edit")
+    .example(
+      "Update from stdin (required with --server)",
+      "cat my-server.yaml | swamp model edit my-server",
+    )
     .arguments("[model_id_or_name:model_name]")
     .option(
       "--repo-dir <dir:string>",
@@ -74,7 +79,10 @@ export const modelEditCommand = withRemoteOptions(
         server,
         options,
       );
-      const content = await readStdin();
+      const content = requireRemoteEditContent(
+        await readStdin(),
+        "swamp model edit",
+      );
       const response = await requestServerResponse<ModelEditResponse>(
         { server, token },
         {

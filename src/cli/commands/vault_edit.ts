@@ -39,6 +39,8 @@ import { pushManagedConfigChanges } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
+import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
+import { requireRemoteEditContent } from "../remote_edit_content.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -56,6 +58,10 @@ export const vaultEditCommand = withRemoteOptions(
     .description("Edit a vault configuration file")
     .example("Edit a vault", "swamp vault edit my-vault")
     .example("Interactive search", "swamp vault edit")
+    .example(
+      "Update from stdin (required with --server)",
+      "cat my-vault.yaml | swamp vault edit my-vault",
+    )
     .arguments("[vault_name_or_id:string]")
     .option(
       "--repo-dir <dir:string>",
@@ -76,6 +82,10 @@ export const vaultEditCommand = withRemoteOptions(
         "Vault name or ID is required with --server (interactive search is not supported remotely)",
       );
     }
+    const content = requireRemoteEditContent(
+      await readStdin(),
+      "swamp vault edit",
+    );
     const token = await resolveServerTokenFromOptions(
       server,
       options,
@@ -87,6 +97,7 @@ export const vaultEditCommand = withRemoteOptions(
         payload: {
           vaultNameOrId,
           vaultType: options.type as string | undefined,
+          content,
         },
       },
     );
@@ -136,6 +147,7 @@ export const vaultEditCommand = withRemoteOptions(
     cliCtx.logger.debug`Selected vault: ${selected.name} (${selected.id})`;
     vaultNameOrId = selected.name;
   }
+  const stdinContent = await readStdin();
   const deps = createVaultEditDeps(repoDir);
 
   const renderer = createVaultEditRenderer(cliCtx.outputMode);
@@ -143,6 +155,7 @@ export const vaultEditCommand = withRemoteOptions(
     vaultEdit(libCtx, deps, {
       vaultNameOrId,
       vaultType,
+      stdinContent,
     }),
     renderer.handlers(),
   );

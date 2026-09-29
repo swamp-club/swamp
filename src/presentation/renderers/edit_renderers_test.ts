@@ -88,3 +88,32 @@ Deno.test("model edit renderer: json mode carries warnings to the caller", () =>
 Deno.test("model edit renderer: log mode reports warnings", () => {
   createModelEditRenderer("log").handlers().completed(completedWithWarning);
 });
+
+const vaultUpdated = {
+  kind: "completed" as const,
+  data: {
+    path: "/repo/vaults/local_encryption/vault-1.yaml",
+    status: "updated" as const,
+    name: "my-vault",
+    type: "local_encryption",
+  },
+};
+
+Deno.test("vault edit renderer: log mode reports a stdin update", () => {
+  createVaultEditRenderer("log").handlers().completed(vaultUpdated);
+});
+
+Deno.test("vault edit renderer: json mode passes a stdin update through without an editor", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (message: string) => logs.push(message);
+  try {
+    createVaultEditRenderer("json").handlers().completed(vaultUpdated);
+  } finally {
+    console.log = originalLog;
+  }
+  const parsed = JSON.parse(logs[0]);
+  assertEquals(parsed.status, "updated");
+  assertEquals(parsed.name, "my-vault");
+  assertEquals("editor" in parsed, false);
+});
