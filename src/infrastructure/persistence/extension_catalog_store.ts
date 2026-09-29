@@ -20,7 +20,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
-import { getLogger } from "@logtape/logtape";
+import { getLogger, type Logger } from "@logtape/logtape";
 import { canonicalizePath } from "./canonicalize_path.ts";
 import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import { isPulledExtensionPath } from "../../domain/extensions/extension_precedence.ts";
@@ -122,6 +122,40 @@ export interface PulledTypeConflict {
   readonly winnerName?: string;
   /** The loser's extension name, when derivable. */
   readonly loserName?: string;
+}
+
+/** Conflicts already reported this process, by kind, type and names. */
+const reportedPulledTypeConflicts = new Set<string>();
+
+/**
+ * Warns about each settled conflict between two different pulled
+ * extensions, naming the one kept and how to switch to the other. Shared
+ * by the loader and the reconcile so both word it the same, and each
+ * conflict is reported once per process: after a catalog rebuild the
+ * reconcile settles it and the loader's first index pass settles it again
+ * (swamp-club#2702).
+ */
+export function warnPulledTypeConflicts(
+  log: Logger,
+  conflicts: readonly PulledTypeConflict[],
+): void {
+  for (const { winner, winnerName, loserName } of conflicts) {
+    // Without both names there is no extension to tell the user to rm.
+    if (winnerName && loserName && winnerName !== loserName) {
+      const key =
+        `${winner.kind}\0${winner.type_normalized}\0${winnerName}\0${loserName}`;
+      if (reportedPulledTypeConflicts.has(key)) continue;
+      reportedPulledTypeConflicts.add(key);
+      log
+        .warn`Extensions ${winnerName} and ${loserName} both provide ${winner.kind} type ${winner.type_normalized}; keeping ${winnerName}, which provided it first. To use ${loserName} instead, run 'swamp extension rm ${winnerName}'`;
+    }
+  }
+}
+
+/** Forgets which conflicts were reported, as a new process starts. For
+ *  tests that stand in for several commands in one process. */
+export function resetPulledTypeConflictWarnings(): void {
+  reportedPulledTypeConflicts.clear();
 }
 
 /**

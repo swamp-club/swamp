@@ -456,6 +456,121 @@ Deno.test("ExtensionRepository: I-Repo-1 fires on save(ext) directly when reusin
   });
 });
 
+// ===== swamp-club#2702: reconcile saves settle pulled-vs-pulled conflicts =====
+Deno.test("ExtensionRepository.saveAll: settlePulledTypeConflicts keeps the first-saved pulled provider and clears the other", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const a = pulledExtension({
+      repoRoot,
+      name: "@scope/a",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+    });
+    const b = pulledExtension({
+      repoRoot,
+      name: "@scope/b",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+    });
+
+    repo.saveAll([b, a], { settlePulledTypeConflicts: true });
+
+    const typeOf = (name: string) =>
+      cat.findAll().find((r) => r.extension_name === name)?.type_normalized;
+    assertEquals(typeOf("@scope/b"), "@dup/x");
+    assertEquals(typeOf("@scope/a"), "");
+    const [conflict] = repo.lastPulledTypeConflicts;
+    assertEquals(repo.lastPulledTypeConflicts.length, 1);
+    assertEquals(conflict.winnerName, "@scope/b");
+    assertEquals(conflict.loserName, "@scope/a");
+  });
+});
+
+Deno.test("ExtensionRepository.saveAll: settlePulledTypeConflicts keeps an existing provider over a later save", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const later = pulledExtension({
+      repoRoot,
+      name: "@scope/later",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+    });
+    repo.save(later);
+    const earlier = pulledExtension({
+      repoRoot,
+      name: "@scope/earlier",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+    });
+
+    repo.saveAll([earlier, later], { settlePulledTypeConflicts: true });
+
+    const typeOf = (name: string) =>
+      cat.findAll().find((r) => r.extension_name === name)?.type_normalized;
+    assertEquals(typeOf("@scope/later"), "@dup/x");
+    assertEquals(typeOf("@scope/earlier"), "");
+  });
+});
+
+Deno.test("ExtensionRepository.saveAll: without settlePulledTypeConflicts a pulled-vs-pulled conflict still throws", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const a = pulledExtension({
+      repoRoot,
+      name: "@scope/a",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+    });
+    repo.save(a);
+    const b = pulledExtension({
+      repoRoot,
+      name: "@scope/b",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+    });
+
+    assertThrows(() => repo.saveAll([b]), DuplicateTypeError);
+    assertEquals(repo.lastPulledTypeConflicts.length, 0);
+    for (const row of cat.findAll()) {
+      assertEquals(row.extension_name, "@scope/a");
+    }
+  });
+});
+
+Deno.test("ExtensionRepository.saveAll: settlePulledTypeConflicts still rejects two local extensions sharing a type", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const local = (dir: string, name: string) => {
+      const extRoot = `${repoRoot}/extensions/models/${dir}`;
+      return makeExtension({
+        name,
+        version: "1.0.0",
+        origin: "local",
+        extensionRoot: extRoot,
+        sources: [makeSource({
+          id: makeSourceLocation(`${extRoot}/x.ts`, extRoot),
+          kind: "model",
+          fingerprint: "fp-" + dir,
+          state: {
+            tag: "Indexed",
+            type: "@dup/x",
+            bundle: makeBundleLocation(
+              `${repoRoot}/.swamp/bundles/${dir}.js`,
+              "fp-" + dir,
+            ),
+          },
+          sourceMtime: "2026-01-15T10:00:00.000Z",
+        })],
+      });
+    };
+
+    assertThrows(
+      () =>
+        repo.saveAll([local("a", "@local/a"), local("b", "@local/b")], {
+          settlePulledTypeConflicts: true,
+        }),
+      DuplicateTypeError,
+    );
+    assertEquals(cat.findAll().length, 0);
+  });
+});
+
 // ===== Test #8: lockfile fallback happy path =====
 Deno.test("ExtensionRepository: lockfile fallback resolves empty version, writes back, second-load is direct", () => {
   withRepository((repo, cat, repoRoot) => {

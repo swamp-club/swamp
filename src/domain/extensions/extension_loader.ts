@@ -45,6 +45,7 @@ import {
   type ExtensionCatalogStore,
   type ExtensionTypeRow,
   sourceDirsFingerprint,
+  warnPulledTypeConflicts,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
@@ -1164,16 +1165,10 @@ export class ExtensionLoader {
    */
   private settleTypeConflicts(catalog: ExtensionCatalogStore): void {
     if (!this.repoDir) return;
-    for (
-      const { winner, winnerName, loserName } of catalog
-        .settlePulledTypeConflicts(this.repoDir)
-    ) {
-      // Without both names there is no extension to tell the user to rm.
-      if (winnerName && loserName && winnerName !== loserName) {
-        this.logger
-          .warn`Extensions ${winnerName} and ${loserName} both provide ${winner.kind} type ${winner.type_normalized}; keeping ${winnerName}, which provided it first. To use ${loserName} instead, run 'swamp extension rm ${winnerName}'`;
-      }
-    }
+    warnPulledTypeConflicts(
+      this.logger,
+      catalog.settlePulledTypeConflicts(this.repoDir),
+    );
     catalog.resolveOriginConflicts(this.repoDir);
   }
 

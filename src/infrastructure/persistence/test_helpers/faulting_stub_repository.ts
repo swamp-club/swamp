@@ -57,7 +57,7 @@ export class FaultingStubRepository extends ExtensionRepository {
 
   override saveAll(
     extensions: readonly Extension[],
-    options?: { pruneUnreachable?: boolean },
+    options?: Parameters<ExtensionRepository["saveAll"]>[1],
   ): void {
     if (this.faultOnNextSaveAll) {
       const err = this.faultOnNextSaveAll;

@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater } from "@std/assert";
+import { assertEquals, assertGreater, assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { basename as pathBasename, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -2485,6 +2486,185 @@ Deno.test(
         );
       },
       { [extName]: { version: "1.0.0", files: [] } },
+    );
+  },
+);
+
+// -- Pulled-vs-pulled type conflicts (swamp-club#2702) -----------------------
+
+/** Runs `fn` with swamp warnings captured, returning their text. */
+async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      { category: ["swamp"], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+  }
+  return records.map((r) => r.message.map(String).join(""));
+}
+
+function typeAt(catalog: ExtensionCatalogStore, sourcePath: string) {
+  return catalog.findBySourcePath(canonicalizePath(sourcePath))
+    ?.type_normalized;
+}
+
+Deno.test(
+  "ReconcileFromDisk pulled: a cold rebuild with two providers of one type keeps the first lockfile entry and warns (swamp-club#2702)",
+  async () => {
+    const id = crypto.randomUUID();
+    const firstExt = `@test/first-${id}`;
+    const secondExt = `@test/second-${id}`;
+    const sharedType = `@test/shared-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const first = await stagePulledModel(
+          repoDir,
+          firstExt,
+          "shared",
+          sharedType,
+        );
+        const second = await stagePulledModel(
+          repoDir,
+          secondExt,
+          "shared",
+          sharedType,
+        );
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+
+        let applied = false;
+        const warnings = await captureWarnings(async () => {
+          applied = (await service.execute()).applied;
+        });
+
+        assertEquals(applied, true);
+        assertEquals(typeAt(catalog, first), sharedType);
+        assertEquals(typeAt(catalog, second), "");
+        assertEquals(catalog.isPopulated("model"), true);
+        const conflicts = warnings.filter((w) => w.includes("both provide"));
+        assertEquals(conflicts.length, 1);
+        assertStringIncludes(
+          conflicts[0],
+          `Extensions ${firstExt} and ${secondExt}`,
+        );
+        assertStringIncludes(conflicts[0], `swamp extension rm ${firstExt}`);
+
+        const again = await service.execute();
+        assertEquals(again.transitions.length, 0);
+        assertEquals(typeAt(catalog, first), sharedType);
+      },
+      {
+        [firstExt]: { version: "1.0.0", files: [] },
+        [secondExt]: { version: "1.0.0", files: [] },
+      },
+    );
+  },
+);
+
+Deno.test(
+  "ReconcileFromDisk pulled: when two catalogued providers both claim a type, the row catalogued first keeps it over lockfile order (swamp-club#2702)",
+  async () => {
+    const id = crypto.randomUUID();
+    const lockfileFirst = `@test/lockfile-first-${id}`;
+    const incumbent = `@test/incumbent-${id}`;
+    const newcomer = `@test/newcomer-${id}`;
+    const sharedType = `@test/shared-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const incumbentPath = await stagePulledModel(
+          repoDir,
+          incumbent,
+          "shared",
+          sharedType,
+        );
+        const lockfileFirstPath = await stagePulledModel(
+          repoDir,
+          lockfileFirst,
+          "shared",
+          sharedType,
+        );
+        // What an older loader could leave: both rows typed, the one
+        // later in the lockfile catalogued first.
+        seedIndexedRow(catalog, {
+          sourcePath: incumbentPath,
+          type: sharedType,
+          extensionName: incumbent,
+        });
+        seedIndexedRow(catalog, {
+          sourcePath: lockfileFirstPath,
+          type: sharedType,
+          extensionName: lockfileFirst,
+        });
+        // A newly pulled, unrelated extension is the change that makes
+        // reconcile save, which runs the I-Repo-1 check over every row.
+        await stagePulledModel(repoDir, newcomer, "noop", `${newcomer}/noop`);
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+
+        const result = await service.execute();
+
+        assertEquals(result.applied, true);
+        assertEquals(typeAt(catalog, incumbentPath), sharedType);
+        assertEquals(typeAt(catalog, lockfileFirstPath), "");
+      },
+      {
+        [lockfileFirst]: { version: "1.0.0", files: [] },
+        [incumbent]: { version: "1.0.0", files: [] },
+        [newcomer]: { version: "1.0.0", files: [] },
+      },
+    );
+  },
+);
+
+Deno.test(
+  "ReconcileFromDisk pulled: a lockfile entry whose files were rolled back claims no type next to the provider that holds it (swamp-club#2702)",
+  async () => {
+    const id = crypto.randomUUID();
+    const ownerExt = `@test/owner-${id}`;
+    const rolledBackExt = `@test/rolled-back-${id}`;
+    const sharedType = `@test/shared-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const owner = await stagePulledModel(
+          repoDir,
+          ownerExt,
+          "shared",
+          sharedType,
+        );
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+
+        const result = await service.execute();
+
+        assertEquals(result.applied, true);
+        assertEquals(typeAt(catalog, owner), sharedType);
+        const pulledRoot = swampPath(repoDir, "pulled-extensions");
+        assertEquals(rowsUnder(catalog, join(pulledRoot, rolledBackExt)), []);
+      },
+      {
+        [ownerExt]: { version: "1.0.0", files: [] },
+        [rolledBackExt]: { version: "1.0.0", files: [] },
+      },
     );
   },
 );

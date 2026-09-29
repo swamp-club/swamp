@@ -36,7 +36,10 @@ import { modelRegistry } from "../src/domain/models/model.ts";
 import { migrateConfigToDatastore } from "../src/domain/datastore/managed_config_migration.ts";
 import { RemoveExtensionService } from "../src/libswamp/extensions/remove_extension_service.ts";
 import { canonicalizePath } from "../src/infrastructure/persistence/canonicalize_path.ts";
-import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
+import {
+  ExtensionCatalogStore,
+  resetPulledTypeConflictWarnings,
+} from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
 import {
@@ -478,6 +481,9 @@ Deno.test("catalog heal: a catalog with both pulled rows typed keeps the first a
     });
     // What an older binary left behind: both rows typed.
     repo.catalog.setTypeNormalized(canonicalizePath(rival), repo.type);
+    // The next pass stands in for a later command, which has reported
+    // nothing yet.
+    resetPulledTypeConflictWarnings();
 
     const records: LogRecord[] = [];
     await configure({

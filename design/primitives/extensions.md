@@ -1614,8 +1614,10 @@ stale row never crashes a command (swamp-club#2490):
   type (`settlePulledTypeConflicts`), which is the row that binary resolved.
   Pulled-vs-local conflicts are then resolved (`resolveOriginConflicts`), so a
   local override ends up the only claimant.
-  `saveAll` does not settle pulled conflicts: a conflicting install still fails
-  with `DuplicateTypeError`.
+  `saveAll` settles pulled conflicts only when asked
+  (`settlePulledTypeConflicts: true`), which only ReconcileFromDisk does: a
+  conflicting install still fails with `DuplicateTypeError`. The loader and the
+  reconcile report a settled conflict with the same warning, once per process.
 - **Typeless-row heal.** A row whose type was cleared for a conflict keeps an
   empty type after the winning row is gone, because its fingerprint still
   matches. The per-kind `bundle_meta` marker
@@ -1767,7 +1769,14 @@ deletion-sweep shim.
 - Uses each loader's `bundleAndIndexOne` for type extraction, not
   `InstallExtensionService`: the source and lockfile already exist, and
   reconcile only repairs state.
-- Saves via `repository.saveAll()` in one SQLite transaction.
+- Saves via `repository.saveAll()` in one SQLite transaction, with
+  `settlePulledTypeConflicts: true`. Two pulled extensions that provide the same
+  `(kind, type)` are settled the way the loader settles them, not rejected: the
+  earliest-inserted row keeps the type, and a warning names both extensions.
+  On a rebuilt catalog that is the entry listed first in the lockfile. Without
+  this, the reconcile rolled back and left the catalog empty, so every later
+  command failed the same way (swamp-club#2702). Duplicates among local and
+  source-mounted extensions still throw `DuplicateTypeError`.
 
 **Locals vs pulled reconcile matrix:**
 
@@ -1784,6 +1793,11 @@ deletion-sweep shim.
 **Trigger points:** cold-start (when `anyKindNeedsInvalidation()` returns true)
 and an explicit `swamp doctor extensions`. It does not run on every command,
 where reconcile would dominate hot-path performance.
+
+A reconcile that fails at startup is logged ("Extension catalog repair failed")
+and the command continues on the loaders' own indexing, so
+`swamp doctor extensions` and `swamp extension rm`, which repair the state, stay
+reachable. The populated markers are not set, so the next command retries.
 
 Serve reload runs a scoped form, `reconcileUncataloguedPulled()`, for pulled
 lockfile entries that have no catalog rows, such as files a managed-config sync
@@ -1813,7 +1827,8 @@ This catches mass-tombstone bugs.
 deterministic winner and tombstoning the loser instead of throwing. The Source
 with the lexicographically smaller `canonicalPath` wins; the loser is tombstoned
 with reason `"renamed"`. Cross-aggregate uniqueness (I-Repo-1) still throws
-`DuplicateTypeError` at the repository layer. Both checks skip `extension`-kind
+`DuplicateTypeError` at the repository layer, after a reconcile save has settled
+pulled-vs-pulled conflicts. Both checks skip `extension`-kind
 Sources: an extension's type is the base type it adds methods to, and one
 package may ship several extension files for the same base type.
 

@@ -25,6 +25,7 @@ import type {
   ExtensionKind,
   ExtensionTypeRow,
   OriginConflict,
+  PulledTypeConflict,
 } from "./extension_catalog_store.ts";
 import { DuplicateTypeError } from "./duplicate_type_error.ts";
 import { evictRemovedBundles } from "../../domain/extensions/bundle_eviction.ts";
@@ -124,6 +125,7 @@ export class ExtensionRepository {
    */
   private readonly fallbackLoggedSourcePaths: Set<string>;
   private _lastOriginConflicts: OriginConflict[] = [];
+  private _lastPulledTypeConflicts: PulledTypeConflict[] = [];
   private readonly activePulledRoot: () => string | undefined;
   private readonly sourceExists: (sourcePath: string) => boolean;
 
@@ -158,6 +160,14 @@ export class ExtensionRepository {
 
   get lastOriginConflicts(): readonly OriginConflict[] {
     return this._lastOriginConflicts;
+  }
+
+  /**
+   * The pulled-vs-pulled conflicts the last `saveAll` settled. Empty
+   * unless it ran with `settlePulledTypeConflicts`.
+   */
+  get lastPulledTypeConflicts(): readonly PulledTypeConflict[] {
+    return this._lastPulledTypeConflicts;
   }
 
   /**
@@ -249,15 +259,28 @@ export class ExtensionRepository {
    * including live sources mounted from outside the repo, so a caller
    * that only creates aggregates for extensions that have none (serve
    * reload's scoped reconcile, swamp-club#2355) turns it off.
+   *
+   * `settlePulledTypeConflicts: true` settles pulled-vs-pulled type
+   * conflicts before the I-Repo-1 check instead of rejecting them: the
+   * earliest-inserted pulled row keeps the type and the others are
+   * cleared, as the loader does (swamp-club#2490). Reconcile repairs
+   * state it did not create, so it turns this on (swamp-club#2702).
+   * Installs leave it off, so pulling a second provider of a type still
+   * fails with {@link DuplicateTypeError}. The settled conflicts are
+   * available from {@link lastPulledTypeConflicts}.
    */
   saveAll(
     extensions: readonly Extension[],
-    options?: { pruneUnreachable?: boolean },
+    options?: {
+      pruneUnreachable?: boolean;
+      settlePulledTypeConflicts?: boolean;
+    },
   ): void {
     let staleRows: ExtensionTypeRow[] = [];
     this.catalog.runInTransaction(() => {
       // runInTransaction re-runs this callback on lock contention.
       staleRows = [];
+      this._lastPulledTypeConflicts = [];
       const protectedPaths = new Set<string>();
       for (const ext of extensions) {
         for (const source of ext.sources.values()) {
@@ -286,6 +309,12 @@ export class ExtensionRepository {
           logger
             .debug`Pruned ${staleRows.length} catalog row(s) whose source is missing or under the inactive pulled root`;
         }
+      }
+      // Pulled-vs-pulled first, then pulled-vs-local, so a local override
+      // ends up the only claimant however many pulled rows share a type.
+      if (options?.settlePulledTypeConflicts) {
+        this._lastPulledTypeConflicts = this.catalog
+          .settlePulledTypeConflicts(this.repoRoot);
       }
       this._lastOriginConflicts = this.catalog.resolveOriginConflicts(
         this.repoRoot,
