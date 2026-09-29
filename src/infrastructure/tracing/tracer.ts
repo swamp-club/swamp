@@ -134,6 +134,18 @@ export async function* bindGeneratorToSpan<T, TReturn>(
   }
 }
 
+/**
+ * Runs `fn` with `span` as the active context, so spans started while it runs
+ * are children of `span`.
+ *
+ * Like {@link bindGeneratorToSpan}, this does not start, end, or set status on
+ * the span — the caller owns its lifecycle. Use it when a span covers more
+ * than one callback, such as a phase whose locals outlive a single closure.
+ */
+export function withActiveSpan<T>(span: Span, fn: () => T): T {
+  return context.with(trace.setSpan(context.active(), span), fn);
+}
+
 export function withSpan<T>(
   name: string,
   attributes: Attributes,

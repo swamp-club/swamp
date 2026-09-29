@@ -199,7 +199,11 @@ import { cronLogPath } from "../infrastructure/update/cron_scheduler.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
 import { isValueOnlyStdoutCommand } from "./stdout_contract.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
-import { getTracer, withSpan } from "../infrastructure/tracing/mod.ts";
+import {
+  getTracer,
+  withActiveSpan,
+  withSpan,
+} from "../infrastructure/tracing/mod.ts";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -1812,6 +1816,23 @@ export async function runCli(args: string[]): Promise<void> {
   // wherever it appears and skips option values, rather than a bare scan.
   const commandInfo = extractCommandInfo(args);
 
+  // swamp.cli is the root span of the whole invocation — bootstrap, the
+  // command, and teardown all nest under it, so one invocation is one trace
+  // (swamp-club#2617).
+  await withSpan("swamp.cli", {
+    "swamp.command": commandInfo.command,
+    "swamp.subcommand": commandInfo.subcommand ?? "",
+    "swamp.version": VERSION,
+    "swamp.args": commandInfo.args.join(" "),
+    "swamp.option_keys": commandInfo.optionKeys.join(" "),
+    "swamp.global_options": commandInfo.globalOptions.join(" "),
+  }, () => runInvocation(args, commandInfo));
+}
+
+async function runInvocation(
+  args: string[],
+  commandInfo: CommandInvocationData,
+): Promise<void> {
   // Decide colour here, before anything can print. Cliffy answers `--version`
   // and `--help` during parsing and exits without ever reaching
   // `globalAction`, so a decision made in there — as it once was — could not
@@ -1936,24 +1957,27 @@ export async function runCli(args: string[]): Promise<void> {
   // by the time ensureLoaded() runs inside command .action() handlers).
   const deferredWarnings: DeferredWarning[] = [];
   if (commandNeedsLoaderSetup(args) && marker !== null) {
-    const loaderSpan = getTracer().startSpan(
-      "swamp.cli.configure_extension_loaders",
+    await withActiveSpan(
+      bootstrapSpan,
+      () =>
+        withSpan("swamp.cli.configure_extension_loaders", {}, async () => {
+          // Loader warnings raised while resolving the managed config base
+          // below would otherwise be dropped: logging starts only after Cliffy
+          // parses.
+          await bufferStartupWarnings();
+          await configureStartupExtensions({
+            repoDir,
+            marker,
+            resolvedSources,
+            deferredWarnings,
+            quiet: isQuietFromArgs(args),
+            extensionsDir,
+            thinClient: isThinClientCommand(commandInfo),
+            suppressWarning: (warning) =>
+              shouldSuppressMissingExtensionsWarning(commandInfo, warning),
+          });
+        }),
     );
-    // Loader warnings raised while resolving the managed config base below
-    // would otherwise be dropped: logging starts only after Cliffy parses.
-    await bufferStartupWarnings();
-    await configureStartupExtensions({
-      repoDir,
-      marker,
-      resolvedSources,
-      deferredWarnings,
-      quiet: isQuietFromArgs(args),
-      extensionsDir,
-      thinClient: isThinClientCommand(commandInfo),
-      suppressWarning: (warning) =>
-        shouldSuppressMissingExtensionsWarning(commandInfo, warning),
-    });
-    loaderSpan.end();
 
     // Suppress missing-pulled-extensions warning during extension install (swamp-club#1762)
     for (let i = deferredWarnings.length - 1; i >= 0; i--) {
@@ -2198,16 +2222,7 @@ export async function runCli(args: string[]): Promise<void> {
   bootstrapSpan.end();
 
   try {
-    await withSpan("swamp.cli", {
-      "swamp.command": commandInfo.command,
-      "swamp.subcommand": commandInfo.subcommand ?? "",
-      "swamp.version": VERSION,
-      "swamp.args": commandInfo.args.join(" "),
-      "swamp.option_keys": commandInfo.optionKeys.join(" "),
-      "swamp.global_options": commandInfo.globalOptions.join(" "),
-    }, async () => {
-      await cli.parse(args);
-    });
+    await cli.parse(args);
 
     // Hook commands exit immediately — no teardown needed. The action's
     // own try/catch handles all errors; skipping teardown prevents
@@ -2216,8 +2231,7 @@ export async function runCli(args: string[]): Promise<void> {
     if (hookMode) return;
 
     // Flush datastore sync (push to S3 + release lock)
-    const teardownSpan = getTracer().startSpan("swamp.cli.teardown");
-    try {
+    await withSpan("swamp.cli.teardown", {}, async () => {
       await flushDatastoreSync();
 
       // Record successful invocation
@@ -2394,9 +2408,7 @@ export async function runCli(args: string[]): Promise<void> {
           }
         }
       }
-    } finally {
-      teardownSpan.end();
-    }
+    });
   } catch (error) {
     // Release datastore lock even on failure (don't leave locks stuck).
     // flushDatastoreSync() can now throw (SyncTimeoutError propagates on

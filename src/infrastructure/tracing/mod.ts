@@ -32,6 +32,7 @@ export {
   getTracer,
   type Span,
   SpanStatusCode,
+  withActiveSpan,
   withGeneratorSpan,
   withServerSpan,
   withSpan,
