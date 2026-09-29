@@ -487,7 +487,7 @@ Deno.test(
 );
 
 Deno.test(
-  "InstallExtensionService.execute: ghost-row conflict suggests swamp doctor extensions",
+  "InstallExtensionService.execute: a row whose source was deleted no longer blocks another install (swamp-club#2490)",
   async () => {
     await withFixtureRepo(
       async ({ repoDir, repository, lockfileRepository }) => {
@@ -525,9 +525,9 @@ Deno.test(
         // Delete A's source file — simulating "rm -rf" outside swamp.
         await Deno.remove(aModelPath);
 
-        // Install B claiming the SAME type. The catalog still has A's
-        // ghost row, so I-Repo-1 fires. The error should detect the
-        // ghost and suggest `swamp doctor extensions`.
+        // Install B claiming the SAME type. A's row is now a ghost: its
+        // source is gone, so saveAll prunes it before I-Repo-1 runs and
+        // B installs cleanly.
         await stageModel(
           repoDir,
           extB,
@@ -546,17 +546,12 @@ Deno.test(
             ),
         });
 
-        const thrown = await assertRejects(
-          () =>
-            serviceB.execute(
-              { name: extB, version: "1.0.0" } as ExtensionRef,
-              makeInstallContext(repoDir, lockfileRepository),
-            ),
-          DuplicateTypeUserError,
+        await serviceB.execute(
+          { name: extB, version: "1.0.0" } as ExtensionRef,
+          makeInstallContext(repoDir, lockfileRepository),
         );
-        assertEquals(thrown.isGhostRow, true);
-        assertStringIncludes(thrown.message, "swamp doctor extensions");
-        assertStringIncludes(thrown.message, "Ghost catalog entry detected");
+        assertEquals(repository.loadByName(extA).length, 0);
+        assertEquals(repository.loadByName(extB).length, 1);
       },
     );
   },

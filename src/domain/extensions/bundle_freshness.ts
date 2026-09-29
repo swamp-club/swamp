@@ -49,6 +49,9 @@ export interface FreshnessCatalogRow {
   source_path: string;
   source_fingerprint?: string;
   bundle_path?: string;
+  /** The type the row claims; empty when it claims none. */
+  type_normalized?: string;
+  kind?: FreshnessKind;
   /**
    * Vestigial after W1a (issue swamp-club#211) — the row migrated to
    * the `state` field below. Preserved on the type for back-compat
@@ -122,6 +125,25 @@ export interface StaleFile {
   absolutePath: string;
   relativePath: string;
   baseDir: string;
+}
+
+/** A seen source whose Indexed catalog row claims no type. */
+export interface TypelessRow extends StaleFile {
+  row: FreshnessCatalogRow;
+}
+
+/** Everything one warm-path scan of the source dirs found. */
+export interface FreshnessScan {
+  /** Sources that need rebundling. */
+  stale: StaleFile[];
+  /** Rows deleted because their source was not seen in any scanned dir. */
+  removed: FreshnessCatalogRow[];
+  /**
+   * Seen sources of a primary (non-extension) kind whose Indexed row
+   * claims no type and is not already stale — candidates for the
+   * loader's typeless-row heal (swamp-club#2490).
+   */
+  typeless: TypelessRow[];
 }
 
 /**
@@ -234,7 +256,8 @@ function toHex(buffer: ArrayBuffer): string {
  */
 export interface FreshnessCatalog {
   findByKind(kind: FreshnessKind): FreshnessCatalogRow[];
-  removeBySourcePath(sourcePath: string): void;
+  /** Deletes the row stored at exactly this (un-canonicalized) path. */
+  removeByRawSourcePath(rawSourcePath: string): void;
 }
 
 export interface FindStaleFilesParams {
@@ -289,20 +312,28 @@ export const CATALOG_FAILURE_STATES: ReadonlySet<string> = new Set([
 export async function findStaleFiles(
   params: FindStaleFilesParams,
 ): Promise<StaleFile[]> {
+  return (await scanCatalogFreshness(params)).stale;
+}
+
+/**
+ * {@link findStaleFiles}, also reporting the rows it removed and the
+ * seen typeless rows, which the loader needs for bundle eviction and the
+ * typeless-row heal (swamp-club#2490).
+ */
+export async function scanCatalogFreshness(
+  params: FindStaleFilesParams,
+): Promise<FreshnessScan> {
   const { modelsDir, additionalDirs, catalog, discoverFiles, kinds } = params;
   const stale: StaleFile[] = [];
+  const typeless: TypelessRow[] = [];
   const cache = createFreshnessCache();
 
   const allDirs = [modelsDir, ...(additionalDirs ?? [])];
 
-  const needsNormalize = SEPARATOR === "\\";
-  const normalizePath = (p: string): string =>
-    needsNormalize ? p.toLowerCase().replaceAll("\\", "/") : p;
-
   const catalogEntries = kinds.flatMap((k) => catalog.findByKind(k));
   const catalogBySource = new Map<string, FreshnessCatalogRow>();
   for (const entry of catalogEntries) {
-    catalogBySource.set(normalizePath(entry.source_path), entry);
+    catalogBySource.set(normalizeFreshnessPath(entry.source_path), entry);
   }
 
   const seenSources = new Set<string>();
@@ -317,9 +348,11 @@ export async function findStaleFiles(
     const files = await discoverFiles(dir);
     for (const relativePath of files) {
       const absolutePath = resolve(dir, relativePath);
-      seenSources.add(normalizePath(absolutePath));
+      seenSources.add(normalizeFreshnessPath(absolutePath));
 
-      const catalogEntry = catalogBySource.get(normalizePath(absolutePath));
+      const catalogEntry = catalogBySource.get(
+        normalizeFreshnessPath(absolutePath),
+      );
       if (!catalogEntry) {
         stale.push({ absolutePath, relativePath, baseDir: dir });
         continue;
@@ -355,6 +388,20 @@ export async function findStaleFiles(
           !(await bundleExists(catalogEntry.bundle_path))
         ) {
           stale.push({ absolutePath, relativePath, baseDir: dir });
+          continue;
+        }
+
+        if (
+          (catalogEntry.state ?? "Indexed") === "Indexed" &&
+          !catalogEntry.type_normalized &&
+          catalogEntry.kind !== "extension"
+        ) {
+          typeless.push({
+            absolutePath,
+            relativePath,
+            baseDir: dir,
+            row: catalogEntry,
+          });
         }
       } catch {
         stale.push({ absolutePath, relativePath, baseDir: dir });
@@ -362,15 +409,65 @@ export async function findStaleFiles(
     }
   }
 
-  for (const [normalizedPath, entry] of catalogBySource) {
-    if (!seenSources.has(normalizedPath)) {
-      if (!CATALOG_FAILURE_STATES.has(entry.state ?? "Indexed")) {
-        catalog.removeBySourcePath(entry.source_path);
-      }
+  const removed = removeUnseenCatalogRows(
+    catalog,
+    catalogEntries,
+    seenSources,
+  );
+
+  return { stale, removed, typeless };
+}
+
+/**
+ * Normalizes a source path for {@link scanCatalogFreshness}'s seen-set
+ * comparisons: lowercase with forward slashes on Windows, unchanged on
+ * POSIX.
+ */
+export function normalizeFreshnessPath(path: string): string {
+  return SEPARATOR === "\\" ? path.toLowerCase().replaceAll("\\", "/") : path;
+}
+
+/**
+ * Collects the normalized absolute paths of every source file the
+ * loader's discovery finds under `dirs`. The cold path uses it to apply
+ * the same unseen-row removal as the warm path (swamp-club#2490).
+ */
+export async function collectSeenSources(
+  dirs: readonly string[],
+  discoverFiles: (dir: string) => Promise<string[]>,
+): Promise<Set<string>> {
+  const seen = new Set<string>();
+  for (const dir of dirs) {
+    try {
+      await Deno.stat(dir);
+    } catch {
+      continue;
+    }
+    for (const relativePath of await discoverFiles(dir)) {
+      seen.add(normalizeFreshnessPath(resolve(dir, relativePath)));
     }
   }
+  return seen;
+}
 
-  return stale;
+/**
+ * Deletes each of `rows` whose source was not seen in any scanned dir,
+ * keeping rows in a failure state so the failure stays visible. Deletes
+ * by the raw stored path. Returns the deleted rows.
+ */
+export function removeUnseenCatalogRows(
+  catalog: FreshnessCatalog,
+  rows: readonly FreshnessCatalogRow[],
+  seenSources: ReadonlySet<string>,
+): FreshnessCatalogRow[] {
+  const removed: FreshnessCatalogRow[] = [];
+  for (const entry of rows) {
+    if (seenSources.has(normalizeFreshnessPath(entry.source_path))) continue;
+    if (CATALOG_FAILURE_STATES.has(entry.state ?? "Indexed")) continue;
+    catalog.removeByRawSourcePath(entry.source_path);
+    removed.push(entry);
+  }
+  return removed;
 }
 
 async function bundleExists(bundlePath: string): Promise<boolean> {

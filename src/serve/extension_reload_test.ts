@@ -21,6 +21,8 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
+import { configure, type LogRecord } from "@logtape/logtape";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   collectRegisteredPulledSources,
   createExtensionDiscoverer,
@@ -827,6 +829,101 @@ Deno.test("reloadPulledExtensions: catalogues an uncatalogued extension whose na
       } finally {
         modelRegistry.invalidateType(hyphenType);
         modelRegistry.invalidateType(underscoreType);
+      }
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: does not re-bundle a catalogued row whose source was deleted (swamp-club#2490)", async () => {
+  const id = crypto.randomUUID();
+  const extName = `@test/deleted-source-${id}`;
+  await withPulledRepo(
+    [extName],
+    async ({ repoDir, lockfilePath, catalog, stage }) => {
+      const modelsDir = join(
+        swampPath(repoDir, "pulled-extensions"),
+        extName,
+        "models",
+      );
+      const bundleDir = join(
+        swampPath(repoDir, "bundles"),
+        bundleNamespace(modelsDir, repoDir),
+      );
+      const row = (sourcePath: string, bundlePath: string) => ({
+        type_normalized: "",
+        kind: "model" as const,
+        bundle_path: bundlePath,
+        source_path: canonicalizePath(sourcePath),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "fingerprint-that-does-not-match",
+      });
+      // Control: a changed source on disk is re-bundled.
+      const changedPath = await stage(
+        extName,
+        "changed",
+        pulledModelCode(`${extName}/changed`, "changed"),
+      );
+      catalog.upsert(row(changedPath, join(bundleDir, "changed.js")));
+      // A row whose source file has been deleted.
+      const deletedPath = join(modelsDir, "deleted.ts");
+      const deletedBundle = join(bundleDir, "deleted.js");
+      catalog.upsert(row(deletedPath, deletedBundle));
+
+      // The catalog stores canonical paths, which the bundler receives.
+      const bundles = (args: string[], sourcePath: string) =>
+        args.some((a) => canonicalizePath(a) === canonicalizePath(sourcePath));
+
+      const captured: LogRecord[] = [];
+      await configure({
+        sinks: { capture: (record: LogRecord) => captured.push(record) },
+        loggers: [
+          {
+            category: ["serve", "reload"],
+            lowestLevel: "warning",
+            sinks: ["capture"],
+          },
+          { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+        ],
+        reset: true,
+      });
+      try {
+        const { calls } = await withMockedCommand(
+          copyingBundler,
+          () =>
+            reloadPulledExtensions(
+              repoDir,
+              lockfilePath,
+              undefined,
+              stubDenoRuntime,
+            ),
+        );
+
+        assertEquals(
+          calls.filter((c) => bundles(c.args, changedPath)).length,
+          1,
+          "control: the changed source is re-bundled",
+        );
+        assertEquals(
+          calls.filter((c) => bundles(c.args, deletedPath)).length,
+          0,
+          "the deleted source is not re-bundled",
+        );
+        const rebundleWarnings = captured.filter((r) =>
+          r.message.map((p) => String(p)).join("").includes(
+            "failed to re-bundle",
+          )
+        );
+        assertEquals(rebundleWarnings, []);
+        assertEquals(
+          await Deno.stat(deletedBundle).then(() => true, () => false),
+          false,
+          "no bundle is written for the deleted source",
+        );
+      } finally {
+        await initializeLogging({ _reset: true });
       }
     },
   );

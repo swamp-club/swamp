@@ -660,6 +660,8 @@ for (
     const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
     clearAttachedExtensions();
     registerTestModel(type, { get: true });
+    // Rows whose source is missing are dropped (swamp-club#2490).
+    await Deno.writeTextFile(join(dir, "noop.ts"), "");
     try {
       catalog.upsert({
         source_path: join(dir, "noop.ts"),
@@ -709,6 +711,7 @@ Deno.test("attachPendingExtensionsForType: an extension that fails to import is 
   registerTestModel(type, { get: true });
   try {
     for (const name of ["broken", "good"]) {
+      await Deno.writeTextFile(join(dir, `${name}.ts`), "");
       catalog.upsert({
         source_path: join(dir, `${name}.ts`),
         type_normalized: type,

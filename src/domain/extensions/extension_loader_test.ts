@@ -134,7 +134,7 @@ class StubCatalog implements FreshnessCatalog {
   findByKind(): ExtensionTypeRow[] {
     return [];
   }
-  removeBySourcePath(): void {}
+  removeByRawSourcePath(): void {}
 }
 
 const discoverExcludingTestFiles = async (dir: string): Promise<string[]> => {
@@ -926,6 +926,9 @@ export const extension = {
 };
 `,
   );
+  // Rows whose source is missing are dropped (swamp-club#2490).
+  await Deno.writeTextFile(join(dir, "base.ts"), "");
+  await Deno.writeTextFile(join(dir, "ext.ts"), "");
   const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
   const originalImport = modelKindAdapter.importAndExtendBundle!;
   let imports = 0;

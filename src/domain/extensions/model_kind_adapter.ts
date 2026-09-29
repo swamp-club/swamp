@@ -62,8 +62,37 @@ import {
   contributorTier,
   type ExtensionContributor,
 } from "./extension_precedence.ts";
+import { evictRemovedBundles } from "./bundle_eviction.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
+
+/**
+ * The extension rows targeting `typeNormalized` whose source still exists.
+ * Rows whose source is gone are deleted, along with their bundles: a
+ * surviving bundle would attach old code, and a missing one fails with
+ * ENOENT when it is rebuilt (swamp-club#2490).
+ */
+function liveExtensionRows(
+  catalog: ExtensionCatalogStore,
+  typeNormalized: string,
+): ExtensionTypeRow[] {
+  const live: ExtensionTypeRow[] = [];
+  const removed: ExtensionTypeRow[] = [];
+  for (const row of catalog.findExtensionsForType(typeNormalized)) {
+    try {
+      Deno.statSync(row.source_path);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        catalog.removeByRawSourcePath(row.source_path);
+        removed.push(row);
+        continue;
+      }
+    }
+    live.push(row);
+  }
+  evictRemovedBundles(removed, catalog);
+  return live;
+}
 
 const attachedExtensions: Map<string, Map<string, string>> = new Map();
 
@@ -1063,7 +1092,7 @@ export const modelKindAdapter: KindAdapter = {
     catalog: ExtensionCatalogStore,
     typeNormalized: string,
   ): ExtensionTypeRow[] {
-    return catalog.findExtensionsForType(typeNormalized);
+    return liveExtensionRows(catalog, typeNormalized);
   },
 
   async importAndExtendBundle(
@@ -1138,7 +1167,7 @@ export const modelKindAdapter: KindAdapter = {
     // Attach the likely winner first so the common case needs no override.
     // The outcome does not depend on this order (swamp-club#2562).
     const extensions = sortByPrecedence(
-      catalog.findExtensionsForType(typeNormalized),
+      liveExtensionRows(catalog, typeNormalized),
       contributorFor,
     );
     for (const { entry, contributor } of extensions) {

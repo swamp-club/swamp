@@ -717,8 +717,12 @@ processes local directories first and deduplicates with `hasType()`); the
 catalog now matches. That dedupe covers primary types only. Members that
 `export const extension` files add to a type follow the rules below.
 
-To re-activate pulled types after removing a local source, run
-`swamp doctor extensions` or any command that rescans the catalog.
+When the local source is removed, the next loader pass re-activates the pulled
+type on its own (see [Stale-source healing](#stale-source-healing)). If two
+pulled extensions provide the same `(kind, type)`, the one that already holds
+the type keeps it, so pulling another extension never takes a type away. The
+loader warns that it chose between them, naming both extensions and the
+`swamp extension rm` that switches to the other.
 
 ### Extension Member Collisions
 
@@ -1537,6 +1541,77 @@ vs `/Users/...`). Unpruned, these phantom rows cause cross-aggregate
 `(kind, typeNormalized)` collisions that block every catalog write, including
 `rm` of unrelated extensions.
 
+### Stale-source pre-flight prune
+
+In the same step, `saveAll` also deletes rows that could only mislead type
+resolution (`ExtensionCatalogStore.pruneStaleSources`, swamp-club#2490):
+
+- a row that claims a type (or, for an extension row, a base type) whose source
+  file is missing. Only `NotFound` counts as missing. Importing such a row
+  either fails with ENOENT when its bundle is rebuilt, or silently runs an old
+  bundle;
+- when the repo's active pulled root is known, a row under the other pulled
+  root, `.swamp/pulled-extensions/` or `.swamp/config/pulled-extensions/`.
+  `datastore config migrate` copies the pulled tree rather than moving it.
+  Datastore rows are exempt: the on-disk datastore chooser can load from either
+  root, and `purgeUnchosenPulledDatastoreRows` decides which one survives.
+
+Rows in the save, Tombstoned rows and rows in a failure state
+(`CATALOG_FAILURE_STATES`, kept so doctor can report them) are never deleted.
+Deletion uses the raw stored path, so keys written on another OS still match.
+The prune runs before I-Repo-1, so a typed row whose source is gone no longer
+blocks another extension from claiming its type. A copied old-root row no
+longer shares a type with its new-root twin either, which used to roll back
+every unrelated save. Like the unreachable-path prune, it is skipped when the
+caller passes `pruneUnreachable: false`. Once the transaction commits, each
+removed row's bundle is deleted, unless the row's source still exists under
+another spelling of the repo root or another row still references the bundle.
+
+### Stale-source healing
+
+The loader keeps its own catalog writes consistent with the rules above, so a
+stale row never crashes a command (swamp-club#2490):
+
+- **Identity.** `deriveExtensionIdentity` recognizes both pulled roots, so
+  `extension rm` finds and tombstones rows under
+  `.swamp/config/pulled-extensions/`. `computeExtensionRoot` still roots every
+  pulled aggregate under `.swamp/pulled-extensions/<name>`, so two roots in one
+  aggregate never trip I1.
+- **Unseen rows.** The cold path of `buildIndex` removes rows its scan no longer
+  reaches, exactly as `findStaleFiles` does on the warm path. Both use the same
+  discovery and exempt failure states. Rows under an old pulled root, or rows
+  of an extension that is no longer installed, do not outlive a cold pass.
+- **Type-load guard.** `loadSingleType` checks that a row's source exists before
+  importing its bundle, whether or not the bundle exists. A row whose source is
+  gone is deleted, and the next row claiming the type is tried. With none left,
+  the registry reports the type as not found. The model adapter filters
+  extension rows the same way. Every kind registry drops a lazy entry that its
+  loader did not promote.
+- **Conflict settle.** A rebundle never writes a type that a higher-ranked row
+  already holds: a local row outranks a pulled one, and a pulled row that holds
+  the type outranks any other pulled row. A cold index discovers files in
+  sorted order, so there the smallest path is indexed first and wins. After
+  each pass, pulled rows that still share a `(kind, type)`, as an older binary
+  could leave them, are settled by insertion order: the earliest row keeps the
+  type (`settlePulledTypeConflicts`), which is the row that binary resolved.
+  Pulled-vs-local conflicts are then resolved (`resolveOriginConflicts`), so a
+  local override ends up the only claimant.
+  `saveAll` does not settle pulled conflicts: a conflicting install still fails
+  with `DuplicateTypeError`.
+- **Typeless-row heal.** A row whose type was cleared for a conflict keeps an
+  empty type after the winning row is gone, because its fingerprint still
+  matches. The per-kind `bundle_meta` marker `typeless-row-heal-v1:<kind>` is
+  absent after an upgrade and is cleared whenever a row that claims a type is
+  deleted. While it is absent, the next warm pass imports the existing bundle of
+  each seen, typeless `Indexed` row to learn its type. It writes the type back
+  only when no row claims it, for at most one row per type. The pass then sets
+  the marker. This writes the catalog only and never the registry, so a pulled
+  row cannot displace a local override. The heal is also skipped, with the
+  marker left unset, while the kind has a local row in a failed state whose
+  source still exists: a failed row claims no type, so a broken local override
+  would otherwise hand its type to the pulled row it shadows. The heal runs once
+  that row is fixed or its file is removed.
+
 ### Atomic upgrade pattern
 
 For each new aggregate it saves, the install service tombstones any existing
@@ -1649,7 +1724,9 @@ contract form two layers:
      `populated:<kind>` marker in `bundle_meta` is unset.
    - **Warm-start / hot path:** `findStaleFiles` compares fingerprints
      incrementally, run by each loader's `buildIndex` once the catalog is
-     populated. A `BundleBuildFailed` row with a matching fingerprint counts as
+     populated. It deletes rows whose source it no longer sees, except those in
+     a failure state; the cold path applies the same removal
+     (`removeUnseenCatalogRows`). A `BundleBuildFailed` row with a matching fingerprint counts as
      stale and is retried on the next scan, not treated as a cache hit. A
      transient build failure (e.g. npm deps unreachable on a cold cache at
      first load) must recover when conditions change, not block the type
@@ -1679,6 +1756,7 @@ deletion-sweep shim.
 | Local          | absent         | present             | `markSourceMissing` → `OrphanedBundleOnly` or `Tombstoned` |
 | Pulled         | present        | absent              | `bundleAndIndexOne` → `Indexed`                            |
 | Pulled         | absent         | lockfile present    | `recordEntryPointUnreadable` (no automatic re-fetch)       |
+| Pulled         | outside walk   | lockfile present    | `Tombstoned` (e.g. the pre-migrate copy, swamp-club#2490)  |
 | Pulled         | absent         | lockfile absent     | `Tombstoned` (orphan from failed rm)                       |
 | Source-mounted | —              | —                   | Follows local semantics                                    |
 

@@ -60,7 +60,10 @@ export interface ExtensionIdentity {
  *
  * Layout rules (issue swamp-club#211, W1):
  *
- *   - Pulled: `<repoRoot>/.swamp/pulled-extensions/<name>/...`
+ *   - Pulled: `<repoRoot>/.swamp/pulled-extensions/<name>/...`, or
+ *     `<repoRoot>/.swamp/config/pulled-extensions/<name>/...` for
+ *     managedConfig repos (swamp-club#2490). Both roots are checked
+ *     before the local rule.
  *     Note <name> may contain forward slashes (scoped extension names
  *     like `@swamp/aws/ec2` are common). When `knownNames` (e.g. the
  *     lockfile's entries) contains a prefix of the path, the longest
@@ -106,8 +109,13 @@ export function deriveExtensionIdentity(
   // pulledPrefix always ends in '/', so plain startsWith is correct —
   // it can't match `/repo/.swamp/pulled-extensions-archive/...` because
   // the literal `/` after `pulled-extensions` is part of the prefix.
-  const pulledPrefix = joinForward(repoRoot, ".swamp/pulled-extensions/");
-  if (sourcePath.startsWith(pulledPrefix)) {
+  //
+  // Both pulled roots are checked before the local rule, so a pulled
+  // extension whose name contains an `extensions/<kind>` pair (e.g.
+  // `@org/extensions/models/...`) is never mistaken for a local one.
+  for (const root of PULLED_ROOTS) {
+    const pulledPrefix = joinForward(repoRoot, root);
+    if (!sourcePath.startsWith(pulledPrefix)) continue;
     const nameAndRest = sourcePath.slice(pulledPrefix.length);
     const name = extractPulledExtensionName(nameAndRest, knownNames);
     if (name === null) {
@@ -131,6 +139,13 @@ export function deriveExtensionIdentity(
 
   return null;
 }
+
+/** The pulled roots `resolvePulledExtensionsRoot` can return, relative
+ *  to the repo root. */
+const PULLED_ROOTS = [
+  ".swamp/pulled-extensions/",
+  ".swamp/config/pulled-extensions/",
+] as const;
 
 /**
  * Walks the path's `/extensions/<kind>/` segments looking for a known

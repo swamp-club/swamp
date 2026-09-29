@@ -18,12 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals } from "@std/assert";
-import { join } from "@std/path";
+import { join, SEPARATOR } from "@std/path";
 import {
+  collectSeenSources,
   computeSourceFingerprint,
   findStaleFiles,
   type FreshnessCatalog,
   type FreshnessKind,
+  normalizeFreshnessPath,
+  scanCatalogFreshness,
 } from "./bundle_freshness.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
@@ -56,8 +59,8 @@ class FakeCatalog implements FreshnessCatalog {
     return this.rows.filter((r) => r.kind === kind);
   }
 
-  removeBySourcePath(sourcePath: string): void {
-    this.rows = this.rows.filter((r) => r.source_path !== sourcePath);
+  removeByRawSourcePath(rawSourcePath: string): void {
+    this.rows = this.rows.filter((r) => r.source_path !== rawSourcePath);
   }
 
   snapshot(): ExtensionTypeRow[] {
@@ -789,7 +792,7 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
 
     const f2 = await computeSourceFingerprint(entry, dir);
     assertNotEquals(f1, f2);
-    catalog.removeBySourcePath(entry);
+    catalog.removeByRawSourcePath(entry);
     catalog.add({
       source_path: entry,
       type_normalized: "@user/entry",
@@ -844,4 +847,195 @@ Deno.test("computeSourceFingerprint: restoring a broken dep changes the fingerpr
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// -- swamp-club#2490: removed and typeless rows -------------------------
+
+function catalogRow(
+  overrides: Partial<ExtensionTypeRow> & { source_path: string },
+): ExtensionTypeRow {
+  return {
+    type_normalized: "",
+    kind: "model",
+    bundle_path: "",
+    version: "",
+    description: "",
+    extends_type: "",
+    source_mtime: "",
+    source_fingerprint: "",
+    ...overrides,
+  };
+}
+
+Deno.test("scanCatalogFreshness: removed lists unseen non-failure rows and keeps failure-state rows", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_2490_removed_" });
+  try {
+    const seen = join(dir, "seen.ts");
+    await Deno.writeTextFile(seen, "export const s = 1;");
+    const gone = join(dir, "gone.ts");
+    const goneLegacy = join(dir, "gone_legacy.ts");
+    const buildFailed = join(dir, "build_failed.ts");
+    const unreadable = join(dir, "unreadable.ts");
+    const orphaned = join(dir, "orphaned.ts");
+
+    const catalog = new FakeCatalog();
+    catalog.add(catalogRow({
+      source_path: seen,
+      type_normalized: "@user/seen",
+      source_fingerprint: await computeSourceFingerprint(seen, dir),
+    }));
+    catalog.add(catalogRow({
+      source_path: gone,
+      type_normalized: "@user/gone",
+      state: "Indexed",
+    }));
+    catalog.add(catalogRow({
+      source_path: goneLegacy,
+      type_normalized: "@user/gone-legacy",
+    }));
+    catalog.add(catalogRow({
+      source_path: buildFailed,
+      state: "BundleBuildFailed",
+    }));
+    catalog.add(catalogRow({
+      source_path: unreadable,
+      state: "EntryPointUnreadable",
+    }));
+    catalog.add(catalogRow({
+      source_path: orphaned,
+      state: "OrphanedBundleOnly",
+    }));
+
+    const scan = await scanCatalogFreshness({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+
+    assertEquals(
+      scan.removed.map((r) => r.source_path).sort(),
+      [gone, goneLegacy].sort(),
+    );
+    assertEquals(
+      catalog.snapshot().map((r) => r.source_path).sort(),
+      [seen, buildFailed, unreadable, orphaned].sort(),
+    );
+    assertEquals(scan.stale, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("scanCatalogFreshness: typeless lists seen Indexed primary-kind rows that claim no type and are not stale", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_2490_typeless_" });
+  try {
+    const names = [
+      "indexed.ts",
+      "legacy.ts",
+      "extension.ts",
+      "mismatch.ts",
+      "validation_failed.ts",
+      "bundled.ts",
+      "typed.ts",
+    ];
+    const paths: Record<string, string> = {};
+    const fps: Record<string, string> = {};
+    for (const name of names) {
+      paths[name] = join(dir, name);
+      await Deno.writeTextFile(paths[name], `export const x = "${name}";`);
+      fps[name] = await computeSourceFingerprint(paths[name], dir);
+    }
+
+    const catalog = new FakeCatalog();
+    // Included: Indexed, primary kind, empty type, fresh.
+    catalog.add(catalogRow({
+      source_path: paths["indexed.ts"],
+      source_fingerprint: fps["indexed.ts"],
+      state: "Indexed",
+    }));
+    // Included: a row without a state reads as Indexed.
+    catalog.add(catalogRow({
+      source_path: paths["legacy.ts"],
+      kind: "vault",
+      source_fingerprint: fps["legacy.ts"],
+    }));
+    // Excluded: kind "extension" rows never claim a type.
+    catalog.add(catalogRow({
+      source_path: paths["extension.ts"],
+      kind: "extension",
+      source_fingerprint: fps["extension.ts"],
+      state: "Indexed",
+    }));
+    // Excluded: already stale via fingerprint mismatch.
+    catalog.add(catalogRow({
+      source_path: paths["mismatch.ts"],
+      source_fingerprint: "does-not-match",
+      state: "Indexed",
+    }));
+    // Excluded: non-Indexed states.
+    catalog.add(catalogRow({
+      source_path: paths["validation_failed.ts"],
+      source_fingerprint: fps["validation_failed.ts"],
+      state: "ValidationFailed",
+    }));
+    catalog.add(catalogRow({
+      source_path: paths["bundled.ts"],
+      source_fingerprint: fps["bundled.ts"],
+      state: "Bundled",
+    }));
+    // Excluded: claims a type.
+    catalog.add(catalogRow({
+      source_path: paths["typed.ts"],
+      type_normalized: "@user/typed",
+      source_fingerprint: fps["typed.ts"],
+      state: "Indexed",
+    }));
+
+    const scan = await scanCatalogFreshness({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model", "vault", "extension"],
+    });
+
+    assertEquals(
+      scan.typeless.map((t) => t.relativePath).sort(),
+      ["indexed.ts", "legacy.ts"],
+    );
+    const indexed = scan.typeless.find((t) => t.relativePath === "indexed.ts");
+    assertEquals(indexed?.absolutePath, paths["indexed.ts"]);
+    assertEquals(indexed?.baseDir, dir);
+    assertEquals(indexed?.row.source_path, paths["indexed.ts"]);
+    assertEquals(scan.stale.map((s) => s.relativePath), ["mismatch.ts"]);
+    assertEquals(scan.removed, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("collectSeenSources: skips a missing dir", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_2490_seen_" });
+  try {
+    const file = join(dir, "a.ts");
+    await Deno.writeTextFile(file, "export const a = 1;");
+    const missing = join(dir, `missing-${crypto.randomUUID()}`);
+
+    const discovered: string[] = [];
+    const seen = await collectSeenSources([missing, dir], (d) => {
+      discovered.push(d);
+      return discoverTsFiles(d);
+    });
+
+    assertEquals(discovered, [dir]);
+    assertEquals([...seen], [normalizeFreshnessPath(file)]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("normalizeFreshnessPath: folds case and separators only on Windows", () => {
+  const input = ["Repo", "Extensions", "Models", "A.ts"].join(SEPARATOR);
+  const expected = SEPARATOR === "\\" ? "repo/extensions/models/a.ts" : input;
+  assertEquals(normalizeFreshnessPath(input), expected);
 });

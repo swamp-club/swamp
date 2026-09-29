@@ -28,6 +28,7 @@ import {
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_type_error.ts";
 import { ReconcileFromDiskService } from "./reconcile_from_disk_service.ts";
+import { computeSourceFingerprint } from "../../domain/extensions/bundle_freshness.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
@@ -1803,9 +1804,12 @@ Deno.test(
             scanOnDiskDatastores,
           });
           const result = await service.execute({ dryRun: true });
+          // Without the scan the legacy-root row sits outside every dir
+          // walked for the entry, so it is tombstoned (swamp-club#2490).
           unreadable =
             result.transitions.filter((t) =>
-              t.toState === "EntryPointUnreadable"
+              t.toState === "EntryPointUnreadable" ||
+              t.toState === "Tombstoned"
             ).length;
         },
         { [extName]: { version: "1.0.0", files: [] } },
@@ -1813,7 +1817,7 @@ Deno.test(
       return unreadable;
     };
 
-    assertEquals(await run(false) > 0, true, "control: rows are blanked");
+    assertEquals(await run(false) > 0, true, "control: rows are dropped");
     assertEquals(await run(true), 0, "scan: rows stay Indexed");
   },
 );
@@ -2340,6 +2344,147 @@ Deno.test(
         );
       },
       { [helperOnly]: { version: "1.0.0", files: [] } },
+    );
+  },
+);
+
+// -- Pulled sources outside the walked dirs (swamp-club#2490) --------------
+
+/**
+ * Stages a pulled model under `pulledRoot` and seeds an Indexed row whose
+ * fingerprint matches, so reconcile's Phase 1 skips it without bundling.
+ */
+async function stageIndexedPulledModel(
+  catalog: ExtensionCatalogStore,
+  args: {
+    pulledRoot: string;
+    extName: string;
+    fileBase: string;
+    typeId: string;
+  },
+): Promise<string> {
+  const modelsDir = join(args.pulledRoot, args.extName, "models");
+  await ensureDir(modelsDir);
+  const sourcePath = join(modelsDir, `${args.fileBase}.ts`);
+  await Deno.writeTextFile(sourcePath, MINIMAL_MODEL_CODE(args.typeId));
+  catalog.upsertWithIdentity({
+    source_path: canonicalizePath(sourcePath),
+    type_normalized: args.typeId,
+    kind: "model",
+    bundle_path: "",
+    version: "1.0.0",
+    description: "",
+    extends_type: "",
+    source_mtime: "",
+    source_fingerprint: await computeSourceFingerprint(sourcePath, modelsDir),
+    state: "Indexed",
+    extension_name: args.extName,
+    extension_version: "1.0.0",
+  });
+  return sourcePath;
+}
+
+Deno.test(
+  "ReconcileFromDisk pulled: a missing source under the legacy root is tombstoned when the managed root is active (swamp-club#2490)",
+  async () => {
+    const id = crypto.randomUUID();
+    const extName = `@test/legacy-copy-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const managedRoot = swampPath(repoDir, "config", "pulled-extensions");
+        await stageIndexedPulledModel(catalog, {
+          pulledRoot: managedRoot,
+          extName,
+          fileBase: "live",
+          typeId: `${extName}/live`,
+        });
+        // The pre-migration copy's row, with no file behind it.
+        const legacySource = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extName,
+          "models",
+          "x.ts",
+        );
+        seedIndexedRow(catalog, {
+          sourcePath: legacySource,
+          type: `${extName}/x`,
+          extensionName: extName,
+        });
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+          pulledExtensionsRoot: managedRoot,
+        });
+        const result = await service.execute({ dryRun: true });
+
+        assertEquals(
+          result.transitions.map((t) => ({
+            path: t.source.canonicalPath,
+            fromState: t.fromState,
+            toState: t.toState,
+            reason: t.reason,
+          })),
+          [{
+            path: canonicalizePath(legacySource),
+            fromState: "Indexed",
+            toState: "Tombstoned",
+            reason: "pulled source outside the extension's walked dirs",
+          }],
+        );
+        assertEquals(result.applied, false);
+      },
+      { [extName]: { version: "1.0.0", files: [] } },
+    );
+  },
+);
+
+Deno.test(
+  "ReconcileFromDisk pulled: a missing source under the active root stays EntryPointUnreadable (swamp-club#2490)",
+  async () => {
+    const id = crypto.randomUUID();
+    const extName = `@test/active-missing-${id}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const managedRoot = swampPath(repoDir, "config", "pulled-extensions");
+        await stageIndexedPulledModel(catalog, {
+          pulledRoot: managedRoot,
+          extName,
+          fileBase: "live",
+          typeId: `${extName}/live`,
+        });
+        const missingSource = join(managedRoot, extName, "models", "gone.ts");
+        seedIndexedRow(catalog, {
+          sourcePath: missingSource,
+          type: `${extName}/gone`,
+          extensionName: extName,
+        });
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+          pulledExtensionsRoot: managedRoot,
+        });
+        const result = await service.execute({ dryRun: true });
+
+        assertEquals(
+          result.transitions.map((t) => ({
+            path: t.source.canonicalPath,
+            toState: t.toState,
+            reason: t.reason,
+          })),
+          [{
+            path: canonicalizePath(missingSource),
+            toState: "EntryPointUnreadable",
+            reason: "pulled source missing from disk (lockfile entry present)",
+          }],
+        );
+      },
+      { [extName]: { version: "1.0.0", files: [] } },
     );
   },
 );

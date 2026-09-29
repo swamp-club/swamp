@@ -27,6 +27,8 @@ import type {
   OriginConflict,
 } from "./extension_catalog_store.ts";
 import { DuplicateTypeError } from "./duplicate_type_error.ts";
+import { evictRemovedBundles } from "../../domain/extensions/bundle_eviction.ts";
+import { activePulledExtensionsRoot } from "./paths.ts";
 import type { LocalManifestIdentity } from "./local_manifest_reader.ts";
 import type { LockfileRepository } from "./lockfile_repository.ts";
 import {
@@ -122,18 +124,36 @@ export class ExtensionRepository {
    */
   private readonly fallbackLoggedSourcePaths: Set<string>;
   private _lastOriginConflicts: OriginConflict[] = [];
+  private readonly activePulledRoot: () => string | undefined;
+  private readonly sourceExists: (sourcePath: string) => boolean;
 
+  /**
+   * @param args.activePulledRoot Returns the repo's active pulled root, or
+   *   `undefined` while managed status is unknown. Defaults to
+   *   {@link activePulledExtensionsRoot} of the raw `repoRoot`, read at
+   *   call time because managed status is recorded during startup.
+   * @param args.sourceExists Whether a catalog row's source file exists.
+   *   Defaults to a stat where only NotFound counts as missing.
+   */
   constructor(args: {
     catalog: ExtensionCatalogStore;
     lockfileRepository: LockfileRepository;
     repoRoot: string;
     localManifestIdentity?: LocalManifestIdentity | null;
+    activePulledRoot?: () => string | undefined;
+    sourceExists?: (sourcePath: string) => boolean;
   }) {
     this.catalog = args.catalog;
     this.lockfileRepository = args.lockfileRepository;
     this.repoRoot = canonicalizePath(args.repoRoot);
     this.localManifestIdentity = args.localManifestIdentity ?? null;
     this.fallbackLoggedSourcePaths = new Set();
+    // The managed-config registry is keyed by the case-preserving repo
+    // dir, so look it up with the raw argument, not the canonical form.
+    const rawRepoRoot = args.repoRoot;
+    this.activePulledRoot = args.activePulledRoot ??
+      (() => activePulledExtensionsRoot(rawRepoRoot));
+    this.sourceExists = args.sourceExists ?? sourceFileExists;
   }
 
   get lastOriginConflicts(): readonly OriginConflict[] {
@@ -234,7 +254,10 @@ export class ExtensionRepository {
     extensions: readonly Extension[],
     options?: { pruneUnreachable?: boolean },
   ): void {
+    let staleRows: ExtensionTypeRow[] = [];
     this.catalog.runInTransaction(() => {
+      // runInTransaction re-runs this callback on lock contention.
+      staleRows = [];
       const protectedPaths = new Set<string>();
       for (const ext of extensions) {
         for (const source of ext.sources.values()) {
@@ -253,12 +276,23 @@ export class ExtensionRepository {
           logger
             .info`Pruned ${pruned.length} catalog row(s) with unreachable source path(s)`;
         }
+        staleRows = this.catalog.pruneStaleSources({
+          canonicalRepoRoot: this.repoRoot,
+          activePulledRoot: this.activePulledRoot(),
+          protectedPaths,
+          sourceExists: this.sourceExists,
+        });
+        if (staleRows.length > 0) {
+          logger
+            .debug`Pruned ${staleRows.length} catalog row(s) whose source is missing or under the inactive pulled root`;
+        }
       }
       this._lastOriginConflicts = this.catalog.resolveOriginConflicts(
         this.repoRoot,
       );
       this.assertIRepo1();
     });
+    evictRemovedBundles(staleRows, this.catalog);
   }
 
   /**
@@ -809,4 +843,15 @@ function sourceToRow(
     extension_version: extension.version,
     last_error: lastError,
   };
+}
+
+/** A stat where only NotFound counts as missing, so an unreadable
+ *  source is never pruned. */
+function sourceFileExists(sourcePath: string): boolean {
+  try {
+    Deno.statSync(sourcePath);
+    return true;
+  } catch (error) {
+    return !(error instanceof Deno.errors.NotFound);
+  }
 }

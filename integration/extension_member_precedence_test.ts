@@ -24,7 +24,7 @@
 // method always beats every extension.
 
 import { assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { ExtensionLoader } from "../src/domain/extensions/extension_loader.ts";
 import {
@@ -122,6 +122,17 @@ async function withFixture(
   );
   for (const s of ["aa", "zz", "pulled"] as const) {
     await Deno.writeTextFile(bundles[s], extBundle(type, s));
+  }
+  // The loader drops rows whose source file is missing (swamp-club#2490),
+  // so every source a row names must exist; the bundles carry the code.
+  for (
+    const source of [
+      ...Object.values(paths),
+      join(repoDir, "extensions", "models", "base.ts"),
+    ]
+  ) {
+    await ensureDir(dirname(source));
+    await Deno.writeTextFile(source, "");
   }
   resetExtensionLoadWarnings();
   try {
@@ -341,6 +352,16 @@ Deno.test({
         // knows the alias. `.swamp/` sorts before `extensions/`, so only the
         // pulled row's tier can make the local one win.
         const realRoot = Deno.realPathSync(f.repoDir);
+        const pulledSource = join(
+          realRoot,
+          ".swamp",
+          "pulled-extensions",
+          "@a",
+          "models",
+          "a.ts",
+        );
+        await ensureDir(dirname(pulledSource));
+        await Deno.writeTextFile(pulledSource, "");
         catalog.upsert({
           ...extRow(f, "pulled"),
           source_path: canonicalizePath(

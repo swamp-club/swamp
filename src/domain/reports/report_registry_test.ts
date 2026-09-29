@@ -233,3 +233,44 @@ Deno.test("ReportRegistry.invalidateType: no-op for unknown type", () => {
   registry.invalidateType("@myorg/nonexistent");
   assertEquals(registry.has("@myorg/nonexistent"), false);
 });
+
+Deno.test("ReportRegistry.ensureTypeLoaded: drops the lazy entry when the loader does not promote", async () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy(createLazyReportEntry("@myorg/stale-report"));
+
+  let callCount = 0;
+  registry.setTypeLoader(() => {
+    callCount++;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/stale-report");
+
+  assertEquals(callCount, 1);
+  assertEquals(registry.isLazy("@myorg/stale-report"), false);
+  assertEquals(registry.has("@myorg/stale-report"), false);
+  assertEquals(registry.get("@myorg/stale-report"), undefined);
+
+  await registry.ensureTypeLoaded("@myorg/stale-report");
+  assertEquals(callCount, 1);
+});
+
+Deno.test("ReportRegistry.ensureTypeLoaded: keeps a type the loader promoted", async () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy(createLazyReportEntry("@myorg/custom-report"));
+
+  let callCount = 0;
+  registry.setTypeLoader((type) => {
+    callCount++;
+    registry.promoteFromLazy(type, makeReport("model"));
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/custom-report");
+  await registry.ensureTypeLoaded("@myorg/custom-report");
+
+  assertEquals(callCount, 1);
+  assertEquals(registry.has("@myorg/custom-report"), true);
+  assertEquals(registry.isLazy("@myorg/custom-report"), false);
+  assertEquals(registry.get("@myorg/custom-report")?.scope, "model");
+});

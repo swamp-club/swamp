@@ -295,6 +295,20 @@ export function resolvePulledExtensionsRoot(
 }
 
 /**
+ * The active pulled-extensions root, or `undefined` when no managed status
+ * has been recorded for the repo yet. Unlike
+ * {@link resolvePulledExtensionsRoot}, an unregistered repo is not assumed
+ * to be unmanaged, so callers that delete rows under the other root can
+ * skip that step instead of guessing (swamp-club#2490).
+ */
+export function activePulledExtensionsRoot(
+  repoDir: string,
+): string | undefined {
+  if (!managedConfigRegistry.has(resolve(repoDir))) return undefined;
+  return resolvePulledExtensionsRoot(repoDir);
+}
+
+/**
  * Resolves the lockfile path for a repository when managedConfig is true.
  * Returns the .swamp/config/upstream_extensions.json path.
  * When managedConfig is false, callers should derive it from resolveModelsDir.
