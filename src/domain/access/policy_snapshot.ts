@@ -38,6 +38,9 @@ function alwaysFalse(): boolean {
   return false;
 }
 
+/** How a grant condition evaluated. */
+export type ConditionOutcome = "match" | "no-match" | "error";
+
 export class PolicySnapshot {
   readonly #grantsBySubject: Map<string, Grant[]>;
   readonly #groupsByPrincipal: Map<string, string[]>;
@@ -96,6 +99,25 @@ export class PolicySnapshot {
     resourceFields: Record<string, unknown>,
     principalContext: PrincipalContext,
   ): boolean {
+    return this.evaluateConditionOutcome(
+      condition,
+      resourceKind,
+      resourceFields,
+      principalContext,
+    ) === "match";
+  }
+
+  /**
+   * Like {@link evaluateCondition}, but tells a condition that evaluated
+   * false apart from one that could not be evaluated. A caller that would
+   * otherwise allow by default must not read an error as "no match".
+   */
+  evaluateConditionOutcome(
+    condition: string,
+    resourceKind: ResourceKind,
+    resourceFields: Record<string, unknown>,
+    principalContext: PrincipalContext,
+  ): ConditionOutcome {
     const deadline = Date.now() + 100;
     try {
       const result = this.#evaluateCondition(
@@ -107,7 +129,7 @@ export class PolicySnapshot {
       if (Date.now() > deadline) {
         logger.warn`Condition evaluation exceeded 100ms deadline: ${condition}`;
       }
-      return result;
+      return result ? "match" : "no-match";
     } catch (error) {
       if (
         error instanceof Error &&
@@ -117,7 +139,7 @@ export class PolicySnapshot {
       } else {
         logger.warn`Condition evaluation failed for ${condition}: ${error}`;
       }
-      return false;
+      return "error";
     }
   }
 

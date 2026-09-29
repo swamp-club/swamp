@@ -247,3 +247,47 @@ Deno.test("GrantBasedAccessDecisionService: a matching deny always beats the ser
     ),
   );
 });
+
+/** Like literalEvaluator, but the condition "error" throws. */
+const erroringEvaluator = (condition: string): boolean => {
+  if (condition === "error") throw new Error("No such key: trigger");
+  return condition === "true";
+};
+
+Deno.test("GrantBasedAccessDecisionService: a service deny that cannot be evaluated never yields the service default", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbServiceGrant, { maxLength: 12 }),
+      fc.constantFrom("scheduler", "webhook"),
+      (grants, id) => {
+        const undecided: Grant = {
+          id: crypto.randomUUID(),
+          subject: { kind: "service", name: id },
+          effect: "deny",
+          actions: ["run"],
+          resource: { kind: "workflow", pattern: "*" },
+          condition: "error",
+          state: "active",
+          source: "method",
+          createdBy: { kind: "user", id: "admin" },
+          createdAt: "2026-01-01T00:00:00Z",
+        };
+        const service = new GrantBasedAccessDecisionService(
+          new PolicySnapshot([...grants, undecided], [], erroringEvaluator),
+        );
+        const principal: AccessPrincipal = {
+          principal: { kind: "service", id },
+          collectives: [],
+          groups: [],
+        };
+        const decision = service.decide(principal, "run", RESOURCE);
+        assert(decision?.grantId !== SERVICE_TRIGGER_DEFAULT_GRANT_ID);
+        assert(
+          service.explain(principal, "run", RESOURCE).every((d) =>
+            d.grantId !== SERVICE_TRIGGER_DEFAULT_GRANT_ID
+          ),
+        );
+      },
+    ),
+  );
+});

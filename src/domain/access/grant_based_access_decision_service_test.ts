@@ -1303,3 +1303,35 @@ Deno.test("explain: omits the service default when a deny matches", () => {
   );
   assertEquals(decisions.map((d) => d.grantId), [deny.id]);
 });
+
+Deno.test("decide: a deny whose condition errors withholds the service default", () => {
+  // The workflow has no `trigger` tag, so CEL throws "No such key".
+  const deny = makeGrant({
+    subject: { kind: "service", name: "webhook" },
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+    condition: 'tags.trigger != "webhook"',
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny], [], celEvaluator),
+  );
+  const webhook = makeServicePrincipal("webhook");
+  const untagged = makeResource({
+    fields: { name: "@acme/deploy", tags: { env: "prod" }, collective: "" },
+  });
+  assertEquals(service.decide(webhook, "run", untagged), null);
+  assertEquals(service.explain(webhook, "run", untagged), []);
+
+  const tagged = makeResource({
+    fields: {
+      name: "@acme/deploy",
+      tags: { trigger: "webhook" },
+      collective: "",
+    },
+  });
+  assertEquals(
+    service.decide(webhook, "run", tagged)?.grantId,
+    SERVICE_TRIGGER_DEFAULT_GRANT_ID,
+  );
+});

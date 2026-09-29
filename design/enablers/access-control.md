@@ -292,6 +292,13 @@ workflow, and a conditioned deny such as
 `deny run workflow:* when name != "nightly"` for `service:scheduler` allows
 only the named workflows.
 
+A deny whose condition cannot be evaluated (for example a `tags.<key>` the
+workflow does not have) withholds the default: the run is refused rather than
+allowed, so a broken restriction fails closed. Write tag conditions defensively,
+e.g. `!("trigger" in tags) || tags.trigger != "webhook"`. In a mixed-version
+fleet, instances older than the service principal skip `service:` grants when
+loading policy; they also do not authorize trigger runs.
+
 ### Condition evaluation
 
 Grant conditions are CEL expressions evaluated in the sealed grant-condition
