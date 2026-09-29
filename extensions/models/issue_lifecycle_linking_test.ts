@@ -648,6 +648,51 @@ Deno.test("unlink_issue: drops the issue and its relationship and leaves its sta
   });
 });
 
+Deno.test("unlink_issue: removes only the link in link_issue's direction", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1, status: "in_progress" });
+    club.addIssue({ number: 2, status: "in_progress" });
+    club.relationships.push(
+      {
+        id: "hand-made",
+        type: "related_to",
+        sourceIssueNumber: 2,
+        targetIssueNumber: 1,
+      },
+      {
+        id: "linked",
+        type: "related_to",
+        sourceIssueNumber: 1,
+        targetIssueNumber: 2,
+      },
+    );
+    carrying(store, { issueNumber: 2 });
+    phase(store, "implementing");
+  }, async ({ club, context }) => {
+    await model.methods.unlink_issue.execute(
+      { issueNumber: 2, reason: "r" },
+      context,
+    );
+    assertEquals(club.relationships.map((r) => r.id), ["hand-made"]);
+  });
+});
+
+Deno.test("unlink_issue: warns when swamp-club has no matching link to remove", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1, status: "in_progress" });
+    club.addIssue({ number: 2, status: "in_progress" });
+    carrying(store, { issueNumber: 2 });
+    phase(store, "implementing");
+  }, async ({ context, store, warnings }) => {
+    await model.methods.unlink_issue.execute(
+      { issueNumber: 2, reason: "r" },
+      context,
+    );
+    assertEquals(warnings.some((w) => w.includes("none was removed")), true);
+    assertEquals(store["linkedIssues-main"].issues, []);
+  });
+});
+
 Deno.test("unlink_issue: refuses an issue that is not linked", async () => {
   await withLifecycle(1, (club) => {
     club.addIssue({ number: 1 });
@@ -806,6 +851,22 @@ Deno.test("mark_duplicate: surfaces swamp-club's refusal of a duplicate chain", 
       "#7",
     );
     assertEquals(club.issues.get(5)!.status, "open");
+  });
+});
+
+Deno.test("mark_duplicate: ignores a recorded PR URL that is not http(s)", async () => {
+  await withLifecycle(5, (club) => {
+    club.addIssue({ number: 5 });
+    club.addIssue({
+      number: 9,
+      status: "shipped",
+      githubPrUrl: "javascript:alert(1)",
+    });
+    club.addEntry(9, "pr_merged", { url: PR });
+  }, async ({ club, context, warnings }) => {
+    await model.methods.mark_duplicate.execute({ of: 9, reason: "r" }, context);
+    assertEquals(club.issues.get(5)!.githubPrUrl, PR);
+    assertEquals(warnings.some((w) => w.includes("not an http(s) URL")), true);
   });
 });
 

@@ -5,9 +5,14 @@ description: >
   plan iteration against swamp-club lab issues. Use when the user wants to
   triage a swamp-club issue, generate an implementation plan, or iterate on
   a plan with feedback. Also handles retroactive lifecycle creation for
-  ad-hoc work via "prepare to ship". Triggers on "triage issue", "triage #",
-  "issue plan", "review plan", "iterate plan", "approve plan",
-  "issue lifecycle", "prepare to ship", "ready to ship".
+  ad-hoc work via "prepare to ship", carrying several issues through one
+  lifecycle when the same work fixes them (link_issue), and shipping a
+  duplicate of an already-shipped issue with its fix instead of closing it
+  (mark_duplicate). Triggers on "triage issue", "triage #", "issue plan",
+  "review plan", "iterate plan", "approve plan", "issue lifecycle",
+  "prepare to ship", "ready to ship", "link issue", "link #", "also fixes #",
+  "fixed by the same change", "mark duplicate", "duplicate of #",
+  "same issue as #", "close as duplicate".
 ---
 
 # Issue Lifecycle Skill

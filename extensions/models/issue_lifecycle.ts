@@ -172,6 +172,16 @@ async function requireSwampClub(context: {
   return sc;
 }
 
+/** Whether `value` parses as an http or https URL. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * A security fix must not be announced on a public issue before it ships,
  * and a public issue must not be tracked under one whose milestones its
@@ -3652,9 +3662,23 @@ export const model = {
         if (!linkedIssue) {
           throw new Error(`Could not fetch issue #${target} from swamp-club.`);
         }
+        // Seen from the linked issue, link_issue's related_to comes in from
+        // the primary and its duplicate_of goes out to it. Matching the
+        // direction keeps a hand-made link the other way from being removed.
+        const direction = entry.relationship === "duplicate_of"
+          ? "outgoing"
+          : "incoming";
         const relationship = linkedIssue.relationships.find((r) =>
-          r.type === entry.relationship && r.otherIssueNumber === primary
+          r.type === entry.relationship && r.otherIssueNumber === primary &&
+          r.direction === direction
         );
+        if (!relationship) {
+          context.logger.warning(
+            "No {type} relationship between #{primary} and #{linked} was " +
+              "found in swamp-club, so none was removed",
+            { type: entry.relationship, primary, linked: target },
+          );
+        }
         // swamp-club deletes a relationship through either issue it joins, so
         // the linked issue's endpoint serves both link directions.
         if (relationship) {
@@ -3791,7 +3815,24 @@ export const model = {
           );
         }
 
-        const foundPrUrl = canonical.githubPrUrl ?? canonical.lifecyclePrUrl;
+        // A URL found on the canonical issue goes into this issue's public
+        // thank-you, so it is held to the same http(s) rule as the prUrl
+        // argument; link_pr accepts any non-empty string.
+        let foundPrUrl: string | undefined;
+        for (
+          const candidate of [canonical.githubPrUrl, canonical.lifecyclePrUrl]
+        ) {
+          if (!candidate) continue;
+          if (isHttpUrl(candidate)) {
+            foundPrUrl = candidate;
+            break;
+          }
+          context.logger.warning(
+            "Ignoring the PR URL recorded for #{canonical} because it is not " +
+              "an http(s) URL: {url}",
+            { canonical: canonicalNumber, url: candidate },
+          );
+        }
         if (foundPrUrl && args.prUrl && args.prUrl !== foundPrUrl) {
           context.logger.warning(
             "swamp-club already records {found} for #{canonical}, so the " +
