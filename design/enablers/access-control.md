@@ -267,8 +267,10 @@ check (swamp-club#2673):
   data, so a deny on any of them refuses the read. Definitions of
   unregistered types and auto-definitions count.
 - A run is authorized on the workflow recorded on it, by its recorded name.
-  If a workflow with the recorded id now has another name (renamed, or a
-  copy), that workflow is authorized too.
+  When no workflow still has both the recorded name and id — the workflow
+  was renamed, or only a copy sharing its id remains — the workflow now
+  found by that id is authorized too. A run's recorded name identifies its
+  workflow exactly, unlike an output, whose data every copy shares.
 - A read by model or workflow name authorizes that model or workflow and the
   owners of the latest output or run it returns.
 - An output whose model was deleted is authorized on its model id; a run

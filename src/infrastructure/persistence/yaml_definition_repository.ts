@@ -647,7 +647,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     for (const dir of [this.baseDir, this.secondaryBaseDir]) {
       if (!dir) continue;
       const results: { definition: Definition; type: ModelType }[] = [];
-      await this.collectAllDefinitions(dir, [], results);
+      // Without recording paths: every definition declaring the id is read,
+      // and the last one read must not become where findById looks next —
+      // that would let an auto-definition shadow a primary one.
+      await this.collectAllDefinitions(dir, [], results, false);
       for (const entry of results) {
         if (entry.definition.id === id) found.push(entry);
       }
@@ -657,11 +660,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
   /**
    * Recursively collects all definition files from nested directory structures.
+   * With `recordPaths`, remembers where each id was found for findById.
    */
   private async collectAllDefinitions(
     currentDir: string,
     pathSegments: string[],
     results: { definition: Definition; type: ModelType }[],
+    recordPaths = true,
   ): Promise<void> {
     try {
       for await (const entry of Deno.readDir(currentDir)) {
@@ -680,10 +685,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             if (!data) continue;
             const definition = Definition.fromData(data);
 
-            this.idToActualPath.set(
-              definition.id as DefinitionId,
-              fullPath,
-            );
+            if (recordPaths) {
+              this.idToActualPath.set(
+                definition.id as DefinitionId,
+                fullPath,
+              );
+            }
             // Prefer the type from the YAML, fall back to path-based type
             const typeStr = definition.type ?? pathSegments.join("/");
             results.push({ definition, type: ModelType.create(typeStr) });
@@ -704,6 +711,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             fullPath,
             [...pathSegments, entry.name],
             results,
+            recordPaths,
           );
         }
       }

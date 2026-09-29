@@ -2195,3 +2195,39 @@ Deno.test("YamlDefinitionRepository.findAllByIdGlobal returns every definition d
     );
   });
 });
+
+Deno.test("YamlDefinitionRepository.findAllByIdGlobal leaves where findById looks unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+    const primary = Definition.create({
+      name: "prod-db",
+      globalArguments: {},
+    });
+    await repo.save(testType, primary);
+    await new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    ).save(
+      testType,
+      Definition.create({
+        id: primary.id,
+        name: "auto-db",
+        globalArguments: {},
+      }),
+    );
+    assertEquals((await repo.findById(testType, primary.id))?.name, "prod-db");
+
+    // Reads the auto-definition last; a later findById must not follow it.
+    assertEquals((await repo.findAllByIdGlobal(primary.id)).length, 2);
+    assertEquals((await repo.findById(testType, primary.id))?.name, "prod-db");
+  });
+});
