@@ -1327,11 +1327,11 @@ is sent in the request body, and the run records it as
 `<reason> (cancelled by <principal>)`, as a WebSocket `workflow.cancel` does.
 The CLI reports the reason the server says it applied; a serve too old to
 return one gets a warning and no `reason` in `--json`. A refusal shows the
-server's message without its JSON (`src/cli/commands/workflow_cancel.ts`). The CLI waits up to
-`SERVER_CANCEL_TIMEOUT_MS` for the answer: serve's grace period for an aborted
-run, plus its longest sync-gate wait, plus a margin for the suspended-run
-check that may follow. If it gets no answer, it says the cancel may still
-complete on the server, and names the command to check.
+server's message without its JSON (`src/cli/commands/workflow_cancel.ts`).
+The CLI waits up to `SERVER_CANCEL_TIMEOUT_MS` for the answer: serve's grace
+period for an aborted run, plus its longest sync-gate wait, plus a margin for
+the suspended-run check that may follow. If it gets no answer, it says the
+cancel may still complete on the server, and names the command to check.
 
 When the daemon restarts, `swamp serve` reaps orphaned runs that the previous
 process left in `running` state (`reapOrphanedWorkflowRuns` in
