@@ -23,7 +23,8 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
-import { createWorkflowId, createWorkflowRunId } from "./workflow_id.ts";
+import { createWorkflowRunId } from "./workflow_id.ts";
+import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
 import { UserError } from "../errors.ts";
 import {
   checkSuspendedRunResume,
@@ -37,14 +38,37 @@ export interface SuspendedRunInfo {
   run: WorkflowRun;
 }
 
+/** How a resolver looks up the workflow named by its argument. */
+export interface WorkflowLookupOptions {
+  /**
+   * Treat the argument as a workflow id the caller already resolved, and look
+   * it up by id only, so the operation acts on the workflow it authorized.
+   */
+  byId?: boolean;
+}
+
+function lookupWorkflow(
+  workflowRepo: WorkflowRepository,
+  workflowIdOrName: string,
+  byId: boolean | undefined,
+): Promise<Workflow | null> {
+  return byId
+    ? findWorkflowById(workflowRepo, workflowIdOrName)
+    : findWorkflowByIdOrName(workflowRepo, workflowIdOrName);
+}
+
 export async function resolveSuspendedRun(
   workflowRepo: WorkflowRepository,
   runRepo: WorkflowRunRepository,
   workflowIdOrName: string,
   runId?: string,
+  lookup: WorkflowLookupOptions = {},
 ): Promise<SuspendedRunInfo> {
-  const workflow = await workflowRepo.findByName(workflowIdOrName) ??
-    await workflowRepo.findById(createWorkflowId(workflowIdOrName));
+  const workflow = await lookupWorkflow(
+    workflowRepo,
+    workflowIdOrName,
+    lookup.byId,
+  );
   if (!workflow) {
     throw new UserError(`Workflow not found: ${workflowIdOrName}`);
   }
@@ -96,7 +120,7 @@ export async function resolveSuspendedRun(
 
 export type ResumableRunInfo = SuspendedRunInfo;
 
-export interface ResolveResumableRunOptions {
+export interface ResolveResumableRunOptions extends WorkflowLookupOptions {
   /** The --from step; when set, only a failed run is resumable. */
   fromStep?: string;
   /**
@@ -136,13 +160,17 @@ export async function resolveResumableRun(
       runRepo,
       workflowIdOrName,
       runId,
+      { byId: options.byId },
     );
     checkSuspendedRunResume(resolved.workflow, resolved.run);
     return resolved;
   }
 
-  const workflow = await workflowRepo.findByName(workflowIdOrName) ??
-    await workflowRepo.findById(createWorkflowId(workflowIdOrName));
+  const workflow = await lookupWorkflow(
+    workflowRepo,
+    workflowIdOrName,
+    options.byId,
+  );
   if (!workflow) {
     throw new UserError(`Workflow not found: ${workflowIdOrName}`);
   }

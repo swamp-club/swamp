@@ -107,11 +107,15 @@ export interface DefinitionLookupResult {
 
 /**
  * Finds a definition by ID, searching across all registered model types.
+ *
+ * Definition ids are UUIDs, so a non-UUID string returns null at once rather
+ * than scanning every definition of every registered type to prove it.
  */
 export async function findDefinitionByIdGlobal(
   definitionRepo: DefinitionRepository,
   id: string,
 ): Promise<DefinitionLookupResult | null> {
+  if (!isUuid(id)) return null;
   const definitionId = createDefinitionId(id) as DefinitionId;
 
   for (const type of modelRegistry.types()) {
@@ -121,7 +125,12 @@ export async function findDefinitionByIdGlobal(
     }
   }
 
-  return null;
+  // A definition whose type is not registered — an uninstalled extension's,
+  // say — is still found by name through a walk of the definitions on disk.
+  // Walk them for the id too, so a lookup by id finds every definition a
+  // lookup by name finds.
+  const all = await definitionRepo.findAllGlobal();
+  return all.find((entry) => entry.definition.id === definitionId) ?? null;
 }
 
 /**

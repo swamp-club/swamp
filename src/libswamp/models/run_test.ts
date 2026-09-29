@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   methodExecutionFailed,
   modelMethodRun,
@@ -1106,4 +1106,70 @@ Deno.test("modelMethodRun: schema-declared inputs contribute authored expression
     seenAuthored !== "unrestricted" && seenAuthored?.has("${{ env.HOME }}"),
     true,
   );
+});
+
+Deno.test("modelMethodRun: byId resolves through lookupDefinitionById, never the name-first lookup", async () => {
+  const byIdDefinition = createTestDefinition("by-id-model", "run");
+  const id = byIdDefinition.id;
+  const calls: string[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(
+      createTestDefinition("name-first-decoy", "run"),
+      createTestModelDef("run"),
+    ),
+    lookupDefinition: (idOrName) => {
+      calls.push(`name:${idOrName}`);
+      return Promise.reject(new Error("name-first lookup must not be used"));
+    },
+    lookupDefinitionById: (lookupId) => {
+      calls.push(`id:${lookupId}`);
+      return Promise.resolve({
+        definition: byIdDefinition,
+        type: TEST_MODEL_TYPE,
+      });
+    },
+  };
+
+  const events = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput(id, "run"),
+      byId: true,
+    }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.run.modelName, "by-id-model");
+    assertEquals(completed.run.status, "succeeded");
+  }
+  assertEquals(calls, [`id:${id}`]);
+});
+
+Deno.test("modelMethodRun: byId without lookupDefinitionById fails instead of falling back to name lookup", async () => {
+  let nameLookups = 0;
+  const base = createTestDeps(
+    createTestDefinition("test-model", "run"),
+    createTestModelDef("run"),
+  );
+  const deps: ModelMethodRunDeps = {
+    ...base,
+    lookupDefinition: (idOrName) => {
+      nameLookups++;
+      return base.lookupDefinition(idOrName);
+    },
+  };
+
+  await assertRejects(
+    () =>
+      collect(
+        modelMethodRun(createLibSwampContext(), deps, {
+          ...createTestInput(crypto.randomUUID(), "run"),
+          byId: true,
+        }),
+      ),
+    Error,
+    "none is wired",
+  );
+  assertEquals(nameLookups, 0);
 });

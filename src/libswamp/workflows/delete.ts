@@ -18,11 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import {
-  createWorkflowId,
-  type WorkflowId,
-} from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import {
+  findWorkflowById,
+  findWorkflowByIdOrName,
+} from "../../domain/workflows/workflow_lookup.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -35,12 +36,6 @@ import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function isUuid(value: string): boolean {
-  return UUID_PATTERN.test(value);
-}
 
 /** Preview data returned before confirmation. */
 export interface WorkflowDeletePreview {
@@ -66,6 +61,12 @@ export type WorkflowDeleteEvent =
 /** Input for the workflow delete operation. */
 export interface WorkflowDeleteInput {
   workflowIdOrName: string;
+  /**
+   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
+   * and look it up by id only, so the delete acts on the workflow the caller
+   * authorized.
+   */
+  byId?: boolean;
 }
 
 /** Dependencies for the workflow delete operation. */
@@ -145,15 +146,14 @@ export function createWorkflowDeleteDeps(
   };
 }
 
-/** Helper to look up a workflow by ID or name. */
-async function findWorkflow(
+/** Looks up the workflow by name then exact id, or by id only with `byId`. */
+function findWorkflow(
   deps: WorkflowDeleteDeps,
-  idOrName: string,
+  input: WorkflowDeleteInput,
 ): Promise<Workflow | null> {
-  if (isUuid(idOrName)) {
-    return await deps.findById(createWorkflowId(idOrName));
-  }
-  return await deps.findByName(idOrName);
+  return input.byId
+    ? findWorkflowById(deps, input.workflowIdOrName)
+    : findWorkflowByIdOrName(deps, input.workflowIdOrName);
 }
 
 /** Gathers preview info for the workflow delete operation. */
@@ -163,7 +163,7 @@ export async function workflowDeletePreview(
   input: WorkflowDeleteInput,
 ): Promise<WorkflowDeletePreview> {
   ctx.logger.debug`Looking up workflow: ${input.workflowIdOrName}`;
-  const workflow = await findWorkflow(deps, input.workflowIdOrName);
+  const workflow = await findWorkflow(deps, input);
   if (!workflow) {
     throw notFound("Workflow", input.workflowIdOrName);
   }
@@ -200,7 +200,7 @@ export async function* workflowDelete(
     (async function* () {
       yield { kind: "deleting" };
 
-      const workflow = await findWorkflow(deps, input.workflowIdOrName);
+      const workflow = await findWorkflow(deps, input);
       if (!workflow) {
         yield {
           kind: "error",

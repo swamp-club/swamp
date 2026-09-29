@@ -19,7 +19,10 @@
 
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../../domain/models/model_lookup.ts";
 import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
 import {
   type ContentEncoding,
@@ -40,6 +43,7 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -85,6 +89,12 @@ export interface DataGetData {
 
 export interface DataGetInput {
   modelIdOrName?: string;
+  /**
+   * Treat `modelIdOrName` as a definition id the caller already resolved,
+   * and look it up by id only, so the operation acts on the model the caller
+   * authorized.
+   */
+  byId?: boolean;
   dataName?: string;
   workflowName?: string;
   runId?: string;
@@ -147,8 +157,13 @@ export type DataGetEvent =
 
 /** Dependencies for the data get operation. */
 export interface DataGetDeps {
+  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
+  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+  /** Looks up by exact id only; required for a `byId` request. */
+  lookupDefinitionById?: (
+    id: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   findWorkflow: (idOrName: string) => Promise<WorkflowInfo | null>;
   findWorkflowRun: (
@@ -218,6 +233,7 @@ export function createDataGetDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
+    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
     findWorkflow: async (idOrName) =>
       await workflowRepo.findByName(idOrName) ??
         await workflowRepo.findById(createWorkflowId(idOrName)),
@@ -302,6 +318,7 @@ export async function* dataGet(
           version,
           repoDir,
           input.includeContent,
+          input.byId ?? false,
         );
       }
     })(),
@@ -424,6 +441,7 @@ async function* modelScopedGet(
   version: number | undefined,
   repoDir: string,
   includeContent: boolean,
+  byId: boolean,
 ): AsyncIterable<DataGetEvent> {
   if (!dataName) {
     yield {
@@ -435,7 +453,13 @@ async function* modelScopedGet(
     return;
   }
 
-  const result = await deps.lookupDefinition(modelIdOrName);
+  const lookupDefinition = selectLookup(
+    "data get",
+    byId,
+    deps.lookupDefinition,
+    deps.lookupDefinitionById,
+  );
+  const result = await lookupDefinition(modelIdOrName);
   if (!result) {
     yield { kind: "error", error: notFound("Model", modelIdOrName) };
     return;

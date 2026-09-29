@@ -51,7 +51,6 @@ import {
   handleDataVersions,
   handleRunGc,
   handleSummarise,
-  resolveDataFields,
 } from "./handlers/data_handlers.ts";
 import {
   handleModelCreate,
@@ -95,8 +94,16 @@ import {
   handleWorkflowTriggerRemove,
   handleWorkflowTriggerSet,
   handleWorkflowValidate,
-  resolveWorkflowFields,
 } from "./handlers/workflow_handlers.ts";
+import {
+  resolveModelTarget,
+  resolveModelTargetById,
+  resolveWorkflowTarget,
+  resolveWorkflowTargetById,
+  type ResourceResolution,
+  unresolvedAccessResource,
+} from "./handlers/resource_resolution.ts";
+import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import {
   handleVaultAnnotate,
   handleVaultAuditTrail,
@@ -1435,6 +1442,29 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
  * type against `ServerRequest` to catch that drift at compile time.
  */
 export type ValidatedServerRequest = z.infer<typeof ServerRequestSchema>;
+
+/**
+ * Each request type's payload field names, read from the schemas above. The
+ * serve id-deny conformance test uses it to find every request that names a
+ * resource, so a new one cannot ship without authorization coverage.
+ */
+export function serverRequestPayloadFields(): ReadonlyMap<
+  string,
+  readonly string[]
+> {
+  const fields = new Map<string, readonly string[]>();
+  for (const option of ServerRequestSchema.options) {
+    const shape = (option as z.ZodObject).shape;
+    const type = (shape.type as z.ZodLiteral<string>).value;
+    let payload: unknown = shape.payload;
+    if (payload instanceof z.ZodOptional) payload = payload.unwrap();
+    fields.set(
+      type,
+      payload instanceof z.ZodObject ? Object.keys(payload.shape) : [],
+    );
+  }
+  return fields;
+}
 
 /**
  * Validates a parsed JSON value against the ServerRequest schema.
@@ -3766,24 +3796,15 @@ async function handleCancelRun(
   principal: Principal | null,
 ): Promise<void> {
   const resourceKind = run.kind === "method-run" ? "model" : "workflow";
-  const cancelFields = await resolveRunFields(
+  const resource = await resolveRunResource(
     ctx,
     resourceKind,
     run.resourceName,
+    run.resourceId,
   );
   if (
-    authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "run",
-      {
-        kind: resourceKind,
-        name: run.resourceName,
-        fields: cancelFields,
-      },
-      ctx,
-    ).allowed
+    authorizeOrReject(socket, requestId, principal, "run", resource, ctx)
+      .allowed
   ) {
     const cancelled = ctx.activeRunRegistry!.cancel(
       requestId,
@@ -3802,25 +3823,35 @@ async function handleCancelRun(
   }
 }
 
-async function resolveRunFields(
+/**
+ * The resource a run's cancel or attach is authorized on: the model or
+ * workflow the run was started on, with its current canonical name and full
+ * fields, as the run itself was authorized (swamp-club#2674). It is found by
+ * the id recorded at registration when there is one, so a rename during the
+ * run cannot point the check at another resource that took the old name.
+ * Records without an id — from older instances — resolve their recorded
+ * name. A run whose resource is gone is authorized on its recorded name.
+ */
+async function resolveRunResource(
   ctx: ConnectionContext,
   resourceKind: "model" | "workflow",
   resourceName: string,
-): Promise<Record<string, unknown>> {
-  try {
-    if (resourceKind === "model") {
-      return await resolveDataFields(
-        ctx.repoContext.definitionRepo,
-        resourceName,
-      );
-    }
-    return await resolveWorkflowFields(
-      ctx.repoContext.workflowRepo,
-      resourceName,
-    );
-  } catch {
-    return { name: resourceName };
+  resourceId: string | undefined,
+): Promise<AccessResource> {
+  const { definitionRepo, workflowRepo } = ctx.repoContext;
+  let resolution: ResourceResolution;
+  if (resourceKind === "model") {
+    resolution = resourceId
+      ? await resolveModelTargetById(definitionRepo, resourceId)
+      : await resolveModelTarget(definitionRepo, resourceName);
+  } else {
+    resolution = resourceId
+      ? await resolveWorkflowTargetById(workflowRepo, resourceId)
+      : await resolveWorkflowTarget(workflowRepo, resourceName);
   }
+  return resolution.status === "found"
+    ? resolution.resource
+    : unresolvedAccessResource(resourceKind, resourceName);
 }
 
 async function handleRunAttach(
@@ -3842,24 +3873,15 @@ async function handleRunAttach(
         const resourceKind = result.record.runKind === "method-run"
           ? "model"
           : "workflow";
-        const remoteFields = await resolveRunFields(
+        const resource = await resolveRunResource(
           ctx,
           resourceKind,
           result.record.resourceName,
+          result.record.resourceId,
         );
         if (
-          !authorizeOrReject(
-            socket,
-            requestId,
-            principal,
-            "run",
-            {
-              kind: resourceKind,
-              name: result.record.resourceName,
-              fields: remoteFields,
-            },
-            ctx,
-          ).allowed
+          !authorizeOrReject(socket, requestId, principal, "run", resource, ctx)
+            .allowed
         ) return;
 
         const heartbeatData = await ctx.controlPlaneStore.get(
@@ -3901,24 +3923,15 @@ async function handleRunAttach(
   }
 
   const resourceKind = run.kind === "method-run" ? "model" : "workflow";
-  const localFields = await resolveRunFields(
+  const resource = await resolveRunResource(
     ctx,
     resourceKind,
     run.resourceName,
+    run.resourceId,
   );
   if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "run",
-      {
-        kind: resourceKind,
-        name: run.resourceName,
-        fields: localFields,
-      },
-      ctx,
-    ).allowed
+    !authorizeOrReject(socket, requestId, principal, "run", resource, ctx)
+      .allowed
   ) return;
 
   send(socket, {

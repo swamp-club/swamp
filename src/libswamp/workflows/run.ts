@@ -26,6 +26,7 @@ import type {
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EnvVarUsageDetail } from "../../domain/models/validation_service.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
+import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 import type {
   ApprovalDecisionData,
   WorkflowRun,
@@ -306,6 +307,12 @@ export interface WorkflowRunDeps {
  */
 export interface WorkflowRunInput {
   workflowIdOrName: string;
+  /**
+   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
+   * and look it up by id only — here and in the execution service — so the
+   * run executes the workflow the caller authorized.
+   */
+  byId?: boolean;
   lastEvaluated?: boolean;
   inputs?: Record<string, unknown>;
   /**
@@ -650,18 +657,23 @@ export async function* workflowRun(
         yield { kind: "validating_inputs" };
 
         // Look up workflow
-        const workflow = await deps.lookupWorkflow(
-          deps.workflowRepo,
-          input.workflowIdOrName,
-        );
+        const workflow = input.byId
+          ? await findWorkflowById(deps.workflowRepo, input.workflowIdOrName)
+          : await deps.lookupWorkflow(
+            deps.workflowRepo,
+            input.workflowIdOrName,
+          );
         if (!workflow) {
           // A file carrying the requested name/id may exist but fail
           // schema parsing, making it invisible to the repository lookup.
           // Surface the parse error instead of a misleading "not found".
-          const broken = await findBrokenWorkflow(
+          const found = await findBrokenWorkflow(
             workflowsDirFor(deps.repoDir),
             input.workflowIdOrName,
           );
+          const broken = input.byId && found?.id !== input.workflowIdOrName
+            ? null
+            : found;
           yield {
             kind: "error",
             error: broken
@@ -752,6 +764,7 @@ export async function* workflowRun(
 
           for await (
             const event of service.run(resolvedInput.workflowIdOrName, {
+              byId: resolvedInput.byId,
               lastEvaluated: resolvedInput.lastEvaluated,
               inputs: resolvedInput.inputs,
               runtimeTags: resolvedInput.runtimeTags,

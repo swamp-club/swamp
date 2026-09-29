@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { z } from "zod";
 import {
+  findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
   isPartialId,
   isUuid,
@@ -26,6 +28,7 @@ import {
 } from "./model_lookup.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
+import { modelRegistry } from "./model.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 // Import models barrel to register all model types (needed for findDefinitionByIdOrName tests)
 import "./models.ts";
@@ -238,6 +241,74 @@ Deno.test("findDefinitionByIdOrName finds definition by UUID", async () => {
     assertEquals(result?.definition.id, definition.id);
     assertEquals(result?.definition.name, "my-model");
     assertEquals(result?.type.normalized, "command/shell");
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal reports a loaded definition's own type, not the first type tried", async () => {
+  await withTempDir(async (dir) => {
+    // Registered after the built-in types, so a lookup that trusted any
+    // cached path would pair the definition with command/shell first.
+    const type = ModelType.create(
+      `test/lookup-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type,
+      version: "2026.01.01.1",
+      methods: {
+        noop: {
+          description: "noop",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    try {
+      const repo = new YamlDefinitionRepository(dir);
+      const definition = Definition.create({
+        name: "late-type-model",
+        globalArguments: {},
+      });
+      await repo.save(type, definition);
+      // Loading it populates the repository's id-to-path cache.
+      await repo.findById(type, definition.id);
+
+      const result = await findDefinitionByIdGlobal(repo, definition.id);
+
+      assertEquals(result?.definition.id, definition.id);
+      assertEquals(result?.type.normalized, type.normalized);
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal finds a definition whose type is not registered", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("test/unregistered-type");
+    const definition = Definition.create({
+      name: "orphan-model",
+      globalArguments: {},
+    });
+    await repo.save(type, definition);
+
+    const byName = await findDefinitionByIdOrName(repo, "orphan-model");
+    const byId = await findDefinitionByIdGlobal(repo, definition.id);
+
+    assertEquals(byName?.definition.id, definition.id);
+    assertEquals(byId?.definition.id, definition.id);
+    assertEquals(byId?.type.normalized, byName?.type.normalized);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal returns null for a non-UUID without scanning", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(
+      ModelType.create("command/shell"),
+      Definition.create({ name: "not-an-id", globalArguments: {} }),
+    );
+    assertEquals(await findDefinitionByIdGlobal(repo, "not-an-id"), null);
   });
 });
 

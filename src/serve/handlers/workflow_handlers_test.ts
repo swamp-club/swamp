@@ -101,21 +101,22 @@ Deno.test("resolveWorkflowFields: falls back to name-only when workflow not foun
 });
 
 Deno.test("resolveWorkflowFields: falls back to findById when findByName returns null", async () => {
+  const id = crypto.randomUUID();
   const wf = Workflow.create({
-    id: "abc-123",
+    id,
     name: "id-workflow",
     tags: { env: "prod" },
   });
   const repo = {
     findByName: () => Promise.resolve(null),
-    findById: (id: unknown) =>
-      Promise.resolve(String(id) === "abc-123" ? wf : null),
+    findById: (candidate: unknown) =>
+      Promise.resolve(String(candidate) === id ? wf : null),
     findAll: () => Promise.resolve([]),
     save: () => Promise.resolve(),
     delete: () => Promise.resolve(),
   } as unknown as WorkflowRepository;
 
-  const fields = await resolveWorkflowFields(repo, "abc-123");
+  const fields = await resolveWorkflowFields(repo, id);
 
   assertEquals(fields.name, "id-workflow");
   assertEquals(fields.tags, { env: "prod" });

@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Definition } from "../../domain/definitions/definition.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import {
@@ -40,6 +43,7 @@ import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_eval
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -89,6 +93,12 @@ export type ModelValidateEvent =
 
 export interface ModelValidateInput {
   modelIdOrName?: string;
+  /**
+   * Treat `modelIdOrName` as a definition id the caller already resolved,
+   * and look it up by id only, so validate acts on the model the caller
+   * authorized.
+   */
+  byId?: boolean;
 }
 
 /** Raw validation result from the domain service. */
@@ -120,8 +130,13 @@ const AUTO_DEFINITION_NOTE: ValidationWarningData = {
 
 /** Dependencies for the model validate operation. */
 export interface ModelValidateDeps {
+  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
+  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+  /** Looks up by exact id only; required for a `byId` request. */
+  lookupDefinitionById?: (
+    id: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   findAllDefinitions: () => Promise<
     Array<{ definition: Definition; type: ModelType }>
@@ -205,6 +220,7 @@ export function createModelValidateDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
+    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
     findAllDefinitions: () => definitionRepo.findAllGlobal(),
     isAutoDefinition: (definition, type) =>
       definitionRepo.isAutoDefinition(definition, type),
@@ -325,8 +341,15 @@ async function* validateAll(
 async function* validateSingle(
   deps: ModelValidateDeps,
   modelIdOrName: string,
+  byId: boolean,
 ): AsyncIterable<ModelValidateEvent> {
-  const result = await deps.lookupDefinition(modelIdOrName);
+  const lookupDefinition = selectLookup(
+    "model validate",
+    byId,
+    deps.lookupDefinition,
+    deps.lookupDefinitionById,
+  );
+  const result = await lookupDefinition(modelIdOrName);
   if (!result) {
     yield { kind: "error", error: notFound("Model", modelIdOrName) };
     return;
@@ -390,7 +413,7 @@ export async function* modelValidate(
       if (!input.modelIdOrName) {
         yield* validateAll(deps);
       } else {
-        yield* validateSingle(deps, input.modelIdOrName);
+        yield* validateSingle(deps, input.modelIdOrName, input.byId ?? false);
       }
     })(),
   );

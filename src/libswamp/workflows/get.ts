@@ -21,14 +21,17 @@ import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import type { ReportSelection } from "../../domain/reports/report_selection.ts";
 import type { TriggerConditionData } from "../../domain/workflows/trigger_condition.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import {
-  createWorkflowId,
-  type WorkflowId,
-} from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import {
+  findWorkflowById,
+  findWorkflowByIdOrName,
+} from "../../domain/workflows/workflow_lookup.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
+import { type LookupOptions, selectLookup } from "../lookup_by_id.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
@@ -78,27 +81,20 @@ export type WorkflowGetEvent =
 
 /** Dependencies for the workflow get operation. */
 export interface WorkflowGetDeps {
+  /** Looks up by name, then by exact id. */
   findWorkflow: (idOrName: string) => Promise<Workflow | null>;
+  /** Looks up by exact id only; required for a `byId` request. */
+  findWorkflowById?: (id: string) => Promise<Workflow | null>;
   getWorkflowPath: (id: WorkflowId) => string;
 }
-
-/**
- * UUID regex pattern for detecting if an argument is a UUID (versions 1-8).
- */
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Wires real infrastructure into WorkflowGetDeps. */
 export function createWorkflowGetDeps(
   workflowRepo: WorkflowRepository,
 ): WorkflowGetDeps {
   return {
-    findWorkflow: async (idOrName) => {
-      if (isUuid(idOrName)) {
-        return await workflowRepo.findById(createWorkflowId(idOrName));
-      }
-      return await workflowRepo.findByName(idOrName);
-    },
+    findWorkflow: (idOrName) => findWorkflowByIdOrName(workflowRepo, idOrName),
+    findWorkflowById: (id) => findWorkflowById(workflowRepo, id),
     getWorkflowPath: (id) => workflowRepo.getPath(id),
   };
 }
@@ -108,6 +104,7 @@ export async function* workflowGet(
   _ctx: LibSwampContext,
   deps: WorkflowGetDeps,
   workflowIdOrName: string,
+  options: LookupOptions = {},
 ): AsyncIterable<WorkflowGetEvent> {
   yield* withGeneratorSpan(
     "swamp.workflow.get",
@@ -115,7 +112,13 @@ export async function* workflowGet(
     (async function* () {
       yield { kind: "resolving" };
 
-      const workflow = await deps.findWorkflow(workflowIdOrName);
+      const findWorkflow = selectLookup(
+        "workflow get",
+        options.byId,
+        deps.findWorkflow,
+        deps.findWorkflowById,
+      );
+      const workflow = await findWorkflow(workflowIdOrName);
 
       if (!workflow) {
         yield { kind: "error", error: notFound("Workflow", workflowIdOrName) };
@@ -157,6 +160,4 @@ export async function* workflowGet(
 }
 
 /** Checks if a string looks like a UUID. */
-export function isUuid(value: string): boolean {
-  return UUID_PATTERN.test(value);
-}
+export { isUuid };

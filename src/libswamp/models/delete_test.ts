@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -330,4 +330,122 @@ Deno.test("modelDeletePreview: excludes expired data from artifact count", async
   );
 
   assertEquals(preview.dataArtifactCount, 1);
+});
+
+function byIdDefinition(id: string) {
+  return {
+    id,
+    name: "by-id-model",
+  } as unknown as import("../../domain/definitions/definition.ts").Definition;
+}
+
+Deno.test("modelDeletePreview: byId resolves through lookupDefinitionById, never the name-first lookup", async () => {
+  const id = crypto.randomUUID();
+  const calls: string[] = [];
+  const deps = makeDeps({
+    lookupDefinition: (idOrName) => {
+      calls.push(`name:${idOrName}`);
+      return Promise.resolve({
+        definition: testDefinition,
+        type: testModelType,
+      });
+    },
+    lookupDefinitionById: (lookupId) => {
+      calls.push(`id:${lookupId}`);
+      return Promise.resolve({
+        definition: byIdDefinition(lookupId),
+        type: testModelType,
+      });
+    },
+  });
+
+  const preview = await modelDeletePreview(createLibSwampContext(), deps, {
+    modelIdOrName: id,
+    force: false,
+    byId: true,
+  });
+
+  assertEquals(preview.id, id);
+  assertEquals(preview.name, "by-id-model");
+  assertEquals(calls, [`id:${id}`]);
+});
+
+Deno.test("modelDelete: byId deletes the definition whose id matches, never the name-first match", async () => {
+  const id = crypto.randomUUID();
+  const deleted: string[] = [];
+  let nameLookups = 0;
+  const deps = makeDeps({
+    lookupDefinition: () => {
+      nameLookups++;
+      return Promise.resolve({
+        definition: testDefinition,
+        type: testModelType,
+      });
+    },
+    lookupDefinitionById: (lookupId) =>
+      Promise.resolve({
+        definition: byIdDefinition(lookupId),
+        type: testModelType,
+      }),
+    deleteDefinition: (_type, defId) => {
+      deleted.push(defId);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<ModelDeleteEvent>(
+    modelDelete(createLibSwampContext(), deps, {
+      modelIdOrName: id,
+      force: false,
+      byId: true,
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    ModelDeleteEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.id, id);
+  assertEquals(deleted, [id]);
+  assertEquals(nameLookups, 0);
+});
+
+Deno.test("modelDelete: byId without lookupDefinitionById fails and deletes nothing", async () => {
+  let nameLookups = 0;
+  let deletes = 0;
+  const deps = makeDeps({
+    lookupDefinition: () => {
+      nameLookups++;
+      return Promise.resolve({
+        definition: testDefinition,
+        type: testModelType,
+      });
+    },
+    deleteDefinition: () => {
+      deletes++;
+      return Promise.resolve();
+    },
+  });
+  const input = {
+    modelIdOrName: crypto.randomUUID(),
+    force: true,
+    byId: true,
+  };
+
+  await assertRejects(
+    () => modelDeletePreview(createLibSwampContext(), deps, input),
+    Error,
+    "none is wired",
+  );
+  await assertRejects(
+    () =>
+      collect<ModelDeleteEvent>(
+        modelDelete(createLibSwampContext(), deps, input),
+      ),
+    Error,
+    "none is wired",
+  );
+  assertEquals(nameLookups, 0);
+  assertEquals(deletes, 0);
 });

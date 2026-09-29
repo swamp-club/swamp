@@ -20,9 +20,13 @@
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { type LookupOptions, selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
@@ -52,8 +56,13 @@ export type ModelMethodDescribeEvent =
 
 /** Dependencies for the model method describe operation. */
 export interface ModelMethodDescribeDeps {
+  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
+  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+  /** Looks up by exact id only; required for a `byId` request. */
+  lookupDefinitionById?: (
+    id: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   resolveModelType: (
     type: ModelType,
@@ -70,6 +79,7 @@ export function createModelMethodDescribeDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
+    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
     resolveModelType: (type) => resolveModelType(type, null),
   };
 }
@@ -80,6 +90,7 @@ export async function* modelMethodDescribe(
   deps: ModelMethodDescribeDeps,
   modelIdOrName: string,
   methodName: string,
+  options: LookupOptions = {},
 ): AsyncIterable<ModelMethodDescribeEvent> {
   yield* withGeneratorSpan(
     "swamp.model.method.describe",
@@ -87,7 +98,13 @@ export async function* modelMethodDescribe(
     (async function* () {
       yield { kind: "resolving" };
 
-      const result = await deps.lookupDefinition(modelIdOrName);
+      const lookup = selectLookup(
+        "model method describe",
+        options.byId,
+        deps.lookupDefinition,
+        deps.lookupDefinitionById,
+      );
+      const result = await lookup(modelIdOrName);
       if (!result) {
         yield { kind: "error", error: notFound("Model", modelIdOrName) };
         return;

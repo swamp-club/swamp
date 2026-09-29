@@ -55,6 +55,7 @@ import {
   createWorkflowRunId,
   type WorkflowId,
 } from "./workflow_id.ts";
+import { findWorkflowById } from "./workflow_lookup.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -2221,6 +2222,12 @@ export class WorkflowExecutionService {
   async *run(
     idOrName: string,
     options?: {
+      /**
+       * Treat `idOrName` as a workflow id the caller already resolved, and
+       * look it up by id only, so the run executes the workflow the caller
+       * authorized rather than one named with that id.
+       */
+      byId?: boolean;
       lastEvaluated?: boolean;
       inputs?: Record<string, unknown>;
       runtimeTags?: Record<string, string>;
@@ -2294,7 +2301,9 @@ export class WorkflowExecutionService {
 
       try {
         // Look up workflow
-        const found = await this.lookupWorkflow(idOrName);
+        const found = options?.byId
+          ? await findWorkflowById(this.workflowRepo, idOrName)
+          : await this.lookupWorkflow(idOrName);
         if (!found) {
           throw new Error(`Workflow not found: ${idOrName}`);
         }

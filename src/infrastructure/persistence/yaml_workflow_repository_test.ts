@@ -78,6 +78,37 @@ Deno.test("YamlWorkflowRepository.save and findById roundtrip", async () => {
   });
 });
 
+Deno.test("YamlWorkflowRepository.findById never returns a workflow named with the requested id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const target = createTestWorkflow("target");
+    // Named with target's id, so its file sits at target's id-named path.
+    const impostor = createTestWorkflow(target.id);
+    await repo.save(target);
+    await repo.save(impostor);
+
+    const fresh = new YamlWorkflowRepository(dir);
+    assertEquals((await fresh.findById(target.id))?.id, target.id);
+    assertEquals((await repo.findById(target.id))?.id, target.id);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.delete leaves a workflow named with the deleted id alone", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const target = createTestWorkflow("target");
+    const impostor = createTestWorkflow(target.id);
+    await repo.save(target);
+    await repo.save(impostor);
+
+    await new YamlWorkflowRepository(dir).delete(target.id);
+
+    const fresh = new YamlWorkflowRepository(dir);
+    assertEquals(await fresh.findByName("target"), null);
+    assertEquals((await fresh.findByName(target.id))?.id, impostor.id);
+  });
+});
+
 Deno.test("YamlWorkflowRepository.findById returns null for nonexistent", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRepository(dir);

@@ -67,6 +67,12 @@ export interface DataDeleteInput {
   modelIdOrName: string;
   dataName: string;
   version?: number;
+  /**
+   * Treat `modelIdOrName` as a definition id the caller already resolved,
+   * and look it up by id only, so the operation acts on the model the caller
+   * authorized.
+   */
+  byId?: boolean;
 }
 
 /** Dependencies for the data delete operation. */
@@ -75,10 +81,12 @@ export interface DataDeleteDeps {
     modelIdOrName: string,
     dataName: string,
     version?: number,
+    byId?: boolean,
   ) => Promise<DeleteResult>;
   preview: (
     modelIdOrName: string,
     dataName: string,
+    byId?: boolean,
   ) => Promise<DeletePreview>;
   batchDelete: (
     modelIdOrName: string,
@@ -120,10 +128,10 @@ export function createDataDeleteDeps(
     );
   const service = new DataDeleteService(dataRepo, definitionRepo);
   return {
-    delete: (modelIdOrName, dataName, version) =>
-      service.delete(modelIdOrName, dataName, version),
-    preview: (modelIdOrName, dataName) =>
-      service.previewDelete(modelIdOrName, dataName),
+    delete: (modelIdOrName, dataName, version, byId) =>
+      service.delete(modelIdOrName, dataName, version, { byId }),
+    preview: (modelIdOrName, dataName, byId) =>
+      service.previewDelete(modelIdOrName, dataName, { byId }),
     batchDelete: (modelIdOrName, filter) =>
       service.batchDelete(modelIdOrName, filter),
     batchPreview: (modelIdOrName, filter) =>
@@ -135,11 +143,15 @@ export function createDataDeleteDeps(
 export async function dataDeletePreview(
   ctx: LibSwampContext,
   deps: DataDeleteDeps,
-  input: { modelIdOrName: string; dataName: string },
+  input: { modelIdOrName: string; dataName: string; byId?: boolean },
 ): Promise<DataDeletePreview> {
   ctx.logger
     .debug`Previewing data delete: model=${input.modelIdOrName}, dataName=${input.dataName}`;
-  const preview = await deps.preview(input.modelIdOrName, input.dataName);
+  const preview = await deps.preview(
+    input.modelIdOrName,
+    input.dataName,
+    input.byId,
+  );
   return {
     modelId: preview.modelId,
     modelName: preview.modelName,
@@ -173,6 +185,7 @@ export async function* dataDelete(
           input.modelIdOrName,
           input.dataName,
           input.version,
+          input.byId,
         );
       } catch (error) {
         yield {

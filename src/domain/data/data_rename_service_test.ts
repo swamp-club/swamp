@@ -23,6 +23,9 @@ import type { UnifiedDataRepository } from "./repositories.ts";
 import { Definition } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "../models/model_type.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+// Registers the built-in model types the by-id lookup walks.
+import "../models/models.ts";
 
 interface RenameCall {
   type: ModelType;
@@ -208,4 +211,87 @@ Deno.test("rename: propagates name-collision errors from the repository", async 
     Error,
     'Data "new-data" already exists',
   );
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+/**
+ * Saves a target definition and a decoy definition NAMED with the target's
+ * id, so a name-first lookup of the target's id resolves the decoy.
+ */
+async function saveTargetAndDecoy(repo: YamlDefinitionRepository) {
+  const type = ModelType.create("command/shell");
+  const target = Definition.create({ name: "target-model" });
+  const decoy = Definition.create({ name: target.id });
+  await repo.save(type, target);
+  await repo.save(type, decoy);
+  return { target, decoy };
+}
+
+function renamedOk() {
+  return Promise.resolve({
+    oldName: "old-data",
+    newName: "new-data",
+    copiedVersion: 1,
+    newVersion: 2,
+  });
+}
+
+Deno.test("rename: byId renames on the definition whose id matches, not one named with it", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const { target } = await saveTargetAndDecoy(definitionRepo);
+    const { repo: dataRepo, calls } = makeDataRepo(renamedOk);
+    const service = new DataRenameService(dataRepo, definitionRepo);
+
+    const result = await service.rename(target.id, "old-data", "new-data", {
+      byId: true,
+    });
+
+    assertEquals(result.modelId, target.id);
+    assertEquals(result.modelName, "target-model");
+    assertEquals(calls.map((c) => c.modelId), [target.id]);
+  });
+});
+
+Deno.test("rename: without byId the name match wins", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const { target, decoy } = await saveTargetAndDecoy(definitionRepo);
+    const { repo: dataRepo, calls } = makeDataRepo(renamedOk);
+    const service = new DataRenameService(dataRepo, definitionRepo);
+
+    const result = await service.rename(target.id, "old-data", "new-data");
+
+    assertEquals(result.modelId, decoy.id);
+    assertEquals(calls.map((c) => c.modelId), [decoy.id]);
+  });
+});
+
+Deno.test("rename: byId with a name rejects as model not found", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    await saveTargetAndDecoy(definitionRepo);
+    const { repo: dataRepo, calls } = makeDataRepo(renamedOk);
+    const service = new DataRenameService(dataRepo, definitionRepo);
+
+    await assertRejects(
+      () =>
+        service.rename("target-model", "old-data", "new-data", { byId: true }),
+      Error,
+      "Model not found: target-model",
+    );
+    assertEquals(calls.length, 0);
+  });
 });

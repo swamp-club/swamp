@@ -1065,7 +1065,9 @@ export class WebhookService {
                 this.deps.instanceId,
                 runId,
                 {
-                  resourceName: workflowIdOrName,
+                  // The workflow the run resolved to, not the configured
+                  // id-or-name, so cancel and attach authorize its name.
+                  resourceName: event.workflowName,
                   runKind: "workflow-run",
                   startedAt: new Date().toISOString(),
                 },

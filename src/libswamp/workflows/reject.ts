@@ -49,6 +49,12 @@ export type WorkflowRejectEvent =
 
 export interface WorkflowRejectInput {
   workflowIdOrName: string;
+  /**
+   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
+   * and look it up by id only, so the decision lands on the workflow the
+   * caller authorized.
+   */
+  byId?: boolean;
   stepName: string;
   reason?: string;
   runId?: string;
@@ -95,6 +101,7 @@ export async function* workflowReject(
           deps.runRepo,
           input.workflowIdOrName,
           input.runId,
+          { byId: input.byId },
         );
       } catch (error) {
         yield {

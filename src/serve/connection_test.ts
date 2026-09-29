@@ -3254,7 +3254,7 @@ Deno.test("validateServerRequest: vault.audit-trail keeps action", () => {
 
 /** A ctx whose repos hold one workflow and one run in the given status. */
 function makeResumeCtx(runId: string, runStatus: string): ConnectionContext {
-  const workflow = { id: "wf-1", name: "deploy", tags: {} };
+  const workflow = { id: crypto.randomUUID(), name: "deploy", tags: {} };
   return {
     ...makeCtx(modeNoneConfig),
     repoContext: {
