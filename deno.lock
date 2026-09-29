@@ -51,7 +51,7 @@
     "npm:fzf@0.5.2": "0.5.2",
     "npm:ink-testing-library@4": "4.0.0_@types+react@19.2.14",
     "npm:ink@^6.8.0": "6.8.0_@types+react@19.2.14_react@19.2.7",
-    "npm:js-yaml@^5.3.0": "5.3.0",
+    "npm:js-yaml@^5.4.2": "5.4.2",
     "npm:marked-terminal@^7.3.0": "7.3.0_marked@14.1.4",
     "npm:marked@^14.1.4": "14.1.4",
     "npm:react-dom@^19.2.5": "19.2.7_react@19.2.7",
@@ -1990,8 +1990,8 @@
     "js-tokens@4.0.0": {
       "integrity": "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ=="
     },
-    "js-yaml@5.3.0": {
-      "integrity": "sha512-muutsYr+e2+d3rTgUGslq5rxbBlUy3cJ61IsHag2QNDQV+7zXWjkUpmALIajhrlLlrgRUiymj6U3zUr/TMK84Q==",
+    "js-yaml@5.4.2": {
+      "integrity": "sha512-m+aqu+LwO1O6sIopafj8HUVl5aawITwZQe/yHpMCKjaWBaA/d07B/QdMb3529REftiU+RMMHL3Vlsw3hON7vWg==",
       "dependencies": [
         "argparse"
       ],
@@ -2699,7 +2699,7 @@
             "npm:@types/react-dom@^19.2.4",
             "npm:@types/react@^19.2.14",
             "npm:@vitejs/plugin-react@^4.5.2",
-            "npm:js-yaml@^5.3.0",
+            "npm:js-yaml@^5.4.2",
             "npm:marked@^14.1.4",
             "npm:react-dom@^19.2.5",
             "npm:react@^19.2.5",
