@@ -451,6 +451,30 @@ Deno.test("FileLock - maxWaitMs override is respected", async () => {
   });
 });
 
+/** Sets a file's mtime `ageMs` into the past. */
+async function backdate(path: string, ageMs: number): Promise<void> {
+  const past = new Date(Date.now() - ageMs);
+  await Deno.utime(path, past, past);
+}
+
+Deno.test("FileLock - fresh zero-byte lock file is treated as held, not removed", async () => {
+  // A live holder's file is empty between create and write. Removing it
+  // would let a second holder in (swamp-club#2571).
+  await withTempDir(async (dir) => {
+    const lockPath = `${dir}/.datastore.lock`;
+    const file = await Deno.open(lockPath, { createNew: true, write: true });
+    file.close();
+
+    const lock = new FileLock(dir, {
+      ttlMs: 60_000,
+      maxWaitMs: 50,
+      retryIntervalMs: 10,
+    });
+    await assertRejects(() => lock.acquire(), LockTimeoutError);
+    assertEquals((await Deno.stat(lockPath)).size, 0);
+  });
+});
+
 Deno.test("FileLock - zero-byte lock file is cleaned up and acquire succeeds", async () => {
   await withTempDir(async (dir) => {
     const lockPath = `${dir}/.datastore.lock`;
@@ -459,6 +483,7 @@ Deno.test("FileLock - zero-byte lock file is cleaned up and acquire succeeds", a
     file.close();
     const stat = await Deno.stat(lockPath);
     assertEquals(stat.size, 0);
+    await backdate(lockPath, 10_000);
 
     const lock = new FileLock(dir, { ttlMs: 5000, maxWaitMs: 2000 });
     await lock.acquire();
@@ -476,6 +501,7 @@ Deno.test("FileLock - corrupt JSON lock file is cleaned up and acquire succeeds"
     const lockPath = `${dir}/.datastore.lock`;
     // Simulate a partial write (truncated JSON)
     await Deno.writeTextFile(lockPath, '{"holder":"crash@host","hos');
+    await backdate(lockPath, 10_000);
 
     const lock = new FileLock(dir, { ttlMs: 5000, maxWaitMs: 2000 });
     await lock.acquire();

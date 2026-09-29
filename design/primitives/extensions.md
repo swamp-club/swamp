@@ -162,6 +162,13 @@ direction only when `--from-channel` is given; otherwise the server enforces it
 Trusted-collective auto-resolution uses only stable versions, never beta or rc.
 Lockfile-pinned restores fetch the exact version whatever its channel.
 
+Concurrent processes that auto-resolve in one repository install one at a time:
+each takes a repo-wide lock (`.swamp/.extension-install.lock`) around
+inspecting, installing and loading. A process that then finds the extension
+already installed by another loads it rather than failing, and reports the
+type missing only when the loaded extension does not provide it
+(`src/domain/extensions/extension_auto_resolver.ts`).
+
 ### Lockfile
 
 The `upstream_extensions.json` entry records the install channel in a `channel`

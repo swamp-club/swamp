@@ -56,6 +56,10 @@ import { webhookKindAdapter } from "../domain/extensions/webhook_kind_adapter.ts
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import type { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { modelRegistry } from "../domain/models/model.ts";
+import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
+import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
+import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
+import { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   renderAutoResolveAlreadyInstalled,
@@ -468,6 +472,31 @@ export function createAutoResolveInstallerAdapter(
       });
     },
 
+    async withInstallLock<T>(fn: () => Promise<T>): Promise<T> {
+      const lock = new FileLock(swampPath(repoDir), {
+        lockKey: EXTENSION_INSTALL_LOCK_KEY,
+        maxWaitMs: EXTENSION_INSTALL_LOCK_MAX_WAIT_MS,
+        retryIntervalMs: EXTENSION_INSTALL_LOCK_RETRY_INTERVAL_MS,
+      });
+      await lock.acquire();
+      try {
+        return await fn();
+      } finally {
+        await lock.release();
+      }
+    },
+
+    async providesType(normalizedType: string): Promise<boolean> {
+      await modelRegistry.ensureTypeLoaded(normalizedType);
+      if (modelRegistry.has(normalizedType)) return true;
+      await vaultTypeRegistry.ensureTypeLoaded(normalizedType);
+      if (vaultTypeRegistry.has(normalizedType)) return true;
+      await datastoreTypeRegistry.ensureTypeLoaded(normalizedType);
+      if (datastoreTypeRegistry.has(normalizedType)) return true;
+      await webhookTypeRegistry.ensureTypeLoaded(normalizedType);
+      return webhookTypeRegistry.has(normalizedType);
+    },
+
     failedLocalSourceMatchesType(typeNormalized: string): boolean {
       if (!repository) return false;
       const paths = repository.getCatalogStore().getFailedLocalSourcePaths();
@@ -483,6 +512,16 @@ export function createAutoResolveInstallerAdapter(
     },
   };
 }
+
+/**
+ * Lock serializing auto-installs across processes sharing a repository
+ * (swamp-club#2571). Repo-wide rather than per-extension: an install also
+ * installs its dependencies, which another extension may share.
+ */
+const EXTENSION_INSTALL_LOCK_KEY = ".extension-install.lock";
+/** Long enough for another process to download and install an extension. */
+const EXTENSION_INSTALL_LOCK_MAX_WAIT_MS = 180_000;
+const EXTENSION_INSTALL_LOCK_RETRY_INTERVAL_MS = 100;
 
 /** Catalog row states that mean a source failed to load (as in doctor). */
 const FAILED_SOURCE_STATES: ReadonlySet<string> = new Set([

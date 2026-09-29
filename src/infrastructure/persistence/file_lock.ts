@@ -169,17 +169,24 @@ export class FileLock implements DistributedLock {
         }
       } else {
         // Lock file exists on disk but is unreadable (0 bytes, corrupt
-        // JSON, or partial write from a crashed process). No holder info
-        // to respect — treat as stale and clean up.
-        const logger = getSwampLogger(["datastore", "lock"]);
-        logger
-          .warn`Removing unreadable lock file ${this.lockPath}`;
-        try {
-          await Deno.remove(this.lockPath);
-        } catch {
-          // Another process may have already cleaned it up
+        // JSON, or partial write). A live holder's file is briefly empty
+        // between create and write, and during each heartbeat rewrite, so
+        // only a file untouched for a full TTL is stale: removing a fresh
+        // one lets two holders in at once (swamp-club#2571).
+        const mtime = await this.readLockFileMtime();
+        if (mtime === null) continue; // Removed meanwhile — retry create
+        if (Date.now() - mtime > this.ttlMs) {
+          const logger = getSwampLogger(["datastore", "lock"]);
+          logger
+            .warn`Removing unreadable lock file ${this.lockPath}`;
+          try {
+            await Deno.remove(this.lockPath);
+          } catch {
+            // Another process may have already cleaned it up
+          }
+          continue;
         }
-        continue;
+        // Fresh: a holder is mid-write. Back off like any held lock.
       }
 
       // Jittered exponential backoff, clamped to remaining budget
@@ -299,6 +306,15 @@ export class FileLock implements DistributedLock {
     if (this.heartbeatId !== undefined) {
       clearInterval(this.heartbeatId);
       this.heartbeatId = undefined;
+    }
+  }
+
+  /** The lock file's mtime in ms, or null when it no longer exists. */
+  private async readLockFileMtime(): Promise<number | null> {
+    try {
+      return (await Deno.stat(this.lockPath)).mtime?.getTime() ?? 0;
+    } catch {
+      return null;
     }
   }
 
