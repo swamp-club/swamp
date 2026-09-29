@@ -126,6 +126,12 @@ in `src/libswamp/`) may import from internal paths.
   `withMockedCommand` / `withMockedFetch` from `@swamp-club/swamp-testing`). The
   one exception is infrastructure adapter tests, which may run a localhost mock
   server on `port: 0`.
+- Supply env values to any test — unit or integration — with `withMockedEnv`
+  from `src/infrastructure/persistence/path_test_helpers.ts`. It answers
+  `Deno.env.get`, `has` and `toObject` for the current test file only; map a
+  variable to `undefined` to read it as unset. Child processes never see it, so
+  pass them an explicit `env`. `integration/test_env_mutation_rules_test.ts`
+  fails on any `Deno.env.set` / `Deno.env.delete` in a test file.
 - **Integration tests** (`integration/`): wire real components together
   in-process — repositories on a real temp filesystem, services + event buses,
   port-0 mock servers. Must NOT spawn the CLI as a subprocess.

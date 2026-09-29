@@ -44,6 +44,7 @@ import { DefaultModelValidationService } from "../../validation_service.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { setProcessGroupIsolation } from "../../../../infrastructure/process/process_group_policy.ts";
 import { isProcessAlive } from "../../../../infrastructure/process/process_kill.ts";
+import { withMockedEnv } from "../../../../infrastructure/persistence/path_test_helpers.ts";
 
 /**
  * Skip on Windows. The matching `windowsOnlyTest` below covers the
@@ -692,26 +693,21 @@ posixOnlyTest("shellModel.methods.execute respects env variables", async () => {
 posixOnlyTest(
   "shellModel.methods.execute strips SWAMP_* vars from child env",
   async () => {
-    const original = Deno.env.get("SWAMP_SERVER_TOKEN");
-    Deno.env.set("SWAMP_SERVER_TOKEN", "test.leaked-secret");
-    try {
-      const args: ShellInputAttributes = {
-        run: "echo SWAMP_SERVER_TOKEN=$SWAMP_SERVER_TOKEN",
-      };
+    await withMockedEnv(
+      { SWAMP_SERVER_TOKEN: "test.leaked-secret" },
+      async () => {
+        const args: ShellInputAttributes = {
+          run: "echo SWAMP_SERVER_TOKEN=$SWAMP_SERVER_TOKEN",
+        };
 
-      const { context, getResults } = createTestContext();
-      await shellModel.methods.execute.execute(args, context);
+        const { context, getResults } = createTestContext();
+        await shellModel.methods.execute.execute(args, context);
 
-      const logContent = getOutputLogContent(getResults());
-      assertStringIncludes(logContent, "SWAMP_SERVER_TOKEN=");
-      assertEquals(logContent.includes("leaked-secret"), false);
-    } finally {
-      if (original !== undefined) {
-        Deno.env.set("SWAMP_SERVER_TOKEN", original);
-      } else {
-        Deno.env.delete("SWAMP_SERVER_TOKEN");
-      }
-    }
+        const logContent = getOutputLogContent(getResults());
+        assertStringIncludes(logContent, "SWAMP_SERVER_TOKEN=");
+        assertEquals(logContent.includes("leaked-secret"), false);
+      },
+    );
   },
 );
 

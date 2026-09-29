@@ -31,6 +31,7 @@ import {
 } from "./webhook.ts";
 import type { VaultSecretResolver } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { UserError } from "../domain/errors.ts";
 import type { WebhookHandler } from "../domain/webhooks/webhook_handler.ts";
 import type { ExtensionWebhookScheme } from "./webhook_verifiers.ts";
@@ -236,37 +237,35 @@ Deno.test("resolveSecret: returns a literal string unchanged", async () => {
 });
 
 Deno.test("resolveSecret: reads from an environment variable via @env=", async () => {
-  Deno.env.set("TEST_WEBHOOK_SECRET_758", "env-secret-value");
-  try {
-    assertEquals(
-      await resolveSecret("@env=TEST_WEBHOOK_SECRET_758"),
-      "env-secret-value",
-    );
-  } finally {
-    Deno.env.delete("TEST_WEBHOOK_SECRET_758");
-  }
-});
-
-Deno.test("resolveSecret: throws for an unset environment variable", async () => {
-  Deno.env.delete("NONEXISTENT_WEBHOOK_VAR_758");
-  await assertRejects(
-    () => resolveSecret("@env=NONEXISTENT_WEBHOOK_VAR_758"),
-    Error,
-    "not set or is empty",
+  await withMockedEnv(
+    { TEST_WEBHOOK_SECRET_758: "env-secret-value" },
+    async () => {
+      assertEquals(
+        await resolveSecret("@env=TEST_WEBHOOK_SECRET_758"),
+        "env-secret-value",
+      );
+    },
   );
 });
 
+Deno.test("resolveSecret: throws for an unset environment variable", async () => {
+  await withMockedEnv({ NONEXISTENT_WEBHOOK_VAR_758: undefined }, async () => {
+    await assertRejects(
+      () => resolveSecret("@env=NONEXISTENT_WEBHOOK_VAR_758"),
+      Error,
+      "not set or is empty",
+    );
+  });
+});
+
 Deno.test("resolveSecret: throws for an empty environment variable", async () => {
-  Deno.env.set("EMPTY_WEBHOOK_VAR_758", "");
-  try {
+  await withMockedEnv({ EMPTY_WEBHOOK_VAR_758: "" }, async () => {
     await assertRejects(
       () => resolveSecret("@env=EMPTY_WEBHOOK_VAR_758"),
       Error,
       "not set or is empty",
     );
-  } finally {
-    Deno.env.delete("EMPTY_WEBHOOK_VAR_758");
-  }
+  });
 });
 
 Deno.test("resolveSecret: reads from a file via @file=", async () => {
@@ -395,29 +394,29 @@ Deno.test("resolveSecret: throws for @vault= when vault get fails", async () => 
 // ── parseWebhookFlag with secret indirection ──────────────────────────
 
 Deno.test("parseWebhookFlag: resolves @env= secret in legacy form", async () => {
-  Deno.env.set("TEST_WH_SECRET_LEGACY_758", "resolved-secret");
-  try {
-    const result = await parseWebhookFlag(
-      "/hooks/gh:wf:@env=TEST_WH_SECRET_LEGACY_758",
-    );
-    assertEquals(result.secret, "resolved-secret");
-    assertEquals(result.verifier, { scheme: "github" });
-  } finally {
-    Deno.env.delete("TEST_WH_SECRET_LEGACY_758");
-  }
+  await withMockedEnv(
+    { TEST_WH_SECRET_LEGACY_758: "resolved-secret" },
+    async () => {
+      const result = await parseWebhookFlag(
+        "/hooks/gh:wf:@env=TEST_WH_SECRET_LEGACY_758",
+      );
+      assertEquals(result.secret, "resolved-secret");
+      assertEquals(result.verifier, { scheme: "github" });
+    },
+  );
 });
 
 Deno.test("parseWebhookFlag: resolves @env= secret in scheme-qualified form", async () => {
-  Deno.env.set("TEST_WH_SECRET_SCHEME_758", "resolved-secret");
-  try {
-    const result = await parseWebhookFlag(
-      "/hooks/linear:wf:@env=TEST_WH_SECRET_SCHEME_758:linear",
-    );
-    assertEquals(result.secret, "resolved-secret");
-    assertEquals(result.verifier, { scheme: "linear" });
-  } finally {
-    Deno.env.delete("TEST_WH_SECRET_SCHEME_758");
-  }
+  await withMockedEnv(
+    { TEST_WH_SECRET_SCHEME_758: "resolved-secret" },
+    async () => {
+      const result = await parseWebhookFlag(
+        "/hooks/linear:wf:@env=TEST_WH_SECRET_SCHEME_758:linear",
+      );
+      assertEquals(result.secret, "resolved-secret");
+      assertEquals(result.verifier, { scheme: "linear" });
+    },
+  );
 });
 
 Deno.test("parseWebhookFlag: resolves @file= secret", async () => {

@@ -36,6 +36,7 @@ import {
 import type { DatastoreSyncOptions } from "../../domain/datastore/datastore_sync_service.ts";
 import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import { withMockedEnv } from "./path_test_helpers.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -446,12 +447,9 @@ Deno.test("resolveSyncTimeoutMs: env var used when config field absent", () => {
     config: {},
     datastorePath: "/tmp/x",
   };
-  Deno.env.set("SWAMP_DATASTORE_SYNC_TIMEOUT_MS", "4200");
-  try {
+  withMockedEnv({ SWAMP_DATASTORE_SYNC_TIMEOUT_MS: "4200" }, () => {
     assertEquals(resolveSyncTimeoutMs(cfg), 4200);
-  } finally {
-    Deno.env.delete("SWAMP_DATASTORE_SYNC_TIMEOUT_MS");
-  }
+  });
 });
 
 Deno.test("resolveSyncTimeoutMs: invalid env falls back to default", () => {
@@ -460,12 +458,9 @@ Deno.test("resolveSyncTimeoutMs: invalid env falls back to default", () => {
     config: {},
     datastorePath: "/tmp/x",
   };
-  Deno.env.set("SWAMP_DATASTORE_SYNC_TIMEOUT_MS", "not-a-number");
-  try {
+  withMockedEnv({ SWAMP_DATASTORE_SYNC_TIMEOUT_MS: "not-a-number" }, () => {
     assertEquals(resolveSyncTimeoutMs(cfg), DEFAULT_SYNC_TIMEOUT_MS);
-  } finally {
-    Deno.env.delete("SWAMP_DATASTORE_SYNC_TIMEOUT_MS");
-  }
+  });
 });
 
 Deno.test("flushDatastoreSync: one entry's timeout still flushes other entries", async () => {

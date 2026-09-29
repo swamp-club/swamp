@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { collapseEnvVars, expandEnvVars } from "./env_path.ts";
+import { withMockedEnv } from "./path_test_helpers.ts";
 
 // ============================================================================
 // expandEnvVars
@@ -49,54 +50,45 @@ Deno.test("expandEnvVars - expands ${HOME}", () => {
 });
 
 Deno.test("expandEnvVars - expands multiple variables", () => {
-  const original = Deno.env.get("SWAMP_TEST_VAR_A");
-  const originalB = Deno.env.get("SWAMP_TEST_VAR_B");
-  try {
-    Deno.env.set("SWAMP_TEST_VAR_A", "/alpha");
-    Deno.env.set("SWAMP_TEST_VAR_B", "beta");
-    assertEquals(
-      expandEnvVars("$SWAMP_TEST_VAR_A/${SWAMP_TEST_VAR_B}/path"),
-      "/alpha/beta/path",
-    );
-  } finally {
-    if (original) Deno.env.set("SWAMP_TEST_VAR_A", original);
-    else Deno.env.delete("SWAMP_TEST_VAR_A");
-    if (originalB) Deno.env.set("SWAMP_TEST_VAR_B", originalB);
-    else Deno.env.delete("SWAMP_TEST_VAR_B");
-  }
+  withMockedEnv(
+    { SWAMP_TEST_VAR_A: "/alpha", SWAMP_TEST_VAR_B: "beta" },
+    () => {
+      assertEquals(
+        expandEnvVars("$SWAMP_TEST_VAR_A/${SWAMP_TEST_VAR_B}/path"),
+        "/alpha/beta/path",
+      );
+    },
+  );
 });
 
 Deno.test("expandEnvVars - throws on undefined $VAR", () => {
-  Deno.env.delete("SWAMP_UNDEFINED_TEST_VAR");
-  assertThrows(
-    () => expandEnvVars("$SWAMP_UNDEFINED_TEST_VAR/path"),
-    Error,
-    'Environment variable "SWAMP_UNDEFINED_TEST_VAR" is not set',
-  );
+  withMockedEnv({ SWAMP_UNDEFINED_TEST_VAR: undefined }, () => {
+    assertThrows(
+      () => expandEnvVars("$SWAMP_UNDEFINED_TEST_VAR/path"),
+      Error,
+      'Environment variable "SWAMP_UNDEFINED_TEST_VAR" is not set',
+    );
+  });
 });
 
 Deno.test("expandEnvVars - throws on undefined ${VAR}", () => {
-  Deno.env.delete("SWAMP_UNDEFINED_TEST_VAR");
-  assertThrows(
-    () => expandEnvVars("${SWAMP_UNDEFINED_TEST_VAR}/path"),
-    Error,
-    'Environment variable "SWAMP_UNDEFINED_TEST_VAR" is not set',
-  );
+  withMockedEnv({ SWAMP_UNDEFINED_TEST_VAR: undefined }, () => {
+    assertThrows(
+      () => expandEnvVars("${SWAMP_UNDEFINED_TEST_VAR}/path"),
+      Error,
+      'Environment variable "SWAMP_UNDEFINED_TEST_VAR" is not set',
+    );
+  });
 });
 
 Deno.test("expandEnvVars - throws on empty $VAR value", () => {
-  const original = Deno.env.get("SWAMP_EMPTY_TEST_VAR");
-  try {
-    Deno.env.set("SWAMP_EMPTY_TEST_VAR", "");
+  withMockedEnv({ SWAMP_EMPTY_TEST_VAR: "" }, () => {
     assertThrows(
       () => expandEnvVars("$SWAMP_EMPTY_TEST_VAR/path"),
       Error,
       'Environment variable "SWAMP_EMPTY_TEST_VAR" is not set or empty',
     );
-  } finally {
-    if (original) Deno.env.set("SWAMP_EMPTY_TEST_VAR", original);
-    else Deno.env.delete("SWAMP_EMPTY_TEST_VAR");
-  }
+  });
 });
 
 Deno.test("expandEnvVars - absolute path passes through unchanged", () => {
