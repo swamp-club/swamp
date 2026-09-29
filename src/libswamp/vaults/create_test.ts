@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -25,6 +25,7 @@ import {
   type VaultCreateDeps,
   type VaultCreateEvent,
 } from "./create.ts";
+import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
 
 function makeDeps(overrides: Partial<VaultCreateDeps> = {}): VaultCreateDeps {
   return {
@@ -125,4 +126,93 @@ Deno.test("vaultCreate: yields error for invalid vault name", async () => {
     last.error.message,
     "Invalid vault name: Invalid-Name!. Vault names must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens.",
   );
+});
+
+// Key-source rule for local_encryption vaults (swamp-club#2690).
+
+async function createLocal(
+  vaultType: string,
+  config: Record<string, unknown> | undefined,
+  trustKeySource?: boolean,
+): Promise<{ last: VaultCreateEvent; saved: VaultConfig[] }> {
+  const saved: VaultConfig[] = [];
+  const deps = makeDeps({
+    save: (c) => {
+      saved.push(c);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<VaultCreateEvent>(
+    vaultCreate(createLibSwampContext(), deps, {
+      vaultType,
+      name: "my-vault",
+      config,
+      repoDir: "/repo",
+      trustKeySource,
+    }),
+  );
+  return { last: events[events.length - 1], saved };
+}
+
+Deno.test("vaultCreate: an untrusted local_encryption config cannot name its own key source", async () => {
+  for (
+    const config of [
+      { base_dir: "/elsewhere" },
+      { key_file: "/k" },
+      { ssh_key_path: "~/.ssh/id_ed25519" },
+      { auto_generate: false },
+    ]
+  ) {
+    const field = Object.keys(config)[0];
+    const { last, saved } = await createLocal("local_encryption", config);
+
+    assertEquals(last.kind, "error", field);
+    const error = (last as Extract<VaultCreateEvent, { kind: "error" }>).error;
+    assertEquals(error.code, "validation_failed", field);
+    assertStringIncludes(error.message, `Cannot set ${field} for vault`);
+    assertEquals(error.message.includes("/"), false, field);
+    assertEquals(saved, [], field);
+  }
+});
+
+Deno.test("vaultCreate: an untrusted local_encryption config gets the server's key source", async () => {
+  for (
+    const config of [
+      {},
+      { base_dir: "/repo", auto_generate: true },
+      { note: "kept" },
+    ]
+  ) {
+    const { last, saved } = await createLocal("local_encryption", config);
+
+    assertEquals(last.kind, "completed");
+    assertEquals(saved[0].config, {
+      ...config,
+      auto_generate: true,
+      base_dir: "/repo",
+    });
+  }
+});
+
+Deno.test("vaultCreate: the key-source rule matches the local_encryption type in any case", async () => {
+  const refused = await createLocal("LOCAL_ENCRYPTION", { key_file: "/k" });
+  assertEquals(refused.last.kind, "error");
+  assertEquals(refused.saved, []);
+
+  const defaulted = await createLocal("Local_Encryption", undefined);
+  assertEquals(defaulted.saved[0].config, {
+    auto_generate: true,
+    base_dir: "/repo",
+  });
+});
+
+Deno.test("vaultCreate: a trusted local_encryption config may name its own key source", async () => {
+  const { last, saved } = await createLocal(
+    "local_encryption",
+    { ssh_key_path: "~/.ssh/id_ed25519" },
+    true,
+  );
+
+  assertEquals(last.kind, "completed");
+  assertEquals(saved[0].config, { ssh_key_path: "~/.ssh/id_ed25519" });
 });

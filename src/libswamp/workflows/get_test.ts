@@ -138,3 +138,36 @@ Deno.test("isUuid returns true for a valid UUID", () => {
 Deno.test("isUuid returns false for a non-UUID string", () => {
   assertEquals(isUuid("my-workflow"), false);
 });
+
+Deno.test("workflowGet with byId uses the id-only lookup", async () => {
+  const deps: WorkflowGetDeps = {
+    ...makeDeps({ workflow: null }),
+    findWorkflowById: () =>
+      Promise.resolve(
+        testWorkflow as unknown as Awaited<
+          ReturnType<WorkflowGetDeps["findWorkflow"]>
+        >,
+      ),
+  };
+  const events = await collect<WorkflowGetEvent>(
+    workflowGet(createLibSwampContext(), deps, testWorkflow.id, {
+      byId: true,
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+});
+
+Deno.test("workflowGet with byId fails rather than fall back when no id-only lookup is wired", async () => {
+  const deps = makeDeps({ workflow: testWorkflow });
+  let failed = false;
+  try {
+    await collect<WorkflowGetEvent>(
+      workflowGet(createLibSwampContext(), deps, testWorkflow.id, {
+        byId: true,
+      }),
+    );
+  } catch {
+    failed = true;
+  }
+  assertEquals(failed, true);
+});

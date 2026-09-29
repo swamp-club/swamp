@@ -51,7 +51,6 @@ import {
   handleDataVersions,
   handleRunGc,
   handleSummarise,
-  resolveDataFields,
 } from "./handlers/data_handlers.ts";
 import {
   handleModelCreate,
@@ -95,8 +94,16 @@ import {
   handleWorkflowTriggerRemove,
   handleWorkflowTriggerSet,
   handleWorkflowValidate,
-  resolveWorkflowFields,
 } from "./handlers/workflow_handlers.ts";
+import {
+  authorizeResolved,
+  resolveModelTarget,
+  resolveRecordedModel,
+  resolveRecordedWorkflow,
+  resolveWorkflowTarget,
+  type ResourceResolution,
+  unresolvedAccessResource,
+} from "./handlers/resource_resolution.ts";
 import {
   handleVaultAnnotate,
   handleVaultAuditTrail,
@@ -175,6 +182,7 @@ import {
   MAX_CANCEL_REASON_LENGTH,
   MAX_PREDICATE_LENGTH,
   MAX_QUERY_RESULTS,
+  sanitizeErrorForClient,
   send,
   sendError,
   setConnectionTeardown,
@@ -1436,6 +1444,29 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
  * type against `ServerRequest` to catch that drift at compile time.
  */
 export type ValidatedServerRequest = z.infer<typeof ServerRequestSchema>;
+
+/**
+ * Each request type's payload field names, read from the schemas above. The
+ * serve id-deny conformance test uses it to find every request that names a
+ * resource, so a new one cannot ship without authorization coverage.
+ */
+export function serverRequestPayloadFields(): ReadonlyMap<
+  string,
+  readonly string[]
+> {
+  const fields = new Map<string, readonly string[]>();
+  for (const option of ServerRequestSchema.options) {
+    const shape = (option as z.ZodObject).shape;
+    const type = (shape.type as z.ZodLiteral<string>).value;
+    let payload: unknown = shape.payload;
+    if (payload instanceof z.ZodOptional) payload = payload.unwrap();
+    fields.set(
+      type,
+      payload instanceof z.ZodObject ? Object.keys(payload.shape) : [],
+    );
+  }
+  return fields;
+}
 
 /**
  * Validates a parsed JSON value against the ServerRequest schema.
@@ -3767,28 +3798,30 @@ async function handleCancelRun(
   principal: Principal | null,
 ): Promise<void> {
   const resourceKind = run.kind === "method-run" ? "model" : "workflow";
-  const cancelFields = await resolveRunFields(
+  const resolution = await resolveRunResource(
     ctx,
     resourceKind,
     run.resourceName,
+    run.resourceId,
   );
   // A refusal is silent, like a cancel of an unknown id, so the reply never
   // confirms the run exists or names its resource (swamp-club#2649). The
-  // denial is still audited.
-  if (
-    isAuthorized(
-      socket,
-      requestId,
-      principal,
-      "run",
-      {
-        kind: resourceKind,
-        name: run.resourceName,
-        fields: cancelFields,
-      },
-      ctx,
-    )
-  ) {
+  // denial is still audited. Otherwise this authorizes as authorizeResolved
+  // does: a failed lookup is checked against the recorded name, and only an
+  // allowed caller is told the lookup failed.
+  const resource = resolution.status === "failed"
+    ? unresolvedAccessResource(resourceKind, run.resourceName)
+    : resolution.resource;
+  if (isAuthorized(socket, requestId, principal, "run", resource, ctx)) {
+    if (resolution.status === "failed") {
+      sendError(
+        socket,
+        requestId,
+        "run_cancel_failed",
+        sanitizeErrorForClient(resolution.error),
+      );
+      return;
+    }
     const cancelled = ctx.activeRunRegistry!.cancel(
       requestId,
       cancelReasonFor(cancelActor(principal, ctx)),
@@ -3806,25 +3839,39 @@ async function handleCancelRun(
   }
 }
 
-async function resolveRunFields(
+/**
+ * The resource a run's cancel or attach is authorized on: the model or
+ * workflow the run was started on, with its current canonical name and full
+ * fields, as the run itself was authorized (swamp-club#2674). It is found by
+ * the id recorded at registration when there is one, so a rename during the
+ * run cannot point the check at another resource that took the old name.
+ * Records without an id — from older instances — resolve their recorded
+ * name. A run whose resource is gone is authorized on its recorded name; a
+ * lookup that fails is reported as failed, never treated as gone.
+ */
+async function resolveRunResource(
   ctx: ConnectionContext,
   resourceKind: "model" | "workflow",
   resourceName: string,
-): Promise<Record<string, unknown>> {
-  try {
-    if (resourceKind === "model") {
-      return await resolveDataFields(
-        ctx.repoContext.definitionRepo,
-        resourceName,
-      );
-    }
-    return await resolveWorkflowFields(
-      ctx.repoContext.workflowRepo,
-      resourceName,
-    );
-  } catch {
-    return { name: resourceName };
+  resourceId: string | undefined,
+): Promise<ResourceResolution> {
+  const { definitionRepo, workflowRepo } = ctx.repoContext;
+  let resolution: ResourceResolution;
+  if (resourceKind === "model") {
+    resolution = resourceId
+      ? await resolveRecordedModel(definitionRepo, resourceId, resourceName)
+      : await resolveModelTarget(definitionRepo, resourceName);
+  } else {
+    resolution = resourceId
+      ? await resolveRecordedWorkflow(workflowRepo, resourceId, resourceName)
+      : await resolveWorkflowTarget(workflowRepo, resourceName);
   }
+  return resolution.status === "missing"
+    ? {
+      status: "missing",
+      resource: unresolvedAccessResource(resourceKind, resourceName),
+    }
+    : resolution;
 }
 
 async function handleRunAttach(
@@ -3846,24 +3893,24 @@ async function handleRunAttach(
         const resourceKind = result.record.runKind === "method-run"
           ? "model"
           : "workflow";
-        const remoteFields = await resolveRunFields(
+        const resolution = await resolveRunResource(
           ctx,
           resourceKind,
           result.record.resourceName,
+          result.record.resourceId,
         );
         if (
-          !authorizeOrReject(
+          !authorizeResolved(
             socket,
             requestId,
             principal,
             "run",
-            {
-              kind: resourceKind,
-              name: result.record.resourceName,
-              fields: remoteFields,
-            },
+            resolution,
+            result.record.resourceName,
+            resourceKind,
             ctx,
-          ).allowed
+            "run_attach_failed",
+          )
         ) return;
 
         const heartbeatData = await ctx.controlPlaneStore.get(
@@ -3905,24 +3952,24 @@ async function handleRunAttach(
   }
 
   const resourceKind = run.kind === "method-run" ? "model" : "workflow";
-  const localFields = await resolveRunFields(
+  const resolution = await resolveRunResource(
     ctx,
     resourceKind,
     run.resourceName,
+    run.resourceId,
   );
   if (
-    !authorizeOrReject(
+    !authorizeResolved(
       socket,
       requestId,
       principal,
       "run",
-      {
-        kind: resourceKind,
-        name: run.resourceName,
-        fields: localFields,
-      },
+      resolution,
+      run.resourceName,
+      resourceKind,
       ctx,
-    ).allowed
+      "run_attach_failed",
+    )
   ) return;
 
   send(socket, {

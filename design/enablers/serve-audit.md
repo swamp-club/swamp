@@ -154,8 +154,16 @@ The `access.token.revoke` WebSocket handler audits token revocation under the
 
 Successful `auth.token.used` events hold the token name, principal, source IP
 and ingress metadata, never the secret. They are best-effort and cannot
-interrupt authentication. Token-creation events use the new token's name as the
-resource name.
+interrupt authentication. Like other events, they record the token's principal
+as its kind in `principalKind` and its bare id in `principalId` (a worker token
+`worker:build-1` is `principalKind: "worker"`, `principalId: "build-1"`), with
+the full principal in `initiatedBy`. Query filters (`swamp audit log` and
+`swamp audit export --principal`), alert `match.principal` rules and compliance
+report grouping therefore match these events on the bare id, as they do every
+other event. Events written before swamp-club#2705 hold `principalKind: "user"`
+and the kind-prefixed principal in `principalId` for every token; the audit log
+is append-only and hash-chained, so they keep that shape. Token-creation events
+use the new token's name as the resource name.
 
 ## Trigger events
 

@@ -76,6 +76,129 @@ Deno.test("YamlDefinitionRepository.save and findById roundtrip", async () => {
   });
 });
 
+Deno.test("YamlDefinitionRepository.findById does not answer for another type from its id cache", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("typed-def");
+    const otherType = ModelType.create("test/other-type");
+
+    await repo.save(testType, definition);
+    await repo.findById(testType, definition.id);
+
+    assertEquals(await repo.findById(otherType, definition.id), null);
+    assertEquals(
+      (await repo.findById(testType, definition.id))?.id,
+      definition.id,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete leaves a same-id definition of another type alone", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("kept-def");
+    const otherType = ModelType.create("test/other-type");
+
+    await repo.save(testType, definition);
+    await repo.findById(testType, definition.id);
+    await repo.delete(otherType, definition.id);
+
+    assertEquals(
+      (await repo.findById(testType, definition.id))?.id,
+      definition.id,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findById never returns a definition named with the requested id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const target = createTestDefinition("target-def");
+    // Named with target's id, so its file sits at target's id-named path.
+    const impostor = createTestDefinition(target.id);
+    await repo.save(testType, target);
+    await repo.save(testType, impostor);
+
+    const fresh = new YamlDefinitionRepository(dir);
+    assertEquals((await fresh.findById(testType, target.id))?.id, target.id);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete leaves a definition named with the deleted id alone", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const target = createTestDefinition("target-def");
+    const impostor = createTestDefinition(target.id);
+    await repo.save(testType, target);
+    await repo.save(testType, impostor);
+
+    await new YamlDefinitionRepository(dir).delete(testType, target.id);
+
+    const fresh = new YamlDefinitionRepository(dir);
+    assertEquals(await fresh.findById(testType, target.id), null);
+    assertEquals(
+      (await fresh.findById(testType, impostor.id))?.name,
+      target.id,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findById and delete find a misfiled definition under the type it declares", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const declared = ModelType.create("test/declared-type");
+    const definition = createTestDefinition("misfiled-def");
+    await repo.save(testType, definition);
+    // Filed under testType's directory but declaring another type, as a
+    // hand-edited file can be.
+    const path = repo.getPath(testType, definition.id);
+    await Deno.writeTextFile(
+      path,
+      (await Deno.readTextFile(path)).replace(
+        `type: ${testType.normalized}`,
+        `type: ${declared.normalized}`,
+      ),
+    );
+    await repo.findAll(testType);
+
+    assertEquals(
+      (await repo.findById(declared, definition.id))?.id,
+      definition.id,
+    );
+    assertEquals(await repo.findById(testType, definition.id), null);
+
+    await repo.delete(declared, definition.id);
+    assertEquals(await new YamlDefinitionRepository(dir).findAll(testType), []);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete with a name leaves another definition sharing the id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = createTestDefinition("prod-def");
+    await repo.save(testType, prod);
+    const path = repo.getPath(testType, prod.id);
+    await Deno.writeTextFile(
+      join(dir, "models", testType.toDirectoryPath(), "safe-def.yaml"),
+      (await Deno.readTextFile(path)).replace(
+        "name: prod-def",
+        "name: safe-def",
+      ),
+    );
+    await repo.findByNameGlobal("safe-def");
+    await repo.findByNameGlobal("prod-def");
+
+    await repo.delete(testType, prod.id, "safe-def");
+
+    const fresh = new YamlDefinitionRepository(dir);
+    assertEquals(await fresh.findByNameGlobal("safe-def"), null);
+    assertEquals(
+      (await fresh.findByNameGlobal("prod-def"))?.definition.id,
+      prod.id,
+    );
+  });
+});
+
 Deno.test("YamlDefinitionRepository.findAll skips broken YAML files", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);

@@ -151,19 +151,20 @@ export const issueBugCommand = new Command()
     // (they never touch swamp-club).
     let extensionTarget: UsableExtensionTarget | undefined;
     if (options.extension) {
-      const resolved = await resolveExtensionOrRefuse(
-        ctx,
+      extensionTarget = await resolveExtensionOrRefuse(
         options.extension,
         resolveRepoDir(options.repoDir),
       );
-      if (resolved === null) return; // refusal rendered
-      extensionTarget = resolved;
     }
 
     // Lab auth is only needed for the plain path and the `@swamp/*` path.
     // Third-party repository handoffs skip this step entirely.
     const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
-      ? await resolveDestination(ctx, options.email)
+      ? await resolveDestination(
+        ctx,
+        options.email,
+        extensionTarget !== undefined,
+      )
       : undefined;
     if (destination?.method === "abort") {
       await submitIssue(ctx, destination, {

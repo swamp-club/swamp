@@ -25,7 +25,13 @@ const logger = getSwampLogger(["serve", "active-run-tracker"]);
 
 export interface ActiveRunRecord {
   instanceId: string;
+  /** The canonical name of the model or workflow the run was authorized on. */
   resourceName: string;
+  /**
+   * The id of that model or workflow, when it resolved. Optional: records
+   * written by older instances carry only a name.
+   */
+  resourceId?: string;
   runKind: RunKind;
   startedAt: string;
 }

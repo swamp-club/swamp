@@ -21,6 +21,8 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   assertOffLoopbackSecurity,
+  authorizeCancelRequest,
+  type CancelAuthorizationRequest,
   cancelExecution,
   cancelSuccessBody,
   collectServeExtraArgs,
@@ -42,6 +44,12 @@ import { RunEventBuffer } from "../../serve/run_event_buffer.ts";
 import { UserError } from "../../domain/errors.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
+import type {
+  AccessDecision,
+  AccessDecisionService,
+} from "../../domain/access/access_decision_service.ts";
+import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -1495,3 +1503,158 @@ Deno.test("cancelExecution: does not re-check a run still registered after the g
   assertEquals(result.status, "cancellation_requested");
   assertEquals(calls, 0);
 });
+
+// ── HTTP cancel authorization (swamp-club#2651) ──────────────────────
+
+interface CancelAuthHarness {
+  events: AuditEvent[];
+  asked: Parameters<AccessDecisionService["decide"]>[];
+  loader: Pick<PolicySnapshotLoader, "decisionService">;
+}
+
+/** A policy whose admin decision is `effect`, or no match for null. */
+function cancelAuthHarness(
+  effect: AccessDecision["effect"] | null,
+): CancelAuthHarness {
+  const events: AuditEvent[] = [];
+  const asked: CancelAuthHarness["asked"] = [];
+  const decisionService = {
+    decide: (...args: Parameters<AccessDecisionService["decide"]>) => {
+      asked.push(args);
+      return effect === null ? null : { effect } as AccessDecision;
+    },
+  };
+  return {
+    events,
+    asked,
+    loader: { decisionService } as unknown as CancelAuthHarness["loader"],
+  };
+}
+
+function cancelAuthCtx(events: AuditEvent[]) {
+  return {
+    instanceId: "inst-1",
+    resolvedUserNames: { "u-1": "alice" },
+    auditEmitter: { emit: (e: AuditEvent) => events.push(e) },
+  } as unknown as Parameters<typeof authorizeCancelRequest>[0];
+}
+
+const cancelAuthRequest: CancelAuthorizationRequest = {
+  principal: { kind: "user", id: "u-1" },
+  collectives: ["acme"],
+  groups: ["ops"],
+  sourceIp: "10.0.0.1",
+  execution: { type: "workflow-run", id: "run-1" },
+};
+
+Deno.test("authorizeCancelRequest: refuses without a policy snapshot and audits the refusal", async () => {
+  const events: AuditEvent[] = [];
+
+  const response = authorizeCancelRequest(
+    cancelAuthCtx(events),
+    undefined,
+    cancelAuthRequest,
+  );
+
+  assertEquals(response?.status, 403);
+  assertEquals(await response?.json(), {
+    status: "error",
+    message:
+      "Authorization enforcement is enabled but no policy snapshot is available",
+  });
+  assertEquals(events.length, 1);
+  assertEquals(events[0].outcome, "denied");
+  assertEquals(events[0].detail, "access_not_configured");
+  assertEquals(events[0].initiatedBy, "user:alice");
+});
+
+for (const effect of ["deny", null] as const) {
+  Deno.test(`authorizeCancelRequest: refuses a caller without admin (decision ${effect}) and audits the refusal`, async () => {
+    const h = cancelAuthHarness(effect);
+
+    const response = authorizeCancelRequest(
+      cancelAuthCtx(h.events),
+      h.loader,
+      cancelAuthRequest,
+    );
+
+    assertEquals(response?.status, 403);
+    assertEquals(await response?.json(), {
+      status: "error",
+      message: "Access denied: cancel requires admin permission",
+    });
+    assertEquals(h.asked, [[
+      {
+        principal: { kind: "user", id: "u-1" },
+        collectives: ["acme"],
+        groups: ["ops"],
+      },
+      "admin",
+      { kind: "access", name: "*", fields: {} },
+    ]]);
+    assertEquals(refusalFields(h), [{
+      action: "cancel",
+      resourceKind: "workflow",
+      resourceName: "run-1",
+      outcome: "denied",
+      detail: "admin required",
+      principalId: "u-1",
+      initiatedBy: "user:alice",
+      sourceIp: "10.0.0.1",
+    }]);
+  });
+}
+
+Deno.test("authorizeCancelRequest: audits a refused method-run and bulk cancel against their own targets", () => {
+  const h = cancelAuthHarness("deny");
+
+  authorizeCancelRequest(cancelAuthCtx(h.events), h.loader, {
+    ...cancelAuthRequest,
+    execution: { type: "method-run", id: "run-2" },
+  });
+  authorizeCancelRequest(cancelAuthCtx(h.events), h.loader, {
+    ...cancelAuthRequest,
+    execution: undefined,
+  });
+
+  assertEquals(
+    refusalFields(h).map(({ action, resourceKind, resourceName }) => ({
+      action,
+      resourceKind,
+      resourceName,
+    })),
+    [
+      { action: "cancel", resourceKind: "model", resourceName: "run-2" },
+      { action: "cancel.all", resourceKind: "execution", resourceName: "*" },
+    ],
+  );
+});
+
+Deno.test("authorizeCancelRequest: lets an admin through without auditing", () => {
+  const h = cancelAuthHarness("allow");
+
+  const response = authorizeCancelRequest(
+    cancelAuthCtx(h.events),
+    h.loader,
+    cancelAuthRequest,
+  );
+
+  assertEquals(response, undefined);
+  assertEquals(h.asked.length, 1);
+  assertEquals(h.asked[0][1], "admin");
+  assertEquals(h.events, []);
+});
+
+/** The audited fields a cancel refusal sets. */
+function refusalFields(h: CancelAuthHarness) {
+  return h.events.map((e) => ({
+    action: e.action,
+    resourceKind: e.resourceKind,
+    resourceName: e.resourceName,
+    outcome: e.outcome,
+    detail: e.detail,
+    principalId: e.principalId,
+    initiatedBy: e.initiatedBy,
+    sourceIp: e.sourceIp,
+  }));
+}

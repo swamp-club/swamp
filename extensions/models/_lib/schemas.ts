@@ -60,6 +60,23 @@ export type Phase = z.infer<typeof Phase>;
 /** Minimum time (ms) between link_pr and pr_merged/pr_failed to allow CI to run. */
 export const PR_COOLDOWN_MS = 3 * 60 * 1000;
 
+/**
+ * Phases in which other issues can be linked to or unlinked from this one:
+ * from the start of triage until the primary ships. Once it has shipped,
+ * a late duplicate is handled by `mark_duplicate` on its own lifecycle.
+ */
+const LINKABLE_PHASES: Phase[] = [
+  "triaging",
+  "classified",
+  "plan_generated",
+  "approved",
+  "implementing",
+  "verifying",
+  "pr_open",
+  "pr_failed",
+  "releasing",
+];
+
 /** Valid transitions: method name → allowed source phases */
 export const TRANSITIONS: Record<string, Phase[]> = {
   start: [
@@ -96,6 +113,9 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   notify: ["notify"],
   skip_notify: ["notify"],
   summarize: ["summarizing"],
+  link_issue: LINKABLE_PHASES,
+  unlink_issue: LINKABLE_PHASES,
+  mark_duplicate: ["triaging", "classified"],
 };
 
 // ---------------------------------------------------------------------------
@@ -467,6 +487,66 @@ export const PullRequestSchema = z.object({
 
 export type PullRequestData = z.infer<typeof PullRequestSchema>;
 
+// ---------------------------------------------------------------------------
+// Linked Issues and Duplicates
+// ---------------------------------------------------------------------------
+
+/**
+ * How a linked issue relates to the primary. `related_to` is shown as
+ * "Sibling of" in swamp-club; `duplicate_of` points from the linked issue
+ * (the duplicate) to the primary (the canonical issue).
+ */
+export const LinkRelationship = z.enum(["related_to", "duplicate_of"]);
+export type LinkRelationship = z.infer<typeof LinkRelationship>;
+
+export const LinkedIssueSchema = z.object({
+  issueNumber: z.number(),
+  relationship: LinkRelationship,
+  title: z.string(),
+  author: z.string().optional(),
+  authorId: z.string().optional(),
+  reason: z.string().optional(),
+  linkedAt: z.string(),
+});
+
+export type LinkedIssueData = z.infer<typeof LinkedIssueSchema>;
+
+export const LinkedIssuesSchema = z.object({
+  issues: z.array(LinkedIssueSchema).describe(
+    "Issues this lifecycle carries alongside its own. Each one follows the " +
+      "primary issue's swamp-club status and is named in notify and " +
+      "summarize.",
+  ),
+  updatedAt: z.string(),
+});
+
+export type LinkedIssuesData = z.infer<typeof LinkedIssuesSchema>;
+
+export const DuplicateSchema = z.object({
+  canonicalIssueNumber: z.number().describe(
+    "The shipped issue this one duplicates.",
+  ),
+  canonicalTitle: z.string().describe(
+    "Kept locally only — never sent to the duplicate, since the canonical " +
+      "issue may be restricted to admins.",
+  ),
+  canonicalPrUrl: z.string().optional().describe(
+    "The pull request that fixed the canonical issue, when one was found.",
+  ),
+  reason: z.string(),
+  markedAt: z.string(),
+});
+
+export type DuplicateData = z.infer<typeof DuplicateSchema>;
+
+export const LinkedOutcomeSchema = z.object({
+  issueNumber: z.number(),
+  deliveredOutcome: z.string().min(1),
+  outcomeMet: z.boolean(),
+});
+
+export type LinkedOutcomeData = z.infer<typeof LinkedOutcomeSchema>;
+
 export const SummarySchema = z.object({
   originalProblem: z.string().describe(
     "Plain-language restatement of the bug or feature request from the issue.",
@@ -476,6 +556,9 @@ export const SummarySchema = z.object({
   ),
   outcomeMet: z.boolean().describe(
     "Whether the delivered outcome addresses the original problem.",
+  ),
+  linkedOutcomes: z.array(LinkedOutcomeSchema).optional().describe(
+    "One outcome per linked issue, when the lifecycle carried any.",
   ),
   summarizedAt: z.string(),
 });

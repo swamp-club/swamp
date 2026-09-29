@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import "../../domain/vaults/vault_types.ts";
 import { buildMarkDirtyHook } from "../../cli/repo_context.ts";
@@ -591,6 +591,71 @@ Deno.test("handleVaultMigrate: marks the new and the old config path before the 
     });
   } finally {
     vaultTypeRegistry.invalidateType(targetType);
+  }
+});
+
+Deno.test("handleVaultMigrate: refuses a local_encryption target naming its own key source (swamp-club#2690)", async () => {
+  const sourceType = `@test/migrate-source-${crypto.randomUUID()}`;
+  vaultTypeRegistry.register({
+    type: sourceType,
+    name: "Migrate source",
+    description: "In-memory vault for the migrate key-source test",
+    isBuiltIn: false,
+    createProvider: (name) => new MockVaultProvider(name),
+  });
+  try {
+    await withTempDir(async (dir) => {
+      const { datastoreResolver, ctx, cleanup } = await createSyncRepo(
+        dir,
+        true,
+      );
+      try {
+        const vaultsDir = join(
+          datastoreResolver.resolvePath("config"),
+          "vaults",
+        );
+        const sourcePath = join(vaultsDir, sourceType, "source-vault-id.yaml");
+        await ensureDir(dirname(sourcePath));
+        await Deno.writeTextFile(
+          sourcePath,
+          stringifyYaml({
+            id: "source-vault-id",
+            name: "source-vault",
+            type: sourceType,
+            config: {},
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        const outsideKey = join(dir, "outside", "key");
+        const socket = createMockSocket();
+
+        await handleVaultMigrate(
+          socket,
+          ctx,
+          "req-migrate",
+          {
+            vaultName: "source-vault",
+            targetType: "local_encryption",
+            targetConfig: { auto_generate: true, key_file: outsideKey },
+          },
+          new AbortController(),
+          null,
+        );
+
+        const frame = JSON.parse(socket.sent[0]);
+        assertEquals(frame.type, "error");
+        assertStringIncludes(frame.error.message, "Cannot set key_file");
+        await Deno.stat(sourcePath);
+        assert(
+          !(await Deno.stat(outsideKey).then(() => true, () => false)),
+          "no key file should be written outside the repo",
+        );
+      } finally {
+        cleanup();
+      }
+    });
+  } finally {
+    vaultTypeRegistry.invalidateType(sourceType);
   }
 });
 

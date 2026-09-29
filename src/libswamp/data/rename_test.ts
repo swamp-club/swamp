@@ -180,3 +180,50 @@ Deno.test("dataRename: yields error when rename service fails", async () => {
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "validation_failed");
 });
+
+Deno.test("dataRename: forwards byId to the rename service", async () => {
+  const calls: Array<{ modelIdOrName: string; byId: boolean | undefined }> = [];
+  const base = makeDeps();
+  const deps = makeDeps({
+    rename: (modelIdOrName, oldName, newName, byId) => {
+      calls.push({ modelIdOrName, byId });
+      return base.rename(modelIdOrName, oldName, newName);
+    },
+  });
+
+  const events = await collect<DataRenameEvent>(
+    dataRename(createLibSwampContext(), deps, {
+      modelIdOrName: "00000000-0000-4000-8000-000000000001",
+      oldName: "old-data",
+      newName: "new-data",
+      byId: true,
+    }),
+  );
+
+  assertEquals(events[1].kind, "completed");
+  assertEquals(calls, [{
+    modelIdOrName: "00000000-0000-4000-8000-000000000001",
+    byId: true,
+  }]);
+});
+
+Deno.test("dataRename: leaves byId unset when the caller does not pass it", async () => {
+  const calls: Array<boolean | undefined> = [];
+  const base = makeDeps();
+  const deps = makeDeps({
+    rename: (modelIdOrName, oldName, newName, byId) => {
+      calls.push(byId);
+      return base.rename(modelIdOrName, oldName, newName);
+    },
+  });
+
+  await collect<DataRenameEvent>(
+    dataRename(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      oldName: "old-data",
+      newName: "new-data",
+    }),
+  );
+
+  assertEquals(calls, [undefined]);
+});

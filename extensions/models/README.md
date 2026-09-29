@@ -140,6 +140,9 @@ swamp model output search issue-42 --json
 | `approve`            | Lock the plan and transition to in_progress     | plan_generated -> approved       |
 | `implement`          | Signal implementation started                   | approved -> implementing         |
 | `complete`           | Mark lifecycle done                             | implementing -> done             |
+| `link_issue`         | Carry another issue with this lifecycle         | no change                        |
+| `unlink_issue`       | Stop carrying a linked issue                    | no change                        |
+| `mark_duplicate`     | Ship as a duplicate of a shipped issue          | triaging/classified -> notify    |
 
 ## Data stored
 
@@ -154,6 +157,8 @@ and a new feedback version. You can review any prior version.
 | `plan`              | Implementation plan (versioned per iteration) |
 | `feedback`          | Human feedback (versioned per round)          |
 | `adversarialReview` | Adversarial review findings for current plan  |
+| `linkedIssues`      | Issues carried with this one (`link_issue`)   |
+| `duplicate`         | Canonical issue and PR (`mark_duplicate`)     |
 
 ## Swamp Club Integration
 
@@ -194,6 +199,11 @@ Status transitions in swamp-club:
 | `triage`   | triaged           |
 | `approve`  | in_progress       |
 | `complete` | shipped           |
+
+`link_pr` also records the PR on the swamp-club issue. Issues linked with
+`link_issue` follow these transitions with the primary issue and get its PR;
+`mark_duplicate` walks a duplicate to `shipped` with the canonical issue's PR.
+See `.claude/skills/issue-lifecycle/references/linked-issues.md`.
 
 ### Setup
 

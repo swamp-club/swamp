@@ -47,6 +47,7 @@ import {
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
+  resolveDisplayPrincipal,
   send,
   setConnectionCollectives,
   setConnectionCompression,
@@ -1226,6 +1227,29 @@ Deno.test("isAuthorized: decides as authorizeOrReject does", () => {
       name,
     );
   }
+});
+
+Deno.test("resolveDisplayPrincipal: names a user by resolved name, else the principal", () => {
+  assertEquals(resolveDisplayPrincipal(makePrincipal("u-1"), {}), "user:u-1");
+  assertEquals(
+    resolveDisplayPrincipal(makePrincipal("u-1"), {
+      resolvedUserNames: { "u-1": "alice" },
+    }),
+    "user:alice",
+  );
+  assertEquals(
+    resolveDisplayPrincipal(makePrincipal("u-1"), {
+      resolvedUserNames: { "u-2": "bob" },
+    }),
+    "user:u-1",
+  );
+  // Only user principals are looked up by name.
+  assertEquals(
+    resolveDisplayPrincipal({ kind: "worker", id: "u-1" }, {
+      resolvedUserNames: { "u-1": "alice" },
+    }),
+    "worker:u-1",
+  );
 });
 
 Deno.test("cancelActor: names the principal, its resolved user name, or anonymous", () => {

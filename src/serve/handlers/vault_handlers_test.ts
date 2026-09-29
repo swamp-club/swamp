@@ -986,3 +986,177 @@ Deno.test("handleVaultEdit: an admin repairs one broken vault while another is b
     assertEquals(await readRaw(otherId), BROKEN_YAML);
   });
 });
+
+// --- local_encryption key source over serve (swamp-club#2690) ---
+
+/** Runs one vault.create request against a repo with no datastore sync. */
+async function runVaultCreateWith(
+  repoDir: string,
+  payload: Parameters<typeof handleVaultCreate>[3],
+): Promise<{
+  frames: Array<Record<string, unknown> & { type: string }>;
+  vaults: VaultConfig[];
+}> {
+  const repoContext = createRepositoryContext({
+    repoDir,
+    enableIndexing: false,
+  });
+  try {
+    const socket = createMockSocket();
+    await handleVaultCreate(
+      socket,
+      { ...createAnnotateCtx(repoDir), repoContext },
+      "req-create",
+      payload,
+      new AbortController(),
+      null,
+    );
+    return {
+      frames: socket.sent.map((raw) => JSON.parse(raw)),
+      vaults: await repoContext.vaultConfigRepo.findAll(),
+    };
+  } finally {
+    repoContext.catalogStore.close();
+  }
+}
+
+Deno.test("handleVaultCreate: refuses a local_encryption config naming its own key source", async () => {
+  for (
+    const config of [
+      { base_dir: "/tmp/outside" },
+      { key_file: "/tmp/outside/key" },
+      { ssh_key_path: "~/.ssh/id_ed25519" },
+      { auto_generate: false },
+    ]
+  ) {
+    await withTempDir(async (dir) => {
+      const field = Object.keys(config)[0];
+      for (const vaultType of ["local_encryption", "LOCAL_ENCRYPTION"]) {
+        const { frames, vaults } = await runVaultCreateWith(dir, {
+          vaultType,
+          name: "remote-vault",
+          config,
+        });
+
+        assertEquals(frames.length, 1);
+        const error = frames[0].error as { code: string; message: string };
+        assertEquals(error.code, "vault_create_failed");
+        assertStringIncludes(error.message, `Cannot set ${field}`);
+        assertEquals(vaults, []);
+      }
+    });
+  }
+});
+
+Deno.test("handleVaultCreate: a local_encryption config without a key source gets the server's", async () => {
+  await withTempDir(async (dir) => {
+    const { frames, vaults } = await runVaultCreateWith(dir, {
+      vaultType: "local_encryption",
+      name: "remote-vault",
+      config: {},
+    });
+
+    assertEquals(frames[0].type, "vault.create");
+    assertEquals(vaults.length, 1);
+    assertEquals(vaults[0].config, { auto_generate: true, base_dir: dir });
+  });
+});
+
+function keyedVault(name: string, repoDir: string): VaultConfig {
+  return VaultConfig.create(
+    crypto.randomUUID(),
+    name,
+    "local_encryption",
+    { auto_generate: true, base_dir: repoDir },
+  );
+}
+
+Deno.test("handleVaultEdit: refuses a change to a local_encryption key source and writes nothing", async () => {
+  for (
+    const change of [
+      { base_dir: "/tmp/outside" },
+      { key_file: "/tmp/outside/key" },
+      { ssh_key_path: "~/.ssh/id_ed25519" },
+      { auto_generate: false },
+    ]
+  ) {
+    await withTempDir(async (dir) => {
+      const repoDir = join(dir, "repo");
+      const vault = keyedVault("keyed-vault", repoDir);
+      const field = Object.keys(change)[0];
+
+      const { frames, read } = await runVaultEdit(
+        repoDir,
+        join(dir, "cache"),
+        [vault],
+        () => ({
+          vaultNameOrId: "keyed-vault",
+          content: vaultYaml(vault, { config: { ...vault.config, ...change } }),
+        }),
+      );
+
+      assertEquals(frames.length, 1);
+      const error = frames[0].error as { code: string; message: string };
+      assertEquals(error.code, "vault_edit_failed");
+      assertStringIncludes(error.message, `Cannot change ${field} of vault`);
+      assertEquals((await read(vault.id))?.config, vault.config);
+    });
+  }
+});
+
+Deno.test("handleVaultEdit: a round-trip that keeps the key source can rename the vault", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const vault = keyedVault("keyed-vault", repoDir);
+
+    const { frames, read } = await runVaultEdit(
+      repoDir,
+      join(dir, "cache"),
+      [vault],
+      () => ({
+        vaultNameOrId: "keyed-vault",
+        content: vaultYaml(vault, { name: "renamed-vault", auditReads: true }),
+      }),
+    );
+
+    assertEquals(frames[0].type, "vault.edit");
+    const saved = await read(vault.id);
+    assertEquals(saved?.name, "renamed-vault");
+    assertEquals(saved?.auditReads, true);
+    assertEquals(saved?.config, vault.config);
+  });
+});
+
+Deno.test("handleVaultEdit: a repair gets the server's key source and refuses its own", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const refused = await runVaultEdit(
+      repoDir,
+      join(dir, "cache"),
+      [],
+      () => ({
+        vaultNameOrId: BROKEN_ID,
+        vaultType: "local_encryption",
+        content:
+          "name: fixed-vault\ntype: local_encryption\nconfig:\n  key_file: /tmp/k\n",
+      }),
+      { grants: [vaultGrant({}), ADMIN_GRANT], brokenIds: [BROKEN_ID] },
+    );
+    const error = refused.frames[0].error as { message: string };
+    assertStringIncludes(error.message, "Cannot set key_file");
+    assertEquals(await refused.readRaw(BROKEN_ID), BROKEN_YAML);
+
+    const { frames, read } = await runVaultEdit(
+      repoDir,
+      join(dir, "cache"),
+      [],
+      repairPayload("fixed-vault"),
+      { grants: [vaultGrant({}), ADMIN_GRANT], brokenIds: [BROKEN_ID] },
+    );
+    assertEquals(frames[0].type, "vault.edit");
+    assertEquals((await read(BROKEN_ID))?.config, {
+      auto_generate: true,
+      base_dir: repoDir,
+    });
+  });
+});

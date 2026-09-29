@@ -231,3 +231,19 @@ Deno.test("createTriggerAuthorizer: runs the configured id, not a same-named wor
   assertEquals(result.resource.name, "deploy");
   assertEquals(result.resource.fields, { name: "deploy" });
 });
+
+Deno.test("createTriggerAuthorizer: reports the id of the workflow it decided on", async () => {
+  const authorize = createTriggerAuthorizer({
+    authMode: "token",
+    policySnapshotLoader: loaderWith([]),
+    workflowRepo: repoWith([deploy]),
+  });
+  assertEquals(
+    (await authorize(WEBHOOK_PRINCIPAL, "deploy")).workflowId,
+    deploy.id,
+  );
+  assertEquals(
+    (await authorize(WEBHOOK_PRINCIPAL, "missing")).workflowId,
+    undefined,
+  );
+});

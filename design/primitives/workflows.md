@@ -766,6 +766,14 @@ Workflows live in `workflows/workflow-{name}.yaml` (legacy
 `workflow-{uuid}.yaml` files are also supported). Each has a unique id, a
 globally unique name, a set of jobs, and optional workflow inputs.
 
+A workflow reference — a CLI argument, a `workflowIdOrName` — resolves by name
+first, then by exact id, the same rule as model definitions
+(`src/domain/workflows/workflow_lookup.ts`). A name may be a UUID, so a
+workflow named with another workflow's id wins over the workflow with that id.
+Only a file that declares an id is returned for that id, even though a
+workflow named with the UUID is stored at the same `workflow-{uuid}.yaml`
+path.
+
 ### Workflow Inputs
 
 Like model definitions, workflows can declare their own inputs (workflow
@@ -1381,7 +1389,11 @@ in progress it travels as the abort reason passed to the registry that held it
 (`ActiveRunRegistry`, `RunCancelRegistry`, or the scheduled runs); the executor
 records the abort reason as `cancel_reason`. `cancelActor`,
 `cancelReasonFor` and `emitRunCancelAudit` in `src/serve/handlers/shared.ts`
-build both.
+build both. `cancelActor` names the principal through
+`resolveDisplayPrincipal`, as every serve audit event's `initiatedBy` does, so
+the two cannot name a caller differently. The HTTP endpoint's `admin` check
+and its `denied` audit are `authorizeCancelRequest` in
+`src/cli/commands/serve.ts`.
 
 Over WebSocket, the `workflow.cancel` request (`runId`, optional
 `workflowIdOrName` and `reason`) cancels a run in `ActiveRunRegistry` (one

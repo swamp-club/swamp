@@ -463,10 +463,31 @@ Deno.test("authenticateServerToken: emits a secret-free audit event after succes
   assertEquals(events.length, 1);
   assertEquals(events[0].action, "auth.token.used");
   assertEquals(events[0].resourceName, "test-token");
-  assertEquals(events[0].principalId, "user:test-user");
+  assertEquals(events[0].principalKind, "user");
+  assertEquals(events[0].principalId, "test-user");
+  assertEquals(events[0].initiatedBy, "user:test-user");
   assertEquals(events[0].sourceIp, "192.0.2.1");
   assertEquals(events[0].detail, "websocket:bearer");
   assertEquals(JSON.stringify(events[0]).includes("secret-value"), false);
+});
+
+Deno.test("authenticateServerToken: audits a worker token with its own principal kind", async () => {
+  const events: AuditEvent[] = [];
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve(activeToken({ principalId: "worker:runner-1" })),
+    }),
+    events,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(events.length, 1);
+  assertEquals(events[0].action, "auth.token.used");
+  assertEquals(events[0].principalKind, "worker");
+  assertEquals(events[0].principalId, "runner-1");
+  assertEquals(events[0].initiatedBy, "worker:runner-1");
 });
 
 Deno.test("authenticateServerToken: ignores audit-emitter errors", async () => {

@@ -918,3 +918,86 @@ Deno.test("isWorkflowEvaluateAllData: returns true for AllData, false for ItemDa
   };
   assertEquals(isWorkflowEvaluateAllData(itemData), false);
 });
+
+/**
+ * Deps holding `target` and an impostor workflow named with `target`'s id,
+ * recording which workflow was saved.
+ */
+function makeCollidingDeps(): {
+  deps: WorkflowEvaluateDeps;
+  target: Workflow;
+  impostor: Workflow;
+  saved: string[];
+} {
+  const target = makeWorkflow({
+    id: crypto.randomUUID(),
+    name: "target-workflow",
+  });
+  const impostor = makeWorkflow({ id: crypto.randomUUID(), name: target.id });
+  const workflows = [target, impostor];
+  const saved: string[] = [];
+  return {
+    target,
+    impostor,
+    saved,
+    deps: makeDeps({
+      findWorkflowByName: (name) =>
+        Promise.resolve(workflows.find((w) => w.name === name) ?? null),
+      findWorkflowById: (id) =>
+        Promise.resolve(workflows.find((w) => w.id === id) ?? null),
+      saveEvaluatedWorkflow: (workflow) => {
+        saved.push(workflow.id);
+        return Promise.resolve();
+      },
+    }),
+  };
+}
+
+Deno.test("workflowEvaluate: byId evaluates the workflow whose id matches, not one named with that id", async () => {
+  const { deps, target, saved } = makeCollidingDeps();
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: target.id,
+      inputs: {},
+      byId: true,
+    }),
+  );
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals((last.data as WorkflowEvaluateItemData).name, target.name);
+  }
+  assertEquals(saved, [target.id]);
+});
+
+Deno.test("workflowEvaluate: without byId a workflow named with the id wins", async () => {
+  const { deps, target, impostor, saved } = makeCollidingDeps();
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: target.id,
+      inputs: {},
+    }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(saved, [impostor.id]);
+});
+
+Deno.test("workflowEvaluate: byId does not fall back to a name lookup", async () => {
+  const { deps, saved } = makeCollidingDeps();
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "target-workflow",
+      inputs: {},
+      byId: true,
+    }),
+  );
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, "not_found");
+  }
+  assertEquals(saved, []);
+});

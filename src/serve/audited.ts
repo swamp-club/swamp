@@ -20,11 +20,12 @@
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditCategory } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
+import type { Principal } from "../domain/access/principal.ts";
 import {
-  type Principal,
-  principalToString,
-} from "../domain/access/principal.ts";
-import { clearRequestErrored, wasRequestErrored } from "./handlers/shared.ts";
+  clearRequestErrored,
+  resolveDisplayPrincipal,
+  wasRequestErrored,
+} from "./handlers/shared.ts";
 
 export interface AuditedOptions {
   readonly emitter: AuditEmitter | undefined;
@@ -49,14 +50,10 @@ export function audited(
 
   const principalKind = options.principal?.kind ?? "anonymous";
   const principalId = options.principal?.id ?? "anonymous";
-  const resolvedName = options.principal?.kind === "user" &&
-      options.resolvedUserNames?.[options.principal.id]
-    ? options.resolvedUserNames[options.principal.id]
-    : null;
   const initiatedBy = options.principal
-    ? (resolvedName
-      ? `user:${resolvedName}`
-      : principalToString(options.principal))
+    ? resolveDisplayPrincipal(options.principal, {
+      resolvedUserNames: options.resolvedUserNames,
+    })
     : "ghost";
 
   return handler.then(() => {

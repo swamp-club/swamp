@@ -114,6 +114,11 @@ export interface ModelEditInput {
    */
   byId?: boolean;
   /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a definition with this name and the id is accepted.
+   */
+  expectedName?: string;
+  /**
    * Called before every stdin update is saved, with the stored and the edited
    * definition. Returning false leaves the file untouched. Serve uses it to
    * authorize the edited definition; it runs on every save, not only when the
@@ -132,6 +137,7 @@ export interface ModelEditDeps {
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   lookupDefinitionById: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   resolveSymlink: (name: string) => Promise<string | null>;
   getDefinitionPath: (type: ModelType, id: DefinitionId) => string;
@@ -159,7 +165,8 @@ export function createModelEditDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     resolveSymlink: async (name) => {
       const symlinkPath = join(repoDir, "models", name, "definition.yaml");
       try {
@@ -203,7 +210,7 @@ export async function* modelEdit(
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
       try {
         const result = input.byId
-          ? await deps.lookupDefinitionById(modelIdOrName)
+          ? await deps.lookupDefinitionById(modelIdOrName, input.expectedName)
           : await deps.lookupDefinition(modelIdOrName);
         if (result) {
           definition = result.definition;

@@ -77,8 +77,8 @@ export class CompositeWorkflowRepository implements WorkflowRepository {
     await this.primary.save(workflow);
   }
 
-  async delete(id: WorkflowId): Promise<void> {
-    await this.primary.delete(id);
+  async delete(id: WorkflowId, name?: string): Promise<void> {
+    await this.primary.delete(id, name);
   }
 
   nextId(): WorkflowId {

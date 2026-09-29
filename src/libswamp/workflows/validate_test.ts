@@ -111,15 +111,16 @@ Deno.test("workflowValidate all workflows yields aggregate", async () => {
   assertEquals(isWorkflowValidateAllData(completed.data), true);
 });
 
-Deno.test("workflowValidate by UUID uses findById", async () => {
-  let usedFindById = false;
+Deno.test("workflowValidate by UUID tries the name first, then the id", async () => {
+  const calls: string[] = [];
   const deps = makeDeps({
     findWorkflowById: () => {
-      usedFindById = true;
+      calls.push("id");
       return Promise.resolve(makeWorkflow("wf"));
     },
     findWorkflowByName: () => {
-      throw new Error("should not be called");
+      calls.push("name");
+      return Promise.resolve(null);
     },
   });
   await collect<WorkflowValidateEvent>(
@@ -127,7 +128,66 @@ Deno.test("workflowValidate by UUID uses findById", async () => {
       workflowIdOrName: "550e8400-e29b-41d4-a716-446655440000",
     }),
   );
-  assertEquals(usedFindById, true);
+  assertEquals(calls, ["name", "id"]);
+});
+
+Deno.test("workflowValidate: a workflow named with a UUID wins over the workflow with that id", async () => {
+  const deps = makeDeps({
+    findWorkflowById: () => Promise.resolve(makeWorkflow("by-id")),
+    findWorkflowByName: () => Promise.resolve(makeWorkflow("by-name")),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "550e8400-e29b-41d4-a716-446655440000",
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(
+    (completed.data as WorkflowValidateData).workflowName,
+    "by-name",
+  );
+});
+
+Deno.test("workflowValidate with byId looks up by id only", async () => {
+  const deps = makeDeps({
+    findWorkflowById: () => Promise.resolve(makeWorkflow("by-id")),
+    findWorkflowByName: () => {
+      throw new Error("should not be called");
+    },
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "550e8400-e29b-41d4-a716-446655440000",
+      byId: true,
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals((completed.data as WorkflowValidateData).workflowName, "by-id");
+});
+
+Deno.test("workflowValidate with byId matches a broken workflow file by id only", async () => {
+  const id = "550e8400-e29b-41d4-a716-446655440000";
+  const deps = makeDeps({
+    findWorkflowById: () => Promise.resolve(null),
+    findWorkflowByName: () => Promise.resolve(null),
+    listBrokenWorkflows: () =>
+      Promise.resolve([
+        { file: "/w/workflow-a.yaml", name: id, id: null, error: "bad" },
+      ]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: id,
+      byId: true,
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
 });
 
 Deno.test("workflowValidate: warning does not affect passed aggregation", async () => {

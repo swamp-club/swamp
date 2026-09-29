@@ -45,6 +45,25 @@ The secrets path is computed at runtime by the datastore path resolver. The
 vault configuration stores `base_dir` (the repository root), and the datastore
 layer derives the full path ([datastores](../enablers/datastores.md)).
 
+### Key source over `--server`
+
+`base_dir`, `key_file`, `ssh_key_path` and `auto_generate` decide where a
+`local_encryption` vault reads its key and stores its secrets on the host.
+With `ssh_key_path` unset and `auto_generate` unset or false, the provider reads
+the host's `~/.ssh/id_rsa`, so `auto_generate` is one of them too. These are
+the key-source fields (`src/domain/vaults/local_encryption_key_source.ts`). A
+`swamp serve` client does not own the server's filesystem, so over `--server`:
+
+- `vault edit` must keep each key-source field at its stored value. A repair
+  of a vault whose YAML no longer parses cannot read them, so it gets the
+  server defaults (`auto_generate: true`, `base_dir` the serve repo).
+- `vault create` and `vault migrate` to `local_encryption` refuse any
+  key-source field other than those defaults, and store the defaults.
+
+Errors name the fields, never their values. The libswamp use cases apply the
+rule by default; only the local CLI passes `trustKeySource`, since a local
+user already owns the host (swamp-club#2690).
+
 ## Vault Provider Interface
 
 Every vault implementation must implement `VaultProvider`:
@@ -315,6 +334,9 @@ have their own sections. The group also has:
     because the previous name cannot be read, and keeps a `createdAt` only
     from the new YAML, so it is not trusted afterwards. Over `--server`, a
     repair needs `admin` on `access:*` and `write` on the new name
+  - Over `--server`, a `local_encryption` vault's key-source fields must keep
+    their stored values, and a repair gets the server defaults (see
+    [Key source over `--server`](#key-source-over---server))
 - `swamp vault search [keyword]`: browse configured vaults
 - `swamp vault type-search [keyword]`: browse registered vault types
   (built-in and extension)
@@ -730,7 +752,9 @@ What this repository does for an extension vault type:
   ```
 
   `vault create` accepts only `--config <json>` and `--audit-reads`; there are
-  no provider-specific flags (`src/cli/commands/vault_create.ts`).
+  no provider-specific flags (`src/cli/commands/vault_create.ts`). Over
+  `--server`, a `local_encryption` config cannot name its own key source (see
+  [Key source over `--server`](#key-source-over---server)).
 - **No implicit vaults**: `VaultService.ensureDefaultVaults()` does nothing and
   is kept for its call site. It used to create an AWS vault when credentials
   were present. Vault names starting with `_` are reserved for swamp's own use
@@ -793,6 +817,9 @@ working.
 ```
 swamp vault migrate <vault-name> --to-type <target-type> [--config <json>] [--dry-run]
 ```
+
+Over `--server`, a `local_encryption` target cannot name its own key source
+(see [Key source over `--server`](#key-source-over---server)).
 
 ### How It Works
 

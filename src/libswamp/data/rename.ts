@@ -58,6 +58,17 @@ export interface DataRenameInput {
   modelIdOrName: string;
   oldName: string;
   newName: string;
+  /**
+   * Treat `modelIdOrName` as a definition id the caller already resolved,
+   * and look it up by id only, so the operation acts on the model the caller
+   * authorized.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the model name the caller authorized: ids are not
+   * guaranteed unique, so only a model with this name and the id matches.
+   */
+  expectedName?: string;
 }
 
 /** Dependencies for the data rename operation. */
@@ -66,6 +77,8 @@ export interface DataRenameDeps {
     modelIdOrName: string,
     oldName: string,
     newName: string,
+    byId?: boolean,
+    expectedName?: string,
   ) => Promise<RenameResult>;
 }
 
@@ -93,8 +106,8 @@ export function createDataRenameDeps(
     new YamlDefinitionRepository(repoDir);
   const service = new DataRenameService(dataRepo, definitionRepo);
   return {
-    rename: (modelIdOrName, oldName, newName) =>
-      service.rename(modelIdOrName, oldName, newName),
+    rename: (modelIdOrName, oldName, newName, byId, expectedName) =>
+      service.rename(modelIdOrName, oldName, newName, { byId, expectedName }),
   };
 }
 
@@ -130,6 +143,8 @@ export async function* dataRename(
           input.modelIdOrName,
           input.oldName,
           input.newName,
+          input.byId,
+          input.expectedName,
         );
       } catch (error) {
         yield {

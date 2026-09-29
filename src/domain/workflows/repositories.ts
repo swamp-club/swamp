@@ -48,7 +48,7 @@ export interface WorkflowRepository {
   /**
    * Deletes a workflow.
    */
-  delete(id: WorkflowId): Promise<void>;
+  delete(id: WorkflowId, name?: string): Promise<void>;
 
   /**
    * Generates a new workflow ID.

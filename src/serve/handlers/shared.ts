@@ -1068,11 +1068,7 @@ function emitDenial(
     resourceName: resource.name,
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
-    initiatedBy: principal
-      ? (principal.kind === "user" && ctx.resolvedUserNames?.[principal.id]
-        ? `user:${ctx.resolvedUserNames[principal.id]}`
-        : principalToString(principal))
-      : "ghost",
+    initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",
     sourceIp: getConnectionSourceIp(socket),
     requestId,
     detail,
@@ -1080,9 +1076,14 @@ function emitDenial(
   }));
 }
 
+/**
+ * A principal's display name: `user:<name>` for a user whose id resolved to a
+ * user name, otherwise the principal itself. Audit events' `initiatedBy` and a
+ * cancelled run's `cancel_reason` both use it, so they name a caller alike.
+ */
 export function resolveDisplayPrincipal(
   principal: Principal,
-  ctx: ConnectionContext,
+  ctx: Pick<ConnectionContext, "resolvedUserNames">,
 ): string {
   if (principal.kind === "user" && ctx.resolvedUserNames?.[principal.id]) {
     return `user:${ctx.resolvedUserNames[principal.id]}`;
@@ -1370,10 +1371,7 @@ export function cancelActor(
   ctx: Pick<ConnectionContext, "resolvedUserNames">,
 ): string {
   if (!principal) return "anonymous";
-  if (principal.kind === "user" && ctx.resolvedUserNames?.[principal.id]) {
-    return `user:${ctx.resolvedUserNames[principal.id]}`;
-  }
-  return principalToString(principal);
+  return resolveDisplayPrincipal(principal, ctx);
 }
 
 /** The longest reason a serve cancel request may give, in UTF-16 code units. */
