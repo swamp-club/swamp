@@ -953,14 +953,33 @@ function cancellableRun(
   };
 }
 
-function makeCancelCtx(registry: ActiveRunRegistry): ConnectionContext {
+/**
+ * A cancel context over `deploy`. With `suspendedRunId`, the run repository
+ * holds that run persisted as suspended, as a resume leaves it when it saves
+ * the run at its next gate: the cancel locates it before reserving the id.
+ */
+function makeCancelCtx(
+  registry: ActiveRunRegistry,
+  suspendedRunId?: string,
+): ConnectionContext {
+  const workflow = Workflow.create({ name: "deploy" });
+  const suspended = suspendedRunId === undefined ? [] : [{
+    run: {
+      id: suspendedRunId,
+      workflowId: workflow.id,
+      workflowName: "deploy",
+      status: "suspended",
+    },
+    workflowId: workflow.id,
+  }];
   return {
     authConfig: { ...searchAuthBase, mode: "none" },
     activeRunRegistry: registry,
     repoContext: {
-      workflowRepo: makeWorkflowRepo(
-        new Map([["deploy", Workflow.create({ name: "deploy" })]]),
-      ),
+      workflowRepo: makeWorkflowRepo(new Map([["deploy", workflow]])),
+      workflowRunRepo: {
+        findGlobalByStatus: () => Promise.resolve(suspended),
+      },
     },
   } as unknown as ConnectionContext;
 }
@@ -969,6 +988,7 @@ async function cancelRun(
   registry: ActiveRunRegistry,
   runId: string,
   workflowIdOrName?: string,
+  persistedSuspended = false,
 ): Promise<CancelFrame[]> {
   const frames: CancelFrame[] = [];
   const socket = {
@@ -977,7 +997,7 @@ async function cancelRun(
   } as unknown as WebSocket;
   await handleWorkflowCancel(
     socket,
-    makeCancelCtx(registry),
+    makeCancelCtx(registry, persistedSuspended ? runId : undefined),
     "req-cancel",
     { runId, workflowIdOrName },
     new AbortController(),
@@ -1002,7 +1022,8 @@ Deno.test("handleWorkflowCancel: reports busy when another operation takes the i
   registry.register(run);
 
   try {
-    const frames = await cancelRun(registry, runId);
+    // The aborted resume saved the run suspended at its next gate.
+    const frames = await cancelRun(registry, runId, undefined, true);
 
     assertEquals(abortMessage(run), "cancelled by anonymous");
     assertEquals(frames.length, 1);
@@ -1042,7 +1063,8 @@ Deno.test("handleWorkflowCancel: aborts a run a resume registered again after th
   registry.replacement = replacement;
 
   try {
-    const frames = await cancelRun(registry, runId);
+    // The aborted resume saved the run suspended at its next gate.
+    const frames = await cancelRun(registry, runId, undefined, true);
 
     assertEquals(abortMessage(run), "cancelled by anonymous");
     assertEquals(abortMessage(replacement), "cancelled by anonymous");

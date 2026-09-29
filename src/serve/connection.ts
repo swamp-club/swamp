@@ -177,10 +177,12 @@ import {
   type ConnectionContext,
   emitRunCancelAudit,
   getConnectionSourceIp,
+  isAuthorized,
   isRestrictedCommand,
   MAX_CANCEL_REASON_LENGTH,
   MAX_PREDICATE_LENGTH,
   MAX_QUERY_RESULTS,
+  sanitizeErrorForClient,
   send,
   sendError,
   setConnectionTeardown,
@@ -3802,19 +3804,24 @@ async function handleCancelRun(
     run.resourceName,
     run.resourceId,
   );
-  if (
-    authorizeResolved(
-      socket,
-      requestId,
-      principal,
-      "run",
-      resolution,
-      run.resourceName,
-      resourceKind,
-      ctx,
-      "run_cancel_failed",
-    )
-  ) {
+  // A refusal is silent, like a cancel of an unknown id, so the reply never
+  // confirms the run exists or names its resource (swamp-club#2649). The
+  // denial is still audited. Otherwise this authorizes as authorizeResolved
+  // does: a failed lookup is checked against the recorded name, and only an
+  // allowed caller is told the lookup failed.
+  const resource = resolution.status === "failed"
+    ? unresolvedAccessResource(resourceKind, run.resourceName)
+    : resolution.resource;
+  if (isAuthorized(socket, requestId, principal, "run", resource, ctx)) {
+    if (resolution.status === "failed") {
+      sendError(
+        socket,
+        requestId,
+        "run_cancel_failed",
+        sanitizeErrorForClient(resolution.error),
+      );
+      return;
+    }
     const cancelled = ctx.activeRunRegistry!.cancel(
       requestId,
       cancelReasonFor(cancelActor(principal, ctx)),

@@ -65,7 +65,7 @@ import {
   createWorkflowRunDeps,
   executeWorkflowWithLocks,
 } from "../deps.ts";
-import { withSharedSyncGate, withSyncGate } from "../sync_gate.ts";
+import { withSharedSyncGate } from "../sync_gate.ts";
 import { serializeEvent } from "../serializer.ts";
 import type {
   WorkflowApprovePayload,
@@ -1416,16 +1416,15 @@ export async function handleWorkflowCancel(
     );
   };
   const cancelPersisted = () =>
-    withSyncGate(ctx.syncGate, () =>
-      cancelSuspendedRunAndPush(
-        ctx,
-        {
-          runId: payload.runId,
-          workflowIdOrName: payload.workflowIdOrName,
-          reason,
-        },
-        (workflow) => mayCancel(workflow),
-      ));
+    cancelSuspendedRunAndPush(
+      ctx,
+      {
+        runId: payload.runId,
+        workflowIdOrName: payload.workflowIdOrName,
+        reason,
+      },
+      (workflow) => mayCancel(workflow),
+    );
   const reply = (workflowName: string, status: string) =>
     send(socket, {
       type: "workflow.cancel",

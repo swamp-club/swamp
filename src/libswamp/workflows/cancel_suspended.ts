@@ -31,7 +31,10 @@ import {
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  withGeneratorSpan,
+  withSpan,
+} from "../../infrastructure/tracing/mod.ts";
 
 export interface WorkflowCancelSuspendedData {
   runId: string;
@@ -49,7 +52,26 @@ export interface WorkflowCancelSuspendedInput {
   runId: string;
   /** When given, the run must belong to this workflow (name or id). */
   workflowIdOrName?: string;
+  /**
+   * The id of the workflow {@link locateSuspendedRunToCancel} found the run
+   * in. When given, the run is loaded from that workflow alone and
+   * `workflowIdOrName` is not consulted.
+   */
+  workflowId?: string;
   reason: string;
+}
+
+/** What {@link locateSuspendedRunToCancel} needs to find a run. */
+export type LocateSuspendedRunInput = Pick<
+  WorkflowCancelSuspendedInput,
+  "runId" | "workflowIdOrName"
+>;
+
+/** A run the caller may cancel, as located before anything is changed. */
+export interface LocatedSuspendedRun {
+  /** The id of the workflow whose runs hold the run. */
+  workflowId: string;
+  workflow: CancelTargetWorkflow;
 }
 
 /** The workflow a run belongs to, as the authorize callback sees it. */
@@ -93,6 +115,31 @@ function cancelNotFound(runId: string): SwampError {
 }
 
 /**
+ * Finds the run a cancel names and authorizes the caller against the workflow
+ * it belongs to, without changing anything. Returns null for a missing run, a
+ * run of another workflow than `workflowIdOrName`, and an unauthorized caller
+ * alike, so an id reveals nothing. Needs no claim on the run: a caller that
+ * goes on to cancel passes the returned `workflowId` to
+ * {@link workflowCancelSuspended}, which reads and authorizes the run again
+ * under its claim.
+ */
+export async function locateSuspendedRunToCancel(
+  deps: WorkflowCancelSuspendedDeps,
+  input: LocateSuspendedRunInput,
+): Promise<LocatedSuspendedRun | null> {
+  return await withSpan(
+    "swamp.workflow.cancel_suspended.locate",
+    { "workflow.run_id": input.runId },
+    async () => {
+      const found = await findAuthorizedRun(deps, input);
+      return found
+        ? { workflowId: found.workflowId, workflow: found.target }
+        : null;
+    },
+  );
+}
+
+/**
  * Cancels a persisted suspended run found by its id alone, such as one started
  * by `swamp serve` that no process is driving. The run is loaded, then the
  * caller is authorized against the workflow the run belongs to (never a name
@@ -114,30 +161,12 @@ export async function* workflowCancelSuspended(
     (async function* () {
       yield { kind: "resolving" };
 
-      const found = await findRun(deps, input);
+      const found = await findAuthorizedRun(deps, input);
       if (!found) {
         yield { kind: "error", error: cancelNotFound(input.runId) };
         return;
       }
-      const { run, workflowId } = found;
-
-      const workflow = await deps.workflowRepo.findById(workflowId);
-      const target: CancelTargetWorkflow = {
-        id: run.workflowId,
-        name: workflow?.name ?? run.workflowName,
-      };
-      if (
-        input.workflowIdOrName !== undefined &&
-        input.workflowIdOrName !== target.id &&
-        input.workflowIdOrName !== target.name
-      ) {
-        yield { kind: "error", error: cancelNotFound(input.runId) };
-        return;
-      }
-      if (!(await deps.authorize(target))) {
-        yield { kind: "error", error: cancelNotFound(input.runId) };
-        return;
-      }
+      const { run, workflowId, target } = found;
 
       if (run.status !== "suspended") {
         yield {
@@ -171,10 +200,51 @@ export async function* workflowCancelSuspended(
   );
 }
 
+/**
+ * Loads the run, resolves the workflow it belongs to, and checks it against
+ * `workflowIdOrName` and the caller's authorization, in that order. Null for
+ * any failure, which callers report as not found.
+ */
+async function findAuthorizedRun(
+  deps: WorkflowCancelSuspendedDeps,
+  input: LocateSuspendedRunInput & { workflowId?: string },
+): Promise<
+  | { run: WorkflowRun; workflowId: WorkflowId; target: CancelTargetWorkflow }
+  | null
+> {
+  const found = await findRun(deps, input);
+  if (!found) return null;
+  const { run, workflowId } = found;
+
+  const workflow = await deps.workflowRepo.findById(workflowId);
+  const target: CancelTargetWorkflow = {
+    id: run.workflowId,
+    name: workflow?.name ?? run.workflowName,
+  };
+  if (
+    input.workflowId === undefined &&
+    input.workflowIdOrName !== undefined &&
+    input.workflowIdOrName !== target.id &&
+    input.workflowIdOrName !== target.name
+  ) {
+    return null;
+  }
+  if (!(await deps.authorize(target))) return null;
+  return { run, workflowId, target };
+}
+
 async function findRun(
   deps: WorkflowCancelSuspendedDeps,
-  input: WorkflowCancelSuspendedInput,
+  input: LocateSuspendedRunInput & { workflowId?: string },
 ): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | null> {
+  if (input.workflowId !== undefined) {
+    const workflowId = createWorkflowId(input.workflowId);
+    const run = await deps.runRepo.findById(
+      workflowId,
+      createWorkflowRunId(input.runId),
+    );
+    return run ? { run, workflowId } : null;
+  }
   if (input.workflowIdOrName !== undefined) {
     const workflow =
       await deps.workflowRepo.findByName(input.workflowIdOrName) ??

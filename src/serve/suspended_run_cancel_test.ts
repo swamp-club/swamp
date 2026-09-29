@@ -21,7 +21,6 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   awaitAbortedRun,
   cancelSuspendedRunAndPush,
-  cancelSuspendedRunInServe,
   SUSPENDED_RUN_BUSY_MESSAGE,
 } from "./suspended_run_cancel.ts";
 import { type ActiveRun, ActiveRunRegistry } from "./active_run_registry.ts";
@@ -72,12 +71,14 @@ interface Harness {
 /**
  * A serve context over in-memory repositories holding `runs`, with a real
  * active-run registry and a sync service that counts pushes. `failLoad`
- * makes every run lookup throw.
+ * makes every run lookup throw; `failReread` only the gated re-read of a
+ * located run, which loads it by id from its workflow.
  */
 function harness(
   workflows: Workflow[],
   runs: WorkflowRun[],
-  options: { registry?: boolean; failLoad?: boolean } = {},
+  options: { registry?: boolean; failLoad?: boolean; failReread?: boolean } =
+    {},
 ): Harness {
   const registry = new ActiveRunRegistry();
   const h: Harness = {
@@ -108,10 +109,12 @@ function harness(
       },
       workflowRunRepo: {
         findById: (workflowId: string, runId: string) =>
-          load(
-            runs.find((r) => r.workflowId === workflowId && r.id === runId) ??
-              null,
-          ),
+          options.failReread
+            ? Promise.reject(new Error("repository unavailable"))
+            : load(
+              runs.find((r) => r.workflowId === workflowId && r.id === runId) ??
+                null,
+            ),
         findGlobalByStatus: (status: string) =>
           load(
             runs.filter((r) => r.status === status).map((run) => ({
@@ -144,13 +147,13 @@ function fakeActiveRun(runId: string, completion: Promise<void>): ActiveRun {
 
 const allow = () => true;
 
-Deno.test("cancelSuspendedRunInServe: without a registry reports not found and authorizes nothing", async () => {
+Deno.test("cancelSuspendedRunAndPush: without a registry reports not found and authorizes nothing", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
   const h = harness([wf], [run], { registry: false });
   const asked: CancelTargetWorkflow[] = [];
 
-  const result = await cancelSuspendedRunInServe(
+  const result = await cancelSuspendedRunAndPush(
     h.ctx,
     { runId: run.id, reason: "r" },
     (workflow) => {
@@ -167,13 +170,13 @@ Deno.test("cancelSuspendedRunInServe: without a registry reports not found and a
   assertEquals(h.saved.length, 0);
 });
 
-Deno.test("cancelSuspendedRunInServe: reports a run registered under the id as active", async () => {
+Deno.test("cancelSuspendedRunAndPush: reports a run registered under the id as active", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
   const h = harness([wf], [run]);
   h.registry.register(fakeActiveRun(run.id, Promise.resolve()));
 
-  const result = await cancelSuspendedRunInServe(
+  const result = await cancelSuspendedRunAndPush(
     h.ctx,
     { runId: run.id, reason: "r" },
     allow,
@@ -183,14 +186,14 @@ Deno.test("cancelSuspendedRunInServe: reports a run registered under the id as a
   assertEquals(h.saved.length, 0);
 });
 
-Deno.test("cancelSuspendedRunInServe: reports busy while another operation holds the id", async () => {
+Deno.test("cancelSuspendedRunAndPush: reports busy while another operation holds the id", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
   const h = harness([wf], [run]);
   const release = h.registry.reserve(run.id)!;
 
   try {
-    const result = await cancelSuspendedRunInServe(
+    const result = await cancelSuspendedRunAndPush(
       h.ctx,
       { runId: run.id, reason: "r" },
       allow,
@@ -206,12 +209,12 @@ Deno.test("cancelSuspendedRunInServe: reports busy while another operation holds
   }
 });
 
-Deno.test("cancelSuspendedRunInServe: cancels a suspended run and releases the id", async () => {
+Deno.test("cancelSuspendedRunAndPush: cancels a suspended run and releases the id", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
   const h = harness([wf], [run]);
 
-  const result = await cancelSuspendedRunInServe(
+  const result = await cancelSuspendedRunAndPush(
     h.ctx,
     { runId: run.id, reason: "stuck gate" },
     allow,
@@ -229,13 +232,13 @@ Deno.test("cancelSuspendedRunInServe: cancels a suspended run and releases the i
   release();
 });
 
-Deno.test("cancelSuspendedRunInServe: maps an authorized run that is not suspended to not_suspended", async () => {
+Deno.test("cancelSuspendedRunAndPush: maps an authorized run that is not suspended to not_suspended", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
   run.cancel("earlier");
   const h = harness([wf], [run]);
 
-  const result = await cancelSuspendedRunInServe(
+  const result = await cancelSuspendedRunAndPush(
     h.ctx,
     { runId: run.id, workflowIdOrName: "deploy", reason: "r" },
     allow,
@@ -248,12 +251,18 @@ Deno.test("cancelSuspendedRunInServe: maps an authorized run that is not suspend
   assertEquals(h.saved.length, 0);
 });
 
-Deno.test("cancelSuspendedRunInServe: reports a refused caller as not found and releases the id", async () => {
+Deno.test("cancelSuspendedRunAndPush: reports a refused caller as not found without reserving the id or pushing", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
   const h = harness([wf], [run]);
+  let reservations = 0;
+  const reserve = h.registry.reserve.bind(h.registry);
+  h.registry.reserve = (runId: string) => {
+    reservations++;
+    return reserve(runId);
+  };
 
-  const result = await cancelSuspendedRunInServe(
+  const result = await cancelSuspendedRunAndPush(
     h.ctx,
     { runId: run.id, reason: "r" },
     () => false,
@@ -261,19 +270,36 @@ Deno.test("cancelSuspendedRunInServe: reports a refused caller as not found and 
 
   assertEquals(result.status, "not_found");
   assertEquals(h.saved.length, 0);
-  const release = h.registry.reserve(run.id);
-  assert(release, "the refusal released its reservation");
-  release();
+  assertEquals(reservations, 0);
+  assertEquals(h.pushes, 0);
 });
 
-Deno.test("cancelSuspendedRunInServe: releases the id when loading the run throws", async () => {
+Deno.test("cancelSuspendedRunAndPush: a lookup that throws takes no reservation and pushes nothing", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
   const h = harness([wf], [run], { failLoad: true });
 
   await assertRejects(
     () =>
-      cancelSuspendedRunInServe(h.ctx, { runId: run.id, reason: "r" }, allow),
+      cancelSuspendedRunAndPush(h.ctx, { runId: run.id, reason: "r" }, allow),
+    Error,
+    "repository unavailable",
+  );
+
+  assertEquals(h.pushes, 0);
+  const release = h.registry.reserve(run.id);
+  assert(release, "the failed lookup took no reservation");
+  release();
+});
+
+Deno.test("cancelSuspendedRunAndPush: releases the id when re-reading the run throws", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedRun(wf);
+  const h = harness([wf], [run], { failReread: true });
+
+  await assertRejects(
+    () =>
+      cancelSuspendedRunAndPush(h.ctx, { runId: run.id, reason: "r" }, allow),
     Error,
     "repository unavailable",
   );
@@ -301,7 +327,7 @@ Deno.test("cancelSuspendedRunAndPush: pushes once after the cancel", async () =>
 Deno.test("cancelSuspendedRunAndPush: pushes once and re-throws when the cancel throws", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
-  const h = harness([wf], [run], { failLoad: true });
+  const h = harness([wf], [run], { failReread: true });
 
   await assertRejects(
     () =>
