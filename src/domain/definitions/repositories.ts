@@ -82,6 +82,17 @@ export interface DefinitionRepository {
   ): Promise<{ definition: Definition; type: ModelType } | null>;
 
   /**
+   * Finds a definition by id from where the repository last saw it, without
+   * scanning, with the type the file declares. Optional; null when there is
+   * no such hint or the file no longer declares the id.
+   *
+   * @param id - The definition ID
+   */
+  findByIdCached?(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType } | null>;
+
+  /**
    * Saves a definition.
    *
    * @param type - The model type

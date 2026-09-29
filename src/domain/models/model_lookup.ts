@@ -118,6 +118,11 @@ export async function findDefinitionByIdGlobal(
   if (!isUuid(id)) return null;
   const definitionId = createDefinitionId(id) as DefinitionId;
 
+  // A definition just found by name is usually cached: one read, no scan of
+  // the type directories that come before it in registry order.
+  const cached = await definitionRepo.findByIdCached?.(definitionId);
+  if (cached) return cached;
+
   for (const type of modelRegistry.types()) {
     const definition = await definitionRepo.findById(type, definitionId);
     if (definition) {

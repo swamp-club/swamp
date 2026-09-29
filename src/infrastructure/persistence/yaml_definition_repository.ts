@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { basename, dirname, join } from "@std/path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  SEPARATOR,
+} from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
@@ -152,21 +159,25 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // loaded once is returned for every type it is asked about, and a lookup
     // by id across types reports the wrong type.
     const cachedPath = this.idToActualPath.get(id);
-    if (
-      cachedPath && cachedPath !== legacyPath &&
-      this.isPathOfType(cachedPath, type)
-    ) {
-      try {
-        const content = await Deno.readTextFile(cachedPath);
-        const data = parseYaml(content) as DefinitionData | null;
-        if (data) {
-          const definition = Definition.fromData(data);
-          if (definition.id === id) return definition;
+    if (cachedPath && cachedPath !== legacyPath) {
+      if (this.isPathOfType(cachedPath, type)) {
+        try {
+          const content = await Deno.readTextFile(cachedPath);
+          const data = parseYaml(content) as DefinitionData | null;
+          if (data) {
+            const definition = Definition.fromData(data);
+            if (definition.id === id) return definition;
+          }
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            throw error;
+          }
         }
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
-        }
+      } else if ((await this.readDeclared(cachedPath))?.id === id) {
+        // The definition with this id lives in another type's directory, and
+        // ids are unique, so it is not of this type: answer without scanning
+        // every file of this type.
+        return null;
       }
     }
 
@@ -912,6 +923,51 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /** Whether `path` holds a readable definition that declares an id not `id`. */
+  /**
+   * Returns the definition with this id from the file the repository last
+   * saw it in, without scanning, when that file still declares the id. The
+   * type is the one the file declares, else the directory it is in, as a
+   * lookup by name reports it. Null when there is no such hint.
+   */
+  async findByIdCached(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    const path = this.idToActualPath.get(id);
+    if (!path) return null;
+    const definition = await this.readDeclared(path);
+    if (definition?.id !== id) return null;
+    try {
+      const typeStr = definition.type ?? this.typeDirOf(path);
+      return typeStr ? { definition, type: ModelType.create(typeStr) } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The type path of the definitions directory `path` sits in, if any. */
+  private typeDirOf(path: string): string | undefined {
+    for (const base of [this.baseDir, this.secondaryBaseDir]) {
+      if (!base) continue;
+      const rel = relative(base, dirname(path));
+      if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
+        return rel.split(SEPARATOR).join("/");
+      }
+    }
+    return undefined;
+  }
+
+  /** Parses the definition in `path`, or null if it is missing or invalid. */
+  private async readDeclared(path: string): Promise<Definition | null> {
+    try {
+      const data = parseYaml(await Deno.readTextFile(path)) as
+        | DefinitionData
+        | null;
+      return data ? Definition.fromData(data) : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async declaresOtherId(
     path: string,
     id: DefinitionId,

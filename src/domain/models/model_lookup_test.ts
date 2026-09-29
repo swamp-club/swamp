@@ -358,6 +358,61 @@ Deno.test("findDefinitionByIdGlobal finds an auto-definition of an unregistered 
   });
 });
 
+Deno.test("findDefinitionByIdGlobal answers a definition just found by name without scanning type directories", async () => {
+  await withTempDir(async (dir) => {
+    // Registered after the built-in types, so an uncached lookup would scan
+    // every earlier type's directory first.
+    const type = ModelType.create(
+      `test/late-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type,
+      version: "2026.01.01.1",
+      methods: {
+        noop: {
+          description: "noop",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    try {
+      const repo = new YamlDefinitionRepository(dir);
+      for (let i = 0; i < 5; i++) {
+        await repo.save(
+          ModelType.create("command/shell"),
+          Definition.create({ name: `shell-${i}`, globalArguments: {} }),
+        );
+      }
+      const definition = Definition.create({
+        name: "late-model",
+        globalArguments: {},
+      });
+      await repo.save(type, definition);
+      await findDefinitionByIdOrName(repo, "late-model");
+
+      const scanned: string[] = [];
+      const findAll = repo.findAll.bind(repo);
+      repo.findAll = (t) => {
+        scanned.push(t.normalized);
+        return findAll(t);
+      };
+      const byId = await findDefinitionByIdGlobal(repo, definition.id);
+      const otherType = await repo.findById(
+        ModelType.create("command/shell"),
+        definition.id,
+      );
+
+      assertEquals(byId?.definition.id, definition.id);
+      assertEquals(byId?.type.normalized, type.normalized);
+      assertEquals(otherType, null);
+      assertEquals(scanned, []);
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
 Deno.test("findDefinitionByIdGlobal returns null for a non-UUID without scanning", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
