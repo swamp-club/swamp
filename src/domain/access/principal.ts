@@ -19,9 +19,30 @@
 
 import { z } from "zod";
 
-export const PrincipalKindSchema = z.enum(["user", "worker"]);
+export const PrincipalKindSchema = z.enum(["user", "worker", "service"]);
 
 export type PrincipalKind = z.infer<typeof PrincipalKindSchema>;
+
+/**
+ * The built-in service principals. No other `service:` id exists, so a
+ * misspelt one is refused rather than silently matching nothing.
+ */
+export const SERVICE_PRINCIPAL_IDS = ["scheduler", "webhook"] as const;
+
+export function isServicePrincipalId(id: string): boolean {
+  return (SERVICE_PRINCIPAL_IDS as readonly string[]).includes(id);
+}
+
+/** The valid service principals, as named in error messages. */
+export const SERVICE_PRINCIPAL_CHOICES = SERVICE_PRINCIPAL_IDS.map((id) =>
+  `"service:${id}"`
+).join(" or ");
+
+/** Joins quoted items as `"a", "b" or "c"` for error messages. */
+function describeAlternatives(items: readonly string[]): string {
+  const quoted = items.map((item) => `"${item}"`);
+  return `${quoted.slice(0, -1).join(", ")} or ${quoted[quoted.length - 1]}`;
+}
 
 export const PrincipalSchema = z.object({
   kind: PrincipalKindSchema,
@@ -31,10 +52,24 @@ export const PrincipalSchema = z.object({
 export type Principal = z.infer<typeof PrincipalSchema>;
 
 export function parsePrincipal(value: string): Principal {
+  return parsePrincipalOfKinds(value, PrincipalKindSchema.options);
+}
+
+/**
+ * Parses a principal, accepting only the given kinds. Error messages name
+ * exactly those kinds, so a caller that cannot take every kind (token mint)
+ * never suggests one it would then refuse.
+ */
+export function parsePrincipalOfKinds(
+  value: string,
+  kinds: readonly PrincipalKind[],
+): Principal {
   const colonIndex = value.indexOf(":");
   if (colonIndex === -1) {
     throw new Error(
-      `Invalid principal "${value}": expected "user:<id>" or "worker:<id>"`,
+      `Invalid principal "${value}": expected ${
+        describeAlternatives(kinds.map((k) => `${k}:<id>`))
+      }`,
     );
   }
   const kind = value.slice(0, colonIndex);
@@ -43,9 +78,16 @@ export function parsePrincipal(value: string): Principal {
     throw new Error(`Invalid principal "${value}": id cannot be empty`);
   }
   const parsed = PrincipalKindSchema.safeParse(kind);
-  if (!parsed.success) {
+  if (!parsed.success || !kinds.includes(parsed.data)) {
     throw new Error(
-      `Invalid principal kind "${kind}": expected "user" or "worker"`,
+      `Invalid principal kind "${kind}": expected ${
+        describeAlternatives(kinds)
+      }`,
+    );
+  }
+  if (parsed.data === "service" && !isServicePrincipalId(id)) {
+    throw new Error(
+      `Invalid principal "${value}": expected ${SERVICE_PRINCIPAL_CHOICES}`,
     );
   }
   return { kind: parsed.data, id };

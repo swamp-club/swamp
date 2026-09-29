@@ -17,16 +17,43 @@ decision service and only serve handlers call it. A local `swamp` invocation (no
 
 ## Principals
 
-A principal is the authenticated identity making a request. There are two kinds:
+A principal is the identity a request or run acts as. There are three kinds:
 
-| Kind     | Format        | Source                                          |
-| -------- | ------------- | ----------------------------------------------- |
-| `user`   | `user:<id>`   | OAuth sub claim, or the username on a server token |
-| `worker` | `worker:<id>` | Worker enrollment via the `rpc.enroll` frame    |
+| Kind      | Format           | Source                                              |
+| --------- | ---------------- | --------------------------------------------------- |
+| `user`    | `user:<id>`      | OAuth sub claim, or the username on a server token  |
+| `worker`  | `worker:<id>`    | Worker enrollment via the `rpc.enroll` frame        |
+| `service` | `service:<id>`   | Built in: serve itself, for runs no client started |
 
 Minting a server token rejects any other kind and names the valid ones. A stored
 token whose principal does not parse (minted before that check, or hand-edited)
 is refused at authentication with `401 invalid-principal`.
+
+### Service principals
+
+Serve starts some runs with no client behind them. Those runs act as a built-in
+service principal, recorded as the run's `initiatedBy`:
+
+| Principal           | Runs                                   |
+| ------------------- | -------------------------------------- |
+| `service:scheduler` | Cron fires, and fires replayed at boot |
+| `service:webhook`   | Verified webhook deliveries            |
+
+Service principals exist only in-process. Every token mint path (local CLI,
+`access.token.mint`, the `swamp/server-token` model) refuses a service
+principal, and a stored token naming one is refused at authentication with
+`401 invalid-principal`, so no caller can act as the scheduler or the webhook
+receiver. `--admins` rejects a service principal. A grant or group can still
+name one explicitly; do not give it `admin`, since every scheduled or webhook
+run would then act with it.
+
+Each run is authorized when it starts executing, so a queued or replayed run is
+checked against the current policy (`src/serve/trigger_authorizer.ts`). The
+authorizer resolves the configured workflow once and decides on its canonical
+name and tags, and the run executes that same workflow. A workflow that does not
+resolve is decided on the configured value and fails in execution as before.
+
+Implementation: `src/domain/access/service_principal.ts`.
 
 The principal is resolved once per connection and attached to every request on
 that WebSocket. In `none` auth mode there is no principal and no authorization.
@@ -62,13 +89,14 @@ Implementation: `src/domain/access/admission.ts`.
 
 ## Subjects
 
-A grant targets a _subject_, not a principal. There are three subject kinds:
+A grant targets a _subject_, not a principal. There are four subject kinds:
 
-| Kind        | Format             | Matches when                                    |
-| ----------- | ------------------ | ----------------------------------------------- |
-| `user`      | `user:<name>`      | The principal's `kind:id` matches exactly       |
-| `group`     | `group:<name>`     | The principal is in the named local group       |
+| Kind        | Format             | Matches when                                       |
+| ----------- | ------------------ | -------------------------------------------------- |
+| `user`      | `user:<name>`      | The principal is `user:<name>`                     |
+| `group`     | `group:<name>`     | The principal is in the named local group          |
 | `idp-group` | `idp-group:<name>` | The principal's IdP group claims include the group |
+| `service`   | `service:<name>`   | The principal is the built-in `service:<name>`     |
 
 ### Local groups
 
@@ -80,7 +108,7 @@ resolving subjects is a single map lookup.
 
 For each request, the decision service builds the principal's subject list:
 
-1. `user:<id>`: the principal itself.
+1. `<kind>:<id>`: the principal itself.
 2. `group:<name>`: every local group the principal belongs to.
 3. `idp-group:<name>`: every IdP group claim carried on the connection.
 
@@ -235,7 +263,7 @@ Implementation: `src/domain/access/action.ts`,
 The `GrantBasedAccessDecisionService` runs the evaluation. For a (principal,
 action, resource) triple:
 
-1. **Resolve subjects**: user, local groups, IdP groups.
+1. **Resolve subjects**: the principal itself, local groups, IdP groups.
 2. **Collect candidates**: every grant whose subject is in the list.
 3. **Filter**: keep grants matching the resource selector, the action and the
    method name (when the grant has a `methods` list). Implied actions count:
@@ -246,11 +274,30 @@ action, resource) triple:
    matching deny wins and the request is rejected.
 6. **Evaluate allows**: check each allow's condition, if any. The first matching
    allow wins and the request proceeds.
-7. **No match**: if an `admin` grant on `access:*` matches, the request proceeds
+7. **Service trigger default**: a `service` principal asking to `run` a
+   `workflow` is allowed (decision grant id `builtin:service-trigger-default`).
+   It covers no other action or resource kind, so it never implies `approve`.
+8. **No match**: if an `admin` grant on `access:*` matches, the request proceeds
    (admin fallback). Otherwise it is denied by default.
 
 **Deny-first**: a deny always beats an allow for the same subject, action and
 resource. There is no other priority or ordering.
+
+**Service trigger default**: the default is computed, not stored, so no grant
+reconcile, reload or fleet version skew can remove it, and existing schedules and
+webhooks keep running when authorization is added. `explain` and
+`swamp access check --subject service:<id>` report it. To restrict trigger runs, add
+deny grants: `deny run workflow:deploy` for `service:webhook` stops one
+workflow, and a conditioned deny such as
+`deny run workflow:* when name != "nightly"` for `service:scheduler` allows
+only the named workflows.
+
+A deny whose condition cannot be evaluated (for example a `tags.<key>` the
+workflow does not have) withholds the default: the run is refused rather than
+allowed, so a broken restriction fails closed. Write tag conditions defensively,
+e.g. `!("trigger" in tags) || tags.trigger != "webhook"`. In a mixed-version
+fleet, instances older than the service principal skip `service:` grants when
+loading policy; they also do not authorize trigger runs.
 
 ### Condition evaluation
 

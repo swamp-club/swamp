@@ -192,6 +192,18 @@ Deno.test("buildServeAuthConfig: worker principal kind in admins refuses", () =>
   );
 });
 
+Deno.test("buildServeAuthConfig: service principal in admins refuses", () => {
+  assertThrows(
+    () =>
+      buildServeAuthConfig({
+        authMode: "token",
+        admins: "service:scheduler",
+      }),
+    UserError,
+    "a built-in service principal cannot be an admin",
+  );
+});
+
 Deno.test("buildServeAuthConfig: admins with empty name after colon refuses", () => {
   assertThrows(
     () =>

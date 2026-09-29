@@ -397,7 +397,15 @@ Deno.test("authenticateServerToken: rejects a mismatched secret", async () => {
   });
 });
 
-for (const principalId of ["agent:swamp-resumer", "adam", "user:"]) {
+for (
+  const principalId of [
+    "agent:swamp-resumer",
+    "adam",
+    "user:",
+    "service:scheduler",
+    "service:webhook",
+  ]
+) {
   Deno.test(`authenticateServerToken: rejects stored principal ${principalId} as invalid-principal without an audit event`, async () => {
     const events: AuditEvent[] = [];
     const result = await authenticateWithDeps(

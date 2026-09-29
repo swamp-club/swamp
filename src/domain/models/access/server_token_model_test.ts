@@ -114,6 +114,8 @@ for (
     ["agent:swamp-resumer", 'Invalid principal kind "agent"'],
     ["adam", 'expected "user:<id>" or "worker:<id>"'],
     ["user:", "id cannot be empty"],
+    ["service:scheduler", "built-in service principal"],
+    ["service:webhook", "built-in service principal"],
   ]
 ) {
   Deno.test(`serverTokenModel: mint rejects principal ${principalId} before writing anything`, async () => {

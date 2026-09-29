@@ -95,12 +95,19 @@ async function withFixture(
   const type = `@test/prec-${crypto.randomUUID().slice(0, 8)}`;
   const bundleDir = join(repoDir, ".swamp", "bundles");
   await ensureDir(bundleDir);
+  // The loader reports members by resolved path; on macOS the temp dir is
+  // an alias (/var -> /private/var), so expected paths use the real root.
+  const realRepoDir = await Deno.realPath(repoDir);
   const paths: Record<Source, string> = {
-    aa: canonicalizePath(join(repoDir, "extensions", "models", "aa_ext.ts")),
-    zz: canonicalizePath(join(repoDir, "extensions", "models", "zz_ext.ts")),
+    aa: canonicalizePath(
+      join(realRepoDir, "extensions", "models", "aa_ext.ts"),
+    ),
+    zz: canonicalizePath(
+      join(realRepoDir, "extensions", "models", "zz_ext.ts"),
+    ),
     pulled: canonicalizePath(
       join(
-        repoDir,
+        realRepoDir,
         ".swamp",
         "pulled-extensions",
         "@acme",

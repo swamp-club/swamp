@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { parsePrincipal, principalToString } from "./principal.ts";
+import {
+  parsePrincipal,
+  parsePrincipalOfKinds,
+  principalToString,
+} from "./principal.ts";
 
 Deno.test("parsePrincipal: parses user principal", () => {
   const p = parsePrincipal("user:adam");
@@ -55,7 +59,7 @@ Deno.test("parsePrincipal: rejects invalid kind", () => {
   assertThrows(
     () => parsePrincipal("group:admins"),
     Error,
-    'expected "user" or "worker"',
+    'expected "user", "worker" or "service"',
   );
 });
 
@@ -63,4 +67,30 @@ Deno.test("principalToString: roundtrips with parsePrincipal", () => {
   const original = "worker:my-worker";
   const parsed = parsePrincipal(original);
   assertEquals(principalToString(parsed), original);
+});
+
+Deno.test("parsePrincipal: parses service principal", () => {
+  const p = parsePrincipal("service:scheduler");
+  assertEquals(p, { kind: "service", id: "scheduler" });
+});
+
+Deno.test("parsePrincipal: rejects a service id that is not built in", () => {
+  assertThrows(
+    () => parsePrincipal("service:webhooks"),
+    Error,
+    'expected "service:scheduler" or "service:webhook"',
+  );
+});
+
+Deno.test("parsePrincipalOfKinds: names only the accepted kinds", () => {
+  assertThrows(
+    () => parsePrincipalOfKinds("adam", ["user", "worker"]),
+    Error,
+    'expected "user:<id>" or "worker:<id>"',
+  );
+  assertThrows(
+    () => parsePrincipalOfKinds("service:scheduler", ["user", "worker"]),
+    Error,
+    'expected "user" or "worker"',
+  );
 });

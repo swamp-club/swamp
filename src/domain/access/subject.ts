@@ -18,10 +18,25 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import {
+  isServicePrincipalId,
+  SERVICE_PRINCIPAL_CHOICES,
+} from "./principal.ts";
 
-export const SubjectKindSchema = z.enum(["user", "group", "idp-group"]);
+export const SubjectKindSchema = z.enum([
+  "user",
+  "group",
+  "idp-group",
+  "service",
+]);
 
 export type SubjectKind = z.infer<typeof SubjectKindSchema>;
+
+/** Joins quoted items as `"a", "b", or "c"` for error messages. */
+function describeAlternatives(items: readonly string[]): string {
+  const quoted = items.map((item) => `"${item}"`);
+  return `${quoted.slice(0, -1).join(", ")}, or ${quoted[quoted.length - 1]}`;
+}
 
 export const SubjectSchema = z.object({
   kind: SubjectKindSchema,
@@ -34,7 +49,11 @@ export function parseSubject(value: string): Subject {
   const colonIndex = value.indexOf(":");
   if (colonIndex === -1) {
     throw new Error(
-      `Invalid subject "${value}": expected "user:<name>", "group:<name>", or "idp-group:<name>"`,
+      `Invalid subject "${value}": expected ${
+        describeAlternatives(
+          SubjectKindSchema.options.map((k) => `${k}:<name>`),
+        )
+      }`,
     );
   }
   const kind = value.slice(0, colonIndex);
@@ -45,7 +64,14 @@ export function parseSubject(value: string): Subject {
   const parsed = SubjectKindSchema.safeParse(kind);
   if (!parsed.success) {
     throw new Error(
-      `Invalid subject kind "${kind}": expected "user", "group", or "idp-group"`,
+      `Invalid subject kind "${kind}": expected ${
+        describeAlternatives(SubjectKindSchema.options)
+      }`,
+    );
+  }
+  if (parsed.data === "service" && !isServicePrincipalId(name)) {
+    throw new Error(
+      `Invalid subject "${value}": expected ${SERVICE_PRINCIPAL_CHOICES}`,
     );
   }
   return { kind: parsed.data, name };

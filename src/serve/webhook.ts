@@ -418,12 +418,34 @@ export type WebhookEvent =
   | {
     kind: "webhook_rejected";
     route: string;
+    /** The workflow the route is configured to run. */
+    workflowName: string;
     reason: string;
+    /** The sender's address, when the caller supplied it. */
+    sourceIp?: string;
   }
   | {
     kind: "webhook_queued";
     route: string;
     workflowName: string;
+  }
+  | {
+    /** A run began executing; runId is known from here on. */
+    kind: "webhook_started";
+    route: string;
+    workflowName: string;
+    runId: string;
+    sourceIp?: string;
+    replayed: boolean;
+  }
+  | {
+    /** Authorization refused the run; it never started. */
+    kind: "webhook_denied";
+    route: string;
+    workflowName: string;
+    reason: string;
+    sourceIp?: string;
+    replayed: boolean;
   }
   | {
     kind: "webhook_completed";
@@ -462,7 +484,35 @@ export interface WebhookServiceDeps {
   /** Remote control-plane store for HA dual-write of pending runs. */
   controlPlaneStore?:
     import("../domain/datastore/control_plane_store.ts").ControlPlaneStore;
+  /** Recorded on every run as `initiatedBy` (the webhook principal). */
+  initiatedBy?: string;
+  /**
+   * Authorizes each run at execution time, so queued and replayed runs are
+   * both checked against the current policy. When absent every run proceeds.
+   */
+  authorizeRun?: WebhookRunAuthorizer;
+  /** Test seam; defaults to {@link executeWorkflowWithLocks}. */
+  executeWorkflow?: typeof executeWorkflowWithLocks;
 }
+
+/** What the webhook service asks before it starts a run. */
+export interface WebhookRunRequest {
+  readonly workflowIdOrName: string;
+  readonly route: string;
+  readonly sourceIp?: string;
+  readonly replayed: boolean;
+}
+
+export interface WebhookRunAuthorization {
+  readonly allowed: boolean;
+  /** The workflow to run: exactly the value authorization decided on. */
+  readonly workflowIdOrName: string;
+  readonly reason?: string;
+}
+
+export type WebhookRunAuthorizer = (
+  request: WebhookRunRequest,
+) => Promise<WebhookRunAuthorization>;
 
 /**
  * WebhookService manages webhook endpoint matching, signature verification,
@@ -496,6 +546,8 @@ export class WebhookService {
     payload: WebhookPayload;
     traceparent?: string;
     tracestate?: string;
+    sourceIp?: string;
+    replayed?: boolean;
   }> = [];
   private processing = false;
   private processingPromise: Promise<void> = Promise.resolve();
@@ -572,7 +624,10 @@ export class WebhookService {
    * Handle an incoming HTTP request. Returns a Response if the request
    * matches a configured webhook route, or null if no route matched.
    */
-  async handleRequest(req: Request): Promise<Response | null> {
+  async handleRequest(
+    req: Request,
+    sourceIp?: string,
+  ): Promise<Response | null> {
     if (req.method !== "POST") {
       return null;
     }
@@ -583,7 +638,7 @@ export class WebhookService {
       return null;
     }
 
-    if (this.draining) return this.shuttingDownResponse(endpoint);
+    if (this.draining) return this.shuttingDownResponse(endpoint, sourceIp);
 
     this.emit({
       kind: "webhook_received",
@@ -593,7 +648,11 @@ export class WebhookService {
 
     const verifier = this.resolveHandler(endpoint);
     if (!verifier) {
-      return this.handlerFailure(endpoint, "Webhook handler unavailable");
+      return this.handlerFailure(
+        endpoint,
+        "Webhook handler unavailable",
+        sourceIp,
+      );
     }
 
     for (const header of verifier.requiredHeaders) {
@@ -601,7 +660,9 @@ export class WebhookService {
         this.emit({
           kind: "webhook_rejected",
           route: endpoint.route,
+          workflowName: endpoint.workflowIdOrName,
           reason: `Missing ${header} header`,
+          sourceIp,
         });
         return Response.json(
           { error: `Missing ${header} header` },
@@ -616,7 +677,9 @@ export class WebhookService {
       this.emit({
         kind: "webhook_rejected",
         route: endpoint.route,
+        workflowName: endpoint.workflowIdOrName,
         reason: "Request body too large",
+        sourceIp,
       });
       return Response.json(
         { error: "Request body too large" },
@@ -640,7 +703,9 @@ export class WebhookService {
       this.emit({
         kind: "webhook_rejected",
         route: endpoint.route,
+        workflowName: endpoint.workflowIdOrName,
         reason: "Invalid signature",
+        sourceIp,
       });
       return Response.json(
         { error: "Invalid signature" },
@@ -684,21 +749,23 @@ export class WebhookService {
         route: endpoint.route,
         error: error instanceof Error ? error.message : String(error),
       });
-      return this.handlerFailure(endpoint, "Webhook handler failed");
+      return this.handlerFailure(endpoint, "Webhook handler failed", sourceIp);
     }
 
     if (httpResponse && !customResponse?.enqueue) return httpResponse;
 
     // Checked again: a drain can start during the awaits above, and a run
     // queued after it would be acknowledged and then aborted unreplayed.
-    if (this.draining) return this.shuttingDownResponse(endpoint);
+    if (this.draining) return this.shuttingDownResponse(endpoint, sourceIp);
 
     // Queue the workflow run (with backpressure)
     if (this.runQueue.length >= MAX_QUEUE_DEPTH) {
       this.emit({
         kind: "webhook_rejected",
         route: endpoint.route,
+        workflowName: endpoint.workflowIdOrName,
         reason: "Queue full",
+        sourceIp,
       });
       return Response.json(
         { error: "Too many queued runs, try again later" },
@@ -745,6 +812,7 @@ export class WebhookService {
       payload: webhookPayload,
       traceparent,
       tracestate,
+      sourceIp,
     });
 
     this.emit({
@@ -785,11 +853,16 @@ export class WebhookService {
     }
   }
 
-  private shuttingDownResponse(endpoint: WebhookEndpoint): Response {
+  private shuttingDownResponse(
+    endpoint: WebhookEndpoint,
+    sourceIp?: string,
+  ): Response {
     this.emit({
       kind: "webhook_rejected",
       route: endpoint.route,
+      workflowName: endpoint.workflowIdOrName,
       reason: "Server shutting down",
+      sourceIp,
     });
     return Response.json(
       { error: "Server is shutting down, try again later" },
@@ -800,8 +873,18 @@ export class WebhookService {
     );
   }
 
-  private handlerFailure(endpoint: WebhookEndpoint, reason: string): Response {
-    this.emit({ kind: "webhook_rejected", route: endpoint.route, reason });
+  private handlerFailure(
+    endpoint: WebhookEndpoint,
+    reason: string,
+    sourceIp?: string,
+  ): Response {
+    this.emit({
+      kind: "webhook_rejected",
+      route: endpoint.route,
+      workflowName: endpoint.workflowIdOrName,
+      reason,
+      sourceIp,
+    });
     return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 
@@ -815,7 +898,7 @@ export class WebhookService {
   }): void {
     // The pending entry stays in the run tracker for the next boot to replay.
     if (this.draining) return;
-    this.runQueue.push(entry);
+    this.runQueue.push({ ...entry, replayed: true });
     if (!this.processing) {
       this.processingPromise = this.processQueue().catch(
         (error: unknown) => {
@@ -871,15 +954,8 @@ export class WebhookService {
 
     try {
       while (this.runQueue.length > 0) {
-        const {
-          pendingRunId,
-          putPromise,
-          workflowIdOrName,
-          route,
-          payload,
-          traceparent,
-          tracestate,
-        } = this.runQueue.shift()!;
+        const entry = this.runQueue.shift()!;
+        const { pendingRunId, putPromise } = entry;
         if (putPromise) await putPromise;
         // A drain that began while this entry was dequeued leaves it pending
         // for the next boot to replay rather than starting it now.
@@ -900,26 +976,51 @@ export class WebhookService {
             });
           }
         }
-        await this.executeWorkflow(
-          workflowIdOrName,
-          route,
-          payload,
-          traceparent,
-          tracestate,
-        );
+        await this.executeWorkflow(entry);
       }
     } finally {
       this.processing = false;
     }
   }
 
-  private async executeWorkflow(
-    workflowIdOrName: string,
-    route: string,
-    payload: WebhookPayload,
-    traceparent?: string,
-    tracestate?: string,
-  ): Promise<void> {
+  private async executeWorkflow(entry: {
+    workflowIdOrName: string;
+    route: string;
+    payload: WebhookPayload;
+    traceparent?: string;
+    tracestate?: string;
+    sourceIp?: string;
+    replayed?: boolean;
+  }): Promise<void> {
+    const { route, payload, traceparent, tracestate, sourceIp } = entry;
+    const replayed = entry.replayed ?? false;
+    const authorization = await this.authorize({
+      workflowIdOrName: entry.workflowIdOrName,
+      route,
+      sourceIp,
+      replayed,
+    });
+    if (!authorization.allowed) {
+      const reason = authorization.reason ?? "denied";
+      this.emit({
+        kind: "webhook_denied",
+        route,
+        workflowName: entry.workflowIdOrName,
+        reason,
+        sourceIp,
+        replayed,
+      });
+      const principal = this.deps.initiatedBy ?? "the webhook receiver";
+      logger.warn(
+        "Webhook run refused for {workflow} on {route} as {principal}: {reason}. Check with: swamp access check --subject {principal} --action run --on workflow:{workflow}",
+        { workflow: entry.workflowIdOrName, route, principal, reason },
+      );
+      return;
+    }
+    // Events and bookkeeping keep the configured value, as before; only the
+    // run executes the value authorization decided on.
+    const { workflowIdOrName } = entry;
+
     const controller = new AbortController();
     const execId = crypto.randomUUID();
     this.running.set(execId, controller);
@@ -932,21 +1033,32 @@ export class WebhookService {
       let streamError: string | undefined;
       let suspended = false;
 
-      await executeWorkflowWithLocks(
+      const execute = this.deps.executeWorkflow ?? executeWorkflowWithLocks;
+      await execute(
         this.deps.repoDir,
         this.deps.repoContext,
         this.deps.datastoreConfig,
         {
-          workflowIdOrName,
+          workflowIdOrName: authorization.workflowIdOrName,
           webhook: payload,
           traceparent,
           tracestate,
           instanceId: this.deps.instanceId,
+          initiatedBy: this.deps.initiatedBy,
         },
         controller.signal,
         (event) => {
           if (event.kind === "started") {
             runId = event.runId;
+            this.emit({
+              kind: "webhook_started",
+              route,
+              // The workflow authorization decided on, which is the one running.
+              workflowName: authorization.workflowIdOrName,
+              runId,
+              sourceIp,
+              replayed,
+            });
             if (this.deps.controlPlaneStore && this.deps.instanceId) {
               writeActiveRun(
                 this.deps.controlPlaneStore,
@@ -972,7 +1084,11 @@ export class WebhookService {
         },
         this.deps.syncService,
         this.deps.runTracker,
-        { syncGate: this.deps.syncGate, triggerSource: "webhook" },
+        {
+          syncGate: this.deps.syncGate,
+          triggerSource: "webhook",
+          initiatedBy: this.deps.initiatedBy,
+        },
       );
 
       // Success requires an explicit "succeeded" status. A run that ends any
@@ -1032,6 +1148,26 @@ export class WebhookService {
           runId,
         );
       }
+    }
+  }
+
+  /** Never throws: an authorizer failure refuses the run. */
+  private async authorize(
+    request: WebhookRunRequest,
+  ): Promise<WebhookRunAuthorization> {
+    if (!this.deps.authorizeRun) {
+      return { allowed: true, workflowIdOrName: request.workflowIdOrName };
+    }
+    try {
+      return await this.deps.authorizeRun(request);
+    } catch (error) {
+      return {
+        allowed: false,
+        workflowIdOrName: request.workflowIdOrName,
+        reason: `authorization_error: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
   }
 

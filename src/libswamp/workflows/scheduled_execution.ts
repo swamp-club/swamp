@@ -88,6 +88,8 @@ export type ScheduledExecutionEvent =
     kind: "schedule_fired";
     workflowId: WorkflowId;
     workflowName: string;
+    /** ISO-8601 cron fire time. */
+    fireTime: string;
   }
   | {
     kind: "schedule_skipped";
@@ -95,6 +97,27 @@ export type ScheduledExecutionEvent =
     workflowName: string;
     reason: string;
     dedupSkip?: boolean;
+    /** ISO-8601 cron fire time. */
+    fireTime: string;
+  }
+  | {
+    /** A run began executing; runId is known from here on. */
+    kind: "schedule_started";
+    workflowId: WorkflowId;
+    workflowName: string;
+    runId: string;
+    /** ISO-8601 cron fire time; unset for a run replayed after a restart. */
+    fireTime?: string;
+    replayed: boolean;
+  }
+  | {
+    /** Authorization refused the run; it never started. */
+    kind: "schedule_denied";
+    workflowId: WorkflowId;
+    workflowName: string;
+    reason: string;
+    fireTime?: string;
+    replayed: boolean;
   }
   | {
     kind: "schedule_completed";
@@ -162,6 +185,30 @@ export type CronFireDedupCallback = (
   fireTime: Date,
 ) => Promise<boolean>;
 
+/** What the scheduler asks before it starts a run. */
+export interface ScheduledRunRequest {
+  readonly workflowName: string;
+  /** Unset for a run replayed after a restart. */
+  readonly fireTime?: Date;
+  readonly replayed: boolean;
+}
+
+export interface ScheduledRunAuthorization {
+  readonly allowed: boolean;
+  /** The workflow to run: exactly the value authorization decided on. */
+  readonly workflowIdOrName: string;
+  readonly reason?: string;
+}
+
+/**
+ * Callback that authorizes each run at execution time, so queued and
+ * replayed runs are both checked against the current policy. Injected by
+ * the serve layer; when absent every run proceeds.
+ */
+export type ScheduledRunAuthorizer = (
+  request: ScheduledRunRequest,
+) => Promise<ScheduledRunAuthorization>;
+
 export interface TriggerOverride {
   readonly schedule?: string;
   readonly inputs?: Record<string, unknown>;
@@ -175,6 +222,9 @@ export interface ScheduledExecutionDeps {
   activeRunHook?: ActiveRunHook;
   cronFireDedup?: CronFireDedupCallback;
   triggerOverrides?: ReadonlyMap<string, TriggerOverride>;
+  /** Recorded on every run as `initiatedBy` (the scheduler's principal). */
+  initiatedBy?: string;
+  authorizeRun?: ScheduledRunAuthorizer;
 }
 
 export class ScheduledExecutionService {
@@ -190,6 +240,8 @@ export class ScheduledExecutionService {
     enqueuePromise?: Promise<void>;
     workflowId: WorkflowId;
     workflowName: string;
+    fireTime?: Date;
+    replayed: boolean;
   }> = [];
   private processing = false;
   private processingPromise: Promise<void> = Promise.resolve();
@@ -395,6 +447,7 @@ export class ScheduledExecutionService {
       pendingRunId: entry.pendingRunId,
       workflowId: entry.workflowIdOrName as WorkflowId,
       workflowName: entry.workflowIdOrName,
+      replayed: true,
     });
     if (!this.processing) {
       this.processingPromise = this.processQueue();
@@ -572,6 +625,7 @@ export class ScheduledExecutionService {
         workflowId,
         workflowName,
         reason: "Previous run still in progress",
+        fireTime: fireTime.toISOString(),
       });
       logger.warn(
         "Skipping scheduled run for {name}: previous run still in progress",
@@ -596,6 +650,7 @@ export class ScheduledExecutionService {
             workflowName,
             reason: "Claimed by another instance",
             dedupSkip: true,
+            fireTime: fireTime.toISOString(),
           });
           return;
         }
@@ -621,6 +676,7 @@ export class ScheduledExecutionService {
       kind: "schedule_fired",
       workflowId,
       workflowName,
+      fireTime: fireTime.toISOString(),
     });
     logger.info("Firing scheduled run for workflow {name}", {
       name: workflowName,
@@ -645,6 +701,8 @@ export class ScheduledExecutionService {
       enqueuePromise,
       workflowId,
       workflowName,
+      fireTime,
+      replayed: false,
     });
     if (!this.processing) {
       this.processingPromise = this.processQueue();
@@ -678,8 +736,8 @@ export class ScheduledExecutionService {
 
     try {
       while (this.runQueue.length > 0) {
-        const { pendingRunId, enqueuePromise, workflowId, workflowName } = this
-          .runQueue.shift()!;
+        const entry = this.runQueue.shift()!;
+        const { pendingRunId, enqueuePromise } = entry;
         if (enqueuePromise) await enqueuePromise;
         // A drain that began while this entry was dequeued leaves it pending
         // for the next boot to replay rather than starting it now.
@@ -687,17 +745,43 @@ export class ScheduledExecutionService {
         if (pendingRunId && this.deps.pendingRunHook) {
           await this.deps.pendingRunHook.delete(pendingRunId);
         }
-        await this.executeWorkflow(workflowId, workflowName);
+        await this.executeWorkflow(entry);
       }
     } finally {
       this.processing = false;
     }
   }
 
-  private async executeWorkflow(
-    workflowId: WorkflowId,
-    workflowName: string,
-  ): Promise<void> {
+  private async executeWorkflow(entry: {
+    workflowId: WorkflowId;
+    workflowName: string;
+    fireTime?: Date;
+    replayed: boolean;
+  }): Promise<void> {
+    const { workflowId, workflowName, replayed } = entry;
+    const fireTime = entry.fireTime?.toISOString();
+    const authorization = await this.authorize(entry);
+    if (!authorization.allowed) {
+      this.emit({
+        kind: "schedule_denied",
+        workflowId,
+        workflowName,
+        reason: authorization.reason ?? "denied",
+        fireTime,
+        replayed,
+      });
+      const principal = this.deps.initiatedBy ?? "the scheduler";
+      logger.warn(
+        "Scheduled run refused for workflow {name} as {principal}: {reason}. Check with: swamp access check --subject {principal} --action run --on workflow:{name}",
+        {
+          name: workflowName,
+          principal,
+          reason: authorization.reason ?? "denied",
+        },
+      );
+      return;
+    }
+
     const controller = new AbortController();
     // runId starts empty until the "started" event arrives with the real ID.
     // During this narrow window cancelByRunId() cannot match this run;
@@ -720,8 +804,9 @@ export class ScheduledExecutionService {
         async (_span) => {
           await this.deps.executeWorkflow(
             {
-              workflowIdOrName: workflowName,
+              workflowIdOrName: authorization.workflowIdOrName,
               inputs: override?.inputs,
+              initiatedBy: this.deps.initiatedBy,
             },
             controller.signal,
             (event) => {
@@ -733,6 +818,15 @@ export class ScheduledExecutionService {
                   workflowName,
                   "workflow-run",
                 );
+                this.emit({
+                  kind: "schedule_started",
+                  workflowId,
+                  // The workflow authorization decided on, which is running.
+                  workflowName: authorization.workflowIdOrName,
+                  runId,
+                  fireTime,
+                  replayed,
+                });
               }
               if (event.kind === "completed") {
                 completedRun = event.run;
@@ -824,6 +918,32 @@ export class ScheduledExecutionService {
       if (runId) {
         this.deps.activeRunHook?.delete(runId);
       }
+    }
+  }
+
+  /** Never throws: an authorizer failure refuses the run. */
+  private async authorize(entry: {
+    workflowName: string;
+    fireTime?: Date;
+    replayed: boolean;
+  }): Promise<ScheduledRunAuthorization> {
+    if (!this.deps.authorizeRun) {
+      return { allowed: true, workflowIdOrName: entry.workflowName };
+    }
+    try {
+      return await this.deps.authorizeRun({
+        workflowName: entry.workflowName,
+        fireTime: entry.fireTime,
+        replayed: entry.replayed,
+      });
+    } catch (error) {
+      return {
+        allowed: false,
+        workflowIdOrName: entry.workflowName,
+        reason: `authorization_error: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
   }
 

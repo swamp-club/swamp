@@ -256,3 +256,30 @@ Deno.test("serverTokenCreate: errors when the token record is missing", async ()
   assertEquals(error.kind, "error");
   assertStringIncludes(error.error.message, "token-main");
 });
+
+Deno.test("serverTokenCreate: refuses a service principal before minting", async () => {
+  let mintCalls = 0;
+  const deps = makeDeps({
+    runMint: async function* () {
+      mintCalls++;
+      await Promise.resolve();
+      yield* [];
+    },
+  });
+  const events = await collect<ServerTokenCreateEvent>(
+    serverTokenCreate(createLibSwampContext(), deps, {
+      name: "tok",
+      principalId: "service:webhook",
+      principalEmail: "webhook@example.com",
+      durationMs: 1000,
+    }),
+  );
+  assertEquals(events.length, 1);
+  const error = events[0] as Extract<
+    ServerTokenCreateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "built-in service principal");
+  assertEquals(mintCalls, 0);
+});

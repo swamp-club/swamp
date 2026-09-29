@@ -76,11 +76,17 @@ function validateAdmins(admins: string[], mode: string): void {
     return;
   }
   for (const admin of admins) {
+    let subject;
     try {
-      parseSubject(admin);
+      subject = parseSubject(admin);
     } catch {
       throw new UserError(
         `Invalid --admins value "${admin}": expected format "user:<id>", "group:<name>", or "idp-group:<name>"`,
+      );
+    }
+    if (subject.kind === "service") {
+      throw new UserError(
+        `Invalid --admins value "${admin}": a built-in service principal cannot be an admin`,
       );
     }
   }

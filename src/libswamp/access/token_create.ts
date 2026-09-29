@@ -33,6 +33,8 @@ import type { RepositoryContext } from "../../infrastructure/persistence/reposit
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import { createServerTokenRunDeps } from "./run_deps.ts";
+import { isServicePrincipal } from "../../domain/access/service_principal.ts";
+import { parsePrincipal } from "../../domain/access/principal.ts";
 
 export interface ServerTokenCreateData {
   name: string;
@@ -135,6 +137,18 @@ async function resolveVaultName(
 
 const TOKEN_DATA_NAME = "token-main";
 
+/**
+ * True when the request names a service principal. Other malformed principals
+ * fall through to the mint method, which reports the parse error itself.
+ */
+function isServiceTokenRequest(principalId: string): boolean {
+  try {
+    return isServicePrincipal(parsePrincipal(principalId));
+  } catch {
+    return false;
+  }
+}
+
 export async function* serverTokenCreate(
   _ctx: LibSwampContext,
   deps: ServerTokenCreateDeps,
@@ -144,6 +158,15 @@ export async function* serverTokenCreate(
     "swamp.access.token.create",
     { "token.name": input.name },
     (async function* () {
+      if (isServiceTokenRequest(input.principalId)) {
+        yield {
+          kind: "error" as const,
+          error: validationFailed(
+            `Principal "${input.principalId}" is a built-in service principal and cannot hold a credential`,
+          ),
+        };
+        return;
+      }
       const resolved = await resolveVaultName(deps, input.vaultName);
       if (!resolved.ok) {
         yield {

@@ -26,9 +26,10 @@ import type {
   AccessResource,
 } from "./access_decision_service.ts";
 import type { Action } from "./action.ts";
-import type { PolicySnapshot } from "./policy_snapshot.ts";
+import type { ConditionOutcome, PolicySnapshot } from "./policy_snapshot.ts";
 import { principalToString } from "./principal.ts";
 import type { PrincipalContext } from "./principal_context.ts";
+import type { Subject } from "./subject.ts";
 import {
   type ResourceKind,
   resourceSelectorMatches,
@@ -139,11 +140,11 @@ function evaluateGrant(
   snapshot: PolicySnapshot,
   resource: AccessResource,
   principalContext: PrincipalContext,
-): boolean {
+): ConditionOutcome {
   if (!grant.condition) {
-    return true;
+    return "match";
   }
-  return snapshot.evaluateCondition(
+  return snapshot.evaluateConditionOutcome(
     grant.condition,
     resource.kind,
     resource.fields,
@@ -163,6 +164,45 @@ function toDecision(grant: Grant, match: ActionMatch): AccessDecision {
     subject: grant.subject,
     condition: grant.condition,
     ...(match === "implied-by-run" ? { impliedBy: "run" as const } : {}),
+  };
+}
+
+/**
+ * Grant id reported for the built-in allow that lets a service principal run
+ * a workflow when no grant decides the request. It is computed, never stored,
+ * so no reconcile loop, reload or fleet version skew can remove it.
+ */
+export const SERVICE_TRIGGER_DEFAULT_GRANT_ID =
+  "builtin:service-trigger-default";
+
+/**
+ * The built-in decision for scheduled and webhook runs: a service principal
+ * may `run` a workflow unless a deny grant matches. It covers no other action
+ * or resource kind, so it never implies `approve`.
+ */
+function serviceTriggerDefault(
+  accessPrincipal: AccessPrincipal,
+  action: Action,
+  resource: AccessResource,
+): AccessDecision | null {
+  if (
+    accessPrincipal.principal.kind !== "service" || action !== "run" ||
+    resource.kind !== "workflow"
+  ) {
+    return null;
+  }
+  return {
+    effect: "allow",
+    grantId: SERVICE_TRIGGER_DEFAULT_GRANT_ID,
+    subject: { kind: "service", name: accessPrincipal.principal.id },
+  };
+}
+
+/** The subject a synthetic decision is attributed to. */
+function budgetExceededSubject(accessPrincipal: AccessPrincipal): Subject {
+  return {
+    kind: accessPrincipal.principal.kind === "service" ? "service" : "user",
+    name: accessPrincipal.principal.id,
   };
 }
 
@@ -235,6 +275,9 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     }
 
     let conditionsEvaluated = 0;
+    // A deny whose condition could not be evaluated decides nothing, but it
+    // must not let the service trigger default allow what it meant to stop.
+    let denyUndecided = false;
 
     for (const { grant, match } of denies) {
       if (grant.condition) {
@@ -245,13 +288,18 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
           return {
             effect: "deny",
             grantId: "aggregate-budget-exceeded",
-            subject: { kind: "user", name: principal.principal.id },
+            subject: budgetExceededSubject(principal),
           };
         }
       }
-      if (evaluateGrant(grant, snapshot, resource, principalContext)) {
-        return toDecision(grant, match);
-      }
+      const outcome = evaluateGrant(
+        grant,
+        snapshot,
+        resource,
+        principalContext,
+      );
+      if (outcome === "match") return toDecision(grant, match);
+      if (outcome === "error") denyUndecided = true;
     }
 
     for (const { grant, match } of allows) {
@@ -263,16 +311,20 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
           return {
             effect: "deny",
             grantId: "aggregate-budget-exceeded",
-            subject: { kind: "user", name: principal.principal.id },
+            subject: budgetExceededSubject(principal),
           };
         }
       }
-      if (evaluateGrant(grant, snapshot, resource, principalContext)) {
+      if (
+        evaluateGrant(grant, snapshot, resource, principalContext) === "match"
+      ) {
         return toDecision(grant, match);
       }
     }
 
-    return null;
+    return denyUndecided
+      ? null
+      : serviceTriggerDefault(principal, action, resource);
   }
 
   explain(
@@ -288,6 +340,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const principalContext = buildPrincipalContext(principal, localGroups);
 
     let conditionsEvaluated = 0;
+    let denyUndecided = false;
     const denyDecisions: AccessDecision[] = [];
     const allowDecisions: AccessDecision[] = [];
     for (const grant of candidates) {
@@ -300,10 +353,19 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         if (conditionsEvaluated > MAX_AGGREGATE_CONDITIONS) {
           logger
             .warn`Aggregate condition budget exceeded (${conditionsEvaluated} > ${MAX_AGGREGATE_CONDITIONS}) for principal ${principalKey} action ${action} on ${resource.kind}:${resource.name} — truncating explain`;
+          // Unexamined grants may include a deny; do not report the default.
+          denyUndecided = true;
           break;
         }
       }
-      if (evaluateGrant(grant, snapshot, resource, principalContext)) {
+      const outcome = evaluateGrant(
+        grant,
+        snapshot,
+        resource,
+        principalContext,
+      );
+      if (outcome === "error" && grant.effect === "deny") denyUndecided = true;
+      if (outcome === "match") {
         if (grant.effect === "deny") {
           denyDecisions.push(toDecision(grant, match));
         } else {
@@ -312,6 +374,13 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       }
     }
 
+    if (
+      denyDecisions.length === 0 && allowDecisions.length === 0 &&
+      !denyUndecided
+    ) {
+      const builtin = serviceTriggerDefault(principal, action, resource);
+      if (builtin) return [builtin];
+    }
     return [...denyDecisions, ...allowDecisions];
   }
 

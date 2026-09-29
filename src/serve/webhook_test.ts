@@ -27,8 +27,10 @@ import {
   resolveExtensionWebhookEndpoints,
   resolveSecret,
   type WebhookEndpoint,
+  type WebhookEvent,
   WebhookService,
 } from "./webhook.ts";
+import { hmacSha256Hex } from "./webhook_verifiers.ts";
 import type { VaultSecretResolver } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
@@ -1048,4 +1050,218 @@ Deno.test("updateEndpoints: clears all endpoints when given empty list", async (
 
   assertEquals(changed, 1);
   assertEquals(service.listEndpoints().length, 0);
+});
+
+// ── service principal, authorization and audit events (swamp-club#2464) ──
+
+type ExecutorCall = {
+  input: { workflowIdOrName: string; initiatedBy?: string };
+  options: { triggerSource?: string; initiatedBy?: string };
+};
+
+function recordingExecutor(calls: ExecutorCall[]) {
+  return ((
+    _repoDir: string,
+    _repoContext: unknown,
+    _datastoreConfig: unknown,
+    input: ExecutorCall["input"],
+    _signal: AbortSignal,
+    onEvent: (event: unknown) => void,
+    _syncService: unknown,
+    _runTracker: unknown,
+    options: ExecutorCall["options"],
+  ) => {
+    calls.push({ input, options });
+    onEvent({ kind: "started", runId: `run-${calls.length}` });
+    onEvent({ kind: "completed", run: { status: "succeeded" } });
+    return Promise.resolve();
+  }) as unknown as NonNullable<
+    ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+  >;
+}
+
+async function signedDelivery(body: string): Promise<Request> {
+  const signature = await hmacSha256Hex(
+    new TextEncoder().encode(body),
+    "secret",
+  );
+  return new Request("http://localhost/hooks/gh", {
+    method: "POST",
+    body,
+    headers: { "x-hub-signature-256": `sha256=${signature}` },
+  });
+}
+
+async function triggerService(
+  overrides: Partial<ConstructorParameters<typeof WebhookService>[0]> = {},
+) {
+  const calls: ExecutorCall[] = [];
+  const events: WebhookEvent[] = [];
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    // deno-lint-ignore no-explicit-any
+    repoContext: {} as any,
+    // deno-lint-ignore no-explicit-any
+    datastoreConfig: {} as any,
+    endpoints: [await parseWebhookFlag("/hooks/gh:deploy:secret")],
+    initiatedBy: "service:webhook",
+    executeWorkflow: recordingExecutor(calls),
+    ...overrides,
+  });
+  service.setEventHandler((event) => events.push(event));
+  return { service, calls, events };
+}
+
+Deno.test("WebhookService: a verified delivery runs as service:webhook with an unchanged response", async () => {
+  const { service, calls, events } = await triggerService();
+  const response = await service.handleRequest(
+    await signedDelivery('{"ref":"main"}'),
+    "203.0.113.9",
+  );
+  assertEquals(response?.status, 200);
+  assertEquals(await response!.json(), {
+    status: "queued",
+    workflow: "deploy",
+  });
+  await waitFor(() => calls.length === 1, "run executed");
+  await service.stop();
+
+  assertEquals(calls[0].input.initiatedBy, "service:webhook");
+  assertEquals(calls[0].options.initiatedBy, "service:webhook");
+  assertEquals(calls[0].options.triggerSource, "webhook");
+  const started = events.find((e) => e.kind === "webhook_started");
+  assertEquals(started, {
+    kind: "webhook_started",
+    route: "/hooks/gh",
+    workflowName: "deploy",
+    runId: "run-1",
+    sourceIp: "203.0.113.9",
+    replayed: false,
+  });
+  assertEquals(events.some((e) => e.kind === "webhook_completed"), true);
+});
+
+Deno.test("WebhookService: runs the authorized workflow and keeps the configured name in events", async () => {
+  const { service, calls, events } = await triggerService({
+    authorizeRun: () =>
+      Promise.resolve({ allowed: true, workflowIdOrName: "deploy-canonical" }),
+  });
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(() => calls.length === 1, "run executed");
+  await service.stop();
+
+  assertEquals(calls[0].input.workflowIdOrName, "deploy-canonical");
+  const started = events.find((e) => e.kind === "webhook_started");
+  assertEquals(
+    started?.kind === "webhook_started" && started.workflowName,
+    "deploy-canonical",
+  );
+  const completed = events.find((e) => e.kind === "webhook_completed");
+  assertEquals(
+    completed?.kind === "webhook_completed" && completed.workflowName,
+    "deploy",
+  );
+});
+
+Deno.test("WebhookService: a refused run never executes and the sender still gets queued", async () => {
+  const { service, calls, events } = await triggerService({
+    authorizeRun: (request) =>
+      Promise.resolve({
+        allowed: false,
+        workflowIdOrName: request.workflowIdOrName,
+        reason: "denied",
+      }),
+  });
+  const response = await service.handleRequest(
+    await signedDelivery("{}"),
+    "203.0.113.9",
+  );
+  assertEquals(response?.status, 200);
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_denied"),
+    "webhook_denied event",
+  );
+  await service.stop();
+  assertEquals(calls.length, 0);
+  const denied = events.find((e) => e.kind === "webhook_denied");
+  assertEquals(
+    denied?.kind === "webhook_denied" && denied.sourceIp,
+    "203.0.113.9",
+  );
+});
+
+Deno.test("WebhookService: a throwing authorizer refuses that run and the queue keeps going", async () => {
+  let attempts = 0;
+  const { service, calls, events } = await triggerService({
+    authorizeRun: (request) => {
+      attempts++;
+      return attempts === 1
+        ? Promise.reject(new Error("policy exploded"))
+        : Promise.resolve({
+          allowed: true,
+          workflowIdOrName: request.workflowIdOrName,
+        });
+    },
+  });
+  await service.handleRequest(await signedDelivery("{}"));
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(() => calls.length === 1, "second run executed");
+  await service.stop();
+
+  const denied = events.find((e) => e.kind === "webhook_denied");
+  assertEquals(
+    denied?.kind === "webhook_denied" &&
+      denied.reason.includes("policy exploded"),
+    true,
+  );
+});
+
+Deno.test("WebhookService: replayed deliveries are authorized as replayed", async () => {
+  const requests: { replayed: boolean; sourceIp?: string }[] = [];
+  const { service, calls, events } = await triggerService({
+    authorizeRun: (request) => {
+      requests.push({ replayed: request.replayed, sourceIp: request.sourceIp });
+      return Promise.resolve({
+        allowed: true,
+        workflowIdOrName: request.workflowIdOrName,
+      });
+    },
+  });
+  service.enqueueForReplay({
+    pendingRunId: "p-1",
+    workflowIdOrName: "deploy",
+    route: "/hooks/gh",
+    payload: buildWebhookPayload(new Uint8Array(), new Headers(), "/hooks/gh"),
+  });
+  await waitFor(() => calls.length === 1, "replayed run executed");
+  await service.stop();
+
+  assertEquals(requests, [{ replayed: true, sourceIp: undefined }]);
+  const started = events.find((e) => e.kind === "webhook_started");
+  assertEquals(started?.kind === "webhook_started" && started.replayed, true);
+});
+
+Deno.test("WebhookService: rejections carry the source address and configured workflow", async () => {
+  const { service, events } = await triggerService();
+  const response = await service.handleRequest(
+    new Request("http://localhost/hooks/gh", {
+      method: "POST",
+      body: "{}",
+      headers: { "x-hub-signature-256": "sha256=00" },
+    }),
+    "198.51.100.7",
+  );
+  assertEquals(response?.status, 401);
+  assertEquals(await response!.json(), { error: "Invalid signature" });
+  await service.stop();
+
+  const rejected = events.find((e) => e.kind === "webhook_rejected");
+  assertEquals(rejected, {
+    kind: "webhook_rejected",
+    route: "/hooks/gh",
+    workflowName: "deploy",
+    reason: "Invalid signature",
+    sourceIp: "198.51.100.7",
+  });
 });

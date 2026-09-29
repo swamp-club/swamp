@@ -117,6 +117,9 @@ export {
   type ScheduledExecutionEvent,
   type ScheduledExecutionEventHandler,
   ScheduledExecutionService,
+  type ScheduledRunAuthorization,
+  type ScheduledRunAuthorizer,
+  type ScheduledRunRequest,
   type TriggerOverride,
   type WorkflowExecutor,
 } from "./workflows/scheduled_execution.ts";
