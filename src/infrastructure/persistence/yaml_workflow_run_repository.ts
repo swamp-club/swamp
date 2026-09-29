@@ -784,11 +784,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
               deleted++;
               bytesReclaimed += fileBytes;
-              // The ID is read back from persisted data; only a single safe
-              // path segment may name a snapshot directory.
-              const runId = isSinglePathSegment(data.id)
-                ? data.id
-                : runIdFromFileName(fileEntry.name);
+              // Report the ID of the file actually deleted — its name, which
+              // save() writes via getPath — not the body's `id`, which could
+              // name a different (live) run. Only a single safe path segment
+              // may name a snapshot directory.
+              const runId = runIdFromFileName(fileEntry.name);
               if (isSinglePathSegment(runId)) deletedRunIds.push(runId);
             } catch (error) {
               if (error instanceof Deno.errors.NotFound) continue;

@@ -1444,3 +1444,26 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: never reports a run ID tha
     assertEquals(result.deletedRunIds.includes("."), false);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the deleted file's run ID, not the ID in its body", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.cancel("test");
+    await repo.save(workflow.id, finished);
+    // The body names another, live run.
+    const liveRunId = crypto.randomUUID();
+    const path = repo.getPath(workflow.id, finished.id);
+    const content = await Deno.readTextFile(path);
+    await Deno.writeTextFile(
+      path,
+      content.replace(`id: ${finished.id}`, `id: ${liveRunId}`),
+    );
+
+    const result = await repo.deleteOlderThan(new Date(Date.now() + 60_000));
+
+    assertEquals(result.deletedRunIds, [finished.id]);
+  });
+});
