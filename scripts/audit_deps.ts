@@ -58,6 +58,7 @@ interface NpmLockfile {
 interface OsvVulnerability {
   id: string;
   summary?: string;
+  details?: string;
   severity?: Array<{ type: string; score: string }>;
   aliases?: string[];
 }
@@ -75,6 +76,10 @@ interface PackageInfo {
   version: string;
   isDirect: boolean;
 }
+
+const OSV_API = "https://api.osv.dev/v1";
+const FETCH_TIMEOUT_MS = 30_000;
+const DETAIL_CONCURRENCY = 8;
 
 interface VulnFinding {
   pkg: PackageInfo;
@@ -211,10 +216,11 @@ async function queryOsv(
     version: pkg.version,
   }));
 
-  const response = await fetch("https://api.osv.dev/v1/querybatch", {
+  const response = await fetch(`${OSV_API}/querybatch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ queries }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -226,11 +232,67 @@ async function queryOsv(
   return await response.json() as OsvBatchResponse;
 }
 
-function formatVuln(vuln: OsvVulnerability): string {
+export interface FetchVulnDetailsOptions {
+  concurrency?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * Fetch the full OSV record for each vulnerability id. The querybatch endpoint
+ * returns only `id` and `modified`, so summaries, details and aliases have to
+ * come from `GET /v1/vulns/{id}`. Ids are de-duplicated and fetched with at
+ * most `concurrency` requests in flight. A failed lookup is warned about and
+ * left out of the result; it never throws, because the batch query has
+ * already decided whether the audit passes.
+ */
+export async function fetchVulnDetails(
+  ids: Iterable<string>,
+  options: FetchVulnDetailsOptions = {},
+): Promise<Map<string, OsvVulnerability>> {
+  const concurrency = options.concurrency ?? DETAIL_CONCURRENCY;
+  const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const unique = [...new Set(ids)];
+  const details = new Map<string, OsvVulnerability>();
+
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < unique.length) {
+      const id = unique[next++];
+      try {
+        const response = await fetch(
+          `${OSV_API}/vulns/${encodeURIComponent(id)}`,
+          { signal: AbortSignal.timeout(timeoutMs) },
+        );
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(`OSV API returned ${response.status}`);
+        }
+        details.set(id, await response.json() as OsvVulnerability);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(`Warning: could not fetch details for ${id}: ${reason}`);
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, unique.length) }, worker),
+  );
+  return details;
+}
+
+function describeVuln(vuln: OsvVulnerability): string {
+  const summary = vuln.summary?.trim();
+  if (summary) return summary;
+  const firstLine = vuln.details?.split("\n").map((line) => line.trim())
+    .find((line) => line !== "");
+  return firstLine ?? "No description available";
+}
+
+export function formatVuln(vuln: OsvVulnerability): string {
   const aliases = vuln.aliases?.filter((a) => a.startsWith("CVE-")) ?? [];
   const cve = aliases.length > 0 ? ` (${aliases.join(", ")})` : "";
-  const summary = vuln.summary ?? "No description available";
-  return `${vuln.id}${cve}: ${summary}`;
+  return `${vuln.id}${cve}: ${describeVuln(vuln)}`;
 }
 
 function formatChain(chain: string[]): string {
@@ -402,6 +464,14 @@ async function main(): Promise<void> {
     }
   }
 
+  // querybatch returns only ids, so replace each with its full record
+  const details = await fetchVulnDetails(
+    [...direct, ...transitive].flatMap((f) => f.vulns.map((v) => v.id)),
+  );
+  for (const finding of [...direct, ...transitive]) {
+    finding.vulns = finding.vulns.map((v) => details.get(v.id) ?? v);
+  }
+
   // Write GitHub Actions job summary
   await writeGitHubSummary(direct, transitive);
 
@@ -451,4 +521,6 @@ async function main(): Promise<void> {
   Deno.exit(direct.length > 0 ? 1 : 0);
 }
 
-main();
+if (import.meta.main) {
+  await main();
+}
