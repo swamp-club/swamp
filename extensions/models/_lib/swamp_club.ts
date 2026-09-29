@@ -143,6 +143,7 @@ export class SwampClubClient {
 
   /** A client for another issue on the same server, with no new probe. */
   forIssue(issueNumber: number): SwampClubClient {
+    // `log` is this client's warning sink and `logInfo` its info sink.
     return new SwampClubClient(this.baseUrl, this.#apiKey, issueNumber, {
       info: this.logInfo,
       warning: this.log,

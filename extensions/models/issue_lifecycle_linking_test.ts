@@ -410,6 +410,34 @@ Deno.test("notify: thanks an external linked author and skips a team member", as
   });
 });
 
+Deno.test("notify: force thanks the primary's author but still skips a linked team member", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1, authorUsername: "lead", authorId: "u-lead" });
+    club.addIssue({ number: 2 });
+    club.roster = [{ userId: "u-team", username: "teammate" }];
+    carrying(store, { issueNumber: 2, author: "teammate", authorId: "u-team" });
+  }, async ({ club, context }) => {
+    await model.methods.notify.execute({ force: true }, context);
+    assertEquals(club.ripples.map((r) => r.issue), [1]);
+  });
+});
+
+Deno.test("notify: fetches the team roster once for the primary and linked authors", async () => {
+  await withLifecycle(1, (club, store) => {
+    club.addIssue({ number: 1, authorUsername: "outsider1", authorId: "u-o1" });
+    club.addIssue({ number: 2 });
+    club.roster = [];
+    carrying(store, { issueNumber: 2, author: "outsider2", authorId: "u-o2" });
+  }, async ({ club, context }) => {
+    await model.methods.notify.execute({}, context);
+    assertEquals(
+      club.calls.filter((c) => c.path === "/api/v1/lab/assignees").length,
+      1,
+    );
+    assertEquals(club.ripples.map((r) => r.issue), [1, 2]);
+  });
+});
+
 Deno.test("summarize: requires exactly one outcome per linked issue", async () => {
   await withLifecycle(1, (club, store) => {
     club.addIssue({ number: 1 });
@@ -677,6 +705,24 @@ Deno.test("mark_duplicate: surfaces swamp-club's refusal of a duplicate chain", 
       Error,
       "#7",
     );
+    assertEquals(club.issues.get(5)!.status, "open");
+  });
+});
+
+Deno.test("mark_duplicate: refuses while the lifecycle carries linked issues", async () => {
+  await withLifecycle(5, (club, store) => {
+    club.addIssue({ number: 5 });
+    club.addIssue({ number: 6 });
+    club.addIssue({ number: 9, status: "shipped", githubPrUrl: PR });
+    carrying(store, { issueNumber: 6 });
+  }, async ({ club, context }) => {
+    await assertRejects(
+      () =>
+        model.methods.mark_duplicate.execute({ of: 9, reason: "r" }, context),
+      Error,
+      "carries linked issue(s) #6",
+    );
+    assertEquals(club.calls.some((c) => c.method !== "GET"), false);
     assertEquals(club.issues.get(5)!.status, "open");
   });
 });

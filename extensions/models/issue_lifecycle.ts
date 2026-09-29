@@ -3038,6 +3038,8 @@ export const model = {
         // checked come from the same fetch.
         let author: string | undefined;
         let teamMember = false;
+        // Fetched at most once and shared with the linked-author pass below.
+        let roster: EligibleAssignee[] | null = null;
         if (sc) {
           const issue = await sc.fetchIssue();
           if (!issue) {
@@ -3047,7 +3049,7 @@ export const model = {
           }
           if (issue.author !== "unknown") author = issue.author;
           if (author && !args.force) {
-            const roster = await sc.fetchEligibleAssignees();
+            roster = await sc.fetchEligibleAssignees();
             if (!roster) {
               throw notifyUndecided(
                 `Could not confirm whether @${author} is a swamp-club team ` +
@@ -3086,9 +3088,11 @@ export const model = {
         // ripple posted would make the re-run thank that author twice. The
         // message leaves out the primary's plan summary, which may come from
         // an issue the linked issue's reader cannot see.
+        // `force` is about the primary's author only, so linked authors are
+        // always checked against the roster.
         if (sc && linked.length > 0) {
-          const roster = args.force ? [] : await sc.fetchEligibleAssignees();
-          if (!roster) {
+          const linkedRoster = roster ?? await sc.fetchEligibleAssignees();
+          if (!linkedRoster) {
             context.logger.warning(
               "Could not fetch the team roster, so no linked issue's author " +
                 "was thanked",
@@ -3100,7 +3104,7 @@ export const model = {
               if (
                 isTeamMember(
                   { author: issue.author, authorId: issue.authorId },
-                  roster,
+                  linkedRoster,
                 )
               ) continue;
               const linkedSc = sc.forIssue(issue.issueNumber);
@@ -3596,6 +3600,8 @@ export const model = {
         const relationship = linkedIssue.relationships.find((r) =>
           r.type === entry.relationship && r.otherIssueNumber === primary
         );
+        // swamp-club deletes a relationship through either issue it joins, so
+        // the linked issue's endpoint serves both link directions.
         if (relationship) {
           recordUpstreamChange(
             context.logger,
@@ -3671,6 +3677,10 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource?: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
@@ -3678,6 +3688,19 @@ export const model = {
         if (canonicalNumber === issueNumber) {
           throw new Error(
             `Issue #${issueNumber} cannot be a duplicate of itself.`,
+          );
+        }
+
+        // Shipping this issue as a duplicate would leave any issue it carries
+        // stranded short of shipped, and notify would then thank those
+        // reporters for a fix that never reached them.
+        const linked = await readLinkedIssues(context.readResource);
+        if (linked.length > 0) {
+          throw new Error(
+            `Issue #${issueNumber} carries linked issue(s) ` +
+              `${linked.map((l) => `#${l.issueNumber}`).join(", ")}. ` +
+              `Unlink them with unlink_issue first; each can then be marked ` +
+              `a duplicate of #${canonicalNumber} on its own lifecycle.`,
           );
         }
 
@@ -3703,6 +3726,9 @@ export const model = {
               `issueNumber=${issueNumber} --input relationship=duplicate_of`,
           );
         }
+        // No security-parity check, unlike link_issue: the canonical issue
+        // has shipped, so its number and PR are already public, and nothing
+        // else of it reaches this issue.
         const duplicate = await sc.fetchIssue();
         if (!duplicate) {
           throw new Error(

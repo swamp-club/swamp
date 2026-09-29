@@ -77,7 +77,8 @@ when M is already related to another issue that has not shipped.
 ## Closing out a lifecycle that carries linked issues
 
 `notify` also thanks each linked issue's author unless they are on the team
-roster. A failed linked ripple only warns.
+roster. `force` applies only to the primary issue's author. A failed linked
+ripple only warns.
 
 `summarize` requires one outcome for each linked issue, and each must be named
 exactly once:
@@ -122,6 +123,7 @@ It looks for N's PR on the issue first, then in N's `pr_merged` or `pr_linked`
 lifecycle entry. If neither has one, pass `--input prUrl=<URL>` (http or https
 only). With no PR anywhere, M still ships and the entry says no PR was found.
 
-It refuses while N is still in flight, and its error gives the `link_issue`
-command to run on N instead. It also refuses when N was closed without shipping,
-and swamp-club refuses duplicate chains.
+It refuses while M's lifecycle carries linked issues; unlink them first. It
+refuses while N is still in flight, and its error gives the `link_issue` command
+to run on N instead. It also refuses when N was closed without shipping, and
+swamp-club refuses duplicate chains.
