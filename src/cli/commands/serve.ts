@@ -83,6 +83,10 @@ import {
   TokenSessionRevalidationService,
 } from "../../serve/token_session_revalidation_service.ts";
 import {
+  DEFAULT_WORKER_TOKEN_REVALIDATION_MS,
+  WorkerTokenRevalidationService,
+} from "../../serve/worker_token_revalidation_service.ts";
+import {
   createDeviceAuthDeps,
   handleDeviceAuth,
 } from "../../serve/device_auth_handler.ts";
@@ -2316,6 +2320,7 @@ export const serveCommand = new Command()
       capabilityService,
       onWorkerIdle: (worker) => dispatchService.notifyWorkerIdle(worker),
       onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
+      onWorkerRemoved: (worker) => dispatchService.notifyWorkerRemoved(worker),
       onWorkerEnrolled: (worker) =>
         dispatchService.notifyWorkerEnrolled(worker),
       onWorkerDraining: (worker) =>
@@ -4649,6 +4654,17 @@ export const serveCommand = new Command()
       tokenSessionRevalidationService.start();
     }
 
+    // Enrollment tokens revoked from the CLI or on a peer never reach this
+    // gateway's revoke path; re-check them so their workers are cut off.
+    const workerTokenRevalidationService = new WorkerTokenRevalidationService({
+      intervalMs: DEFAULT_WORKER_TOKEN_REVALIDATION_MS,
+      listBoundTokens: () => workerGateway.boundTokens(),
+      readToken: (name) => workerGateway.readTokenRecord(name),
+      revokeToken: (name, cause, options) =>
+        workerGateway.revokeToken(name, cause, options),
+    });
+    workerTokenRevalidationService.start();
+
     let clubHeartbeatService: ClubHeartbeatService | null = null;
     if (
       authConfig.mode === "oauth" && authConfig.oauthClientId &&
@@ -5805,6 +5821,7 @@ export const serveCommand = new Command()
       if (tokenSessionRevalidationService) {
         await tokenSessionRevalidationService.dispose();
       }
+      await workerTokenRevalidationService.dispose();
       if (clubHeartbeatService) {
         clubHeartbeatService.stop();
       }

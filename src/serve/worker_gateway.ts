@@ -56,6 +56,8 @@ import {
 } from "../domain/models/worker/worker_model.ts";
 import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
+  type EnrollmentBindingCutoffCause,
+  type EnrollmentToken,
   EnrollmentTokenSchema,
   type MaxEnrollments,
 } from "../domain/models/worker/enrollment_token_model.ts";
@@ -68,6 +70,13 @@ export const DEFAULT_GRACE_WINDOW_MS = 60_000;
 
 /** The enrollment-token model's single resource name. */
 const TOKEN_DATA_NAME = "token-main";
+
+/** Human wording for each way a token loses its authority. */
+const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
+  revoked: "revoked",
+  reminted: "re-minted",
+  deleted: "deleted",
+};
 
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
@@ -123,6 +132,11 @@ interface WorkerEntry {
   name: string;
   /** The enrollment-token model instance name (differs from `name` for fleet workers). */
   tokenName: string;
+  /**
+   * The token mint (`createdAt`) this worker enrolled on, or null when it
+   * could not be read. Re-minting a revoked name yields a new mint.
+   */
+  tokenCreatedAt: string | null;
   instanceUuid: string;
   labels: Record<string, string>;
   platform: string;
@@ -169,6 +183,12 @@ export interface WorkerGatewayOptions {
   /** A worker announced it is draining (no longer schedulable). */
   onWorkerDraining?: (worker: WorkerSnapshot) => void;
   /**
+   * A worker was removed from the pool because its enrollment token lost
+   * its authority (revoked, expired, re-minted, or deleted). Unlike a
+   * socket drop there is no grace window: the worker cannot re-enroll.
+   */
+  onWorkerRemoved?: (worker: WorkerSnapshot) => void;
+  /**
    * When true, dispatch a fleet probe to each enrolling worker before it
    * becomes schedulable. Workers that fail the probe are marked `unverified`.
    * Requires `verifyWorker` to be set.
@@ -195,6 +215,12 @@ export interface WorkerGatewayOptions {
   readTokenMaxEnrollments?: (
     tokenName: string,
   ) => Promise<MaxEnrollments | null>;
+  /**
+   * Test seam: reads a token's current record, or null when it does not
+   * exist or no longer parses. Throws on read failures (I/O), which callers
+   * treat as transient. Defaults to a datastore query.
+   */
+  readTokenRecord?: (tokenName: string) => Promise<EnrollmentToken | null>;
 }
 
 /** Tracks one attached control socket before/after enrollment. */
@@ -214,6 +240,9 @@ export class WorkerGateway {
   readonly #readTokenMaxEnrollments: (
     tokenName: string,
   ) => Promise<MaxEnrollments | null>;
+  readonly #readTokenRecord: (
+    tokenName: string,
+  ) => Promise<EnrollmentToken | null>;
   /** Serializes every token/worker/lease transition (sole-writer rule). */
   #transitionTail: Promise<unknown> = Promise.resolve();
 
@@ -228,6 +257,8 @@ export class WorkerGateway {
       ((tokenName) => this.#defaultReadTokenExpiresAt(tokenName));
     this.#readTokenMaxEnrollments = options.readTokenMaxEnrollments ??
       ((tokenName) => this.#defaultReadTokenMaxEnrollments(tokenName));
+    this.#readTokenRecord = options.readTokenRecord ??
+      ((tokenName) => this.#findTokenRecord(tokenName));
   }
 
   /** The credential service the data plane authenticates against. */
@@ -275,6 +306,72 @@ export class WorkerGateway {
   worker(name: string): WorkerSnapshot | null {
     const entry = this.#workers.get(name);
     return entry ? this.#snapshot(entry) : null;
+  }
+
+  /**
+   * A token's current record, or null when it does not exist or no longer
+   * parses. Read failures propagate.
+   */
+  readTokenRecord(tokenName: string): Promise<EnrollmentToken | null> {
+    return this.#readTokenRecord(tokenName);
+  }
+
+  /**
+   * Each distinct token mint held by a pool member, including members
+   * inside a reconnection grace window.
+   */
+  boundTokens(): { tokenName: string; tokenCreatedAt: string | null }[] {
+    const seen = new Map<
+      string,
+      { tokenName: string; tokenCreatedAt: string | null }
+    >();
+    for (const entry of this.#workers.values()) {
+      const key = JSON.stringify([entry.tokenName, entry.tokenCreatedAt]);
+      if (!seen.has(key)) {
+        seen.set(key, {
+          tokenName: entry.tokenName,
+          tokenCreatedAt: entry.tokenCreatedAt,
+        });
+      }
+    }
+    return [...seen.values()];
+  }
+
+  /**
+   * Cut off every pool member enrolled on `tokenName` (all fleet members):
+   * each is removed at once, its control and dispatch credentials are
+   * revoked, and its control socket is closed. With `mint`, only members
+   * enrolled on that mint are cut off, so a worker that enrolled on a newer
+   * mint of the same name keeps its connection. Runs on the transition tail
+   * so an enrollment already in progress lands first and is cut off too.
+   * Returns the names of the removed workers.
+   */
+  async revokeToken(
+    tokenName: string,
+    cause: EnrollmentBindingCutoffCause,
+    options?: { mint: string | null },
+  ): Promise<string[]> {
+    return await this.#recordTransition(async () => {
+      const removed: string[] = [];
+      for (const entry of [...this.#workers.values()]) {
+        if (entry.tokenName !== tokenName) continue;
+        if (options !== undefined && entry.tokenCreatedAt !== options.mint) {
+          continue;
+        }
+        logger.info("Enrollment token for {worker} {cause} — disconnecting", {
+          worker: entry.name,
+          cause: CUTOFF_REASONS[cause],
+        });
+        const wasConnected = entry.channel !== null;
+        this.#removeWorker(entry, `enrollment token ${CUTOFF_REASONS[cause]}`);
+        removed.push(entry.name);
+        if (wasConnected) {
+          // Already on the transition tail, so written in place.
+          await this.#recordDisconnected(entry.name);
+        }
+      }
+      return removed;
+    });
   }
 
   /**
@@ -463,6 +560,7 @@ export class WorkerGateway {
       });
 
       const maxEnrollments = await this.#readTokenMaxEnrollments(name) ?? 1;
+      const tokenCreatedAt = await this.#readTokenMint(name);
       const workerName = maxEnrollments === 1
         ? name
         : `${name}-${await fleetMemberSuffix(params.machineId)}`;
@@ -550,6 +648,7 @@ export class WorkerGateway {
       const entry: WorkerEntry = reconnecting ? existing : {
         name: workerName,
         tokenName: name,
+        tokenCreatedAt,
         instanceUuid: params.instanceUuid,
         labels,
         platform: params.platform,
@@ -566,6 +665,7 @@ export class WorkerGateway {
       }
       entry.channel = state.channel;
       entry.closeSocket = state.closeSocket;
+      entry.tokenCreatedAt = tokenCreatedAt;
       this.#workers.set(workerName, entry);
       state.workerName = workerName;
 
@@ -731,10 +831,9 @@ export class WorkerGateway {
 
   /**
    * The token lifetime elapsed for a pool member: record the durable
-   * `expired` state and force the control socket closed. The close surfaces
-   * through the normal disconnect path (grace window, then removal); the
-   * worker's re-enrollment attempt is rejected as expired, so it cannot
-   * return on this token.
+   * `expired` state and cut the worker off. The worker's re-enrollment
+   * attempt is rejected as expired, so there is no grace window: it is
+   * removed and its credentials revoked at once.
    */
   #handleTokenExpired(workerName: string): void {
     const entry = this.#workers.get(workerName);
@@ -760,14 +859,60 @@ export class WorkerGateway {
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    if (entry.channel !== null) {
-      if (entry.closeSocket !== null) {
-        entry.closeSocket();
-      } else {
-        // No transport close hook: at least tear down the channel so the
-        // worker's session refresh fails and it falls back to re-enrolling.
-        entry.channel.close("enrollment token expired");
-      }
+    const wasConnected = entry.channel !== null;
+    this.#removeWorker(entry, "enrollment token expired");
+    if (wasConnected) {
+      // #recordDisconnected logs its own failures, so this never rejects.
+      this.#recordTransition(() => this.#recordDisconnected(workerName))
+        .catch(() => {});
+    }
+  }
+
+  /**
+   * Remove a worker whose token lost its authority. The pool entry goes
+   * first, so the socket close this triggers is ignored by
+   * #handleSocketClosed instead of opening a grace window. Closing the
+   * channel rejects in-flight dispatches now; DispatchService then sees the
+   * worker gone and applies its usual lost-worker semantics.
+   */
+  #removeWorker(entry: WorkerEntry, reason: string): void {
+    if (entry.graceTimer !== undefined) {
+      clearTimeout(entry.graceTimer);
+      entry.graceTimer = undefined;
+    }
+    if (entry.expiryTimer !== undefined) {
+      clearTimeout(entry.expiryTimer);
+      entry.expiryTimer = undefined;
+    }
+    this.#workers.delete(entry.name);
+    this.#sessions.revokeAllForWorker(entry.name);
+
+    const channel = entry.channel;
+    entry.channel = null;
+    if (channel !== null) {
+      channel.close(reason);
+      entry.closeSocket?.();
+    }
+    this.#options.onWorkerRemoved?.(this.#snapshot(entry));
+  }
+
+  /**
+   * Durable record that a removed worker is no longer connected. Callers
+   * run it on the transition tail. Bookkeeping only: failures are logged.
+   */
+  async #recordDisconnected(workerName: string): Promise<void> {
+    try {
+      await this.#runModelMethod({
+        typeArg: WORKER_MODEL_TYPE.normalized,
+        definitionName: workerDefinitionName(workerName),
+        methodName: "set_status",
+        inputs: { status: "disconnected" },
+      });
+    } catch (error) {
+      logger.warn("Failed to record disconnect for {worker}: {error}", {
+        worker: workerName,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -878,28 +1023,7 @@ export class WorkerGateway {
    */
   async #defaultReadTokenExpiresAt(tokenName: string): Promise<string | null> {
     try {
-      const dataItems = await this.#options.repoContext.unifiedDataRepo
-        .findAllForType(ENROLLMENT_TOKEN_MODEL_TYPE);
-      for (const { data, modelType, modelId } of dataItems) {
-        if (data.isRenamed || data.isDeleted) continue;
-        if (data.name !== TOKEN_DATA_NAME) continue;
-        const content = await this.#options.repoContext.unifiedDataRepo
-          .getContent(modelType, modelId, data.name);
-        if (!content) continue;
-        let attrs: Record<string, unknown>;
-        try {
-          attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
-            string,
-            unknown
-          >;
-        } catch {
-          continue;
-        }
-        const parsed = EnrollmentTokenSchema.safeParse(attrs);
-        if (parsed.success && parsed.data.name === tokenName) {
-          return parsed.data.expiresAt;
-        }
-      }
+      return (await this.#findTokenRecord(tokenName))?.expiresAt ?? null;
     } catch (error) {
       logger.warn("Failed to read token expiry for {worker}: {error}", {
         worker: tokenName,
@@ -913,28 +1037,7 @@ export class WorkerGateway {
     tokenName: string,
   ): Promise<MaxEnrollments | null> {
     try {
-      const dataItems = await this.#options.repoContext.unifiedDataRepo
-        .findAllForType(ENROLLMENT_TOKEN_MODEL_TYPE);
-      for (const { data, modelType, modelId } of dataItems) {
-        if (data.isRenamed || data.isDeleted) continue;
-        if (data.name !== TOKEN_DATA_NAME) continue;
-        const content = await this.#options.repoContext.unifiedDataRepo
-          .getContent(modelType, modelId, data.name);
-        if (!content) continue;
-        let attrs: Record<string, unknown>;
-        try {
-          attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
-            string,
-            unknown
-          >;
-        } catch {
-          continue;
-        }
-        const parsed = EnrollmentTokenSchema.safeParse(attrs);
-        if (parsed.success && parsed.data.name === tokenName) {
-          return parsed.data.maxEnrollments;
-        }
-      }
+      return (await this.#findTokenRecord(tokenName))?.maxEnrollments ?? null;
     } catch (error) {
       logger.warn(
         "Failed to read token maxEnrollments for {worker}: {error}",
@@ -943,6 +1046,53 @@ export class WorkerGateway {
           error: error instanceof Error ? error.message : String(error),
         },
       );
+    }
+    return null;
+  }
+
+  /**
+   * Reads the mint a worker enrolls on. Returns null when it cannot be
+   * read; the worker is then checked on its token's state alone.
+   */
+  async #readTokenMint(tokenName: string): Promise<string | null> {
+    try {
+      return (await this.#readTokenRecord(tokenName))?.createdAt ?? null;
+    } catch (error) {
+      logger.warn("Failed to read token mint for {worker}: {error}", {
+        worker: tokenName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return null;
+  }
+
+  /**
+   * Finds a token's current record in the datastore. Records that are
+   * deleted, renamed, or do not parse are skipped, so null means no usable
+   * record. Read failures propagate.
+   */
+  async #findTokenRecord(tokenName: string): Promise<EnrollmentToken | null> {
+    const dataItems = await this.#options.repoContext.unifiedDataRepo
+      .findAllForType(ENROLLMENT_TOKEN_MODEL_TYPE);
+    for (const { data, modelType, modelId } of dataItems) {
+      if (data.isRenamed || data.isDeleted) continue;
+      if (data.name !== TOKEN_DATA_NAME) continue;
+      const content = await this.#options.repoContext.unifiedDataRepo
+        .getContent(modelType, modelId, data.name);
+      if (!content) continue;
+      let attrs: Record<string, unknown>;
+      try {
+        attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        continue;
+      }
+      const parsed = EnrollmentTokenSchema.safeParse(attrs);
+      if (parsed.success && parsed.data.name === tokenName) {
+        return parsed.data;
+      }
     }
     return null;
   }

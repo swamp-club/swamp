@@ -26,6 +26,8 @@ import {
 import {
   type Binding,
   ENROLLMENT_TOKEN_MODEL_TYPE,
+  type EnrollmentToken,
+  enrollmentTokenBindingVerdict,
   enrollmentTokenModel,
   type MaxEnrollments,
   tokenSecretKey,
@@ -555,6 +557,65 @@ Deno.test("enrollmentTokenModel: prune_bindings frees enrollment slots on capped
     context,
   );
   assertEquals(tokenBindings(store).length, 2);
+});
+
+function tokenRecord(overrides: Partial<EnrollmentToken>): EnrollmentToken {
+  return {
+    name: "ci-runner-3",
+    state: "enrolled",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2026-01-01T01:00:00.000Z",
+    vaultName: "local",
+    secretKey: tokenSecretKey("ci-runner-3"),
+    maxEnrollments: 1,
+    bindings: [],
+    ...overrides,
+  };
+}
+
+Deno.test("enrollmentTokenBindingVerdict: keeps a worker on its own live mint", () => {
+  const token = tokenRecord({});
+  assertEquals(
+    enrollmentTokenBindingVerdict(token, token.createdAt),
+    { keep: true },
+  );
+});
+
+Deno.test("enrollmentTokenBindingVerdict: a revoked token cuts the worker off", () => {
+  const token = tokenRecord({ state: "revoked" });
+  assertEquals(
+    enrollmentTokenBindingVerdict(token, token.createdAt),
+    { keep: false, cause: "revoked" },
+  );
+});
+
+Deno.test("enrollmentTokenBindingVerdict: a re-minted name cuts off workers on the old mint", () => {
+  const token = tokenRecord({
+    state: "unused",
+    createdAt: "2026-01-01T00:05:00.000Z",
+  });
+  assertEquals(
+    enrollmentTokenBindingVerdict(token, "2026-01-01T00:00:00.000Z"),
+    { keep: false, cause: "reminted" },
+  );
+});
+
+Deno.test("enrollmentTokenBindingVerdict: a missing record cuts the worker off", () => {
+  assertEquals(
+    enrollmentTokenBindingVerdict(null, "2026-01-01T00:00:00.000Z"),
+    { keep: false, cause: "deleted" },
+  );
+});
+
+Deno.test("enrollmentTokenBindingVerdict: an unknown bound mint checks state only", () => {
+  assertEquals(
+    enrollmentTokenBindingVerdict(tokenRecord({}), null),
+    { keep: true },
+  );
+  assertEquals(
+    enrollmentTokenBindingVerdict(tokenRecord({ state: "revoked" }), null),
+    { keep: false, cause: "revoked" },
+  );
 });
 
 Deno.test("timingSafeEqual: equal and unequal strings", () => {

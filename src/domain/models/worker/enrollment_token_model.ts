@@ -126,6 +126,38 @@ function isExpired(token: EnrollmentToken, nowMs: number): boolean {
   return Date.parse(token.expiresAt) <= nowMs;
 }
 
+/** Why a connected worker lost the authority of the token it enrolled on. */
+export type EnrollmentBindingCutoffCause = "revoked" | "reminted" | "deleted";
+
+export type EnrollmentBindingVerdict =
+  | { readonly keep: true }
+  | { readonly keep: false; readonly cause: EnrollmentBindingCutoffCause };
+
+/**
+ * Decides whether a worker enrolled on the mint `boundCreatedAt` of a token
+ * may stay connected. `token` is the current record, or null when it no
+ * longer exists (or no longer parses). Minting after a revoke reuses the
+ * name, so a record whose `createdAt` differs is a different credential.
+ * `boundCreatedAt` is null when the mint could not be read at enrollment;
+ * only the record's state and existence are checked then. Expiry is not a
+ * cause here: the gateway arms its own timer from `expiresAt`.
+ */
+export function enrollmentTokenBindingVerdict(
+  token: EnrollmentToken | null,
+  boundCreatedAt: string | null,
+): EnrollmentBindingVerdict {
+  if (token === null) {
+    return { keep: false, cause: "deleted" };
+  }
+  if (token.state === "revoked") {
+    return { keep: false, cause: "revoked" };
+  }
+  if (boundCreatedAt !== null && token.createdAt !== boundCreatedAt) {
+    return { keep: false, cause: "reminted" };
+  }
+  return { keep: true };
+}
+
 const MintArgsSchema = z.object({
   durationMs: z.number().int().positive().describe(
     "Token lifetime in milliseconds",

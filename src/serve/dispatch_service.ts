@@ -199,6 +199,14 @@ export class DispatchService {
     this.#wakePoolWaiters();
   }
 
+  /**
+   * Gateway hook: a worker was removed because its enrollment token lost
+   * its authority — wake queued steps and any dispatch awaiting its fate.
+   */
+  notifyWorkerRemoved(_worker: WorkerSnapshot): void {
+    this.#wakePoolWaiters();
+  }
+
   /** Gateway hook: a worker enrolled or re-enrolled — wake queued steps. */
   notifyWorkerEnrolled(_worker: WorkerSnapshot): void {
     this.#wakePoolWaiters();

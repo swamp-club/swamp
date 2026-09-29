@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
   fleetMemberSuffix,
@@ -26,7 +27,12 @@ import {
   type WorkerGatewayOptions,
   type WorkerSnapshot,
 } from "./worker_gateway.ts";
-import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
+import {
+  ChannelClosedError,
+  RpcChannel,
+  RpcError,
+} from "../domain/remote/rpc_channel.ts";
+import type { EnrollmentToken } from "../domain/models/worker/enrollment_token_model.ts";
 import {
   type DispatchParams,
   type EnrollResult,
@@ -48,6 +54,7 @@ interface Harness {
   idle: WorkerSnapshot[];
   disconnected: WorkerSnapshot[];
   graceExpired: WorkerSnapshot[];
+  removed: WorkerSnapshot[];
   failOn: Set<string>;
 }
 
@@ -58,6 +65,7 @@ function createHarness(
   const idle: WorkerSnapshot[] = [];
   const disconnected: WorkerSnapshot[] = [];
   const graceExpired: WorkerSnapshot[] = [];
+  const removed: WorkerSnapshot[] = [];
   const failOn = new Set<string>();
   const gateway = new WorkerGateway({
     repoDir: "/tmp/unused",
@@ -74,6 +82,7 @@ function createHarness(
     onWorkerIdle: (w) => idle.push(w),
     onWorkerDisconnected: (w) => disconnected.push(w),
     onGraceExpired: (w) => graceExpired.push(w),
+    onWorkerRemoved: (w) => removed.push(w),
     runModelMethod: (input) => {
       if (failOn.has(input.methodName)) {
         return Promise.reject(
@@ -85,9 +94,19 @@ function createHarness(
     },
     // No expiry enforcement unless a test opts in with a real timestamp.
     readTokenExpiresAt: () => Promise.resolve(null),
+    // Unknown mint unless a test supplies a record.
+    readTokenRecord: () => Promise.resolve(null),
     ...overrides,
   });
-  return { gateway, transitions, idle, disconnected, graceExpired, failOn };
+  return {
+    gateway,
+    transitions,
+    idle,
+    disconnected,
+    graceExpired,
+    removed,
+    failOn,
+  };
 }
 
 /** Wires a simulated worker control socket to the gateway. */
@@ -364,25 +383,27 @@ Deno.test("WorkerGateway: grace expiry removes the worker and revokes its creden
   assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
 });
 
-Deno.test("WorkerGateway: token expiry disconnects the worker and removes it after grace", async () => {
+Deno.test("WorkerGateway: token expiry removes the worker and revokes its credential without a grace window", async () => {
   const h = createHarness({
-    graceWindowMs: 20,
+    graceWindowMs: 60_000,
     readTokenExpiresAt: () =>
       Promise.resolve(new Date(Date.now() + 30).toISOString()),
   });
   const { workerChannel } = connectWorkerSocket(h.gateway);
-  await enroll(workerChannel);
+  const result = await enroll(workerChannel);
   assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
 
-  await new Promise((r) => setTimeout(r, 100));
-  // The expiry timer recorded the lapsed lifetime, dropped the socket, and
-  // the grace window then removed the worker from the pool.
+  // The expiry timer recorded the lapsed lifetime and removed the worker
+  // at once; the long grace window never started.
+  await waitFor(() => h.removed.length === 1, "worker removed on expiry");
   const expires = h.transitions.filter((t) => t.methodName === "expire");
   assertEquals(expires.length, 1);
   assertEquals(expires[0].typeArg, "swamp/enrollment-token");
-  assertEquals(h.disconnected.length, 1);
-  assertEquals(h.graceExpired.length, 1);
   assertEquals(h.gateway.workers().length, 0);
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
+  assertEquals(h.disconnected.length, 0);
+  assertEquals(h.graceExpired.length, 0);
 });
 
 Deno.test("WorkerGateway: a different instance cannot enroll while a worker is connected", async () => {
@@ -593,12 +614,11 @@ Deno.test("WorkerGateway: fleet token expiry records expire on the token name, n
   const suffix = await fleetMemberSuffix("machine-1");
   assertEquals(result.workerId, `ci-runner-3-${suffix}`);
 
-  await new Promise((r) => setTimeout(r, 100));
+  await waitFor(() => h.removed.length === 1, "fleet worker removed");
   const expires = h.transitions.filter((t) => t.methodName === "expire");
   assertEquals(expires.length, 1);
   assertEquals(expires[0].typeArg, "swamp/enrollment-token");
   assertEquals(expires[0].definitionName, "ci-runner-3");
-  assertEquals(h.graceExpired.length, 1);
   assertEquals(h.gateway.workers().length, 0);
 });
 
@@ -735,4 +755,187 @@ Deno.test("WorkerGateway: draining worker disconnect skips grace window", async 
   assertEquals(h.gateway.pendingGraceWindows, 0);
   assertEquals(h.graceExpired.length, 0);
   assertEquals(h.disconnected.length, 1);
+});
+
+function mintRecord(createdAt: string): EnrollmentToken {
+  return {
+    name: "ci-runner-3",
+    state: "enrolled",
+    createdAt,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    vaultName: "local",
+    secretKey: "worker-token-ci-runner-3",
+    maxEnrollments: 1,
+    bindings: [],
+  };
+}
+
+Deno.test("WorkerGateway: revokeToken removes the worker, revokes its credential, and closes its socket", async () => {
+  const h = createHarness({ graceWindowMs: 60_000 });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+
+  const removed = await h.gateway.revokeToken("ci-runner-3", "revoked");
+
+  assertEquals(removed, ["ci-runner-3"]);
+  assertEquals(h.gateway.workers().length, 0);
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
+  assertEquals(h.removed.map((w) => w.name), ["ci-runner-3"]);
+  assertEquals(h.removed[0].connected, false);
+  // The socket close it forces is not treated as a drop.
+  assertEquals(h.disconnected.length, 0);
+  await waitFor(
+    () =>
+      h.transitions.some((t) =>
+        t.methodName === "set_status" && t.inputs.status === "disconnected"
+      ),
+    "disconnect recorded",
+  );
+});
+
+Deno.test("WorkerGateway: revokeToken fails an in-flight dispatch and revokes its dispatch credential", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  let dispatchCredential: string | undefined;
+  workerChannel.register(
+    WorkerMethod.dispatch,
+    (params) => {
+      dispatchCredential = (params as { dispatchCredential: string })
+        .dispatchCredential;
+      return new Promise(() => {});
+    },
+  );
+
+  const dispatch = h.gateway.dispatch("ci-runner-3", dispatchParams());
+  await waitFor(() => dispatchCredential !== undefined, "dispatch sent");
+  assertEquals(
+    h.gateway.sessions.verify(dispatchCredential!)?.workerId,
+    "ci-runner-3",
+  );
+
+  await h.gateway.revokeToken("ci-runner-3", "revoked");
+
+  await assertRejects(() => dispatch, ChannelClosedError, "revoked");
+  assertEquals(h.gateway.sessions.verify(dispatchCredential!), null);
+  assertEquals(h.gateway.worker("ci-runner-3"), null);
+});
+
+Deno.test("WorkerGateway: revokeToken cuts off every fleet member of that token only", async () => {
+  const h = createHarness({
+    readTokenMaxEnrollments: (name) =>
+      Promise.resolve(name === "ci-runner-3" ? 3 : 1),
+  });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  const second = connectWorkerSocket(h.gateway);
+  await enroll(second.workerChannel, {
+    ...enrollParams,
+    instanceUuid: "uuid-2",
+    machineId: "machine-2",
+  });
+  const other = connectWorkerSocket(h.gateway);
+  await enroll(other.workerChannel, {
+    ...enrollParams,
+    token: "other-token.s3cret",
+    instanceUuid: "uuid-3",
+    machineId: "machine-3",
+  });
+
+  const removed = await h.gateway.revokeToken("ci-runner-3", "revoked");
+
+  assertEquals(removed.length, 2);
+  assertEquals(h.gateway.workers().map((w) => w.name), ["other-token"]);
+});
+
+Deno.test("WorkerGateway: revokeToken removes a worker inside its grace window", async () => {
+  const h = createHarness({ graceWindowMs: 60_000 });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+  dropSocket();
+  assertEquals(h.gateway.pendingGraceWindows, 1);
+
+  const removed = await h.gateway.revokeToken("ci-runner-3", "revoked");
+
+  assertEquals(removed, ["ci-runner-3"]);
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
+});
+
+Deno.test("WorkerGateway: revokeToken is a no-op for a token with no workers", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await h.gateway.revokeToken("ci-runner-3", "revoked");
+
+  assertEquals(await h.gateway.revokeToken("ci-runner-3", "revoked"), []);
+  assertEquals(h.removed.length, 1);
+});
+
+Deno.test("WorkerGateway: revokeToken with a mint leaves workers on a newer mint connected", async () => {
+  const h = createHarness({
+    readTokenRecord: () =>
+      Promise.resolve(mintRecord("2026-01-01T00:05:00.000Z")),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  assertEquals(h.gateway.boundTokens(), [{
+    tokenName: "ci-runner-3",
+    tokenCreatedAt: "2026-01-01T00:05:00.000Z",
+  }]);
+
+  const stale = await h.gateway.revokeToken("ci-runner-3", "reminted", {
+    mint: "2026-01-01T00:00:00.000Z",
+  });
+  assertEquals(stale, []);
+  assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
+
+  const current = await h.gateway.revokeToken("ci-runner-3", "revoked", {
+    mint: "2026-01-01T00:05:00.000Z",
+  });
+  assertEquals(current, ["ci-runner-3"]);
+});
+
+Deno.test("WorkerGateway: revokeToken waits for an enrollment in progress and cuts it off", async () => {
+  let releaseRedeem!: () => void;
+  const redeemGate = new Promise<void>((r) => {
+    releaseRedeem = r;
+  });
+  let redeemStarted = false;
+  const h = createHarness({
+    runModelMethod: async (input) => {
+      if (input.methodName === "redeem") {
+        redeemStarted = true;
+        await redeemGate;
+      }
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const enrolling = enroll(workerChannel).catch((error: unknown) => error);
+  // The enrollment holds the transition tail before the revoke queues.
+  await waitFor(() => redeemStarted, "redeem started");
+
+  const revoking = h.gateway.revokeToken("ci-runner-3", "revoked");
+  releaseRedeem();
+
+  assertEquals(await revoking, ["ci-runner-3"]);
+  assertEquals(h.gateway.workers().length, 0);
+  // The gateway closed the socket before the enroll reply; the simulated
+  // worker only learns that when its end closes.
+  workerChannel.close("control socket closed");
+  assertEquals((await enrolling) instanceof ChannelClosedError, true);
+});
+
+Deno.test("WorkerGateway: boundTokens records the enrolled mint, or null when unreadable", async () => {
+  const h = createHarness({
+    readTokenRecord: () => Promise.reject(new Error("datastore offline")),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  assertEquals(h.gateway.boundTokens(), [{
+    tokenName: "ci-runner-3",
+    tokenCreatedAt: null,
+  }]);
 });

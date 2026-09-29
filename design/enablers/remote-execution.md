@@ -502,6 +502,34 @@ swamp worker token list                             # NAME, STATE, EXPIRES, ENRO
 swamp worker token revoke <name>                    # invalidate before expiry
 ```
 
+**Cutting off a token's workers.** A token's authority ends for workers that
+are already connected, not just at the next enrollment. Each pool member
+records the mint (`createdAt`) it enrolled on; minting after a revoke reuses
+the name, so a new `createdAt` is a new credential. `WorkerGateway.revokeToken`
+(`src/serve/worker_gateway.ts`) removes every pool member bound to the token,
+fleet members included, with **no reconnection grace window**. It revokes
+their session and dispatch credentials at once and closes their control
+sockets. A step in flight fails under the usual lost-worker rules (a no-write
+step re-dispatches, a write fails the run). The worker treats the `revoked` or
+`expired` rejection of its re-enrollment as permanent and stops. Workers are
+cut off in three ways:
+
+- **Immediately on revoke through serve.** `handleWorkerTokenRevoke` calls
+  `revokeToken` after the revoke is saved, even when the request was cancelled
+  or the token was already revoked, and returns the removed names as
+  `disconnectedWorkers`. It runs on the gateway's transition tail, so an
+  enrollment already in progress lands first and is cut off too.
+- **On revalidation.** `WorkerTokenRevalidationService`
+  (`src/serve/worker_token_revalidation_service.ts`) re-reads each bound
+  token's record every 30 s and applies `enrollmentTokenBindingVerdict`: a
+  worker is cut off when its token is revoked, re-minted, or gone (a record
+  that no longer parses counts as gone). A read failure such as I/O keeps the
+  workers until the next pass. This covers revokes from the CLI without
+  `--server` and on HA peers, whose record arrives through the runtime data
+  poller, so a peer cuts workers off within the poll interval plus 30 s.
+- **On expiry.** The per-worker expiry timer, armed from `expiresAt` at
+  enrollment, records `expired` and removes the worker the same way.
+
 The printed credential is **`<name>.<secret>`**. The name half finds the token
 aggregate at enrollment without scanning the pool. The secret half is compared
 in constant time with the plaintext stored in the vault.
@@ -1160,8 +1188,9 @@ write is the ambiguous case below. If the control socket drops with a step in
 flight, the orchestrator holds the step lease through a **reconnection grace
 window** (`DEFAULT_GRACE_WINDOW_MS` = 60 s, `src/serve/worker_gateway.ts`)
 before giving up. This stops reconnection and re-dispatch from racing into
-double execution. Token expiry is a separate timer that disconnects the worker
-when its token lifetime ends.
+double execution. A worker whose token loses its authority gets no grace
+window, since it can never re-enroll (see "Cutting off a token's workers"
+below).
 
 - **Worker reconnects within the window** (same `{token, machineId}`): it stays
   the same pool member, with a fresh session credential. As built, the
@@ -1281,7 +1310,9 @@ credentials and extensions onto workers:
   The data-plane **session credential** is short-lived and lease-scoped. Token
   lifetimes should be short too: a token leaked before enrollment is the main
   exposure, since an attacker could enroll first. The orchestrator disconnects
-  a worker when its token lifetime ends, and `revoke` cuts a token off early.
+  a worker when its token lifetime ends, and `revoke` cuts a token off early,
+  including workers already connected on it (see "Cutting off a token's
+  workers").
 
 - Conversely, a worker tricked into connecting to the wrong URL hands code
   execution on its host to that URL's owner, the same trust model as a

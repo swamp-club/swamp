@@ -174,6 +174,75 @@ Deno.test("renderWorkerTokenRevoke: log mode reports already-revoked", () => {
   assertStringIncludes(output, "already revoked");
 });
 
+Deno.test("renderWorkerTokenRevoke: log mode lists workers the server disconnected", () => {
+  const data: WorkerTokenRevokeData = {
+    name: "ci-runner-3",
+    state: "revoked",
+    revokedAt: "2026-06-09T12:00:00.000Z",
+    alreadyRevoked: false,
+    disconnectedWorkers: ["ci-runner-3-aa11bb22", "ci-runner-3-cc33dd44"],
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenRevoke(data, "log")),
+  );
+  assertStringIncludes(
+    output,
+    "Disconnected workers: ci-runner-3-aa11bb22, ci-runner-3-cc33dd44",
+  );
+});
+
+Deno.test("renderWorkerTokenRevoke: log mode says when no worker was connected", () => {
+  const data: WorkerTokenRevokeData = {
+    name: "ci-runner-3",
+    state: "revoked",
+    alreadyRevoked: false,
+    disconnectedWorkers: [],
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenRevoke(data, "log")),
+  );
+  assertStringIncludes(output, "No connected workers were enrolled");
+});
+
+Deno.test("renderWorkerTokenRevoke: log mode reports workers cut off by a repeat revoke", () => {
+  const data: WorkerTokenRevokeData = {
+    name: "old",
+    state: "revoked",
+    alreadyRevoked: true,
+    disconnectedWorkers: ["old"],
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenRevoke(data, "log")),
+  );
+  assertStringIncludes(output, "already revoked");
+  assertStringIncludes(output, "Disconnected workers: old");
+});
+
+Deno.test("renderWorkerTokenRevoke: log mode notes the orchestrator catches a local revoke", () => {
+  const data: WorkerTokenRevokeData = {
+    name: "ci-runner-3",
+    state: "revoked",
+    alreadyRevoked: false,
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenRevoke(data, "log")),
+  );
+  assertStringIncludes(output, "at its next revalidation");
+});
+
+Deno.test("renderWorkerTokenRevoke: json mode carries disconnectedWorkers when present", () => {
+  const data: WorkerTokenRevokeData = {
+    name: "ci-runner-3",
+    state: "revoked",
+    alreadyRevoked: false,
+    disconnectedWorkers: ["ci-runner-3"],
+  };
+  const parsed = JSON.parse(
+    captureLogs(() => renderWorkerTokenRevoke(data, "json")),
+  );
+  assertEquals(parsed.disconnectedWorkers, ["ci-runner-3"]);
+});
+
 Deno.test("renderWorkerTokenRevoke: json mode emits the structured record", () => {
   const data: WorkerTokenRevokeData = {
     name: "ci-runner-3",
