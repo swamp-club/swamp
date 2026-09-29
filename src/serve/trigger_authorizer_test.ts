@@ -108,7 +108,7 @@ Deno.test("createTriggerAuthorizer: a workflow configured by id is decided on it
   const result = await authorize(WEBHOOK_PRINCIPAL, deploy.id);
   assertEquals(result.allowed, false);
   assertEquals(result.reason, `denied by grant ${deny.id}`);
-  assertEquals(result.workflowIdOrName, "deploy");
+  assertEquals(result.workflowIdOrName, deploy.id);
   assertEquals(result.resource.name, "deploy");
   assertEquals(result.decision?.grantId, deny.id);
 });
@@ -201,4 +201,33 @@ Deno.test("createTriggerAuthorizer: auth mode none still allows when the lookup 
     workflowRepo: failing,
   });
   assertEquals((await authorize(SCHEDULER_PRINCIPAL, "deploy")).allowed, true);
+});
+
+Deno.test("createTriggerAuthorizer: runs the configured id, not a same-named workflow that shadows it", async () => {
+  // An extension workflow configured by id, shadowed by a repo workflow of
+  // the same name carrying prod tags. Execution resolves the configured id
+  // to the extension workflow, so that is what must be decided on and run.
+  const extension = Workflow.create({ name: "deploy", jobs: [] });
+  const shadow = Workflow.create({
+    name: "deploy",
+    tags: { env: "prod" },
+    jobs: [],
+  });
+  const composite: WorkflowRepository = {
+    ...repoWith([shadow, extension]),
+    findByName: (name: string) =>
+      Promise.resolve(name === "deploy" ? shadow : null),
+    findById: (id: WorkflowId) =>
+      Promise.resolve(id === extension.id ? extension : null),
+  };
+  const authorize = createTriggerAuthorizer({
+    authMode: "token",
+    policySnapshotLoader: loaderWith([]),
+    workflowRepo: composite,
+  });
+  const result = await authorize(WEBHOOK_PRINCIPAL, extension.id);
+  assertEquals(result.allowed, true);
+  assertEquals(result.workflowIdOrName, extension.id);
+  assertEquals(result.resource.name, "deploy");
+  assertEquals(result.resource.fields, { name: "deploy" });
 });

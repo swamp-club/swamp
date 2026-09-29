@@ -36,9 +36,12 @@ const logger = getSwampLogger(["serve", "trigger-authorizer"]);
 export interface TriggerAuthorization {
   readonly allowed: boolean;
   /**
-   * The workflow the decision was made on. The caller runs exactly this
-   * value, so authorization and execution share one identity: the canonical
-   * workflow name when it resolved, the configured value otherwise.
+   * The value the caller runs: the configured value itself. Execution
+   * resolves it name-first then by id, the same order the authorizer used,
+   * so it reaches the workflow the decision was made on. Running the
+   * resolved name instead could reach a different workflow that shadows it
+   * (a repo workflow with the name of an extension workflow configured by
+   * id). The decided workflow's canonical name is on `resource`.
    */
   readonly workflowIdOrName: string;
   readonly resource: AccessResource;
@@ -85,10 +88,11 @@ export function createTriggerAuthorizer(
     } catch (error) {
       lookupError = error instanceof Error ? error.message : String(error);
     }
-    const workflowIdOrName = workflow?.name ?? configured;
+    // Resolved in the same order execution uses (findByName, then findById).
+    const workflowIdOrName = configured;
     const resource: AccessResource = {
       kind: "workflow",
-      name: workflowIdOrName,
+      name: workflow?.name ?? configured,
       fields: workflow
         ? workflowAccessFields({ name: workflow.name, tags: workflow.tags })
         : { name: configured },
