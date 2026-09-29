@@ -107,7 +107,7 @@ Deno.test("createTriggerAuthorizer: a workflow configured by id is decided on it
   });
   const result = await authorize(WEBHOOK_PRINCIPAL, deploy.id);
   assertEquals(result.allowed, false);
-  assertEquals(result.reason, "denied");
+  assertEquals(result.reason, `denied by grant ${deny.id}`);
   assertEquals(result.workflowIdOrName, "deploy");
   assertEquals(result.resource.name, "deploy");
   assertEquals(result.decision?.grantId, deny.id);
@@ -155,7 +155,10 @@ Deno.test("createTriggerAuthorizer: a missing policy snapshot refuses", async ()
   });
   const result = await authorize(SCHEDULER_PRINCIPAL, "deploy");
   assertEquals(result.allowed, false);
-  assertEquals(result.reason, "access_not_configured");
+  assertEquals(
+    result.reason,
+    "authorization is enabled but no policy snapshot is loaded",
+  );
 });
 
 Deno.test("createTriggerAuthorizer: a failing decision refuses without throwing", async () => {

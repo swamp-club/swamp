@@ -28,8 +28,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { parsePrincipal } from "../../domain/access/principal.ts";
-import { assertAuthenticatablePrincipal } from "../../domain/access/service_principal.ts";
+import { parseCredentialPrincipal } from "../../domain/access/service_principal.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
@@ -107,7 +106,7 @@ export const accessTokenMintCommand = withRemoteOptions(
 
   const principal = options.principal as string;
   try {
-    assertAuthenticatablePrincipal(parsePrincipal(principal));
+    parseCredentialPrincipal(principal);
   } catch (error) {
     throw new UserError(
       `Invalid --principal value "${principal}": ${

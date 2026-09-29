@@ -284,7 +284,7 @@ resource. There is no other priority or ordering.
 **Service trigger default**: the default is computed, not stored, so no grant
 reconcile, reload or fleet version skew can remove it, and existing schedules and
 webhooks keep running when authorization is added. `explain` and
-`access can-i --subject service:<id>` report it. To restrict trigger runs, add
+`swamp access check --subject service:<id>` report it. To restrict trigger runs, add
 deny grants: `deny run workflow:deploy` for `service:webhook` stops one
 workflow, and a conditioned deny such as
 `deny run workflow:* when name != "nightly"` for `service:scheduler` allows

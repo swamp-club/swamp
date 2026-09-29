@@ -444,6 +444,7 @@ export type WebhookEvent =
     route: string;
     workflowName: string;
     reason: string;
+    sourceIp?: string;
     replayed: boolean;
   }
   | {
@@ -1006,13 +1007,14 @@ export class WebhookService {
         route,
         workflowName: entry.workflowIdOrName,
         reason,
+        sourceIp,
         replayed,
       });
-      logger.warn("Webhook run refused for {workflow} on {route}: {reason}", {
-        workflow: entry.workflowIdOrName,
-        route,
-        reason,
-      });
+      const principal = this.deps.initiatedBy ?? "the webhook receiver";
+      logger.warn(
+        "Webhook run refused for {workflow} on {route} as {principal}: {reason}. Check with: swamp access check --subject {principal} --action run --on workflow:{workflow}",
+        { workflow: entry.workflowIdOrName, route, principal, reason },
+      );
       return;
     }
     // Events and bookkeeping keep the configured value, as before; only the

@@ -22,6 +22,7 @@ import { parsePrincipal, principalToString } from "./principal.ts";
 import {
   assertAuthenticatablePrincipal,
   isServicePrincipal,
+  parseCredentialPrincipal,
   SCHEDULER_PRINCIPAL,
   WEBHOOK_PRINCIPAL,
 } from "./service_principal.ts";
@@ -51,4 +52,29 @@ Deno.test("assertAuthenticatablePrincipal: rejects service principals", () => {
 Deno.test("assertAuthenticatablePrincipal: accepts user and worker", () => {
   assertAuthenticatablePrincipal(parsePrincipal("user:adam"));
   assertAuthenticatablePrincipal(parsePrincipal("worker:build-1"));
+});
+
+Deno.test("parseCredentialPrincipal: refuses service principals by name", () => {
+  assertThrows(
+    () => parseCredentialPrincipal("service:scheduler"),
+    Error,
+    "built-in service principal",
+  );
+  assertThrows(
+    () => parseCredentialPrincipal("service:typo"),
+    Error,
+    "built-in service principal",
+  );
+});
+
+Deno.test("parseCredentialPrincipal: parse errors name only user and worker", () => {
+  assertThrows(
+    () => parseCredentialPrincipal("adam"),
+    Error,
+    'expected "user:<id>" or "worker:<id>"',
+  );
+  assertEquals(parseCredentialPrincipal("worker:build-1"), {
+    kind: "worker",
+    id: "build-1",
+  });
 });

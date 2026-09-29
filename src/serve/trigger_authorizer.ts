@@ -97,7 +97,12 @@ export function createTriggerAuthorizer(
       return { allowed: true, workflowIdOrName, resource, decision: null };
     }
     const loader = deps.policySnapshotLoader;
-    if (!loader) return refuse("access_not_configured", null);
+    if (!loader) {
+      return refuse(
+        "authorization is enabled but no policy snapshot is loaded",
+        null,
+      );
+    }
 
     try {
       const accessPrincipal = { principal, collectives: [], groups: [] };
@@ -109,7 +114,7 @@ export function createTriggerAuthorizer(
       if (decision) {
         return decision.effect === "allow"
           ? { allowed: true, workflowIdOrName, resource, decision }
-          : refuse("denied", decision);
+          : refuse(`denied by grant ${decision.grantId}`, decision);
       }
       const admin = loader.decisionService.decide(
         accessPrincipal,
@@ -118,7 +123,7 @@ export function createTriggerAuthorizer(
       );
       return admin?.effect === "allow"
         ? { allowed: true, workflowIdOrName, resource, decision: admin }
-        : refuse("denied", null);
+        : refuse("no grant allows it", null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error(

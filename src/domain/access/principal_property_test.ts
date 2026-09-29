@@ -23,6 +23,7 @@ import {
   parsePrincipal,
   PrincipalKindSchema,
   principalToString,
+  SERVICE_PRINCIPAL_IDS,
 } from "./principal.ts";
 
 const arbKind = fc.constantFrom(...PrincipalKindSchema.options);
@@ -34,7 +35,13 @@ const arbId = fc.stringOf(
 
 Deno.test("parsePrincipal: round-trips through principalToString for every kind", () => {
   fc.assert(
-    fc.property(arbKind, arbId, (kind, id) => {
+    fc.property(arbKind, arbId, fc.constantFrom(...SERVICE_PRINCIPAL_IDS), (
+      kind,
+      anyId,
+      serviceId,
+    ) => {
+      // A service principal is one of the built-ins; other kinds take any id.
+      const id = kind === "service" ? serviceId : anyId;
       const text = `${kind}:${id}`;
       const parsed = parsePrincipal(text);
       assertEquals(parsed, { kind, id });

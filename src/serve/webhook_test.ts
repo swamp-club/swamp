@@ -1173,7 +1173,10 @@ Deno.test("WebhookService: a refused run never executes and the sender still get
         reason: "denied",
       }),
   });
-  const response = await service.handleRequest(await signedDelivery("{}"));
+  const response = await service.handleRequest(
+    await signedDelivery("{}"),
+    "203.0.113.9",
+  );
   assertEquals(response?.status, 200);
   await waitFor(
     () => events.some((e) => e.kind === "webhook_denied"),
@@ -1181,6 +1184,11 @@ Deno.test("WebhookService: a refused run never executes and the sender still get
   );
   await service.stop();
   assertEquals(calls.length, 0);
+  const denied = events.find((e) => e.kind === "webhook_denied");
+  assertEquals(
+    denied?.kind === "webhook_denied" && denied.sourceIp,
+    "203.0.113.9",
+  );
 });
 
 Deno.test("WebhookService: a throwing authorizer refuses that run and the queue keeps going", async () => {

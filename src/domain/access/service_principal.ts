@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type Principal, principalToString } from "./principal.ts";
+import {
+  parsePrincipalOfKinds,
+  type Principal,
+  principalToString,
+} from "./principal.ts";
 
 /**
  * Service principals are the identities serve itself acts as when it starts a
@@ -54,4 +58,18 @@ export function assertAuthenticatablePrincipal(principal: Principal): void {
       }" is a built-in service principal and cannot hold a credential`,
     );
   }
+}
+
+/**
+ * Parses a principal a credential may be issued to: `user` or `worker`.
+ * A service principal is refused by name, and parse errors name only the
+ * kinds a token can hold.
+ */
+export function parseCredentialPrincipal(value: string): Principal {
+  if (value.startsWith("service:")) {
+    throw new Error(
+      `Principal "${value}" is a built-in service principal and cannot hold a credential`,
+    );
+  }
+  return parsePrincipalOfKinds(value, ["user", "worker"]);
 }

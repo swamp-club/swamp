@@ -76,3 +76,11 @@ Deno.test("parseSubject: parses service subject", () => {
     name: "scheduler",
   });
 });
+
+Deno.test("parseSubject: rejects a service subject that is not built in", () => {
+  assertThrows(
+    () => parseSubject("service:schedular"),
+    Error,
+    'Invalid subject "service:schedular": expected "service:scheduler" or "service:webhook"',
+  );
+});

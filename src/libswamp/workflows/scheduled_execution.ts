@@ -770,9 +770,14 @@ export class ScheduledExecutionService {
         fireTime,
         replayed,
       });
+      const principal = this.deps.initiatedBy ?? "the scheduler";
       logger.warn(
-        "Scheduled run refused for workflow {name}: {reason}",
-        { name: workflowName, reason: authorization.reason ?? "denied" },
+        "Scheduled run refused for workflow {name} as {principal}: {reason}. Check with: swamp access check --subject {principal} --action run --on workflow:{name}",
+        {
+          name: workflowName,
+          principal,
+          reason: authorization.reason ?? "denied",
+        },
       );
       return;
     }
