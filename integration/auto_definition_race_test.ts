@@ -21,7 +21,7 @@ import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import { resolveOrCreateDefinition } from "../src/libswamp/mod.ts";
 import type { ModelDefinition } from "../src/domain/models/model.ts";
-import type { Definition } from "../src/domain/definitions/definition.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -126,5 +126,81 @@ Deno.test("integration: concurrent auto-creation converges on a single definitio
       true,
       `expected more than ${N} lookups (got ${lookupCount})`,
     );
+  });
+});
+
+Deno.test("integration: concurrent auto-creators each run with their own globalArgs", async () => {
+  await withTempDir(async (tmpDir) => {
+    const lockDir = join(tmpDir, "locks");
+    await ensureDir(lockDir);
+
+    const modelDef = {
+      type: "test/race",
+      version: "2026.01.01.1",
+      globalArguments: z.object({ message: z.string() }),
+      methods: {
+        record: {
+          description: "Test method",
+          arguments: z.object({ label: z.string() }),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    } as unknown as ModelDefinition;
+    const resolvedType = ModelType.create("test/race");
+    // The latest saved state, handed out as a fresh copy per lookup the way a
+    // read from disk would be, so no caller shares another's instance.
+    let stored: Definition | undefined;
+    let createCount = 0;
+
+    const deps = {
+      lookupDefinition: () =>
+        Promise.resolve(
+          stored
+            ? {
+              definition: Definition.fromData(stored.toData()),
+              type: resolvedType,
+            }
+            : null,
+        ),
+      getModelDef: () => modelDef,
+      saveDefinition: (_type: ModelType, def: Definition) => {
+        if (!stored) createCount++;
+        stored = Definition.fromData(def.toData());
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type: ModelType, id: string) =>
+        join(tmpDir, `${id}.yaml`),
+    };
+
+    const messages = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    const results = await Promise.all(
+      messages.map((message) =>
+        resolveOrCreateDefinition(
+          deps,
+          "test/race",
+          "shared",
+          "record",
+          { label: message },
+          resolvedType,
+          modelDef,
+          { message },
+          lockDir,
+        )
+      ),
+    );
+
+    assertEquals(createCount, 1, "expected exactly one definition created");
+    const ids = new Set<string>();
+    results.forEach((result, i) => {
+      assertEquals(result.ok, true);
+      if (!result.ok) return;
+      ids.add(result.definition.id);
+      assertEquals(
+        result.definition.globalArguments,
+        { message: messages[i] },
+        `caller ${messages[i]} ran with another caller's globalArgs`,
+      );
+    });
+    assertEquals(ids.size, 1, "all callers should share one definition id");
   });
 });

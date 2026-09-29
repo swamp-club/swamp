@@ -1064,3 +1064,147 @@ Deno.test("resolveOrCreateDefinition: with lockDir adopts race winner's definiti
     assertEquals(lookupCount, 2);
   });
 });
+
+/**
+ * Deps whose first lookup misses and whose later lookups find `winner`, as
+ * seen by a caller that loses the auto-creation race.
+ */
+function raceLoserDeps(
+  winner: Definition,
+  resolvedType: ModelType,
+  modelDef: ModelDefinition,
+  saved: Definition[],
+) {
+  let lookupCount = 0;
+  return {
+    lookupDefinition: () => {
+      lookupCount++;
+      if (lookupCount === 1) return Promise.resolve(null);
+      return Promise.resolve({ definition: winner, type: resolvedType });
+    },
+    getModelDef: () => modelDef,
+    saveDefinition: (_type: ModelType, def: Definition) => {
+      saved.push(def);
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type: ModelType, id: string) => `/tmp/${id}.yaml`,
+  };
+}
+
+Deno.test("resolveOrCreateDefinition: with lockDir race loser applies its own globalArgs to the winner's definition", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(
+      z.object({ message: z.string() }),
+      { record: z.object({ label: z.string() }) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    const winnerDef = Definition.create({
+      name: "shared",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { message: "a", note: "${{ env.WINNER_NOTE }}" },
+    });
+    const saved: Definition[] = [];
+
+    const result = await resolveOrCreateDefinition(
+      raceLoserDeps(winnerDef, resolvedType, modelDef, saved),
+      "test/model",
+      "shared",
+      "record",
+      { label: "b" },
+      resolvedType,
+      modelDef,
+      { message: "b" },
+      lockDir,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.created, false);
+      assertEquals(result.definition.id, winnerDef.id);
+      assertEquals(result.definition.globalArguments, { message: "b" });
+      assertEquals(result.globalArgsUpdated, true);
+      // Provenance is the winner's stored expressions, collected before the
+      // loser's arguments replaced them.
+      assertEquals(
+        result.authoredExpressions.has("${{ env.WINNER_NOTE }}"),
+        true,
+      );
+    }
+    assertEquals(saved.length, 1);
+    assertEquals(saved[0].globalArguments, { message: "b" });
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: with lockDir race loser with matching globalArgs does not save", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(
+      z.object({ message: z.string() }),
+      { record: z.object({ label: z.string() }) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    const winnerDef = Definition.create({
+      name: "shared",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { message: "a" },
+    });
+    const saved: Definition[] = [];
+
+    const result = await resolveOrCreateDefinition(
+      raceLoserDeps(winnerDef, resolvedType, modelDef, saved),
+      "test/model",
+      "shared",
+      "record",
+      { label: "a" },
+      resolvedType,
+      modelDef,
+      { message: "a" },
+      lockDir,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.definition.globalArguments, { message: "a" });
+      assertEquals(result.globalArgsUpdated, false);
+    }
+    assertEquals(saved.length, 0);
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: with lockDir race loser removes global args it does not supply", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(
+      z.object({ message: z.string(), region: z.string() }),
+      { record: z.object({ label: z.string() }) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    const winnerDef = Definition.create({
+      name: "shared",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { message: "a", region: "us-east-1" },
+    });
+    const saved: Definition[] = [];
+
+    const result = await resolveOrCreateDefinition(
+      raceLoserDeps(winnerDef, resolvedType, modelDef, saved),
+      "test/model",
+      "shared",
+      "record",
+      { label: "b" },
+      resolvedType,
+      modelDef,
+      { message: "b" },
+      lockDir,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.definition.globalArguments, { message: "b" });
+      assertEquals(result.globalArgsUpdated, true);
+    }
+    assertEquals(saved.length, 1);
+    assertEquals(saved[0].globalArguments, { message: "b" });
+  });
+});
