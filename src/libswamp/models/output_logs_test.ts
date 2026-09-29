@@ -213,3 +213,42 @@ Deno.test("modelOutputLogs yields error when no log artifacts", async () => {
 
   assertEquals(events[1].kind, "error");
 });
+
+Deno.test("modelOutputLogs acts on a passed reference without looking the id up", async () => {
+  const output = makeOutput();
+  const deps = makeDeps({
+    isPartialId: () => {
+      throw new Error("the id must not be parsed again");
+    },
+    matchOutputByPartialId: () =>
+      Promise.reject(new Error("the id must not be looked up again")),
+  });
+  const events = await collect<ModelOutputLogsEvent>(
+    modelOutputLogs(createLibSwampContext(), deps, {
+      outputIdArg: "abc",
+      reference: {
+        kind: "output",
+        match: { output, type: ModelType.create("aws/ec2") },
+      },
+    }),
+  );
+  const completed = events[1] as Extract<
+    ModelOutputLogsEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.outputId, output.id);
+});
+
+Deno.test("modelOutputLogs reports a passed ambiguous reference as today", async () => {
+  const events = await collect<ModelOutputLogsEvent>(
+    modelOutputLogs(createLibSwampContext(), makeDeps(), {
+      outputIdArg: "abc",
+      reference: { kind: "ambiguous", ids: ["abc1", "abc2"] },
+    }),
+  );
+  const error = events[1] as Extract<ModelOutputLogsEvent, { kind: "error" }>;
+  assertEquals(
+    error.error.message,
+    'Ambiguous ID prefix "abc" matches:\n  abc1\n  abc2',
+  );
+});

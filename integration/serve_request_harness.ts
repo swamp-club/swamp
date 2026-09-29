@@ -332,23 +332,22 @@ let outputSequence = 0;
 
 /**
  * Saves a succeeded `noop` output of `model` whose artifacts are its `state`
- * data item and a `log` item tagged as a log, saving both first. Pass `id` to
- * choose the output id, for prefix and ambiguity cases.
+ * data item and a `log` item tagged as a log, saving either first if the
+ * model has none yet. Pass `id` to choose the output id, for prefix and
+ * ambiguity cases.
  */
 export async function saveOutput(
   repo: ServeRepo,
   model: Definition,
   id?: string,
 ): Promise<ModelOutput> {
-  await saveData(repo, model, "state");
-  await saveData(repo, model, "log", "log");
+  const dataRepo = repo.repoContext.unifiedDataRepo;
   const artifacts = [];
-  for (const name of ["state", "log"]) {
-    const data = await repo.repoContext.unifiedDataRepo.findByName(
-      repo.modelType,
-      model.id,
-      name,
-    );
+  for (const [name, type] of [["state", "resource"], ["log", "log"]]) {
+    if (!await dataRepo.findByName(repo.modelType, model.id, name)) {
+      await saveData(repo, model, name, type);
+    }
+    const data = await dataRepo.findByName(repo.modelType, model.id, name);
     artifacts.push({
       dataId: data!.id,
       name,

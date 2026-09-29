@@ -29,7 +29,6 @@ import {
   handleWorkflowHistoryGet,
   handleWorkflowRunSearch,
   handleWorkflowSearch,
-  resolveWorkflowFields,
   WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
 } from "./workflow_handlers.ts";
 import "../../domain/models/models.ts";
@@ -67,75 +66,6 @@ function makeWorkflowRepo(
     delete: () => Promise.resolve(),
   } as unknown as WorkflowRepository;
 }
-
-Deno.test("resolveWorkflowFields: returns tags when workflow has them", async () => {
-  const wf = Workflow.create({
-    name: "tagged-workflow",
-    tags: { env: "staging", team: "ops" },
-  });
-  const repo = makeWorkflowRepo(new Map([["tagged-workflow", wf]]));
-
-  const fields = await resolveWorkflowFields(repo, "tagged-workflow");
-
-  assertEquals(fields.name, "tagged-workflow");
-  assertEquals(fields.tags, { env: "staging", team: "ops" });
-});
-
-Deno.test("resolveWorkflowFields: omits tags when workflow has none", async () => {
-  const wf = Workflow.create({ name: "plain-workflow" });
-  const repo = makeWorkflowRepo(new Map([["plain-workflow", wf]]));
-
-  const fields = await resolveWorkflowFields(repo, "plain-workflow");
-
-  assertEquals(fields.name, "plain-workflow");
-  assertEquals(fields.tags, undefined);
-});
-
-Deno.test("resolveWorkflowFields: falls back to name-only when workflow not found", async () => {
-  const repo = makeWorkflowRepo(new Map());
-
-  const fields = await resolveWorkflowFields(repo, "missing-workflow");
-
-  assertEquals(fields.name, "missing-workflow");
-  assertEquals(fields.tags, undefined);
-});
-
-Deno.test("resolveWorkflowFields: falls back to findById when findByName returns null", async () => {
-  const id = crypto.randomUUID();
-  const wf = Workflow.create({
-    id,
-    name: "id-workflow",
-    tags: { env: "prod" },
-  });
-  const repo = {
-    findByName: () => Promise.resolve(null),
-    findById: (candidate: unknown) =>
-      Promise.resolve(String(candidate) === id ? wf : null),
-    findAll: () => Promise.resolve([]),
-    save: () => Promise.resolve(),
-    delete: () => Promise.resolve(),
-  } as unknown as WorkflowRepository;
-
-  const fields = await resolveWorkflowFields(repo, id);
-
-  assertEquals(fields.name, "id-workflow");
-  assertEquals(fields.tags, { env: "prod" });
-});
-
-Deno.test("resolveWorkflowFields: falls back to name-only when repo throws", async () => {
-  const repo = {
-    findByName: () => Promise.reject(new Error("PermissionDenied")),
-    findById: () => Promise.reject(new Error("PermissionDenied")),
-    findAll: () => Promise.resolve([]),
-    save: () => Promise.resolve(),
-    delete: () => Promise.resolve(),
-  } as unknown as WorkflowRepository;
-
-  const fields = await resolveWorkflowFields(repo, "erroring-workflow");
-
-  assertEquals(fields.name, "erroring-workflow");
-  assertEquals(fields.tags, undefined);
-});
 
 // ── applyTriggerOverrides ────────────────────────────────────────────
 

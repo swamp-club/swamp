@@ -82,6 +82,20 @@ export interface DefinitionRepository {
   ): Promise<{ definition: Definition; type: ModelType } | null>;
 
   /**
+   * Finds every definition that declares `id` wherever it is stored — every
+   * type's directory, auto-definitions included — with the type each file
+   * declares. Ids are not guaranteed unique (a copied file keeps its id), so
+   * a caller authorizing what is stored under an id must see all of them.
+   * Optional: without it, callers fall back to {@link findAllGlobal}.
+   *
+   * @param id - The definition ID
+   * @returns Every definition declaring the id, primary definitions first
+   */
+  findAllByIdGlobal?(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType }[]>;
+
+  /**
    * Finds a definition by id from where the repository last saw it, without
    * scanning, with the type the file declares. Optional; null when there is
    * no such hint or the file no longer declares the id.

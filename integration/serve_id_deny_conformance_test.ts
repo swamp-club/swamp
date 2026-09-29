@@ -46,7 +46,12 @@ import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { serverRequestPayloadFields } from "../src/serve/connection.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
-import type { Definition } from "../src/domain/definitions/definition.ts";
+import {
+  type Definition,
+  Definition as DefinitionEntity,
+} from "../src/domain/definitions/definition.ts";
+import { ModelOutput } from "../src/domain/models/model_output.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
 import type { Workflow } from "../src/domain/workflows/workflow.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
@@ -60,6 +65,8 @@ import {
   saveData,
   saveGatedWorkflow,
   saveModel,
+  saveOutput,
+  saveRun,
   saveWorkflow,
   sendRequest,
   type ServeRepo,
@@ -78,13 +85,6 @@ const IDENTIFIER_FIELD =
  * an owning issue.
  */
 const EXEMPT: Record<string, string> = {
-  "model.output.get": "swamp-club#2673 (output id prefixes)",
-  "model.output.data": "swamp-club#2673 (output id prefixes)",
-  "model.output.logs": "swamp-club#2673 (output id prefixes)",
-  "model.method.history.get": "swamp-club#2673 (output id prefixes)",
-  "model.method.history.logs": "swamp-club#2673 (output id prefixes)",
-  "workflow.history.get": "swamp-club#2673 (run id prefixes)",
-  "workflow.history.logs": "swamp-club#2673 (run id prefixes)",
   "workflow.schema": "swamp-club#2675 (authorizes *)",
 };
 
@@ -235,6 +235,32 @@ function simple(
   };
 }
 
+/**
+ * An id prefix of a new output of `model` — output reads resolve a 3+ hex
+ * character prefix across every model's outputs (swamp-club#2673).
+ */
+async function outputPrefix(f: Fixtures, model: Definition): Promise<string> {
+  return (await saveOutput(f.repo, model)).id.slice(0, 8);
+}
+
+/** An id prefix of a new run of `workflow`, as {@link outputPrefix}. */
+async function runPrefix(f: Fixtures, workflow: Workflow): Promise<string> {
+  return (await saveRun(f.repo, workflow)).id.slice(0, 8);
+}
+
+/** A read of an output or run that `payload` names from `f` and `t`. */
+function historyRead(
+  type: string,
+  payload: (f: Fixtures, t: "prod" | "dev") => Promise<Record<string, unknown>>,
+  deniedAs: string,
+): Case {
+  return {
+    send: async (f, t) =>
+      await sendRequest(f.ctx, request(type, await payload(f, t))),
+    deniedAs,
+  };
+}
+
 const prodModelKept = async (f: Fixtures) => {
   assertNotEquals(
     await f.repo.repoContext.definitionRepo.findByNameGlobal("prod-db"),
@@ -347,6 +373,47 @@ const CASES: Record<string, Case> = {
   "workflow.run": simple(
     "workflow.run",
     (f, t) => ({ workflowIdOrName: workflow(f, t).id }),
+    "workflow:prod-flow",
+  ),
+  "model.output.get": historyRead(
+    "model.output.get",
+    async (f, t) => ({
+      outputIdOrModelName: await outputPrefix(f, model(f, t)),
+    }),
+    "model:prod-db",
+  ),
+  "model.output.data": historyRead(
+    "model.output.data",
+    async (f, t) => ({ outputIdArg: await outputPrefix(f, model(f, t)) }),
+    "model:prod-db",
+  ),
+  "model.output.logs": historyRead(
+    "model.output.logs",
+    async (f, t) => ({ outputIdArg: await outputPrefix(f, model(f, t)) }),
+    "model:prod-db",
+  ),
+  "model.method.history.get": historyRead(
+    "model.method.history.get",
+    async (f, t) => ({
+      outputIdOrModelName: await outputPrefix(f, model(f, t)),
+    }),
+    "model:prod-db",
+  ),
+  "model.method.history.logs": historyRead(
+    "model.method.history.logs",
+    async (f, t) => ({
+      outputIdOrModelName: await outputPrefix(f, model(f, t)),
+    }),
+    "model:prod-db",
+  ),
+  "workflow.history.get": historyRead(
+    "workflow.history.get",
+    async (f, t) => ({ workflowIdOrName: await runPrefix(f, workflow(f, t)) }),
+    "workflow:prod-flow",
+  ),
+  "workflow.history.logs": historyRead(
+    "workflow.history.logs",
+    async (f, t) => ({ runIdOrWorkflow: await runPrefix(f, workflow(f, t)) }),
     "workflow:prod-flow",
   ),
   "workflow.get": simple(
@@ -973,5 +1040,273 @@ Deno.test("serve id-deny conformance: a workflow sharing a denied workflow's id 
     );
     assertAllowed(deleted, "workflow.delete");
     await prodWorkflowKept(f);
+  });
+});
+
+// Output and run reads (swamp-club#2673): the owner of what is read is
+// authorized, whichever way the request named it.
+
+/** A copy of prod-flow's file under another name, sharing its id. */
+async function copyWorkflowAs(f: Fixtures, name: string): Promise<void> {
+  const workflowRepo = f.repo.repoContext.workflowRepo;
+  const path = workflowRepo.getPath(f.prodWorkflow.id);
+  await Deno.writeTextFile(
+    join(dirname(path), `workflow-${name}.yaml`),
+    (await Deno.readTextFile(path)).replace(
+      "name: prod-flow",
+      `name: ${name}`,
+    ),
+  );
+}
+
+Deno.test("serve id-deny conformance: a hex-named model shadowed by an output prefix is authorized as the output's owner", async () => {
+  await withFixtures(async (f) => {
+    const prodOutput = await saveOutput(f.repo, f.prodModel);
+    const prefix = prodOutput.id.slice(0, 8);
+    // An allowed model whose name is the prefix: the read still matches the
+    // output first, so the name must not be what is authorized.
+    await saveModel(f.repo, prefix);
+    for (
+      const [type, field] of [
+        ["model.output.get", "outputIdOrModelName"],
+        ["model.method.history.get", "outputIdOrModelName"],
+        ["model.method.history.logs", "outputIdOrModelName"],
+      ] as const
+    ) {
+      assertDenied(
+        await sendRequest(f.ctx, request(type, { [field]: prefix })),
+        "model:prod-db",
+      );
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: an output shared with a denied copy is refused, by prefix and by the copy's name", async () => {
+  await withFixtures(async (f) => {
+    await copyDefinitionAs(f, f.prodModel, "safe-model");
+    const prodOutput = await saveOutput(f.repo, f.prodModel);
+    for (
+      const value of [prodOutput.id.slice(0, 8), "safe-model"]
+    ) {
+      assertDenied(
+        await sendRequest(
+          f.ctx,
+          request("model.output.get", { outputIdOrModelName: value }),
+        ),
+        "model:prod-db",
+      );
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: a run recorded by a denied workflow is refused when read by a copy's name", async () => {
+  await withFixtures(async (f) => {
+    await copyWorkflowAs(f, "safe-flow");
+    await saveRun(f.repo, f.prodWorkflow);
+    for (
+      const [type, field] of [
+        ["workflow.history.get", "workflowIdOrName"],
+        ["workflow.history.logs", "runIdOrWorkflow"],
+      ] as const
+    ) {
+      assertDenied(
+        await sendRequest(f.ctx, request(type, { [field]: "safe-flow" })),
+        "workflow:prod-flow",
+      );
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: a tag-conditioned deny applies to an output requested by prefix", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, [
+      grant({ actions: ACTIONS, resource: { kind: "model", pattern: "*" } }),
+      grant({
+        effect: "deny",
+        actions: ACTIONS,
+        resource: { kind: "model", pattern: "*" },
+        condition: 'tags.env == "prod"',
+      }),
+    ]);
+    assertDenied(
+      await sendRequest(
+        ctx,
+        request("model.output.get", {
+          outputIdOrModelName: await outputPrefix(f, f.prodModel),
+        }),
+      ),
+      "model:prod-db",
+    );
+    assertAllowed(
+      await sendRequest(
+        ctx,
+        request("model.output.get", {
+          outputIdOrModelName: await outputPrefix(f, f.devModel),
+        }),
+      ),
+      "model.output.get",
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: an output of a deleted model is authorized on its definition id", async () => {
+  await withFixtures(async (f) => {
+    const prefix = await outputPrefix(f, f.prodModel);
+    await f.repo.repoContext.definitionRepo.delete(
+      f.repo.modelType,
+      f.prodModel.id,
+      f.prodModel.name,
+    );
+    const ctx = createServeCtx(f.repo, [
+      grant({ actions: ACTIONS, resource: { kind: "model", pattern: "*" } }),
+      grant({
+        effect: "deny",
+        actions: ACTIONS,
+        resource: { kind: "model", pattern: f.prodModel.id },
+      }),
+    ]);
+    assertDenied(
+      await sendRequest(
+        ctx,
+        request("model.output.get", { outputIdOrModelName: prefix }),
+      ),
+      `model:${f.prodModel.id}`,
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: a run of a deleted workflow is authorized on its recorded name", async () => {
+  await withFixtures(async (f) => {
+    const prefix = await runPrefix(f, f.prodWorkflow);
+    await f.repo.repoContext.workflowRepo.delete(
+      f.prodWorkflow.id,
+      f.prodWorkflow.name,
+    );
+    assertDenied(
+      await sendRequest(
+        f.ctx,
+        request("workflow.history.get", { workflowIdOrName: prefix }),
+      ),
+      "workflow:prod-flow",
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: an ambiguous output prefix is authorized as sent", async () => {
+  await withFixtures(async (f) => {
+    await saveOutput(
+      f.repo,
+      f.prodModel,
+      "abc00000-0000-4000-8000-000000000001",
+    );
+    await saveOutput(
+      f.repo,
+      f.devModel,
+      "abc11111-0000-4000-8000-000000000001",
+    );
+    // Allowed on the raw prefix: the caller only learns it is ambiguous.
+    const ambiguous = await sendRequest(
+      f.ctx,
+      request("model.output.get", { outputIdOrModelName: "abc" }),
+    );
+    assertStringIncludes(
+      errorFrame(ambiguous)!.error!.message,
+      'Ambiguous ID prefix "abc"',
+    );
+    const ctx = createServeCtx(f.repo, [
+      ...GRANTS,
+      grant({
+        effect: "deny",
+        actions: ACTIONS,
+        resource: { kind: "model", pattern: "abc" },
+      }),
+    ]);
+    assertDenied(
+      await sendRequest(
+        ctx,
+        request("model.output.get", { outputIdOrModelName: "abc" }),
+      ),
+      "model:abc",
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: output data and logs need a data read on the output's model (swamp-club#2739)", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, [
+      grant({ actions: ACTIONS, resource: { kind: "model", pattern: "*" } }),
+      grant({ actions: ACTIONS, resource: { kind: "data", pattern: "*" } }),
+      grant({
+        effect: "deny",
+        actions: ACTIONS,
+        resource: { kind: "data", pattern: "prod-*" },
+      }),
+    ]);
+    const prodPrefix = await outputPrefix(f, f.prodModel);
+    const devPrefix = await outputPrefix(f, f.devModel);
+    for (const type of ["model.output.data", "model.output.logs"]) {
+      assertDenied(
+        await sendRequest(ctx, request(type, { outputIdArg: prodPrefix })),
+        "data:prod-db",
+      );
+      assertAllowed(
+        await sendRequest(ctx, request(type, { outputIdArg: devPrefix })),
+        type,
+      );
+    }
+    // data.get refuses the same content by name.
+    assertDenied(
+      await sendRequest(
+        ctx,
+        request("data.get", { modelIdOrName: "prod-db", dataName: "state" }),
+      ),
+      "data:prod-db",
+    );
+    // Output metadata is not data content: a model read is enough.
+    assertAllowed(
+      await sendRequest(
+        ctx,
+        request("model.output.get", { outputIdOrModelName: prodPrefix }),
+      ),
+      "model.output.get",
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: an output whose model's type is not registered is never read by prefix", async () => {
+  await withFixtures(async (f) => {
+    const uninstalled = ModelType.create(
+      `@acme/uninstalled-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    const definition = DefinitionEntity.create({
+      name: "prod-acme",
+      type: uninstalled.normalized,
+      globalArguments: {},
+    });
+    await f.repo.repoContext.definitionRepo.save(uninstalled, definition);
+    const output = ModelOutput.create({
+      definitionId: definition.id,
+      methodName: "noop",
+      status: "succeeded",
+      provenance: {
+        definitionHash: "hash",
+        modelVersion: "1",
+        triggeredBy: "manual",
+      },
+    });
+    await f.repo.repoContext.outputRepo.save(uninstalled, "noop", output);
+    // Outputs are only listed for registered types, so the prefix matches
+    // nothing: the read reports not-found and returns none of prod-acme's
+    // output. Were it listed, prod-acme would be among its owners, since the
+    // owner lookup walks unregistered types too.
+    const prefix = output.id.slice(0, 8);
+    const frames = await sendRequest(
+      f.ctx,
+      request("model.output.get", { outputIdOrModelName: prefix }),
+    );
+    assertEquals(errorFrame(frames)?.error, {
+      code: "model_output_get_failed",
+      message: `Output or model not found: ${prefix}`,
+    });
   });
 });
