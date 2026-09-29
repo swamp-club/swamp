@@ -649,6 +649,123 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped forEach iterations name the expan
   ]);
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: templated forEach steps are labelled with the expanded name", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const template = "deploy-${{ self.env }}";
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "main", stepCount: 2, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "step_started",
+      jobId: "main",
+      stepId: "deploy-dev",
+      forEachTemplate: template,
+      forEachIndex: 0,
+    },
+    {
+      kind: "step_started",
+      jobId: "main",
+      stepId: "deploy-prod",
+      forEachTemplate: template,
+      forEachIndex: 1,
+    },
+    {
+      kind: "method_output",
+      jobId: "main",
+      stepId: "deploy-dev",
+      modelName: "m",
+      methodName: "r",
+      stream: "stdout",
+      line: "from dev",
+    },
+    {
+      kind: "step_completed",
+      jobId: "main",
+      stepId: "deploy-dev",
+      forEachTemplate: template,
+      forEachIndex: 0,
+    },
+    {
+      kind: "step_failed",
+      jobId: "main",
+      stepId: "deploy-prod",
+      error: "process exited 1",
+      forEachTemplate: template,
+      forEachIndex: 1,
+    },
+    { kind: "job_completed", jobId: "main", status: "failed" },
+    { kind: "completed", run: makeRunView("failed") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const iterationLines = lines
+    .map((l) => l.trimStart())
+    .filter((l) => l.startsWith("deploy-"))
+    .map((l) => l.replace(/ in \S+ · \d{2}:\d{2}:\d{2} UTC$/, ""));
+  assertEquals(iterationLines, [
+    "deploy-dev │ from dev",
+    "deploy-dev │ done deploy-dev",
+    "deploy-prod │ failed deploy-prod",
+  ]);
+  assertEquals(lines.filter((l) => l.includes("${{")), []);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: skipped templated forEach iterations are labelled with the expanded name", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "main", stepCount: 2, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "rollback-dev",
+      reason: "dependency",
+      forEachTemplate: "rollback-${{ self.env }}",
+      forEachIndex: 0,
+    },
+    {
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "warm-us-east-1",
+      reason: "guarded",
+      guardExpression: "true",
+      guardResult: true,
+      forEachTemplate: "warm-${{ self.region }}",
+      forEachIndex: 0,
+    },
+    { kind: "job_completed", jobId: "main", status: "succeeded" },
+    { kind: "completed", run: makeRunView("succeeded") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(skippedLines(lines), [
+    "rollback-dev │ skipped rollback-dev (dependency)",
+    "warm-us-east-1 │ skipped warm-us-east-1 (guarded) · guard: true",
+  ]);
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: skipped job line names no step", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
