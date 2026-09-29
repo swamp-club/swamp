@@ -26,8 +26,11 @@ import {
   defaultInstallFsOps,
   ExtensionInstallTransaction,
   type InstallFsOps,
-  SimulatedInstallCrash,
 } from "../src/infrastructure/persistence/extension_install_transaction.ts";
+import {
+  crashAware,
+  SimulatedInstallCrash,
+} from "../src/infrastructure/persistence/test_helpers/install_crash.ts";
 import { readInstalledExtensionDigest } from "../src/infrastructure/persistence/installed_extension_digest_reader.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
 import {
@@ -170,15 +173,14 @@ async function crashedUpgrade(
 ): Promise<void> {
   const roots = extensionInstallRoots(f.repoDir, f.parent);
   let renames = 0;
-  const ops: InstallFsOps = {
-    ...defaultInstallFsOps,
+  const ops: InstallFsOps = crashAware({
     rename: async (from, to) => {
       if (++renames === opts.crashAt) {
         throw new SimulatedInstallCrash(`rename ${renames}`);
       }
       await defaultInstallFsOps.rename(from, to);
     },
-  };
+  });
   const newChecksum = opts.newChecksum ?? "sum-crashed";
   const tx = await ExtensionInstallTransaction.begin({
     pulledRoot: resolvePulledExtensionsRoot(f.repoDir),

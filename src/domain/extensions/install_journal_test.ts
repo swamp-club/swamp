@@ -148,6 +148,7 @@ function observe(
     liveManifestDigest: manifest.digest === undefined
       ? "new-manifest"
       : manifest.digest,
+    unsafeDir: null,
   };
 }
 
@@ -293,6 +294,13 @@ const BACK_ROWS: BackRow[] = [
     expected: "none",
   },
   {
+    name: "crash inside begin, before new/ existed",
+    liveExisted: true,
+    hasNew: true,
+    state: rootState("absent", "absent", "dir"),
+    expected: "none",
+  },
+  {
     name: "already restored by an earlier recovery",
     liveExisted: true,
     hasNew: true,
@@ -321,6 +329,13 @@ const BACK_ROWS: BackRow[] = [
     expected: "swap-back",
   },
   {
+    name: "a live dir recreated next to the moved-aside original",
+    liveExisted: true,
+    hasNew: true,
+    state: rootState("dir", "dir", "dir"),
+    expected: "swap-back",
+  },
+  {
     name: "removed root never moved",
     liveExisted: true,
     hasNew: false,
@@ -342,10 +357,24 @@ const BACK_ROWS: BackRow[] = [
     expected: "none",
   },
   {
+    name: "crash while deleting staging after a roll-back",
+    liveExisted: false,
+    hasNew: true,
+    state: rootState("absent", "absent", "absent"),
+    expected: "none",
+  },
+  {
     name: "new root moved in",
     liveExisted: false,
     hasNew: true,
     state: rootState("absent", "absent", "dir"),
+    expected: "discard-live",
+  },
+  {
+    name: "a live dir created after the install began",
+    liveExisted: false,
+    hasNew: true,
+    state: rootState("absent", "dir", "dir"),
     expected: "discard-live",
   },
   {
@@ -356,24 +385,17 @@ const BACK_ROWS: BackRow[] = [
     expected: "none",
   },
   {
-    name: "old, new and live all present",
-    liveExisted: true,
-    hasNew: true,
-    state: rootState("dir", "dir", "dir"),
-    expected: "leave",
-  },
-  {
-    name: "every copy gone",
+    name: "the original is gone",
     liveExisted: true,
     hasNew: true,
     state: rootState("absent", "absent", "absent"),
     expected: "leave",
   },
   {
-    name: "new and discard both present",
-    liveExisted: false,
+    name: "discard occupied while live must move aside",
+    liveExisted: true,
     hasNew: true,
-    state: rootState("absent", "dir", "absent", "dir"),
+    state: rootState("dir", "absent", "dir", "dir"),
     expected: "leave",
   },
   {
@@ -381,13 +403,6 @@ const BACK_ROWS: BackRow[] = [
     liveExisted: false,
     hasNew: true,
     state: rootState("dir", "dir", "absent"),
-    expected: "leave",
-  },
-  {
-    name: "live created by someone else after the install",
-    liveExisted: false,
-    hasNew: true,
-    state: rootState("absent", "dir", "dir"),
     expected: "leave",
   },
   {
@@ -477,6 +492,21 @@ Deno.test("planRecovery: rolls back a staged journal even when the lockfile matc
     "new-sum",
   );
   assertEquals(plan.direction, "back");
+});
+
+Deno.test("planRecovery: leaves a journal whose staging has an unsafe dir", () => {
+  const plan = planRecovery(
+    makeJournal(),
+    {
+      ...observe({
+        0: rootState("dir", "absent", "dir"),
+        1: rootState("dir", "absent", "dir"),
+      }),
+      unsafeDir: "/repo/.swamp/bundles/.swamp-staging-x",
+    },
+    null,
+  );
+  assertEquals(plan.direction, "leave");
 });
 
 Deno.test("planRecovery: leaves a journal with an unobserved root", () => {

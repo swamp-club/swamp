@@ -47,6 +47,11 @@ import { UserError } from "../../domain/errors.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 import { extensionInstallRoots } from "../../infrastructure/persistence/paths.ts";
+import { ExtensionInstallTransaction } from "../../infrastructure/persistence/extension_install_transaction.ts";
+import {
+  crashAware,
+  SimulatedInstallCrash,
+} from "../../infrastructure/persistence/test_helpers/install_crash.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 
 Deno.test("parseExtensionRef: parses name without version", () => {
@@ -1989,6 +1994,97 @@ Deno.test(
         ],
         V2_FILES["models/a.ts"],
       );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a failed same-version reinstall restores the prior tree, extra files included",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const v1 = await buildSkillArchive(swapSpec(name, V1_FILES));
+      await installArchive(repoDir, lockfile, { [name]: v1 }, name);
+      const extra = join(extRootOf(repoDir, name), "models", "mine.ts");
+      await Deno.writeTextFile(extra, "user file");
+      const tree = await installedTree(repoDir);
+
+      const blocker = join(repoDir, "not-a-dir");
+      await Deno.writeTextFile(blocker, "");
+      await assertRejects(() =>
+        installArchive(repoDir, lockfile, { [name]: v1 }, name, {
+          force: true,
+          skillsDirs: [join(blocker, "skills")],
+        })
+      );
+      assertEquals(await installedTree(repoDir), { ...tree, "not-a-dir": "" });
+    });
+  },
+);
+
+/** Leaves a journal for `name` that recovery cannot act on. */
+async function leaveUnrecoverableJournal(
+  repoDir: string,
+  lockfile: LockfileRepository,
+  name: string,
+): Promise<string> {
+  const roots = extensionInstallRoots(repoDir, name);
+  const tx = await ExtensionInstallTransaction.begin({
+    pulledRoot: join(repoDir, ".swamp", "pulled-extensions"),
+    extensionName: name,
+    lockfilePath: lockfile.lockfilePath,
+    newChecksum: "sum",
+    newManifestDigest: "digest",
+    roots: [{ role: "extension", live: roots.extensionRoot, hasNew: true }],
+    nestedRoots: [],
+    ops: crashAware(),
+  });
+  await tx.settle(
+    new SimulatedInstallCrash("died"),
+    () => Promise.resolve(null),
+  );
+  // A journal recovery refuses: its lockfile is not this repository's.
+  const journalPath = join(
+    repoDir,
+    ".swamp",
+    "pulled-extensions",
+    ".swamp-staging",
+    tx.journal.stagingId,
+    "journal.json",
+  );
+  const journal = JSON.parse(await Deno.readTextFile(journalPath));
+  journal.lockfilePath = join(repoDir, "elsewhere.json");
+  await Deno.writeTextFile(journalPath, JSON.stringify(journal));
+  return journalPath;
+}
+
+Deno.test(
+  "installExtension: refuses an extension whose interrupted install recovery had to leave",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const other = uniqueExtName();
+      const archives = {
+        [name]: await buildSkillArchive(swapSpec(name, V1_FILES)),
+        [other]: await buildSkillArchive(swapSpec(other, V1_FILES)),
+      };
+      const journalPath = await leaveUnrecoverableJournal(
+        repoDir,
+        lockfile,
+        name,
+      );
+
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, archives, name),
+        UserError,
+      );
+      assertStringIncludes(error.message, journalPath);
+      assertEquals(lockfile.getEntry(name), null);
+
+      // Other extensions are not held up.
+      await installArchive(repoDir, lockfile, archives, other);
+      assertEquals(lockfile.getEntry(other)?.version, SKILL_VERSION);
+      assertEquals(await exists(journalPath), true);
     });
   },
 );

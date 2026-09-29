@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
 import {
   type DatastoreExpressionContext,
   resolveDatastoreExpressions,
@@ -342,12 +343,16 @@ Deno.test("resolveDatastoreExpressions: never imports bundles from install stagi
     const marker = `__swamp_staging_imported_${
       crypto.randomUUID().slice(0, 8)
     }`;
-    const staging =
-      `${repoDir}/.swamp/vault-bundles/.swamp-staging-${crypto.randomUUID()}`;
+    const staging = join(
+      repoDir,
+      ".swamp",
+      "vault-bundles",
+      `.swamp-staging-${crypto.randomUUID()}`,
+    );
     await Deno.mkdir(staging, { recursive: true });
     const source =
       `globalThis["${marker}"] = true;\nexport const vault = {};\n`;
-    await Deno.writeTextFile(`${staging}/v.js`, source);
+    await Deno.writeTextFile(join(staging, "v.js"), source);
 
     await assertRejects(
       () =>
@@ -358,7 +363,7 @@ Deno.test("resolveDatastoreExpressions: never imports bundles from install stagi
       UserError,
     );
     assertEquals((globalThis as Record<string, unknown>)[marker], undefined);
-    assertEquals(await Deno.readTextFile(`${staging}/v.js`), source);
+    assertEquals(await Deno.readTextFile(join(staging, "v.js")), source);
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }

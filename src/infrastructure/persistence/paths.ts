@@ -396,6 +396,9 @@ export function extensionInstallRoots(
   repoDir: string,
   name: string,
 ): { extensionRoot: string; bundleRoots: ExtensionBundleRoot[] } {
+  // Absolute, so an install and a later recovery that spell the repo
+  // path differently still derive the same roots.
+  repoDir = resolve(repoDir);
   const extensionRoot = join(resolvePulledExtensionsRoot(repoDir), name);
   return {
     extensionRoot,

@@ -32,7 +32,10 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
-import { recoverPulledExtensionStagingLocked } from "./recover_staging.ts";
+import {
+  assertNoBlockingJournal,
+  recoverPulledExtensionStagingLocked,
+} from "./recover_staging.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
@@ -165,9 +168,11 @@ export class RemoveExtensionService {
       await this.lockfileRepository.refresh();
       // Put right any install a crashed process left half done, so the
       // files removed are the ones the lockfile describes.
-      await recoverPulledExtensionStagingLocked(this.repoDir, {
-        lockfilePaths: [this.lockfileRepository.lockfilePath],
-      });
+      const recovery = await recoverPulledExtensionStagingLocked(
+        this.repoDir,
+        { lockfilePaths: [this.lockfileRepository.lockfilePath] },
+      );
+      assertNoBlockingJournal(recovery, name, "remove");
       return await this.removeLocked(name);
     });
   }

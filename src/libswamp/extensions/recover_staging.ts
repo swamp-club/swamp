@@ -17,8 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { resolve } from "@std/path";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
+  blockingLeftJournals,
   type InstallFsOps,
   recoverInstallStaging,
   type StagingRecoveryReport,
@@ -83,6 +86,7 @@ export async function recoverPulledExtensionStagingLocked(
   repoDir: string,
   options: RecoverStagingOptions = {},
 ): Promise<StagingRecoveryReport> {
+  repoDir = resolve(repoDir);
   const marker = await readMarker(repoDir);
   const allowedLockfilePaths = [
     ...resolveExtensionLockfilePaths(repoDir, marker),
@@ -109,6 +113,30 @@ export async function recoverPulledExtensionStagingLocked(
     now: options.now,
     ops: options.ops,
   });
+}
+
+/**
+ * Refuses to change extension `name` while crash recovery left a journal
+ * behind for it, or for an extension nested in or above it: their roots
+ * overlap, and a later recovery of that journal could act on files this
+ * change wrote.
+ */
+export function assertNoBlockingJournal(
+  recovery: StagingRecoveryReport,
+  name: string,
+  action: "install" | "remove",
+): void {
+  const blocking = blockingLeftJournals(recovery, name);
+  if (blocking.length === 0) return;
+  const [first] = blocking;
+  throw new UserError(
+    `Cannot ${action} ${name}: an earlier install of ` +
+      `${first.extensionName} was interrupted and could not be put right ` +
+      `(${first.reason}). Its journal is ${first.journalPath}. Fix the ` +
+      `cause and retry, or, after checking that ` +
+      `.swamp/pulled-extensions/${first.extensionName} holds the version ` +
+      `you want, delete the journal's directory and retry.`,
+  );
 }
 
 async function readMarker(repoDir: string): Promise<RepoMarkerData | null> {

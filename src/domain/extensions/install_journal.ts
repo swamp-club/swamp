@@ -353,6 +353,13 @@ export interface ObservedInstall {
   liveManifest: ObservedPath;
   /** Checksum of the live manifest.yaml, or null when it is absent. */
   liveManifestDigest: string | null;
+  /**
+   * A staging dir, or a dir between a root's container and its live
+   * path, that is not a plain directory (a symlink could send a rename
+   * outside the repository). Null when every one is a plain dir or
+   * absent.
+   */
+  unsafeDir: string | null;
 }
 
 /** One rename recovery performs. The planner never deletes anything. */
@@ -379,36 +386,48 @@ export type RecoveryPlan =
 
 /**
  * Decides how to put an interrupted install right, from the journal and
- * what is on disk. Each root is judged from its own staging dir (whether
- * `old/<i>`, `new/<i>` or `discard/<i>` hold it), never from the
- * extension's manifest.
+ * what is on disk. Each root is judged from where its original copy is,
+ * never from the extension's manifest: in `old/<i>` once phase 1 moved
+ * it aside, otherwise still live. Where the new copy is (`new/<i>`, live,
+ * `discard/<i>`, or already deleted by a cleanup that crashed) does not
+ * matter for a roll-back, so a crash anywhere, including in `begin` or
+ * while deleting staging, stays recoverable.
  *
  * Roll forward only when the journal reached `swapped` and the lockfile
  * entry it names carries the new checksum; otherwise roll back.
  *
- * Rolling back, per root (o = old present, N = new present in `new/` or
- * `discard/`, l = live present):
+ * Rolling back, per root (o = `old/<i>` present, l = live present):
  *
- * | liveExisted | hasNew | o | N | l | action                          |
- * | ----------- | ------ | - | - | - | ------------------------------- |
- * | yes         | *      | 0 | = hasNew | 1 | none (never moved, or already restored) |
- * | yes         | *      | 1 | = hasNew | 0 | old → live                      |
- * | yes         | yes    | 1 | 0 | 1 | live → discard, old → live      |
- * | no          | yes    | 0 | 1 | 0 | none (never moved in)           |
- * | no          | yes    | 0 | 0 | 1 | live → discard                  |
+ * | liveExisted | o | l | action                                        |
+ * | ----------- | - | - | --------------------------------------------- |
+ * | yes         | 0 | 1 | none: the original never left                 |
+ * | yes         | 1 | 0 | old → live                                    |
+ * | yes         | 1 | 1 | live → discard, old → live                    |
+ * | no          | 0 | 1 | live → discard                                |
+ * | no          | 0 | 0 | none                                          |
  *
- * Rolling forward, every root must hold its new version: nothing in
- * `new/<i>`, live present exactly when `hasNew`, and the live manifest
- * must be the one this install wrote.
+ * A live root found next to its moved-aside original is superseded
+ * whatever it holds: the new version, or a bundle cache dir a loader
+ * outside the lock recreated. Rolling forward, every root must hold its
+ * new version (nothing in `new/<i>`, live present exactly when
+ * `hasNew`) and the live manifest must be the one this install wrote.
  *
- * Any other combination, or anything that is not a plain dir where a dir
- * belongs (a symlink included), yields `leave`.
+ * Anything else yields `leave`: an original that is gone (liveExisted,
+ * neither copy present), an `old/<i>` for a root that did not exist, an
+ * occupied `discard/<i>`, anything that is not a plain directory where a
+ * directory belongs (a symlink included), or an unsafe staging dir.
  */
 export function planRecovery(
   journal: InstallJournal,
   observed: ObservedInstall,
   lockfileEntryChecksum: string | null,
 ): RecoveryPlan {
+  if (observed.unsafeDir !== null) {
+    return {
+      direction: "leave",
+      reason: `${observed.unsafeDir} is not a plain directory`,
+    };
+  }
   const forward = journal.phase === "swapped" &&
     lockfileEntryChecksum === journal.newChecksum;
 
@@ -427,19 +446,10 @@ export function planRecovery(
       }
     }
     const o = seen.old === "dir";
-    const n = seen.new === "dir";
-    const d = seen.discard === "dir";
     const l = seen.live === "dir";
-    if (n && d) {
-      return {
-        direction: "leave",
-        reason: `root ${root.live} has both a new and a discarded copy`,
-      };
-    }
-    const N = n || d;
 
     if (forward) {
-      if (n || l !== root.hasNew) {
+      if (seen.new === "dir" || l !== root.hasNew) {
         return {
           direction: "leave",
           reason: `root ${root.live} does not hold its new version`,
@@ -448,28 +458,29 @@ export function planRecovery(
       continue;
     }
 
+    const discardFree = seen.discard === "absent";
     const discard = rootDiscardPath(root);
     if (root.liveExisted) {
-      if (!o && N === root.hasNew && l) continue;
-      if (o && N === root.hasNew && !l) {
+      if (!o && l) continue;
+      if (o && !l) {
         renames.push({ from: root.old, to: root.live });
         continue;
       }
-      if (root.hasNew && o && !N && l) {
+      if (o && l && discardFree) {
         renames.push({ from: root.live, to: discard });
         renames.push({ from: root.old, to: root.live });
         continue;
       }
-    } else if (root.hasNew && !o) {
-      if (N && !l) continue;
-      if (!N && l) {
+    } else if (!o) {
+      if (!l) continue;
+      if (discardFree) {
         renames.push({ from: root.live, to: discard });
         continue;
       }
     }
     return {
       direction: "leave",
-      reason: `root ${root.live} is in a state the install cannot produce ` +
+      reason: `root ${root.live} is in a state recovery cannot resolve ` +
         `(old ${seen.old}, new ${seen.new}, discard ${seen.discard}, live ${seen.live})`,
     };
   }

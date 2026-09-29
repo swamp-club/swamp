@@ -35,11 +35,11 @@ import {
   resolvePulledExtensionsRoot,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { ExtensionInstallTransaction } from "../../infrastructure/persistence/extension_install_transaction.ts";
 import {
-  defaultInstallFsOps,
-  ExtensionInstallTransaction,
+  crashAware,
   SimulatedInstallCrash,
-} from "../../infrastructure/persistence/extension_install_transaction.ts";
+} from "../../infrastructure/persistence/test_helpers/install_crash.ts";
 import { STAGING_DIR_NAME } from "../../domain/extensions/install_journal.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
@@ -1567,13 +1567,12 @@ Deno.test(
             hasNew: true,
           }],
           nestedRoots: [],
-          ops: {
-            ...defaultInstallFsOps,
+          ops: crashAware({
             rename: async (from, to) => {
               if (++renames === 2) throw new SimulatedInstallCrash("rename 2");
               await Deno.rename(from, to);
             },
-          },
+          }),
         });
         await Deno.writeTextFile(tx.stagedManifestPath, "v2");
         await assertRejects(() => tx.swap(), SimulatedInstallCrash);
@@ -1598,6 +1597,66 @@ Deno.test(
           STAGING_DIR_NAME,
         );
         await assertRejects(() => Deno.lstat(staging), Deno.errors.NotFound);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: refuses while recovery has to leave that extension's journal",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/rm-blocked-${crypto.randomUUID().slice(0, 8)}`;
+        const model = await stageModel(repoDir, extName, "a.ts", "// v1");
+        await lockfileRepository.writeEntry(
+          extName,
+          "1.0.0",
+          [relative(repoDir, model)],
+          { checksum: "sum-v1" },
+        );
+        const roots = extensionInstallRoots(repoDir, extName);
+        const tx = await ExtensionInstallTransaction.begin({
+          pulledRoot: resolvePulledExtensionsRoot(repoDir),
+          extensionName: extName,
+          lockfilePath: lockfileRepository.lockfilePath,
+          newChecksum: "sum-v2",
+          newManifestDigest: "digest-v2",
+          roots: [{
+            role: "extension",
+            live: roots.extensionRoot,
+            hasNew: true,
+          }],
+          nestedRoots: [],
+          ops: crashAware(),
+        });
+        await tx.settle(
+          new SimulatedInstallCrash("died"),
+          () => Promise.resolve(null),
+        );
+        // A symlinked staging dir: recovery must leave the journal.
+        const stagingDir = join(
+          resolvePulledExtensionsRoot(repoDir),
+          STAGING_DIR_NAME,
+          tx.journal.stagingId,
+        );
+        const outside = join(repoDir, "outside");
+        await ensureDir(outside);
+        await Deno.remove(join(stagingDir, "new"), { recursive: true });
+        await Deno.symlink(outside, join(stagingDir, "new"), { type: "dir" });
+
+        const error = await assertRejects(
+          () =>
+            new RemoveExtensionService({
+              repository,
+              lockfileRepository,
+              repoDir,
+            }).execute(extName),
+          UserError,
+        );
+        assertEquals(error.message.includes("journal"), true);
+        assertEquals(lockfileRepository.getEntry(extName) !== null, true);
+        assertEquals(await Deno.readTextFile(model), "// v1");
       },
     );
   },

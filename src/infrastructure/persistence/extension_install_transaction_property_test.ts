@@ -27,8 +27,11 @@ import {
   ExtensionInstallTransaction,
   type InstallFsOps,
   recoverInstallStaging,
-  SimulatedInstallCrash,
 } from "./extension_install_transaction.ts";
+import {
+  crashAware,
+  SimulatedInstallCrash,
+} from "./test_helpers/install_crash.ts";
 
 // For random old and new file sets (each root present or not, a nested
 // child or not), a failure or crash at any point of the swap, and the
@@ -156,8 +159,7 @@ Deno.test("ExtensionInstallTransaction: settle and recovery leave exactly the ol
         const oldTree = await readTree(repoDir);
 
         let renames = 0;
-        const ops: InstallFsOps = {
-          ...defaultInstallFsOps,
+        const ops: InstallFsOps = crashAware({
           rename: async (from, to) => {
             renames++;
             if (renames === s.failAt) {
@@ -167,7 +169,7 @@ Deno.test("ExtensionInstallTransaction: settle and recovery leave exactly the ol
             }
             await defaultInstallFsOps.rename(from, to);
           },
-        };
+        });
         const tx = await ExtensionInstallTransaction.begin({
           pulledRoot,
           extensionName: NAME,

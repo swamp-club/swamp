@@ -47,7 +47,10 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionInstallTransaction } from "../../infrastructure/persistence/extension_install_transaction.ts";
 import { nestedEntryRelDirs } from "../../domain/extensions/install_journal.ts";
-import { recoverPulledExtensionStagingLocked } from "./recover_staging.ts";
+import {
+  assertNoBlockingJournal,
+  recoverPulledExtensionStagingLocked,
+} from "./recover_staging.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import {
   ArchiveSizeLimitError,
@@ -1313,9 +1316,10 @@ export async function applyInstall(
 
   // Put right any install a crashed process left half done before this
   // one reads the tree it replaces.
-  await recoverPulledExtensionStagingLocked(repoDir, {
+  const recovery = await recoverPulledExtensionStagingLocked(repoDir, {
     lockfilePaths: [ctx.lockfileRepository.lockfilePath],
   });
+  assertNoBlockingJournal(recovery, ref.name, "install");
 
   // Snapshot the prior lockfile entry's `files[]` BEFORE the swap.
   // Used afterwards to compute the orphan diff (paths declared by the
@@ -1403,8 +1407,8 @@ export async function applyInstall(
       throw new UserError(
         `Cannot install ${ref.name}: the installed extension ` +
           `${ref.name}/${relDir} lives at ${first}/ inside its root, where ` +
-          `${ref.name} keeps its own files. Remove ${ref.name}/${relDir} ` +
-          `first.`,
+          `${ref.name} keeps its own files. Run ` +
+          `\`swamp extension rm ${ref.name}/${relDir}\` first.`,
       );
     }
     if (await isPlainDir(join(absoluteExtRoot, relDir))) {
@@ -1422,7 +1426,7 @@ export async function applyInstall(
     );
   }
   const tx = await ExtensionInstallTransaction.begin({
-    pulledRoot: resolvePulledExtensionsRoot(repoDir),
+    pulledRoot: resolvePulledExtensionsRoot(resolve(repoDir)),
     extensionName: ref.name,
     lockfilePath: ctx.lockfileRepository.lockfilePath,
     newChecksum: localChecksum,
@@ -1443,6 +1447,10 @@ export async function applyInstall(
     })),
   });
 
+  // Set once this install's own lockfile write completes. A same-version
+  // reinstall finds the prior entry already carrying its checksum, so
+  // only this flag says the entry landed for a failure after the swap.
+  let lockfileWritten = false;
   try {
     const stagedExtRoot = tx.newPathOf(absoluteExtRoot);
     const extractedFiles: string[] = [];
@@ -1688,6 +1696,7 @@ export async function applyInstall(
         pulledAt: oldEntry?.version === version ? oldEntry.pulledAt : undefined,
       },
     );
+    lockfileWritten = true;
 
     // A dependency cycle must not reinstall this extension over the tree
     // just written. installExtension() marks it before prepare; mark it
@@ -1798,13 +1807,17 @@ export async function applyInstall(
   } catch (error) {
     // Roll the swap back, or forward when the lockfile entry already
     // landed (e.g. a dependency failed after it). Read from disk, so a
-    // write that failed after reaching the file still counts.
-    await tx.settle(
-      error,
-      async () =>
-        (await LockfileRepository.create(ctx.lockfileRepository.lockfilePath))
-          .getEntry(ref.name)?.checksum ?? null,
-    );
+    // write that failed after reaching the file still counts, except
+    // when the prior entry had the same checksum: then only this
+    // install's completed write says it landed.
+    await tx.settle(error, async () => {
+      if (!lockfileWritten && oldEntry?.checksum === localChecksum) {
+        return null;
+      }
+      return (await LockfileRepository.create(
+        ctx.lockfileRepository.lockfilePath,
+      )).getEntry(ref.name)?.checksum ?? null;
+    });
     throw error;
   }
 }

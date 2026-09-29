@@ -27,14 +27,18 @@ import {
   STAGING_DIR_NAME,
 } from "../../domain/extensions/install_journal.ts";
 import {
+  blockingLeftJournals,
   defaultInstallFsOps,
   ExtensionInstallTransaction,
   type InstallFsOps,
   isActiveInstallOwner,
   recoverInstallStaging,
-  SimulatedInstallCrash,
   STAGING_SWEEP_AGE_MS,
 } from "./extension_install_transaction.ts";
+import {
+  crashAware,
+  SimulatedInstallCrash,
+} from "./test_helpers/install_crash.ts";
 
 const NAME = "@acme/thing";
 const MANIFEST_V1 = "name: thing\nversion: 1\n";
@@ -117,6 +121,17 @@ async function exists(path: string): Promise<boolean> {
   return await defaultInstallFsOps.lstat(path) !== "absent";
 }
 
+/** Resets the fixture to a plain v1 install. */
+async function seedFresh(f: Fixture): Promise<void> {
+  await Deno.remove(f.extRoot, { recursive: true }).catch(() => {});
+  await Deno.remove(join(f.pulledRoot, STAGING_DIR_NAME), { recursive: true })
+    .catch(() => {});
+  for await (const entry of Deno.readDir(f.bundleKindDir)) {
+    await Deno.remove(join(f.bundleKindDir, entry.name), { recursive: true });
+  }
+  await seedV1(f);
+}
+
 /** Installs v1 the plain way: files in place, no staging. */
 async function seedV1(f: Fixture): Promise<void> {
   await writeFiles(f.extRoot, {
@@ -129,7 +144,7 @@ async function seedV1(f: Fixture): Promise<void> {
 
 async function beginV2(
   f: Fixture,
-  ops: InstallFsOps = defaultInstallFsOps,
+  ops: InstallFsOps = crashAware(),
   opts: { bundleHasNew?: boolean } = {},
 ): Promise<ExtensionInstallTransaction> {
   const tx = await ExtensionInstallTransaction.begin({
@@ -231,6 +246,7 @@ function recordingOps(
       calls.push({ op: "readDir", args: [p] });
       return base.readDir(p);
     },
+    isSimulatedCrash: (error) => error instanceof SimulatedInstallCrash,
   };
   return { ops, calls, renames: () => renames, control };
 }
@@ -576,8 +592,12 @@ Deno.test("recoverInstallStaging: leaves an invalid or out-of-containment journa
       readLockfileChecksum: () => Promise.resolve(null),
     });
     assertEquals(
-      report.left.sort(),
+      report.left.map((l) => l.journalPath).sort(),
       [journalPath, installJournalPath(f.pulledRoot, garbageId)].sort(),
+    );
+    assertEquals(
+      report.left.find((l) => l.journalPath === journalPath)?.extensionName,
+      NAME,
     );
     assertEquals(report.rolledBack, []);
     // The live root stays wherever the crash left it: nothing moved.
@@ -601,7 +621,12 @@ Deno.test("recoverInstallStaging: leaves a journal whose lockfile is not this re
       bundleKindDirs: [f.bundleKindDir],
       readLockfileChecksum: () => Promise.resolve(null),
     });
-    assertEquals(report.left, [installJournalPath(f.pulledRoot, stagingId)]);
+    assertEquals(report.left.map((l) => l.journalPath), [
+      installJournalPath(f.pulledRoot, stagingId),
+    ]);
+    assertEquals(blockingLeftJournals(report, NAME).length, 1);
+    assertEquals(blockingLeftJournals(report, `${NAME}/child`).length, 1);
+    assertEquals(blockingLeftJournals(report, "@acme/other").length, 0);
   });
 });
 
@@ -639,6 +664,157 @@ Deno.test("recoverInstallStaging: sweeps journal-less staging only past the age 
     assertEquals(await exists(staleBundle), false);
     assert(await exists(freshDir));
     assert(await exists(notOurs));
+  });
+});
+
+/** Real ops whose remove() dies (a simulated crash) on the nth call. */
+function crashOnRemove(nth: number): InstallFsOps {
+  let removes = 0;
+  return crashAware({
+    remove: async (path) => {
+      if (++removes === nth) throw new SimulatedInstallCrash(`remove ${nth}`);
+      await defaultInstallFsOps.remove(path);
+    },
+  });
+}
+
+Deno.test("ExtensionInstallTransaction.commit: a crash while deleting staging never rolls the install back", async () => {
+  await withFixture(async (f) => {
+    for (const nth of [1, 2, 3]) {
+      await seedFresh(f);
+      const tx = await beginV2(f, crashOnRemove(nth));
+      await tx.swap();
+      await tx.commit();
+      assertEquals(isActiveInstallOwner(tx.journal.ownerId), false);
+      const report = await recoverInstallStaging({
+        bounds: boundsOf(f),
+        bundleKindDirs: [f.bundleKindDir],
+        readLockfileChecksum: () => Promise.resolve("sum-v2"),
+      });
+      assertEquals(report.rolledBack, [], `crash at remove ${nth}`);
+      assertEquals(report.left, [], `crash at remove ${nth}`);
+      assertEquals(await readTree(f.extRoot), V2_TREE_EXT);
+    }
+  });
+});
+
+Deno.test("ExtensionInstallTransaction.settle: a crash while deleting staging after a roll-back stays recoverable", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    const before = await readTree(f.repoDir);
+    for (const nth of [1, 2, 3]) {
+      const tx = await beginV2(f, crashOnRemove(nth));
+      await tx.swap();
+      await tx.settle(
+        new Error("later step failed"),
+        () => Promise.resolve(null),
+      );
+      assertEquals(await readTree(f.repoDir), before, `crash at remove ${nth}`);
+      const report = await recoverInstallStaging({
+        bounds: boundsOf(f),
+        bundleKindDirs: [f.bundleKindDir],
+        readLockfileChecksum: () => Promise.resolve(null),
+      });
+      assertEquals(report.left, [], `crash at remove ${nth}`);
+      assertEquals(await readTree(f.repoDir), before, `crash at remove ${nth}`);
+    }
+  });
+});
+
+Deno.test("ExtensionInstallTransaction.begin: a crash before the new dirs exist stays recoverable", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    const before = await readTree(f.repoDir);
+    let mkdirs = 0;
+    const ops = crashAware({
+      mkdir: async (path) => {
+        if (++mkdirs === 2) throw new SimulatedInstallCrash("mkdir 2");
+        await defaultInstallFsOps.mkdir(path);
+      },
+    });
+    await assertRejects(() => beginV2(f, ops), SimulatedInstallCrash);
+    const report = await recoverInstallStaging({
+      bounds: boundsOf(f),
+      bundleKindDirs: [f.bundleKindDir],
+      readLockfileChecksum: () => Promise.resolve(null),
+    });
+    assertEquals(report.rolledBack, [NAME]);
+    assertEquals(report.left, []);
+    assertEquals(await readTree(f.repoDir), before);
+    assertEquals(await exists(join(f.pulledRoot, STAGING_DIR_NAME)), false);
+  });
+});
+
+Deno.test("ExtensionInstallTransaction.swap: a bundle dir recreated mid-swap does not strand the extension root", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    const before = await readTree(f.repoDir);
+    let rebuilt = false;
+    const ops = crashAware({
+      rename: async (from, to) => {
+        if (
+          !rebuilt && to === f.bundleRoot &&
+          from.includes(`${STAGING_DIR_NAME}-`)
+        ) {
+          rebuilt = true;
+          // A loader outside the lock rebuilds the bundle cache dir
+          // between phase 1 and phase 2.
+          await writeFiles(f.bundleRoot, { "rebuilt.js": "cache" });
+        }
+        await defaultInstallFsOps.rename(from, to);
+      },
+    });
+    const tx = await beginV2(f, ops);
+    await assertRejects(() => tx.swap());
+    await tx.settle(new Error("swap failed"), () => Promise.resolve(null));
+    assertEquals(await readTree(f.repoDir), before);
+    assertEquals(await exists(join(f.pulledRoot, STAGING_DIR_NAME)), false);
+  });
+});
+
+Deno.test("recoverInstallStaging: leaves a journal whose staging dir is a symlink", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    const stagingId = await crashAt(f, 2);
+    const bundleStaging = join(
+      f.bundleKindDir,
+      bundleStagingDirName(stagingId),
+    );
+    const outside = join(f.repoDir, "outside");
+    await Deno.rename(bundleStaging, outside);
+    await Deno.symlink(outside, bundleStaging, { type: "dir" });
+
+    const report = await recoverInstallStaging({
+      bounds: boundsOf(f),
+      bundleKindDirs: [f.bundleKindDir],
+      readLockfileChecksum: () => Promise.resolve(null),
+    });
+    assertEquals(report.rolledBack, []);
+    assertEquals(report.left.length, 1);
+    assert(report.left[0].reason.includes("not a plain directory"));
+    // Nothing was moved through the link.
+    assertEquals(await exists(join(outside, "discard")), false);
+  });
+});
+
+Deno.test("recoverInstallStaging: a stale leftover that cannot be removed only warns", async () => {
+  await withFixture(async (f) => {
+    const staleDir = join(f.pulledRoot, STAGING_DIR_NAME, crypto.randomUUID());
+    await writeFiles(staleDir, { "new/0/a.ts": "x" });
+    const now = Date.now();
+    const old = new Date(now - STAGING_SWEEP_AGE_MS - 60_000);
+    await Deno.utime(staleDir, old, old);
+    const report = await recoverInstallStaging({
+      bounds: boundsOf(f),
+      bundleKindDirs: [f.bundleKindDir],
+      readLockfileChecksum: () => Promise.resolve(null),
+      now: () => now,
+      ops: crashAware({
+        remove: () => Promise.reject(new Error("EPERM")),
+      }),
+    });
+    assertEquals(report.swept, []);
+    assert(await exists(staleDir));
   });
 });
 

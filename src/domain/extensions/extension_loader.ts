@@ -1684,7 +1684,13 @@ export class ExtensionLoader {
       // flight or to its crash recovery (swamp-club#2723).
       for await (const entry of Deno.readDir(bundleDir)) {
         if (isStagingEntryName(entry.name)) continue;
-        await Deno.remove(join(bundleDir, entry.name), { recursive: true });
+        try {
+          await Deno.remove(join(bundleDir, entry.name), { recursive: true });
+        } catch (error) {
+          // Moved or removed since the listing (an install's swap):
+          // nothing left to evict, and the rest still are.
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
       }
       this.logger
         .info`Evicted stale bundles for ${this.adapter.kind}: ${bundleDir}`;

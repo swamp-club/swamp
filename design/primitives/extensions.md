@@ -1591,7 +1591,9 @@ it), and the nested entry roots carried over.
 **Swap.** Phase 1 moves each existing live root to `old/<i>`. Phase 2 moves
 each new root into place, bundles first, then the extension root (staged
 without `manifest.yaml`), then `manifest.yaml` last. The journal then records
-`swapped`. Any failed rename undoes the completed ones in reverse order. Before
+`swapped`. Any failed rename undoes the completed ones in reverse order,
+carrying on past a step that cannot be undone (a bundle dir a loader recreated)
+so the other roots still go back. Before
 each phase the install re-reads the journal and stops unless it still owns it.
 No rename ever targets an existing path, so Windows never renames over a
 directory. Between the first phase-1 rename and the `swapped` write only
@@ -1600,7 +1602,9 @@ root is absent to readers outside the lock stays short.
 
 **Commit.** `applyInstall` returns with the swap done and the old roots kept.
 `installExtension` commits (deletes the staging, and with it the old roots)
-right after apply, before the catalog save. swamp-club#2724 moves the commit
+right after apply, before the catalog save. Deleting staging removes the journal
+first, so a crash part-way through leaves journal-less staging for the sweep,
+never a journal that could later restore a half-deleted old root. swamp-club#2724 moves the commit
 after the catalog save so a type collision can roll back to the prior version.
 Until then, an upgrade that collides still ends with no version installed (see
 [FS rollback on DuplicateTypeError](#fs-rollback-on-duplicatetypeerror)).
@@ -1608,7 +1612,9 @@ Until then, an upgrade that collides still ends with no version installed (see
 **Settle.** Any failure after staging starts is settled before it propagates,
 by the same rule as crash recovery: forward when the journal reached `swapped`
 and the lockfile entry landed (a dependency failed after the parent was
-written), back otherwise. Settle never replaces the original error. If settle
+written), back otherwise. In process the install knows whether its own lockfile
+write completed, so a failed same-version reinstall rolls back even though the
+prior entry already carries its checksum. Settle never replaces the original error. If settle
 itself fails, the journal stays for crash recovery.
 
 **Crash recovery.** `recoverPulledExtensionStaging(repoDir)` runs under the
@@ -1624,17 +1630,26 @@ reuse pids):
   is left in place with one warning naming it.
 - It rolls forward when the journal reached `swapped` and the recorded
   lockfile's entry carries the new checksum; otherwise back.
-- Each root is judged from what its staging holds (`old/<i>`, `new/<i>`,
-  `discard/<i>`), never from the extension's manifest. Recovery only renames;
-  a superseded root goes to `discard/<i>` and is deleted with the staging, so
-  the only copy of a root is never deleted. A disk state the install cannot
-  have produced, or a symlink where a directory belongs, leaves the journal in
-  place with a warning.
+- Rolling back, each root is judged from where its original is: in `old/<i>`
+  once phase 1 moved it aside, otherwise still live. Where the new copy is
+  does not matter, so a crash inside `begin` or during cleanup stays
+  recoverable, and a live dir found next to a moved-aside original (a bundle
+  cache a loader recreated) is superseded. Never from the extension's
+  manifest. Recovery only renames; a superseded root goes to `discard/<i>` and
+  is deleted with the staging, so the only copy of a root is never deleted.
+- An original that is gone, a symlink or file where a directory belongs
+  (including any staging dir or a dir above a live root), or a failed
+  recovery leaves the journal in place with a warning. While such a journal
+  names an extension, installing or removing it, or an extension nested in or
+  above it, is refused with a message naming the journal: changing its roots
+  first would let a later recovery act on files it did not write.
+- Journal paths are derived from the absolute repository path, so an install
+  and a later recovery that spell the path differently agree.
 - Staging with no journal is swept only once it is older than an hour.
 
 Recovery never writes the lockfile. A same-version reinstall has equal old and
-new checksums, so a crash after `swapped` and before the lockfile write rolls
-forward. The tree is then the reinstalled one with the old entry, identical
+new checksums, so after a process crash (not a failure the install settles
+itself) between `swapped` and the lockfile write, recovery rolls forward. The tree is then the reinstalled one with the old entry, identical
 apart from any extra files `--force` dropped.
 
 **Extra files.** The swap replaces a root whole, so a file the user added
@@ -1647,7 +1662,8 @@ guard refuses, since an extra file changes the root's digest.
 root, keeping file and directory times so the nested entry's sources stay no
 newer than its pre-built bundles, and records it in the journal. A nested entry
 whose first path segment is a kind dir or `manifest.yaml` (`@a/b/models`) is
-refused. The installed-extension digest (`filesChecksum`) leaves nested entry
+refused: the parent's own files live there. Such a layout installed before this
+change; remove the nested entry to install the parent. The installed-extension digest (`filesChecksum`) leaves nested entry
 roots out, so installing `@a/b/c` does not make `@a/b` look locally edited. A
 digest stored before this rule covered the nested root too. While a root has
 nested entries, the local-edits check and the `extension install` content check

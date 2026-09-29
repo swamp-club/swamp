@@ -73,6 +73,14 @@ export interface InstallFsOps {
   readText(path: string): Promise<string>;
   readFile(path: string): Promise<Uint8Array>;
   readDir(path: string): Promise<string[]>;
+  /**
+   * Test seam: true when `error` models the process dying at the step
+   * that threw it. The transaction then neither undoes its renames nor
+   * settles, and drops its owner id, leaving the journal exactly as a
+   * crash would for {@link recoverInstallStaging}. Production ops leave
+   * it unset.
+   */
+  isSimulatedCrash?(error: unknown): boolean;
 }
 
 /** The real filesystem. */
@@ -127,19 +135,6 @@ export const defaultInstallFsOps: InstallFsOps = {
     return names;
   },
 };
-
-/**
- * Test seam: an ops step that throws this models the process dying at
- * that step. The transaction neither undoes its renames nor settles, and
- * drops its owner id, so the journal is left exactly as a crash would
- * leave it for {@link recoverInstallStaging}.
- */
-export class SimulatedInstallCrash extends Error {
-  constructor(step: string) {
-    super(`simulated crash at ${step}`);
-    this.name = "SimulatedInstallCrash";
-  }
-}
 
 /**
  * Owner ids of the installs this process is running. Recovery leaves
@@ -279,7 +274,7 @@ export class ExtensionInstallTransaction {
         }
       }
     } catch (error) {
-      await tx.#deleteStaging().catch(() => {});
+      if (!tx.#isCrash(error)) await tx.#deleteStaging().catch(() => {});
       activeOwners.delete(ownerId);
       tx.#done = true;
       throw error;
@@ -345,14 +340,17 @@ export class ExtensionInstallTransaction {
         throw error;
       }
     } catch (error) {
-      if (!(error instanceof SimulatedInstallCrash)) {
+      if (!this.#isCrash(error)) {
+        // Every step undone that can be: the roots are independent, so
+        // one that cannot move back (a bundle dir a loader recreated)
+        // must not leave the others, the extension root above all, in
+        // staging. settle() resolves whatever is left.
         for (const step of done.reverse()) {
           try {
             await this.#ops.rename(step.to, step.from);
           } catch (undoError) {
             logger
-              .warn`Could not undo ${step.from} -> ${step.to} for ${this.#journal.extensionName}: ${undoError}; recovery will finish it`;
-            break;
+              .warn`Could not undo ${step.from} -> ${step.to} for ${this.#journal.extensionName}: ${undoError}; settling will finish it`;
           }
         }
       }
@@ -361,10 +359,10 @@ export class ExtensionInstallTransaction {
   }
 
   /**
-   * Deletes the staging dirs, and with them the old roots. The bundle
-   * staging dirs go first and the journal's dir last, so a crash
-   * mid-commit still leaves a journal for recovery. Never throws: the
-   * install is complete, and recovery deletes whatever is left.
+   * Deletes the staging dirs, and with them the old roots. The journal
+   * goes first, so a crash mid-commit can never restore a half-deleted
+   * old root; what is left is swept once stale. Never throws: the install
+   * is complete.
    */
   async commit(): Promise<void> {
     if (this.#done) return;
@@ -395,7 +393,7 @@ export class ExtensionInstallTransaction {
     if (this.#done) return;
     this.#done = true;
     try {
-      if (error instanceof SimulatedInstallCrash) return;
+      if (this.#isCrash(error)) return;
       const outcome = await settleJournal(
         this.#journal,
         await readLockfileChecksum(),
@@ -411,6 +409,10 @@ export class ExtensionInstallTransaction {
     } finally {
       activeOwners.delete(this.#journal.ownerId);
     }
+  }
+
+  #isCrash(error: unknown): boolean {
+    return this.#ops.isSimulatedCrash?.(error) ?? false;
   }
 
   #journalPath(): string {
@@ -434,7 +436,7 @@ export class ExtensionInstallTransaction {
     try {
       onDisk = JSON.parse(await this.#ops.readText(this.#journalPath()));
     } catch (error) {
-      if (error instanceof SimulatedInstallCrash) throw error;
+      if (this.#isCrash(error)) throw error;
       throw new Error(
         `Install journal ${this.#journalPath()} is unreadable: ${error}`,
       );
@@ -495,18 +497,23 @@ async function digestIfFile(
 }
 
 /**
- * Deletes the bundle staging dirs, then the journal's dir, then the
- * `.swamp-staging` parent once no other install's journal is in it.
+ * Deletes an install's staging once its renames are settled. The journal
+ * goes first: from then on staging holds only superseded copies, and a
+ * crash part-way through leaves journal-less staging that the stale sweep
+ * removes, never a journal that recovery would act on again. Then the
+ * bundle staging dirs, the journal's dir, and the `.swamp-staging` parent
+ * once no other install's journal is in it.
  */
 async function deleteStaging(
   journal: InstallJournal,
   ops: InstallFsOps,
 ): Promise<void> {
+  const journalDir = extensionRootOf(journal).stagingDir;
+  await ops.remove(join(journalDir, INSTALL_JOURNAL_FILE));
   const bundleDirs = new Set(
     journal.roots.filter((r) => r.role === "bundle").map((r) => r.stagingDir),
   );
   for (const dir of bundleDirs) await ops.remove(dir);
-  const journalDir = extensionRootOf(journal).stagingDir;
   await ops.remove(journalDir);
   await ops.removeIfEmpty(dirname(journalDir));
 }
@@ -534,7 +541,44 @@ export async function observeInstall(
     liveManifestDigest: liveManifest === "file"
       ? await computeChecksum(await ops.readFile(journal.manifest.live))
       : null,
+    unsafeDir: await findUnsafeDir(journal, ops),
   };
+}
+
+/**
+ * The first dir a recovery rename passes through that is neither a plain
+ * directory nor absent: each staging dir and its `old`, `new` and
+ * `discard` dirs, and every dir between a root's container (the pulled
+ * root, or its bundle kind dir) and its live path. A symlink there would
+ * send a rename, or the recursive mkdir before one, outside the repo.
+ */
+async function findUnsafeDir(
+  journal: InstallJournal,
+  ops: InstallFsOps,
+): Promise<string | null> {
+  const extStaging = extensionRootOf(journal).stagingDir;
+  const pulledRoot = dirname(dirname(extStaging));
+  const dirs = new Set<string>([dirname(extStaging)]);
+  for (const root of journal.roots) {
+    for (const slot of ["", "old", "new", "discard"]) {
+      dirs.add(slot ? join(root.stagingDir, slot) : root.stagingDir);
+    }
+    const container = root.role === "extension"
+      ? pulledRoot
+      : dirname(root.stagingDir);
+    for (
+      let dir = dirname(root.live);
+      dir !== container && dir.startsWith(container);
+      dir = dirname(dir)
+    ) {
+      dirs.add(dir);
+    }
+  }
+  for (const dir of dirs) {
+    const kind = await ops.lstat(dir);
+    if (kind !== "dir" && kind !== "absent") return dir;
+  }
+  return null;
 }
 
 /**
@@ -563,12 +607,24 @@ async function settleJournal(
   return plan;
 }
 
+/** A journal recovery left in place. */
+export interface LeftJournal {
+  journalPath: string;
+  /**
+   * The extension it names, when the journal says: an install or removal
+   * of that extension (or of one nested in or above it) must not go
+   * ahead, or this journal could later act on its roots.
+   */
+  extensionName: string | null;
+  reason: string;
+}
+
 /** What one {@link recoverInstallStaging} pass did. */
 export interface StagingRecoveryReport {
   rolledForward: string[];
   rolledBack: string[];
   /** Journals left in place (invalid, or a state recovery cannot fix). */
-  left: string[];
+  left: LeftJournal[];
   /** Journal-less staging dirs past the age threshold that were removed. */
   swept: string[];
 }
@@ -591,10 +647,14 @@ export interface RecoverInstallStagingArgs {
  * Puts right every install a crashed process left behind: each journal
  * under `<pulledRoot>/.swamp-staging/` whose owner is not an install
  * running in this process is validated, then rolled forward or back from
- * what is on disk. An invalid journal, or one whose disk state recovery
- * cannot account for, is left alone with one warning naming it.
- * Journal-less staging dirs are removed only once older than
- * {@link STAGING_SWEEP_AGE_MS}.
+ * what is on disk. An invalid journal, one whose disk state recovery
+ * cannot account for, or one whose recovery failed (a rename refused on
+ * Windows, say) is left alone with a warning naming it, and reported so
+ * the caller can refuse to change that extension. Journal-less staging is
+ * removed only once older than {@link STAGING_SWEEP_AGE_MS}.
+ *
+ * A failure on one entry is logged and never stops the pass, so a
+ * leftover that cannot be deleted does not block every install.
  *
  * The caller must hold the pulled-extensions lock.
  */
@@ -609,56 +669,73 @@ export async function recoverInstallStaging(
     left: [],
     swept: [],
   };
-  const isStale = async (path: string): Promise<boolean> => {
-    const mtime = await ops.mtime(path);
-    return mtime !== null && now() - mtime.getTime() > STAGING_SWEEP_AGE_MS;
-  };
   const sweep = async (path: string) => {
-    if (await isStale(path)) {
+    try {
+      const mtime = await ops.mtime(path);
+      if (mtime === null || now() - mtime.getTime() <= STAGING_SWEEP_AGE_MS) {
+        return;
+      }
       await ops.remove(path);
       report.swept.push(path);
+    } catch (error) {
+      logger.warn`Could not remove stale install staging ${path}: ${error}`;
+    }
+  };
+  const leave = (
+    journalPath: string,
+    extensionName: string | null,
+    reason: string,
+  ) => {
+    logger.warn`Left the install journal ${journalPath} in place: ${reason}`;
+    report.left.push({ journalPath, extensionName, reason });
+  };
+  const readNames = async (dir: string): Promise<string[]> => {
+    try {
+      return (await ops.readDir(dir)).sort();
+    } catch (error) {
+      logger.warn`Could not list ${dir} for install recovery: ${error}`;
+      return [];
     }
   };
 
   const stagingParent = join(args.bounds.pulledRoot, STAGING_DIR_NAME);
   const journalIds = new Set<string>();
   if (await ops.lstat(stagingParent) === "dir") {
-    for (const name of (await ops.readDir(stagingParent)).sort()) {
+    for (const name of await readNames(stagingParent)) {
       if (!isStagingId(name)) continue;
       const dir = join(stagingParent, name);
-      if (await ops.lstat(dir) !== "dir") {
-        await sweep(dir);
-        continue;
-      }
       const journalPath = installJournalPath(args.bounds.pulledRoot, name);
-      const journalKind = await ops.lstat(journalPath);
-      if (journalKind === "absent") {
-        await sweep(dir);
-        continue;
-      }
-      journalIds.add(name);
-
-      let raw: unknown;
       try {
-        if (journalKind !== "file") throw new Error("not a regular file");
-        raw = JSON.parse(await ops.readText(journalPath));
-      } catch (error) {
-        logger
-          .warn`Left the install journal ${journalPath} in place: it cannot be read (${error})`;
-        report.left.push(journalPath);
-        continue;
-      }
-      const parsed = parseInstallJournal(raw, args.bounds, name);
-      if (!parsed.ok) {
-        logger
-          .warn`Left the install journal ${journalPath} in place: it ${parsed.reason}`;
-        report.left.push(journalPath);
-        continue;
-      }
-      const journal = parsed.journal;
-      if (activeOwners.has(journal.ownerId)) continue;
+        if (await ops.lstat(dir) !== "dir") {
+          await sweep(dir);
+          continue;
+        }
+        const journalKind = await ops.lstat(journalPath);
+        if (journalKind === "absent") {
+          await sweep(dir);
+          continue;
+        }
+        journalIds.add(name);
 
-      try {
+        let raw: unknown;
+        try {
+          if (journalKind !== "file") throw new Error("not a regular file");
+          raw = JSON.parse(await ops.readText(journalPath));
+        } catch (error) {
+          leave(journalPath, null, `it cannot be read (${error})`);
+          continue;
+        }
+        const rawName = (raw as { extensionName?: unknown } | null)
+          ?.extensionName;
+        const namedAs = typeof rawName === "string" ? rawName : null;
+        const parsed = parseInstallJournal(raw, args.bounds, name);
+        if (!parsed.ok) {
+          leave(journalPath, namedAs, `it ${parsed.reason}`);
+          continue;
+        }
+        const journal = parsed.journal;
+        if (activeOwners.has(journal.ownerId)) continue;
+
         const plan = await settleJournal(
           journal,
           await args.readLockfileChecksum(
@@ -668,9 +745,7 @@ export async function recoverInstallStaging(
           ops,
         );
         if (plan.direction === "leave") {
-          logger
-            .warn`Left the install journal ${journalPath} in place: ${plan.reason}`;
-          report.left.push(journalPath);
+          leave(journalPath, journal.extensionName, plan.reason);
         } else if (plan.direction === "forward") {
           logger
             .info`Finished the interrupted install of ${journal.extensionName}`;
@@ -681,20 +756,29 @@ export async function recoverInstallStaging(
           report.rolledBack.push(journal.extensionName);
         }
       } catch (error) {
-        logger
-          .warn`Could not recover the install journal ${journalPath}: ${error}`;
-        report.left.push(journalPath);
+        journalIds.add(name);
+        let namedAs: string | null = null;
+        try {
+          const raw = JSON.parse(await ops.readText(journalPath));
+          if (typeof raw?.extensionName === "string") {
+            namedAs = raw.extensionName;
+          }
+        } catch {
+          // Journal already gone or unreadable: nothing to attribute.
+        }
+        leave(journalPath, namedAs, `recovery failed (${error})`);
       }
     }
-  }
-
-  if (await ops.lstat(stagingParent) === "dir") {
-    await ops.removeIfEmpty(stagingParent);
+    try {
+      await ops.removeIfEmpty(stagingParent);
+    } catch (error) {
+      logger.debug`Could not remove empty ${stagingParent}: ${error}`;
+    }
   }
 
   for (const kindDir of args.bundleKindDirs) {
     if (await ops.lstat(kindDir) !== "dir") continue;
-    for (const name of (await ops.readDir(kindDir)).sort()) {
+    for (const name of await readNames(kindDir)) {
       if (!name.startsWith(BUNDLE_STAGING_PREFIX)) continue;
       const id = name.slice(BUNDLE_STAGING_PREFIX.length);
       if (!isStagingId(id) || journalIds.has(id)) continue;
@@ -702,4 +786,21 @@ export async function recoverInstallStaging(
     }
   }
   return report;
+}
+
+/**
+ * The journals in `report` that block changing extension `name`: those
+ * naming `name`, an extension nested in it, or one it is nested in. Their
+ * roots overlap `name`'s, so changing `name` first would let a later
+ * recovery act on files it did not write.
+ */
+export function blockingLeftJournals(
+  report: StagingRecoveryReport,
+  name: string,
+): LeftJournal[] {
+  return report.left.filter(({ extensionName: other }) =>
+    other !== null &&
+    (other === name || other.startsWith(`${name}/`) ||
+      name.startsWith(`${other}/`))
+  );
 }
