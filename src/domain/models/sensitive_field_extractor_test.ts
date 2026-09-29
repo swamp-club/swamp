@@ -684,3 +684,68 @@ Deno.test("buildSensitiveArgRemediations: falls back to my-vault without a schem
   assertEquals(remediations[0].vaultName, "my-vault");
   assertEquals(remediations[0].vaultKey, "apiKey");
 });
+
+Deno.test("findLiteralSensitiveGlobalArgs: flags a constant expression, which stores its text in cleartext", () => {
+  const schema = z.object({ apiKey: z.string().meta({ sensitive: true }) });
+  for (
+    const apiKey of [
+      "${{ literal('hunter2') }}",
+      "${{ 'hunter2' }}",
+      "${{ 'hun' + 'ter2' }}",
+      "${{ inputs.key }} ${{ literal('hunter2') }}",
+    ]
+  ) {
+    assertEquals(
+      findLiteralSensitiveGlobalArgs(schema, { apiKey }),
+      ["apiKey"],
+      apiKey,
+    );
+  }
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: allows expressions that read something, and blank constants", () => {
+  const schema = z.object({ apiKey: z.string().meta({ sensitive: true }) });
+  for (
+    const apiKey of [
+      "${{ vault.get('v', 'k') }}",
+      "${{ env.API_KEY }}",
+      "${{ inputs.?key.orValue('') }}",
+      "${{ '' }}",
+      "${{ null }}",
+      "${{ literal('') }}",
+      // Text that does not parse never evaluates to a value.
+      "${{ not cel ( }}",
+    ]
+  ) {
+    assertEquals(
+      findLiteralSensitiveGlobalArgs(schema, { apiKey }),
+      [],
+      apiKey,
+    );
+  }
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: a }} inside a string does not end the expression", () => {
+  const schema = z.object({ apiKey: z.string().meta({ sensitive: true }) });
+  // One expression reading env; nothing outside it.
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      apiKey: "${{ env.A + '}}' }}",
+    }),
+    [],
+  );
+  // An unterminated string keeps the first }} boundary, so the text after it
+  // is a literal secret.
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      apiKey: '${{ "abc }} secret',
+    }),
+    ["apiKey"],
+  );
+});
+
+Deno.test("literalSensitiveGlobalArgsMessage: names constant expressions and doctor secrets", () => {
+  const message = literalSensitiveGlobalArgsMessage(["apiKey"]);
+  assertStringIncludes(message, "constant expression");
+  assertStringIncludes(message, "swamp doctor secrets");
+});

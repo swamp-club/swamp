@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
+import { maskLiteralCalls } from "./cel_string_lexer.ts";
+import { scanExpressions } from "./expression_scanner.ts";
 
 const VAULT_GET_PATTERN =
   /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/g;
@@ -55,8 +56,9 @@ function collectVaultReferences(
   onDynamic: (isDynamic: boolean) => void,
 ): void {
   if (typeof data === "string") {
-    for (const exprMatch of data.matchAll(EXPRESSION_PATTERN)) {
-      const celExpr = exprMatch[1];
+    for (const span of scanExpressions(data)) {
+      // A literal() argument is text, never a vault reference.
+      const celExpr = maskLiteralCalls(span.inner);
       VAULT_GET_PATTERN.lastIndex = 0;
       for (const vaultMatch of celExpr.matchAll(VAULT_GET_PATTERN)) {
         const vaultName = vaultMatch[2];

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { DependencyType } from "./dependency_extractor.ts";
+import { maskLiteralCalls } from "./cel_string_lexer.ts";
 
 /**
  * Represents a full path reference extracted from an expression.
@@ -123,7 +124,8 @@ export function extractPathReferences(
   const references: ExpressionPathReference[] = [];
   const seen = new Set<string>();
 
-  const matches = expression.matchAll(MODEL_PATH_PATTERN);
+  // A literal() argument is text, never a reference.
+  const matches = maskLiteralCalls(expression).matchAll(MODEL_PATH_PATTERN);
   for (const match of matches) {
     const modelRef = match[1];
     const type = match[2] as DependencyType;
@@ -161,7 +163,8 @@ export function extractSelfReferences(
   const references: SelfPathReference[] = [];
   const seen = new Set<string>();
 
-  const matches = expression.matchAll(SELF_PATH_PATTERN);
+  // A literal() argument is text, never a reference.
+  const matches = maskLiteralCalls(expression).matchAll(SELF_PATH_PATTERN);
   for (const match of matches) {
     const remainingPath = match[1] || "";
     const path = parsePathSegments(remainingPath);
@@ -196,7 +199,8 @@ export function extractEnvReferences(
   const references: EnvPathReference[] = [];
   const seen = new Set<string>();
 
-  const matches = expression.matchAll(ENV_PATH_PATTERN);
+  // A literal() argument is text, never a reference.
+  const matches = maskLiteralCalls(expression).matchAll(ENV_PATH_PATTERN);
   for (const match of matches) {
     const variableName = match[1];
     const rawExpression = match[0];

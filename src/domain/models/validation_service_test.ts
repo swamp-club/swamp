@@ -557,8 +557,8 @@ Deno.test("validateModel reports a dropped $ on a swamp expression with both rem
   assertStringIncludes(error, 'at "globalArguments.message"');
   assertStringIncludes(error, 'Add "$" prefix');
   assertStringIncludes(error, ".meta({ foreignTemplate: true })");
-  assertStringIncludes(error, "CEL string concatenation");
-  assertStringIncludes(error, '${{ "{" + "{name}" + "}" }}');
+  assertStringIncludes(error, "literal()");
+  assertStringIncludes(error, "${{ literal('{{name}}') }}");
   assertEquals(warnings, []);
 });
 
@@ -581,9 +581,9 @@ Deno.test("validateModel carries each Expression paths error and prints each sha
     'Add "$" prefix: ${{...}}.',
     "Use double braces: ${{...}}.",
   ]);
-  assertStringIncludes(entries[0].remedy ?? "", '${{ "{" + "{name}" + "}" }}');
+  assertStringIncludes(entries[0].remedy ?? "", "${{ literal('{{name}}') }}");
   assertEquals(entries[1].remedy, entries[0].remedy);
-  assertStringIncludes(entries[2].remedy ?? "", '${{ "$" + "{name}" }}');
+  assertStringIncludes(entries[2].remedy ?? "", "${{ literal('${name}') }}");
 
   const error = expressionPaths?.error ?? "";
   const lines = error.split("\n");
@@ -606,7 +606,7 @@ Deno.test("validateModel leaves an unclosed ${{ without a shared remedy", async 
   const entries = expressionPaths?.expressionErrors ?? [];
   assertEquals(entries.length, 1);
   assertEquals(entries[0].remedy, undefined);
-  assertStringIncludes(entries[0].suggestion ?? "", "CEL string concatenation");
+  assertStringIncludes(entries[0].suggestion ?? "", "literal()");
 });
 
 Deno.test("validateModel keeps a colliding vendor root like {{env.name}} an error with both remedies", async () => {
@@ -738,16 +738,18 @@ Deno.test("validateModel warns on shell ${VAR} and fails on a single-brace swamp
   const error = terraform.expressionPaths?.error ?? "";
   assertStringIncludes(error, "double braces");
   assertStringIncludes(error, ".meta({ foreignTemplate: true })");
-  assertStringIncludes(error, '${{ "$" + "{name}" }}');
-  assertEquals(error.includes('"{" + "{name}" + "}"'), false);
+  assertStringIncludes(error, "${{ literal('${name}') }}");
+  assertEquals(error.includes("literal('{{name}}')"), false);
 });
 
-Deno.test("validateModel accepts the concatenation examples its errors suggest", async () => {
+Deno.test("validateModel accepts the literal() examples its errors suggest, and concatenation", async () => {
   const { expressionPaths, warnings } = await validateWith(testExprModel, {
     name: "test-definition",
     globalArguments: {
-      message: 'crashed in ${{ "{" + "{env.name}" + "}" }}',
-      nested: { ami: '${{ "$" + "{data.aws_ami.ubuntu.id}" }}' },
+      message: "crashed in ${{ literal('{{env.name}}') }}",
+      nested: { ami: "${{ literal('${data.aws_ami.ubuntu.id}') }}" },
+      opener: "${{ literal('${{') }}",
+      concat: 'crashed in ${{ "{" + "{env.name}" + "}" }}',
     },
   });
   assertEquals(expressionPaths?.passed, true);
@@ -788,19 +790,53 @@ Deno.test("validateModel still checks undeclared fields of a type that declares 
   ]);
 });
 
-Deno.test("validateModel fails {{...}} inside a ${{ }} string, even in a declared field", async () => {
+Deno.test("validateModel passes {{...}} inside a ${{ }} string, declared or not (swamp-club#2492)", async () => {
   for (const modelDef of [testExprModel, foreignTemplateModel]) {
-    const { expressionPaths, warnings } = await validateWith(modelDef, {
-      name: "test-definition",
-      globalArguments: { message: 'crashed on ${{ "{{host.name}}" }}' },
-    });
-    assertEquals(expressionPaths?.passed, false);
-    const error = expressionPaths?.error ?? "";
-    assertStringIncludes(error, "cuts it short");
-    assertStringIncludes(error, "ends at the first }}");
-    assertStringIncludes(error, "CEL string concatenation");
-    assertEquals(warnings, []);
+    for (
+      const message of [
+        'crashed on ${{ "{{host.name}}" }}',
+        "${{ self.name }} alert, crashed on ${{ literal('{{host.name}}') }}",
+        "${{ literal('{{a}}') + ' on-call' }}",
+        "${{ literal('{{a}}') + literal('{{b}}') }}",
+      ]
+    ) {
+      const { expressionPaths, warnings } = await validateWith(modelDef, {
+        name: "test-definition",
+        globalArguments: { message },
+      });
+      assertEquals(expressionPaths?.passed, true, message);
+      assertEquals(warnings, [], message);
+    }
   }
+});
+
+Deno.test("validateModel treats a literal() joined to an unknown root like the root alone", async () => {
+  // A root swamp does not own makes the text another service's, with or
+  // without a literal() beside it, so it is reported rather than accepted.
+  for (
+    const message of ["${{ typo.name }}", "${{ literal('x') + typo.name }}"]
+  ) {
+    const { expressionPaths, warnings } = await validateWith(testExprModel, {
+      name: "test-definition",
+      globalArguments: { message },
+    });
+    assertEquals(expressionPaths?.passed, true, message);
+    assertEquals(warnings[0]?.templates, [
+      { path: "globalArguments.message", text: message },
+    ], message);
+  }
+});
+
+Deno.test("validateModel reads no reference from text passed through literal()", async () => {
+  // {{self.nope}} would fail as a self reference to a missing field if it
+  // were read as code.
+  const { expressionPaths } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: {
+      message: "${{ literal('{{self.nope}} {{inputs.x}}') }}",
+    },
+  });
+  assertEquals(expressionPaths?.passed, true);
 });
 
 Deno.test("validateModel scans authored global arguments in place of evaluated ones (swamp-club#2496)", async () => {

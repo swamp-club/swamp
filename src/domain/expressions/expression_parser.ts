@@ -17,25 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { maskLiteralCalls } from "./cel_string_lexer.ts";
 import type { ExpressionLocation } from "./expression.ts";
+import {
+  matchSingleExpression,
+  replaceExpressionSpans,
+  scanExpressions,
+} from "./expression_scanner.ts";
+
+export { transformHyphenatedModelRefs } from "./cel_grammar.ts";
 
 /**
- * Pattern to match ${{ ... }} expressions.
- * Captures the inner CEL expression.
+ * Whether a string holds a `${{ ... }}` expression. Every expression the
+ * scanner finds starts where this pattern matches — which `}}` ends it never
+ * changes whether there is one — so detection needs no parsing.
  */
-const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
-
-/**
- * Matches a string that is exactly one ${{ ... }} expression, optionally
- * followed by trailing whitespace. The tempered interior refuses to cross a
- * closing `}}`, so the capture is always identical to the raw produced by
- * {@link EXPRESSION_PATTERN} for the same text. A string that merely starts
- * with `${{` and ends with `}}` around other content — e.g.
- * `"${{ a }} and ${{ b }}"` — must NOT match: it would be looked up whole in
- * the values map (keyed by individual raws), miss, and skip inline
- * interpolation entirely.
- */
-const SINGLE_EXPRESSION_PATTERN = /^(\$\{\{(?:(?!\}\})[\s\S])+?\}\})\s*$/;
+const HAS_EXPRESSION_PATTERN = /\$\{\{.+?\}\}/s;
 
 /**
  * Every accessor the CEL `data.*` namespace exposes as an expression-callable
@@ -75,42 +72,19 @@ export function dataAccessorAlternation(): string {
 }
 
 /**
- * Transforms model references with hyphenated names to bracket notation.
- *
- * CEL interprets hyphens as subtraction operators, so `model.deploy-vpc.resource`
- * would be parsed as `(model.deploy) - (vpc.resource)`. This function transforms
- * hyphenated model names to bracket notation:
- *   model.deploy-vpc.resource → model["deploy-vpc"].resource
- *
- * @param expression - The CEL expression to transform
- * @returns The expression with hyphenated model names using bracket notation
- */
-export function transformHyphenatedModelRefs(expression: string): string {
-  // Pattern matches: model.<name-with-hyphens>.(input|resource|file|execution|definition)
-  // The name must contain at least one hyphen to need transformation
-  return expression.replace(
-    /model\.([a-zA-Z0-9_]+(?:-[a-zA-Z0-9_-]+)+)\.(input|resource|file|execution|definition)/g,
-    'model["$1"].$2',
-  );
-}
-
-/**
  * Checks if a string contains any expressions.
  */
 export function containsExpression(value: string): boolean {
-  return /\$\{\{.+?\}\}/s.test(value);
+  return HAS_EXPRESSION_PATTERN.test(value);
 }
 
 /**
  * Returns the `[start, end)` offsets of each `${{ ... }}` expression in a
- * string, exactly as {@link extractExpressions} sees them: each expression
- * ends at the first `}}`, even one inside a CEL string literal.
+ * string, exactly as {@link extractExpressions} sees them (see
+ * {@link scanExpressions} for where an expression ends).
  */
 export function expressionSpans(value: string): Array<[number, number]> {
-  return [...value.matchAll(EXPRESSION_PATTERN)].map((match) => [
-    match.index,
-    match.index + match[0].length,
-  ]);
+  return scanExpressions(value).map((span) => [span.start, span.end]);
 }
 
 /**
@@ -184,14 +158,8 @@ function extractExpressionsRecursive(
 ): void {
   if (skipPath?.(path)) return;
   if (typeof data === "string") {
-    // Check for expressions in string values
-    const matches = data.matchAll(EXPRESSION_PATTERN);
-    for (const match of matches) {
-      locations.push({
-        path,
-        raw: match[0],
-        celExpression: match[1].trim(),
-      });
+    for (const span of scanExpressions(data)) {
+      locations.push({ path, raw: span.raw, celExpression: span.inner });
     }
   } else if (Array.isArray(data)) {
     // Recursively process array elements
@@ -233,36 +201,27 @@ function replaceExpressionsRecursive(
 ): unknown {
   if (skipPath?.(path)) return data;
   if (typeof data === "string") {
+    if (!containsExpression(data)) return data;
+
     // Check if the entire string is a single expression
-    const singleMatch = data.match(SINGLE_EXPRESSION_PATTERN);
-    if (singleMatch) {
+    const single = matchSingleExpression(data);
+    if (single) {
       // Return the evaluated value directly (preserves type)
-      const evaluated = values.get(singleMatch[1]);
+      const evaluated = values.get(single.raw);
       return evaluated !== undefined ? evaluated : data;
     }
 
-    // Replace inline expressions within a larger string
-    if (containsExpression(data)) {
-      let result = data;
-      for (const [rawExpr, value] of values) {
-        if (result.includes(rawExpr)) {
-          // Convert value to string for inline replacement
-          // JSON stringify arrays/objects to preserve structure
-          let stringValue: string;
-          if (value === null || value === undefined) {
-            stringValue = "";
-          } else if (typeof value === "object") {
-            stringValue = JSON.stringify(value, null, 2);
-          } else {
-            stringValue = String(value);
-          }
-          result = result.split(rawExpr).join(stringValue);
-        }
-      }
-      return result;
-    }
-
-    return data;
+    // Replace inline expressions within a larger string, by position, so a
+    // raw that also appears inside another expression's string literal is
+    // left alone there.
+    return replaceExpressionSpans(data, (span) => {
+      if (!values.has(span.raw)) return span.raw;
+      const value = values.get(span.raw);
+      // JSON stringify arrays/objects to preserve structure
+      if (value === null || value === undefined) return "";
+      if (typeof value === "object") return JSON.stringify(value, null, 2);
+      return String(value);
+    });
   } else if (Array.isArray(data)) {
     return data.map((item, index) =>
       replaceExpressionsRecursive(item, values, `${path}[${index}]`, skipPath)
@@ -411,20 +370,22 @@ export function extractInputReferencesFromCel(
   celExpression: string,
 ): Set<string> {
   const inputNames = new Set<string>();
-  for (const match of celExpression.matchAll(INPUTS_DOT_PATTERN)) {
+  // A literal() argument is text, not a reference.
+  const cel = maskLiteralCalls(celExpression);
+  for (const match of cel.matchAll(INPUTS_DOT_PATTERN)) {
     inputNames.add(match[1]);
   }
-  for (const match of celExpression.matchAll(INPUTS_BRACKET_PATTERN)) {
+  for (const match of cel.matchAll(INPUTS_BRACKET_PATTERN)) {
     inputNames.add(match[1]);
   }
   return inputNames;
 }
 
 export function extractWholeFieldInputRef(value: string): string | null {
-  const singleMatch = value.match(SINGLE_EXPRESSION_PATTERN);
-  if (!singleMatch) return null;
+  const single = matchSingleExpression(value);
+  if (!single) return null;
 
-  const cel = singleMatch[1].replace(/^\$\{\{\s*/, "").replace(/\s*\}\}$/, "");
+  const cel = single.inner;
 
   const dotMatch = cel.match(/^inputs\.([a-zA-Z_][a-zA-Z0-9_]*)$/);
   if (dotMatch) return dotMatch[1];

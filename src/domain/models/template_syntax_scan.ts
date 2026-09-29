@@ -112,14 +112,16 @@ const MAX_CLOSING_ATTEMPTS = 16;
  * syntax. Every match in every string is reported, and the two forms are
  * matched independently, so one value can yield both kinds of finding.
  *
- * An expression ends at the first `}}`. One that parses as CEL is sound,
- * even with `{{` in it, as in `${{ '{{' }}`. One that does not parse, and
- * shows a sign of running past its intended end (a `{{` after its opening,
- * even in `${{{`, or a lone `}` typed for `}}` after valid CEL), is judged by
- * whether it parses when it ends at a later `}}` instead:
+ * An expression ends where `scanExpressions` says: at the first `}}`, or at
+ * the first one outside a CEL string literal when only that one parses. One
+ * that parses as CEL is sound, even with `{{` or `}}` in a string, as in
+ * `${{ literal('{{host.name}}') }}`. One that does not parse, and shows a
+ * sign of running past its intended end (a `{{` after its opening, even in
+ * `${{{`, or a lone `}` typed for `}}` after valid CEL), is judged by whether
+ * it parses when it ends at a later `}}` instead:
  *
- * - If it does, a string inside it was cut short, and the braces there are
- *   malformed (`inside-expression`), as in `${{ "{{host.name}}" }}`.
+ * - If it does, the expression was cut short, and the braces there are
+ *   malformed (`inside-expression`).
  * - If it does not, the expression is `unclosed-expression`, as in
  *   `${{ self.name } && docker ps --format '{{.Names}}'`. So is a `${{` with
  *   no `}}` after it.

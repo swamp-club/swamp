@@ -22,6 +22,11 @@ import {
   dataAccessorAlternation,
   extractExpressions,
 } from "./expression_parser.ts";
+import { maskLiteralCalls } from "./cel_string_lexer.ts";
+
+// Every extractor below reads CEL through maskLiteralCalls first: the text a
+// literal('...') call passes through is not a reference, so
+// literal('{{model.a.resource.b}}') mints no dependency.
 
 /**
  * Type of model reference in an expression.
@@ -101,10 +106,11 @@ const MODEL_METHOD_PATTERN = /model\.method\s*\(\s*['"]([^'"]+)['"]/g;
 export function extractDependencies(
   expression: string,
 ): ExpressionDependency[] {
+  const cel = maskLiteralCalls(expression);
   const dependencies: ExpressionDependency[] = [];
   const seen = new Set<string>();
 
-  const matches = expression.matchAll(MODEL_REF_PATTERN);
+  const matches = cel.matchAll(MODEL_REF_PATTERN);
   for (const match of matches) {
     const modelRef = match[1];
     const type = match[2] as DependencyType;
@@ -128,30 +134,31 @@ export function extractDependencies(
  * @returns Array of unique model references
  */
 export function extractModelRefs(expression: string): string[] {
+  const cel = maskLiteralCalls(expression);
   const refs = new Set<string>();
 
   // Extract from model.X.property patterns
-  const modelMatches = expression.matchAll(MODEL_REF_PATTERN);
+  const modelMatches = cel.matchAll(MODEL_REF_PATTERN);
   for (const match of modelMatches) {
     refs.add(match[1]);
   }
 
   // Extract from data.version('model', ...), data.latest('model', ...), etc.
   // Strip namespace prefix ("ns:model" → "model", "*:model" → "model")
-  const dataMatches = expression.matchAll(DATA_FUNCTION_PATTERN);
+  const dataMatches = cel.matchAll(DATA_FUNCTION_PATTERN);
   for (const match of dataMatches) {
     const parsed = parseNamespacedModelName(match[2]);
     refs.add(parsed.modelName);
   }
 
   // Extract from file.contents('model', ...)
-  const fileContentsMatches = expression.matchAll(FILE_CONTENTS_PATTERN);
+  const fileContentsMatches = cel.matchAll(FILE_CONTENTS_PATTERN);
   for (const match of fileContentsMatches) {
     refs.add(match[1]);
   }
 
   // Extract from model.method('model', ...)
-  const methodMatches = expression.matchAll(MODEL_METHOD_PATTERN);
+  const methodMatches = cel.matchAll(MODEL_METHOD_PATTERN);
   for (const match of methodMatches) {
     refs.add(match[1]);
   }
@@ -167,7 +174,8 @@ export function extractModelRefs(expression: string): string[] {
  * @returns True if the expression references any model artifacts
  */
 export function hasArtifactDependency(expression: string): boolean {
-  return /model\.[a-zA-Z0-9_-]+\.(resource|file)/.test(expression);
+  const cel = maskLiteralCalls(expression);
+  return /model\.[a-zA-Z0-9_-]+\.(resource|file)/.test(cel);
 }
 
 /**
@@ -178,7 +186,8 @@ export function hasArtifactDependency(expression: string): boolean {
  * @returns True if the expression references any model resources
  */
 export function hasResourceDependency(expression: string): boolean {
-  return /model\.[a-zA-Z0-9_-]+\.resource/.test(expression);
+  const cel = maskLiteralCalls(expression);
+  return /model\.[a-zA-Z0-9_-]+\.resource/.test(cel);
 }
 
 /**
@@ -192,12 +201,13 @@ export function hasResourceDependency(expression: string): boolean {
 export function extractArtifactDependencies(
   expression: string,
 ): ExpressionDependency[] {
+  const cel = maskLiteralCalls(expression);
   const dependencies: ExpressionDependency[] = [];
   const seen = new Set<string>();
 
   // Extract from model.X.property patterns
   const pattern = /model\.([a-zA-Z0-9_-]+)\.(resource|file)/g;
-  const matches = expression.matchAll(pattern);
+  const matches = cel.matchAll(pattern);
   for (const match of matches) {
     const modelRef = match[1];
     const type = match[2] as DependencyType;
@@ -211,7 +221,7 @@ export function extractArtifactDependencies(
 
   // Extract from data function calls (all data functions create data dependencies)
   // Strip namespace prefix ("ns:model" → "model")
-  const dataMatches = expression.matchAll(DATA_FUNCTION_PATTERN);
+  const dataMatches = cel.matchAll(DATA_FUNCTION_PATTERN);
   for (const match of dataMatches) {
     const parsed = parseNamespacedModelName(match[2]);
     const modelRef = parsed.modelName;
@@ -224,7 +234,7 @@ export function extractArtifactDependencies(
   }
 
   // Extract from file.contents() calls (create file dependencies)
-  const fileContentsMatches = expression.matchAll(FILE_CONTENTS_PATTERN);
+  const fileContentsMatches = cel.matchAll(FILE_CONTENTS_PATTERN);
   for (const match of fileContentsMatches) {
     const modelRef = match[1];
     const key = `${modelRef}:file`;
@@ -246,9 +256,10 @@ export function extractArtifactDependencies(
  * @returns Array of model references that have resource dependencies
  */
 export function extractResourceDependencies(expression: string): string[] {
+  const cel = maskLiteralCalls(expression);
   const refs = new Set<string>();
 
-  const matches = expression.matchAll(/model\.([a-zA-Z0-9_-]+)\.resource/g);
+  const matches = cel.matchAll(/model\.([a-zA-Z0-9_-]+)\.resource/g);
   for (const match of matches) {
     refs.add(match[1]);
   }
@@ -263,7 +274,8 @@ export function extractResourceDependencies(expression: string): string[] {
  * @returns True if the expression references 'self'
  */
 export function hasSelfReference(expression: string): boolean {
-  return /\bself\b/.test(expression);
+  const cel = maskLiteralCalls(expression);
+  return /\bself\b/.test(cel);
 }
 
 /**
@@ -273,9 +285,10 @@ export function hasSelfReference(expression: string): boolean {
  * @returns Array of model references from data.version/latest/listVersions calls
  */
 export function extractDataFunctionDependencies(expression: string): string[] {
+  const cel = maskLiteralCalls(expression);
   const refs = new Set<string>();
 
-  const dataMatches = expression.matchAll(DATA_FUNCTION_PATTERN);
+  const dataMatches = cel.matchAll(DATA_FUNCTION_PATTERN);
   for (const match of dataMatches) {
     const parsed = parseNamespacedModelName(match[2]);
     refs.add(parsed.modelName);
@@ -291,6 +304,7 @@ export function extractDataFunctionDependencies(expression: string): string[] {
  * @returns True if the expression contains any data.* function call
  */
 export function hasDataFunctionDependency(expression: string): boolean {
+  const cel = maskLiteralCalls(expression);
   // Derived from DATA_NAMESPACE_ACCESSORS rather than restated, so this cannot
   // drift the way the validator's copy did.
   //
@@ -301,7 +315,7 @@ export function hasDataFunctionDependency(expression: string): boolean {
   // rebuild here is hygiene — a stale copy left behind is how the next drift
   // starts — not a behaviour fix.
   return new RegExp(`data\\.(${dataAccessorAlternation()})\\s*\\(`)
-    .test(expression);
+    .test(cel);
 }
 
 /**
@@ -313,9 +327,10 @@ export function hasDataFunctionDependency(expression: string): boolean {
 export function extractFileContentsDependencies(
   expression: string,
 ): string[] {
+  const cel = maskLiteralCalls(expression);
   const refs = new Set<string>();
 
-  const matches = expression.matchAll(FILE_CONTENTS_PATTERN);
+  const matches = cel.matchAll(FILE_CONTENTS_PATTERN);
   for (const match of matches) {
     refs.add(match[1]);
   }
@@ -330,7 +345,8 @@ export function extractFileContentsDependencies(
  * @returns True if the expression contains file.contents()
  */
 export function hasFileContentsDependency(expression: string): boolean {
-  return /file\.contents\s*\(/.test(expression);
+  const cel = maskLiteralCalls(expression);
+  return /file\.contents\s*\(/.test(cel);
 }
 
 /**
@@ -341,7 +357,8 @@ export function hasFileContentsDependency(expression: string): boolean {
  * @returns True if the expression references any model execution data
  */
 export function hasExecutionDependency(expression: string): boolean {
-  return /model\.[a-zA-Z0-9_-]+\.execution/.test(expression);
+  const cel = maskLiteralCalls(expression);
+  return /model\.[a-zA-Z0-9_-]+\.execution/.test(cel);
 }
 
 /**
@@ -385,7 +402,7 @@ const MODEL_NAMESPACE_PATTERN = /(?<![.\w])(?:model|file)\b/;
  */
 export function requiresModelNamespace(data: unknown): boolean {
   return extractExpressions(data).some((expression) =>
-    MODEL_NAMESPACE_PATTERN.test(expression.celExpression)
+    MODEL_NAMESPACE_PATTERN.test(maskLiteralCalls(expression.celExpression))
   );
 }
 
@@ -409,5 +426,6 @@ const STEPS_NAMESPACE_PATTERN = /(?<![.\w])steps\b/;
  * @returns True if the expression reads the steps namespace
  */
 export function hasStepsNamespaceReference(expression: string): boolean {
-  return STEPS_NAMESPACE_PATTERN.test(expression);
+  const cel = maskLiteralCalls(expression);
+  return STEPS_NAMESPACE_PATTERN.test(cel);
 }

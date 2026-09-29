@@ -146,7 +146,7 @@ Deno.test("isForeignExpression: false for text in a swamp namespace", () => {
 
 Deno.test("isForeignExpression: false for text that does not parse", () => {
   assertEquals(isForeignExpression("not valid cel !!!"), false);
-  // What extractExpressions leaves of ${{ "a}}" + inputs.x }}.
+  // An unterminated string, as a malformed expression arrives.
   assertEquals(isForeignExpression('"a'), false);
   // Optional syntax parses for evaluation (parsesAsCel) but not for
   // isSwampExpression, so it cannot be attributed and stays claimed.

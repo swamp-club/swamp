@@ -87,9 +87,43 @@ Deno.test("containsVaultExpression returns false for CEL-only expressions", () =
   assertEquals(containsVaultExpression("env.HOME"), false);
 });
 
-Deno.test("containsVaultExpression returns false for vault-like but not vault.get", () => {
-  assertEquals(containsVaultExpression("vault.name"), false);
+Deno.test("containsVaultExpression returns false for names that are not the vault namespace", () => {
   assertEquals(containsVaultExpression("vault_get(foo)"), false);
+  assertEquals(containsVaultExpression("self.vault.get('a', 'b')"), false);
+  assertEquals(containsVaultExpression("'vault.get(a, b)'"), false);
+  assertEquals(
+    containsVaultExpression('literal(\'{{ vault.get("a", "b") }}\')'),
+    false,
+  );
+});
+
+Deno.test("containsVaultExpression counts every read of the vault namespace", () => {
+  // Nothing binds `vault` but its get() calls, so any read is deferred to
+  // runtime, where an unsupported form is reported.
+  assertEquals(containsVaultExpression("vault.name"), true);
+  assertEquals(
+    containsVaultExpression("cel.bind(v, vault, v.get('a', 'b'))"),
+    true,
+  );
+  assertEquals(containsVaultExpression("(vault).get('a', 'b')"), true);
+  assertEquals(containsVaultExpression("[1].map(vault, vault)"), false);
+});
+
+Deno.test("containsVaultExpression sees a vault.get after a raw string's escaped quote", () => {
+  // cel-js ends r'a\'b' after the b, so the vault.get is code, not text.
+  assertEquals(
+    containsVaultExpression("r'a\\'b' + vault.get('v', 'k')"),
+    true,
+  );
+  assertEquals(
+    containsRuntimeExpression("r'a\\'b' + vault.get('v', 'k')"),
+    true,
+  );
+});
+
+Deno.test("containsVaultExpression falls back to a textual scan when the text does not parse", () => {
+  assertEquals(containsVaultExpression("vault.get('a', 'b') +"), true);
+  assertEquals(containsVaultExpression("self.vault +"), false);
 });
 
 Deno.test("containsVaultExpression returns true for quoted args with spaces", () => {
@@ -190,7 +224,9 @@ Deno.test("containsEnvExpression handles triple-quoted, raw and bytes string lit
     true,
   );
   assertEquals(containsEnvExpression("'''a ' b''' + env.X"), true);
-  assertEquals(containsEnvExpression('r"a\\" + env.X + "b"'), true);
+  // As in cel-js, a backslash skips the next character in a raw string too,
+  // so the raw string here is `a\"b` and env.X is code.
+  assertEquals(containsEnvExpression('r"a\\"b" + env.X'), true);
   assertEquals(containsEnvExpression('"""env""" + self.name'), false);
   assertEquals(containsEnvExpression("'''env.X''' + self.name"), false);
   assertEquals(containsEnvExpression('r"env" + b"env" + self.name'), false);

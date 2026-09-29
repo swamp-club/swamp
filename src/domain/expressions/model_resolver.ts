@@ -38,6 +38,8 @@ import { isUuid } from "../models/model_lookup.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
+import { freeRoots } from "./cel_grammar.ts";
+import { lexSegments } from "./cel_string_lexer.ts";
 import {
   type VaultRefreshOptions,
   VaultService,
@@ -1303,18 +1305,35 @@ export class ModelResolver {
     //   (['"`])(.+?)\1  — quoted: any chars up to the matching close quote
     //   ([^\s,)]+)      — unquoted: non-whitespace, non-comma, non-paren
     const vaultPattern =
-      /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/g;
+      /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/y;
 
-    let resolvedValue = value;
-    const matches = Array.from(value.matchAll(vaultPattern));
+    // Only a call written as code counts: one that starts inside a string
+    // literal or a comment (`literal('vault.get(')`) is text, and a member
+    // such as `self.vault.get(...)` is not the vault namespace.
+    const matches: RegExpExecArray[] = [];
+    for (const seg of lexSegments(value)) {
+      if (seg.kind !== "code") continue;
+      let at = value.indexOf("vault", seg.start);
+      while (at !== -1 && at < seg.end) {
+        if (!/[.\w]/.test(value[at - 1] ?? "")) {
+          vaultPattern.lastIndex = at;
+          const match = vaultPattern.exec(value);
+          if (match) matches.push(match);
+        }
+        at = value.indexOf("vault", at + 5);
+      }
+    }
 
     if (matches.length === 0) {
-      return resolvedValue;
+      assertNoUnresolvedVault(value, value);
+      return value;
     }
 
     // Get vault service (lazy initialization if needed)
     const vaultService = await this.getVaultService();
 
+    let resolvedValue = "";
+    let last = 0;
     for (const match of matches) {
       // Groups: [1]=quote1, [2]=quoted vault, [3]=unquoted vault,
       //         [4]=quote2, [5]=quoted key,   [6]=unquoted key
@@ -1367,7 +1386,9 @@ export class ModelResolver {
           celReplacement = `"${escapedValue}"`;
         }
 
-        resolvedValue = resolvedValue.split(fullMatch).join(celReplacement);
+        // Replace by position, so the same text inside a string is untouched.
+        resolvedValue += value.slice(last, match.index) + celReplacement;
+        last = match.index + fullMatch.length;
       } catch (error) {
         const msg = (error instanceof Error ? error.message : String(error))
           .replace(/\n\s*/g, " — ");
@@ -1376,7 +1397,9 @@ export class ModelResolver {
         );
       }
     }
+    resolvedValue += value.slice(last);
 
+    assertNoUnresolvedVault(resolvedValue, value);
     return resolvedValue;
   }
 
@@ -1424,5 +1447,19 @@ export class ModelResolver {
         `Failed to resolve dynamic ${argLabel} in ${fullMatch}: ${msg}`,
       );
     }
+  }
+}
+
+/**
+ * Throws when an expression still reads the `vault` namespace after its
+ * `vault.get(vaultName, secretKey)` calls were resolved: a form such as
+ * `cel.bind(v, vault, v.get(...))` that only a direct call resolves. Without
+ * this, evaluation fails with an unrelated overload error.
+ */
+function assertNoUnresolvedVault(resolved: string, original: string): void {
+  if (freeRoots(resolved)?.has("vault")) {
+    throw new UserError(
+      `Unsupported vault expression ${original}: call vault.get(vaultName, secretKey) directly.`,
+    );
   }
 }

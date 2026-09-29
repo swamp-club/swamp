@@ -1750,3 +1750,30 @@ Deno.test("CelEvaluator: skips the spec lookup when the expression succeeds", as
   assertEquals(result, 0);
   assertEquals(calls, []);
 });
+
+Deno.test("CelEvaluator: literal() returns its string unchanged", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(
+    evaluator.evaluate("literal('{{host.name}}')", {}),
+    "{{host.name}}",
+  );
+  assertEquals(
+    evaluator.evaluate("inputs.env + ' on ' + literal('{{host.name}}')", {
+      inputs: { env: "prod" },
+    }),
+    "prod on {{host.name}}",
+  );
+});
+
+Deno.test("CelEvaluator: literal() text is not rewritten as a hyphenated model reference", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(
+    evaluator.evaluate("literal('{{ model.my-app.resource.x }}')", {}),
+    "{{ model.my-app.resource.x }}",
+  );
+});
+
+Deno.test("createExtensionCelEnvironment: does NOT pre-register literal()", () => {
+  const env = createExtensionCelEnvironment();
+  assertThrows(() => env.evaluate("literal('x')"), Error);
+});

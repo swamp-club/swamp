@@ -204,3 +204,29 @@ Deno.test("doctorSecrets: scans multiple definitions and counts them", async () 
   assertEquals(data.findings.length, 1);
   assertEquals(data.findings[0].definitionName, "leaky");
 });
+
+Deno.test("doctorSecrets: flags a constant expression, whose text is stored in cleartext", async () => {
+  const deps = makeDeps(
+    [{
+      definition: {
+        id: "def-1",
+        name: "literal-creds",
+        globalArguments: {
+          apiKey: "${{ literal('hunter2') }}",
+          region: "us-east-1",
+        },
+      },
+      type: "acme/api",
+    }],
+    () => ({ globalArguments: sensitiveSchema }),
+  );
+
+  const data = completedData(
+    await collect<DoctorSecretsEvent>(
+      doctorSecrets(createLibSwampContext(), deps),
+    ),
+  );
+
+  assertEquals(data.findings.map((f) => f.leakedPaths), [["apiKey"]]);
+  assertEquals(JSON.stringify(data).includes("hunter2"), false);
+});

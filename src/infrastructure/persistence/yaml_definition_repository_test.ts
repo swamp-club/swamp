@@ -608,6 +608,27 @@ Deno.test("YamlDefinitionRepository.save refuses a literal sensitive global arg 
   });
 });
 
+Deno.test("YamlDefinitionRepository.save refuses a constant expression for a sensitive global arg", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "leaky-literal",
+      type: SENSITIVE_SAVE_TYPE.normalized,
+      globalArguments: {
+        apiKey: "${{ literal('SUPERSECRET123') }}",
+        region: "us-east-1",
+      },
+    });
+
+    const error = await assertRejects(
+      () => repo.save(SENSITIVE_SAVE_TYPE, definition),
+      UserError,
+    );
+    assertStringIncludes(error.message, "constant expression");
+    assertEquals(await repo.findById(SENSITIVE_SAVE_TYPE, definition.id), null);
+  });
+});
+
 Deno.test("YamlDefinitionRepository.save accepts a vault.get expression for a sensitive global arg", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);

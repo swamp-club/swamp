@@ -54,6 +54,8 @@ import {
   formatAvailableKeys,
   validateSchemaPath,
 } from "../expressions/schema_path_validator.ts";
+import { freeRoots } from "../expressions/cel_grammar.ts";
+import { maskLiteralCalls } from "../expressions/cel_string_lexer.ts";
 
 /**
  * The second remedy for template-like text, for when it is another service's
@@ -61,7 +63,7 @@ import {
  * example rebuilds the matched form, so it differs per form.
  */
 function foreignTemplateRemedy(example: string): string {
-  return `If this is another service's template syntax, build it with CEL string concatenation, e.g. ${example}, or have the model type declare the field with .meta({ foreignTemplate: true }).`;
+  return `If this is another service's template syntax, pass it through with literal(), e.g. ${example}, or have the model type declare the field with .meta({ foreignTemplate: true }).`;
 }
 
 /**
@@ -75,22 +77,22 @@ const MALFORMED_EXPRESSION_MESSAGES: Record<
   "bare-double-brace": {
     issue: "Expression uses {{...}} instead of ${{...}}",
     suggestion: 'Add "$" prefix: ${{...}}.',
-    remedy: foreignTemplateRemedy('${{ "{" + "{name}" + "}" }}'),
+    remedy: foreignTemplateRemedy("${{ literal('{{name}}') }}"),
   },
   "single-brace": {
     issue: "Expression uses ${...} instead of ${{...}}",
     suggestion: "Use double braces: ${{...}}.",
-    remedy: foreignTemplateRemedy('${{ "$" + "{name}" }}'),
+    remedy: foreignTemplateRemedy("${{ literal('${name}') }}"),
   },
   "inside-expression": {
     issue: "Template text {{...}} inside a ${{...}} expression cuts it short",
     suggestion:
-      'An expression ends at the first }}, so a string inside it cannot hold {{...}}. Build the braces with CEL string concatenation instead, e.g. ${{ "{" + "{name}" + "}" }}.',
+      "An expression ends at the first }} that is not inside a complete CEL string, and a string here is left open. Close the string, and pass the braces through with literal(), e.g. ${{ literal('{{name}}') }}.",
   },
   "unclosed-expression": {
     issue: "Unclosed ${{...}} expression",
     suggestion:
-      'An expression ends at the first }} after its ${{. This one is not valid CEL up to there, or has no }} at all, so a brace is probably missing or out of place. Close it with }} where it should end. If the ${{ is another service\'s text, build it with CEL string concatenation, e.g. ${{ "$" + "{{" }}.',
+      "An expression ends at the first }} after its ${{ that is not inside a CEL string. This one is not valid CEL up to there, or has no }} at all, so a brace is probably missing or out of place. Close it with }} where it should end. If the ${{ is another service's text, pass it through with literal(), e.g. ${{ literal('${{') }}.",
   },
 };
 
@@ -871,7 +873,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       const envRefs = extractEnvReferences(celExpression);
 
       // Check for inputs references (valid when model defines an inputs schema)
-      const hasInputsRef = /\binputs\./.test(celExpression);
+      // (text passed through literal() is not a reference)
+      const hasInputsRef = /\binputs\./.test(maskLiteralCalls(celExpression));
 
       // Check for expressions with valid ${{...}} syntax but no valid references
       if (
@@ -922,6 +925,12 @@ export class DefaultModelValidationService implements ModelValidationService {
       celExpression,
     );
     if (looksLikeValidCel) {
+      return null;
+    }
+
+    // An expression that reads nothing, such as literal('{{host.name}}') or
+    // literal('{{a}}') + ' on-call', always evaluates to the same value.
+    if (freeRoots(celExpression)?.size === 0) {
       return null;
     }
 

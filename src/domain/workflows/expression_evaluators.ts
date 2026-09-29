@@ -21,6 +21,7 @@ import { Definition } from "../definitions/definition.ts";
 import type { Workflow, WorkflowInput } from "./workflow.ts";
 import { Workflow as WorkflowClass } from "./workflow.ts";
 import {
+  containsExpression,
   extractExpressions,
   isAssertExprPath,
   isAssertMessagePath,
@@ -30,6 +31,7 @@ import {
   isTriggerInputsPath,
   replaceExpressions,
 } from "../expressions/expression_parser.ts";
+import { maskLiteralCalls } from "../expressions/cel_string_lexer.ts";
 import {
   type AuthoredExpressions,
   containsRuntimeExpression,
@@ -157,11 +159,8 @@ export class WorkflowExpressionEvaluator {
     const forEachInExpressions = new Set<string>();
     for (const job of workflow.jobs) {
       for (const step of job.steps) {
-        if (step.forEach) {
-          const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/s);
-          if (match) {
-            forEachInExpressions.add(step.forEach.in);
-          }
+        if (step.forEach && containsExpression(step.forEach.in)) {
+          forEachInExpressions.add(step.forEach.in);
         }
       }
     }
@@ -180,15 +179,17 @@ export class WorkflowExpressionEvaluator {
       if (containsRuntimeExpression(expr.celExpression)) {
         continue;
       }
+      // A literal() argument is text, so it never reads a namespace.
+      const code = maskLiteralCalls(expr.celExpression);
       // self.* references forEach variables resolved at runtime.
-      if (expr.celExpression.match(/\bself\??\./)) {
+      if (code.match(/\bself\??\./)) {
         continue;
       }
       // run.* and workflowRunId are only available at step execution
       // time, after the WorkflowRun is created.
       if (
-        expr.celExpression.match(/\brun\./) ||
-        expr.celExpression.match(/\bworkflowRunId\b/)
+        code.match(/\brun\./) ||
+        code.match(/\bworkflowRunId\b/)
       ) {
         continue;
       }

@@ -280,7 +280,9 @@ schema, enabling dynamic configuration at workflow runtime.
 
 ## Expressions in Workflows
 
-Model inputs can contain CEL expressions using `${{ <expression> }}` syntax.
+Model inputs can contain CEL expressions using `${{ <expression> }}` syntax. To
+keep another service's template text literal in the same value, pass it through
+with `literal()`: `${{ inputs.env }} alert on ${{ literal('{{host.name}}') }}`.
 
 ### Environment Variables
 

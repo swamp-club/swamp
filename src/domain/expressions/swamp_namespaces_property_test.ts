@@ -119,9 +119,8 @@ Deno.test("isForeignExpression: never true for text cut short inside a string", 
       arbExpression,
       fc.string({ maxLength: 8 }).filter((h) => !/["\\]/.test(h)),
       (cel, head) => {
-        // extractExpressions ends an expression at the first }}, so a swamp
-        // expression with }} inside a string literal arrives as an unterminated
-        // string.
+        // An expression whose string literal never closes keeps its first-}}
+        // boundary, so it arrives as an unterminated string.
         assert(!isForeignExpression(`${cel} + "${head}`));
       },
     ),

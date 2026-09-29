@@ -43,7 +43,8 @@ import {
 } from "./model_resolver.ts";
 import { CyclicDependencyError } from "./errors.ts";
 import { evaluateDefinitionExpressions } from "./definition_expression_pass.ts";
-import { BINDING_MACROS } from "./swamp_namespaces.ts";
+import { BINDING_MACROS, freeRoots } from "./cel_grammar.ts";
+import { maskLiteralCalls, stripStringLiterals } from "./cel_string_lexer.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -61,9 +62,12 @@ import {
 } from "./deferred_expression.ts";
 
 /**
- * Pattern to detect vault.get() references inside a CEL expression.
+ * Textual fallback for detecting references to the `vault` namespace, used
+ * only when the expression does not parse (see
+ * {@link containsVaultExpression}). Like {@link ENV_PATTERN}, it matches any
+ * bare `vault` identifier but not member access such as `self.vault`.
  */
-const VAULT_GET_PATTERN = /vault\.get\s*\(/;
+const VAULT_PATTERN = /(?<![.\w])vault\b/;
 
 /**
  * Textual fallback for detecting references to the `env` map, used only when
@@ -125,38 +129,20 @@ function astReferencesEnv(node: ASTNode, bound: ReadonlySet<string>): boolean {
 }
 
 /**
- * Pattern matching every CEL string literal form: single- or double-quoted,
- * triple-quoted, with an optional bytes (`b`) and/or raw (`r`) prefix. Raw
- * strings have no escapes; the others honour backslash escapes. Triple-quoted
- * alternatives come first so `"""` is never read as an empty string followed
- * by an open quote. Stripping literals before classification keeps text such
- * as `self.tags["env"]` from being mistaken for an identifier reference.
- */
-const STRING_LITERAL_PATTERN =
-  /[bB]?(?:[rR](?:"""[\s\S]*?"""|'''[\s\S]*?'''|"[^"\n]*"|'[^'\n]*')|"""(?:[^\\]|\\[\s\S])*?"""|'''(?:[^\\]|\\[\s\S])*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
-
-/**
- * Pattern matching a member-access operator (`.` or optional `.?`) together
- * with any surrounding whitespace, so `self.tags . env` and `self.tags.?env`
- * normalise to `self.tags.env` and the member name is never taken for the
- * root `env` identifier.
- */
-const MEMBER_ACCESS_PATTERN = /\s*\.\s*(?:\?\s*)?/g;
-
-function stripStringLiterals(celExpression: string): string {
-  return celExpression.replace(STRING_LITERAL_PATTERN, '""').replace(
-    MEMBER_ACCESS_PATTERN,
-    ".",
-  );
-}
-
-/**
- * Checks whether a CEL expression references vault.get().
- * Expressions containing vault references must NOT be evaluated during
- * the persist phase — they are resolved at runtime only.
+ * Checks whether a CEL expression references the `vault` namespace, as
+ * `vault.get(...)` does. Expressions containing vault references must NOT be
+ * evaluated during the persist phase — they are resolved at runtime only.
+ *
+ * Decided on the parsed tree, the way evaluation reads it, so text inside a
+ * string literal never counts and a call reached through `cel.bind` or a
+ * parenthesised receiver does. When the text does not parse, a textual scan
+ * over it with string literals removed stands in; it is conservative, so an
+ * error can only defer to runtime.
  */
 export function containsVaultExpression(celExpression: string): boolean {
-  return VAULT_GET_PATTERN.test(stripStringLiterals(celExpression));
+  const roots = freeRoots(celExpression);
+  if (roots !== undefined) return roots.has("vault");
+  return VAULT_PATTERN.test(stripStringLiterals(celExpression));
 }
 
 /**
@@ -231,8 +217,11 @@ export function collectAuthoredExpressions(
 
 /** Binding paths (`inputs.home`, `self`, `steps.a.outputs`) a CEL expression reads. */
 function referencedBindingPaths(cel: string): string[] {
+  // A literal() argument is text, so it reads no binding.
   return [
-    ...cel.matchAll(/\b(inputs|self|run|steps)((?:\.[A-Za-z0-9_]+|\[\d+\])*)/g),
+    ...maskLiteralCalls(cel).matchAll(
+      /\b(inputs|self|run|steps)((?:\.[A-Za-z0-9_]+|\[\d+\])*)/g,
+    ),
   ]
     .map((m) => m[1] + m[2]);
 }

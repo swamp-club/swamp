@@ -29,10 +29,9 @@ import {
   fixCjsEsmInterop,
   rewriteZodImports,
 } from "../domain/models/bundle.ts";
+import { scanExpressions } from "../domain/expressions/expression_scanner.ts";
 
 const logger = getLogger(["swamp", "datastore", "expressions"]);
-
-const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
 
 const ENV_PATTERN = /^env\.([a-zA-Z_][a-zA-Z0-9_]*)$/;
 
@@ -200,25 +199,25 @@ export async function resolveDatastoreExpressions(
   }
 
   async function resolveString(str: string): Promise<unknown> {
-    const matches = [...str.matchAll(EXPRESSION_PATTERN)];
-    if (matches.length === 0) return str;
+    const spans = scanExpressions(str);
+    if (spans.length === 0) return str;
 
     if (
-      matches.length === 1 &&
-      matches[0].index === 0 &&
-      matches[0][0].length === str.trimEnd().length
+      spans.length === 1 &&
+      spans[0].start === 0 &&
+      spans[0].end === str.trimEnd().length
     ) {
-      return await resolveExpression(matches[0][1].trim());
+      return await resolveExpression(spans[0].inner);
     }
 
-    let result = str;
-    for (const match of matches) {
-      const rawExpr = match[0];
-      const inner = match[1].trim();
-      const resolved = await resolveExpression(inner);
-      result = result.split(rawExpr).join(String(resolved));
+    let result = "";
+    let last = 0;
+    for (const span of spans) {
+      const resolved = await resolveExpression(span.inner);
+      result += str.slice(last, span.start) + String(resolved);
+      last = span.end;
     }
-    return result;
+    return result + str.slice(last);
   }
 
   async function resolveValue(value: unknown): Promise<unknown> {

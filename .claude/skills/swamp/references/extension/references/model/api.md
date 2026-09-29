@@ -705,6 +705,13 @@ const GlobalArgsSchema = z.object({
 - Put `.meta()` on the field itself (wrapping it in `.optional()`, `.nullable()`
   or `.default()` is fine), not before a `.transform()`.
 - Older swamp versions ignore the metadata, so no version gate is needed.
+- Without the declaration, a definition author can still keep vendor text
+  literal with `${{ literal('{{env.name}}') }}`. `literal()` exists only in
+  swamp's own evaluator, not in `ctx.createCelEnvironment()`. It cannot pass
+  through `${{ ... }}` text that names a swamp namespace (GitHub Actions
+  `${{ inputs.version }}`): the method then gets
+  `Unresolved expression in globalArguments.<field>`, so a field that must carry
+  such text belongs in the method's arguments rather than its global arguments.
 
 ---
 

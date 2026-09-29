@@ -19,7 +19,11 @@ Swamp has three CEL surfaces:
 1. **Internal**: `CelEvaluator` evaluates workflow conditions, data queries,
    `forEach` expansion, and definition evaluation. It adds swamp's own
    namespace types (`file.contents`, `data.latest`, etc.) to the baseline
-   factory (`src/infrastructure/cel/cel_evaluator.ts`).
+   factory (`src/infrastructure/cel/cel_evaluator.ts`). It also registers
+   `literal(string): string`, which returns its argument unchanged, for
+   passing another service's template text through (see
+   [Other Services' Template Syntax](#other-services-template-syntax)). The
+   extension baseline does not have it.
 2. **Extension-author-facing**: `createExtensionCelEnvironment()` is the same
    factory without the swamp-internal namespace types. `MethodContext` exposes
    it as `ctx.createCelEnvironment()`, so extension model methods can evaluate
@@ -599,10 +603,10 @@ judges each `${{ ... }}` with `isForeignExpression`: the text parses, and is not
 swamp's under `WIDEST_SWAMP_SCOPE`, where every namespace counts as bound and
 every input as declared. Widening a scope can only turn "not swamp's" into
 "swamp's", so everything a definition pass records as a failure stays guarded.
-Text that does not parse is never foreign; that covers a swamp expression cut
-short at a `}}` inside one of its strings. Only text no swamp evaluation could
-own, such as `${{ github.sha }}`, reaches the method as a value. Text in a swamp
-namespace, such as GitHub's `${{ inputs.version }}` or
+Text that does not parse is never foreign; that covers a malformed swamp
+expression, such as one whose string never closes. Only text no swamp
+evaluation could own, such as `${{ github.sha }}`, reaches the method as a
+value. Text in a swamp namespace, such as GitHub's `${{ inputs.version }}` or
 `${{ steps.build.outputs.sha }}`, stays guarded in a global argument because
 swamp cannot tell it from its own.
 
@@ -624,7 +628,7 @@ validates a definition built from its arguments after the workflow evaluator
 substituted them, so there the scan reads the step's arguments as written in the
 workflow instead, key by key (`templateScanGlobalArguments`,
 `src/domain/workflows/execution_service.ts`). Text that evaluation produced,
-from a CEL concatenation, a workflow input or a step output, is never flagged.
+from a `literal()` call, a workflow input or a step output, is never flagged.
 Each match is classified with the rule the runtime applies to
 `${{ ... }}` text (`isSwampExpression`). **A match is a mistake exactly when,
 with the syntax corrected, swamp would claim it as its own expression.**
@@ -640,20 +644,54 @@ with the syntax corrected, swamp would claim it as its own expression.**
 - `{{ ... }}` or `${ ... }` text whose inside CEL cannot parse is not swamp's.
   A `${{` that is unclosed (below) is still reported.
 
-An expression ends at the first `}}` after its `${{`. When that text parses as
-CEL, the expression is sound even with braces in it: `${{ '{{' }}` evaluates to
-`{{`. Validation parses with the grammar evaluation uses, including optional
-syntax such as `.?name.orValue('')` (`parsesAsCel`,
-`src/domain/expressions/swamp_namespaces.ts`). When it does not parse,
-validation looks for a sign that the expression ran past its intended end: a
-`{{` after its opening, or a lone `}` after valid CEL, typed for `}}`. With
-such a sign, it tries ending the expression at each later `}}` before the next
-expression, up to 16 of them:
+**Where an expression ends.** Every reader of `${{ ... }}` text finds
+expressions with one scanner (`scanExpressions`,
+`src/domain/expressions/expression_scanner.ts`). The raw text of an expression
+keys the maps that carry its value, so evaluation, validation, dependency,
+vault and sensitive-field checks must all cut a value at the same places.
 
-- If one of those ends parses, a string inside the expression was cut short.
-  The braces that start in it, as in `${{ "{{host.name}}" }}` or
-  `${{ "${{ github.sha }}" }}`, fail with their own message: build the braces
-  with CEL string concatenation.
+1. The legacy boundary is the first `}}` after at least one character of
+   expression text. When that text parses as CEL it is final, so every
+   expression that worked before keeps its exact text: `${{ '{{' }}` still
+   evaluates to `{{`.
+2. Otherwise a quote-aware walk from the opening finds the first `}}` outside a
+   CEL string literal. A `}}` inside a `//` comment still ends the expression;
+   the comment only keeps a quote in it from opening a string. The walk's
+   boundary is used when its text parses, so `${{ '{{host.name}}' }}` and
+   `${{ literal('{{host.name}}') }}` are one expression each. The legacy rule
+   cut both short at the first `}}`.
+3. Otherwise the legacy boundary stands, so malformed text is guarded and
+   reported as it always was.
+
+A rejected walk records the lexer states it passed through. A later walk that
+reaches one of them is rejected at once and keeps its legacy boundary: a memo
+hit is final. Each (position, lexer state) pair is walked at most once by a
+rejected walk, and accepted walks cover disjoint text, so a scan, parsing
+included, is linear in the length of the value. Without the memo, a value with
+many `${{` and a quote that never closes would re-walk the same tail from each
+opening.
+
+Parsing uses the grammar evaluation uses, including optional syntax such as
+`.?name.orValue('')` (`parsesAsCel`, `src/domain/expressions/cel_grammar.ts`).
+
+The quote-aware walk has one accepted consequence. A quoted string that holds a
+`}}` and then a later expression is now one string literal:
+`${{ 'a }} b ${{ inputs.x }} c' }}` evaluates to `a }} b ${{ inputs.x }} c`,
+and `inputs.x` is not substituted (in a global argument, the guard then
+reports the produced `${{ inputs.x }}`; see the limitation below). The legacy
+rule read it as a broken expression followed by `${{ inputs.x }}`. A string
+the author closed is kept whole rather than split, and the legacy boundary
+still wins whenever its text parses, so no expression that evaluated before
+changes.
+
+When an expression does not parse, validation looks for a sign that it ran
+past its intended end: a `{{` after its opening, or a lone `}` after valid CEL,
+typed for `}}`. With such a sign, it tries ending the expression at each later
+`}}` before the next expression, up to 16 of them:
+
+- If one of those ends parses, the expression was cut short, typically by a
+  string left open. The braces that start in it fail with their own message:
+  close the string, and pass the braces through with `literal()`.
 - If none parses, the expression is unclosed, as in
   `${{ self.name } && docker ps --format '{{.Names}}'`, which runs on to the Go
   template's `}}`. So is one that swallows a later expression
@@ -662,15 +700,56 @@ expression, up to 16 of them:
   brace, and the expression's references are not checked, so the mistake gives
   one error. The last shape also catches a JavaScript template literal that
   interpolates an object (`${{a: 1}.a}`), which is rare in a definition;
-  another service's `${{` is written as `${{ "$" + "{{" }}`.
+  another service's `${{` is written as `${{ literal('${{') }}`.
 
 Both failures hold even in a declared field (below), because they are broken
 swamp expressions, not another service's text. Text with no sign, such as prose
 `${{ ... }}` or an Azure Pipelines `${{ if ... }}`, still passes through
 unreported. So does a CEL map literal cut short by its own `}}`, as in
-`${{ {'a': {'b': 1}} }}`, until the scanner understands quoted strings and
-braces (swamp-club#2492). A `${ ... }` inside an expression is ordinary CEL
-string content and is not reported.
+`${{ {'a': {'b': 1}} }}`: the scanner understands quoted strings but not
+braces. A `${ ... }` inside an expression is ordinary CEL string content and is
+not reported, and neither is `{{ ... }}` inside a quoted CEL string.
+
+**Passing text through with `literal()`.** `literal(string): string` returns
+its argument unchanged. It lets one value mix a swamp expression with another
+service's template text:
+
+```yaml
+globalArguments:
+  # inputs.env = "prod" → "prod alert, crashed on {{host.name}}"
+  message: ${{ inputs.env }} alert, crashed on ${{ literal('{{host.name}}') }}
+```
+
+It passes shell text the same way (`${{ literal('${HOME}') }}`), and a literal
+`${{` (`${{ literal('${{') }}`). A plain quoted string evaluates the same, but
+`literal()` states the intent, and its argument is exempt from reference
+detection. The string argument of a bare `literal('...')` call is never read as
+a reference: it raises no env-var warning, adds no model dependency or vault
+allowlist entry, and causes no deferred-binding read (`maskLiteralCalls`,
+`src/domain/expressions/cel_string_lexer.ts`). A non-string argument, as in
+`literal(inputs.x)`, is still a real reference. Validation accepts an
+expression that reads no root identifier, a constant such as
+`literal('{{a}}') + ' on-call'`.
+
+`literal()` is registered only in the internal evaluator, not in the extension
+baseline. Remote workers need no upgrade for it: they receive arguments the
+orchestrator has already evaluated, so the worker protocol version did not
+change. The datastore config resolver still accepts only `env.VAR` and
+`vault.get(...)`, and rejects `literal()` with its usual
+`Unsupported expression` error.
+
+**Limitation.** `literal()` cannot pass through `${{ ... }}` text that names a
+swamp namespace, such as GitHub Actions `${{ inputs.version }}` or
+`${{ steps.x.outputs.y }}`. `${{ literal('${{ inputs.version }}') }}` evaluates
+to `${{ inputs.version }}`, but the global-argument guard
+(`containsSwampExpression`, above) runs after evaluation and reads the produced
+text as an unresolved swamp expression. It cannot tell produced text from
+authored text, so the method sees an
+`Unresolved expression in globalArguments.<field>` error. Neither a
+`foreignTemplate` declaration nor a workflow input changes that: the guard reads
+neither. Method arguments are not re-checked after evaluation, so such text
+belongs in a method argument, as `command/shell` takes its `run` script, where
+`literal()` passes it through unchanged.
 
 Validation treats every swamp root as bound. The runtime binds `run`, `steps`,
 `workflow` and `webhook` only inside a workflow. One definition can run both
@@ -689,20 +768,23 @@ them classifies as swamp's and fails:
   literals such as `{{ true }}`, and calls such as Jinja's `{{ now() }}` or
   Ansible's `{{ lookup('env', 'HOME') }}`
 
-The error names the ways out. The value can build the braces with CEL string
-concatenation, which passes validation and evaluates to the literal text:
-`${{ "{" + "{env.name}" + "}" }}` for `{{ ... }}`, or
-`${{ "$" + "{data.aws_ami.ubuntu.id}" }}` for `${ ... }`. Or the model type
-can declare the field as foreign template text (below). Concatenation works the
-same in a workflow step that runs a model type directly, since the scan reads
-the step's authored arguments there (above).
+The error names the ways out. The value can pass the text through with
+`literal()`, which passes validation and evaluates to the literal text:
+`${{ literal('{{env.name}}') }}` for `{{ ... }}`, or
+`${{ literal('${data.aws_ami.ubuntu.id}') }}` for `${ ... }`. Or the model type
+can declare the field as foreign template text (below). CEL string
+concatenation, as in `${{ "{" + "{env.name}" + "}" }}`, still works, but
+`literal()` is the recommended form: it reads as the text it produces, and its
+argument is exempt from reference detection. Both work the same in a workflow
+step that runs a model type directly, since the scan reads the step's authored
+arguments there (above).
 
 The definition such a step saves in `.swamp/auto-definitions/` holds the
-evaluated values, not the concatenation. Storing the authored text instead would
-store expressions that only resolve inside the run that passed them in. A later
-workflow step that reuses the auto-definition, by `modelName` without supplying
-the argument or by `modelIdOrName`, does not scan its stored values: they are
-another run's evaluated arguments, not authored text
+evaluated values, not the `literal()` call. Storing the authored text instead
+would store expressions that only resolve inside the run that passed them in.
+A later workflow step that reuses the auto-definition, by `modelName` without
+supplying the argument or by `modelIdOrName`, does not scan its stored values:
+they are another run's evaluated arguments, not authored text
 (`StepExecutorDeps.isAutoDefinition`, answered by
 `YamlDefinitionRepository.isAutoDefinition`, which compares definition IDs).
 Arguments that step supplies are still scanned as written, and a definition in
@@ -740,17 +822,35 @@ run does, rather than skipping the check. Two cases still fail: text whose
 first name is one of the repo's models (`${{ my-vpc.VpcId }}` is a missing
 `model.` prefix), and text that CEL cannot parse.
 
-Related gaps are tracked separately. A `literal("...")` function for
-strings that mix swamp and vendor syntax needs an expression scanner that
-understands quoted strings (swamp-club#2492).
-
 ## Sensitive Data
 
 Vault secrets are read with `vault.get('<vault-name>', '<key>')`, the only
-vault expression form recognized (`VAULT_GET_PATTERN` in
-`src/domain/expressions/vault_reference_extractor.ts`). Vault expressions are
-never evaluated at definition-evaluation time. They resolve at runtime and are
-never persisted.
+vault expression form supported. Vault expressions are never evaluated at
+definition-evaluation time. They resolve at runtime and are never persisted.
+
+Whether an expression is a vault expression is decided from its parse
+(`containsVaultExpression`,
+`src/domain/expressions/expression_evaluation_service.ts`): any read of the
+`vault` namespace counts, so no spelling of a vault read can slip into the
+persist phase. Only a direct `vault.get(vaultName, secretKey)` call is
+resolved. After those calls are resolved, an expression that still reads
+`vault`, such as `cel.bind(v, vault, v.get('aws', 'key'))`, fails with an
+explicit `Unsupported vault expression` error rather than evaluating with the
+vault object unbound (`assertNoUnresolvedVault`,
+`src/domain/expressions/model_resolver.ts`). `vault.get(...)` text inside a CEL
+string literal or comment, such as `literal('vault.get(a, b)')`, is text and is
+never resolved, and `self.vault.get(...)` is a member, not the namespace.
+
+**Constant expressions in sensitive fields.** A sensitive global
+argument must be a runtime reference, not a value stored in the definition
+(`extractSensitiveFields`, `src/domain/models/sensitive_field_extractor.ts`). A
+value made only of expressions that read nothing, such as
+`${{ literal('hunter2') }}` or `${{ 'hunter2' }}`, evaluates to the text it
+holds, so the definition YAML stores the secret in cleartext. It is rejected as
+a literal secret everywhere one is: on save, `swamp model create`, a method run
+and direct execution, and `swamp doctor secrets` reports stored ones. The empty
+string and null carry no text and stay allowed, and so does an expression that
+does not parse, which never evaluates to a value.
 
 ### Example
 
@@ -988,7 +1088,10 @@ See [Sensitive Data](#sensitive-data) for more on vaults.
 Extension model methods extend CEL through `ctx.createCelEnvironment()`
 (surface 2 above), registering their own functions, types, and operators on an
 isolated environment. There is no repo-level way to register custom CEL
-functions in the internal evaluator.
+functions in the internal evaluator. Its one swamp-defined function is
+`literal()` (see
+[Other Services' Template Syntax](#other-services-template-syntax)), which the
+extension baseline does not carry.
 
 ## Runtime Guidance
 

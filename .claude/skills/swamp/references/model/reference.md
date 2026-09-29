@@ -362,7 +362,9 @@ shell `${HOME}`), and `${{ ... }}` text that references nothing swamp provides
 Mention it to the user. Only if a listed value was meant as a swamp expression,
 rewrite it as `${{ ... }}`. A `{{ ... }}` on a swamp root (`self`, `model`,
 `env`, `inputs`, ...) fails `Expression paths` instead; the error names the
-remedies.
+remedies. To keep such text literal, pass it through with `literal()`
+(`${{ literal('{{env.name}}') }}`), or have the model type declare the field
+with `.meta({ foreignTemplate: true })`.
 
 ## Expression Language
 

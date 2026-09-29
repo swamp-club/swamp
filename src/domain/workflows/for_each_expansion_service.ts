@@ -21,7 +21,14 @@ import {
   type AuthoredExpressions,
   partitionAuthored,
 } from "../expressions/expression_evaluation_service.ts";
-import { extractExpressions } from "../expressions/expression_parser.ts";
+import {
+  containsExpression,
+  extractExpressions,
+} from "../expressions/expression_parser.ts";
+import {
+  replaceExpressionSpans,
+  scanExpressions,
+} from "../expressions/expression_scanner.ts";
 import { getLogger } from "@logtape/logtape";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
@@ -69,25 +76,20 @@ export function resolveForEachStepName(
 ): ResolvedStepName {
   if (hasExpression) {
     let hadEvalFailure = false;
-    const resolved = template.replace(
-      /\$\{\{\s*(.+?)\s*\}\}/gs,
-      (_match, expr) => {
-        if (
-          partitionAuthored(extractExpressions(_match), authored).length !== 1
-        ) {
-          hadEvalFailure = true;
-          return _match;
-        }
-        try {
-          return String(
-            celEvaluator.evaluate(expr as string, stepContext),
-          );
-        } catch {
-          hadEvalFailure = true;
-          return _match as string;
-        }
-      },
-    );
+    const resolved = replaceExpressionSpans(template, (span) => {
+      if (
+        partitionAuthored(extractExpressions(span.raw), authored).length !== 1
+      ) {
+        hadEvalFailure = true;
+        return span.raw;
+      }
+      try {
+        return String(celEvaluator.evaluate(span.inner, stepContext));
+      } catch {
+        hadEvalFailure = true;
+        return span.raw;
+      }
+    });
     return {
       name: hadEvalFailure ? `${resolved}-${fallbackSuffix}` : resolved,
       hadEvalFailure,
@@ -128,8 +130,8 @@ export class ForEachExpansionService {
       const inExpression = step.forEach.in;
       const itemName = step.forEach.item;
 
-      const match = inExpression.match(/\$\{\{\s*(.+?)\s*\}\}/s);
-      if (!match) {
+      const first = scanExpressions(inExpression)[0];
+      if (!first) {
         throw new UserError(
           `Invalid forEach.in expression: ${inExpression}. Must be in $\{{ }} format.`,
         );
@@ -143,9 +145,12 @@ export class ForEachExpansionService {
       ) {
         throw new UserError("forEach.in must be an authored expression");
       }
-      const items = await this.celEvaluator.evaluateAsync(match[1], context);
+      const items = await this.celEvaluator.evaluateAsync(
+        first.inner,
+        context,
+      );
 
-      const nameHasExpression = /\$\{\{.+?\}\}/s.test(step.name);
+      const nameHasExpression = containsExpression(step.name);
       const expandedSteps: ExpandedStep[] = [];
 
       if (Array.isArray(items)) {
