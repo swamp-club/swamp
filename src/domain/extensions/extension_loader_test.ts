@@ -1196,3 +1196,56 @@ for (const indexOnly of [true, false]) {
     assertStringIncludes(warnings[0], "simulated bundle failure");
   });
 }
+
+Deno.test("buildIndex: a layout-version eviction keeps install staging (swamp-club#2723)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2723_evict_" });
+  try {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const bundleKindDir = join(dir, ".swamp", "bundles");
+    const staleBundle = join(bundleKindDir, "abcd1234", "stale.js");
+    const staged = join(
+      bundleKindDir,
+      `.swamp-staging-${crypto.randomUUID()}`,
+      "new",
+      "1",
+      "fresh.js",
+    );
+    for (const path of [staleBundle, staged]) {
+      await Deno.mkdir(join(path, ".."), { recursive: true });
+      await Deno.writeTextFile(path, "// bundle");
+    }
+
+    const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+    try {
+      catalog.markPopulated("model");
+      catalog.setLayoutVersion("an-older-layout");
+      const repository = new ExtensionRepository({
+        catalog,
+        lockfileRepository: new LockfileRepository(join(dir, "lockfile.json")),
+        repoRoot: dir,
+      });
+      const loader = new ExtensionLoader(
+        stubDenoRuntime,
+        makeStubAdapter(new Set()),
+        dir,
+        undefined,
+        repository,
+      );
+      await loader.buildIndex(modelsDir);
+
+      let staleLeft = true;
+      try {
+        await Deno.stat(staleBundle);
+      } catch {
+        staleLeft = false;
+      }
+      assertEquals(staleLeft, false, "stale bundles are evicted");
+      assertEquals(await Deno.readTextFile(staged), "// bundle");
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});

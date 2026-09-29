@@ -1019,6 +1019,12 @@ export {
   type RetainedFile,
 } from "./extensions/remove_extension_service.ts";
 export { UpgradeExtensionService } from "./extensions/upgrade_extension_service.ts";
+// Crash recovery of interrupted extension installs (swamp-club#2723).
+export {
+  recoverPulledExtensionStaging,
+  type RecoverStagingOptions,
+  type StagingRecoveryReport,
+} from "./extensions/recover_staging.ts";
 
 // W3 reconcile service — post-hoc state repair from disk.
 export {

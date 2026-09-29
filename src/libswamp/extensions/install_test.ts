@@ -270,6 +270,71 @@ Deno.test("extensionInstall: stays up_to_date when filesChecksum matches", async
   }
 });
 
+for (
+  const [label, digestOf] of [
+    ["the digest without the nested entry", ["child"]],
+    ["a legacy whole-tree digest", []],
+  ] as const
+) {
+  Deno.test(`extensionInstall: a parent with a nested entry stays up_to_date with ${label} (swamp-club#2723)`, async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const extRoot = join(
+        tmpDir,
+        ".swamp",
+        "pulled-extensions",
+        "@test",
+        "ext",
+      );
+      await ensureDir(join(extRoot, "models"));
+      await ensureDir(join(extRoot, "child", "models"));
+      await Deno.writeTextFile(join(extRoot, "models", "test.ts"), "// parent");
+      await Deno.writeTextFile(
+        join(extRoot, "child", "models", "c.ts"),
+        "// child",
+      );
+      const digest = await readInstalledExtensionDigest(extRoot, {
+        excludeRelDirs: [...digestOf],
+      });
+
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@test/ext": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [".swamp/pulled-extensions/@test/ext/models/test.ts"],
+            filesChecksum: digest,
+          },
+          "@test/ext/child": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [".swamp/pulled-extensions/@test/ext/child/models/c.ts"],
+          },
+        }),
+      );
+
+      const events = await collectEvents(
+        extensionInstall(createLibSwampContext({}), {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            Promise.reject(new Error("should not be called for up-to-date")),
+        }),
+      );
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.upToDate, 2);
+        assertEquals(completed.data.installed, 0);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    }
+  });
+}
+
 Deno.test("extensionInstall: no filesChecksum in lockfile skips digest check (grandfather)", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {

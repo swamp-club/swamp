@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join, resolve, SEPARATOR, toFileUrl } from "@std/path";
+import { isStagingEntryName } from "./install_journal.ts";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
@@ -1679,7 +1680,12 @@ export class ExtensionLoader {
     const bundleDir = this.resolveBundlePath();
     if (!bundleDir) return;
     try {
-      await Deno.remove(bundleDir, { recursive: true });
+      // Every entry but install staging, which belongs to an install in
+      // flight or to its crash recovery (swamp-club#2723).
+      for await (const entry of Deno.readDir(bundleDir)) {
+        if (isStagingEntryName(entry.name)) continue;
+        await Deno.remove(join(bundleDir, entry.name), { recursive: true });
+      }
       this.logger
         .info`Evicted stale bundles for ${this.adapter.kind}: ${bundleDir}`;
     } catch (error) {

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { copy, ensureDir } from "@std/fs";
+import { isStagingEntryName } from "../extensions/install_journal.ts";
 import { dirname, join, resolve } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 
@@ -109,6 +110,8 @@ export async function migrateConfigToDatastore(
         if (isFile) {
           await ensureDir(dirname(dest));
           await Deno.copyFile(src, dest);
+        } else if (key === "copiedPulledExtensions") {
+          await copyPulledExtensions(src, dest);
         } else {
           await copy(src, dest, { overwrite: true });
         }
@@ -137,4 +140,19 @@ export async function migrateConfigToDatastore(
 
 export function getMigrationSentinelPath(configRoot: string): string {
   return join(configRoot, MIGRATION_SENTINEL);
+}
+
+/**
+ * Copies the pulled-extensions root entry by entry, leaving out install
+ * staging: an interrupted install's journal names paths under the root
+ * it was written in, so it stays there for crash recovery.
+ */
+async function copyPulledExtensions(src: string, dest: string): Promise<void> {
+  await ensureDir(dest);
+  for await (const entry of Deno.readDir(src)) {
+    if (isStagingEntryName(entry.name)) continue;
+    await copy(join(src, entry.name), join(dest, entry.name), {
+      overwrite: true,
+    });
+  }
 }

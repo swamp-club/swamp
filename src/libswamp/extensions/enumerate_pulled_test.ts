@@ -450,3 +450,63 @@ Deno.test({
     });
   },
 });
+
+// ---- install staging (swamp-club#2723) ----
+
+/**
+ * Plants what an install in flight leaves under the pulled root: a
+ * journal dir whose staged new root ships models and datastores.
+ */
+async function plantStaging(repoDir: string): Promise<void> {
+  const staged = join(
+    repoDir,
+    ".swamp/pulled-extensions/.swamp-staging",
+    crypto.randomUUID(),
+    "new",
+    "0",
+  );
+  await ensureDir(join(staged, "models"));
+  await ensureDir(join(staged, "datastores"));
+  await Deno.writeTextFile(join(staged, "models", "m.ts"), "export {};");
+  await Deno.writeTextFile(join(staged, "datastores", "d.ts"), "export {};");
+}
+
+Deno.test("enumeratePulledExtensionDirs: never returns install staging", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/a": { version: "1.0.0" },
+    });
+    await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@fake/a/models"));
+    await plantStaging(tmpDir);
+
+    for (const type of ["models", "datastores"] as const) {
+      const dirs = await enumeratePulledExtensionDirs(
+        lockfilePath,
+        tmpDir,
+        type,
+      );
+      assertEquals(
+        dirs.some((d) => d.includes(".swamp-staging")),
+        false,
+        type,
+      );
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("enumeratePulledDatastoreExtensionsOnDisk: never returns install staging", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    await plantStaging(tmpDir);
+    const found = await enumeratePulledDatastoreExtensionsOnDisk(
+      tmpDir,
+      false,
+    );
+    assertEquals(found, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

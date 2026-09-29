@@ -366,6 +366,54 @@ export function bundleNamespace(baseDir: string, repoDir: string): string {
 }
 
 /**
+ * Each extension source kind dir and the `.swamp` dir its pre-built
+ * bundles are cached in, in the order installs copy them.
+ */
+export const EXTENSION_BUNDLE_KINDS = [
+  { sourceKind: "models", bundleKind: "bundles" },
+  { sourceKind: "vaults", bundleKind: "vault-bundles" },
+  { sourceKind: "datastores", bundleKind: "datastore-bundles" },
+  { sourceKind: "reports", bundleKind: "report-bundles" },
+  { sourceKind: "webhooks", bundleKind: "webhook-bundles" },
+] as const;
+
+/** One bundle namespace dir a pulled extension owns. */
+export interface ExtensionBundleRoot {
+  sourceKind: typeof EXTENSION_BUNDLE_KINDS[number]["sourceKind"];
+  /** `.swamp/<kind>-bundles`, the dir the namespace lives in. */
+  kindDir: string;
+  /** `.swamp/<kind>-bundles/<namespace>`. */
+  live: string;
+}
+
+/**
+ * The live roots an install of pulled extension `name` writes: its
+ * per-extension root and one bundle namespace dir per source kind. The
+ * single derivation installs and crash recovery share, so a journal's
+ * paths can be checked against it exactly.
+ */
+export function extensionInstallRoots(
+  repoDir: string,
+  name: string,
+): { extensionRoot: string; bundleRoots: ExtensionBundleRoot[] } {
+  const extensionRoot = join(resolvePulledExtensionsRoot(repoDir), name);
+  return {
+    extensionRoot,
+    bundleRoots: EXTENSION_BUNDLE_KINDS.map(({ sourceKind, bundleKind }) => {
+      const kindDir = swampPath(repoDir, bundleKind);
+      return {
+        sourceKind,
+        kindDir,
+        live: join(
+          kindDir,
+          bundleNamespace(join(extensionRoot, sourceKind), repoDir),
+        ),
+      };
+    }),
+  };
+}
+
+/**
  * Converts an absolute path to a relative path from the repository root.
  *
  * Used when persisting paths to YAML files so they work across different

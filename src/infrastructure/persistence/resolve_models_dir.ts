@@ -17,6 +17,24 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Moved to infrastructure so libswamp can resolve lockfile paths
-// (swamp-club#2723); re-exported here for existing CLI and serve callers.
-export { resolveModelsDir } from "../infrastructure/persistence/resolve_models_dir.ts";
+import type { RepoMarkerData } from "./repo_marker_repository.ts";
+
+/**
+ * Resolves the models directory path.
+ * Priority: SWAMP_MODELS_DIR env var > .swamp.yaml config > default "extensions/models"
+ */
+export function resolveModelsDir(marker: RepoMarkerData | null): string {
+  // Environment variable takes highest priority
+  const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
+  if (envModelsDir) {
+    return envModelsDir;
+  }
+
+  // Then .swamp.yaml config
+  if (marker?.modelsDir) {
+    return marker.modelsDir;
+  }
+
+  // Default
+  return "extensions/models";
+}

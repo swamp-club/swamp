@@ -20,7 +20,8 @@
 import { join } from "@std/path";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
-import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import { installedDigestMatches } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import { nestedEntryRelDirs } from "../../domain/extensions/install_journal.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 /**
@@ -55,9 +56,13 @@ export async function detectLocalEditsForExtension(
     const effectivePulledRoot = pulledExtensionsRoot ??
       resolvePulledExtensionsRoot(repoDir);
     const extRoot = join(effectivePulledRoot, name);
-    const onDisk = await readInstalledExtensionDigest(extRoot);
-    if (onDisk === null) return "no-anchor";
-    return onDisk === stored ? "match" : "mismatch";
+    const matches = await installedDigestMatches(
+      extRoot,
+      stored,
+      nestedEntryRelDirs(name, Object.keys(repo.getAllEntries())),
+    );
+    if (matches === null) return "no-anchor";
+    return matches ? "match" : "mismatch";
   } catch {
     return "no-anchor";
   }

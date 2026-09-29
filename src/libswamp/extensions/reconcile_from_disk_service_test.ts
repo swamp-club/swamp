@@ -885,6 +885,57 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "ReconcileFromDisk pulled: a root absent mid-swap heals to Indexed once it is back (swamp-club#2723)",
+  async () => {
+    const ts = Date.now();
+    const extName = `@test/pulled-swap-window-${ts}`;
+    const typeId = `@test/pulled-swap-window-model-${ts}`;
+    await withPulledFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const extRoot = join(swampPath(repoDir, "pulled-extensions"), extName);
+        const sourcePath = join(extRoot, "models", "noop.ts");
+        await ensureDir(join(extRoot, "models"));
+        await Deno.writeTextFile(sourcePath, MINIMAL_MODEL_CODE(typeId));
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await service.execute();
+        const indexed = catalog.findBySourcePath(canonicalizePath(sourcePath));
+        assertEquals(indexed?.state, "Indexed");
+
+        // An install's phase 1 has moved the live root aside.
+        const aside = join(repoDir, "aside");
+        await Deno.rename(extRoot, aside);
+        const during = await service.execute();
+        assertEquals(
+          during.transitions.some((t) => t.toState === "Tombstoned"),
+          false,
+          "a root absent mid-swap must not be tombstoned",
+        );
+        assertEquals(
+          catalog.findBySourcePath(canonicalizePath(sourcePath))?.state,
+          "EntryPointUnreadable",
+        );
+        assertEquals(lockfileRepository.getEntry(extName) !== null, true);
+
+        // Phase 2 puts a root back in place.
+        await Deno.rename(aside, extRoot);
+        await service.execute();
+        const healed = catalog.findBySourcePath(canonicalizePath(sourcePath));
+        assertEquals(healed?.state, "Indexed");
+        assertEquals(healed?.type_normalized, indexed?.type_normalized);
+        assertEquals(healed?.bundle_path, indexed?.bundle_path);
+      },
+      { [extName]: { version: "1.0.0", files: [] } },
+    );
+  },
+);
+
 // -- Manifest version migration tests (#284) --------------------------------
 
 async function withManifestFixtureRepo(

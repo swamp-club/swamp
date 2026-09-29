@@ -21,7 +21,8 @@ import { join } from "@std/path";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import { installedDigestMatches } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import { nestedEntryRelDirs } from "../../domain/extensions/install_journal.ts";
 import {
   readManifestDependenciesAt,
   readManifestIdentityAt,
@@ -221,8 +222,12 @@ export async function* extensionInstall(
           // (swamp-club#1021).
           if (needs === "up_to_date" && entry.filesChecksum) {
             try {
-              const onDisk = await readInstalledExtensionDigest(extRoot);
-              if (onDisk !== entry.filesChecksum) {
+              const matches = await installedDigestMatches(
+                extRoot,
+                entry.filesChecksum,
+                nestedEntryRelDirs(name, Object.keys(upstream)),
+              );
+              if (matches !== true) {
                 needs = "install";
               }
             } catch {

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
+import { isStagingEntryName } from "../../domain/extensions/install_journal.ts";
 import type { MergeDirResult } from "../../libswamp/mod.ts";
 
 export async function findFileCollisions(
@@ -31,6 +32,7 @@ export async function findFileCollisions(
     relPrefix: string,
   ): Promise<void> => {
     for await (const entry of Deno.readDir(src)) {
+      if (isStagingEntryName(entry.name)) continue;
       const srcPath = join(src, entry.name);
       const dstPath = join(dst, entry.name);
       const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
@@ -71,6 +73,9 @@ export async function mergeDirInto(
   ): Promise<number> => {
     let moved = 0;
     for await (const entry of Deno.readDir(src)) {
+      // Install staging stays where its journal says it is, for crash
+      // recovery (swamp-club#2723).
+      if (isStagingEntryName(entry.name)) continue;
       const srcPath = join(src, entry.name);
       const dstPath = join(dst, entry.name);
       const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;

@@ -41,10 +41,13 @@ import type { ExtensionRepository } from "../../infrastructure/persistence/exten
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
 import {
-  bundleNamespace,
+  EXTENSION_BUNDLE_KINDS,
+  extensionInstallRoots,
   resolvePulledExtensionsRoot,
-  swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { ExtensionInstallTransaction } from "../../infrastructure/persistence/extension_install_transaction.ts";
+import { nestedEntryRelDirs } from "../../domain/extensions/install_journal.ts";
+import { recoverPulledExtensionStagingLocked } from "./recover_staging.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import {
   ArchiveSizeLimitError,
@@ -416,12 +419,16 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * Recursively copies a directory's contents, returning list of relative dest paths.
+ * Recursively copies a directory's contents, returning the repo-relative
+ * path of each file copied. `recordDir` is where `destDir` will end up
+ * (a staging dir's live location); the paths are reported under it.
+ * Defaults to `destDir`.
  */
 async function copyDir(
   srcDir: string,
   destDir: string,
   repoDir: string,
+  recordDir: string = destDir,
 ): Promise<string[]> {
   const extracted: string[] = [];
   try {
@@ -430,14 +437,15 @@ async function copyDir(
 
       const srcPath = join(srcDir, entry.name);
       const destPath = join(destDir, entry.name);
+      const recordPath = join(recordDir, entry.name);
       if (entry.isDirectory) {
         await Deno.mkdir(destPath, { recursive: true });
-        const sub = await copyDir(srcPath, destPath, repoDir);
+        const sub = await copyDir(srcPath, destPath, repoDir, recordPath);
         extracted.push(...sub);
       } else if (entry.isFile) {
         await Deno.mkdir(dirname(destPath), { recursive: true });
         await Deno.copyFile(srcPath, destPath);
-        extracted.push(relative(repoDir, destPath));
+        extracted.push(relative(repoDir, recordPath));
       }
     }
   } catch (error) {
@@ -886,9 +894,12 @@ export async function installExtension(
     return await pulledExtensionsLock.withLock(ctx.repoDir, async () => {
       await ctx.lockfileRepository.refresh();
       const priorEntry = ctx.lockfileRepository.getEntry(ref.name);
-      const result = await applyInstall(prepared, ctx);
-      await options?.underLock?.({ result, priorEntry });
-      return result;
+      const applied = await applyInstall(prepared, ctx);
+      // Commit at the end of apply: the prior version is deleted before
+      // underLock's catalog save. swamp-club#2724 moves this after it.
+      await applied.commit();
+      await options?.underLock?.({ result: applied.result, priorEntry });
+      return applied.result;
     });
   } finally {
     await prepared.dispose();
@@ -1228,15 +1239,58 @@ export async function prepareInstall(
 }
 
 /**
+ * What {@link applyInstall} returns: the install's result, with the new
+ * version swapped in and the old one kept in staging until
+ * {@link AppliedInstallHandle.commit}.
+ */
+export interface AppliedInstallHandle {
+  result: InstallResult;
+  /**
+   * Deletes the install's staging, and with it the prior version. Never
+   * throws: whatever it cannot delete, the next install or removal
+   * cleans up.
+   */
+  commit(): Promise<void>;
+}
+
+/** Top-level names in an extension root that a nested entry cannot use. */
+const EXTENSION_ROOT_ENTRIES = new Set([
+  "models",
+  "workflows",
+  "vaults",
+  "datastores",
+  "reports",
+  "webhooks",
+  "files",
+  "manifest.yaml",
+]);
+
+/**
  * Installs a {@link PreparedInstall} into the repo: conflict detection
- * against the live tree (throws ConflictError when !force), the copies
- * into the pulled root and skills dirs, orphan pruning, the lockfile
- * entry, and dependency installs. Does not dispose `prepared`.
+ * against the live tree (throws ConflictError when !force), then a
+ * stage-and-swap of the extension root and its bundle namespace dirs,
+ * the merge copy into the skills dirs, skill orphan pruning, the
+ * lockfile entry, and dependency installs. Does not dispose `prepared`.
+ *
+ * The new version is built in staging, the live roots are moved aside
+ * and the new ones moved in (see {@link ExtensionInstallTransaction}); a
+ * journal written first lets a crash at any point be put right. The
+ * swap replaces the roots whole, so a file the archive does not ship is
+ * gone afterwards. Entries nested under this one (`@a/b/c` inside
+ * `@a/b`) are copied into the new root unchanged.
+ *
+ * Any failure after staging starts is settled before it propagates: the
+ * swap is rolled back unless its lockfile entry already landed. The
+ * caller commits the returned handle once it no longer needs the prior
+ * version.
+ *
+ * Runs crash recovery first, under the pulled-extensions lock the caller
+ * holds.
  */
 export async function applyInstall(
   prepared: PreparedInstall,
   ctx: InstallContext,
-): Promise<InstallResult> {
+): Promise<AppliedInstallHandle> {
   if (!(prepared instanceof PreparedInstall)) {
     throw new Error(
       "applyInstall requires a PreparedInstall from prepareInstall",
@@ -1257,13 +1311,17 @@ export async function applyInstall(
     safetyWarnings,
   } = prepared;
 
-  // Snapshot the prior lockfile entry's `files[]` BEFORE copying.
-  // Used after the copies to compute the orphan diff (paths declared
-  // by the prior version but absent from the new version) and prune
-  // them. Empty when this is a first-install (no prior entry). The
-  // lockfile snapshot was captured at InstallContext construction
-  // (per createInstallContext / createExtensionPullDeps); callers MUST
-  // construct a fresh context per install (see InstallContext JSDoc).
+  // Put right any install a crashed process left half done before this
+  // one reads the tree it replaces.
+  await recoverPulledExtensionStagingLocked(repoDir, {
+    lockfilePaths: [ctx.lockfileRepository.lockfilePath],
+  });
+
+  // Snapshot the prior lockfile entry's `files[]` BEFORE the swap.
+  // Used afterwards to compute the orphan diff (paths declared by the
+  // prior version but absent from the new version). Empty when this is
+  // a first-install (no prior entry). installExtension refreshed the
+  // snapshot from disk under the lock just before calling apply.
   const oldEntry = ctx.lockfileRepository.getEntry(ref.name);
   const oldFiles = oldEntry?.files ?? [];
 
@@ -1272,10 +1330,10 @@ export async function applyInstall(
   // cross-extension filename collisions (e.g. _lib/aws.ts shared between
   // @swamp/aws/ec2 and @swamp/aws/eks, or README.md across unrelated
   // extensions). Skills fan out to ctx.skillsDirs — one per enrolled tool.
-  const absoluteExtRoot = join(
-    resolvePulledExtensionsRoot(repoDir),
-    ref.name,
-  );
+  // Bundle cache is namespaced by source dir path, so each extension gets
+  // its own bundle namespace dirs automatically.
+  const installRoots = extensionInstallRoots(repoDir, ref.name);
+  const absoluteExtRoot = installRoots.extensionRoot;
   const absoluteModelsDir = join(absoluteExtRoot, "models");
   const absoluteWorkflowsDir = join(absoluteExtRoot, "workflows");
   const absoluteVaultsDir = join(absoluteExtRoot, "vaults");
@@ -1283,29 +1341,18 @@ export async function applyInstall(
   const absoluteReportsDir = join(absoluteExtRoot, "reports");
   const absoluteWebhooksDir = join(absoluteExtRoot, "webhooks");
   const absoluteFilesDir = join(absoluteExtRoot, "files");
-  // Bundle cache is namespaced by source dir path. Because each extension
-  // now has a unique per-extension models dir, each extension gets its own
-  // bundle namespace automatically — no cross-extension bundle collisions.
-  const bundlesDir = join(
-    swampPath(repoDir, "bundles"),
-    bundleNamespace(absoluteModelsDir, repoDir),
-  );
-  const vaultBundlesDir = join(
-    swampPath(repoDir, "vault-bundles"),
-    bundleNamespace(absoluteVaultsDir, repoDir),
-  );
-  const datastoreBundlesDir = join(
-    swampPath(repoDir, "datastore-bundles"),
-    bundleNamespace(absoluteDatastoresDir, repoDir),
-  );
-  const reportBundlesDir = join(
-    swampPath(repoDir, "report-bundles"),
-    bundleNamespace(absoluteReportsDir, repoDir),
-  );
-  const webhookBundlesDir = join(
-    swampPath(repoDir, "webhook-bundles"),
-    bundleNamespace(absoluteWebhooksDir, repoDir),
-  );
+  const bundleRootOf = (sourceKind: string): string => {
+    const root = installRoots.bundleRoots.find((r) =>
+      r.sourceKind === sourceKind
+    );
+    if (!root) throw new Error(`No bundle root for ${sourceKind}`);
+    return root.live;
+  };
+  const bundlesDir = bundleRootOf("models");
+  const vaultBundlesDir = bundleRootOf("vaults");
+  const datastoreBundlesDir = bundleRootOf("datastores");
+  const reportBundlesDir = bundleRootOf("reports");
+  const webhookBundlesDir = bundleRootOf("webhooks");
 
   const conflicts = await detectConflicts(
     extractDir,
@@ -1342,388 +1389,466 @@ export async function applyInstall(
     throw new ConflictError(conflicts, skillConflicts);
   }
 
-  const extractedFiles: string[] = [];
-
-  await Deno.mkdir(absoluteModelsDir, { recursive: true });
-  const modelsExtracted = await copyDir(
-    join(extractDir, "models"),
-    absoluteModelsDir,
-    repoDir,
+  // Entries nested under this one keep their own roots inside ours.
+  // The swap replaces this root whole, so each one on disk is copied
+  // into the new root unchanged.
+  const nestedRelDirs = nestedEntryRelDirs(
+    ref.name,
+    Object.keys(ctx.lockfileRepository.getAllEntries()),
   );
-  extractedFiles.push(...modelsExtracted);
-
-  await Deno.mkdir(absoluteWorkflowsDir, { recursive: true });
-  const workflowsExtracted = await copyDir(
-    join(extractDir, "workflows"),
-    absoluteWorkflowsDir,
-    repoDir,
-  );
-  extractedFiles.push(...workflowsExtracted);
-
-  await Deno.mkdir(bundlesDir, { recursive: true });
-  const bundlesExtracted = await copyDir(
-    join(extractDir, "bundles"),
-    bundlesDir,
-    repoDir,
-  );
-  extractedFiles.push(...bundlesExtracted);
-
-  await Deno.mkdir(absoluteVaultsDir, { recursive: true });
-  const vaultsExtracted = await copyDir(
-    join(extractDir, "vaults"),
-    absoluteVaultsDir,
-    repoDir,
-  );
-  extractedFiles.push(...vaultsExtracted);
-
-  await Deno.mkdir(vaultBundlesDir, { recursive: true });
-  const vaultBundlesExtracted = await copyDir(
-    join(extractDir, "vault-bundles"),
-    vaultBundlesDir,
-    repoDir,
-  );
-  extractedFiles.push(...vaultBundlesExtracted);
-
-  await Deno.mkdir(absoluteDatastoresDir, { recursive: true });
-  const datastoresExtracted = await copyDir(
-    join(extractDir, "datastores"),
-    absoluteDatastoresDir,
-    repoDir,
-  );
-  extractedFiles.push(...datastoresExtracted);
-
-  await Deno.mkdir(datastoreBundlesDir, { recursive: true });
-  const datastoreBundlesExtracted = await copyDir(
-    join(extractDir, "datastore-bundles"),
-    datastoreBundlesDir,
-    repoDir,
-  );
-  extractedFiles.push(...datastoreBundlesExtracted);
-
-  await Deno.mkdir(absoluteReportsDir, { recursive: true });
-  const reportsExtracted = await copyDir(
-    join(extractDir, "reports"),
-    absoluteReportsDir,
-    repoDir,
-  );
-  extractedFiles.push(...reportsExtracted);
-
-  await Deno.mkdir(reportBundlesDir, { recursive: true });
-  const reportBundlesExtracted = await copyDir(
-    join(extractDir, "report-bundles"),
-    reportBundlesDir,
-    repoDir,
-  );
-  extractedFiles.push(...reportBundlesExtracted);
-
-  await Deno.mkdir(absoluteWebhooksDir, { recursive: true });
-  const webhooksExtracted = await copyDir(
-    join(extractDir, "webhooks"),
-    absoluteWebhooksDir,
-    repoDir,
-  );
-  extractedFiles.push(...webhooksExtracted);
-
-  await Deno.mkdir(webhookBundlesDir, { recursive: true });
-  const webhookBundlesExtracted = await copyDir(
-    join(extractDir, "webhook-bundles"),
-    webhookBundlesDir,
-    repoDir,
-  );
-  extractedFiles.push(...webhookBundlesExtracted);
-
-  await Deno.mkdir(absoluteFilesDir, { recursive: true });
-  const filesExtracted = await copyDir(
-    join(extractDir, "files"),
-    absoluteFilesDir,
-    repoDir,
-  );
-  extractedFiles.push(...filesExtracted);
-
-  // Restore executable bits for declared binaries
-  if (Deno.build.os !== "windows" && manifest.binaries.length > 0) {
-    for (const bin of manifest.binaries) {
-      const binPath = join(absoluteFilesDir, bin);
-      try {
-        await Deno.chmod(binPath, 0o755);
-      } catch (error) {
-        if (error instanceof Deno.errors.NotFound) continue;
-        if (logger) {
-          logger.debug`Failed to chmod binary ${bin}: ${error}`;
-        }
-      }
+  const nestedToCopy: string[] = [];
+  for (const relDir of nestedRelDirs) {
+    const first = relDir.split("/")[0];
+    if (EXTENSION_ROOT_ENTRIES.has(first)) {
+      throw new UserError(
+        `Cannot install ${ref.name}: the installed extension ` +
+          `${ref.name}/${relDir} lives at ${first}/ inside its root, where ` +
+          `${ref.name} keeps its own files. Remove ${ref.name}/${relDir} ` +
+          `first.`,
+      );
+    }
+    if (await isPlainDir(join(absoluteExtRoot, relDir))) {
+      nestedToCopy.push(relDir);
     }
   }
 
-  // Extract skills to every enrolled tool's skill directory.
-  // The lockfile tracks a skill as its root when this extension owns
-  // the dir (created it now, or its prior entry recorded the root), so
-  // extension rm can delete it in one shot. A skill merged into a dir
-  // that already existed and is not owned is tracked file by file, so
-  // rm and orphan prune never delete the user's or another
-  // extension's files. `skillCreatedPaths` is what a rollback may
-  // undo: a created root whole, or only the new files in a merged one.
-  let hasSkills = false;
-  let hasSkillScripts = false;
-  const skillFiles: string[] = [];
-  const skillRecordedPaths: string[] = [];
-  const skillCreatedPaths: string[] = [];
-  const skillsSrc = join(extractDir, "skills");
-  try {
-    const skillEntries: Deno.DirEntry[] = [];
-    for await (const entry of Deno.readDir(skillsSrc)) {
-      skillEntries.push(entry);
-    }
-    if (skillEntries.length > 0) {
-      hasSkills = true;
-      for (const skillsDir of ctx.skillsDirs) {
-        const absoluteSkillsDir = resolve(repoDir, skillsDir);
-        await Deno.mkdir(absoluteSkillsDir, { recursive: true });
-        for (const entry of skillEntries) {
-          if (!entry.isDirectory) continue;
-          const srcSkillDir = join(skillsSrc, entry.name);
-          const destSkillDir = join(absoluteSkillsDir, entry.name);
-          const skillDirRelative = relative(repoDir, destSkillDir);
-          const preExisted = await pathExistsNoFollow(destSkillDir);
-          const filesBefore = preExisted
-            ? new Set(
-              (await listFilesAndLinks(destSkillDir)).map((f) =>
-                relative(repoDir, f)
-              ),
-            )
-            : new Set<string>();
-          await Deno.mkdir(destSkillDir, { recursive: true });
-          const extracted = await copyDir(
-            srcSkillDir,
-            destSkillDir,
-            repoDir,
-          );
-          const canonicalRoot = canonicalClaimPath(skillDirRelative);
-          const ownsRoot = oldFiles.some((f) =>
-            canonicalClaimPath(f) === canonicalRoot
-          );
-          const recorded = !preExisted || ownsRoot
-            ? [skillDirRelative]
-            : extracted;
-          extractedFiles.push(...recorded);
-          skillRecordedPaths.push(...recorded);
-          skillCreatedPaths.push(
-            ...(preExisted
-              ? extracted.filter((f) => !filesBefore.has(f))
-              : [skillDirRelative]),
-          );
-          skillFiles.push(...extracted);
-          if (
-            logger && preExisted && !claimsPath(oldFiles, skillDirRelative)
-          ) {
-            logger
-              .warn`Skill directory ${skillDirRelative} already existed; ${ref.name} wrote its files into it and may have overwritten some`;
-          }
-
-          // Check for scripts/ directory (once per skill, not per tool)
-          if (!hasSkillScripts) {
-            try {
-              const scriptsDir = join(srcSkillDir, "scripts");
-              const stat = await Deno.stat(scriptsDir);
-              if (stat.isDirectory) {
-                hasSkillScripts = true;
-              }
-            } catch {
-              // No scripts/ directory
-            }
-          }
-        }
-      }
-    }
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) {
-      throw error;
-    }
-  }
-
-  const missingSourceFiles = await validateSourceCompleteness(
-    absoluteModelsDir,
-    absoluteVaultsDir,
-    absoluteDatastoresDir,
-    absoluteReportsDir,
-    absoluteWebhooksDir,
-  );
-
-  // Extract manifest.yaml into the per-extension root as a read-only
-  // copy. Makes each installed extension self-describing on disk so
-  // downstream consumers (e.g. findDependents in extension rm) can
-  // resolve the manifest without re-parsing the archive. Scoped to
-  // per-extension so the file cannot collide across extensions.
-  const manifestDestPath = join(absoluteExtRoot, "manifest.yaml");
   const manifestWithHeader =
     "# Read-only; regenerate via 'swamp extension pull'\n" + manifestContent;
-  await Deno.mkdir(absoluteExtRoot, { recursive: true });
-  // chmod 0o444 makes subsequent overwrites fail; remove the prior copy
-  // first so re-installs (--force) succeed. NotFound is expected on a
-  // first install.
-  try {
-    await Deno.remove(manifestDestPath);
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) {
-      throw error;
-    }
+  const bundleHasNew = new Map<string, boolean>();
+  for (const { bundleKind, sourceKind } of EXTENSION_BUNDLE_KINDS) {
+    bundleHasNew.set(
+      bundleRootOf(sourceKind),
+      (await listFiles(join(extractDir, bundleKind))).length > 0,
+    );
   }
-  await Deno.writeTextFile(manifestDestPath, manifestWithHeader);
+  const tx = await ExtensionInstallTransaction.begin({
+    pulledRoot: resolvePulledExtensionsRoot(repoDir),
+    extensionName: ref.name,
+    lockfilePath: ctx.lockfileRepository.lockfilePath,
+    newChecksum: localChecksum,
+    newManifestDigest: await computeChecksum(
+      new TextEncoder().encode(manifestWithHeader),
+    ),
+    roots: [
+      { role: "extension", live: absoluteExtRoot, hasNew: true },
+      ...installRoots.bundleRoots.map((r) => ({
+        role: "bundle" as const,
+        live: r.live,
+        hasNew: bundleHasNew.get(r.live) ?? false,
+      })),
+    ],
+    nestedRoots: nestedToCopy.map((relDir) => ({
+      relDir,
+      strategy: "copied" as const,
+    })),
+  });
+
   try {
-    await Deno.chmod(manifestDestPath, 0o444);
-  } catch {
-    // chmod is advisory on some filesystems/platforms (notably Windows);
-    // intent is documented via the file header, enforcement is best-effort.
-  }
-  extractedFiles.push(relative(repoDir, manifestDestPath));
+    const stagedExtRoot = tx.newPathOf(absoluteExtRoot);
+    const extractedFiles: string[] = [];
+    // Copies one archive dir into staging, recording the paths it will
+    // have once swapped in. Kind dirs are created even when empty, as
+    // before; a bundle root the archive has nothing for is not staged.
+    const stage = async (archiveDir: string, liveDir: string) => {
+      const stagedDir = liveDir.startsWith(absoluteExtRoot + SEPARATOR)
+        ? join(stagedExtRoot, relative(absoluteExtRoot, liveDir))
+        : bundleHasNew.get(liveDir)
+        ? tx.newPathOf(liveDir)
+        : undefined;
+      if (stagedDir === undefined) return;
+      await Deno.mkdir(stagedDir, { recursive: true });
+      const copied = await copyDir(
+        join(extractDir, archiveDir),
+        stagedDir,
+        repoDir,
+        liveDir,
+      );
+      for (const path of copied) extractedFiles.push(path);
+    };
+    // Sources before their bundles, as before, so staged bundles are
+    // never older than the sources they were built from.
+    await stage("models", absoluteModelsDir);
+    await stage("workflows", absoluteWorkflowsDir);
+    await stage("bundles", bundlesDir);
+    await stage("vaults", absoluteVaultsDir);
+    await stage("vault-bundles", vaultBundlesDir);
+    await stage("datastores", absoluteDatastoresDir);
+    await stage("datastore-bundles", datastoreBundlesDir);
+    await stage("reports", absoluteReportsDir);
+    await stage("report-bundles", reportBundlesDir);
+    await stage("webhooks", absoluteWebhooksDir);
+    await stage("webhook-bundles", webhookBundlesDir);
+    await stage("files", absoluteFilesDir);
 
-  // Record include files from manifest for loader skip logic
-  const includeFiles = manifest.include.length > 0
-    ? manifest.include.map((inc) =>
-      relative(repoDir, resolve(absoluteModelsDir, inc))
-    )
-    : undefined;
-
-  // Per-extension on-disk digest anchor. Computed AFTER every write that
-  // belongs to the install (copyDir + the read-only manifest.yaml copy)
-  // and BEFORE the lockfile write, so the digest captures exactly what
-  // the installer just produced. Auto-update consults this on the next
-  // version bump to refuse overwrites when the user has local edits
-  // (issue #126).
-  const filesChecksum = await readInstalledExtensionDigest(absoluteExtRoot);
-
-  // Prune orphans: paths declared by the prior version's lockfile
-  // entry that are NOT in the new version's extractedFiles[]. Done
-  // BEFORE writeEntry persists the new entry so a kill mid-prune
-  // leaves the lockfile pointing at the OLD version — the next install
-  // retries the diff. The inverse ordering (write then prune) would
-  // orphan paths the lockfile can't see if the prune never runs.
-  // A path another lockfile entry also claims (a shared skill dir) is
-  // kept: pruning it recursively would delete that extension's files.
-  const otherEntries = ctx.lockfileRepository.getAllEntries();
-  const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles).filter(
-    (f) => findClaimants(f, ref.name, otherEntries).length === 0,
-  );
-  const pruned = orphanDiff.length > 0
-    ? await pruneOrphanFiles(orphanDiff, repoDir)
-    : [];
-
-  await ctx.lockfileRepository.writeEntry(
-    ref.name,
-    version,
-    extractedFiles,
-    {
-      include: includeFiles,
-      checksum: localChecksum,
-      filesChecksum: filesChecksum ?? undefined,
-      serverUrl: resolveServerUrl(),
-      channel: ctx.channel,
-      pulledAt: oldEntry?.version === version ? oldEntry.pulledAt : undefined,
-    },
-  );
-
-  // A dependency cycle must not reinstall this extension over the tree
-  // just written. installExtension() marks it before prepare; mark it
-  // here too so a caller running prepare and apply directly is covered.
-  ctx.alreadyPulled.add(ref.name);
-
-  // Dependency installs do network I/O from inside apply, at two
-  // points: the ctx.getExtension() call that resolves an unpinned
-  // dependency's version and channel, and the nested installExtension()
-  // call, whose prepareInstall() fetches registry info, the archive and
-  // its checksum. Both run under this install's pulled-extensions lease,
-  // and the nested apply runs inline in it. Whether a dependency needs
-  // installing is only known from the lockfile read under the lock, so
-  // preparing dependencies before taking it would download speculatively
-  // (swamp-club#2709).
-  const dependencyResults: InstallResult[] = [];
-  if (manifest.dependencies.length > 0) {
-    for (const dep of manifest.dependencies) {
-      const depRef = parseExtensionRef(dep);
-      if (ctx.alreadyPulled.has(depRef.name)) {
-        continue;
+    // Restore executable bits for declared binaries
+    if (Deno.build.os !== "windows" && manifest.binaries.length > 0) {
+      for (const bin of manifest.binaries) {
+        const binPath = join(stagedExtRoot, "files", bin);
+        try {
+          await Deno.chmod(binPath, 0o755);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          if (logger) {
+            logger.debug`Failed to chmod binary ${bin}: ${error}`;
+          }
+        }
       }
+    }
 
-      // ctx.lockfileRepository reflects writes the parent install has
-      // made — writeEntry updates the cache on every commit, and child
-      // installs in this loop reuse the same repository instance, so
-      // their writes are visible too.
-      const isInstalled = ctx.lockfileRepository.getEntry(depRef.name) !== null;
+    for (const relDir of nestedToCopy) {
+      await copyTreePreservingTimes(
+        join(absoluteExtRoot, relDir),
+        join(stagedExtRoot, relDir),
+      );
+    }
 
-      if (!isInstalled) {
-        // Strip version constraints (>=, ^, ~, etc.) — pass version: null
-        // so installExtension resolves to the registry's latest version.
-        // When the dep has no stable version, resolve from beta/rc channels
-        // so beta-only extensions can satisfy dependency requirements.
-        const hasConstraint = depRef.version != null &&
-          isVersionConstraint(depRef.version);
-        let depVersion: string | null = hasConstraint ? null : depRef.version;
-        let depChannel: string | undefined = undefined;
+    // manifest.yaml is staged on its own and moved in last, into the
+    // new per-extension root, as a read-only copy. Makes each installed
+    // extension self-describing on disk so downstream consumers (e.g.
+    // findDependents in extension rm) can resolve the manifest without
+    // re-parsing the archive.
+    await Deno.writeTextFile(tx.stagedManifestPath, manifestWithHeader);
+    try {
+      await Deno.chmod(tx.stagedManifestPath, 0o444);
+    } catch {
+      // chmod is advisory on some filesystems/platforms (notably Windows);
+      // intent is documented via the file header, enforcement is best-effort.
+    }
 
-        if (depVersion === null) {
-          const depInfo = await ctx.getExtension(depRef.name);
-          if (depInfo) {
-            if (depInfo.latestVersion) {
-              depVersion = depInfo.latestVersion;
-            } else if (depInfo.latestBeta) {
-              depVersion = depInfo.latestBeta;
-              depChannel = "beta";
-            } else if (depInfo.latestRc) {
-              depVersion = depInfo.latestRc;
-              depChannel = "rc";
+    await tx.swap();
+
+    // Extract skills to every enrolled tool's skill directory.
+    // The lockfile tracks a skill as its root when this extension owns
+    // the dir (created it now, or its prior entry recorded the root), so
+    // extension rm can delete it in one shot. A skill merged into a dir
+    // that already existed and is not owned is tracked file by file, so
+    // rm and orphan prune never delete the user's or another
+    // extension's files. `skillCreatedPaths` is what a rollback may
+    // undo: a created root whole, or only the new files in a merged one.
+    let hasSkills = false;
+    let hasSkillScripts = false;
+    const skillFiles: string[] = [];
+    const skillRecordedPaths: string[] = [];
+    const skillCreatedPaths: string[] = [];
+    const skillsSrc = join(extractDir, "skills");
+    try {
+      const skillEntries: Deno.DirEntry[] = [];
+      for await (const entry of Deno.readDir(skillsSrc)) {
+        skillEntries.push(entry);
+      }
+      if (skillEntries.length > 0) {
+        hasSkills = true;
+        for (const skillsDir of ctx.skillsDirs) {
+          const absoluteSkillsDir = resolve(repoDir, skillsDir);
+          await Deno.mkdir(absoluteSkillsDir, { recursive: true });
+          for (const entry of skillEntries) {
+            if (!entry.isDirectory) continue;
+            const srcSkillDir = join(skillsSrc, entry.name);
+            const destSkillDir = join(absoluteSkillsDir, entry.name);
+            const skillDirRelative = relative(repoDir, destSkillDir);
+            const preExisted = await pathExistsNoFollow(destSkillDir);
+            const filesBefore = preExisted
+              ? new Set(
+                (await listFilesAndLinks(destSkillDir)).map((f) =>
+                  relative(repoDir, f)
+                ),
+              )
+              : new Set<string>();
+            await Deno.mkdir(destSkillDir, { recursive: true });
+            const extracted = await copyDir(
+              srcSkillDir,
+              destSkillDir,
+              repoDir,
+            );
+            const canonicalRoot = canonicalClaimPath(skillDirRelative);
+            const ownsRoot = oldFiles.some((f) =>
+              canonicalClaimPath(f) === canonicalRoot
+            );
+            const recorded = !preExisted || ownsRoot
+              ? [skillDirRelative]
+              : extracted;
+            extractedFiles.push(...recorded);
+            skillRecordedPaths.push(...recorded);
+            skillCreatedPaths.push(
+              ...(preExisted
+                ? extracted.filter((f) => !filesBefore.has(f))
+                : [skillDirRelative]),
+            );
+            skillFiles.push(...extracted);
+            if (
+              logger && preExisted && !claimsPath(oldFiles, skillDirRelative)
+            ) {
+              logger
+                .warn`Skill directory ${skillDirRelative} already existed; ${ref.name} wrote its files into it and may have overwritten some`;
+            }
+
+            // Check for scripts/ directory (once per skill, not per tool)
+            if (!hasSkillScripts) {
+              try {
+                const scriptsDir = join(srcSkillDir, "scripts");
+                const stat = await Deno.stat(scriptsDir);
+                if (stat.isDirectory) {
+                  hasSkillScripts = true;
+                }
+              } catch {
+                // No scripts/ directory
+              }
             }
           }
         }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
 
-        const resolvedRef: ExtensionRef = {
-          name: depRef.name,
-          version: depVersion,
-        };
-        // expectedChecksum anchors the parent's archive, not this one. A
-        // dependency reached here has no lockfile entry, so it has no
-        // anchor of its own: it installs like a fresh pull, still checked
-        // against the registry's server checksum.
-        const depResult = await installExtension(resolvedRef, {
-          ...ctx,
-          depth: ctx.depth + 1,
-          channel: depChannel,
-          expectedChecksum: undefined,
-        });
-        if (depResult) {
-          dependencyResults.push(depResult);
+    const missingSourceFiles = await validateSourceCompleteness(
+      absoluteModelsDir,
+      absoluteVaultsDir,
+      absoluteDatastoresDir,
+      absoluteReportsDir,
+      absoluteWebhooksDir,
+    );
+
+    extractedFiles.push(
+      relative(repoDir, join(absoluteExtRoot, "manifest.yaml")),
+    );
+
+    // Record include files from manifest for loader skip logic
+    const includeFiles = manifest.include.length > 0
+      ? manifest.include.map((inc) =>
+        relative(repoDir, resolve(absoluteModelsDir, inc))
+      )
+      : undefined;
+
+    // Per-extension on-disk digest anchor, over exactly what the install
+    // produced and leaving out nested entries' roots. Computed BEFORE the
+    // lockfile write. Auto-update consults this on the next version bump
+    // to refuse overwrites when the user has local edits (issue #126).
+    const filesChecksum = await readInstalledExtensionDigest(absoluteExtRoot, {
+      excludeRelDirs: nestedRelDirs,
+    });
+
+    // Orphans: paths declared by the prior version's lockfile entry that
+    // are NOT in the new version's extractedFiles[]. Those under a
+    // swapped root are already out of the live tree (the swap replaced
+    // the root whole) and are only reported. The rest (skills) are
+    // pruned here, BEFORE writeEntry persists the new entry, so a kill
+    // mid-prune leaves the lockfile pointing at the OLD version and the
+    // next install retries the diff. A path another lockfile entry also
+    // claims (a shared skill dir) is kept.
+    const otherEntries = ctx.lockfileRepository.getAllEntries();
+    const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles).filter(
+      (f) => findClaimants(f, ref.name, otherEntries).length === 0,
+    );
+    const swappedRoots = tx.journal.roots.map((r) => ({
+      live: canonicalClaimPath(relative(repoDir, r.live)),
+      liveAbs: r.live,
+      old: r.old,
+      liveExisted: r.liveExisted,
+    }));
+    const swappedRootOf = (f: string) => {
+      const c = canonicalClaimPath(f);
+      return swappedRoots.find((r) =>
+        c === r.live || c.startsWith(r.live + "/")
+      );
+    };
+    const pruned: string[] = [];
+    const toPrune: string[] = [];
+    for (const f of orphanDiff) {
+      const root = swappedRootOf(f);
+      if (!root) {
+        toPrune.push(f);
+      } else if (
+        root.liveExisted &&
+        await pathExistsNoFollow(
+          join(root.old, relative(root.liveAbs, join(repoDir, f))),
+        )
+      ) {
+        pruned.push(f);
+      }
+    }
+    if (toPrune.length > 0) {
+      for (const path of await pruneOrphanFiles(toPrune, repoDir)) {
+        pruned.push(path);
+      }
+    }
+
+    await ctx.lockfileRepository.writeEntry(
+      ref.name,
+      version,
+      extractedFiles,
+      {
+        include: includeFiles,
+        checksum: localChecksum,
+        filesChecksum: filesChecksum ?? undefined,
+        serverUrl: resolveServerUrl(),
+        channel: ctx.channel,
+        pulledAt: oldEntry?.version === version ? oldEntry.pulledAt : undefined,
+      },
+    );
+
+    // A dependency cycle must not reinstall this extension over the tree
+    // just written. installExtension() marks it before prepare; mark it
+    // here too so a caller running prepare and apply directly is covered.
+    ctx.alreadyPulled.add(ref.name);
+
+    // Dependency installs do network I/O from inside apply, at two
+    // points: the ctx.getExtension() call that resolves an unpinned
+    // dependency's version and channel, and the nested installExtension()
+    // call, whose prepareInstall() fetches registry info, the archive and
+    // its checksum. Both run under this install's pulled-extensions lease,
+    // and the nested apply runs inline in it. Whether a dependency needs
+    // installing is only known from the lockfile read under the lock, so
+    // preparing dependencies before taking it would download speculatively
+    // (swamp-club#2709).
+    const dependencyResults: InstallResult[] = [];
+    if (manifest.dependencies.length > 0) {
+      for (const dep of manifest.dependencies) {
+        const depRef = parseExtensionRef(dep);
+        if (ctx.alreadyPulled.has(depRef.name)) {
+          continue;
+        }
+
+        // ctx.lockfileRepository reflects writes the parent install has
+        // made — writeEntry updates the cache on every commit, and child
+        // installs in this loop reuse the same repository instance, so
+        // their writes are visible too.
+        const isInstalled =
+          ctx.lockfileRepository.getEntry(depRef.name) !== null;
+
+        if (!isInstalled) {
+          // Strip version constraints (>=, ^, ~, etc.) — pass version: null
+          // so installExtension resolves to the registry's latest version.
+          // When the dep has no stable version, resolve from beta/rc channels
+          // so beta-only extensions can satisfy dependency requirements.
+          const hasConstraint = depRef.version != null &&
+            isVersionConstraint(depRef.version);
+          let depVersion: string | null = hasConstraint ? null : depRef.version;
+          let depChannel: string | undefined = undefined;
+
+          if (depVersion === null) {
+            const depInfo = await ctx.getExtension(depRef.name);
+            if (depInfo) {
+              if (depInfo.latestVersion) {
+                depVersion = depInfo.latestVersion;
+              } else if (depInfo.latestBeta) {
+                depVersion = depInfo.latestBeta;
+                depChannel = "beta";
+              } else if (depInfo.latestRc) {
+                depVersion = depInfo.latestRc;
+                depChannel = "rc";
+              }
+            }
+          }
+
+          const resolvedRef: ExtensionRef = {
+            name: depRef.name,
+            version: depVersion,
+          };
+          // expectedChecksum anchors the parent's archive, not this one. A
+          // dependency reached here has no lockfile entry, so it has no
+          // anchor of its own: it installs like a fresh pull, still checked
+          // against the registry's server checksum.
+          const depResult = await installExtension(resolvedRef, {
+            ...ctx,
+            depth: ctx.depth + 1,
+            channel: depChannel,
+            expectedChecksum: undefined,
+          });
+          if (depResult) {
+            dependencyResults.push(depResult);
+          }
         }
       }
     }
+
+    const extendsTypes = await scanForExtensionGrafts(absoluteModelsDir);
+    const skillRecorded = new Set(skillRecordedPaths);
+
+    return {
+      result: {
+        name: ref.name,
+        version,
+        description: extInfo.description,
+        extractedFiles,
+        integrityStatus,
+        repository: manifest.repository,
+        platforms: manifest.platforms,
+        safetyWarnings,
+        binaries: manifest.binaries,
+        conflicts,
+        missingSourceFiles,
+        hasSkills,
+        hasSkillScripts,
+        skillFiles,
+        dependencies: manifest.dependencies,
+        dependencyResults,
+        extendsTypes,
+        pruned,
+        shadowedTypes: [],
+        createdPaths: [
+          ...extractedFiles.filter((f) => !skillRecorded.has(f)),
+          ...skillCreatedPaths,
+        ],
+      },
+      commit: () => tx.commit(),
+    };
+  } catch (error) {
+    // Roll the swap back, or forward when the lockfile entry already
+    // landed (e.g. a dependency failed after it). Read from disk, so a
+    // write that failed after reaching the file still counts.
+    await tx.settle(
+      error,
+      async () =>
+        (await LockfileRepository.create(ctx.lockfileRepository.lockfilePath))
+          .getEntry(ref.name)?.checksum ?? null,
+    );
+    throw error;
   }
+}
 
-  const extendsTypes = await scanForExtensionGrafts(absoluteModelsDir);
-  const skillRecorded = new Set(skillRecordedPaths);
+/**
+ * Copies a nested entry's root into a staged parent root, keeping each
+ * file's and dir's access and modification times so the nested
+ * entry's sources stay no newer than its pre-built bundles. Symlinks are
+ * skipped, as an install never writes one.
+ */
+async function copyTreePreservingTimes(
+  srcDir: string,
+  destDir: string,
+): Promise<void> {
+  await Deno.mkdir(destDir, { recursive: true });
+  for await (const entry of Deno.readDir(srcDir)) {
+    const srcPath = join(srcDir, entry.name);
+    const destPath = join(destDir, entry.name);
+    if (entry.isDirectory) {
+      await copyTreePreservingTimes(srcPath, destPath);
+    } else if (entry.isFile) {
+      await Deno.copyFile(srcPath, destPath);
+      await copyTimes(srcPath, destPath);
+    }
+  }
+  await copyTimes(srcDir, destDir);
+}
 
-  return {
-    name: ref.name,
-    version,
-    description: extInfo.description,
-    extractedFiles,
-    integrityStatus,
-    repository: manifest.repository,
-    platforms: manifest.platforms,
-    safetyWarnings,
-    binaries: manifest.binaries,
-    conflicts,
-    missingSourceFiles,
-    hasSkills,
-    hasSkillScripts,
-    skillFiles,
-    dependencies: manifest.dependencies,
-    dependencyResults,
-    extendsTypes,
-    pruned,
-    shadowedTypes: [],
-    createdPaths: [
-      ...extractedFiles.filter((f) => !skillRecorded.has(f)),
-      ...skillCreatedPaths,
-    ],
-  };
+async function copyTimes(src: string, dest: string): Promise<void> {
+  const stat = await Deno.lstat(src);
+  if (stat.mtime) {
+    await Deno.utime(dest, stat.atime ?? stat.mtime, stat.mtime);
+  }
+}
+
+/** True when `path` is a directory itself, not a symlink to one. */
+async function isPlainDir(path: string): Promise<boolean> {
+  try {
+    const stat = await Deno.lstat(path);
+    return stat.isDirectory;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }
 /** Async generator wrapping installExtension for the stream pattern. */
 export async function* extensionPull(

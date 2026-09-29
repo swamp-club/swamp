@@ -31,8 +31,16 @@ import { LockfileRepository } from "../../infrastructure/persistence/lockfile_re
 import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import {
   bundleNamespace,
+  extensionInstallRoots,
+  resolvePulledExtensionsRoot,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import {
+  defaultInstallFsOps,
+  ExtensionInstallTransaction,
+  SimulatedInstallCrash,
+} from "../../infrastructure/persistence/extension_install_transaction.ts";
+import { STAGING_DIR_NAME } from "../../domain/extensions/install_journal.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 
@@ -1523,6 +1531,73 @@ Deno.test(
           await Deno.readTextFile(join(skillDir, "SKILL.md")),
           "owner",
         );
+      },
+    );
+  },
+);
+
+// =============================================================
+// swamp-club#2723: rm recovers an interrupted install first
+// =============================================================
+
+Deno.test(
+  "RemoveExtensionService.execute: rolls back an interrupted install before removing",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/rm-recover-${crypto.randomUUID().slice(0, 8)}`;
+        const v1Model = await stageModel(repoDir, extName, "a.ts", "// v1");
+        const relModel = relative(repoDir, v1Model);
+        await lockfileRepository.writeEntry(extName, "1.0.0", [relModel], {
+          checksum: "sum-v1",
+        });
+
+        // An upgrade dies after moving the live root aside.
+        const roots = extensionInstallRoots(repoDir, extName);
+        let renames = 0;
+        const tx = await ExtensionInstallTransaction.begin({
+          pulledRoot: resolvePulledExtensionsRoot(repoDir),
+          extensionName: extName,
+          lockfilePath: lockfileRepository.lockfilePath,
+          newChecksum: "sum-v2",
+          newManifestDigest: "digest-v2",
+          roots: [{
+            role: "extension",
+            live: roots.extensionRoot,
+            hasNew: true,
+          }],
+          nestedRoots: [],
+          ops: {
+            ...defaultInstallFsOps,
+            rename: async (from, to) => {
+              if (++renames === 2) throw new SimulatedInstallCrash("rename 2");
+              await Deno.rename(from, to);
+            },
+          },
+        });
+        await Deno.writeTextFile(tx.stagedManifestPath, "v2");
+        await assertRejects(() => tx.swap(), SimulatedInstallCrash);
+        await tx.settle(
+          new SimulatedInstallCrash("died"),
+          () => Promise.resolve(null),
+        );
+        await assertRejects(() => Deno.stat(v1Model), Deno.errors.NotFound);
+
+        const result = await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(extName);
+
+        // Recovery put v1 back, so rm removed the tracked file itself.
+        assertEquals(result.filesDeleted, 1);
+        await assertRejects(() => Deno.stat(v1Model), Deno.errors.NotFound);
+        assertEquals(lockfileRepository.getEntry(extName), null);
+        const staging = join(
+          resolvePulledExtensionsRoot(repoDir),
+          STAGING_DIR_NAME,
+        );
+        await assertRejects(() => Deno.lstat(staging), Deno.errors.NotFound);
       },
     );
   },
