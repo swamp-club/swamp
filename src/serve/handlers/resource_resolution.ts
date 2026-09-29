@@ -35,15 +35,22 @@ import {
   type DefinitionLookupResult,
   findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
+  findDefinitionsByIdGlobal,
 } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import {
   findWorkflowById,
   findWorkflowByIdOrName,
 } from "../../domain/workflows/workflow_lookup.ts";
-import { findBrokenWorkflow } from "../../libswamp/mod.ts";
+import {
+  findBrokenWorkflow,
+  type OutputIdReference,
+  type OutputReference,
+  type RunReference,
+} from "../../libswamp/mod.ts";
 import type { Action } from "../../domain/access/action.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
@@ -369,6 +376,213 @@ export function authorizeResolved(
       requestId,
       failedCode,
       sanitizeErrorForClient(resolution.error),
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
+ * What a read by output or run reference resolved to, and every resource the
+ * caller must be allowed to read for it (swamp-club#2673). The read is then
+ * handed `resolved.reference` and acts on exactly that.
+ */
+export type ReferenceAccess<T> =
+  | { status: "resolved"; resolved: T; resources: AccessResource[] }
+  | { status: "failed"; error: unknown };
+
+type AnyOutputReference =
+  | OutputReference<{ definitionId: string }>
+  | OutputIdReference<{ definitionId: string }>;
+
+/**
+ * The resources that own what is stored under an output's model: every
+ * definition declaring its definition id, since ids are not unique and a copy
+ * shares the original's outputs and data. An output whose model was deleted
+ * has no owner left to name, so it is authorized on its definition id.
+ */
+async function outputOwners(
+  definitionRepo: DefinitionRepository,
+  definitionId: string,
+  type: ModelType,
+  kinds: ModelResourceKind[],
+): Promise<AccessResource[]> {
+  const owners = await findDefinitionsByIdGlobal(definitionRepo, definitionId);
+  if (owners.length > 0) {
+    return owners.flatMap((owner) =>
+      kinds.map((kind) => modelAccessResource(owner, kind))
+    );
+  }
+  return kinds.map((kind) => {
+    const fields: Record<string, unknown> = { name: definitionId };
+    if (kind === "model") {
+      fields.modelType = type.normalized;
+    } else {
+      const ns = ModelType.getUserNamespace(type.normalized);
+      if (ns) fields.ns = ns;
+    }
+    return { kind, name: definitionId, fields };
+  });
+}
+
+/** Drops resources that repeat an earlier one exactly. */
+function distinct(resources: AccessResource[]): AccessResource[] {
+  const seen = new Set<string>();
+  return resources.filter((resource) => {
+    const key = JSON.stringify([resource.kind, resource.name, resource.fields]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Resolves an output read with `resolve` and collects what to authorize, as
+ * each of `kinds`: for an output, every model that owns it; for a model, that
+ * model and every owner of the latest output the read will return; for an
+ * ambiguous or unmatched argument, the raw string as sent.
+ */
+export async function resolveOutputAccess<
+  T extends { reference: AnyOutputReference },
+>(
+  definitionRepo: DefinitionRepository,
+  resolve: () => Promise<T>,
+  rawArgument: string,
+  kinds: ModelResourceKind[],
+): Promise<ReferenceAccess<T>> {
+  try {
+    const resolved = await resolve();
+    const reference = resolved.reference;
+    let resources: AccessResource[];
+    switch (reference.kind) {
+      case "output":
+        resources = await outputOwners(
+          definitionRepo,
+          reference.match.output.definitionId,
+          reference.match.type,
+          kinds,
+        );
+        break;
+      case "model": {
+        const named = kinds.map((kind) => modelAccessResource(reference, kind));
+        const owners = reference.latest
+          ? await outputOwners(
+            definitionRepo,
+            reference.latest.definitionId,
+            reference.type,
+            kinds,
+          )
+          : [];
+        resources = [...named, ...owners];
+        break;
+      }
+      default:
+        resources = kinds.map((kind) =>
+          unresolvedAccessResource(kind, rawArgument)
+        );
+    }
+    return { status: "resolved", resolved, resources: distinct(resources) };
+  } catch (error) {
+    return { status: "failed", error };
+  }
+}
+
+/**
+ * The workflows a run belongs to: the workflow recorded on it, by its
+ * recorded name, and — when a workflow with the recorded id now goes by
+ * another name — that workflow too. The recorded name always counts, so a
+ * run is judged on the workflow that made it even if that workflow was
+ * deleted or renamed, or a copy now shares its id.
+ */
+async function runOwners(
+  workflowRepo: WorkflowRepository,
+  run: WorkflowRun,
+): Promise<AccessResource[]> {
+  const resolution = await resolveRecordedWorkflow(
+    workflowRepo,
+    run.workflowId,
+    run.workflowName,
+  );
+  if (resolution.status === "failed") throw resolution.error;
+  const recorded = workflowAccessResource({
+    name: run.workflowName,
+    tags: {},
+  });
+  if (resolution.status === "missing") return [recorded];
+  return resolution.name === run.workflowName
+    ? [resolution.resource]
+    : [recorded, resolution.resource];
+}
+
+/**
+ * Resolves a workflow history read with `resolve` and collects what to
+ * authorize: for a run, the workflows it belongs to; for a workflow, that
+ * workflow and the workflows of the latest run the read will return; for an
+ * ambiguous or unmatched argument, the raw string as sent.
+ */
+export async function resolveRunAccess<T extends { reference: RunReference }>(
+  workflowRepo: WorkflowRepository,
+  resolve: () => Promise<T>,
+  rawArgument: string,
+): Promise<ReferenceAccess<T>> {
+  try {
+    const resolved = await resolve();
+    const reference = resolved.reference;
+    let resources: AccessResource[];
+    switch (reference.kind) {
+      case "run":
+        resources = await runOwners(workflowRepo, reference.run);
+        break;
+      case "workflow":
+        resources = [
+          workflowAccessResource(reference.workflow),
+          ...(reference.latest
+            ? await runOwners(workflowRepo, reference.latest)
+            : []),
+        ];
+        break;
+      default:
+        resources = [unresolvedAccessResource("workflow", rawArgument)];
+    }
+    return { status: "resolved", resolved, resources: distinct(resources) };
+  } catch (error) {
+    return { status: "failed", error };
+  }
+}
+
+/**
+ * Authorizes `action` on every resource `access` collected, stopping at the
+ * first denial, which is replied as authorizeOrReject replies. A failed
+ * lookup is replied as `failedCode` with a sanitized message, after the raw
+ * argument is authorized as each of `kinds`, so a refused caller learns
+ * nothing more. Returns whether the read may proceed.
+ */
+export function authorizeReferenceAccess<T>(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  access: ReferenceAccess<T>,
+  rawArgument: string,
+  kinds: AccessResource["kind"][],
+  ctx: ConnectionContext,
+  failedCode: string,
+): access is Extract<ReferenceAccess<T>, { status: "resolved" }> {
+  const resources = access.status === "failed"
+    ? kinds.map((kind) => unresolvedAccessResource(kind, rawArgument))
+    : access.resources;
+  for (const resource of resources) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, action, resource, ctx)
+        .allowed
+    ) return false;
+  }
+  if (access.status === "failed") {
+    sendError(
+      socket,
+      requestId,
+      failedCode,
+      sanitizeErrorForClient(access.error),
     );
     return false;
   }

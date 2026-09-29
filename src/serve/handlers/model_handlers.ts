@@ -55,6 +55,8 @@ import {
   modelSearch,
   type ModelSearchDeps,
   modelValidate,
+  resolveOutputIdReference,
+  resolveOutputReference,
   typeDescribe,
   typeSearch,
   type TypeSearchDeps,
@@ -130,9 +132,11 @@ import {
 } from "./shared.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
+  authorizeReferenceAccess,
   authorizeResolved,
   modelAccessResource,
   resolveModelTarget,
+  resolveOutputAccess,
   type ResourceResolution,
   targetArgument,
   unresolvedAccessResource,
@@ -1130,25 +1134,49 @@ export async function handleModelOutputGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Resolve first and authorize every model that owns the output read, not
+  // the raw argument: an output id prefix matches across every model
+  // (swamp-club#2673).
+  const access = await resolveOutputAccess(
+    ctx.repoContext.definitionRepo,
+    async () => {
+      const deps = await createModelOutputGetDeps(
+        ctx.repoDir,
+        undefined,
+        ctx.repoContext.definitionRepo,
+      );
+      return {
+        deps,
+        reference: await resolveOutputReference(
+          deps,
+          payload.outputIdOrModelName,
+        ),
+      };
+    },
+    payload.outputIdOrModelName,
+    ["model"],
+  );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload.outputIdOrModelName,
-      fields: {},
-    }, ctx).allowed
+    !authorizeReferenceAccess(
+      socket,
+      requestId,
+      principal,
+      "read",
+      access,
+      payload.outputIdOrModelName,
+      ["model"],
+      ctx,
+      "model_output_get_failed",
+    )
   ) return;
+  const { deps, reference } = access.resolved;
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createModelOutputGetDeps(
-      ctx.repoDir,
-      undefined,
-      ctx.repoContext.definitionRepo,
-    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      modelOutputGet(libCtx, deps, payload.outputIdOrModelName),
+      modelOutputGet(libCtx, deps, payload.outputIdOrModelName, { reference }),
       {
         resolving: () => {},
         completed: (e) => {
@@ -1189,22 +1217,44 @@ export async function handleModelOutputData(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Resolve first and authorize every model that owns the output, not the
+  // raw id prefix (swamp-club#2673). The read returns data artifact content,
+  // so it needs a data read on those models too, as data.get does
+  // (swamp-club#2739).
+  const access = await resolveOutputAccess(
+    ctx.repoContext.definitionRepo,
+    async () => {
+      const deps = createModelOutputDataDeps(
+        ctx.repoDir,
+        ctx.datastoreResolver,
+        ctx.repoContext.unifiedDataRepo,
+        ctx.repoContext.definitionRepo,
+      );
+      return {
+        deps,
+        reference: await resolveOutputIdReference(deps, payload.outputIdArg),
+      };
+    },
+    payload.outputIdArg,
+    ["model", "data"],
+  );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload.outputIdArg,
-      fields: {},
-    }, ctx).allowed
+    !authorizeReferenceAccess(
+      socket,
+      requestId,
+      principal,
+      "read",
+      access,
+      payload.outputIdArg,
+      ["model", "data"],
+      ctx,
+      "model_output_data_failed",
+    )
   ) return;
+  const { deps, reference } = access.resolved;
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelOutputDataDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.unifiedDataRepo,
-      ctx.repoContext.definitionRepo,
-    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1213,6 +1263,7 @@ export async function handleModelOutputData(
         name: payload.name,
         field: payload.field,
         version: payload.version,
+        reference,
       }),
       {
         resolving: () => {},
@@ -1254,27 +1305,50 @@ export async function handleModelOutputLogs(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Resolve first and authorize every model that owns the output, not the
+  // raw id prefix (swamp-club#2673). The read returns log data artifacts, so
+  // it needs a data read on those models too, as data.get does
+  // (swamp-club#2739).
+  const access = await resolveOutputAccess(
+    ctx.repoContext.definitionRepo,
+    async () => {
+      const deps = createModelOutputLogsDeps(
+        ctx.repoDir,
+        ctx.datastoreResolver,
+        ctx.repoContext.unifiedDataRepo,
+      );
+      return {
+        deps,
+        reference: await resolveOutputIdReference(deps, payload.outputIdArg),
+      };
+    },
+    payload.outputIdArg,
+    ["model", "data"],
+  );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload.outputIdArg,
-      fields: {},
-    }, ctx).allowed
+    !authorizeReferenceAccess(
+      socket,
+      requestId,
+      principal,
+      "read",
+      access,
+      payload.outputIdArg,
+      ["model", "data"],
+      ctx,
+      "model_output_logs_failed",
+    )
   ) return;
+  const { deps, reference } = access.resolved;
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelOutputLogsDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.unifiedDataRepo,
-    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       modelOutputLogs(libCtx, deps, {
         outputIdArg: payload.outputIdArg,
         tail: payload.tail,
+        reference,
       }),
       {
         resolving: () => {},
@@ -1395,25 +1469,48 @@ export async function handleModelMethodHistoryGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Resolve first and authorize every model that owns the output read, not
+  // the raw argument (swamp-club#2673).
+  const access = await resolveOutputAccess(
+    ctx.repoContext.definitionRepo,
+    async () => {
+      const deps = await createModelOutputGetDeps(
+        ctx.repoDir,
+        undefined,
+        ctx.repoContext.definitionRepo,
+      );
+      return {
+        deps,
+        reference: await resolveOutputReference(
+          deps,
+          payload.outputIdOrModelName,
+        ),
+      };
+    },
+    payload.outputIdOrModelName,
+    ["model"],
+  );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload.outputIdOrModelName,
-      fields: {},
-    }, ctx).allowed
+    !authorizeReferenceAccess(
+      socket,
+      requestId,
+      principal,
+      "read",
+      access,
+      payload.outputIdOrModelName,
+      ["model"],
+      ctx,
+      "model_method_history_get_failed",
+    )
   ) return;
+  const { deps, reference } = access.resolved;
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createModelOutputGetDeps(
-      ctx.repoDir,
-      undefined,
-      ctx.repoContext.definitionRepo,
-    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      modelOutputGet(libCtx, deps, payload.outputIdOrModelName),
+      modelOutputGet(libCtx, deps, payload.outputIdOrModelName, { reference }),
       {
         resolving: () => {},
         completed: (e) => {
@@ -1459,21 +1556,44 @@ export async function handleModelMethodHistoryLogs(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Resolve first and authorize every model that owns the output read, not
+  // the raw argument (swamp-club#2673).
+  const access = await resolveOutputAccess(
+    ctx.repoContext.definitionRepo,
+    async () => {
+      const deps = await createModelMethodHistoryLogsDeps(
+        ctx.repoDir,
+        undefined,
+        ctx.repoContext.definitionRepo,
+      );
+      return {
+        deps,
+        reference: await resolveOutputReference(
+          deps,
+          payload.outputIdOrModelName,
+        ),
+      };
+    },
+    payload.outputIdOrModelName,
+    ["model"],
+  );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload.outputIdOrModelName,
-      fields: {},
-    }, ctx).allowed
+    !authorizeReferenceAccess(
+      socket,
+      requestId,
+      principal,
+      "read",
+      access,
+      payload.outputIdOrModelName,
+      ["model"],
+      ctx,
+      "model_method_history_logs_failed",
+    )
   ) return;
+  const { deps, reference } = access.resolved;
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createModelMethodHistoryLogsDeps(
-      ctx.repoDir,
-      undefined,
-      ctx.repoContext.definitionRepo,
-    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1481,6 +1601,7 @@ export async function handleModelMethodHistoryLogs(
         outputIdOrModelName: payload.outputIdOrModelName,
         tail: payload.tail,
         repoDir: ctx.repoDir,
+        reference,
       }),
       {
         resolving: () => {},

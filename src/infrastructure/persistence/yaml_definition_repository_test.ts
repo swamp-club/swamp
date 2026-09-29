@@ -24,7 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
@@ -2129,5 +2129,105 @@ Deno.test("YamlDefinitionRepository.save: with secondary search off writes to it
 
     assertEquals((await listYamlFiles(fx.primaryDir)).length, 1);
     assertEquals((await listYamlFiles(fx.secondaryDir)).length, 1);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllByIdGlobal returns every definition declaring the id, auto-definitions and unregistered types included", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+    const shared = Definition.create({ name: "prod-db", globalArguments: {} });
+    await repo.save(testType, shared);
+    // A copied file keeps the id.
+    const path = repo.getPath(testType, shared.id);
+    await Deno.writeTextFile(
+      join(dirname(path), "safe-model.yaml"),
+      (await Deno.readTextFile(path)).replace(
+        "name: prod-db",
+        "name: safe-model",
+      ),
+    );
+    // An auto-definition, and a definition of a type nobody registered, with
+    // the same id.
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+    await secondaryRepo.save(
+      testType,
+      Definition.create({
+        id: shared.id,
+        name: "auto-db",
+        globalArguments: {},
+      }),
+    );
+    // Saved through a fresh repository: saving an id this one has seen is
+    // read as a rename, which would remove prod-db's file.
+    const unregistered = ModelType.create("@acme/uninstalled");
+    await new YamlDefinitionRepository(dir, undefined, primaryDir, false).save(
+      unregistered,
+      Definition.create({
+        id: shared.id,
+        name: "acme-db",
+        type: unregistered.normalized,
+        globalArguments: {},
+      }),
+    );
+    await repo.save(testType, createTestDefinition("unrelated"));
+
+    const found = await repo.findAllByIdGlobal(shared.id);
+    assertEquals(
+      found.map((entry) => entry.definition.name).sort(),
+      ["acme-db", "auto-db", "prod-db", "safe-model"],
+    );
+    assertEquals(
+      found.find((entry) => entry.definition.name === "acme-db")?.type
+        .normalized,
+      "@acme/uninstalled",
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllByIdGlobal leaves where findById looks unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+    const primary = Definition.create({
+      name: "prod-db",
+      globalArguments: {},
+    });
+    await repo.save(testType, primary);
+    await new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    ).save(
+      testType,
+      Definition.create({
+        id: primary.id,
+        name: "auto-db",
+        globalArguments: {},
+      }),
+    );
+    assertEquals((await repo.findById(testType, primary.id))?.name, "prod-db");
+
+    // Reads the auto-definition last; a later findById must not follow it.
+    assertEquals((await repo.findAllByIdGlobal(primary.id)).length, 2);
+    assertEquals((await repo.findById(testType, primary.id))?.name, "prod-db");
   });
 });

@@ -160,6 +160,25 @@ export async function findDefinitionByIdGlobal(
 }
 
 /**
+ * Finds every definition that declares `id`, across all types and
+ * auto-definitions, registered or not. Ids are not guaranteed unique — a
+ * copied file keeps its id — and outputs and data are stored by definition
+ * id, so each of these owns what is stored under it.
+ */
+export async function findDefinitionsByIdGlobal(
+  definitionRepo: DefinitionRepository,
+  id: string,
+): Promise<DefinitionLookupResult[]> {
+  if (!isUuid(id)) return [];
+  const definitionId = createDefinitionId(id) as DefinitionId;
+  if (definitionRepo.findAllByIdGlobal) {
+    return await definitionRepo.findAllByIdGlobal(definitionId);
+  }
+  const all = await definitionRepo.findAllGlobal();
+  return all.filter((entry) => entry.definition.id === definitionId);
+}
+
+/**
  * Finds a definition by ID or name, searching across all registered model types.
  * Tries name lookup first (most common in workflows), then falls back to ID.
  */

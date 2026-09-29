@@ -47,6 +47,8 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { ModelOutput } from "../src/domain/models/model_output.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 
 /** A serve request frame as the client sends it. */
 export interface ServeRequest {
@@ -250,13 +252,14 @@ export async function saveData(
   repo: ServeRepo,
   model: Definition,
   dataName: string,
+  type = "resource",
 ): Promise<void> {
   const data = Data.create({
     name: dataName,
     contentType: "application/json",
     lifetime: "infinite",
     garbageCollection: 10,
-    tags: { type: "resource", modelName: model.name },
+    tags: { type, modelName: model.name },
     ownerDefinition: {
       ownerType: "model-method",
       ownerRef: `${repo.modelType.normalized}:${model.id}`,
@@ -318,4 +321,68 @@ export async function saveGatedWorkflow(
   });
   await repo.repoContext.workflowRepo.save(workflow);
   return workflow;
+}
+
+/**
+ * Outputs are filed by their model and start time, so each saved output
+ * starts a second after the last: none overwrites another, and the latest
+ * saved is the latest output.
+ */
+let outputSequence = 0;
+
+/**
+ * Saves a succeeded `noop` output of `model` whose artifacts are its `state`
+ * data item and a `log` item tagged as a log, saving either first if the
+ * model has none yet. Pass `id` to choose the output id, for prefix and
+ * ambiguity cases.
+ */
+export async function saveOutput(
+  repo: ServeRepo,
+  model: Definition,
+  id?: string,
+): Promise<ModelOutput> {
+  const dataRepo = repo.repoContext.unifiedDataRepo;
+  const artifacts = [];
+  for (const [name, type] of [["state", "resource"], ["log", "log"]]) {
+    if (!await dataRepo.findByName(repo.modelType, model.id, name)) {
+      await saveData(repo, model, name, type);
+    }
+    const data = await dataRepo.findByName(repo.modelType, model.id, name);
+    artifacts.push({
+      dataId: data!.id,
+      name,
+      version: data!.version,
+      tags: { ...data!.tags },
+    });
+  }
+  const output = ModelOutput.create({
+    id,
+    definitionId: model.id,
+    methodName: "noop",
+    status: "succeeded",
+    startedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, outputSequence++)),
+    provenance: {
+      definitionHash: "hash",
+      modelVersion: "2026.01.01.1",
+      triggeredBy: "manual",
+    },
+    artifacts: { dataArtifacts: artifacts },
+  });
+  await repo.repoContext.outputRepo.save(repo.modelType, "noop", output);
+  return output;
+}
+
+/**
+ * Saves a pending run of `workflow`. Pass `id` to choose the run id, for
+ * prefix and ambiguity cases.
+ */
+export async function saveRun(
+  repo: ServeRepo,
+  workflow: Workflow,
+  id?: string,
+): Promise<WorkflowRun> {
+  const created = WorkflowRun.create(workflow);
+  const run = id ? WorkflowRun.fromData({ ...created.toData(), id }) : created;
+  await repo.repoContext.workflowRunRepo.save(workflow.id, run);
+  return run;
 }

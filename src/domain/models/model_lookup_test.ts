@@ -23,11 +23,13 @@ import { z } from "zod";
 import {
   findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
+  findDefinitionsByIdGlobal,
   isPartialId,
   isUuid,
   matchByPartialId,
 } from "./model_lookup.ts";
 import { Definition } from "../definitions/definition.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "./model_type.ts";
 import { modelRegistry } from "./model.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -564,4 +566,28 @@ Deno.test("findDefinitionByIdOrName still resolves a definition by its UUID", as
     assertEquals(result?.definition.id, definition.id);
     assertEquals(result?.type.normalized, type.normalized);
   });
+});
+
+Deno.test("findDefinitionsByIdGlobal: without a repository all-by-id lookup, filters every definition", async () => {
+  const type = ModelType.create("test/lookup");
+  const id = crypto.randomUUID();
+  const a = Definition.create({ id, name: "a", globalArguments: {} });
+  const b = Definition.create({ id, name: "b", globalArguments: {} });
+  const other = Definition.create({ name: "other", globalArguments: {} });
+  const repo = {
+    findAllGlobal: () =>
+      Promise.resolve(
+        [a, b, other].map((definition) => ({ definition, type })),
+      ),
+  } as unknown as DefinitionRepository;
+  const found = await findDefinitionsByIdGlobal(repo, id);
+  assertEquals(found.map((entry) => entry.definition.name), ["a", "b"]);
+});
+
+Deno.test("findDefinitionsByIdGlobal: a string that is not a UUID matches nothing, without a scan", async () => {
+  const repo = {
+    findAllGlobal: () => Promise.reject(new Error("must not scan")),
+    findAllByIdGlobal: () => Promise.reject(new Error("must not scan")),
+  } as unknown as DefinitionRepository;
+  assertEquals(await findDefinitionsByIdGlobal(repo, "prod-db"), []);
 });

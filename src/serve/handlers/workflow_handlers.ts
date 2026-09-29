@@ -36,6 +36,7 @@ import {
   createWorkflowRejectDeps,
   createWorkflowValidateDeps,
   mapWorkflowExecutionEvent,
+  resolveRunReference,
   workflowApprovals,
   type WorkflowApprovalsEvent,
   workflowApprove,
@@ -169,8 +170,10 @@ import {
   findWorkflowByIdOrName,
 } from "../../domain/workflows/workflow_lookup.ts";
 import {
+  authorizeReferenceAccess,
   authorizeResolved,
   resolveRecordedWorkflow,
+  resolveRunAccess,
   resolveWorkflowTarget,
   type ResourceResolution,
   targetArgument,
@@ -181,16 +184,6 @@ const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
 /** Page size for `workflow.run.search` when the client sends no limit. */
 export const WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT = 500;
-
-export async function resolveWorkflowFields(
-  workflowRepo: WorkflowRepository,
-  idOrName: string,
-): Promise<Record<string, unknown>> {
-  const workflow = await resolveWorkflow(workflowRepo, idOrName);
-  return workflow
-    ? workflowAccessFields({ name: workflow.name, tags: workflow.tags })
-    : { name: idOrName };
-}
 
 /**
  * Finds a workflow by name, then by id. Returns null when neither matches or
@@ -765,31 +758,48 @@ export async function handleWorkflowHistoryGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
+  // Resolve first and authorize the workflow of the run read, not the raw
+  // argument: a run id prefix matches across every workflow
+  // (swamp-club#2673).
+  const access = await resolveRunAccess(
     ctx.repoContext.workflowRepo,
+    async () => {
+      const deps = createWorkflowHistoryGetDeps(
+        ctx.repoDir,
+        ctx.datastoreResolver,
+        ctx.repoContext.workflowRepo,
+        dataReadPolicy(socket, ctx, principal),
+      );
+      return {
+        deps,
+        reference: await resolveRunReference(deps, payload.workflowIdOrName),
+      };
+    },
     payload.workflowIdOrName,
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: payload.workflowIdOrName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeReferenceAccess(
+      socket,
+      requestId,
+      principal,
+      "read",
+      access,
+      payload.workflowIdOrName,
+      ["workflow"],
+      ctx,
+      "workflow_history_get_failed",
+    )
   ) return;
+  const { deps, reference } = access.resolved;
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createWorkflowHistoryGetDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.workflowRepo,
-      dataReadPolicy(socket, ctx, principal),
-    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       workflowHistoryGet(libCtx, deps, payload.workflowIdOrName, {
         includeOutputs: true,
+        reference,
       }),
       {
         resolving: () => {},
@@ -842,25 +852,41 @@ export async function handleWorkflowHistoryLogs(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
+  // Resolve first and authorize the workflow of the run read, not the raw
+  // argument: a run id prefix matches across every workflow
+  // (swamp-club#2673).
+  const access = await resolveRunAccess(
     ctx.repoContext.workflowRepo,
+    async () => {
+      const deps = createWorkflowHistoryLogsDeps(
+        ctx.repoDir,
+        ctx.datastoreResolver,
+        ctx.repoContext.workflowRepo,
+      );
+      return {
+        deps,
+        reference: await resolveRunReference(deps, payload.runIdOrWorkflow),
+      };
+    },
     payload.runIdOrWorkflow,
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: payload.runIdOrWorkflow,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeReferenceAccess(
+      socket,
+      requestId,
+      principal,
+      "read",
+      access,
+      payload.runIdOrWorkflow,
+      ["workflow"],
+      ctx,
+      "workflow_history_logs_failed",
+    )
   ) return;
+  const { deps, reference } = access.resolved;
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createWorkflowHistoryLogsDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.workflowRepo,
-    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -868,6 +894,7 @@ export async function handleWorkflowHistoryLogs(
         runIdOrWorkflow: payload.runIdOrWorkflow,
         tail: payload.tail,
         repoDir: ctx.repoDir,
+        reference,
       }),
       {
         resolving: () => {},

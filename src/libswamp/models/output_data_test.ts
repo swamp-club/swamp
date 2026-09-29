@@ -315,3 +315,28 @@ Deno.test("modelOutputData: --field on binary content fails as not a JSON object
     assertEquals(last.error.message.includes("not a JSON object"), true);
   }
 });
+
+Deno.test("modelOutputData acts on a passed reference without looking the id up", async () => {
+  const output = makeOutput();
+  const deps = makeDeps({
+    isPartialId: () => {
+      throw new Error("the id must not be parsed again");
+    },
+    matchOutputByPartialId: () =>
+      Promise.reject(new Error("the id must not be looked up again")),
+  });
+  const events = await collect<ModelOutputDataEvent>(
+    modelOutputData(createLibSwampContext(), deps, {
+      outputIdArg: "abc",
+      reference: {
+        kind: "output",
+        match: { output, type: ModelType.create("aws/ec2") },
+      },
+    }),
+  );
+  const completed = events[1] as Extract<
+    ModelOutputDataEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.outputId, output.id);
+});

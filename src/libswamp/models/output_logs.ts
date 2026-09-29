@@ -33,6 +33,11 @@ import {
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import {
+  type OutputIdReference,
+  type OutputIdReferenceDeps,
+  resolveOutputIdReference,
+} from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Data payload for the completed event. */
@@ -53,21 +58,16 @@ export type ModelOutputLogsEvent =
 export interface ModelOutputLogsInput {
   outputIdArg: string;
   tail?: number;
-}
-
-/** Partial ID match result. */
-interface PartialMatchResult {
-  status: "found" | "not_found" | "ambiguous";
-  match?: { output: ModelOutput; type: ModelType };
-  matches?: Array<{ id: string }>;
+  /**
+   * The output id, already resolved with resolveOutputIdReference. The read
+   * acts on exactly this and does not look the id up again.
+   */
+  reference?: OutputIdReference<ModelOutput>;
 }
 
 /** Dependencies for the model output logs operation. */
-export interface ModelOutputLogsDeps {
-  isPartialId: (value: string) => boolean;
-  matchOutputByPartialId: (
-    idPrefix: string,
-  ) => Promise<PartialMatchResult>;
+export interface ModelOutputLogsDeps
+  extends OutputIdReferenceDeps<ModelOutput> {
   findDataByName: (
     type: ModelType,
     definitionId: string,
@@ -144,7 +144,10 @@ export async function* modelOutputLogs(
     (async function* () {
       yield { kind: "resolving" };
 
-      if (!deps.isPartialId(input.outputIdArg)) {
+      const reference = input.reference ??
+        await resolveOutputIdReference(deps, input.outputIdArg);
+
+      if (reference.kind === "invalid") {
         yield {
           kind: "error",
           error: validationFailed(
@@ -155,9 +158,7 @@ export async function* modelOutputLogs(
         return;
       }
 
-      const result = await deps.matchOutputByPartialId(input.outputIdArg);
-
-      if (result.status === "not_found") {
+      if (reference.kind === "not_found") {
         yield {
           kind: "error",
           error: notFound("Output", input.outputIdArg),
@@ -165,18 +166,18 @@ export async function* modelOutputLogs(
         return;
       }
 
-      if (result.status === "ambiguous" && result.matches) {
+      if (reference.kind === "ambiguous") {
         yield {
           kind: "error",
           error: validationFailed(
             `Ambiguous ID prefix "${input.outputIdArg}" matches:\n` +
-              result.matches.map((m) => `  ${m.id}`).join("\n"),
+              reference.ids.map((id) => `  ${id}`).join("\n"),
           ),
         };
         return;
       }
 
-      const { output, type } = result.match!;
+      const { output, type } = reference.match;
 
       // Get log IDs from artifacts (find all artifacts with type "log")
       const logArtifacts = output.artifacts.dataArtifacts.filter(

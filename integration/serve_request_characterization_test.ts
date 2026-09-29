@@ -33,6 +33,8 @@ import {
   type Frame,
   saveData,
   saveModel,
+  saveOutput,
+  saveRun,
   saveWorkflow,
   sendRequest,
   type ServeRepo,
@@ -379,5 +381,316 @@ Deno.test("serve characterization: running an allowed workflow by id completes",
       "done",
       "",
     ]]);
+  });
+});
+
+// Output and run reads (swamp-club#2673), pinned against the handlers before
+// they moved to resolve-then-authorize. Each output or run id below starts
+// with a hex prefix shared by two of them, so a short prefix is ambiguous and
+// a longer one names exactly one.
+
+const OUTPUT_A = "abc00000-0000-4000-8000-000000000001";
+const OUTPUT_B = "abc11111-0000-4000-8000-000000000001";
+const RUN_A = "abd00000-0000-4000-8000-000000000001";
+const RUN_B = "abd11111-0000-4000-8000-000000000001";
+
+async function historyFixtures(repo: ServeRepo) {
+  const { model, workflow } = await fixtures(repo);
+  await saveModel(repo, "empty-model");
+  await saveWorkflow(repo, "empty-flow", model);
+  await saveOutput(repo, model, OUTPUT_A);
+  await saveOutput(repo, model, OUTPUT_B);
+  await saveRun(repo, workflow, RUN_A);
+  await saveRun(repo, workflow, RUN_B);
+  return { model, workflow };
+}
+
+/** The request types that read an output or run, and the field naming it. */
+const HISTORY_READS = [
+  ["model.output.get", "outputIdOrModelName"],
+  ["model.method.history.get", "outputIdOrModelName"],
+  ["model.method.history.logs", "outputIdOrModelName"],
+  ["model.output.data", "outputIdArg"],
+  ["model.output.logs", "outputIdArg"],
+  ["workflow.history.get", "workflowIdOrName"],
+  ["workflow.history.logs", "runIdOrWorkflow"],
+] as const;
+
+function historyRead(type: string, field: string, value: string) {
+  return request(type, { [field]: value });
+}
+
+const outputOrModelNotFound = (value: string) =>
+  `Output or model not found: ${value}`;
+const invalidOutputId = (value: string) =>
+  `Invalid output ID format: ${value}. ` +
+  `Expected a UUID or partial ID (3+ hex characters).`;
+const runOrWorkflowNotFound = (value: string) =>
+  `No workflow run or workflow found: ${value}`;
+const workflowHistoryNotFound = { reason: "not_found" };
+
+/** Today's error for a string that names no output, run, model or workflow. */
+function missingError(type: string, value: string): Record<string, unknown> {
+  const hex = /^[0-9a-f-]{3,}$/i.test(value);
+  switch (type) {
+    case "model.output.get":
+    case "model.method.history.get":
+      return {
+        code: `${type.replaceAll(".", "_")}_failed`,
+        message: outputOrModelNotFound(value),
+      };
+    case "model.method.history.logs":
+      return {
+        code: "model_method_history_logs_failed",
+        message: `No method run or model found: ${value}`,
+      };
+    case "model.output.data":
+    case "model.output.logs":
+      return {
+        code: `${type.replaceAll(".", "_")}_failed`,
+        message: hex ? `Output not found: ${value}` : invalidOutputId(value),
+      };
+    case "workflow.history.get":
+      return {
+        code: "workflow_history_get_failed",
+        message: runOrWorkflowNotFound(value),
+        details: {
+          ...workflowHistoryNotFound,
+          entityType: "Workflow run or workflow",
+        },
+      };
+    default:
+      return {
+        code: "workflow_history_logs_failed",
+        message: runOrWorkflowNotFound(value),
+      };
+  }
+}
+
+for (const missing of [MISSING_NAME, "fedcba", MISSING_ID]) {
+  Deno.test(`serve characterization: an output or run read for ${missing} gets today's error frame`, async () => {
+    await withServeRepo(async (repo) => {
+      await historyFixtures(repo);
+      const ctx = createServeCtx(repo);
+      for (const [type, field] of HISTORY_READS) {
+        const frames = await sendRequest(
+          ctx,
+          historyRead(type, field, missing),
+          null,
+        );
+        assertEquals(frames.length, 1, type);
+        assertEquals(
+          errorFrame(frames)?.error,
+          missingError(type, missing),
+          type,
+        );
+      }
+    });
+  });
+}
+
+Deno.test("serve characterization: a model with no outputs and a workflow with no runs get today's error frames", async () => {
+  await withServeRepo(async (repo) => {
+    await historyFixtures(repo);
+    const ctx = createServeCtx(repo);
+    const cases: [string, string, string, Record<string, unknown>][] = [
+      ["model.output.get", "outputIdOrModelName", "empty-model", {
+        code: "model_output_get_failed",
+        message: "Output not found: no outputs for model: empty-model",
+      }],
+      ["model.method.history.get", "outputIdOrModelName", "empty-model", {
+        code: "model_method_history_get_failed",
+        message: "Output not found: no outputs for model: empty-model",
+      }],
+      ["model.method.history.logs", "outputIdOrModelName", "empty-model", {
+        code: "model_method_history_logs_failed",
+        message: "Run not found: for model: empty-model",
+      }],
+      ["workflow.history.get", "workflowIdOrName", "empty-flow", {
+        code: "workflow_history_get_failed",
+        message: "Workflow run not found: no runs for workflow: empty-flow",
+        details: { ...workflowHistoryNotFound, entityType: "Workflow run" },
+      }],
+      ["workflow.history.logs", "runIdOrWorkflow", "empty-flow", {
+        code: "workflow_history_logs_failed",
+        message: "Run not found: for workflow: empty-flow",
+      }],
+    ];
+    for (const [type, field, value, expected] of cases) {
+      const frames = await sendRequest(
+        ctx,
+        historyRead(type, field, value),
+        null,
+      );
+      assertEquals(frames.length, 1, type);
+      assertEquals(errorFrame(frames)?.error, expected, type);
+    }
+  });
+});
+
+Deno.test("serve characterization: an ambiguous output or run prefix gets today's error frame", async () => {
+  await withServeRepo(async (repo) => {
+    await historyFixtures(repo);
+    const ctx = createServeCtx(repo);
+    for (const [type, field] of HISTORY_READS) {
+      const run = type.startsWith("workflow.");
+      const prefix = run ? "abd" : "abc";
+      const frames = await sendRequest(
+        ctx,
+        historyRead(type, field, prefix),
+        null,
+      );
+      assertEquals(frames.length, 1, type);
+      const error = errorFrame(frames)?.error as
+        | { code: string; message: string; details?: unknown }
+        | undefined;
+      assertEquals(error?.code, `${type.replaceAll(".", "_")}_failed`, type);
+      // The matches are listed in scan order, which the filesystem decides.
+      const [head, ...ids] = error!.message.split("\n");
+      assertEquals(head, `Ambiguous ID prefix "${prefix}" matches:`, type);
+      assertEquals(
+        ids.map((id) => id.trim()).sort(),
+        run ? [RUN_A, RUN_B] : [OUTPUT_A, OUTPUT_B],
+        type,
+      );
+      if (type === "workflow.history.get") {
+        assertEquals(error?.details, { reason: "validation_failed" });
+      } else {
+        assertEquals(error?.details, undefined, type);
+      }
+    }
+  });
+});
+
+Deno.test("serve characterization: output and run reads by prefix, full id and name read today's entity", async () => {
+  await withServeRepo(async (repo) => {
+    const { model, workflow } = await historyFixtures(repo);
+    const ctx = createServeCtx(repo);
+    const cases: [
+      string,
+      string,
+      string,
+      (data: Record<string, unknown>) => unknown,
+      unknown,
+    ][] = [
+      [
+        "model.output.get",
+        "outputIdOrModelName",
+        "abc00",
+        (d) => d.id,
+        OUTPUT_A,
+      ],
+      [
+        "model.output.get",
+        "outputIdOrModelName",
+        OUTPUT_A,
+        (d) => d.id,
+        OUTPUT_A,
+      ],
+      // By name or model id: the model's latest output.
+      [
+        "model.output.get",
+        "outputIdOrModelName",
+        "dev-model",
+        (d) => d.id,
+        OUTPUT_B,
+      ],
+      [
+        "model.output.get",
+        "outputIdOrModelName",
+        model.id,
+        (d) => d.id,
+        OUTPUT_B,
+      ],
+      [
+        "model.method.history.get",
+        "outputIdOrModelName",
+        "abc00",
+        (d) => d.id,
+        OUTPUT_A,
+      ],
+      [
+        "model.method.history.get",
+        "outputIdOrModelName",
+        "dev-model",
+        (d) => d.id,
+        OUTPUT_B,
+      ],
+      [
+        "model.method.history.logs",
+        "outputIdOrModelName",
+        "abc00",
+        (d) => (d.info as { outputId: string }).outputId,
+        OUTPUT_A,
+      ],
+      [
+        "model.method.history.logs",
+        "outputIdOrModelName",
+        "dev-model",
+        (d) => (d.info as { outputId: string }).outputId,
+        OUTPUT_B,
+      ],
+      [
+        "model.output.data",
+        "outputIdArg",
+        "abc00",
+        (d) => d.outputId,
+        OUTPUT_A,
+      ],
+      [
+        "model.output.data",
+        "outputIdArg",
+        OUTPUT_B,
+        (d) => d.outputId,
+        OUTPUT_B,
+      ],
+      ["model.output.logs", "outputIdArg", "abc00", (d) => d.lines, [
+        '{"value":"log"}',
+      ]],
+      ["workflow.history.get", "workflowIdOrName", "abd00", (d) => d.id, RUN_A],
+      ["workflow.history.get", "workflowIdOrName", RUN_A, (d) => d.id, RUN_A],
+      [
+        "workflow.history.get",
+        "workflowIdOrName",
+        "dev-flow",
+        (d) => d.workflowName,
+        "dev-flow",
+      ],
+      [
+        "workflow.history.get",
+        "workflowIdOrName",
+        workflow.id,
+        (d) => d.workflowName,
+        "dev-flow",
+      ],
+      [
+        "workflow.history.logs",
+        "runIdOrWorkflow",
+        "abd00",
+        (d) => (d.info as { runId: string }).runId,
+        RUN_A,
+      ],
+      [
+        "workflow.history.logs",
+        "runIdOrWorkflow",
+        "dev-flow",
+        (d) => d.type,
+        "no_log_file",
+      ],
+    ];
+    for (const [type, field, value, pick, expected] of cases) {
+      const frames = await sendRequest(
+        ctx,
+        historyRead(type, field, value),
+        null,
+      );
+      assertEquals(
+        frames.map((frame) => frame.type),
+        [type],
+        `${type} ${value}`,
+      );
+      const data = frames[0].payload?.data as Record<string, unknown>;
+      assertEquals(pick(data), expected, `${type} ${value}`);
+    }
   });
 });

@@ -18,14 +18,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import {
+  authorizeReferenceAccess,
   resolveModelTarget,
   resolveModelTargetById,
+  resolveOutputAccess,
+  resolveRunAccess,
   resolveWorkflowTarget,
   resolveWorkflowTargetById,
   targetArgument,
 } from "./resource_resolution.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type { ConnectionContext } from "./shared.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -233,4 +238,260 @@ Deno.test("resolveWorkflowTarget: a broken workflow file without an id is passed
       byId: false,
     });
   });
+});
+
+// Output and run reads (swamp-club#2673).
+
+/** Copies `source`'s file under another name; the copy keeps its id. */
+async function copyDefinitionFile(
+  repo: YamlDefinitionRepository,
+  source: Definition,
+  name: string,
+): Promise<void> {
+  const path = repo.getPath(SHELL, source.id);
+  await Deno.writeTextFile(
+    join(dirname(path), `${name}.yaml`),
+    (await Deno.readTextFile(path)).replace(
+      `name: ${source.name}`,
+      `name: ${name}`,
+    ),
+  );
+}
+
+const OUTPUT = {
+  id: "abc00000-0000-4000-8000-000000000001",
+  definitionId: "00000000-0000-4000-8000-0000000000aa",
+};
+
+Deno.test("resolveOutputAccess: an output is authorized on every definition declaring its model id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = Definition.create({
+      id: OUTPUT.definitionId,
+      name: "prod-db",
+      globalArguments: {},
+      tags: { env: "prod" },
+    });
+    await repo.save(SHELL, prod);
+    // A copied file keeps the id, so the copy shares the output.
+    await copyDefinitionFile(repo, prod, "safe-model");
+
+    const access = await resolveOutputAccess(
+      repo,
+      () =>
+        Promise.resolve({
+          reference: {
+            kind: "output" as const,
+            match: { output: OUTPUT, type: SHELL },
+          },
+        }),
+      "abc",
+      ["model", "data"],
+    );
+
+    assertEquals(access.status, "resolved");
+    if (access.status !== "resolved") return;
+    assertEquals(
+      access.resources.map((r) => `${r.kind}:${r.name}`).sort(),
+      ["data:prod-db", "data:safe-model", "model:prod-db", "model:safe-model"],
+    );
+    const prodModel = access.resources.find((r) =>
+      r.kind === "model" && r.name === "prod-db"
+    );
+    assertEquals(prodModel?.fields, {
+      name: "prod-db",
+      modelType: "command/shell",
+      tags: { env: "prod" },
+    });
+  });
+});
+
+Deno.test("resolveOutputAccess: an output of a deleted model is authorized on its model id", async () => {
+  await withTempDir(async (dir) => {
+    const access = await resolveOutputAccess(
+      new YamlDefinitionRepository(dir),
+      () =>
+        Promise.resolve({
+          reference: {
+            kind: "output" as const,
+            match: { output: OUTPUT, type: ModelType.create("@acme/db") },
+          },
+        }),
+      "abc",
+      ["model", "data"],
+    );
+    assertEquals(access.status === "resolved" && access.resources, [
+      {
+        kind: "model",
+        name: OUTPUT.definitionId,
+        fields: { name: OUTPUT.definitionId, modelType: "@acme/db" },
+      },
+      {
+        kind: "data",
+        name: OUTPUT.definitionId,
+        fields: { name: OUTPUT.definitionId, ns: "acme" },
+      },
+    ]);
+  });
+});
+
+Deno.test("resolveOutputAccess: a model read authorizes the model and the owners of its latest output", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const safe = Definition.create({
+      id: OUTPUT.definitionId,
+      name: "safe-model",
+      globalArguments: {},
+    });
+    await repo.save(SHELL, safe);
+    await copyDefinitionFile(repo, safe, "prod-db");
+    const access = await resolveOutputAccess(
+      repo,
+      () =>
+        Promise.resolve({
+          reference: {
+            kind: "model" as const,
+            definition: safe,
+            type: SHELL,
+            latest: OUTPUT,
+          },
+        }),
+      "safe-model",
+      ["model"],
+    );
+    assertEquals(
+      access.status === "resolved" && access.resources.map((r) => r.name),
+      ["safe-model", "prod-db"],
+    );
+  });
+});
+
+Deno.test("resolveOutputAccess: an ambiguous or unmatched argument is authorized as sent", async () => {
+  for (
+    const reference of [
+      { kind: "ambiguous" as const, ids: [OUTPUT.id] },
+      { kind: "not_found" as const },
+      { kind: "invalid" as const },
+    ]
+  ) {
+    const access = await resolveOutputAccess(
+      {} as DefinitionRepository,
+      () => Promise.resolve({ reference }),
+      "abc",
+      ["model"],
+    );
+    assertEquals(access.status === "resolved" && access.resources, [
+      { kind: "model", name: "abc", fields: { name: "abc" } },
+    ]);
+  }
+});
+
+Deno.test("resolveOutputAccess: a failing lookup is reported, never treated as not found", async () => {
+  const access = await resolveOutputAccess(
+    {} as DefinitionRepository,
+    () => Promise.reject(new Error("disk on fire")),
+    "abc",
+    ["model"],
+  );
+  assertEquals(access.status, "failed");
+});
+
+function runOf(workflow: Workflow): WorkflowRun {
+  return WorkflowRun.create(workflow);
+}
+
+Deno.test("resolveRunAccess: a run is authorized on its recorded workflow", async () => {
+  const prod = Workflow.create({ name: "prod-flow", tags: { env: "prod" } });
+  const access = await resolveRunAccess(
+    workflowRepo([prod]),
+    () => Promise.resolve({ reference: { kind: "run", run: runOf(prod) } }),
+    "abd",
+  );
+  assertEquals(access.status === "resolved" && access.resources, [
+    {
+      kind: "workflow",
+      name: "prod-flow",
+      fields: { name: "prod-flow", tags: { env: "prod" } },
+    },
+  ]);
+});
+
+Deno.test("resolveRunAccess: a run of a deleted workflow is authorized on its recorded name", async () => {
+  const prod = Workflow.create({ name: "prod-flow" });
+  const access = await resolveRunAccess(
+    workflowRepo([]),
+    () => Promise.resolve({ reference: { kind: "run", run: runOf(prod) } }),
+    "abd",
+  );
+  assertEquals(access.status === "resolved" && access.resources, [
+    { kind: "workflow", name: "prod-flow", fields: { name: "prod-flow" } },
+  ]);
+});
+
+Deno.test("resolveRunAccess: a run of a renamed workflow is authorized on both names", async () => {
+  const prod = Workflow.create({ name: "prod-flow" });
+  const renamed = Workflow.create({ id: prod.id, name: "renamed-flow" });
+  const access = await resolveRunAccess(
+    workflowRepo([renamed]),
+    () => Promise.resolve({ reference: { kind: "run", run: runOf(prod) } }),
+    "abd",
+  );
+  assertEquals(
+    access.status === "resolved" && access.resources.map((r) => r.name),
+    ["prod-flow", "renamed-flow"],
+  );
+});
+
+Deno.test("resolveRunAccess: a workflow read authorizes the workflow and its latest run's workflow", async () => {
+  const prod = Workflow.create({ name: "prod-flow" });
+  const copy = Workflow.create({ id: prod.id, name: "safe-flow" });
+  const access = await resolveRunAccess(
+    workflowRepo([prod, copy]),
+    () =>
+      Promise.resolve({
+        reference: {
+          kind: "workflow",
+          workflow: copy,
+          latest: runOf(prod),
+        },
+      }),
+    "safe-flow",
+  );
+  assertEquals(
+    access.status === "resolved" && access.resources.map((r) => r.name),
+    ["safe-flow", "prod-flow"],
+  );
+});
+
+/** A socket that records what serve sends. */
+function recordingSocket(): { socket: WebSocket; sent: unknown[] } {
+  const sent: unknown[] = [];
+  return {
+    sent,
+    socket: {
+      readyState: WebSocket.OPEN,
+      send: (data: string) => sent.push(JSON.parse(data)),
+    } as unknown as WebSocket,
+  };
+}
+
+Deno.test("authorizeReferenceAccess: a failed lookup replies with the failed code and never proceeds", () => {
+  const { socket, sent } = recordingSocket();
+  const ctx = { authConfig: { mode: "none" } } as unknown as ConnectionContext;
+  const proceed = authorizeReferenceAccess(
+    socket,
+    "req-1",
+    null,
+    "read",
+    { status: "failed", error: new Error("disk on fire") },
+    "abc",
+    ["model"],
+    ctx,
+    "model_output_get_failed",
+  );
+  assertEquals(proceed, false);
+  assertEquals(
+    (sent[0] as { error?: { code: string } }).error?.code,
+    "model_output_get_failed",
+  );
 });

@@ -138,3 +138,30 @@ Deno.test("workflowHistoryLogs yields error on ambiguous ID", async () => {
 
   assertEquals(events[1].kind, "error");
 });
+
+Deno.test("workflowHistoryLogs acts on a passed reference without looking the argument up", async () => {
+  const refused = () =>
+    Promise.reject(new Error("the argument must not be looked up again"));
+  const deps = makeDeps({
+    isPartialId: () => {
+      throw new Error("the argument must not be parsed again");
+    },
+    matchRunByPartialId: refused,
+    findWorkflow: refused,
+    findLatestRun: refused,
+  });
+  const workflow = makeWorkflow();
+  const run = makeRun(workflow);
+  const events = await collect<WorkflowHistoryLogsEvent>(
+    workflowHistoryLogs(createLibSwampContext(), deps, {
+      runIdOrWorkflow: "my-wf",
+      repoDir: "/tmp",
+      reference: { kind: "workflow", workflow, latest: run },
+    }),
+  );
+  const completed = events[1] as Extract<
+    WorkflowHistoryLogsEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.type, "no_log_file");
+});

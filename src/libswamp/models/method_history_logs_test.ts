@@ -61,9 +61,10 @@ function makeDeps(
     matchOutputByPartialId: () =>
       Promise.resolve({
         status: "found" as const,
-        match: output,
+        match: { output, type: modelType },
       }),
-    findDefinition: () => Promise.resolve({ definition, type: modelType }),
+    findDefinitionByIdOrName: () =>
+      Promise.resolve({ definition, type: modelType }),
     findLatestOutput: () => Promise.resolve(output),
     getModelName: () => Promise.resolve("my-model"),
     readLogFile: () =>
@@ -97,7 +98,7 @@ Deno.test("modelMethodHistoryLogs yields no_log_file", async () => {
     matchOutputByPartialId: () =>
       Promise.resolve({
         status: "found" as const,
-        match: outputWithoutLog,
+        match: { output: outputWithoutLog, type: ModelType.create("aws/ec2") },
       }),
   });
   const events = await collect<ModelMethodHistoryLogsEvent>(
@@ -126,4 +127,37 @@ Deno.test("modelMethodHistoryLogs falls through to model name lookup", async () 
   );
 
   assertEquals(events[1].kind, "completed");
+});
+
+Deno.test("modelMethodHistoryLogs acts on a passed reference without looking the argument up", async () => {
+  const refused = () =>
+    Promise.reject(new Error("the argument must not be looked up again"));
+  const deps = makeDeps({
+    isPartialId: () => {
+      throw new Error("the argument must not be parsed again");
+    },
+    matchOutputByPartialId: refused,
+    findDefinitionByIdOrName: refused,
+    findLatestOutput: refused,
+  });
+  const output = makeOutput();
+  const events = await collect<ModelMethodHistoryLogsEvent>(
+    modelMethodHistoryLogs(createLibSwampContext(), deps, {
+      outputIdOrModelName: "abc",
+      repoDir: "/tmp",
+      reference: {
+        kind: "output",
+        match: { output, type: ModelType.create("aws/ec2") },
+      },
+    }),
+  );
+  const completed = events[1] as Extract<
+    ModelMethodHistoryLogsEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.type, "no_log_file");
+  assertEquals(
+    completed.data.type === "no_log_file" && completed.data.info.outputId,
+    output.id,
+  );
 });

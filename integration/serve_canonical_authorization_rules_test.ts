@@ -50,14 +50,6 @@ const FUNCTION = /^(?:export )?(?:async )?function\*? (\w+)/;
 const PINNED = [
   // Direct type execution may create its definition — swamp-club#2672.
   "src/serve/handlers/model_handlers.ts::resolveMethodRunTarget::modelIdOrName",
-  // Output and run id prefixes — swamp-club#2673.
-  "src/serve/handlers/model_handlers.ts::handleModelOutputGet::outputIdOrModelName",
-  "src/serve/handlers/model_handlers.ts::handleModelOutputData::outputIdArg",
-  "src/serve/handlers/model_handlers.ts::handleModelOutputLogs::outputIdArg",
-  "src/serve/handlers/model_handlers.ts::handleModelMethodHistoryGet::outputIdOrModelName",
-  "src/serve/handlers/model_handlers.ts::handleModelMethodHistoryLogs::outputIdOrModelName",
-  "src/serve/handlers/workflow_handlers.ts::handleWorkflowHistoryGet::workflowIdOrName",
-  "src/serve/handlers/workflow_handlers.ts::handleWorkflowHistoryLogs::runIdOrWorkflow",
   // Edit resolves first and replies not_found when nothing matched; the raw
   // name is only authorized for that reply.
   "src/serve/handlers/model_handlers.ts::handleModelEdit::modelIdOrName",

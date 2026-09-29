@@ -76,16 +76,13 @@ function makeDeps(
   const globalOutput = makeGlobalOutputInfo();
 
   return {
-    findAllOutputsGlobal: () => Promise.resolve([globalOutput]),
     findDefinitionByIdOrName: () =>
       Promise.resolve({ definition, type: modelType }),
-    findLatestOutputByDefinition: () => Promise.resolve(output),
+    findLatestOutput: () => Promise.resolve(output),
     findOutputsByDefinition: () => Promise.resolve([output]),
     findDefinitionById: () => Promise.resolve(definition),
-    matchByPartialId: (_items, _partialId) => ({
-      status: "found",
-      match: globalOutput,
-    }),
+    matchOutputByPartialId: () =>
+      Promise.resolve({ status: "found", match: globalOutput }),
     isPartialId: () => false,
     modelTypes: () => [modelType],
     ...overrides,
@@ -116,7 +113,8 @@ Deno.test("modelOutputGet yields resolving then completed when looking up by par
   const definition = makeDefinition();
   const deps = makeDeps({
     isPartialId: () => true,
-    matchByPartialId: () => ({ status: "found", match: globalOutput }),
+    matchOutputByPartialId: () =>
+      Promise.resolve({ status: "found", match: globalOutput }),
     findOutputsByDefinition: () => Promise.resolve([globalOutput.output]),
     findDefinitionById: () => Promise.resolve(definition),
   });
@@ -151,16 +149,16 @@ Deno.test("modelOutputGet yields error with not_found when model not found", asy
 });
 
 Deno.test("modelOutputGet yields error with ambiguous_id on ambiguous partial ID", async () => {
-  const globalOutput = makeGlobalOutputInfo();
   const deps = makeDeps({
     isPartialId: () => true,
-    matchByPartialId: () => ({
-      status: "ambiguous",
-      matches: [
-        { id: "aaaa1111-0000-4000-8000-000000000001", match: globalOutput },
-        { id: "aaaa1112-0000-4000-8000-000000000002", match: globalOutput },
-      ],
-    }),
+    matchOutputByPartialId: () =>
+      Promise.resolve({
+        status: "ambiguous",
+        matches: [
+          { id: "aaaa1111-0000-4000-8000-000000000001" },
+          { id: "aaaa1112-0000-4000-8000-000000000002" },
+        ],
+      }),
   });
   const events = await collect<ModelOutputGetEvent>(
     modelOutputGet(createLibSwampContext(), deps, "aaaa"),
@@ -171,4 +169,52 @@ Deno.test("modelOutputGet yields error with ambiguous_id on ambiguous partial ID
   const last = events[1] as Extract<ModelOutputGetEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "ambiguous_id");
+});
+
+Deno.test("modelOutputGet acts on a passed reference without looking the argument up", async () => {
+  const refused = () =>
+    Promise.reject(new Error("the argument must not be looked up again"));
+  const deps = makeDeps({
+    isPartialId: () => {
+      throw new Error("the argument must not be parsed again");
+    },
+    matchOutputByPartialId: refused,
+    findDefinitionByIdOrName: refused,
+    findLatestOutput: refused,
+  });
+  const definition = makeDefinition();
+  const events = await collect<ModelOutputGetEvent>(
+    modelOutputGet(createLibSwampContext(), deps, "my-model", {
+      reference: {
+        kind: "model",
+        definition,
+        type: makeModelType(),
+        latest: makeOutputInfo(),
+      },
+    }),
+  );
+  const completed = events[1] as Extract<
+    ModelOutputGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.id, makeOutputInfo().id);
+  assertEquals(completed.data.modelName, "my-model");
+});
+
+Deno.test("modelOutputGet reports a passed model with no outputs as today", async () => {
+  const events = await collect<ModelOutputGetEvent>(
+    modelOutputGet(createLibSwampContext(), makeDeps(), "my-model", {
+      reference: {
+        kind: "model",
+        definition: makeDefinition(),
+        type: makeModelType(),
+        latest: null,
+      },
+    }),
+  );
+  const error = events[1] as Extract<ModelOutputGetEvent, { kind: "error" }>;
+  assertEquals(
+    error.error.message,
+    "Output not found: no outputs for model: my-model",
+  );
 });
