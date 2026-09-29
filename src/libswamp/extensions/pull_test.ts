@@ -19,10 +19,11 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
-import { ensureDir } from "@std/fs";
-import { join, relative } from "@std/path";
+import { ensureDir, walk } from "@std/fs";
+import { dirname, join, relative } from "@std/path";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import {
+  applyInstall,
   computeOrphanDiff,
   ConflictError,
   extensionPull,
@@ -35,6 +36,8 @@ import {
   type InstallResult,
   isVersionConstraint,
   parseExtensionRef,
+  type PreparedInstall,
+  prepareInstall,
   validateExtensionName,
 } from "./pull.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -595,6 +598,10 @@ interface SkillArchiveSpec {
   name: string;
   skills: Record<string, Record<string, string>>;
   dependencies?: string[];
+  /** Extra files keyed by path under the extension root, e.g. `models/a.ts`. */
+  files?: Record<string, string>;
+  /** Leaves manifest.yaml out of the archive. */
+  omitManifest?: boolean;
 }
 
 /** Builds an extension archive that ships only skills. */
@@ -614,7 +621,16 @@ async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
       lines.push(...spec.dependencies.map((d) => `  - "${d}"`));
     }
     await ensureDir(extDir);
-    await Deno.writeTextFile(join(extDir, "manifest.yaml"), lines.join("\n"));
+    if (!spec.omitManifest) {
+      await Deno.writeTextFile(
+        join(extDir, "manifest.yaml"),
+        lines.join("\n"),
+      );
+    }
+    for (const [file, content] of Object.entries(spec.files ?? {})) {
+      await ensureDir(dirname(join(extDir, file)));
+      await Deno.writeTextFile(join(extDir, file), content);
+    }
     for (const [skill, files] of Object.entries(spec.skills)) {
       for (const [file, content] of Object.entries(files)) {
         await ensureDir(join(extDir, "skills", skill));
@@ -1162,6 +1178,341 @@ Deno.test(
       );
       assertEquals(channels, ["beta", "beta"]);
       assertEquals(lockfile.getEntry(name)?.channel, "beta");
+    });
+  },
+);
+
+// ===== Prepare / apply split (swamp-club#2708) =====
+//
+// installExtension runs prepareInstall (network I/O and a private temp
+// dir only), then applyInstall (repo and lockfile changes). These tests
+// pin that prepare leaves the repo alone, that the prepared install's
+// temp dir is always cleaned up, and that apply refuses anything but a
+// live PreparedInstall.
+
+/** Repo-relative path → size and mtime for every file under `dir`. */
+async function snapshotTree(dir: string): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+  for await (const entry of walk(dir, { includeDirs: true })) {
+    if (entry.path === dir) continue;
+    const stat = await Deno.lstat(entry.path);
+    snapshot[relative(dir, entry.path)] =
+      `${stat.size}:${stat.mtime?.getTime()}`;
+  }
+  return snapshot;
+}
+
+/** Repo-relative path → content for every file under `dir`. */
+async function readTree(
+  dir: string,
+  skip: string[] = [],
+): Promise<Record<string, string>> {
+  const tree: Record<string, string> = {};
+  for await (const entry of walk(dir, { includeDirs: false })) {
+    const rel = relative(dir, entry.path);
+    if (skip.includes(rel)) continue;
+    tree[rel] = await Deno.readTextFile(entry.path);
+  }
+  return tree;
+}
+
+async function withTempRoot(
+  fn: (tempRoot: string) => Promise<void>,
+): Promise<void> {
+  const tempRoot = await Deno.makeTempDir({ prefix: "swamp_prepare_root_" });
+  try {
+    await fn(tempRoot);
+  } finally {
+    await Deno.remove(tempRoot, { recursive: true }).catch(() => {});
+  }
+}
+
+async function listDir(dir: string): Promise<string[]> {
+  const names: string[] = [];
+  for await (const entry of Deno.readDir(dir)) names.push(entry.name);
+  return names;
+}
+
+function splitArchiveSpec(name: string): SkillArchiveSpec {
+  return {
+    name,
+    skills: { guide: { "SKILL.md": "guide" } },
+    files: {
+      "models/thing.ts": "export const model = { type: 'thing' };\n",
+      "workflows/run.yaml": "name: run\n",
+      "files/data.txt": "data\n",
+    },
+  };
+}
+
+Deno.test(
+  "prepareInstall: writes nothing outside its temp dir",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        await Deno.writeTextFile(join(repoDir, "existing.txt"), "keep");
+        const archive = await buildSkillArchive(splitArchiveSpec(name));
+        const ctx = skillInstallContext(repoDir, lockfile, {
+          [name]: archive,
+        });
+        const before = await snapshotTree(repoDir);
+
+        const prepared = await prepareInstall({ name, version: null }, ctx, {
+          tempRoot,
+        });
+        try {
+          assertEquals(await snapshotTree(repoDir), before);
+          assertEquals(lockfile.getEntry(name), null);
+          assertEquals(ctx.alreadyPulled.size, 0);
+          assertEquals(prepared.version, SKILL_VERSION);
+          assertEquals(
+            relative(tempRoot, prepared.extractDir).startsWith(".."),
+            false,
+          );
+          assertEquals(
+            await Deno.readTextFile(
+              join(prepared.extractDir, "models", "thing.ts"),
+            ),
+            "export const model = { type: 'thing' };\n",
+          );
+        } finally {
+          await prepared.dispose();
+        }
+      });
+    });
+  },
+);
+
+Deno.test(
+  "PreparedInstall.dispose: removes the temp dir and is idempotent",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const archive = await buildSkillArchive(splitArchiveSpec(name));
+        const prepared = await prepareInstall(
+          { name, version: null },
+          skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          { tempRoot },
+        );
+        assertEquals((await listDir(tempRoot)).length, 1);
+
+        await prepared.dispose();
+        assertEquals(await listDir(tempRoot), []);
+        await prepared.dispose();
+        assertEquals(await listDir(tempRoot), []);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "prepareInstall: removes its temp dir when the archive has no manifest",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const archive = await buildSkillArchive({
+          ...splitArchiveSpec(name),
+          omitManifest: true,
+        });
+        const error = await assertRejects(
+          () =>
+            prepareInstall(
+              { name, version: null },
+              skillInstallContext(repoDir, lockfile, { [name]: archive }),
+              { tempRoot },
+            ),
+          UserError,
+        );
+        assertStringIncludes(error.message, "missing manifest.yaml");
+        assertEquals(await listDir(tempRoot), []);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "prepareInstall: removes its temp dir when safety analysis fails",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const archive = await buildSkillArchive({
+          ...splitArchiveSpec(name),
+          files: { "models/bad.ts": "export const x = eval('1');\n" },
+        });
+        const error = await assertRejects(
+          () =>
+            prepareInstall(
+              { name, version: null },
+              skillInstallContext(repoDir, lockfile, { [name]: archive }),
+              { tempRoot },
+            ),
+          UserError,
+        );
+        assertStringIncludes(error.message, "safety errors");
+        assertEquals(await listDir(tempRoot), []);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "applyInstall: a conflict throws ConflictError and changes nothing",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const userSkill = join(repoDir, ".claude", "skills", "guide");
+        await ensureDir(userSkill);
+        await Deno.writeTextFile(join(userSkill, "notes.md"), "mine");
+        const archive = await buildSkillArchive(splitArchiveSpec(name));
+        const ctx = skillInstallContext(repoDir, lockfile, {
+          [name]: archive,
+        });
+        const prepared = await prepareInstall({ name, version: null }, ctx, {
+          tempRoot,
+        });
+        try {
+          const before = await snapshotTree(repoDir);
+          await assertRejects(() => applyInstall(prepared, ctx), ConflictError);
+          assertEquals(await snapshotTree(repoDir), before);
+          assertEquals(lockfile.getEntry(name), null);
+        } finally {
+          await prepared.dispose();
+        }
+        assertEquals(await listDir(tempRoot), []);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "applyInstall: prepare then apply writes the same tree and lockfile entry as installExtension",
+  async () => {
+    const name = uniqueExtName();
+    const archive = await buildSkillArchive(splitArchiveSpec(name));
+    const lockfileName = "upstream_extensions.json";
+    let expectedTree: Record<string, string> = {};
+    let expectedEntry: Record<string, unknown> = {};
+
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      expectedTree = await readTree(repoDir, [lockfileName]);
+      const { pulledAt: _pulledAt, ...entry } = lockfile.getEntry(name)!;
+      expectedEntry = entry;
+    });
+
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const ctx = skillInstallContext(repoDir, lockfile, { [name]: archive });
+      const prepared = await prepareInstall({ name, version: null }, ctx);
+      try {
+        await applyInstall(prepared, ctx);
+      } finally {
+        await prepared.dispose();
+      }
+      assertEquals(await readTree(repoDir, [lockfileName]), expectedTree);
+      const { pulledAt: _pulledAt, ...entry } = lockfile.getEntry(name)!;
+      assertEquals(entry, expectedEntry);
+    });
+  },
+);
+
+Deno.test(
+  "applyInstall: refuses a disposed install and keeps the prior version",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive(splitArchiveSpec(name));
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      const before = await snapshotTree(repoDir);
+      const entryBefore = lockfile.getEntry(name);
+
+      const ctx = skillInstallContext(repoDir, lockfile, {
+        [name]: archive,
+      }, { force: true });
+      const prepared = await prepareInstall({ name, version: null }, ctx);
+      await prepared.dispose();
+      const error = await assertRejects(() => applyInstall(prepared, ctx));
+      assertStringIncludes((error as Error).message, "already disposed");
+      assertEquals(await snapshotTree(repoDir), before);
+      assertEquals(lockfile.getEntry(name), entryBefore);
+    });
+  },
+);
+
+Deno.test(
+  "applyInstall: refuses an install whose extract dir vanished",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive(splitArchiveSpec(name));
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      const before = await snapshotTree(repoDir);
+      const entryBefore = lockfile.getEntry(name);
+
+      const ctx = skillInstallContext(repoDir, lockfile, {
+        [name]: archive,
+      }, { force: true });
+      const prepared = await prepareInstall({ name, version: null }, ctx);
+      try {
+        await Deno.remove(prepared.extractDir, { recursive: true });
+        const error = await assertRejects(() => applyInstall(prepared, ctx));
+        assertStringIncludes((error as Error).message, "lost its extract dir");
+        assertEquals(await snapshotTree(repoDir), before);
+        assertEquals(lockfile.getEntry(name), entryBefore);
+      } finally {
+        await prepared.dispose();
+      }
+    });
+  },
+);
+
+Deno.test(
+  "applyInstall: refuses an object that did not come from prepareInstall",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const extractDir = join(repoDir, "fake-extract");
+      await ensureDir(join(extractDir, "models"));
+      const before = await snapshotTree(repoDir);
+      const forged = {
+        ref: { name, version: SKILL_VERSION },
+        version: SKILL_VERSION,
+        extInfo: { name, description: "", latestVersion: SKILL_VERSION },
+        localChecksum: "0",
+        integrityStatus: "verified",
+        manifest: {},
+        manifestContent: "",
+        extractDir,
+        safetyWarnings: [],
+        dispose: () => Promise.resolve(),
+        assertUsable: () => Promise.resolve(),
+      } as unknown as PreparedInstall;
+
+      const error = await assertRejects(() =>
+        applyInstall(
+          forged,
+          skillInstallContext(repoDir, lockfile, {}),
+        )
+      );
+      assertStringIncludes(
+        (error as Error).message,
+        "requires a PreparedInstall",
+      );
+      assertEquals(await snapshotTree(repoDir), before);
+      assertEquals(lockfile.getEntry(name), null);
     });
   },
 );
