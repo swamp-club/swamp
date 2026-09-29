@@ -25,6 +25,7 @@ import {
   handleVaultCreate,
   handleVaultDelete,
   handleVaultEdit,
+  handleVaultPut,
   isReservedVaultName,
 } from "./vault_handlers.ts";
 import { buildMarkDirtyHook } from "../../cli/repo_context.ts";
@@ -39,6 +40,11 @@ import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import "../../domain/vaults/vault_types.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import type {
+  VaultDeleteProvider,
+  VaultProvider,
+} from "../../domain/vaults/vault_provider.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
@@ -218,6 +224,145 @@ Deno.test("handleVaultDelete: makes no datastore push, since nothing it writes i
     assertEquals(markDirtyCalls, []);
     assertEquals(pushCalls, []);
   });
+});
+
+for (const force of [false, true]) {
+  Deno.test(
+    `handleVaultDelete: a missing vault${
+      force ? " with force" : ""
+    } replies not found without listing the configured vaults (swamp-club#2716)`,
+    async () => {
+      await withTempDir(async (dir) => {
+        await setupVault(dir);
+        const socket = createMockSocket();
+
+        await handleVaultDelete(
+          socket,
+          createAnnotateCtx(dir),
+          "req-delete",
+          { vaultName: "no-such-vault", key: "test-key", force },
+          new AbortController(),
+          null,
+        );
+
+        assertEquals(socket.sent.length, 1);
+        const response = JSON.parse(socket.sent[0]);
+        assertEquals(response.type, "error");
+        assertEquals(response.error.code, "vault_delete_failed");
+        assertEquals(response.error.message, "Vault not found: no-such-vault");
+        assertEquals(response.error.details, { reason: "not_found" });
+        assert(!socket.sent[0].includes(TEST_VAULT_NAME));
+      });
+    },
+  );
+}
+
+for (const force of [false, true]) {
+  Deno.test(
+    `handleVaultPut: a missing vault${
+      force ? " with force" : ""
+    } replies not found without listing the configured vaults (swamp-club#2716)`,
+    async () => {
+      await withTempDir(async (dir) => {
+        await setupVault(dir);
+        const socket = createMockSocket();
+
+        await handleVaultPut(
+          socket,
+          createAnnotateCtx(dir),
+          "req-put",
+          { vaultName: "no-such-vault", key: "test-key", value: "v", force },
+          new AbortController(),
+          null,
+        );
+
+        assertEquals(socket.sent.length, 1);
+        const response = JSON.parse(socket.sent[0]);
+        assertEquals(response.type, "error");
+        assertEquals(response.error.code, "vault_put_failed");
+        assertEquals(response.error.message, "Vault not found: no-such-vault");
+        assertEquals(response.error.details, { reason: "not_found" });
+        assert(!socket.sent[0].includes(TEST_VAULT_NAME));
+      });
+    },
+  );
+}
+
+Deno.test("handleVaultDelete: a missing secret with force is a no-op success", async () => {
+  await withTempDir(async (dir) => {
+    await setupVault(dir);
+    const socket = createMockSocket();
+
+    await handleVaultDelete(
+      socket,
+      createAnnotateCtx(dir),
+      "req-delete",
+      { vaultName: TEST_VAULT_NAME, key: "no-such-key", force: true },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "vault.delete");
+    assertEquals(response.payload.data.noOp, true);
+  });
+});
+
+Deno.test("handleVaultDelete: with force, a provider's coded not-found Error for a missing secret is still a no-op success", async () => {
+  // Provider SDK errors (e.g. Azure's RestError) are Errors that carry a string
+  // code; they must reach the missing-secret branch, not the SwampError one.
+  const type = `@test/coded-not-found-${crypto.randomUUID()}`;
+  const provider = (name: string): VaultProvider & VaultDeleteProvider => ({
+    get: () => Promise.reject(new Error("unused")),
+    put: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+    getName: () => name,
+    delete: (key: string) =>
+      Promise.reject(
+        Object.assign(
+          new Error(`A secret with (name/id) ${key} was not found`),
+          { code: "SecretNotFound" },
+        ),
+      ),
+  });
+  vaultTypeRegistry.register({
+    type,
+    name: "Coded not-found vault",
+    description: "Throws an Error with a string code on delete",
+    isBuiltIn: false,
+    createProvider: provider,
+  });
+  try {
+    await withTempDir(async (dir) => {
+      const repoContext = createRepositoryContext({
+        repoDir: dir,
+        enableIndexing: false,
+      });
+      try {
+        await repoContext.vaultConfigRepo.save(
+          VaultConfig.create(crypto.randomUUID(), "coded-vault", type, {}),
+        );
+      } finally {
+        repoContext.catalogStore.close();
+      }
+      const socket = createMockSocket();
+
+      await handleVaultDelete(
+        socket,
+        createAnnotateCtx(dir),
+        "req-delete",
+        { vaultName: "coded-vault", key: "no-such-key", force: true },
+        new AbortController(),
+        null,
+      );
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "vault.delete");
+      assertEquals(response.payload.data.noOp, true);
+    });
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
 });
 
 type VaultSyncEvent = { kind: "mark"; relPath?: string } | { kind: "push" };

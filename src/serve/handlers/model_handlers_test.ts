@@ -20,7 +20,12 @@
 import { assertEquals, assertGreater } from "@std/assert";
 import { z } from "zod";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { handleModelEdit, isMethodMutating } from "./model_handlers.ts";
+import { join } from "@std/path";
+import {
+  handleModelDelete,
+  handleModelEdit,
+  isMethodMutating,
+} from "./model_handlers.ts";
 import type { ConnectionContext } from "./shared.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -594,3 +599,61 @@ Deno.test("handleModelEdit: reports an unknown model as not found", async () => 
     assertEquals(sent[0].error.code, "not_found");
   });
 });
+
+// --- handleModelDelete not-found tests (swamp-club#2716) ---
+
+function createDeleteCtx(repoDir: string): ConnectionContext {
+  const definitionRepo = new YamlDefinitionRepository(
+    repoDir,
+    undefined,
+    undefined,
+    false,
+  );
+  const base = createEditCtx(repoDir, definitionRepo);
+  return {
+    ...base,
+    repoContext: {
+      definitionRepo,
+      // The lookup misses before any data is read, so a stub avoids opening a
+      // catalog store for the test.
+      unifiedDataRepo: {},
+    } as unknown as ConnectionContext["repoContext"],
+    datastoreResolver: {
+      resolvePath: (subdir: string) => join(repoDir, ".swamp", subdir),
+    } as unknown as ConnectionContext["datastoreResolver"],
+  };
+}
+
+for (
+  const [label, modelIdOrName] of [
+    ["name", "no-such-model"],
+    ["id", "8a0f1b2c-3d4e-4f56-8789-0abcdef12345"],
+  ]
+) {
+  Deno.test(`handleModelDelete: a missing model by ${label} replies with the not-found message, not [object Object]`, async () => {
+    await withTempDir(async (dir) => {
+      const socket = createMockSocket();
+      await handleModelDelete(
+        socket,
+        createDeleteCtx(dir),
+        "req-delete",
+        { modelIdOrName },
+        new AbortController(),
+        null,
+      );
+
+      const sent = frames(socket);
+      assertEquals(sent.length, 1);
+      assertEquals(sent[0].type, "error");
+      assertEquals(sent[0].error.code, "model_delete_failed");
+      assertEquals(
+        sent[0].error.message,
+        `Model not found: ${modelIdOrName}`,
+      );
+      assertEquals(sent[0].error.details, {
+        reason: "not_found",
+        entityType: "Model",
+      });
+    });
+  });
+}

@@ -36,6 +36,8 @@ import {
   createVaultPutDeps,
   createVaultReadSecretDeps,
   findVaultByNameOrId,
+  isSwampError,
+  type SwampError,
   vaultAnnotate,
   vaultAuditTrail,
   vaultCreate,
@@ -82,7 +84,9 @@ import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
   authorizeOrReject,
+  clientErrorDetails,
   type ConnectionContext,
+  LibSwampStreamError,
   rejectEditWithoutContent,
   sanitizeErrorForClient,
   send,
@@ -112,6 +116,34 @@ function rejectReservedVault(
     return true;
   }
   return false;
+}
+
+/**
+ * Sends a SwampError thrown by a vault preview (e.g. vaultPutPreview,
+ * vaultDeletePreview) as an error frame. A missing vault gets a fixed message:
+ * libswamp's lists every configured vault, but vault put and delete are
+ * authorized by write on data:vault and listing vaults needs read.
+ */
+function sendVaultSwampError(
+  socket: WebSocket,
+  requestId: string,
+  code: string,
+  vaultName: string,
+  error: SwampError,
+): void {
+  const clientError = new LibSwampStreamError(error);
+  const missingVault = error.code === "not_found" &&
+    (error.details as { entityType?: unknown } | undefined)?.entityType ===
+      "Vault";
+  sendError(
+    socket,
+    requestId,
+    code,
+    missingVault
+      ? `Vault not found: ${vaultName}`
+      : sanitizeErrorForClient(clientError),
+    clientErrorDetails(clientError),
+  );
 }
 
 export async function handleVaultGet(
@@ -282,6 +314,14 @@ export async function handleVaultPut(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
+    } else if (isSwampError(error)) {
+      sendVaultSwampError(
+        socket,
+        requestId,
+        "vault_put_failed",
+        payload.vaultName,
+        error,
+      );
     } else {
       const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "vault_put_failed", message);
@@ -388,6 +428,16 @@ export async function handleVaultDelete(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
+    } else if (isSwampError(error)) {
+      // Handled before the not-found branch below so force never turns a
+      // missing vault into a success.
+      sendVaultSwampError(
+        socket,
+        requestId,
+        "vault_delete_failed",
+        payload.vaultName,
+        error,
+      );
     } else if (
       error instanceof Error &&
       /not found|can't find|ResourceNotFoundException/i.test(error.message)

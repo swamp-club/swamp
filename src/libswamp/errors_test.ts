@@ -22,6 +22,7 @@ import {
   alreadyExists,
   cancelled,
   invalidApiKey,
+  isSwampError,
   notAuthenticated,
   notFound,
   validationFailed,
@@ -73,4 +74,25 @@ Deno.test("validationFailed works without details", () => {
   const err = validationFailed("Missing argument");
   assertEquals(err.code, "validation_failed");
   assertEquals(err.details, undefined);
+});
+
+Deno.test("isSwampError: accepts a SwampError from a factory", () => {
+  assertEquals(isSwampError(notFound("Model", "missing")), true);
+});
+
+Deno.test("isSwampError: rejects values that are not SwampError-shaped", () => {
+  assertEquals(isSwampError(new Error("boom")), false);
+  assertEquals(
+    isSwampError(
+      Object.assign(new Error("A secret was not found"), {
+        code: "SecretNotFound",
+      }),
+    ),
+    false,
+  );
+  assertEquals(isSwampError(null), false);
+  assertEquals(isSwampError(undefined), false);
+  assertEquals(isSwampError("not_found"), false);
+  assertEquals(isSwampError({ code: "not_found" }), false);
+  assertEquals(isSwampError({ code: 404, message: "Model not found" }), false);
 });

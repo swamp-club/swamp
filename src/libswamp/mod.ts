@@ -40,6 +40,7 @@ export {
   alreadyExists,
   cancelled,
   invalidApiKey,
+  isSwampError,
   notAuthenticated,
   notFound,
   type SwampError,
