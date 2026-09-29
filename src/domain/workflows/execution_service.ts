@@ -543,6 +543,48 @@ const MAX_WORKFLOW_NESTING_DEPTH = 10;
 const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
 
 /**
+ * Waits, at most {@link CLEANUP_GRACE_TIMEOUT_MS}, for the nested workflow
+ * steps still in flight to settle. After an abort the job runner stops reading
+ * a step's events, so a nested step finishes its child run in the background;
+ * the parent waits here so the child saves itself cancelled before the parent
+ * records its own cancellation.
+ */
+async function awaitNestedRuns(
+  pending: ReadonlySet<Promise<void>>,
+): Promise<void> {
+  if (pending.size === 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, CLEANUP_GRACE_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([Promise.allSettled([...pending]), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Runs a nested workflow step's stream, holding a promise in `nestedRuns`
+ * until the stream ends so the run can wait for it (see
+ * {@link awaitNestedRuns}).
+ */
+async function* trackNestedRun<T, R>(
+  nestedRuns: Set<Promise<void>> | undefined,
+  stream: AsyncGenerator<T, R>,
+): AsyncGenerator<T, R> {
+  let settle: () => void = () => {};
+  const settled = new Promise<void>((resolve) => settle = resolve);
+  nestedRuns?.add(settled);
+  try {
+    return yield* stream;
+  } finally {
+    nestedRuns?.delete(settled);
+    settle();
+  }
+}
+
+/**
  * Fails the job's steps still `running` with {@link CANCELLED_STEP_ERROR} and
  * reports whether there were any. A level of several steps does not wait for
  * them once the abort fires, so their generators end without recording an
@@ -2097,6 +2139,12 @@ interface StepOptions {
    * (`JobRun.skipNotStarted`), so a resume evaluates it again.
    */
   cleanupJobLevel?: boolean;
+  /**
+   * One promise per nested workflow step of this run still in flight,
+   * settled when the step's child run has ended. The run awaits them before
+   * recording its own cancellation (see {@link awaitNestedRuns}).
+   */
+  nestedRuns?: Set<Promise<void>>;
 }
 
 /**
@@ -2238,6 +2286,8 @@ export class WorkflowExecutionService {
       runtimeTags?: Record<string, string>;
       workflowNestingDepth?: number;
       ancestorWorkflowIds?: Set<string>;
+      /** The run whose nested workflow step starts this run. */
+      parentRunId?: string;
       /**
        * Expressions a parent workflow authored and passed through `inputs`
        * unresolved (env, vault). Unioned with this workflow's own source.
@@ -2291,6 +2341,7 @@ export class WorkflowExecutionService {
     let workflowAffinityKey: string | undefined;
     let workflowLogHandle: string | undefined;
     let wfHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
+    const nestedRuns = new Set<Promise<void>>();
     try {
       const wfSetupSpan = tracer.startSpan("swamp.workflow.setup");
       let workflow: Workflow;
@@ -2504,6 +2555,9 @@ export class WorkflowExecutionService {
       yield {
         kind: "started",
         runId: run.id,
+        ...(options?.parentRunId !== undefined
+          ? { parentRunId: options.parentRunId }
+          : {}),
         workflowName: workflow.name,
         logPath: workflowLogPath,
         jobs: workflow.jobs.map((job) => ({
@@ -2538,6 +2592,7 @@ export class WorkflowExecutionService {
         initiatedBy: options?.initiatedBy,
         secretRedactor,
         signal: options?.signal,
+        nestedRuns,
         // Default so per-step reports run even when the caller doesn't
         // thread CLI report flags — absent filter means "no filtering".
         reportFilterOptions: options?.reportFilterOptions ?? {},
@@ -2695,6 +2750,7 @@ export class WorkflowExecutionService {
       // Check if the run was cancelled via abort signal
       if (options?.signal?.aborted) {
         if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
+        await awaitNestedRuns(nestedRuns);
         if (this.runTracker) this.runTracker.complete(run.id, "cancelled");
         run.cancel(
           abortReason(options.signal),
@@ -2766,6 +2822,7 @@ export class WorkflowExecutionService {
       if (
         workflowRun && options?.signal?.aborted
       ) {
+        await awaitNestedRuns(nestedRuns);
         if (this.runTracker) {
           this.runTracker.complete(workflowRun.id, "cancelled");
         }
@@ -3083,6 +3140,7 @@ export class WorkflowExecutionService {
       };
     });
 
+    const nestedRuns = new Set<Promise<void>>();
     // The try opens immediately after register() — before the "started"
     // yield — so early consumer abandonment (a client that receives
     // "started" then disconnects) still unwinds the finally, which stops the
@@ -3108,6 +3166,7 @@ export class WorkflowExecutionService {
         initiatedBy: existingRun.initiatedBy,
         secretRedactor,
         signal: options?.signal,
+        nestedRuns,
         resumeDerived: existingRun.resumeInputs.map((key) => `inputs.${key}`),
         // workflow resume never receives CLI report flags — default so
         // resumed runs still execute reports instead of silently skipping.
@@ -3264,6 +3323,7 @@ export class WorkflowExecutionService {
       }
 
       if (options?.signal?.aborted) {
+        await awaitNestedRuns(nestedRuns);
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "cancelled");
         }
@@ -3310,6 +3370,7 @@ export class WorkflowExecutionService {
         return;
       }
       if (options?.signal?.aborted) {
+        await awaitNestedRuns(nestedRuns);
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "cancelled");
         }
@@ -4177,15 +4238,19 @@ export class WorkflowExecutionService {
 
       // Handle workflow tasks inline to forward nested workflow events
       if (task.type === "workflow") {
-        liveOutputs = yield* this.runWorkflowStep(
-          workflow,
-          job,
-          stepRun,
-          stepName,
-          task,
-          stepExprContext,
-          options,
-          !!step.allowFailure,
+        liveOutputs = yield* trackNestedRun(
+          options.nestedRuns,
+          this.runWorkflowStep(
+            workflow,
+            run,
+            job,
+            stepRun,
+            stepName,
+            task,
+            stepExprContext,
+            options,
+            !!step.allowFailure,
+          ),
         );
         return;
       }
@@ -4426,6 +4491,7 @@ export class WorkflowExecutionService {
    */
   private async *runWorkflowStep(
     workflow: Workflow,
+    run: WorkflowRun,
     job: Job,
     stepRun: import("./workflow_run.ts").StepRun,
     stepName: string,
@@ -4611,26 +4677,51 @@ export class WorkflowExecutionService {
     );
 
     let childRun: WorkflowRun | undefined;
+    const childEvents = childService.run(task.workflowIdOrName, {
+      inputs: evaluatedInputs,
+      authoredExpressions: inheritedExpressions,
+      deferredExpressions: deferred.deferredExpressions,
+      workflowNestingDepth: depth + 1,
+      ancestorWorkflowIds: childAncestors,
+      parentRunId: run.id,
+      signal: options.signal,
+    });
+    let childEnded = false;
     try {
-      for await (
-        const event of childService.run(task.workflowIdOrName, {
-          inputs: evaluatedInputs,
-          authoredExpressions: inheritedExpressions,
-          deferredExpressions: deferred.deferredExpressions,
-          workflowNestingDepth: depth + 1,
-          ancestorWorkflowIds: childAncestors,
-        })
-      ) {
-        if (event.kind === "completed") {
-          childRun = event.run;
-        } else if (event.kind === "step_failed" && allowFailure) {
-          // When the parent step allows failure, mark child step_failed
-          // events as allowed so they don't set jobFailed in the parent
-          // job runner. The parent emits its own step_failed with the
-          // correct allowedFailure flag after the child finishes.
-          yield { ...event, allowedFailure: true };
-        } else {
-          yield event;
+      try {
+        while (true) {
+          const next = await childEvents.next();
+          if (next.done) {
+            childEnded = true;
+            break;
+          }
+          const event = next.value;
+          if (event.kind === "completed" || event.kind === "cancelled") {
+            // The child's terminal event is the parent step's outcome, never
+            // the parent run's: the parent emits its own.
+            childRun = event.run;
+          } else if (event.kind === "step_failed" && allowFailure) {
+            // When the parent step allows failure, mark child step_failed
+            // events as allowed so they don't set jobFailed in the parent
+            // job runner. The parent emits its own step_failed with the
+            // correct allowedFailure flag after the child finishes.
+            yield { ...event, allowedFailure: true };
+          } else {
+            yield event;
+          }
+        }
+      } finally {
+        if (!childEnded) {
+          if (options.signal?.aborted) {
+            // After an abort the job runner stops reading this step's events
+            // and returns it at its next yield. Run the child to its end,
+            // without forwarding, so it still saves itself cancelled.
+            while (!(await childEvents.next()).done) {
+              // Drained without forwarding.
+            }
+          } else {
+            await childEvents.return(undefined);
+          }
         }
       }
     } catch (error) {
@@ -4651,12 +4742,19 @@ export class WorkflowExecutionService {
       return;
     }
 
-    if (!childRun || childRun.status === "failed") {
-      const childStepError = childRun?.jobs
-        .flatMap((j) => j.steps)
-        .find((s) => s.status === "failed" && !s.allowedFailure)?.error;
+    if (
+      !childRun || childRun.status === "failed" ||
+      childRun.status === "cancelled"
+    ) {
+      const childStepError = childRun?.status === "failed"
+        ? childRun.jobs
+          .flatMap((j) => j.steps)
+          .find((s) => s.status === "failed" && !s.allowedFailure)?.error
+        : undefined;
       const errorMessage = childStepError ??
-        `Nested workflow "${task.workflowIdOrName}" failed.`;
+        (childRun?.status === "cancelled"
+          ? `Nested workflow "${task.workflowIdOrName}" was cancelled.`
+          : `Nested workflow "${task.workflowIdOrName}" failed.`);
       stepRun.fail(errorMessage);
       if (allowFailure) {
         stepRun.markAllowedFailure();
@@ -4676,6 +4774,11 @@ export class WorkflowExecutionService {
     const childOutputs = await this.createStepOutputResolver(
       options.secretRedactor,
     ).resolveChildOutputs(childRun);
+    // After an abort the job may already have failed this step as abandoned;
+    // a child that finished anyway must not flip it back to succeeded.
+    if (options.signal?.aborted && stepRun.status !== "running") {
+      return childOutputs;
+    }
     stepRun.succeed({
       type: "workflow",
       workflow: task.workflowIdOrName,

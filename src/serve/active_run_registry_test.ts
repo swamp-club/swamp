@@ -867,3 +867,46 @@ Deno.test("ActiveRunRegistry: cancel and cancelAll record the given reason", () 
   assertEquals(message(two), "cancelled by user:bob");
   assertEquals(message(three), "cancelled by user:bob");
 });
+
+Deno.test("ActiveRunRegistry: findForAttach resolves a nested child run to its parent (swamp-club#2470)", () => {
+  const registry = new ActiveRunRegistry();
+  const parent = makeRun("parent");
+  registry.register(parent);
+  registry.addNestedRun("parent", "child");
+  registry.addNestedRun("parent", "grandchild");
+
+  assertEquals(registry.findForAttach("parent"), parent);
+  assertEquals(registry.findForAttach("child")?.runId, "parent");
+  assertEquals(registry.findForAttach("grandchild")?.runId, "parent");
+  assertEquals(registry.findForAttach("unknown"), undefined);
+});
+
+Deno.test("ActiveRunRegistry: a nested child run is neither registered nor cancellable by its own id (swamp-club#2470)", () => {
+  const registry = new ActiveRunRegistry();
+  const parent = makeRun("parent");
+  registry.register(parent);
+  registry.addNestedRun("parent", "child");
+
+  assertEquals(registry.get("child"), undefined);
+  assertEquals(registry.cancel("child"), false);
+  assertEquals(parent.controller.signal.aborted, false);
+  assertEquals(registry.list().map((r) => r.runId), ["parent"]);
+});
+
+Deno.test("ActiveRunRegistry: nested child runs follow a rekey and leave with their parent (swamp-club#2470)", () => {
+  const registry = new ActiveRunRegistry();
+  registry.register(makeRun("request-id"));
+  registry.addNestedRun("request-id", "child");
+  registry.rekey("request-id", "domain-id");
+  assertEquals(registry.findForAttach("child")?.runId, "domain-id");
+
+  registry.deregister("domain-id");
+  assertEquals(registry.findForAttach("child"), undefined);
+});
+
+Deno.test("ActiveRunRegistry: addNestedRun ignores an unregistered parent (swamp-club#2470)", () => {
+  const registry = new ActiveRunRegistry();
+  registry.addNestedRun("missing", "child");
+  registry.register(makeRun("missing"));
+  assertEquals(registry.findForAttach("child"), undefined);
+});

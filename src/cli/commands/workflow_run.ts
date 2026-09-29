@@ -556,7 +556,9 @@ export const workflowRunCommand = new Command()
         const wrappedHandlers = {
           ...baseHandlers,
           started: (e: WorkflowRunEvent & { kind: "started" }) => {
-            currentRunId = e.runId;
+            // A nested workflow's started event carries the child's run id;
+            // the fallback cancel below is for the run this command started.
+            if (e.parentRunId === undefined) currentRunId = e.runId;
             baseHandlers.started(e);
           },
         };

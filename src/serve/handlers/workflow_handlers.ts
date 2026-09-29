@@ -285,8 +285,11 @@ export async function handleWorkflowRun(
         },
         controller.signal,
         (event) => {
+          // A nested workflow's started event carries the child's run id;
+          // the cancel handle belongs to the run this request started.
           if (
-            event.kind === "started" && ctx.cancelRegistry
+            event.kind === "started" && event.parentRunId === undefined &&
+            ctx.cancelRegistry
           ) {
             const startedEvent = event as { runId: string };
             registeredRunId = startedEvent.runId;
@@ -399,7 +402,12 @@ export async function handleWorkflowRun(
         },
         runController.signal,
         (event) => {
-          if (event.kind === "started") {
+          // A nested workflow's started event carries the child's run id;
+          // the registry entry stays keyed on the run this request started,
+          // and a client reattaching by the child's id finds it.
+          if (event.kind === "started" && event.parentRunId !== undefined) {
+            registry.addNestedRun(runId, event.runId);
+          } else if (event.kind === "started") {
             const domainRunId = (event as { runId: string }).runId;
             if (domainRunId && domainRunId !== runId) {
               if (registry.rekey(runId, domainRunId)) {

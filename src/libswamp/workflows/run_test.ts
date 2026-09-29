@@ -1470,6 +1470,32 @@ Deno.test("mapWorkflowExecutionEvent: keeps step_failed dataHandles off the publ
   });
 });
 
+Deno.test("mapWorkflowExecutionEvent: carries a nested run's parentRunId on started and omits it at top level (swamp-club#2470)", () => {
+  const started = (parentRunId?: string): WorkflowExecutionEvent => ({
+    kind: "started",
+    runId: "run-1",
+    ...(parentRunId !== undefined ? { parentRunId } : {}),
+    workflowName: "wf",
+    logPath: "/tmp/wf.log",
+    jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+  });
+  const repo = new InMemoryWorkflowRunRepository();
+
+  assertEquals(mapWorkflowExecutionEvent(started("parent-1"), repo), {
+    kind: "started",
+    runId: "run-1",
+    parentRunId: "parent-1",
+    workflowName: "wf",
+    jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+  });
+  assertEquals(mapWorkflowExecutionEvent(started(), repo), {
+    kind: "started",
+    runId: "run-1",
+    workflowName: "wf",
+    jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+  });
+});
+
 // --- byId lookup tests ---
 
 Deno.test("workflowRun: byId looks the workflow up by id only and passes byId to the execution service", async () => {

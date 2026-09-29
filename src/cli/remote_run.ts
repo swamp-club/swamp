@@ -1249,9 +1249,13 @@ async function* singleConnectionStream(
         }
         if (message.type === "event") {
           const event = deserializeEvent(message.event);
+          // A nested workflow's started event carries the child's run id;
+          // a reconnect reattaches to the run this request started. An older
+          // serve sends no parentRunId and keys the run on the child, which
+          // this then follows.
           if (
             typeof event === "object" && event !== null && "kind" in event &&
-            "runId" in event
+            "runId" in event && !("parentRunId" in event)
           ) {
             state.runId = event.runId as string;
           }

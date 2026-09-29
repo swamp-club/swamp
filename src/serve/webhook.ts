@@ -1053,7 +1053,9 @@ export class WebhookService {
         },
         controller.signal,
         (event) => {
-          if (event.kind === "started") {
+          // A nested workflow's started event carries the child's run id;
+          // this webhook's run is the one without a parent.
+          if (event.kind === "started" && event.parentRunId === undefined) {
             runId = event.runId;
             this.emit({
               kind: "webhook_started",

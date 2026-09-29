@@ -3882,7 +3882,7 @@ async function handleRunAttach(
   controller: AbortController,
   principal: import("../domain/access/principal.ts").Principal | null,
 ): Promise<void> {
-  const run = ctx.activeRunRegistry?.get(payload.runId);
+  const run = ctx.activeRunRegistry?.findForAttach(payload.runId);
   if (!run) {
     if (ctx.controlPlaneStore) {
       const result = await findActiveRunByRunId(

@@ -2633,6 +2633,53 @@ const runAttachGrant = makeGrant({
   resource: { kind: "workflow", pattern: "*" },
 });
 
+Deno.test("handleRunAttach: a nested child run's id reattaches to the run that started it (swamp-club#2470)", async () => {
+  const registry = new ActiveRunRegistry();
+  const buffer = new RunEventBuffer(10);
+  registry.register({
+    runId: "run-parent",
+    kind: "workflow-run",
+    resourceName: "deploy-pipeline",
+    buffer,
+    controller: new AbortController(),
+    startedAt: new Date(),
+    completion: Promise.resolve(),
+    principalId: null,
+  });
+  registry.addNestedRun("run-parent", "run-child");
+  buffer.push({ kind: "started", runId: "run-parent" });
+  buffer.push({
+    kind: "started",
+    runId: "run-child",
+    parentRunId: "run-parent",
+  });
+  const ctx = {
+    ...makeCtx(modeTokenConfig, [runAttachGrant]),
+    activeRunRegistry: registry,
+  } as unknown as ConnectionContext;
+  const mock = createMockSocket();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({
+      type: "run.attach",
+      id: "attach-child",
+      payload: { runId: "run-child", afterSeq: 1 },
+    })),
+    testPrincipal,
+  );
+
+  await waitFor(() => mock.sent.length >= 1, "run.attach response sent");
+  const response = parseSent(mock);
+  assertEquals(response.type, "run.attached");
+  assertEquals(
+    (response.payload as Record<string, unknown>).runId,
+    "run-parent",
+  );
+});
+
 Deno.test("handleRunAttach: miss + active-runs record + fresh heartbeat returns run.elsewhere", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
