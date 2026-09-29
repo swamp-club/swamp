@@ -33,6 +33,7 @@ import { runWorker, type WorkerExitReason } from "../../worker/connect.ts";
 import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
 import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { warnIfRunningAsInit } from "../../infrastructure/process/init_process.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
 import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
 import { getEnvCaCerts, readTokenFile } from "../remote_run.ts";
@@ -157,6 +158,7 @@ export const workerConnectCommand = new Command()
       "worker",
       "connect",
     ]);
+    warnIfRunningAsInit();
 
     const url = urlArg ?? Deno.env.get("SWAMP_ORCHESTRATOR_URL");
     if (url === undefined) {
