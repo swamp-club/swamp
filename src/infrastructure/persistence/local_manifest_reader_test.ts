@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { readLocalManifestIdentity } from "./local_manifest_reader.ts";
+import {
+  readLocalManifestIdentity,
+  readManifestDependenciesAt,
+} from "./local_manifest_reader.ts";
 
 async function withTempDir(
   fn: (dir: string) => void | Promise<void>,
@@ -96,5 +99,67 @@ Deno.test("readLocalManifestIdentity: empty version string returns null", async 
   await withTempDir((dir) => {
     writeManifest(dir, `name: "@scope/foo"\nversion: ""\n`);
     assertEquals(readLocalManifestIdentity(dir), null);
+  });
+});
+
+Deno.test("readManifestDependenciesAt: returns declared dependencies", async () => {
+  await withTempDir((dir) => {
+    writeManifest(
+      dir,
+      `# generated header\nname: "@scope/parent"\nversion: "1.0.0"\ndependencies:\n  - "@scope/a"\n  - "@scope/b@^1.0.0"\n`,
+    );
+    assertEquals(
+      readManifestDependenciesAt(join(dir, "extensions", "manifest.yaml")),
+      ["@scope/a", "@scope/b@^1.0.0"],
+    );
+  });
+});
+
+Deno.test("readManifestDependenciesAt: missing file returns empty", async () => {
+  await withTempDir((dir) => {
+    assertEquals(
+      readManifestDependenciesAt(join(dir, "extensions", "manifest.yaml")),
+      [],
+    );
+  });
+});
+
+Deno.test("readManifestDependenciesAt: malformed YAML returns empty", async () => {
+  await withTempDir((dir) => {
+    writeManifest(dir, ":\n  - [invalid yaml {{{}}}");
+    assertEquals(
+      readManifestDependenciesAt(join(dir, "extensions", "manifest.yaml")),
+      [],
+    );
+  });
+});
+
+Deno.test("readManifestDependenciesAt: absent dependencies returns empty", async () => {
+  await withTempDir((dir) => {
+    writeManifest(dir, `name: "@scope/parent"\nversion: "1.0.0"\n`);
+    assertEquals(
+      readManifestDependenciesAt(join(dir, "extensions", "manifest.yaml")),
+      [],
+    );
+  });
+});
+
+Deno.test("readManifestDependenciesAt: non-array dependencies returns empty", async () => {
+  await withTempDir((dir) => {
+    writeManifest(dir, `dependencies: "@scope/a"\n`);
+    assertEquals(
+      readManifestDependenciesAt(join(dir, "extensions", "manifest.yaml")),
+      [],
+    );
+  });
+});
+
+Deno.test("readManifestDependenciesAt: drops non-string items", async () => {
+  await withTempDir((dir) => {
+    writeManifest(dir, `dependencies:\n  - "@scope/a"\n  - 42\n  - {x: 1}\n`);
+    assertEquals(
+      readManifestDependenciesAt(join(dir, "extensions", "manifest.yaml")),
+      ["@scope/a"],
+    );
   });
 });

@@ -1280,6 +1280,17 @@ current layout, install compares:
    every run.
 2. **Content**: the subtree digest against `filesChecksum`. This catches a
    lockfile updated through git without a matching re-fetch (swamp-club#1021).
+3. **Dependencies**: each dependency the installed `manifest.yaml` declares
+   against the lockfile, matched by name. A dependency with no entry re-pulls
+   the parent, whose dependency loop installs it. Pull writes a parent's entry
+   before installing its dependencies, so a dependency install that fails, or a
+   hand-edited lockfile, otherwise leaves the dependency missing on every later
+   restore (swamp-club#2646). A dependency that does not parse as an extension
+   ref also re-pulls the parent, which then fails that entry. Such a dependency,
+   or one the registry no longer serves, re-downloads the parent and reports it
+   failed on every restore until the parent's manifest or the registry changes.
+   A dependency removed with `extension rm` while a parent still declares it
+   (rm warns about such dependents) is reinstalled by the next restore.
 
 `doctor extensions --repair` restores the pinned version for the same reason:
 re-pulling the latest would rewrite the entry and silently drop the pin.
