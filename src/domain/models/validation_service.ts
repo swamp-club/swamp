@@ -367,7 +367,7 @@ export function formatExpressionPathErrors(
       lines.push(`  Available: ${formatAvailableKeys(err.availableKeys)}`);
     }
   }
-  lines.push(...distinctRemedies(errors));
+  for (const remedy of distinctRemedies(errors)) lines.push(remedy);
   return lines.join("\n");
 }
 

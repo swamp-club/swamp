@@ -52,7 +52,9 @@ function formatValidationLines(
     } else {
       lines.push(`  ${red(cross)} ${v.name}`);
       if (v.expressionErrors?.length) {
-        lines.push(...formatExpressionErrorLines(v.expressionErrors));
+        for (const line of formatExpressionErrorLines(v.expressionErrors)) {
+          lines.push(line);
+        }
       } else if (v.error) {
         lines.push(`    ${red(arrow)} ${v.error}`);
       }
@@ -61,6 +63,8 @@ function formatValidationLines(
   return lines;
 }
 
+// The same layout as formatExpressionPathErrors in the domain, with the
+// renderer's indent and fail arrows. Keep the two in step.
 function formatExpressionErrorLines(
   errors: readonly ExpressionPathError[],
 ): string[] {
