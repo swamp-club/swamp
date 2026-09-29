@@ -642,7 +642,8 @@ Deno.test("reloadPulledExtensions: catalogues an uncatalogued pulled extension a
       );
 
       assertEquals(
-        calls.filter((c) => c.args.includes(sourcePath)).length,
+        calls.filter((c) => c.args.includes(canonicalizePath(sourcePath)))
+          .length,
         1,
         "the changed source is rebundled by the catalog pass",
       );
