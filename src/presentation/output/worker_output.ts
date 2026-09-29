@@ -208,7 +208,7 @@ export function renderWorkerTokenRevoke(
     if (!data.alreadyRevoked) {
       lines.push(
         dim(
-          "A running orchestrator disconnects workers on this token at its next revalidation.",
+          "A running orchestrator disconnects workers on this token at its next token check (about every 30 seconds).",
         ),
       );
     }

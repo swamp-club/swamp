@@ -94,8 +94,7 @@ function createHarness(
     },
     // No expiry enforcement unless a test opts in with a real timestamp.
     readTokenExpiresAt: () => Promise.resolve(null),
-    // Unknown mint unless a test supplies a record.
-    readTokenRecord: () => Promise.resolve(null),
+    readTokenRecord: (name) => Promise.resolve(mintRecord(name, BASE_MINT)),
     ...overrides,
   });
   return {
@@ -106,6 +105,21 @@ function createHarness(
     graceExpired,
     removed,
     failOn,
+  };
+}
+
+const BASE_MINT = "2026-01-01T00:00:00.000Z";
+
+function mintRecord(name: string, createdAt: string): EnrollmentToken {
+  return {
+    name,
+    state: "enrolled",
+    createdAt,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    vaultName: "local",
+    secretKey: `worker-token-${name}`,
+    maxEnrollments: 1,
+    bindings: [],
   };
 }
 
@@ -757,19 +771,6 @@ Deno.test("WorkerGateway: draining worker disconnect skips grace window", async 
   assertEquals(h.disconnected.length, 1);
 });
 
-function mintRecord(createdAt: string): EnrollmentToken {
-  return {
-    name: "ci-runner-3",
-    state: "enrolled",
-    createdAt,
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    vaultName: "local",
-    secretKey: "worker-token-ci-runner-3",
-    maxEnrollments: 1,
-    bindings: [],
-  };
-}
-
 Deno.test("WorkerGateway: revokeToken removes the worker, revokes its credential, and closes its socket", async () => {
   const h = createHarness({ graceWindowMs: 60_000 });
   const { workerChannel } = connectWorkerSocket(h.gateway);
@@ -876,8 +877,8 @@ Deno.test("WorkerGateway: revokeToken is a no-op for a token with no workers", a
 
 Deno.test("WorkerGateway: revokeToken with a mint leaves workers on a newer mint connected", async () => {
   const h = createHarness({
-    readTokenRecord: () =>
-      Promise.resolve(mintRecord("2026-01-01T00:05:00.000Z")),
+    readTokenRecord: (name) =>
+      Promise.resolve(mintRecord(name, "2026-01-01T00:05:00.000Z")),
   });
   const { workerChannel } = connectWorkerSocket(h.gateway);
   await enroll(workerChannel);
@@ -928,14 +929,65 @@ Deno.test("WorkerGateway: revokeToken waits for an enrollment in progress and cu
   assertEquals((await enrolling) instanceof ChannelClosedError, true);
 });
 
-Deno.test("WorkerGateway: boundTokens records the enrolled mint, or null when unreadable", async () => {
-  const h = createHarness({
-    readTokenRecord: () => Promise.reject(new Error("datastore offline")),
-  });
+Deno.test("WorkerGateway: boundTokens records the mint each worker enrolled on", async () => {
+  const h = createHarness();
   const { workerChannel } = connectWorkerSocket(h.gateway);
   await enroll(workerChannel);
   assertEquals(h.gateway.boundTokens(), [{
     tokenName: "ci-runner-3",
-    tokenCreatedAt: null,
+    tokenCreatedAt: BASE_MINT,
   }]);
+});
+
+Deno.test("WorkerGateway: enrollment fails when the redeemed record cannot be read", async () => {
+  for (
+    const readTokenRecord of [
+      () => Promise.reject(new Error("datastore offline")),
+      () => Promise.resolve(null),
+    ]
+  ) {
+    const h = createHarness({ readTokenRecord });
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    const error = await assertRejects(() => enroll(workerChannel), RpcError);
+    assertEquals(error.code, "token_unreadable");
+    // Not a permanent rejection: the worker retries instead of exiting.
+    assertEquals(error.message.includes("revoked"), false);
+    assertEquals(error.message.includes("expired"), false);
+    assertEquals(h.gateway.workers().length, 0);
+  }
+});
+
+Deno.test("WorkerGateway: readTokenRecords resolves a duplicated name to the newest mint", async () => {
+  const stale = { ...mintRecord("dup", BASE_MINT), state: "revoked" };
+  const fresh = mintRecord("dup", "2026-01-01T00:05:00.000Z");
+  const contents = new Map<string, unknown>([
+    ["m-fresh", fresh],
+    ["m-stale", stale],
+    ["m-broken", "{not json"],
+  ]);
+  const repoContext = {
+    unifiedDataRepo: {
+      findAllForType: () =>
+        Promise.resolve([...contents.keys()].map((modelId) => ({
+          data: { name: "token-main", isRenamed: false, isDeleted: false },
+          modelType: "swamp/enrollment-token",
+          modelId,
+        }))),
+      getContent: (_type: unknown, modelId: string) => {
+        const value = contents.get(modelId);
+        return Promise.resolve(
+          new TextEncoder().encode(
+            typeof value === "string" ? value : JSON.stringify(value),
+          ),
+        );
+      },
+    },
+  } as unknown as RepositoryContext;
+  const h = createHarness({ repoContext });
+
+  const records = await h.gateway.readTokenRecords();
+
+  assertEquals(records.size, 1);
+  assertEquals(records.get("dup")?.createdAt, fresh.createdAt);
+  assertEquals(records.get("dup")?.state, "enrolled");
 });

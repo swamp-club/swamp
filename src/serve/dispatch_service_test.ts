@@ -908,7 +908,17 @@ Deno.test("DispatchService: revoking the worker's token mid-dispatch fails the s
     onWorkerRemoved: (worker) => service.notifyWorkerRemoved(worker),
     runModelMethod: () => Promise.resolve(),
     readTokenExpiresAt: () => Promise.resolve(null),
-    readTokenRecord: () => Promise.resolve(null),
+    readTokenRecord: (name) =>
+      Promise.resolve({
+        name,
+        state: "enrolled",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        vaultName: "local",
+        secretKey: `worker-token-${name}`,
+        maxEnrollments: 1,
+        bindings: [],
+      }),
   });
   const service = new DispatchService({
     repoDir: "/tmp/unused",

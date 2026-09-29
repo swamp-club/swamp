@@ -49,7 +49,7 @@ function tokenRecord(overrides: Partial<EnrollmentToken>): EnrollmentToken {
 interface RevokeCall {
   name: string;
   cause: EnrollmentBindingCutoffCause;
-  mint: string | null;
+  mint: string;
 }
 
 function tokens(
@@ -59,7 +59,7 @@ function tokens(
 }
 
 function createService(options: {
-  bound: { tokenName: string; tokenCreatedAt: string | null }[];
+  bound: { tokenName: string; tokenCreatedAt: string }[];
   readTokens: WorkerTokenRevalidationDeps["readTokens"];
 }): { service: WorkerTokenRevalidationService; calls: RevokeCall[] } {
   const calls: RevokeCall[] = [];
@@ -112,13 +112,13 @@ Deno.test("WorkerTokenRevalidationService: cuts off only the old mint after a re
 
 Deno.test("WorkerTokenRevalidationService: cuts off workers only when their token is missing on two passes in a row", async () => {
   const { service, calls } = createService({
-    bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: null }],
+    bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: MINT }],
     readTokens: () => Promise.resolve(tokens()),
   });
   assertEquals(await service.runOnce(), []);
   assertEquals(calls, []);
   await service.runOnce();
-  assertEquals(calls, [{ name: "ci-runner-3", cause: "deleted", mint: null }]);
+  assertEquals(calls, [{ name: "ci-runner-3", cause: "deleted", mint: MINT }]);
 });
 
 Deno.test("WorkerTokenRevalidationService: a token that reappears resets the missing count", async () => {
@@ -157,7 +157,7 @@ Deno.test("WorkerTokenRevalidationService: reads the tokens once per pass for ev
   const { service } = createService({
     bound: [
       { tokenName: "fleet", tokenCreatedAt: MINT },
-      { tokenName: "fleet", tokenCreatedAt: null },
+      { tokenName: "fleet", tokenCreatedAt: "2026-01-01T00:05:00.000Z" },
       { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
     ],
     readTokens: () => {

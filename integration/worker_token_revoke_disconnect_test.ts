@@ -24,7 +24,7 @@
  * WorkerGateway, and the worker token revalidation pass.
  */
 
-import { assertEquals, assertExists, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   collect,
   createLibSwampContext,
@@ -256,7 +256,6 @@ Deno.test("re-minting a revoked token name cuts off workers on the old mint only
     const oldToken = await mintToken(f, "w-remint");
     await enroll(connectWorker(f.gateway), oldToken);
     const [oldMint] = f.gateway.boundTokens();
-    assertExists(oldMint.tokenCreatedAt);
 
     await revokeLocally(f, "w-remint");
     const newToken = await mintToken(f, "w-remint");

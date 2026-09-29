@@ -607,17 +607,6 @@ Deno.test("enrollmentTokenBindingVerdict: a missing record cuts the worker off",
   );
 });
 
-Deno.test("enrollmentTokenBindingVerdict: an unknown bound mint checks state only", () => {
-  assertEquals(
-    enrollmentTokenBindingVerdict(tokenRecord({}), null),
-    { keep: true },
-  );
-  assertEquals(
-    enrollmentTokenBindingVerdict(tokenRecord({ state: "revoked" }), null),
-    { keep: false, cause: "revoked" },
-  );
-});
-
 Deno.test("timingSafeEqual: equal and unequal strings", () => {
   assertEquals(timingSafeEqual("abc", "abc"), true);
   assertEquals(timingSafeEqual("abc", "abd"), false);

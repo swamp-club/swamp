@@ -505,7 +505,11 @@ swamp worker token revoke <name>                    # invalidate before expiry
 **Cutting off a token's workers.** A token's authority ends for workers that
 are already connected, not just at the next enrollment. Each pool member
 records the mint (`createdAt`) it enrolled on; minting after a revoke reuses
-the name, so a new `createdAt` is a new credential. `WorkerGateway.revokeToken`
+the name, so a new `createdAt` is a new credential. Enrollment reads the
+record once after `redeem` and takes the mint, `expiresAt` and
+`maxEnrollments` from it; if that read fails the enrollment fails and the
+worker retries, so no pool member is ever without a known mint or deadline.
+When two records carry one name, the newest mint wins. `WorkerGateway.revokeToken`
 (`src/serve/worker_gateway.ts`) removes every pool member bound to the token,
 fleet members included, with **no reconnection grace window**. It revokes
 their session and dispatch credentials at once and closes their control

@@ -51,20 +51,16 @@ Deno.test("enrollmentTokenBindingVerdict: keeps a worker exactly when its record
   fc.assert(
     fc.property(
       arbToken,
-      // Draw the bound mint from the token (same mint), freely, or unknown.
-      fc.constantFrom("same", "other", "unknown"),
+      // Draw the bound mint either from the token (same mint) or freely.
+      fc.boolean(),
       arbInstant,
-      (token, mintKind, otherMint) => {
-        const boundCreatedAt = mintKind === "unknown"
-          ? null
-          : mintKind === "same" && token
-          ? token.createdAt
-          : otherMint;
+      (token, sameMint, otherMint) => {
+        const boundCreatedAt = sameMint && token ? token.createdAt : otherMint;
         const verdict = enrollmentTokenBindingVerdict(token, boundCreatedAt);
 
         const shouldKeep = token !== null &&
           token.state !== "revoked" &&
-          (boundCreatedAt === null || token.createdAt === boundCreatedAt);
+          token.createdAt === boundCreatedAt;
         assertEquals(verdict.keep, shouldKeep);
       },
     ),
@@ -78,7 +74,7 @@ Deno.test("enrollmentTokenBindingVerdict: a revoked record is never kept, whatev
         ...t!,
         state: "revoked" as const,
       })),
-      fc.option(arbInstant, { nil: null }),
+      arbInstant,
       (token, boundCreatedAt) => {
         assertEquals(
           enrollmentTokenBindingVerdict(token, boundCreatedAt),

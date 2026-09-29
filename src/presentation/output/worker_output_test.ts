@@ -227,7 +227,7 @@ Deno.test("renderWorkerTokenRevoke: log mode notes the orchestrator catches a lo
   const output = stripAnsiCode(
     captureLogs(() => renderWorkerTokenRevoke(data, "log")),
   );
-  assertStringIncludes(output, "at its next revalidation");
+  assertStringIncludes(output, "at its next token check");
 });
 
 Deno.test("renderWorkerTokenRevoke: json mode carries disconnectedWorkers when present", () => {

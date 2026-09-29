@@ -51,7 +51,7 @@ export interface WorkerTokenRevalidationDeps {
   /** Each distinct token mint held by a pool member. */
   listBoundTokens(): readonly {
     tokenName: string;
-    tokenCreatedAt: string | null;
+    tokenCreatedAt: string;
   }[];
   /**
    * Every token's current record, keyed by name, from one read. A token
@@ -63,7 +63,7 @@ export interface WorkerTokenRevalidationDeps {
   revokeToken(
     name: string,
     cause: EnrollmentBindingCutoffCause,
-    options: { mint: string | null },
+    options: { mint: string },
   ): Promise<string[]>;
 }
 
@@ -125,7 +125,7 @@ export class WorkerTokenRevalidationService {
 
   async #revalidate(): Promise<string[]> {
     if (this.#disposed) return [];
-    const mintsByName = new Map<string, (string | null)[]>();
+    const mintsByName = new Map<string, string[]>();
     for (const bound of this.#deps.listBoundTokens()) {
       const mints = mintsByName.get(bound.tokenName) ?? [];
       mints.push(bound.tokenCreatedAt);

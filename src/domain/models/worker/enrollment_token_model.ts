@@ -138,13 +138,12 @@ export type EnrollmentBindingVerdict =
  * may stay connected. `token` is the current record, or null when it no
  * longer exists (or no longer parses). Minting after a revoke reuses the
  * name, so a record whose `createdAt` differs is a different credential.
- * `boundCreatedAt` is null when the mint could not be read at enrollment;
- * only the record's state and existence are checked then. Expiry is not a
- * cause here: the gateway arms its own timer from `expiresAt`.
+ * Expiry is not a cause here: the gateway arms its own timer from
+ * `expiresAt` at enrollment.
  */
 export function enrollmentTokenBindingVerdict(
   token: EnrollmentToken | null,
-  boundCreatedAt: string | null,
+  boundCreatedAt: string,
 ): EnrollmentBindingVerdict {
   if (token === null) {
     return { keep: false, cause: "deleted" };
@@ -152,7 +151,7 @@ export function enrollmentTokenBindingVerdict(
   if (token.state === "revoked") {
     return { keep: false, cause: "revoked" };
   }
-  if (boundCreatedAt !== null && token.createdAt !== boundCreatedAt) {
+  if (token.createdAt !== boundCreatedAt) {
     return { keep: false, cause: "reminted" };
   }
   return { keep: true };

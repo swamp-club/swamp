@@ -133,10 +133,10 @@ interface WorkerEntry {
   /** The enrollment-token model instance name (differs from `name` for fleet workers). */
   tokenName: string;
   /**
-   * The token mint (`createdAt`) this worker enrolled on, or null when it
-   * could not be read. Re-minting a revoked name yields a new mint.
+   * The token mint (`createdAt`) this worker enrolled on. Re-minting a
+   * revoked name yields a new mint.
    */
-  tokenCreatedAt: string | null;
+  tokenCreatedAt: string;
   instanceUuid: string;
   labels: Record<string, string>;
   platform: string;
@@ -204,23 +204,28 @@ export interface WorkerGatewayOptions {
   /** Test seam: overrides the modelMethodRun-backed transition runner. */
   runModelMethod?: ModelMethodRunner;
   /**
-   * Test seam: reads a token's `expiresAt` after redemption; null disables
-   * expiry enforcement for that worker. Defaults to a datastore query.
+   * Test seam: reads a token's current record, or null when it does not
+   * exist or no longer parses. Throws on read failures (I/O). Enrollment
+   * reads it once after redemption and fails when it cannot. Defaults to a
+   * datastore query.
    */
-  readTokenExpiresAt?: (tokenName: string) => Promise<string | null>;
+  readTokenRecord?: (tokenName: string) => Promise<EnrollmentToken | null>;
   /**
-   * Test seam: reads a token's `maxEnrollments` after redemption for fleet
-   * naming. Defaults to a datastore query.
+   * Test seam: the `expiresAt` to enforce, taken from the record read at
+   * enrollment; null disables expiry enforcement for that worker.
+   */
+  readTokenExpiresAt?: (
+    tokenName: string,
+    record: EnrollmentToken,
+  ) => Promise<string | null>;
+  /**
+   * Test seam: the `maxEnrollments` used for fleet naming, taken from the
+   * record read at enrollment.
    */
   readTokenMaxEnrollments?: (
     tokenName: string,
+    record: EnrollmentToken,
   ) => Promise<MaxEnrollments | null>;
-  /**
-   * Test seam: reads a token's current record, or null when it does not
-   * exist or no longer parses. Throws on read failures (I/O), which callers
-   * treat as transient. Defaults to a datastore query.
-   */
-  readTokenRecord?: (tokenName: string) => Promise<EnrollmentToken | null>;
 }
 
 /** Tracks one attached control socket before/after enrollment. */
@@ -236,9 +241,13 @@ export class WorkerGateway {
   readonly #sessions: SessionCredentialService;
   readonly #graceWindowMs: number;
   readonly #runModelMethod: ModelMethodRunner;
-  readonly #readTokenExpiresAt: (tokenName: string) => Promise<string | null>;
+  readonly #readTokenExpiresAt: (
+    tokenName: string,
+    record: EnrollmentToken,
+  ) => Promise<string | null>;
   readonly #readTokenMaxEnrollments: (
     tokenName: string,
+    record: EnrollmentToken,
   ) => Promise<MaxEnrollments | null>;
   readonly #readTokenRecord: (
     tokenName: string,
@@ -254,9 +263,9 @@ export class WorkerGateway {
     this.#runModelMethod = options.runModelMethod ??
       ((input) => this.#defaultRunModelMethod(input));
     this.#readTokenExpiresAt = options.readTokenExpiresAt ??
-      ((tokenName) => this.#defaultReadTokenExpiresAt(tokenName));
+      ((_tokenName, record) => Promise.resolve(record.expiresAt));
     this.#readTokenMaxEnrollments = options.readTokenMaxEnrollments ??
-      ((tokenName) => this.#defaultReadTokenMaxEnrollments(tokenName));
+      ((_tokenName, record) => Promise.resolve(record.maxEnrollments));
     this.#readTokenRecord = options.readTokenRecord ??
       ((tokenName) => this.#findTokenRecord(tokenName));
   }
@@ -321,10 +330,10 @@ export class WorkerGateway {
    * Each distinct token mint held by a pool member, including members
    * inside a reconnection grace window.
    */
-  boundTokens(): { tokenName: string; tokenCreatedAt: string | null }[] {
+  boundTokens(): { tokenName: string; tokenCreatedAt: string }[] {
     const seen = new Map<
       string,
-      { tokenName: string; tokenCreatedAt: string | null }
+      { tokenName: string; tokenCreatedAt: string }
     >();
     for (const entry of this.#workers.values()) {
       const key = JSON.stringify([entry.tokenName, entry.tokenCreatedAt]);
@@ -350,7 +359,7 @@ export class WorkerGateway {
   async revokeToken(
     tokenName: string,
     cause: EnrollmentBindingCutoffCause,
-    options?: { mint: string | null },
+    options?: { mint: string },
   ): Promise<string[]> {
     return await this.#recordTransition(async () => {
       const removed: string[] = [];
@@ -560,8 +569,12 @@ export class WorkerGateway {
         },
       });
 
-      const maxEnrollments = await this.#readTokenMaxEnrollments(name) ?? 1;
-      const tokenCreatedAt = await this.#readTokenMint(name);
+      // One read of the record redeem just validated supplies the mint the
+      // worker is bound to, its lifetime, and fleet naming.
+      const record = await this.#readEnrolledRecord(name);
+      const tokenCreatedAt = record.createdAt;
+      const maxEnrollments =
+        await this.#readTokenMaxEnrollments(name, record) ?? 1;
       const workerName = maxEnrollments === 1
         ? name
         : `${name}-${await fleetMemberSuffix(params.machineId)}`;
@@ -673,7 +686,7 @@ export class WorkerGateway {
       // The token lifetime is a hard deadline: when it elapses, disconnect
       // the worker. Re-enrollment is then rejected as expired, so the
       // worker cannot return on this token.
-      const expiresAt = await this.#readTokenExpiresAt(name);
+      const expiresAt = await this.#readTokenExpiresAt(name, record);
       if (expiresAt !== null) {
         this.#scheduleTokenExpiry(entry, Date.parse(expiresAt));
       }
@@ -1017,54 +1030,30 @@ export class WorkerGateway {
   }
 
   /**
-   * Reads the token's recorded `expiresAt` for expiry scheduling. Returns
-   * null when the record cannot be found or parsed — enrollment proceeds
-   * without live enforcement rather than failing (redeem still rejects
-   * expired tokens at the next reconnect).
+   * Reads the record redeem just validated. Redeem read the same record a
+   * moment ago, so a failure here is transient: the enrollment fails and
+   * the worker retries, rather than joining the pool without a known mint
+   * or expiry deadline.
    */
-  async #defaultReadTokenExpiresAt(tokenName: string): Promise<string | null> {
+  async #readEnrolledRecord(tokenName: string): Promise<EnrollmentToken> {
+    let record: EnrollmentToken | null;
     try {
-      return (await this.#findTokenRecord(tokenName))?.expiresAt ?? null;
+      record = await this.#readTokenRecord(tokenName);
     } catch (error) {
-      logger.warn("Failed to read token expiry for {worker}: {error}", {
-        worker: tokenName,
+      logger.warn("Failed to read enrollment token {token}: {error}", {
+        token: tokenName,
         error: error instanceof Error ? error.message : String(error),
       });
+      record = null;
     }
-    return null;
-  }
-
-  async #defaultReadTokenMaxEnrollments(
-    tokenName: string,
-  ): Promise<MaxEnrollments | null> {
-    try {
-      return (await this.#findTokenRecord(tokenName))?.maxEnrollments ?? null;
-    } catch (error) {
-      logger.warn(
-        "Failed to read token maxEnrollments for {worker}: {error}",
-        {
-          worker: tokenName,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      );
-    }
-    return null;
-  }
-
-  /**
-   * Reads the mint a worker enrolls on. Returns null when it cannot be
-   * read; the worker is then checked on its token's state alone.
-   */
-  async #readTokenMint(tokenName: string): Promise<string | null> {
-    try {
-      return (await this.#readTokenRecord(tokenName))?.createdAt ?? null;
-    } catch (error) {
-      logger.warn("Failed to read token mint for {worker}: {error}", {
-        worker: tokenName,
-        error: error instanceof Error ? error.message : String(error),
+    if (record === null) {
+      throw new RpcError({
+        code: "token_unreadable",
+        message:
+          `Enrollment token '${tokenName}' could not be read after redemption; retry the connection`,
       });
     }
-    return null;
+    return record;
   }
 
   /** Finds one token's current record; null when there is no usable one. */
@@ -1097,7 +1086,14 @@ export class WorkerGateway {
         continue;
       }
       const parsed = EnrollmentTokenSchema.safeParse(attrs);
-      if (parsed.success) {
+      if (!parsed.success) continue;
+      // Two records under one name (a definition recreated over stale data)
+      // resolve to the newest mint, never a stale revoked one.
+      const existing = records.get(parsed.data.name);
+      if (
+        existing === undefined ||
+        Date.parse(parsed.data.createdAt) > Date.parse(existing.createdAt)
+      ) {
         records.set(parsed.data.name, parsed.data);
       }
     }
