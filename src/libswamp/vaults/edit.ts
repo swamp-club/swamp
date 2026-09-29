@@ -178,8 +178,8 @@ export function createVaultEditDeps(
       if (stored.type !== "local_encryption") return null;
       // The storage root comes from the stored config only: over --server
       // the edited config is client-controlled. VaultService falls back to
-      // the repo dir when base_dir is unset, so this does too.
-      const baseDir = (stored.config as LocalEncryptionConfig).base_dir ??
+      // the repo dir when base_dir is unset or empty, so this does too.
+      const baseDir = (stored.config as LocalEncryptionConfig).base_dir ||
         repoDir;
       const moved = await moveLocalEncryptionSecrets(
         baseDir,
@@ -343,7 +343,19 @@ async function* updateVaultFromStdin(
   try {
     await deps.saveConfigData(updated);
   } catch (error) {
-    if (undoMove) await undoMove();
+    if (!undoMove) throw error;
+    try {
+      await undoMove();
+    } catch (undoError) {
+      // Report both: the save failure is the cause, and the failed undo
+      // tells the user where the secrets now are.
+      throw new Error(
+        `${errorMessage(error)}. Moving the secrets back to vault name ` +
+          `'${existing.name}' also failed: ${errorMessage(undoError)}. ` +
+          `They are stored under '${updated.name}'.`,
+        { cause: error },
+      );
+    }
     throw error;
   }
   yield {
@@ -409,7 +421,19 @@ async function reconcileEditorRename(
     }
   }
 
-  await deps.saveConfigData({ ...edited, name: stored.name });
+  try {
+    await deps.saveConfigData({ ...edited, name: stored.name });
+  } catch (error) {
+    return {
+      error: validationFailed(
+        `Cannot rename vault '${stored.name}' to '${edited.name}': ${reason} ` +
+          `Changing the name back to '${stored.name}' also failed: ` +
+          `${errorMessage(error)}. The config names the vault ` +
+          `'${edited.name}' but its secrets are still stored under ` +
+          `'${stored.name}'.`,
+      ),
+    };
+  }
   return {
     error: validationFailed(
       `Cannot rename vault '${stored.name}' to '${edited.name}': ${reason} ` +

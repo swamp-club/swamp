@@ -626,6 +626,28 @@ Deno.test("vaultEdit: stdin rename moves the secrets back when the save fails", 
   assertEquals(calls, ["move", "undo"]);
 });
 
+Deno.test("vaultEdit: stdin rename reports both errors when moving the secrets back also fails", async () => {
+  const { deps } = makeStdinDeps({
+    moveSecrets: () =>
+      Promise.resolve(() =>
+        Promise.reject(new Error("something is under 'my-vault'"))
+      ),
+    saveConfigData: () => Promise.reject(new Error("disk full")),
+  });
+
+  const error = await assertRejects(
+    () => runStdin(deps, "name: renamed\ntype: env\n"),
+    Error,
+  );
+
+  assertStringIncludes(error.message, "disk full");
+  assertStringIncludes(
+    error.message,
+    "Moving the secrets back to vault name 'my-vault' also failed: something is under 'my-vault'",
+  );
+  assertStringIncludes(error.message, "They are stored under 'renamed'");
+});
+
 /**
  * Deps for an editor session over `existingData`: the editor replaces the
  * stored config with `edit(stored)`, or makes it unreadable when `edit`
@@ -737,6 +759,28 @@ Deno.test("vaultEdit: editor rename whose secrets cannot move is reverted, keepi
   }]);
 });
 
+Deno.test("vaultEdit: editor rename reports where things stand when changing the name back fails", async () => {
+  const { deps } = makeEditorDeps((d) => ({ ...d, name: "renamed" }), {
+    moveSecrets: () =>
+      Promise.reject(
+        new Error("Secrets are already stored under vault name 'renamed'."),
+      ),
+    saveConfigData: () => Promise.reject(new Error("read-only file system")),
+  });
+
+  const error = errorOf(await runEditor(deps));
+
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(
+    error.message,
+    "Changing the name back to 'my-vault' also failed: read-only file system",
+  );
+  assertStringIncludes(
+    error.message,
+    "its secrets are still stored under 'my-vault'",
+  );
+});
+
 Deno.test("vaultEdit: editor rename that breaks the naming rule is reverted without moving secrets", async () => {
   const { deps, saved, moves } = makeEditorDeps((d) => ({
     ...d,
@@ -828,5 +872,41 @@ Deno.test("createVaultEditDeps: stdin rename of a local_encryption vault keeps i
     });
     assertEquals(await renamed.get("API_KEY"), "s3cret");
     await assertRejects(() => Deno.lstat(elsewhere));
+  });
+});
+
+Deno.test("createVaultEditDeps: an empty base_dir falls back to the repo dir, as VaultService does", async () => {
+  await withTempDir(async (repoDir) => {
+    const repo = new YamlVaultConfigRepository(repoDir);
+    await repo.save(
+      VaultConfig.fromData({
+        ...existingData,
+        type: "local_encryption",
+        config: { auto_generate: true, base_dir: "" },
+      }),
+    );
+    await new LocalEncryptionVaultProvider("my-vault", {
+      auto_generate: true,
+      base_dir: repoDir,
+    }).put("API_KEY", "s3cret");
+
+    const events = await collect<VaultEditEvent>(
+      vaultEdit(createLibSwampContext(), createVaultEditDeps(repoDir), {
+        vaultNameOrId: "my-vault",
+        stdinContent:
+          `name: renamed\ntype: local_encryption\nconfig:\n  auto_generate: true\n  base_dir: ""\n`,
+      }),
+    );
+
+    const last = events[events.length - 1] as Extract<
+      VaultEditEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(last.data.secretsMoved, true);
+    const renamed = new LocalEncryptionVaultProvider("renamed", {
+      auto_generate: true,
+      base_dir: repoDir,
+    });
+    assertEquals(await renamed.get("API_KEY"), "s3cret");
   });
 });
