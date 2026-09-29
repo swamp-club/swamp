@@ -1319,7 +1319,7 @@ export async function applyInstall(
   const recovery = await recoverPulledExtensionStagingLocked(repoDir, {
     lockfilePaths: [ctx.lockfileRepository.lockfilePath],
   });
-  assertNoBlockingJournal(recovery, ref.name, "install");
+  assertNoBlockingJournal(recovery, repoDir, ref.name, "install");
 
   // Snapshot the prior lockfile entry's `files[]` BEFORE the swap.
   // Used afterwards to compute the orphan diff (paths declared by the
@@ -1409,8 +1409,8 @@ export async function applyInstall(
     const first = ref.name.slice(ancestor.length + 1).split("/")[0];
     if (EXTENSION_ROOT_ENTRIES.has(first)) {
       throw new UserError(
-        `Cannot install ${ref.name}: its files would go to ${first}/ inside ` +
-          `the root of the installed extension ${ancestor}, where ` +
+        `Cannot install ${ref.name}: its files would go to ` +
+          `${ancestor}/${first}/, where the installed extension ` +
           `${ancestor} keeps its own files. Run ` +
           `\`swamp extension rm ${ancestor}\` first.`,
       );

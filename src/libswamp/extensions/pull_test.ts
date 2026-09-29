@@ -2078,7 +2078,10 @@ Deno.test(
         () => installArchive(repoDir, lockfile, archives, name),
         UserError,
       );
-      assertStringIncludes(error.message, journalPath);
+      assertStringIncludes(
+        error.message,
+        relative(repoDir, dirname(journalPath)),
+      );
       assertEquals(lockfile.getEntry(name), null);
 
       // Other extensions are not held up.

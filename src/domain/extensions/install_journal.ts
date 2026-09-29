@@ -408,9 +408,10 @@ export type RecoveryPlan =
  *
  * A live root found next to its moved-aside original is superseded
  * whatever it holds: the new version, or a bundle cache dir a loader
- * outside the lock recreated. Rolling forward, every root must hold its
- * new version (nothing in `new/<i>`, live present exactly when
- * `hasNew`) and the live manifest must be the one this install wrote.
+ * outside the lock recreated. Rolling forward, nothing may be left in
+ * `new/<i>`, the extension root must be live and the live manifest must
+ * be the one this install wrote. A bundle root's presence is not checked:
+ * it is a cache that loaders outside the lock rebuild or evict.
  *
  * Anything else yields `leave`: an original that is gone (liveExisted,
  * neither copy present), an `old/<i>` for a root that did not exist, an
@@ -449,7 +450,11 @@ export function planRecovery(
     const l = seen.live === "dir";
 
     if (forward) {
-      if (seen.new === "dir" || l !== root.hasNew) {
+      // Nothing moves forward. A bundle root is a cache that loaders
+      // outside the lock rebuild or evict, so only the extension root's
+      // presence says whether the swap completed.
+      const liveMismatch = root.role === "extension" && l !== root.hasNew;
+      if (seen.new === "dir" || liveMismatch) {
         return {
           direction: "leave",
           reason: `root ${root.live} does not hold its new version`,

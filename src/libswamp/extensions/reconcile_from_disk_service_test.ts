@@ -888,7 +888,7 @@ Deno.test(
 Deno.test(
   "ReconcileFromDisk pulled: a root absent mid-swap heals to Indexed once it is back (swamp-club#2723)",
   async () => {
-    const ts = Date.now();
+    const ts = crypto.randomUUID().slice(0, 8);
     const extName = `@test/pulled-swap-window-${ts}`;
     const typeId = `@test/pulled-swap-window-model-${ts}`;
     await withPulledFixtureRepo(

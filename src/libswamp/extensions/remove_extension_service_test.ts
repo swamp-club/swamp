@@ -1654,7 +1654,7 @@ Deno.test(
             }).execute(extName),
           UserError,
         );
-        assertEquals(error.message.includes("journal"), true);
+        assertEquals(error.message.includes(STAGING_DIR_NAME), true);
         assertEquals(lockfileRepository.getEntry(extName) !== null, true);
         assertEquals(await Deno.readTextFile(model), "// v1");
       },

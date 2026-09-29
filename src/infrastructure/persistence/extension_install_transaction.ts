@@ -362,7 +362,9 @@ export class ExtensionInstallTransaction {
             await this.#ops.rename(step.to, step.from);
           } catch (undoError) {
             logger
-              .warn`Could not undo ${step.from} -> ${step.to} for ${this.#journal.extensionName}: ${undoError}; settling will finish it`;
+              .warn`Could not yet restore part of ${this.#journal.extensionName}'s previous files; the rollback will retry`;
+            logger
+              .debug`Undo of ${step.from} -> ${step.to} failed: ${undoError}`;
           }
         }
       }
@@ -742,7 +744,7 @@ export async function recoverInstallStaging(
           if (journalKind !== "file") throw new Error("not a regular file");
           raw = JSON.parse(await ops.readText(journalPath));
         } catch (error) {
-          leave(journalPath, null, `it cannot be read (${error})`);
+          leave(journalPath, null, `the journal cannot be read (${error})`);
           continue;
         }
         const rawName = (raw as { extensionName?: unknown } | null)
@@ -750,7 +752,7 @@ export async function recoverInstallStaging(
         const namedAs = typeof rawName === "string" ? rawName : null;
         const parsed = parseInstallJournal(raw, args.bounds, name);
         if (!parsed.ok) {
-          leave(journalPath, namedAs, `it ${parsed.reason}`);
+          leave(journalPath, namedAs, `invalid journal: ${parsed.reason}`);
           continue;
         }
         const journal = parsed.journal;

@@ -1635,7 +1635,10 @@ reuse pids):
   non-managed `extensions/models/upstream_extensions.json`). An invalid journal
   is left in place with one warning naming it.
 - It rolls forward when the journal reached `swapped` and the recorded
-  lockfile's entry carries the new checksum; otherwise back.
+  lockfile's entry carries the new checksum; otherwise back. Rolling forward
+  checks that the extension root and its manifest are the new ones, not
+  whether a bundle root is live: loaders outside the lock rebuild and evict
+  bundle caches.
 - Rolling back, each root is judged from where its original is: in `old/<i>`
   once phase 1 moved it aside, otherwise still live. Where the new copy is
   does not matter, so a crash inside `begin` or during cleanup stays
@@ -1650,7 +1653,10 @@ reuse pids):
   above it, is refused with a message naming the journal: changing its roots
   first would let a later recovery act on files it did not write.
 - Journal paths are derived from the absolute repository path, so an install
-  and a later recovery that spell the path differently agree.
+  and a later recovery agree whether the repo was given as a relative or an
+  absolute path. They do not agree across a symlinked spelling of the repo
+  (macOS `/tmp` and `/private/tmp`, a bind mount): the journal then fails
+  validation and is left in place.
 - Staging with no journal is swept only once it is older than an hour.
 
 Recovery never writes the lockfile. A same-version reinstall has equal old and

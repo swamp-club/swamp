@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { copy, ensureDir } from "@std/fs";
-import { isStagingEntryName } from "../extensions/install_journal.ts";
 import { dirname, join, resolve } from "@std/path";
 import { getLogger } from "@logtape/logtape";
+import { isStagingEntryName } from "../extensions/install_journal.ts";
 
 const logger = getLogger(["swamp", "datastore", "managed-config-migration"]);
 

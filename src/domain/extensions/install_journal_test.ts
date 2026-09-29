@@ -559,6 +559,48 @@ Deno.test("planRecovery: rolls forward a removed bundle root that is gone", () =
   assertEquals(plan, { direction: "forward" });
 });
 
+Deno.test("planRecovery: rolls forward past a bundle cache dir a loader rebuilt or evicted", () => {
+  // Rebuilt: the new version shipped no bundles, yet the dir is back.
+  assertEquals(
+    planRecovery(
+      makeJournal({
+        phase: "swapped",
+        bundle: { liveExisted: true, hasNew: false },
+      }),
+      observe({
+        0: rootState("dir", "absent", "dir"),
+        1: rootState("dir", "absent", "dir"),
+      }),
+      "new-sum",
+    ),
+    { direction: "forward" },
+  );
+  // Evicted: the new bundles went in, then a layout eviction removed them.
+  assertEquals(
+    planRecovery(
+      makeJournal({ phase: "swapped" }),
+      observe({
+        0: rootState("dir", "absent", "dir"),
+        1: rootState("dir", "absent", "absent"),
+      }),
+      "new-sum",
+    ),
+    { direction: "forward" },
+  );
+});
+
+Deno.test("planRecovery: leaves a forward journal whose extension root is missing", () => {
+  const plan = planRecovery(
+    makeJournal({ phase: "swapped" }),
+    observe({
+      0: rootState("dir", "absent", "absent"),
+      1: rootState("dir", "absent", "dir"),
+    }),
+    "new-sum",
+  );
+  assertEquals(plan.direction, "leave");
+});
+
 Deno.test("planRecovery: leaves a forward journal whose new root is still staged", () => {
   const plan = planRecovery(
     makeJournal({ phase: "swapped" }),

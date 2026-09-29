@@ -172,7 +172,7 @@ export class RemoveExtensionService {
         this.repoDir,
         { lockfilePaths: [this.lockfileRepository.lockfilePath] },
       );
-      assertNoBlockingJournal(recovery, name, "remove");
+      assertNoBlockingJournal(recovery, this.repoDir, name, "remove");
       return await this.removeLocked(name);
     });
   }

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { resolve } from "@std/path";
+import { dirname, join, relative, resolve } from "@std/path";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -123,19 +123,24 @@ export async function recoverPulledExtensionStagingLocked(
  */
 export function assertNoBlockingJournal(
   recovery: StagingRecoveryReport,
+  repoDir: string,
   name: string,
   action: "install" | "remove",
 ): void {
   const blocking = blockingLeftJournals(recovery, name);
   if (blocking.length === 0) return;
   const [first] = blocking;
+  const shown = (path: string) => relative(resolve(repoDir), path);
+  const liveRoot = join(
+    resolvePulledExtensionsRoot(resolve(repoDir)),
+    first.extensionName ?? name,
+  );
   throw new UserError(
     `Cannot ${action} ${name}: an earlier install of ` +
       `${first.extensionName} was interrupted and could not be put right ` +
-      `(${first.reason}). Its journal is ${first.journalPath}. Fix the ` +
-      `cause and retry, or, after checking that ` +
-      `.swamp/pulled-extensions/${first.extensionName} holds the version ` +
-      `you want, delete the journal's directory and retry.`,
+      `(${first.reason}). Fix the cause and retry. Or, once you have ` +
+      `checked that ${shown(liveRoot)} holds the version you want, delete ` +
+      `${shown(dirname(first.journalPath))} and retry.`,
   );
 }
 

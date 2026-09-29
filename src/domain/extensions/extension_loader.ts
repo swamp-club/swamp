@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join, resolve, SEPARATOR, toFileUrl } from "@std/path";
-import { isStagingEntryName } from "./install_journal.ts";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
@@ -78,6 +77,7 @@ import {
   type ExtensionContributor,
   isPulledExtensionPath,
 } from "./extension_precedence.ts";
+import { isStagingEntryName } from "./install_journal.ts";
 
 /**
  * Build the dynamic import() URL for a bundle file, keyed on the bundle's
