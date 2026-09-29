@@ -52,15 +52,21 @@ interface RevokeCall {
   mint: string | null;
 }
 
+function tokens(
+  ...records: EnrollmentToken[]
+): ReadonlyMap<string, EnrollmentToken> {
+  return new Map(records.map((record) => [record.name, record]));
+}
+
 function createService(options: {
   bound: { tokenName: string; tokenCreatedAt: string | null }[];
-  readToken: WorkerTokenRevalidationDeps["readToken"];
+  readTokens: WorkerTokenRevalidationDeps["readTokens"];
 }): { service: WorkerTokenRevalidationService; calls: RevokeCall[] } {
   const calls: RevokeCall[] = [];
   const service = new WorkerTokenRevalidationService({
     intervalMs: 60_000,
     listBoundTokens: () => options.bound,
-    readToken: options.readToken,
+    readTokens: options.readTokens,
     revokeToken: (name, cause, { mint }) => {
       calls.push({ name, cause, mint });
       return Promise.resolve([`${name}@${mint}`]);
@@ -72,7 +78,7 @@ function createService(options: {
 Deno.test("WorkerTokenRevalidationService: keeps workers on a live, current mint", async () => {
   const { service, calls } = createService({
     bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: MINT }],
-    readToken: () => Promise.resolve(tokenRecord({})),
+    readTokens: () => Promise.resolve(tokens(tokenRecord({}))),
   });
   assertEquals(await service.runOnce(), []);
   assertEquals(calls, []);
@@ -81,7 +87,8 @@ Deno.test("WorkerTokenRevalidationService: keeps workers on a live, current mint
 Deno.test("WorkerTokenRevalidationService: cuts off workers on a revoked token", async () => {
   const { service, calls } = createService({
     bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: MINT }],
-    readToken: () => Promise.resolve(tokenRecord({ state: "revoked" })),
+    readTokens: () =>
+      Promise.resolve(tokens(tokenRecord({ state: "revoked" }))),
   });
   assertEquals(await service.runOnce(), [`ci-runner-3@${MINT}`]);
   assertEquals(calls, [{ name: "ci-runner-3", cause: "revoked", mint: MINT }]);
@@ -94,64 +101,96 @@ Deno.test("WorkerTokenRevalidationService: cuts off only the old mint after a re
       { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
       { tokenName: "ci-runner-3", tokenCreatedAt: newMint },
     ],
-    readToken: () =>
-      Promise.resolve(tokenRecord({ state: "unused", createdAt: newMint })),
+    readTokens: () =>
+      Promise.resolve(
+        tokens(tokenRecord({ state: "unused", createdAt: newMint })),
+      ),
   });
   await service.runOnce();
   assertEquals(calls, [{ name: "ci-runner-3", cause: "reminted", mint: MINT }]);
 });
 
-Deno.test("WorkerTokenRevalidationService: cuts off workers whose token record is gone or unreadable", async () => {
+Deno.test("WorkerTokenRevalidationService: cuts off workers only when their token is missing on two passes in a row", async () => {
   const { service, calls } = createService({
     bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: null }],
-    readToken: () => Promise.resolve(null),
+    readTokens: () => Promise.resolve(tokens()),
   });
+  assertEquals(await service.runOnce(), []);
+  assertEquals(calls, []);
   await service.runOnce();
   assertEquals(calls, [{ name: "ci-runner-3", cause: "deleted", mint: null }]);
 });
 
-Deno.test("WorkerTokenRevalidationService: a read failure keeps the workers until the next pass", async () => {
-  let reads = 0;
+Deno.test("WorkerTokenRevalidationService: a token that reappears resets the missing count", async () => {
+  let present = false;
   const { service, calls } = createService({
-    bound: [
-      { tokenName: "flaky", tokenCreatedAt: MINT },
-      { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
-    ],
-    readToken: (name) => {
-      reads++;
-      return name === "flaky"
-        ? Promise.reject(new Error("datastore offline"))
-        : Promise.resolve(tokenRecord({ state: "revoked" }));
-    },
+    bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: MINT }],
+    readTokens: () =>
+      Promise.resolve(present ? tokens(tokenRecord({})) : tokens()),
   });
+  await service.runOnce(); // missing once
+  present = true;
+  await service.runOnce(); // readable again
+  present = false;
+  await service.runOnce(); // missing once more — not two in a row
+  assertEquals(calls, []);
+});
+
+Deno.test("WorkerTokenRevalidationService: a read failure keeps every worker until the next pass", async () => {
+  let fail = true;
+  const { service, calls } = createService({
+    bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: MINT }],
+    readTokens: () =>
+      fail
+        ? Promise.reject(new Error("datastore offline"))
+        : Promise.resolve(tokens(tokenRecord({ state: "revoked" }))),
+  });
+  assertEquals(await service.runOnce(), []);
+  assertEquals(calls, []);
+  fail = false;
   await service.runOnce();
-  assertEquals(reads, 2);
   assertEquals(calls, [{ name: "ci-runner-3", cause: "revoked", mint: MINT }]);
 });
 
-Deno.test("WorkerTokenRevalidationService: reads each token once for a whole fleet", async () => {
+Deno.test("WorkerTokenRevalidationService: reads the tokens once per pass for every bound token", async () => {
   let reads = 0;
   const { service } = createService({
     bound: [
       { tokenName: "fleet", tokenCreatedAt: MINT },
       { tokenName: "fleet", tokenCreatedAt: null },
+      { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
     ],
-    readToken: () => {
+    readTokens: () => {
       reads++;
-      return Promise.resolve(tokenRecord({ name: "fleet" }));
+      return Promise.resolve(
+        tokens(tokenRecord({ name: "fleet" }), tokenRecord({})),
+      );
     },
   });
   await service.runOnce();
   assertEquals(reads, 1);
 });
 
+Deno.test("WorkerTokenRevalidationService: skips the read when no worker is bound", async () => {
+  let reads = 0;
+  const { service } = createService({
+    bound: [],
+    readTokens: () => {
+      reads++;
+      return Promise.resolve(tokens());
+    },
+  });
+  assertEquals(await service.runOnce(), []);
+  assertEquals(reads, 0);
+});
+
 Deno.test("WorkerTokenRevalidationService: dispose stops further passes", async () => {
   let reads = 0;
   const { service } = createService({
     bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: MINT }],
-    readToken: () => {
+    readTokens: () => {
       reads++;
-      return Promise.resolve(tokenRecord({}));
+      return Promise.resolve(tokens(tokenRecord({})));
     },
   });
   service.start();

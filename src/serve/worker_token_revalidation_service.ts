@@ -38,6 +38,14 @@ const logger = getSwampLogger(["serve", "worker-token-revalidation"]);
 /** Matches the server-token session revalidation interval. */
 export const DEFAULT_WORKER_TOKEN_REVALIDATION_MS = 30_000;
 
+/**
+ * Consecutive passes a token must be missing before its workers are cut off.
+ * A record that is present but momentarily unreadable (a remote datastore
+ * returning no content, an HA peer mid-sync) looks missing for one pass; a
+ * deleted token stays missing.
+ */
+export const MISSING_PASSES_BEFORE_CUTOFF = 2;
+
 export interface WorkerTokenRevalidationDeps {
   readonly intervalMs: number;
   /** Each distinct token mint held by a pool member. */
@@ -46,10 +54,11 @@ export interface WorkerTokenRevalidationDeps {
     tokenCreatedAt: string | null;
   }[];
   /**
-   * The token's current record, or null when it does not exist or no
-   * longer parses. Throws on read failures, which keep the workers.
+   * Every token's current record, keyed by name, from one read. A token
+   * that does not exist or no longer parses is absent. Throws on read
+   * failures, which keep every worker until the next pass.
    */
-  readToken(name: string): Promise<EnrollmentToken | null>;
+  readTokens(): Promise<ReadonlyMap<string, EnrollmentToken>>;
   /** Cuts off the workers enrolled on one mint; returns their names. */
   revokeToken(
     name: string,
@@ -60,6 +69,8 @@ export interface WorkerTokenRevalidationDeps {
 
 export class WorkerTokenRevalidationService {
   readonly #deps: WorkerTokenRevalidationDeps;
+  /** Consecutive passes each bound token name has been missing. */
+  readonly #missingPasses = new Map<string, number>();
   #timer: ReturnType<typeof setTimeout> | null = null;
   #pending: Promise<void> = Promise.resolve();
   #disposed = false;
@@ -113,6 +124,7 @@ export class WorkerTokenRevalidationService {
   }
 
   async #revalidate(): Promise<string[]> {
+    if (this.#disposed) return [];
     const mintsByName = new Map<string, (string | null)[]>();
     for (const bound of this.#deps.listBoundTokens()) {
       const mints = mintsByName.get(bound.tokenName) ?? [];
@@ -120,20 +132,45 @@ export class WorkerTokenRevalidationService {
       mintsByName.set(bound.tokenName, mints);
     }
 
+    if (mintsByName.size === 0) {
+      this.#missingPasses.clear();
+      return [];
+    }
+
+    let tokens: ReadonlyMap<string, EnrollmentToken>;
+    try {
+      tokens = await this.#deps.readTokens();
+    } catch (err) {
+      // A transient read failure must not drop the fleet; the next pass
+      // retries.
+      logger.warn(
+        "Could not revalidate worker tokens, keeping every worker until the next pass: {error}",
+        { error: err instanceof Error ? err.message : String(err) },
+      );
+      return [];
+    }
+
+    // Forget names no worker is bound to any more.
+    for (const name of this.#missingPasses.keys()) {
+      if (!mintsByName.has(name)) this.#missingPasses.delete(name);
+    }
+
     const removed: string[] = [];
     for (const [name, mints] of mintsByName) {
       if (this.#disposed) break;
-      let token: EnrollmentToken | null;
-      try {
-        token = await this.#deps.readToken(name);
-      } catch (err) {
-        // A transient read failure must not drop the fleet; the next pass
-        // retries.
-        logger.warn(
-          "Could not revalidate workers on token {name}, keeping them until the next pass: {error}",
-          { name, error: err instanceof Error ? err.message : String(err) },
-        );
-        continue;
+      const token = tokens.get(name) ?? null;
+      if (token === null) {
+        const missing = (this.#missingPasses.get(name) ?? 0) + 1;
+        this.#missingPasses.set(name, missing);
+        if (missing < MISSING_PASSES_BEFORE_CUTOFF) {
+          logger.warn(
+            "Enrollment token {name} has no readable record; its workers are cut off if it is still missing on the next pass",
+            { name },
+          );
+          continue;
+        }
+      } else {
+        this.#missingPasses.delete(name);
       }
       for (const mint of mints) {
         const verdict = enrollmentTokenBindingVerdict(token, mint);
@@ -143,6 +180,7 @@ export class WorkerTokenRevalidationService {
         });
         for (const worker of cutOff) removed.push(worker);
       }
+      if (token === null) this.#missingPasses.delete(name);
     }
     return removed;
   }

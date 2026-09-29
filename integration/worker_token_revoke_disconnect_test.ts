@@ -117,7 +117,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   const revalidation = new WorkerTokenRevalidationService({
     intervalMs: 60_000,
     listBoundTokens: () => gateway.boundTokens(),
-    readToken: (name) => gateway.readTokenRecord(name),
+    readTokens: () => gateway.readTokenRecords(),
     revokeToken: (name, cause, options) =>
       gateway.revokeToken(name, cause, options),
   });

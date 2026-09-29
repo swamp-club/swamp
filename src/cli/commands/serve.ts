@@ -4659,7 +4659,7 @@ export const serveCommand = new Command()
     const workerTokenRevalidationService = new WorkerTokenRevalidationService({
       intervalMs: DEFAULT_WORKER_TOKEN_REVALIDATION_MS,
       listBoundTokens: () => workerGateway.boundTokens(),
-      readToken: (name) => workerGateway.readTokenRecord(name),
+      readTokens: () => workerGateway.readTokenRecords(),
       revokeToken: (name, cause, options) =>
         workerGateway.revokeToken(name, cause, options),
     });

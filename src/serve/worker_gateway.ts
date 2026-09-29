@@ -309,11 +309,12 @@ export class WorkerGateway {
   }
 
   /**
-   * A token's current record, or null when it does not exist or no longer
-   * parses. Read failures propagate.
+   * Every token's current record, keyed by name, from one datastore scan.
+   * A token that does not exist or no longer parses is absent. Read
+   * failures propagate.
    */
-  readTokenRecord(tokenName: string): Promise<EnrollmentToken | null> {
-    return this.#readTokenRecord(tokenName);
+  readTokenRecords(): Promise<Map<string, EnrollmentToken>> {
+    return this.#scanTokenRecords();
   }
 
   /**
@@ -1066,12 +1067,18 @@ export class WorkerGateway {
     return null;
   }
 
-  /**
-   * Finds a token's current record in the datastore. Records that are
-   * deleted, renamed, or do not parse are skipped, so null means no usable
-   * record. Read failures propagate.
-   */
+  /** Finds one token's current record; null when there is no usable one. */
   async #findTokenRecord(tokenName: string): Promise<EnrollmentToken | null> {
+    return (await this.#scanTokenRecords()).get(tokenName) ?? null;
+  }
+
+  /**
+   * Reads every token record in the datastore, keyed by name. Records that
+   * are deleted, renamed, or do not parse are skipped. Read failures
+   * propagate.
+   */
+  async #scanTokenRecords(): Promise<Map<string, EnrollmentToken>> {
+    const records = new Map<string, EnrollmentToken>();
     const dataItems = await this.#options.repoContext.unifiedDataRepo
       .findAllForType(ENROLLMENT_TOKEN_MODEL_TYPE);
     for (const { data, modelType, modelId } of dataItems) {
@@ -1090,11 +1097,11 @@ export class WorkerGateway {
         continue;
       }
       const parsed = EnrollmentTokenSchema.safeParse(attrs);
-      if (parsed.success && parsed.data.name === tokenName) {
-        return parsed.data;
+      if (parsed.success) {
+        records.set(parsed.data.name, parsed.data);
       }
     }
-    return null;
+    return records;
   }
 
   async #defaultRunModelMethod(input: {

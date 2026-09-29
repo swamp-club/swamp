@@ -520,11 +520,14 @@ cut off in three ways:
   `disconnectedWorkers`. It runs on the gateway's transition tail, so an
   enrollment already in progress lands first and is cut off too.
 - **On revalidation.** `WorkerTokenRevalidationService`
-  (`src/serve/worker_token_revalidation_service.ts`) re-reads each bound
-  token's record every 30 s and applies `enrollmentTokenBindingVerdict`: a
-  worker is cut off when its token is revoked, re-minted, or gone (a record
-  that no longer parses counts as gone). A read failure such as I/O keeps the
-  workers until the next pass. This covers revokes from the CLI without
+  (`src/serve/worker_token_revalidation_service.ts`) reads the token records
+  once every 30 s and applies `enrollmentTokenBindingVerdict` to each bound
+  token: a worker is cut off when its token is revoked, re-minted, or gone. A
+  token counts as gone only when it has no readable record on two passes in a
+  row, because a record that is present but momentarily unreadable (a remote
+  datastore returning no content, a peer mid-sync) looks the same for one
+  pass. A read failure such as I/O keeps every worker until the next pass.
+  This covers revokes from the CLI without
   `--server` and on HA peers, whose record arrives through the runtime data
   poller, so a peer cuts workers off within the poll interval plus 30 s.
 - **On expiry.** The per-worker expiry timer, armed from `expiresAt` at
