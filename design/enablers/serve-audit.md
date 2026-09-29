@@ -162,8 +162,8 @@ the full principal in `initiatedBy`. Query filters (`swamp audit log` and
 report grouping therefore match these events on the bare id, as they do every
 other event. Events written before swamp-club#2705 hold `principalKind: "user"`
 and the kind-prefixed principal in `principalId` for every token; the audit log
-is append-only and hash-chained, so they keep that shape. Token-creation events use the new token's name as the
-resource name.
+is append-only and hash-chained, so they keep that shape. Token-creation events
+use the new token's name as the resource name.
 
 ## Trigger events
 
