@@ -23,6 +23,7 @@ import {
   bindGeneratorToSpan,
   getTracer,
   SpanStatusCode,
+  withActiveSpan,
   withGeneratorSpan,
   withServerSpan,
   withSpan,
@@ -187,6 +188,91 @@ Deno.test("withServerSpan: records a thrown error as ERROR and rethrows", async 
     assertEquals(span.status.code, SpanStatusCode.ERROR);
     assertEquals(span.status.message, "boom");
     assertEquals(span.events[0].name, "exception");
+  });
+});
+
+// ── withActiveSpan tests ────────────────────────────────────────────
+
+Deno.test("withActiveSpan: spans started inside are children of the span, across awaits", async () => {
+  await withCapturedSpans(async (spans) => {
+    const parent = getTracer().startSpan("parent");
+    await withActiveSpan(parent, async () => {
+      getTracer().startSpan("before-await").end();
+      await Promise.resolve();
+      await withSpan("after-await", {}, () => Promise.resolve());
+    });
+    getTracer().startSpan("outside").end();
+    parent.end();
+
+    const parentSpan = findSpan(spans, "parent");
+    assert(isChildOf(findSpan(spans, "before-await"), parentSpan));
+    assert(isChildOf(findSpan(spans, "after-await"), parentSpan));
+    assertEquals(findSpan(spans, "outside").parentSpanId, undefined);
+  });
+});
+
+Deno.test("withActiveSpan: does not end the span or set its status", async () => {
+  await withCapturedSpans(async (spans) => {
+    const parent = getTracer().startSpan("parent");
+    await withActiveSpan(parent, () => Promise.resolve());
+    assertEquals(spans.length, 0);
+    parent.end();
+    assertEquals(findSpan(spans, "parent").status.code, SpanStatusCode.UNSET);
+  });
+});
+
+Deno.test("withActiveSpan: returns the result and propagates rejections", async () => {
+  await withCapturedSpans(async () => {
+    const parent = getTracer().startSpan("parent");
+    assertEquals(await withActiveSpan(parent, () => Promise.resolve(42)), 42);
+    await assertRejects(
+      () => withActiveSpan(parent, () => Promise.reject(new Error("boom"))),
+      Error,
+      "boom",
+    );
+    parent.end();
+  });
+});
+
+Deno.test("withActiveSpan: composes CLI phases into one trace under the root", async () => {
+  // Mirrors runCli: swamp.cli covers bootstrap, the command, and teardown.
+  await withCapturedSpans(async (spans) => {
+    await withSpan("swamp.cli", {}, async () => {
+      const bootstrap = getTracer().startSpan("swamp.cli.bootstrap");
+      await withActiveSpan(
+        bootstrap,
+        () =>
+          withSpan(
+            "swamp.cli.configure_extension_loaders",
+            {},
+            () => Promise.resolve(),
+          ),
+      );
+      bootstrap.end();
+      await withSpan("command", {}, () => Promise.resolve());
+      await withSpan("swamp.cli.teardown", {}, async () => {
+        await withSpan("swamp.datastore.sync", {}, () => Promise.resolve());
+      });
+    });
+
+    const cli = findSpan(spans, "swamp.cli");
+    const bootstrap = findSpan(spans, "swamp.cli.bootstrap");
+    const teardown = findSpan(spans, "swamp.cli.teardown");
+    assertEquals(cli.parentSpanId, undefined);
+    assert(isChildOf(bootstrap, cli));
+    assert(
+      isChildOf(
+        findSpan(spans, "swamp.cli.configure_extension_loaders"),
+        bootstrap,
+      ),
+    );
+    assert(isChildOf(findSpan(spans, "command"), cli));
+    assert(isChildOf(teardown, cli));
+    assert(isChildOf(findSpan(spans, "swamp.datastore.sync"), teardown));
+    assertEquals(
+      new Set(spans.map((s) => s.spanContext().traceId)).size,
+      1,
+    );
   });
 });
 

@@ -106,18 +106,28 @@ export OTEL_EXPORTER_OTLP_METRICS_HEADERS="Authorization=Bearer YOUR_TOKEN,X-Axi
 
 ```
 swamp.cli "workflow run"
-  └─ swamp.workflow.run.command
-       └─ swamp.workflow.run "deploy"
-            ├─ swamp.workflow.evaluate
-            ├─ swamp.workflow.job "build"
-            │    ├─ swamp.workflow.step "compile" (20ms)
-            │    │    └─ swamp.model.method
-            │    └─ swamp.workflow.step "test" (parallel, 45ms)
-            │         └─ swamp.model.method
-            └─ swamp.workflow.job "deploy" (starts after build)
-                 └─ swamp.workflow.step "apply"
-                      └─ swamp.model.method
+  ├─ swamp.cli.bootstrap
+  │    └─ swamp.cli.configure_extension_loaders
+  ├─ swamp.workflow.run.command
+  │    └─ swamp.workflow.run "deploy"
+  │         ├─ swamp.workflow.evaluate
+  │         ├─ swamp.workflow.job "build"
+  │         │    ├─ swamp.workflow.step "compile" (20ms)
+  │         │    │    └─ swamp.model.method
+  │         │    └─ swamp.workflow.step "test" (parallel, 45ms)
+  │         │         └─ swamp.model.method
+  │         └─ swamp.workflow.job "deploy" (starts after build)
+  │              └─ swamp.workflow.step "apply"
+  │                   └─ swamp.model.method
+  └─ swamp.cli.teardown
+       └─ swamp.datastore.sync (push)
 ```
+
+One CLI invocation is one trace: `swamp.cli` is the root and covers startup, the
+command, and shutdown. A `TRACEPARENT` env var parents the whole invocation; the
+`--traceparent` flag parents only the workflow or method run it is passed to.
+Long-running commands (`swamp serve`, `worker`, `agent`) never end `swamp.cli`,
+so their spans appear under a parent the backend never receives.
 
 ### All CLI Operations
 
