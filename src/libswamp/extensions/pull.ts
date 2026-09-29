@@ -45,9 +45,15 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import {
+  ArchiveSizeLimitError,
   extractTarGz,
   listTarGzEntries,
 } from "../../infrastructure/archive/tar_archive.ts";
+import {
+  formatArchiveBytes,
+  MAX_EXTENSION_ARCHIVE_BYTES,
+  MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES,
+} from "../../domain/extensions/extension_archive_limits.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import {
   canonicalClaimPath,
@@ -992,6 +998,17 @@ export async function prepareInstall(
     version,
     ctx.channel,
   );
+  // Checked here as well as in the HTTP client so every download source is
+  // bounded before its bytes reach the temp dir.
+  if (archiveBytes.byteLength > MAX_EXTENSION_ARCHIVE_BYTES) {
+    throw new UserError(
+      `Extension archive ${ref.name}@${version} is ${
+        formatArchiveBytes(archiveBytes.byteLength)
+      }, over the ${
+        formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
+      } archive size limit. This version cannot be installed; ask the extension author to publish a smaller archive.`,
+    );
+  }
 
   const serverChecksum = await ctx.getChecksum(ref.name, version, ctx.channel);
   const localChecksum = await computeChecksum(archiveBytes);
@@ -1036,6 +1053,20 @@ export async function prepareInstall(
     prefix: "swamp_pull_",
     dir: opts.tempRoot,
   });
+  const readOptions = {
+    maxDecompressedBytes: MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES,
+  };
+  const archiveReadError = (action: string, error: unknown): UserError => {
+    if (error instanceof ArchiveSizeLimitError) {
+      return new UserError(
+        `Extension archive ${ref.name}@${version} decompresses past the ${
+          formatArchiveBytes(error.maxDecompressedBytes)
+        } decompressed archive size limit. This version cannot be installed; ask the extension author to publish a smaller archive.`,
+      );
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return new UserError(`Failed to ${action}: ${message}`);
+  };
   try {
     const archivePath = join(tmpDir, "extension.tar.gz");
     await Deno.writeFile(archivePath, archiveBytes);
@@ -1043,10 +1074,9 @@ export async function prepareInstall(
     let archiveEntries: string[];
     try {
       const listFile = await Deno.open(archivePath, { read: true });
-      archiveEntries = await listTarGzEntries(listFile.readable);
+      archiveEntries = await listTarGzEntries(listFile.readable, readOptions);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new UserError(`Failed to list archive contents: ${message}`);
+      throw archiveReadError("list archive contents", error);
     }
     for (const entry of archiveEntries) {
       if (entry.includes("..") || entry.startsWith("/")) {
@@ -1062,10 +1092,14 @@ export async function prepareInstall(
       // `COPYFILE_DISABLE=1` env var that suppressed AppleDouble files in
       // the previous implementation is no longer needed: AppleDouble entries
       // are filtered out at extraction time as a defensive measure.
-      await extractTarGz(extractFile.readable, tmpDir);
+      await extractTarGz(
+        extractFile.readable,
+        tmpDir,
+        undefined,
+        readOptions,
+      );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new UserError(`Failed to extract archive: ${message}`);
+      throw archiveReadError("extract archive", error);
     }
 
     const extractDir = join(tmpDir, "extension");

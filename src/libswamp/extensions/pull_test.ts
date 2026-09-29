@@ -44,6 +44,7 @@ import { createLibSwampContext } from "../context.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
+import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
 Deno.test("parseExtensionRef: parses name without version", () => {
   const ref = parseExtensionRef("@myorg/my-ext");
@@ -1513,6 +1514,34 @@ Deno.test(
       );
       assertEquals(await snapshotTree(repoDir), before);
       assertEquals(lockfile.getEntry(name), null);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: refuses a downloaded archive over the archive size limit before verifying or writing it",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      let checksumFetched = false;
+      const ctx: InstallContext = {
+        ...skillInstallContext(repoDir, lockfile, {
+          [name]: new Uint8Array(MAX_EXTENSION_ARCHIVE_BYTES + 1),
+        }),
+        getChecksum: () => {
+          checksumFetched = true;
+          return Promise.resolve(null);
+        },
+      };
+      const error = await assertRejects(
+        () => installExtension({ name, version: null }, ctx),
+        UserError,
+      );
+      assertStringIncludes(error.message, `${name}@${SKILL_VERSION}`);
+      assertStringIncludes(error.message, "50 MiB archive size limit");
+      assertEquals(checksumFetched, false);
+      assertEquals(lockfile.getEntry(name), null);
+      assertEquals(await exists(join(repoDir, ".claude")), false);
     });
   },
 );

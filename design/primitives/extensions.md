@@ -1093,6 +1093,34 @@ Archives are verified with SHA-256 checksums, computed at push and stored in the
 registry. Pull checks the downloaded archive against it. Legacy extensions from
 before checksum support are marked "unverified" but still allowed.
 
+### Archive Size Limits
+
+Two limits in `src/domain/extensions/extension_archive_limits.ts` bound every
+extension archive:
+
+| Limit                                      | Value   | Bounds                                            |
+| ------------------------------------------ | ------- | ------------------------------------------------- |
+| `MAX_EXTENSION_ARCHIVE_BYTES`              | 50 MiB  | The compressed `.tar.gz`                          |
+| `MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES` | 500 MiB | One decompressed read pass (tar headers + bodies) |
+
+The compressed limit is enforced three times. The registry download counts
+bytes as they arrive, and refuses an oversize `Content-Length` before reading
+anything. `installExtension` checks it again before verifying checksums or
+writing to the temp dir, so every download source is bounded, not just HTTP.
+Push checks it in `extensionPushPrepare`, so `extension push`, `--dry-run` and
+`extension quality` (when it packages a fresh archive) report an archive that
+consumers could not download. Push does not check the decompressed limit.
+
+The decompressed limit is a byte-counting stream placed right after gunzip in
+`listTarGzEntries` and `extractTarGz`. The listing pass and the extract pass
+each count separately, and going over the limit aborts either pass with
+`ArchiveSizeLimitError`. This stops a small archive that expands to gigabytes
+(a gzip bomb) from filling the temp dir.
+
+Both values match the registry scoring analyzer's ceilings. The registry
+enforces no size limit at publish time, so any archive the registry can score
+still installs.
+
 ## Runtime Permissions
 
 Extension model methods run inside the host Deno process (via

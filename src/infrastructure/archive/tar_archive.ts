@@ -52,6 +52,93 @@ function toUint8ArrayStream(): TransformStream<BufferSource, Uint8Array> {
 }
 
 /**
+ * Thrown when a `.tar.gz` stream decompresses to more bytes than the
+ * caller's `maxDecompressedBytes` allows. Carries the limit so callers can
+ * report it in their own terms.
+ */
+export class ArchiveSizeLimitError extends Error {
+  constructor(readonly maxDecompressedBytes: number) {
+    super(
+      `Archive decompresses to more than ${maxDecompressedBytes} bytes`,
+    );
+    this.name = "ArchiveSizeLimitError";
+  }
+}
+
+/** Options shared by the `.tar.gz` read passes. */
+export interface TarGzReadOptions {
+  /**
+   * Abort with `ArchiveSizeLimitError` once the decompressed stream (tar
+   * headers, padding and file bodies) exceeds this many bytes. A stream of
+   * exactly this length is accepted. Omit for no limit.
+   */
+  maxDecompressedBytes?: number;
+}
+
+/**
+ * Passes chunks through unchanged, erroring once more than `maxBytes` have
+ * flowed. Erroring the transform also cancels its upstream, so the source
+ * (e.g. an `FsFile.readable`) is released.
+ */
+function byteLimitStream(
+  maxBytes: number,
+): TransformStream<Uint8Array, Uint8Array> {
+  let total = 0;
+  return new TransformStream({
+    transform(chunk, controller) {
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        controller.error(new ArchiveSizeLimitError(maxBytes));
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
+}
+
+/**
+ * gunzip → optional byte limit → untar. Aborting `signal` cancels `source`.
+ */
+function untarGz(
+  source: ReadableStream<Uint8Array>,
+  options: TarGzReadOptions,
+  signal?: AbortSignal,
+) {
+  // `pipeThrough` typings on `ReadableStream<Uint8Array>` are tighter than
+  // what `DecompressionStream` accepts as its writable side; cast to the
+  // BufferSource-shaped stream that `DecompressionStream` actually needs.
+  const compressed = source as unknown as ReadableStream<BufferSource>;
+  let decompressed = compressed
+    .pipeThrough(new DecompressionStream("gzip"), { signal })
+    .pipeThrough(toUint8ArrayStream());
+  if (options.maxDecompressedBytes !== undefined) {
+    decompressed = decompressed.pipeThrough(
+      byteLimitStream(options.maxDecompressedBytes),
+    );
+  }
+  return decompressed.pipeThrough(new UntarStream());
+}
+
+/**
+ * Iterates `stream`, aborting `abort` if the consumer leaves the loop early
+ * (e.g. throws on an entry). `UntarStream`'s readable side does not forward
+ * cancellation to its input, so without this a large archive's source (an
+ * `FsFile.readable`) would stay open once backpressure stops reading.
+ */
+async function* abortOnEarlyExit<T>(
+  stream: ReadableStream<T>,
+  abort: AbortController,
+): AsyncGenerator<T> {
+  let finished = false;
+  try {
+    for await (const item of stream) yield item;
+    finished = true;
+  } finally {
+    if (!finished) abort.abort();
+  }
+}
+
+/**
  * An entry written by the tar reader during streaming extraction.
  *
  * The entry holds the raw tar header along with an absolute target path
@@ -108,6 +195,9 @@ function ensureNoTraversal(targetPath: string, extractRoot: string): void {
  * Streams a `.tar.gz` byte stream into `extractRoot`, calling `onEntry` for
  * each entry before any bytes are written. `onEntry` may throw to abort
  * extraction (e.g. on a path-traversal violation discovered during validation).
+ * With `options.maxDecompressedBytes`, extraction aborts with
+ * `ArchiveSizeLimitError` once the decompressed stream exceeds it; files
+ * written before the abort stay under `extractRoot` for the caller to remove.
  *
  * Behavior preserved from the previous shell-out:
  * - Symlinks are recreated as symlinks (not dereferenced).
@@ -125,20 +215,23 @@ export async function extractTarGz(
   source: ReadableStream<Uint8Array>,
   extractRoot: string,
   onEntry?: (entry: ExtractedEntry) => void | Promise<void>,
+  options: TarGzReadOptions = {},
 ): Promise<void> {
-  await ensureDir(extractRoot);
-  const root = await Deno.realPath(extractRoot);
+  let root: string;
+  try {
+    await ensureDir(extractRoot);
+    root = await Deno.realPath(extractRoot);
+  } catch (error) {
+    // The source has not been read yet; cancel it so a file-backed stream
+    // releases its handle instead of leaking it.
+    await source.cancel().catch(() => {});
+    throw error;
+  }
 
-  // `pipeThrough` typings on `ReadableStream<Uint8Array>` are tighter than
-  // what `DecompressionStream` accepts as its writable side; cast to the
-  // BufferSource-shaped stream that `DecompressionStream` actually needs.
-  const compressed = source as unknown as ReadableStream<BufferSource>;
-  const stream = compressed
-    .pipeThrough(new DecompressionStream("gzip"))
-    .pipeThrough(toUint8ArrayStream())
-    .pipeThrough(new UntarStream());
+  const abort = new AbortController();
+  const stream = untarGz(source, options, abort.signal);
 
-  for await (const entry of stream) {
+  for await (const entry of abortOnEarlyExit(stream, abort)) {
     const typeflag = entry.header.typeflag;
 
     // PAX extended-header entries (typeflag 'x' / 'g') and macOS AppleDouble
@@ -298,17 +391,15 @@ export async function extractTarGz(
 /**
  * Reads a `.tar.gz` byte stream and returns the list of archive paths without
  * writing anything to disk. Used for pre-extraction safety checks (e.g.
- * "archive contains unsafe path").
+ * "archive contains unsafe path"). Entry bodies are still decompressed to
+ * reach the next header, so `maxDecompressedBytes` bounds this pass too.
  */
 export async function listTarGzEntries(
   source: ReadableStream<Uint8Array>,
+  options: TarGzReadOptions = {},
 ): Promise<string[]> {
   const entries: string[] = [];
-  const compressed = source as unknown as ReadableStream<BufferSource>;
-  const stream = compressed
-    .pipeThrough(new DecompressionStream("gzip"))
-    .pipeThrough(toUint8ArrayStream())
-    .pipeThrough(new UntarStream());
+  const stream = untarGz(source, options);
 
   for await (const entry of stream) {
     const typeflag = entry.header.typeflag;
