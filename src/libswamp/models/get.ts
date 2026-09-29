@@ -113,16 +113,10 @@ export async function createModelGetDeps(
     result: DefinitionLookupResult | null,
   ): Promise<ModelGetLookupResult> => {
     if (!result) return null;
-    const primaryPath = definitionRepo.getPath(
+    const autoCreated = await definitionRepo.isAutoDefinition(
+      result.definition,
       result.type,
-      result.definition.id,
     );
-    let autoCreated = false;
-    try {
-      await Deno.stat(primaryPath);
-    } catch {
-      autoCreated = true;
-    }
     return { ...result, autoCreated };
   };
   return {
