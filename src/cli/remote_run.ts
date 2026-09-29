@@ -1100,7 +1100,7 @@ async function* singleConnectionStream(
     type: "run.attach";
     payload: { runId: string; afterSeq: number };
   },
-  state: RemoteRunState,
+  state: { runId: string | undefined; lastSeq: number },
 ): AsyncGenerator<
   { kind: string; [key: string]: unknown },
   StreamOutcome
@@ -1249,14 +1249,15 @@ async function* singleConnectionStream(
         }
         if (message.type === "event") {
           const event = deserializeEvent(message.event);
+          // A nested workflow's started event carries the child's run id;
+          // a reconnect reattaches to the run this request started. An older
+          // serve sends no parentRunId and keys the run on the child, which
+          // this then follows.
           if (
             typeof event === "object" && event !== null && "kind" in event &&
-            "runId" in event
+            "runId" in event && !("parentRunId" in event)
           ) {
-            state.latestRunId = event.runId as string;
-            // A nested workflow's started event carries the child's run id;
-            // a reconnect reattaches to the run this request started.
-            if (!("parentRunId" in event)) state.runId = event.runId as string;
+            state.runId = event.runId as string;
           }
           if (
             typeof message.event === "object" && message.event !== null &&
@@ -1315,17 +1316,6 @@ async function* singleConnectionStream(
 }
 
 /**
- * The ids a remote run is known by across reconnections. `runId` is the run
- * the request started; `latestRunId` is the last id any event carried, which
- * a nested workflow's events set to the child's id.
- */
-interface RemoteRunState {
-  runId: string | undefined;
-  latestRunId: string | undefined;
-  lastSeq: number;
-}
-
-/**
  * One request, one event stream with automatic reconnection. The generator
  * completes on `done`, throws UserError on an `error` frame, and reconnects
  * transparently when the socket drops mid-run (if a runId is known).
@@ -1335,11 +1325,7 @@ async function* streamServerRun(
   request: OutboundRequest,
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
   writeRemoteIndicator(options.server);
-  const state: RemoteRunState = {
-    runId: undefined,
-    latestRunId: undefined,
-    lastSeq: 0,
-  };
+  const state = { runId: undefined as string | undefined, lastSeq: 0 };
   let reconnectRetries = 0;
   let elsewhereRetries = 0;
   let currentRequest: OutboundRequest | {
@@ -1366,20 +1352,6 @@ async function* streamServerRun(
         yield result.value;
       }
     } catch (err) {
-      if (
-        err instanceof UserError && err.code === "not_found" &&
-        !receivedEvents && currentRequest.type === "run.attach" &&
-        state.latestRunId !== undefined &&
-        currentRequest.payload.runId !== state.latestRunId
-      ) {
-        // A serve older than swamp-club#2470 keys the run on the id of the
-        // latest nested workflow it started, so reattach by that id.
-        currentRequest = {
-          type: "run.attach",
-          payload: { runId: state.latestRunId, afterSeq: state.lastSeq },
-        };
-        continue;
-      }
       if (err instanceof UserError && lastCloseDetail && !receivedEvents) {
         // A reconnect after the server closed the session failed — most often
         // because the token expired. Say why the session ended, not just why

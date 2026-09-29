@@ -2488,29 +2488,3 @@ Deno.test({
     }
   },
 });
-
-Deno.test({
-  name:
-    "remote run: reconnects by the nested run's id when an older serve does not know the parent's (swamp-club#2470)",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
-    // A serve older than swamp-club#2470 rekeys the run on the nested child.
-    const server = nestedRunServer(["run-child"]);
-    try {
-      const events: string[] = [];
-      for await (
-        const event of runWorkflowOverServer({
-          server: server.url,
-          payload: { workflowIdOrName: "parent" },
-        })
-      ) {
-        events.push(event.kind);
-      }
-      assertEquals(events, ["started", "started", "completed"]);
-      assertEquals(attachedRunIds(server), ["run-parent", "run-child"]);
-    } finally {
-      await server.shutdown();
-    }
-  },
-});

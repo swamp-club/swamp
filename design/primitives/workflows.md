@@ -1362,8 +1362,9 @@ parent run's id. The registry does record each nested child against its parent
 (`ActiveRunRegistry.addNestedRun`), but only `run.attach` resolves a child id
 to the parent's entry (`findForAttach`). That keeps reconnects working for
 clients that track the child's id. A `--server` client reattaches by the run it
-started. If serve answers `not_found`, the client retries with the last run id
-any event carried, which is what an older serve keyed the run on.
+started, skipping events that carry `parentRunId`. An older serve sends none
+and keys the run on its latest nested child, so the client follows that id
+there.
 
 **Suspended runs.** A suspended run has no process driving it, so it is in
 none of those registries. When they all miss, the cancel API falls back to a

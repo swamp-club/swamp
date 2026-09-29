@@ -4664,35 +4664,51 @@ export class WorkflowExecutionService {
     );
 
     let childRun: WorkflowRun | undefined;
+    const childEvents = childService.run(task.workflowIdOrName, {
+      inputs: evaluatedInputs,
+      authoredExpressions: inheritedExpressions,
+      deferredExpressions: deferred.deferredExpressions,
+      workflowNestingDepth: depth + 1,
+      ancestorWorkflowIds: childAncestors,
+      parentRunId: run.id,
+      signal: options.signal,
+    });
+    let childEnded = false;
     try {
-      for await (
-        const event of childService.run(task.workflowIdOrName, {
-          inputs: evaluatedInputs,
-          authoredExpressions: inheritedExpressions,
-          deferredExpressions: deferred.deferredExpressions,
-          workflowNestingDepth: depth + 1,
-          ancestorWorkflowIds: childAncestors,
-          parentRunId: run.id,
-          signal: options.signal,
-        })
-      ) {
-        if (event.kind === "completed" || event.kind === "cancelled") {
-          // The child's terminal event is the parent step's outcome, never
-          // the parent run's: the parent emits its own.
-          childRun = event.run;
-        } else if (options.signal?.aborted) {
-          // After an abort the job runner stops reading this step's events,
-          // and a yield would return() the child mid-run, before it saves
-          // itself cancelled. Drain the child without forwarding.
-          continue;
-        } else if (event.kind === "step_failed" && allowFailure) {
-          // When the parent step allows failure, mark child step_failed
-          // events as allowed so they don't set jobFailed in the parent
-          // job runner. The parent emits its own step_failed with the
-          // correct allowedFailure flag after the child finishes.
-          yield { ...event, allowedFailure: true };
-        } else {
-          yield event;
+      try {
+        while (true) {
+          const next = await childEvents.next();
+          if (next.done) {
+            childEnded = true;
+            break;
+          }
+          const event = next.value;
+          if (event.kind === "completed" || event.kind === "cancelled") {
+            // The child's terminal event is the parent step's outcome, never
+            // the parent run's: the parent emits its own.
+            childRun = event.run;
+          } else if (event.kind === "step_failed" && allowFailure) {
+            // When the parent step allows failure, mark child step_failed
+            // events as allowed so they don't set jobFailed in the parent
+            // job runner. The parent emits its own step_failed with the
+            // correct allowedFailure flag after the child finishes.
+            yield { ...event, allowedFailure: true };
+          } else {
+            yield event;
+          }
+        }
+      } finally {
+        if (!childEnded) {
+          if (options.signal?.aborted) {
+            // After an abort the job runner stops reading this step's events
+            // and returns it at its next yield. Run the child to its end,
+            // without forwarding, so it still saves itself cancelled.
+            while (!(await childEvents.next()).done) {
+              // Drained without forwarding.
+            }
+          } else {
+            await childEvents.return(undefined);
+          }
         }
       }
     } catch (error) {
@@ -4745,6 +4761,11 @@ export class WorkflowExecutionService {
     const childOutputs = await this.createStepOutputResolver(
       options.secretRedactor,
     ).resolveChildOutputs(childRun);
+    // After an abort the job may already have failed this step as abandoned;
+    // a child that finished anyway must not flip it back to succeeded.
+    if (options.signal?.aborted && stepRun.status !== "running") {
+      return childOutputs;
+    }
     stepRun.succeed({
       type: "workflow",
       workflow: task.workflowIdOrName,

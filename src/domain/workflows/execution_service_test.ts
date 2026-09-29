@@ -14765,6 +14765,76 @@ Deno.test("run(): a cancelled nested workflow beside a sibling step still saves 
   });
 });
 
+Deno.test("run(): a nested workflow that completes after the abort does not flip a parent step the job failed (swamp-club#2470)", async () => {
+  await withTempDir(async (tempDir) => {
+    // The child's workflow report aborts the run after the child has checked
+    // its signal, so the child still ends succeeded.
+    const controller = new AbortController();
+    const reportName = `@test2470/abort-${crypto.randomUUID()}`;
+    reportRegistry.register(reportName, {
+      description: "aborts the run from the child's workflow report",
+      scope: "workflow",
+      execute: () => {
+        controller.abort();
+        return Promise.resolve({ markdown: "# aborted", json: {} });
+      },
+    });
+    const child = Workflow.create({
+      name: "nested-cancel-child",
+      reports: { require: [reportName] },
+      jobs: [
+        Job.create({
+          name: "child-job",
+          steps: [
+            Step.create({
+              name: "slow",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const parent = Workflow.create({
+      name: "nested-cancel-parent",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow(child.name),
+            }),
+            Step.create({
+              name: "sibling",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service, runRepo } = await setupNestedCancel(
+      tempDir,
+      [parent, child],
+      new MockStepExecutor(),
+    );
+
+    const { run } = await finishedRun(
+      service.run(parent.name, { signal: controller.signal }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRun.status, "succeeded");
+    // Whichever settled first, the saved job and its step agree.
+    const job = run.getJob("main")!;
+    const step = job.getStep("call-child")!;
+    assert(
+      !(job.status === "failed" && step.status === "succeeded"),
+      `job ${job.status} with call-child ${step.status}`,
+    );
+  });
+});
+
 Deno.test("run(): a nested workflow's started event names the run whose step called it (swamp-club#2470)", async () => {
   await withTempDir(async (tempDir) => {
     const leaf = Workflow.create({
