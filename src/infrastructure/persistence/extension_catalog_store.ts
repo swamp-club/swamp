@@ -20,7 +20,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
-import { getLogger } from "@logtape/logtape";
+import { getLogger, type Logger } from "@logtape/logtape";
 import { canonicalizePath } from "./canonicalize_path.ts";
 import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import { isPulledExtensionPath } from "../../domain/extensions/extension_precedence.ts";
@@ -122,6 +122,40 @@ export interface PulledTypeConflict {
   readonly winnerName?: string;
   /** The loser's extension name, when derivable. */
   readonly loserName?: string;
+}
+
+/** Conflicts already reported this process, by kind, type and names. */
+const reportedPulledTypeConflicts = new Set<string>();
+
+/**
+ * Warns about each settled conflict between two different pulled
+ * extensions, naming the one kept and how to switch to the other. Shared
+ * by the loader and the reconcile so both word it the same, and each
+ * conflict is reported once per process: after a catalog rebuild the
+ * reconcile settles it and the loader's first index pass settles it again
+ * (swamp-club#2702).
+ */
+export function warnPulledTypeConflicts(
+  log: Logger,
+  conflicts: readonly PulledTypeConflict[],
+): void {
+  for (const { winner, winnerName, loserName } of conflicts) {
+    // Without both names there is no extension to tell the user to rm.
+    if (winnerName && loserName && winnerName !== loserName) {
+      const key =
+        `${winner.kind}\0${winner.type_normalized}\0${winnerName}\0${loserName}`;
+      if (reportedPulledTypeConflicts.has(key)) continue;
+      reportedPulledTypeConflicts.add(key);
+      log
+        .warn`Extensions ${winnerName} and ${loserName} both provide ${winner.kind} type ${winner.type_normalized}; keeping ${winnerName}, which provided it first. To use ${loserName} instead, run 'swamp extension rm ${winnerName}'`;
+    }
+  }
+}
+
+/** Forgets which conflicts were reported, as a new process starts. For
+ *  tests that stand in for several commands in one process. */
+export function resetPulledTypeConflictWarnings(): void {
+  reportedPulledTypeConflicts.clear();
 }
 
 /**
@@ -1596,10 +1630,12 @@ export class ExtensionCatalogStore {
    * an extension pulled later; `upsert` keeps a row's rowid, so a
    * rebundle does not reset its seniority.
    *
-   * Loader-only (swamp-club#2490): the loader's own catalog writes can
-   * type two pulled rows the same, and I-Repo-1 would then reject every
-   * later save. `ExtensionRepository.saveAll` does not call this, so a
-   * conflicting install still fails with DuplicateTypeError.
+   * The loader calls it after its own catalog writes, which can type two
+   * pulled rows the same; I-Repo-1 would then reject every later save
+   * (swamp-club#2490). `ExtensionRepository.saveAll` calls it only when
+   * asked (`settlePulledTypeConflicts: true`), which only the reconcile
+   * does (swamp-club#2702), so a conflicting install still fails with
+   * DuplicateTypeError.
    */
   settlePulledTypeConflicts(repoRoot: string): PulledTypeConflict[] {
     const canonicalRoot = canonicalizePath(repoRoot);

@@ -55,7 +55,10 @@ import {
 import type {
   ExtensionKind,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
-import { BUNDLE_LAYOUT_VERSION } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import {
+  BUNDLE_LAYOUT_VERSION,
+  warnPulledTypeConflicts,
+} from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import {
@@ -248,7 +251,16 @@ export class ReconcileFromDiskService {
     }
 
     if (!dryRun && transitions.length > 0) {
-      this.repository.saveAll(reconciledExtensions);
+      // Reconcile repairs state it did not create, so two pulled
+      // extensions providing one type are settled, not a rollback that
+      // leaves the catalog empty for every later command (swamp-club#2702).
+      this.repository.saveAll(reconciledExtensions, {
+        settlePulledTypeConflicts: true,
+      });
+      warnPulledTypeConflicts(
+        logger,
+        this.repository.lastPulledTypeConflicts,
+      );
       this.markAllKindsPopulated();
       logger
         .info`Extension catalog updated: ${transitions.length} ${

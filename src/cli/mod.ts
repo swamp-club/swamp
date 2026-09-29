@@ -659,8 +659,24 @@ export async function configureStartupExtensions(
     // load rather than skipped for the rest of the process.
     let reconciled = false;
     if (baseReady()) {
-      reconciled = await runReconcile();
-      if (checkLocalFiles && reconciled) {
+      // A failed repair must not fail every command, or doctor extensions
+      // and extension rm, which fix the state, become unreachable
+      // (swamp-club#2702). It is marked done so the deferred path does not
+      // repeat it this process; the populated markers stay unset, so the
+      // next process retries.
+      let repaired = false;
+      try {
+        reconciled = await runReconcile();
+        repaired = reconciled;
+      } catch (error) {
+        reconciled = true;
+        // Error messages usually end in a period; drop it before the hint.
+        const reason = (error instanceof Error ? error.message : String(error))
+          .replace(/\.$/, "");
+        logger
+          .warn`Extension catalog repair failed: ${reason}. Run ${"swamp doctor extensions"} to inspect.`;
+      }
+      if (checkLocalFiles && repaired) {
         await checkMissing((w) => deferredWarnings.push(w));
       }
     }
