@@ -37,6 +37,7 @@ import {
   createVaultReadSecretDeps,
   findVaultByNameOrId,
   isSwampError,
+  type SwampError,
   vaultAnnotate,
   vaultAuditTrail,
   vaultCreate,
@@ -115,6 +116,34 @@ function rejectReservedVault(
     return true;
   }
   return false;
+}
+
+/**
+ * Sends a SwampError thrown by a vault preview (e.g. vaultPutPreview,
+ * vaultDeletePreview) as an error frame. A missing vault gets a fixed message:
+ * libswamp's lists every configured vault, but vault put and delete are
+ * authorized by write on data:vault and listing vaults needs read.
+ */
+function sendVaultSwampError(
+  socket: WebSocket,
+  requestId: string,
+  code: string,
+  vaultName: string,
+  error: SwampError,
+): void {
+  const clientError = new LibSwampStreamError(error);
+  const missingVault = error.code === "not_found" &&
+    (error.details as { entityType?: unknown } | undefined)?.entityType ===
+      "Vault";
+  sendError(
+    socket,
+    requestId,
+    code,
+    missingVault
+      ? `Vault not found: ${vaultName}`
+      : sanitizeErrorForClient(clientError),
+    clientErrorDetails(clientError),
+  );
 }
 
 export async function handleVaultGet(
@@ -285,6 +314,14 @@ export async function handleVaultPut(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
+    } else if (isSwampError(error)) {
+      sendVaultSwampError(
+        socket,
+        requestId,
+        "vault_put_failed",
+        payload.vaultName,
+        error,
+      );
     } else {
       const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "vault_put_failed", message);
@@ -392,23 +429,14 @@ export async function handleVaultDelete(
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else if (isSwampError(error)) {
-      // vaultDeletePreview throws a SwampError for a missing vault. Its message
-      // lists every configured vault, but this request is authorized by write
-      // on data:vault and listing vaults needs read, so send a fixed message.
       // Handled before the not-found branch below so force never turns a
       // missing vault into a success.
-      const clientError = new LibSwampStreamError(error);
-      const missingVault = error.code === "not_found" &&
-        (error.details as { entityType?: unknown } | undefined)?.entityType ===
-          "Vault";
-      sendError(
+      sendVaultSwampError(
         socket,
         requestId,
         "vault_delete_failed",
-        missingVault
-          ? `Vault not found: ${payload.vaultName}`
-          : sanitizeErrorForClient(clientError),
-        clientErrorDetails(clientError),
+        payload.vaultName,
+        error,
       );
     } else if (
       error instanceof Error &&

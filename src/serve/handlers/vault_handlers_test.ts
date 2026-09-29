@@ -25,6 +25,7 @@ import {
   handleVaultCreate,
   handleVaultDelete,
   handleVaultEdit,
+  handleVaultPut,
   isReservedVaultName,
 } from "./vault_handlers.ts";
 import { buildMarkDirtyHook } from "../../cli/repo_context.ts";
@@ -248,6 +249,37 @@ for (const force of [false, true]) {
         const response = JSON.parse(socket.sent[0]);
         assertEquals(response.type, "error");
         assertEquals(response.error.code, "vault_delete_failed");
+        assertEquals(response.error.message, "Vault not found: no-such-vault");
+        assertEquals(response.error.details, { reason: "not_found" });
+        assert(!socket.sent[0].includes(TEST_VAULT_NAME));
+      });
+    },
+  );
+}
+
+for (const force of [false, true]) {
+  Deno.test(
+    `handleVaultPut: a missing vault${
+      force ? " with force" : ""
+    } replies not found without listing the configured vaults (swamp-club#2716)`,
+    async () => {
+      await withTempDir(async (dir) => {
+        await setupVault(dir);
+        const socket = createMockSocket();
+
+        await handleVaultPut(
+          socket,
+          createAnnotateCtx(dir),
+          "req-put",
+          { vaultName: "no-such-vault", key: "test-key", value: "v", force },
+          new AbortController(),
+          null,
+        );
+
+        assertEquals(socket.sent.length, 1);
+        const response = JSON.parse(socket.sent[0]);
+        assertEquals(response.type, "error");
+        assertEquals(response.error.code, "vault_put_failed");
         assertEquals(response.error.message, "Vault not found: no-such-vault");
         assertEquals(response.error.details, { reason: "not_found" });
         assert(!socket.sent[0].includes(TEST_VAULT_NAME));
