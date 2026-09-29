@@ -26,7 +26,7 @@
  */
 
 import { hostname } from "node:os";
-import { dirname } from "@std/path";
+import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import type {
   DistributedLock,
@@ -82,8 +82,8 @@ export class FileLock implements DistributedLock {
     const lockFile = options?.lockKey ?? DEFAULT_LOCK_PATH;
     const ns = options?.namespace;
     this.lockPath = ns
-      ? `${basePath}/${ns}/${lockFile}`
-      : `${basePath}/${lockFile}`;
+      ? join(basePath, ns, lockFile)
+      : join(basePath, lockFile);
     this.ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
     this.retryIntervalMs = options?.retryIntervalMs ??
       DEFAULT_RETRY_INTERVAL_MS;

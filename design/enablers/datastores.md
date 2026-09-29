@@ -1492,7 +1492,9 @@ count and total wait at info level:
 INF datastore·lock Acquired lock "/abs/path/to/datastore/.datastore.lock" after 3 retries (4521ms)
 ```
 
-The path is the absolute `lockPath` (`file_lock.ts`).
+The path is the absolute `lockPath` (`file_lock.ts`), built with `@std/path`
+`join`, so it uses the platform separator: timeout errors and log lines name a
+valid Windows path.
 
 ### Lock Lifecycle
 

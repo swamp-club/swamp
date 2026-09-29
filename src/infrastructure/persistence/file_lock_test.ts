@@ -130,6 +130,51 @@ Deno.test("FileLock - second acquire blocks and times out", async () => {
   });
 });
 
+Deno.test("FileLock - timeout names the lock file with the platform separator", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 60_000 });
+    const waiter = new FileLock(dir, {
+      ttlMs: 60_000,
+      retryIntervalMs: 20,
+      maxWaitMs: 100,
+    });
+    await holder.acquire();
+    try {
+      const error = await assertRejects(
+        () => waiter.acquire(),
+        LockTimeoutError,
+      );
+      assertEquals(error.lockKey, join(dir, ".datastore.lock"));
+      assertStringIncludes(error.message, join(dir, ".datastore.lock"));
+    } finally {
+      await holder.release();
+    }
+  });
+});
+
+Deno.test("FileLock - timeout names a namespaced lock file with the platform separator", async () => {
+  await withTempDir(async (dir) => {
+    const options = { lockKey: ".datastore.lock", namespace: "prod" };
+    const holder = new FileLock(dir, { ...options, ttlMs: 60_000 });
+    const waiter = new FileLock(dir, {
+      ...options,
+      ttlMs: 60_000,
+      retryIntervalMs: 20,
+      maxWaitMs: 100,
+    });
+    await holder.acquire();
+    try {
+      const error = await assertRejects(
+        () => waiter.acquire(),
+        LockTimeoutError,
+      );
+      assertEquals(error.lockKey, join(dir, "prod", ".datastore.lock"));
+    } finally {
+      await holder.release();
+    }
+  });
+});
+
 Deno.test("FileLock - stale lock is force-acquired", async () => {
   await withTempDir(async (dir) => {
     // Simulate a stale lock by writing a lockfile with expired TTL
@@ -545,7 +590,7 @@ Deno.test("FileLock - contention message includes lock file path", async () => {
 
     await assertRejects(() => waiter.acquire(), LockTimeoutError);
 
-    const lockPath = `${dir}/.datastore.lock`;
+    const lockPath = join(dir, ".datastore.lock");
     const messages = capturedLogRecords.map((r) =>
       r.message.map((p) => String(p)).join("")
     );
