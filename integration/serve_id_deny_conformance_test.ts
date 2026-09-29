@@ -40,6 +40,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { stringify as stringifyYaml } from "@std/yaml";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -48,6 +49,7 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import type { Workflow } from "../src/domain/workflows/workflow.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
+import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 import { RunEventBuffer } from "../src/serve/run_event_buffer.ts";
 import {
@@ -659,6 +661,10 @@ function registerRun(
 Deno.test("serve id-deny conformance: cancelling a run recorded under a raw UUID is authorized on the resolved name", async () => {
   await withFixtures(async (f) => {
     const ctx = createServeCtx(f.repo, GRANTS, { detached: true });
+    const audit: AuditEvent[] = [];
+    (ctx as { auditEmitter?: unknown }).auditEmitter = {
+      emit: (event: AuditEvent) => audit.push(event),
+    };
     // An older instance recorded the id the client sent, not the name.
     const { runId, controller } = registerRun(ctx, {
       kind: "method-run",
@@ -672,7 +678,17 @@ Deno.test("serve id-deny conformance: cancelling a run recorded under a raw UUID
       { awaitRuns: false },
     );
 
-    assertDenied(frames, "model:prod-db");
+    // A refused bare cancel is silent, like one for an unknown id
+    // (swamp-club#2649), so the resource it was checked on is read from the
+    // audited denial rather than a reply.
+    await waitFor(
+      () => audit.some((event) => event.outcome === "denied"),
+      "the cancel's denial to be audited",
+    );
+    assertEquals(frames, [], JSON.stringify(frames));
+    const denial = audit.find((event) => event.outcome === "denied");
+    assertEquals(denial?.resourceKind, "model");
+    assertEquals(denial?.resourceName, "prod-db");
     assertEquals(controller.signal.aborted, false);
   });
 });
