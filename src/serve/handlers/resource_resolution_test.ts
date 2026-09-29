@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import {
   authorizeReferenceAccess,
+  type ReferenceAccess,
   resolveModelTarget,
   resolveModelTargetById,
   resolveOutputAccess,
@@ -30,7 +31,13 @@ import {
   targetArgument,
 } from "./resource_resolution.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import type { ConnectionContext } from "./shared.ts";
+import { type ConnectionContext, setConnectionCollectives } from "./shared.ts";
+import type { AccessResource } from "../../domain/access/access_decision_service.ts";
+import type { Grant } from "../../domain/models/access/grant_model.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
+import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -366,10 +373,9 @@ Deno.test("resolveOutputAccess: a model read authorizes the model and the owners
   });
 });
 
-Deno.test("resolveOutputAccess: an ambiguous or unmatched argument is authorized as sent", async () => {
+Deno.test("resolveOutputAccess: an unmatched argument is authorized as sent", async () => {
   for (
     const reference of [
-      { kind: "ambiguous" as const, ids: [OUTPUT.id] },
       { kind: "not_found" as const },
       { kind: "invalid" as const },
     ]
@@ -384,6 +390,101 @@ Deno.test("resolveOutputAccess: an ambiguous or unmatched argument is authorized
       { kind: "model", name: "abc", fields: { name: "abc" } },
     ]);
   }
+});
+
+/** Counts the by-id lookups `repo` answers. */
+function countingDefinitionRepo(
+  repo: YamlDefinitionRepository,
+): { repo: DefinitionRepository; lookups: () => number } {
+  let lookups = 0;
+  return {
+    lookups: () => lookups,
+    repo: {
+      findAllByIdGlobal: (
+        id: Parameters<
+          NonNullable<DefinitionRepository["findAllByIdGlobal"]>
+        >[0],
+      ) => {
+        lookups++;
+        return repo.findAllByIdGlobal(id);
+      },
+    } as unknown as DefinitionRepository,
+  };
+}
+
+const PROD_ID = "00000000-0000-4000-8000-0000000000aa";
+const DEV_ID = "00000000-0000-4000-8000-0000000000bb";
+
+/** An ambiguous reference to two prod outputs and one dev output. */
+function ambiguousOutputs() {
+  const matches = [
+    { output: { definitionId: PROD_ID }, type: SHELL },
+    { output: { definitionId: DEV_ID }, type: SHELL },
+    { output: { definitionId: PROD_ID }, type: SHELL },
+  ];
+  return {
+    kind: "ambiguous" as const,
+    ids: ["abc1", "abc2", "abc3"],
+    matches,
+  };
+}
+
+async function saveProdAndDev(repo: YamlDefinitionRepository): Promise<void> {
+  await repo.save(
+    SHELL,
+    Definition.create({ id: PROD_ID, name: "prod-db", globalArguments: {} }),
+  );
+  await repo.save(
+    SHELL,
+    Definition.create({ id: DEV_ID, name: "dev-db", globalArguments: {} }),
+  );
+}
+
+Deno.test("resolveOutputAccess: an ambiguous prefix is authorized on each match's owners, looked up once per model (swamp-club#2743)", async () => {
+  await withTempDir(async (dir) => {
+    const yaml = new YamlDefinitionRepository(dir);
+    await saveProdAndDev(yaml);
+    const { repo, lookups } = countingDefinitionRepo(yaml);
+
+    const access = await resolveOutputAccess(
+      repo,
+      () => Promise.resolve({ reference: ambiguousOutputs() }),
+      "abc",
+      ["model", "data"],
+    );
+
+    assertEquals(access.status, "ambiguous");
+    if (access.status !== "ambiguous") return;
+    assertEquals(
+      access.candidates.map((c) => c.map((r) => `${r.kind}:${r.name}`)),
+      [
+        ["model:prod-db", "data:prod-db"],
+        ["model:dev-db", "data:dev-db"],
+        ["model:prod-db", "data:prod-db"],
+      ],
+    );
+    assertEquals(lookups(), 2);
+  });
+});
+
+Deno.test("resolveOutputAccess: narrowing an ambiguous prefix keeps ids and matches aligned", async () => {
+  await withTempDir(async (dir) => {
+    const yaml = new YamlDefinitionRepository(dir);
+    await saveProdAndDev(yaml);
+    const reference = ambiguousOutputs();
+    const access = await resolveOutputAccess(
+      yaml,
+      () => Promise.resolve({ reference }),
+      "abc",
+      ["model"],
+    );
+    if (access.status !== "ambiguous") throw new Error(access.status);
+    assertEquals(access.narrow([0, 2]).reference, {
+      kind: "ambiguous",
+      ids: ["abc1", "abc3"],
+      matches: [reference.matches[0], reference.matches[2]],
+    });
+  });
 });
 
 Deno.test("resolveOutputAccess: a failing lookup is reported, never treated as not found", async () => {
@@ -442,6 +543,78 @@ Deno.test("resolveRunAccess: a run of a renamed workflow is authorized on both n
   );
 });
 
+/** Counts every lookup `workflows` answers. */
+function countingWorkflowRepo(
+  workflows: Workflow[],
+): { repo: WorkflowRepository; lookups: () => number } {
+  let lookups = 0;
+  const inner = workflowRepo(workflows);
+  return {
+    lookups: () => lookups,
+    repo: {
+      findByName: (name: string) => {
+        lookups++;
+        return inner.findByName(name);
+      },
+      findById: (id: Parameters<WorkflowRepository["findById"]>[0]) => {
+        lookups++;
+        return inner.findById(id);
+      },
+    } as unknown as WorkflowRepository,
+  };
+}
+
+Deno.test("resolveRunAccess: an ambiguous prefix is authorized on each run's workflows, looked up once per workflow (swamp-club#2743)", async () => {
+  const prod = Workflow.create({ name: "prod-flow" });
+  const dev = Workflow.create({ name: "dev-flow" });
+
+  const single = countingWorkflowRepo([prod, dev]);
+  await resolveRunAccess(
+    single.repo,
+    () => Promise.resolve({ reference: { kind: "run", run: runOf(prod) } }),
+    "abd",
+  );
+
+  const { repo, lookups } = countingWorkflowRepo([prod, dev]);
+  const runs = [runOf(prod), runOf(dev), runOf(prod)];
+  const access = await resolveRunAccess(
+    repo,
+    () =>
+      Promise.resolve({
+        reference: {
+          kind: "ambiguous",
+          ids: runs.map((run) => run.id),
+          runs,
+        },
+      }),
+    "abd",
+  );
+
+  assertEquals(access.status, "ambiguous");
+  if (access.status !== "ambiguous") return;
+  assertEquals(
+    access.candidates.map((c) => c.map((r) => r.name)),
+    [["prod-flow"], ["dev-flow"], ["prod-flow"]],
+  );
+  assertEquals(lookups(), 2 * single.lookups());
+  assertEquals(access.narrow([1]).reference, {
+    kind: "ambiguous",
+    ids: [runs[1].id],
+    runs: [runs[1]],
+  });
+});
+
+Deno.test("resolveRunAccess: an unmatched argument is authorized as sent", async () => {
+  const access = await resolveRunAccess(
+    workflowRepo([]),
+    () => Promise.resolve({ reference: { kind: "not_found" } }),
+    "abd",
+  );
+  assertEquals(access.status === "resolved" && access.resources, [
+    { kind: "workflow", name: "abd", fields: { name: "abd" } },
+  ]);
+});
+
 Deno.test("resolveRunAccess: a workflow read authorizes the workflow and its latest run's workflow", async () => {
   const prod = Workflow.create({ name: "prod-flow" });
   const copy = Workflow.create({ id: prod.id, name: "safe-flow" });
@@ -489,9 +662,147 @@ Deno.test("authorizeReferenceAccess: a failed lookup replies with the failed cod
     ctx,
     "model_output_get_failed",
   );
-  assertEquals(proceed, false);
+  assertEquals(proceed, null);
   assertEquals(
     (sent[0] as { error?: { code: string } }).error?.code,
     "model_output_get_failed",
   );
+});
+
+// Ambiguous prefixes (swamp-club#2743).
+
+const PRINCIPAL = { kind: "user" as const, id: "adam" };
+
+function modelResource(name: string): AccessResource {
+  return { kind: "model", name, fields: { name } };
+}
+
+/** A policy context allowing model:* and denying model:prod-*. */
+function policyCtx(
+  mode: "none" | "token" = "token",
+): { ctx: ConnectionContext; audit: AuditEvent[] } {
+  const grant = (overrides: Partial<Grant>): Grant => ({
+    id: crypto.randomUUID(),
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "model", pattern: "*" },
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  });
+  const snapshot = new PolicySnapshot([
+    grant({}),
+    grant({ effect: "deny", resource: { kind: "model", pattern: "prod-*" } }),
+  ], []);
+  const audit: AuditEvent[] = [];
+  const ctx = {
+    policySnapshotLoader: {
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader,
+    authConfig: { mode, admins: [] },
+    auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
+    instanceId: "test-instance",
+  } as unknown as ConnectionContext;
+  return { ctx, audit };
+}
+
+/** An ambiguous access over `names`, narrowing to the readable names. */
+function ambiguousAccess(names: string[]): ReferenceAccess<string[]> {
+  return {
+    status: "ambiguous",
+    resolved: names,
+    candidates: names.map((name) => [modelResource(name)]),
+    narrow: (readable) => readable.map((i) => names[i]),
+  };
+}
+
+function authorizeAmbiguousNames(
+  names: string[],
+  ctx: ConnectionContext,
+  principal: typeof PRINCIPAL | null = PRINCIPAL,
+): { result: string[] | null; sent: unknown[] } {
+  const { socket, sent } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const result = authorizeReferenceAccess(
+    socket,
+    "req-1",
+    principal,
+    "read",
+    ambiguousAccess(names),
+    "abc",
+    ["model"],
+    ctx,
+    "model_output_get_failed",
+  );
+  return { result, sent };
+}
+
+Deno.test("authorizeReferenceAccess: an ambiguous prefix keeps only the readable matches, in order, and audits the rest", () => {
+  const { ctx, audit } = policyCtx();
+  const { result, sent } = authorizeAmbiguousNames(
+    ["prod-db", "dev-db", "prod-cache", "dev-cache"],
+    ctx,
+  );
+  assertEquals(result, ["dev-db", "dev-cache"]);
+  assertEquals(sent, []);
+  assertEquals(
+    audit.map((e) => [e.outcome, e.resourceName]),
+    [["denied", "prod-cache"], ["denied", "prod-db"]],
+  );
+});
+
+Deno.test("authorizeReferenceAccess: an ambiguous prefix with no readable match is refused as its first match would be", () => {
+  const { ctx, audit } = policyCtx();
+  const { result, sent } = authorizeAmbiguousNames(
+    ["prod-db", "prod-cache"],
+    ctx,
+  );
+  assertEquals(result, null);
+  assertEquals(sent.length, 1);
+  const error = (sent[0] as { error: { code: string; message: string } })
+    .error;
+  assertEquals(error.code, "unauthorized");
+  assertEquals(error.message.includes("model:prod-db"), true);
+  assertEquals(error.message.includes("prod-cache"), false);
+  assertEquals(
+    audit.map((e) => [e.outcome, e.resourceName]),
+    [["denied", "prod-cache"], ["denied", "prod-db"]],
+  );
+});
+
+Deno.test("authorizeReferenceAccess: an ambiguous prefix without a principal or policy is refused with the usual code", () => {
+  const { ctx } = policyCtx();
+  const noPrincipal = authorizeAmbiguousNames(
+    ["dev-db", "dev-cache"],
+    ctx,
+    null,
+  );
+  assertEquals(noPrincipal.result, null);
+  assertEquals(
+    (noPrincipal.sent[0] as { error: { code: string } }).error.code,
+    "unauthorized",
+  );
+
+  ctx.policySnapshotLoader = undefined;
+  const noPolicy = authorizeAmbiguousNames(["dev-db", "dev-cache"], ctx);
+  assertEquals(noPolicy.result, null);
+  assertEquals(
+    (noPolicy.sent[0] as { error: { code: string } }).error.code,
+    "access_not_configured",
+  );
+});
+
+Deno.test("authorizeReferenceAccess: an ambiguous prefix lists every match when auth is off", () => {
+  const { ctx, audit } = policyCtx("none");
+  const { result, sent } = authorizeAmbiguousNames(
+    ["prod-db", "dev-db"],
+    ctx,
+    null,
+  );
+  assertEquals(result, ["prod-db", "dev-db"]);
+  assertEquals(sent, []);
+  assertEquals(audit, []);
 });

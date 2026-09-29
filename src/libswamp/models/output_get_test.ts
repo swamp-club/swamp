@@ -155,8 +155,14 @@ Deno.test("modelOutputGet yields error with ambiguous_id on ambiguous partial ID
       Promise.resolve({
         status: "ambiguous",
         matches: [
-          { id: "aaaa1111-0000-4000-8000-000000000001" },
-          { id: "aaaa1112-0000-4000-8000-000000000002" },
+          {
+            id: "aaaa1111-0000-4000-8000-000000000001",
+            match: makeGlobalOutputInfo(),
+          },
+          {
+            id: "aaaa1112-0000-4000-8000-000000000002",
+            match: makeGlobalOutputInfo(),
+          },
         ],
       }),
   });

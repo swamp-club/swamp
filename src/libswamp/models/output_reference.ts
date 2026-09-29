@@ -40,12 +40,14 @@ export interface TypedOutput<O> {
 export interface OutputMatchResult<O> {
   status: "found" | "not_found" | "ambiguous";
   match?: TypedOutput<O>;
-  matches?: Array<{ id: string }>;
+  matches?: Array<{ id: string; match: TypedOutput<O> }>;
 }
 
 /**
  * What an output-or-model argument names. A model carries its latest
  * output, found as it resolves, so the read never looks one up afterwards.
+ * An ambiguous prefix carries every output it matched, in the order of
+ * `ids`, so serve can authorize each one's owners (swamp-club#2743).
  */
 export type OutputReference<O> =
   | { kind: "output"; match: TypedOutput<O> }
@@ -55,13 +57,13 @@ export type OutputReference<O> =
     type: ModelType;
     latest: O | null;
   }
-  | { kind: "ambiguous"; ids: string[] }
+  | { kind: "ambiguous"; ids: string[]; matches: TypedOutput<O>[] }
   | { kind: "not_found" };
 
 /** What an output id argument names. */
 export type OutputIdReference<O> =
   | { kind: "output"; match: TypedOutput<O> }
-  | { kind: "ambiguous"; ids: string[] }
+  | { kind: "ambiguous"; ids: string[]; matches: TypedOutput<O>[] }
   | { kind: "not_found" }
   /** Not an output id at all: no 3+ hex-character prefix. */
   | { kind: "invalid" };
@@ -97,7 +99,11 @@ export async function resolveOutputIdReference<O>(
     return { kind: "output", match: result.match };
   }
   if (result.status === "ambiguous" && result.matches) {
-    return { kind: "ambiguous", ids: result.matches.map((m) => m.id) };
+    return {
+      kind: "ambiguous",
+      ids: result.matches.map((m) => m.id),
+      matches: result.matches.map((m) => m.match),
+    };
   }
   return { kind: "not_found" };
 }

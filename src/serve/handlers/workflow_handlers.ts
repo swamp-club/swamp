@@ -777,20 +777,19 @@ export async function handleWorkflowHistoryGet(
     },
     payload.workflowIdOrName,
   );
-  if (
-    !authorizeReferenceAccess(
-      socket,
-      requestId,
-      principal,
-      "read",
-      access,
-      payload.workflowIdOrName,
-      ["workflow"],
-      ctx,
-      "workflow_history_get_failed",
-    )
-  ) return;
-  const { deps, reference } = access.resolved;
+  const authorized = authorizeReferenceAccess(
+    socket,
+    requestId,
+    principal,
+    "read",
+    access,
+    payload.workflowIdOrName,
+    ["workflow"],
+    ctx,
+    "workflow_history_get_failed",
+  );
+  if (!authorized) return;
+  const { deps, reference } = authorized;
 
   try {
     const libCtx = createLibSwampContext();
@@ -870,20 +869,19 @@ export async function handleWorkflowHistoryLogs(
     },
     payload.runIdOrWorkflow,
   );
-  if (
-    !authorizeReferenceAccess(
-      socket,
-      requestId,
-      principal,
-      "read",
-      access,
-      payload.runIdOrWorkflow,
-      ["workflow"],
-      ctx,
-      "workflow_history_logs_failed",
-    )
-  ) return;
-  const { deps, reference } = access.resolved;
+  const authorized = authorizeReferenceAccess(
+    socket,
+    requestId,
+    principal,
+    "read",
+    access,
+    payload.runIdOrWorkflow,
+    ["workflow"],
+    ctx,
+    "workflow_history_logs_failed",
+  );
+  if (!authorized) return;
+  const { deps, reference } = authorized;
 
   try {
     const libCtx = createLibSwampContext();

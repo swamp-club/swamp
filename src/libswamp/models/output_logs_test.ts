@@ -243,7 +243,7 @@ Deno.test("modelOutputLogs reports a passed ambiguous reference as today", async
   const events = await collect<ModelOutputLogsEvent>(
     modelOutputLogs(createLibSwampContext(), makeDeps(), {
       outputIdArg: "abc",
-      reference: { kind: "ambiguous", ids: ["abc1", "abc2"] },
+      reference: { kind: "ambiguous", ids: ["abc1", "abc2"], matches: [] },
     }),
   );
   const error = events[1] as Extract<ModelOutputLogsEvent, { kind: "error" }>;

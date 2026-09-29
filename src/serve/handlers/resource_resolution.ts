@@ -56,6 +56,7 @@ import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
+  isAuthorized,
   sanitizeErrorForClient,
   sendError,
 } from "./shared.ts";
@@ -386,9 +387,20 @@ export function authorizeResolved(
  * What a read by output or run reference resolved to, and every resource the
  * caller must be allowed to read for it (swamp-club#2673). The read is then
  * handed `resolved.reference` and acts on exactly that.
+ *
+ * A prefix matching several outputs or runs is `ambiguous`: `candidates`
+ * holds the owners of each match, in the order of the reference's `ids`, and
+ * `narrow` keeps only the matches at the given indexes, so the ambiguity
+ * error lists only what the caller may read (swamp-club#2743).
  */
 export type ReferenceAccess<T> =
   | { status: "resolved"; resolved: T; resources: AccessResource[] }
+  | {
+    status: "ambiguous";
+    resolved: T;
+    candidates: AccessResource[][];
+    narrow: (readable: number[]) => T;
+  }
   | { status: "failed"; error: unknown };
 
 type AnyOutputReference =
@@ -440,7 +452,8 @@ function distinct(resources: AccessResource[]): AccessResource[] {
  * Resolves an output read with `resolve` and collects what to authorize, as
  * each of `kinds`: for an output, every model that owns it; for a model, that
  * model and every owner of the latest output the read will return; for an
- * ambiguous or unmatched argument, the raw string as sent.
+ * ambiguous prefix, the owners of each output it matched, looked up once per
+ * model id; for an unmatched argument, the raw string as sent.
  */
 export async function resolveOutputAccess<
   T extends { reference: AnyOutputReference },
@@ -475,6 +488,37 @@ export async function resolveOutputAccess<
           : [];
         resources = [...named, ...owners];
         break;
+      }
+      case "ambiguous": {
+        const owners = new Map<string, AccessResource[]>();
+        const candidates: AccessResource[][] = [];
+        for (const { output, type } of reference.matches) {
+          const key = JSON.stringify([type.normalized, output.definitionId]);
+          let found = owners.get(key);
+          if (!found) {
+            found = await outputOwners(
+              definitionRepo,
+              output.definitionId,
+              type,
+              kinds,
+            );
+            owners.set(key, found);
+          }
+          candidates.push(distinct(found));
+        }
+        return {
+          status: "ambiguous",
+          resolved,
+          candidates,
+          narrow: (readable) => ({
+            ...resolved,
+            reference: {
+              kind: "ambiguous",
+              ids: readable.map((i) => reference.ids[i]),
+              matches: readable.map((i) => reference.matches[i]),
+            },
+          }),
+        };
       }
       default:
         resources = kinds.map((kind) =>
@@ -518,7 +562,8 @@ async function runOwners(
  * Resolves a workflow history read with `resolve` and collects what to
  * authorize: for a run, the workflows it belongs to; for a workflow, that
  * workflow and the workflows of the latest run the read will return; for an
- * ambiguous or unmatched argument, the raw string as sent.
+ * ambiguous prefix, the workflows of each run it matched, looked up once per
+ * recorded workflow; for an unmatched argument, the raw string as sent.
  */
 export async function resolveRunAccess<T extends { reference: RunReference }>(
   workflowRepo: WorkflowRepository,
@@ -541,6 +586,32 @@ export async function resolveRunAccess<T extends { reference: RunReference }>(
             : []),
         ];
         break;
+      case "ambiguous": {
+        const owners = new Map<string, AccessResource[]>();
+        const candidates: AccessResource[][] = [];
+        for (const run of reference.runs) {
+          const key = JSON.stringify([run.workflowId, run.workflowName]);
+          let found = owners.get(key);
+          if (!found) {
+            found = await runOwners(workflowRepo, run);
+            owners.set(key, found);
+          }
+          candidates.push(found);
+        }
+        return {
+          status: "ambiguous",
+          resolved,
+          candidates,
+          narrow: (readable) => ({
+            ...resolved,
+            reference: {
+              kind: "ambiguous",
+              ids: readable.map((i) => reference.ids[i]),
+              runs: readable.map((i) => reference.runs[i]),
+            },
+          }),
+        };
+      }
       default:
         resources = [unresolvedAccessResource("workflow", rawArgument)];
     }
@@ -555,7 +626,10 @@ export async function resolveRunAccess<T extends { reference: RunReference }>(
  * first denial, which is replied as authorizeOrReject replies. A failed
  * lookup is replied as `failedCode` with a sanitized message, after the raw
  * argument is authorized as each of `kinds`, so a refused caller learns
- * nothing more. Returns whether the read may proceed.
+ * nothing more. An ambiguous prefix keeps only the matches whose owners are
+ * all allowed; a refused match is audited but not replied, and when none is
+ * allowed the first is replied as a unique prefix of it would be
+ * (swamp-club#2743). Returns what the read may proceed with, or null.
  */
 export function authorizeReferenceAccess<T>(
   socket: WebSocket,
@@ -567,7 +641,17 @@ export function authorizeReferenceAccess<T>(
   kinds: AccessResource["kind"][],
   ctx: ConnectionContext,
   failedCode: string,
-): access is Extract<ReferenceAccess<T>, { status: "resolved" }> {
+): T | null {
+  if (access.status === "ambiguous") {
+    return authorizeAmbiguous(
+      socket,
+      requestId,
+      principal,
+      action,
+      access,
+      ctx,
+    );
+  }
   const resources = access.status === "failed"
     ? kinds.map((kind) => unresolvedAccessResource(kind, rawArgument))
     : access.resources;
@@ -575,7 +659,7 @@ export function authorizeReferenceAccess<T>(
     if (
       !authorizeOrReject(socket, requestId, principal, action, resource, ctx)
         .allowed
-    ) return false;
+    ) return null;
   }
   if (access.status === "failed") {
     sendError(
@@ -584,7 +668,42 @@ export function authorizeReferenceAccess<T>(
       failedCode,
       sanitizeErrorForClient(access.error),
     );
-    return false;
+    return null;
   }
-  return true;
+  return access.resolved;
+}
+
+/**
+ * Keeps the matches of an ambiguous prefix whose owners the caller may all
+ * read. The first match is decided last, so that when no other is readable
+ * its refusal is the one replied, and every match is audited exactly once.
+ */
+function authorizeAmbiguous<T>(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  access: Extract<ReferenceAccess<T>, { status: "ambiguous" }>,
+  ctx: ConnectionContext,
+): T | null {
+  const allows = (resources: AccessResource[]): boolean =>
+    resources.every((resource) =>
+      isAuthorized(socket, requestId, principal, action, resource, ctx)
+    );
+  const readable: number[] = [];
+  for (let i = 1; i < access.candidates.length; i++) {
+    if (allows(access.candidates[i])) readable.push(i);
+  }
+  const first = access.candidates[0] ?? [];
+  if (readable.length === 0) {
+    for (const resource of first) {
+      if (
+        !authorizeOrReject(socket, requestId, principal, action, resource, ctx)
+          .allowed
+      ) return null;
+    }
+    return access.narrow([0]);
+  }
+  if (allows(first)) readable.unshift(0);
+  return access.narrow(readable);
 }

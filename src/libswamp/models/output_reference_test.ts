@@ -68,7 +68,10 @@ function fakeDeps(
       if (result.status === "ambiguous") {
         return Promise.resolve({
           status: "ambiguous",
-          matches: result.matches.map((m) => ({ id: m.id })),
+          matches: result.matches.map((m) => ({
+            id: m.id,
+            match: { output: m.match, type: TYPE },
+          })),
         });
       }
       return Promise.resolve({ status: "not_found" });

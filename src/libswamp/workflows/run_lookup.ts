@@ -29,7 +29,7 @@ import { isUuid, matchByPartialId } from "../../domain/models/model_lookup.ts";
 export interface PartialMatchResult {
   status: "found" | "not_found" | "ambiguous";
   match?: WorkflowRun;
-  matches?: Array<{ id: string }>;
+  matches?: Array<{ id: string; run: WorkflowRun }>;
 }
 
 /**
@@ -108,7 +108,7 @@ export function createRunMatcher(
     if (result.status === "ambiguous") {
       return {
         status: "ambiguous",
-        matches: result.matches.map((m) => ({ id: m.id })),
+        matches: result.matches.map((m) => ({ id: m.id, run: m.match })),
       };
     }
     return { status: "not_found" };

@@ -1156,20 +1156,19 @@ export async function handleModelOutputGet(
     payload.outputIdOrModelName,
     ["model"],
   );
-  if (
-    !authorizeReferenceAccess(
-      socket,
-      requestId,
-      principal,
-      "read",
-      access,
-      payload.outputIdOrModelName,
-      ["model"],
-      ctx,
-      "model_output_get_failed",
-    )
-  ) return;
-  const { deps, reference } = access.resolved;
+  const authorized = authorizeReferenceAccess(
+    socket,
+    requestId,
+    principal,
+    "read",
+    access,
+    payload.outputIdOrModelName,
+    ["model"],
+    ctx,
+    "model_output_get_failed",
+  );
+  if (!authorized) return;
+  const { deps, reference } = authorized;
 
   try {
     const libCtx = createLibSwampContext();
@@ -1238,20 +1237,19 @@ export async function handleModelOutputData(
     payload.outputIdArg,
     ["model", "data"],
   );
-  if (
-    !authorizeReferenceAccess(
-      socket,
-      requestId,
-      principal,
-      "read",
-      access,
-      payload.outputIdArg,
-      ["model", "data"],
-      ctx,
-      "model_output_data_failed",
-    )
-  ) return;
-  const { deps, reference } = access.resolved;
+  const authorized = authorizeReferenceAccess(
+    socket,
+    requestId,
+    principal,
+    "read",
+    access,
+    payload.outputIdArg,
+    ["model", "data"],
+    ctx,
+    "model_output_data_failed",
+  );
+  if (!authorized) return;
+  const { deps, reference } = authorized;
 
   try {
     const libCtx = createLibSwampContext();
@@ -1325,20 +1323,19 @@ export async function handleModelOutputLogs(
     payload.outputIdArg,
     ["model", "data"],
   );
-  if (
-    !authorizeReferenceAccess(
-      socket,
-      requestId,
-      principal,
-      "read",
-      access,
-      payload.outputIdArg,
-      ["model", "data"],
-      ctx,
-      "model_output_logs_failed",
-    )
-  ) return;
-  const { deps, reference } = access.resolved;
+  const authorized = authorizeReferenceAccess(
+    socket,
+    requestId,
+    principal,
+    "read",
+    access,
+    payload.outputIdArg,
+    ["model", "data"],
+    ctx,
+    "model_output_logs_failed",
+  );
+  if (!authorized) return;
+  const { deps, reference } = authorized;
 
   try {
     const libCtx = createLibSwampContext();
@@ -1490,20 +1487,19 @@ export async function handleModelMethodHistoryGet(
     payload.outputIdOrModelName,
     ["model"],
   );
-  if (
-    !authorizeReferenceAccess(
-      socket,
-      requestId,
-      principal,
-      "read",
-      access,
-      payload.outputIdOrModelName,
-      ["model"],
-      ctx,
-      "model_method_history_get_failed",
-    )
-  ) return;
-  const { deps, reference } = access.resolved;
+  const authorized = authorizeReferenceAccess(
+    socket,
+    requestId,
+    principal,
+    "read",
+    access,
+    payload.outputIdOrModelName,
+    ["model"],
+    ctx,
+    "model_method_history_get_failed",
+  );
+  if (!authorized) return;
+  const { deps, reference } = authorized;
 
   try {
     const libCtx = createLibSwampContext();
@@ -1577,20 +1573,19 @@ export async function handleModelMethodHistoryLogs(
     payload.outputIdOrModelName,
     ["model"],
   );
-  if (
-    !authorizeReferenceAccess(
-      socket,
-      requestId,
-      principal,
-      "read",
-      access,
-      payload.outputIdOrModelName,
-      ["model"],
-      ctx,
-      "model_method_history_logs_failed",
-    )
-  ) return;
-  const { deps, reference } = access.resolved;
+  const authorized = authorizeReferenceAccess(
+    socket,
+    requestId,
+    principal,
+    "read",
+    access,
+    payload.outputIdOrModelName,
+    ["model"],
+    ctx,
+    "model_method_history_logs_failed",
+  );
+  if (!authorized) return;
+  const { deps, reference } = authorized;
 
   try {
     const libCtx = createLibSwampContext();

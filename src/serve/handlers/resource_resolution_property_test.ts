@@ -27,10 +27,15 @@
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  authorizeReferenceAccess,
   resolveOutputAccess,
   resolveWorkflowTarget,
   targetArgument,
 } from "./resource_resolution.ts";
+import { type ConnectionContext, setConnectionCollectives } from "./shared.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import {
   findWorkflowById,
   findWorkflowByIdOrName,
@@ -199,7 +204,7 @@ function outputDepsOf(
       if (result.status === "ambiguous") {
         return Promise.resolve({
           status: "ambiguous",
-          matches: result.matches.map((m) => ({ id: m.id })),
+          matches: result.matches.map((m) => ({ id: m.id, match: m.match })),
         });
       }
       return Promise.resolve({ status: "not_found" });
@@ -246,7 +251,10 @@ Deno.test("resolveOutputAccess property: every model owning the output read is a
           ["model"],
         );
         if (access.status === "failed") throw access.error;
-        const authorized = access.resources.map((r) => r.name);
+        const resources = access.status === "ambiguous"
+          ? access.candidates.flat()
+          : access.resources;
+        const authorized = resources.map((r) => r.name);
 
         let read: ModelOutputGetData | undefined;
         for await (
@@ -271,6 +279,85 @@ Deno.test("resolveOutputAccess property: every model owning the output read is a
           : [read.definitionId];
         for (const name of expected) {
           assertEquals(authorized.includes(name), true, name);
+        }
+      },
+    ),
+  );
+});
+
+Deno.test("authorizeReferenceAccess property: an ambiguous prefix lists exactly the readable matches, in order (swamp-club#2743)", () => {
+  const NAMES = ["alpha", "beta", "gamma", "delta"];
+  fc.assert(
+    fc.property(
+      fc.array(fc.constantFrom(...NAMES), { minLength: 2, maxLength: 8 }),
+      fc.subarray(NAMES),
+      (matches, denied) => {
+        const snapshot = new PolicySnapshot([
+          {
+            id: crypto.randomUUID(),
+            subject: { kind: "user", name: "adam" },
+            effect: "allow",
+            actions: ["read"],
+            resource: { kind: "model", pattern: "*" },
+            state: "active",
+            source: "method",
+            createdBy: { kind: "user", id: "admin" },
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+          ...denied.map((name) => ({
+            id: crypto.randomUUID(),
+            subject: { kind: "user" as const, name: "adam" },
+            effect: "deny" as const,
+            actions: ["read" as const],
+            resource: { kind: "model" as const, pattern: name },
+            state: "active" as const,
+            source: "method" as const,
+            createdBy: { kind: "user" as const, id: "admin" },
+            createdAt: "2026-01-01T00:00:00Z",
+          })),
+        ], []);
+        const ctx = {
+          policySnapshotLoader: {
+            decisionService: new GrantBasedAccessDecisionService(snapshot),
+          } as unknown as PolicySnapshotLoader,
+          authConfig: { mode: "token", admins: [] },
+          auditEmitter: { emit: () => {} },
+          instanceId: "test-instance",
+        } as unknown as ConnectionContext;
+        const sent: unknown[] = [];
+        const socket = {
+          readyState: WebSocket.OPEN,
+          send: (data: string) => sent.push(JSON.parse(data)),
+        } as unknown as WebSocket;
+        setConnectionCollectives(socket, [], []);
+
+        const indexes = matches.map((_, i) => i);
+        const result = authorizeReferenceAccess(
+          socket,
+          "req-1",
+          { kind: "user", id: "adam" },
+          "read",
+          {
+            status: "ambiguous",
+            resolved: indexes,
+            candidates: matches.map((name) => [
+              { kind: "model", name, fields: { name } },
+            ]),
+            narrow: (readable) => readable,
+          },
+          "abc",
+          ["model"],
+          ctx,
+          "model_output_get_failed",
+        );
+
+        const readable = indexes.filter((i) => !denied.includes(matches[i]));
+        if (readable.length === 0) {
+          assertEquals(result, null);
+          assertEquals(sent.length, 1);
+        } else {
+          assertEquals(result, readable);
+          assertEquals(sent, []);
         }
       },
     ),
