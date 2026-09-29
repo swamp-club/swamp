@@ -59,7 +59,7 @@ export const runGcCommand = withRemoteOptions(
   new Command()
     .name("gc")
     .description(
-      "Garbage-collect old workflow runs and model method outputs. Running and suspended runs are never deleted regardless of age.",
+      "Garbage-collect old workflow runs, their evaluated-workflow snapshots, and model method outputs. Orphaned snapshots are removed once past retention. Running and suspended runs are never deleted regardless of age.",
     )
     .example("Preview what would be collected", "swamp run gc --dry-run")
     .example("Run GC with default 30-day retention", "swamp run gc --force")
@@ -172,5 +172,7 @@ export function runGcDataFromServer(data: Record<string, unknown>): RunGcData {
   return {
     ...result,
     evaluatedSnapshotsDeleted: result.evaluatedSnapshotsDeleted ?? 0,
+    evaluatedSnapshotBytesReclaimed: result.evaluatedSnapshotBytesReclaimed ??
+      0,
   };
 }

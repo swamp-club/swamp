@@ -76,8 +76,10 @@ export interface WorkflowDeleteDeps {
   pathExists: (path: string) => Promise<boolean>;
   countRuns: (workflowId: WorkflowId) => Promise<number>;
   deleteRuns: (workflowId: WorkflowId) => Promise<number>;
-  /** Deletes the per-run evaluated-workflow snapshots of every run. */
-  deleteRunSnapshots: (workflowId: WorkflowId) => Promise<void>;
+  /** Lists a workflow's run IDs from the run filenames. */
+  listRunIds: (workflowId: WorkflowId) => Promise<string[]>;
+  /** Deletes the per-run evaluated-workflow snapshots of the given runs. */
+  deleteRunSnapshots: (runIds: readonly string[]) => Promise<void>;
   deleteEvaluated: (workflowId: WorkflowId) => Promise<void>;
   deleteWorkflow: (workflowId: WorkflowId) => Promise<void>;
 }
@@ -128,13 +130,14 @@ export function createWorkflowDeleteDeps(
     },
     deleteRuns: (workflowId) =>
       workflowRunRepo.deleteAllByWorkflowId(workflowId),
-    deleteRunSnapshots: async (workflowId) => {
-      const runs = await workflowRunRepo.findAllByWorkflowId(workflowId);
-      for (const run of runs) {
-        // Run IDs come from persisted run records; skip any that cannot
-        // name a snapshot directory rather than abort the delete.
-        if (!isSinglePathSegment(run.id)) continue;
-        await evaluatedWorkflowRepo.deleteForRun(run.id);
+    listRunIds: (workflowId) =>
+      workflowRunRepo.listRunIdsForWorkflow(workflowId),
+    deleteRunSnapshots: async (runIds) => {
+      for (const runId of runIds) {
+        // listRunIds already filters, but the IDs come from the filesystem;
+        // skip any that cannot name a snapshot directory.
+        if (!isSinglePathSegment(runId)) continue;
+        await evaluatedWorkflowRepo.deleteForRun(runId);
       }
     },
     deleteEvaluated: (workflowId) => evaluatedWorkflowRepo.delete(workflowId),
@@ -208,13 +211,17 @@ export async function* workflowDelete(
 
       const workflowPath = deps.getPath(workflow.id);
 
-      // Delete run snapshots first: the run IDs are gone once the runs are.
-      ctx.logger.debug`Deleting run snapshots`;
-      await deps.deleteRunSnapshots(workflow.id);
+      // Collect the run IDs (from the run filenames) before the runs are
+      // deleted; the snapshots go after the runs, so a failed run delete
+      // never leaves surviving runs without their snapshots.
+      const runIds = await deps.listRunIds(workflow.id);
 
       // Delete runs
       ctx.logger.debug`Deleting workflow runs`;
       const runsDeleted = await deps.deleteRuns(workflow.id);
+
+      ctx.logger.debug`Deleting run snapshots`;
+      await deps.deleteRunSnapshots(runIds);
 
       // Delete evaluated workflow
       ctx.logger.debug`Deleting evaluated workflow`;

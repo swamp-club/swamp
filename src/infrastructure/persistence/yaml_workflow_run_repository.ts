@@ -826,21 +826,40 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     try {
       for await (const entry of Deno.readDir(this.baseDir)) {
         if (!entry.isDirectory) continue;
-        try {
-          for await (
-            const fileEntry of Deno.readDir(join(this.baseDir, entry.name))
-          ) {
-            if (
-              fileEntry.isFile &&
-              fileEntry.name.startsWith("workflow-run-") &&
-              fileEntry.name.endsWith(".yaml")
-            ) {
-              const runId = runIdFromFileName(fileEntry.name);
-              if (isSinglePathSegment(runId)) ids.add(runId);
-            }
-          }
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        for (
+          const runId of await this.listRunIdsInDir(
+            join(this.baseDir, entry.name),
+          )
+        ) {
+          ids.add(runId);
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    return ids;
+  }
+
+  /**
+   * Returns the IDs of a workflow's stored runs, read from the
+   * `workflow-run-{runId}.yaml` filenames without parsing any YAML. Empty or
+   * unparseable run files are included; a record body's `id` is never used.
+   */
+  async listRunIdsForWorkflow(workflowId: WorkflowId): Promise<string[]> {
+    return await this.listRunIdsInDir(this.getRunsDir(workflowId));
+  }
+
+  private async listRunIdsInDir(dir: string): Promise<string[]> {
+    const ids: string[] = [];
+    try {
+      for await (const fileEntry of Deno.readDir(dir)) {
+        if (
+          fileEntry.isFile &&
+          fileEntry.name.startsWith("workflow-run-") &&
+          fileEntry.name.endsWith(".yaml")
+        ) {
+          const runId = runIdFromFileName(fileEntry.name);
+          if (isSinglePathSegment(runId)) ids.push(runId);
         }
       }
     } catch (error) {

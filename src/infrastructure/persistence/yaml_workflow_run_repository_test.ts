@@ -1467,3 +1467,31 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the deleted file's
     assertEquals(result.deletedRunIds, [finished.id]);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.listRunIdsForWorkflow: lists one workflow's run IDs from filenames, including empty files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    assertEquals(await repo.listRunIdsForWorkflow(workflow.id), []);
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const emptyId = crypto.randomUUID();
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await Deno.writeTextFile(join(runsDir, `workflow-run-${emptyId}.yaml`), "");
+    await Deno.writeTextFile(join(runsDir, "workflow-run-..yaml"), "");
+    // Another workflow's run is not included.
+    const otherDir = join(dir, ".swamp", "workflow-runs", crypto.randomUUID());
+    await ensureDir(otherDir);
+    await Deno.writeTextFile(
+      join(otherDir, `workflow-run-${crypto.randomUUID()}.yaml`),
+      "",
+    );
+
+    assertEquals(
+      (await repo.listRunIdsForWorkflow(workflow.id)).sort(),
+      [run.id, emptyId].sort(),
+    );
+  });
+});

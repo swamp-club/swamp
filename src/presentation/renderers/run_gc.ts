@@ -51,7 +51,9 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
             formatBytes(e.data.workflowRunBytesReclaimed)
           }), ${e.data.outputsDeleted} output(s) (${
             formatBytes(e.data.outputBytesReclaimed)
-          }), ${e.data.evaluatedSnapshotsDeleted} evaluated workflow snapshot(s), total: ${total} items (${totalBytes})`;
+          }), ${e.data.evaluatedSnapshotsDeleted} run snapshot(s) (${
+            formatBytes(e.data.evaluatedSnapshotBytesReclaimed)
+          }), total: ${total} items (${totalBytes})`;
           return;
         }
         logger
@@ -59,7 +61,9 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
           formatBytes(e.data.workflowRunBytesReclaimed)
         }), ${e.data.outputsDeleted} output(s) (${
           formatBytes(e.data.outputBytesReclaimed)
-        }), ${e.data.evaluatedSnapshotsDeleted} evaluated workflow snapshot(s), total: ${total} items (${totalBytes})`;
+        }), ${e.data.evaluatedSnapshotsDeleted} run snapshot(s) (${
+          formatBytes(e.data.evaluatedSnapshotBytesReclaimed)
+        }), total: ${total} items (${totalBytes})`;
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -80,6 +84,8 @@ class JsonRunGcRenderer implements Renderer<RunGcEvent> {
             outputsDeleted: e.data.outputsDeleted,
             outputBytesReclaimed: e.data.outputBytesReclaimed,
             evaluatedSnapshotsDeleted: e.data.evaluatedSnapshotsDeleted,
+            evaluatedSnapshotBytesReclaimed:
+              e.data.evaluatedSnapshotBytesReclaimed,
             totalBytesReclaimed: e.data.totalBytesReclaimed,
             dryRun: e.data.dryRun,
           },
@@ -117,6 +123,8 @@ export function renderRunGcPreview(
         outputsToDelete: preview.outputsToDelete,
         outputBytesReclaimable: preview.outputBytesReclaimable,
         evaluatedSnapshotsToDelete: preview.evaluatedSnapshotsToDelete,
+        evaluatedSnapshotBytesReclaimable:
+          preview.evaluatedSnapshotBytesReclaimable,
         totalBytesReclaimable: preview.totalBytesReclaimable,
       },
       null,
@@ -132,9 +140,9 @@ export function renderRunGcPreview(
       formatBytes(preview.workflowRunBytesReclaimable)
     }), ${preview.outputsToDelete} output(s) (${
       formatBytes(preview.outputBytesReclaimable)
-    }), ${preview.evaluatedSnapshotsToDelete} evaluated workflow snapshot(s), total: ${
-      formatBytes(preview.totalBytesReclaimable)
-    } reclaimable`;
+    }), ${preview.evaluatedSnapshotsToDelete} run snapshot(s) (${
+      formatBytes(preview.evaluatedSnapshotBytesReclaimable)
+    }), total: ${formatBytes(preview.totalBytesReclaimable)} reclaimable`;
   }
 }
 

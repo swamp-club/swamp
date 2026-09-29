@@ -43,6 +43,7 @@ export interface RunGcData {
   outputBytesReclaimed: number;
   /** Per-run evaluated-workflow snapshots removed with their runs or as orphans. */
   evaluatedSnapshotsDeleted: number;
+  evaluatedSnapshotBytesReclaimed: number;
   totalBytesReclaimed: number;
   dryRun: boolean;
 }
@@ -97,6 +98,7 @@ export interface RunGcPreview {
   outputsToDelete: number;
   outputBytesReclaimable: number;
   evaluatedSnapshotsToDelete: number;
+  evaluatedSnapshotBytesReclaimable: number;
   totalBytesReclaimable: number;
 }
 
@@ -161,6 +163,7 @@ export async function runGcPreview(
     outputsToDelete: result.outputsDeleted,
     outputBytesReclaimable: result.outputBytesReclaimed,
     evaluatedSnapshotsToDelete: result.snapshotsDeleted,
+    evaluatedSnapshotBytesReclaimable: result.snapshotBytesReclaimed,
     totalBytesReclaimable: result.workflowRunBytesReclaimed +
       result.outputBytesReclaimed + result.snapshotBytesReclaimed,
   };
@@ -193,6 +196,7 @@ export async function* runGc(
           outputsDeleted: result.outputsDeleted,
           outputBytesReclaimed: result.outputBytesReclaimed,
           evaluatedSnapshotsDeleted: result.snapshotsDeleted,
+          evaluatedSnapshotBytesReclaimed: result.snapshotBytesReclaimed,
           totalBytesReclaimed: result.workflowRunBytesReclaimed +
             result.outputBytesReclaimed + result.snapshotBytesReclaimed,
           dryRun: result.dryRun,

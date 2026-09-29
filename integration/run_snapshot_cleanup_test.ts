@@ -253,3 +253,44 @@ Deno.test("workflow delete: a run record with a tampered ID deletes nothing", as
     await Deno.stat(path);
   });
 });
+
+Deno.test("workflow delete: takes snapshot IDs from run filenames, never from a record's body", async () => {
+  await withRepo(async (repoDir) => {
+    const workflow = snapshotWorkflow();
+    await new YamlWorkflowRepository(repoDir).save(workflow);
+    const [runId, emptyRunId] = await runWorkflow(repoDir, workflow, 2);
+
+    // A live run of another workflow, whose snapshot must survive.
+    const liveRunId = crypto.randomUUID();
+    await new YamlEvaluatedWorkflowRepository(repoDir).saveForRun(
+      liveRunId,
+      workflow,
+    );
+
+    const runRepo = new YamlWorkflowRunRepository(repoDir);
+    // This run's body names the live run.
+    const path = runRepo.getPath(workflow.id, createWorkflowRunId(runId));
+    const content = await Deno.readTextFile(path);
+    await Deno.writeTextFile(
+      path,
+      content.replace(`id: ${runId}`, `id: ${liveRunId}`),
+    );
+    // This run's file is empty; its snapshot must still go.
+    await Deno.writeTextFile(
+      runRepo.getPath(workflow.id, createWorkflowRunId(emptyRunId)),
+      "",
+    );
+
+    for await (
+      const _event of workflowDelete(
+        createLibSwampContext(),
+        createWorkflowDeleteDeps(repoDir),
+        { workflowIdOrName: workflow.name },
+      )
+    ) {
+      // drain
+    }
+
+    assertEquals(await snapshotIds(repoDir), [liveRunId]);
+  });
+});

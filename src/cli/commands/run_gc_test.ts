@@ -35,6 +35,7 @@ Deno.test("runGcDataFromServer: defaults evaluatedSnapshotsDeleted to 0 for a se
   });
 
   assertEquals(data.evaluatedSnapshotsDeleted, 0);
+  assertEquals(data.evaluatedSnapshotBytesReclaimed, 0);
   assertEquals(data.workflowRunsDeleted, 2);
   assertEquals(data.totalBytesReclaimed, 300);
 });
@@ -46,9 +47,11 @@ Deno.test("runGcDataFromServer: keeps evaluatedSnapshotsDeleted from a current s
     outputsDeleted: 0,
     outputBytesReclaimed: 0,
     evaluatedSnapshotsDeleted: 4,
+    evaluatedSnapshotBytesReclaimed: 400,
     totalBytesReclaimed: 400,
     dryRun: true,
   });
 
   assertEquals(data.evaluatedSnapshotsDeleted, 4);
+  assertEquals(data.evaluatedSnapshotBytesReclaimed, 400);
 });

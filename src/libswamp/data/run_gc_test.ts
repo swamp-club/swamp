@@ -73,6 +73,7 @@ Deno.test("runGcPreview: returns preview with dryRun=true", async () => {
   assertEquals(preview.outputsToDelete, 5);
   assertEquals(preview.outputBytesReclaimable, 2000);
   assertEquals(preview.evaluatedSnapshotsToDelete, 4);
+  assertEquals(preview.evaluatedSnapshotBytesReclaimable, 400);
   assertEquals(preview.totalBytesReclaimable, 7400);
 });
 
@@ -105,6 +106,7 @@ Deno.test("runGc: yields collecting then completed events", async () => {
     assertEquals(events[1].data.workflowRunsDeleted, 3);
     assertEquals(events[1].data.outputsDeleted, 2);
     assertEquals(events[1].data.evaluatedSnapshotsDeleted, 6);
+    assertEquals(events[1].data.evaluatedSnapshotBytesReclaimed, 600);
     assertEquals(events[1].data.totalBytesReclaimed, 2900);
     assertEquals(events[1].data.dryRun, false);
   }

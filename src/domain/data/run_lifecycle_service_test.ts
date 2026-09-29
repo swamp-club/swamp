@@ -342,3 +342,59 @@ Deno.test("gcAll: passes the collected run IDs to the snapshot pass", async () =
   assertEquals(result.snapshotsDeleted, 1);
   assertEquals(snapshotRepo.deletedRunIds, ["collected"]);
 });
+
+Deno.test("gcRunSnapshots: never sweeps an orphan younger than the minimum age, even with a tiny retention", async () => {
+  const snapshotRepo = createMockSnapshotRepo([
+    {
+      runId: "starting",
+      modifiedAt: new Date(Date.now() - 60_000),
+      sizeBytes: 1,
+    },
+    {
+      runId: "old",
+      modifiedAt: new Date(Date.now() - 2 * 3_600_000),
+      sizeBytes: 1,
+    },
+  ]);
+  const service = new DefaultRunLifecycleService(
+    createMockWorkflowRunRepo(),
+    createMockOutputRepo(),
+    snapshotRepo,
+    () => Promise.resolve(new Set()),
+  );
+
+  // Retention of about 1 second: the starting run's snapshot is older than
+  // that, but younger than the one-hour minimum orphan age.
+  await service.gcRunSnapshots({
+    retentionDays: 1 / 86_400,
+    deletedRunIds: [],
+    dryRun: false,
+  });
+
+  assertEquals(snapshotRepo.deletedRunIds, ["old"]);
+});
+
+Deno.test("gcAll: a failing snapshot pass still reports the runs collected", async () => {
+  const service = new DefaultRunLifecycleService(
+    createMockWorkflowRunRepo({
+      deleted: 2,
+      bytesReclaimed: 20,
+      deletedRunIds: ["a", "b"],
+    }),
+    createMockOutputRepo(),
+    {
+      listRunSnapshots: () => Promise.reject(new Error("permission denied")),
+      deleteForRun: () => Promise.resolve(),
+    },
+    () => Promise.resolve(new Set()),
+  );
+
+  const result = await service.gcAll({
+    workflowRunRetentionDays: 30,
+    outputRetentionDays: 30,
+    dryRun: false,
+  });
+
+  assertEquals(result.workflowRunsDeleted, 2);
+  assertEquals(result.snapshotsDeleted, 0);
+});
