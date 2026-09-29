@@ -196,13 +196,30 @@ export function renderWorkerTokenRevoke(
     console.log(JSON.stringify(data, null, 2));
     return;
   }
-  if (data.alreadyRevoked) {
-    writeOutput(`Token ${bold(data.name)} was already revoked.`);
-    return;
-  }
-  const lines = [`${green(checkmark)} Token ${bold(data.name)} revoked.`];
-  if (data.revokedAt) {
+  const lines = data.alreadyRevoked
+    ? [`Token ${bold(data.name)} was already revoked.`]
+    : [`${green(checkmark)} Token ${bold(data.name)} revoked.`];
+  if (!data.alreadyRevoked && data.revokedAt) {
     lines.push(`${bold(cyan("Revoked at:"))} ${data.revokedAt}`);
+  }
+  if (data.disconnectedWorkers === undefined) {
+    // A local revoke cannot see the live pool; a running orchestrator
+    // catches it on its next token revalidation pass.
+    if (!data.alreadyRevoked) {
+      lines.push(
+        dim(
+          "A running orchestrator disconnects workers on this token at its next token check (about every 30 seconds).",
+        ),
+      );
+    }
+  } else if (data.disconnectedWorkers.length > 0) {
+    lines.push(
+      `${bold(cyan("Disconnected workers:"))} ${
+        data.disconnectedWorkers.map((name) => bold(name)).join(", ")
+      }`,
+    );
+  } else if (!data.alreadyRevoked) {
+    lines.push(dim("No connected workers were enrolled on this token."));
   }
   writeOutput(lines.join("\n"));
 }

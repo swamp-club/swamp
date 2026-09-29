@@ -31,12 +31,14 @@
  */
 
 import { join } from "@std/path";
-import { RpcChannel } from "../domain/remote/rpc_channel.ts";
+import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   type EnrollResult,
+  PERMANENT_ENROLLMENT_ERROR_CODES,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
   type SessionRefreshResult,
+  withoutQuotedNames,
 } from "../domain/remote/protocol.ts";
 import { dataPlaneUrlFromConnectUrl } from "./data_plane_client.ts";
 import {
@@ -255,7 +257,7 @@ export async function runWorker(
       delayMs = RECONNECT_BASE_DELAY_MS;
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error);
-      if (isPermanentEnrollmentFailure(raw)) {
+      if (isPermanentEnrollmentFailure(error)) {
         options.onStatus?.({ kind: "stopped", reason: raw });
         throw error;
       }
@@ -315,9 +317,19 @@ async function loadOrCreateMachineId(cacheDir: string): Promise<string> {
 
 /**
  * Enrollment failures that retrying cannot fix — a dead token or a version
- * mismatch needs a new token or a new binary, not patience.
+ * mismatch needs a new token or a new binary, not patience. A coded
+ * rejection is decided by its code. An uncoded one (an orchestrator that
+ * predates the codes, or a transport error) is matched on its text with
+ * quoted names removed, so a token named e.g. 'expired-runners' cannot turn
+ * a retryable failure into a permanent stop.
  */
-function isPermanentEnrollmentFailure(message: string): boolean {
+function isPermanentEnrollmentFailure(error: unknown): boolean {
+  if (error instanceof RpcError && error.code !== "handler_failed") {
+    return PERMANENT_ENROLLMENT_ERROR_CODES.has(error.code);
+  }
+  const message = withoutQuotedNames(
+    error instanceof Error ? error.message : String(error),
+  );
   return message.includes("revoked") ||
     message.includes("expired") ||
     message.includes("does not match") ||

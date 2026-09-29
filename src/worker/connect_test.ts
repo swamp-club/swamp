@@ -362,3 +362,87 @@ Deno.test("runWorker: permanent enrollment failures stop the loop", async () => 
   assertStringIncludes(error.message, "revoked");
   assertEquals(events.at(-1)?.kind, "stopped");
 });
+
+function rejectingEnroll(error: Error): WebSocket {
+  return new FakeSocket((channel) => {
+    channel.register(RemoteMethod.enroll, () => Promise.reject(error));
+  }) as unknown as WebSocket;
+}
+
+Deno.test("runWorker: a coded permanent rejection stops the loop", async () => {
+  const events: WorkerStatusEvent[] = [];
+  await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        onStatus: (event) => events.push(event),
+        createSocket: () =>
+          rejectingEnroll(
+            new RpcError({
+              code: "token_revoked",
+              message: "Enrollment token 'ci' has been revoked",
+            }),
+          ),
+      }),
+    Error,
+  );
+  assertEquals(events.at(-1)?.kind, "stopped");
+});
+
+Deno.test("runWorker: a token name that reads like a reason does not make a retryable rejection permanent", async () => {
+  for (
+    const error of [
+      // Coded and retryable.
+      new RpcError({
+        code: "token_unreadable",
+        message:
+          "Enrollment token 'expired-runners' could not be read after redemption; retry the connection",
+      }),
+      // Uncoded, as an orchestrator without codes sends it.
+      new RpcError({
+        code: "handler_failed",
+        message:
+          "Enrollment token 'revoked-fleet' could not be read after redemption",
+      }),
+    ]
+  ) {
+    const events: WorkerStatusEvent[] = [];
+    const controller = new AbortController();
+    await runWorker({
+      url: "ws://test:1",
+      token: "expired-runners.s",
+      swampVersion: "1.2.3",
+      signal: controller.signal,
+      onStatus: (event) => {
+        events.push(event);
+        if (event.kind === "retrying") controller.abort();
+      },
+      createSocket: () => rejectingEnroll(error),
+    });
+    assertEquals(events.some((e) => e.kind === "retrying"), true);
+  }
+});
+
+Deno.test("runWorker: an uncoded revoke from an older orchestrator still stops the loop", async () => {
+  const events: WorkerStatusEvent[] = [];
+  await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        onStatus: (event) => events.push(event),
+        createSocket: () =>
+          rejectingEnroll(
+            new RpcError({
+              code: "handler_failed",
+              message: "Enrollment token 'ci' has been revoked",
+            }),
+          ),
+      }),
+    Error,
+  );
+  assertEquals(events.at(-1)?.kind, "stopped");
+});

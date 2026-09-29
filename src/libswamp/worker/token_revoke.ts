@@ -40,6 +40,12 @@ export interface WorkerTokenRevokeData {
   revokedAt?: string;
   /** True when the token was already revoked and no state change occurred. */
   alreadyRevoked: boolean;
+  /**
+   * Workers the orchestrator disconnected because they were enrolled on the
+   * token. Set only when the revoke ran through `swamp serve`; a local
+   * revoke cannot see the live pool.
+   */
+  disconnectedWorkers?: string[];
 }
 
 export type WorkerTokenRevokeEvent =

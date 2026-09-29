@@ -129,6 +129,29 @@ export function parseRpcFrame(data: unknown): RpcFrame | string | null {
   return `Invalid RPC frame: ${issues}`;
 }
 
+/**
+ * Enrollment rejection codes that retrying cannot fix: the token is dead or
+ * malformed, or the binary speaks another protocol version. A worker stops
+ * on these; every other coded rejection is retried.
+ */
+export const PERMANENT_ENROLLMENT_ERROR_CODES: ReadonlySet<string> = new Set([
+  "protocol_mismatch",
+  "invalid_token",
+  "token_revoked",
+  "token_expired",
+  "token_mismatch",
+  "token_not_found",
+  "enrollment_allowance_exhausted",
+]);
+
+/**
+ * Replaces every quoted name (`'…'`) in an error message, so a token or
+ * worker name such as `expired-runners` cannot be mistaken for the reason.
+ */
+export function withoutQuotedNames(message: string): string {
+  return message.replace(/'[^']*'/g, "''");
+}
+
 // ── Method names ─────────────────────────────────────────────────────────
 
 /**

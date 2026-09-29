@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import {
   BUILTIN_BUNDLE_PREFIX,
@@ -27,15 +28,23 @@ import {
 } from "./dispatch_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
 import { BundleRegistry } from "./bundle_registry.ts";
-import type { WorkerSnapshot } from "./worker_gateway.ts";
+import { WorkerGateway, type WorkerSnapshot } from "./worker_gateway.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
-import type {
-  DispatchParams,
-  DispatchResult,
+import {
+  type DispatchParams,
+  type DispatchResult,
+  type EnrollResult,
+  REMOTE_PROTOCOL_VERSION,
+  RemoteMethod,
+  WorkerMethod,
 } from "../domain/remote/protocol.ts";
-import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
+import {
+  ChannelClosedError,
+  RpcChannel,
+  RpcError,
+} from "../domain/remote/rpc_channel.ts";
 import type { RemoteStepRequest } from "../domain/remote/remote_dispatch.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/dispatch-test");
@@ -886,4 +895,86 @@ Deno.test("executeRemote: dataOutputOverrides and tagOverrides are stored on the
   }));
   assertEquals(capturedDispatch!.dataOutputOverrides, overrides);
   assertEquals(capturedDispatch!.tagOverrides, tags);
+});
+
+Deno.test("DispatchService: revoking the worker's token mid-dispatch fails the step instead of waiting out a grace window", async () => {
+  const transitions: string[] = [];
+  const gateway = new WorkerGateway({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    capabilityService: { registerHandlers: () => {} },
+    // A long grace window: the step must not wait it out.
+    graceWindowMs: 60_000,
+    onWorkerRemoved: (worker) => service.notifyWorkerRemoved(worker),
+    runModelMethod: () => Promise.resolve(),
+    readTokenExpiresAt: () => Promise.resolve(null),
+    readTokenRecord: (name) =>
+      Promise.resolve({
+        name,
+        state: "enrolled",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        vaultName: "local",
+        secretKey: `worker-token-${name}`,
+        maxEnrollments: 1,
+        bindings: [],
+      }),
+  });
+  const service = new DispatchService({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    dispatches: new DispatchRegistry(),
+    bundles: new BundleRegistry(),
+    queueTimeoutMs: 60_000,
+    runModelMethod: (input) => {
+      transitions.push(input.methodName);
+      return Promise.resolve();
+    },
+    captureEnvironment: () => ({}),
+  });
+  service.bindGateway(gateway);
+
+  // An in-process worker whose dispatch writes, then never returns.
+  const workerChannel: RpcChannel = new RpcChannel({
+    send: (data) => void Promise.resolve().then(() => attached.feed(data)),
+  });
+  const attached = gateway.attachTransport({
+    send: (data) =>
+      void Promise.resolve().then(() => workerChannel.handleRaw(data)),
+  }, () => attached.closed());
+  await workerChannel.call<EnrollResult>(RemoteMethod.enroll, {
+    token: "w1.s3cret",
+    instanceUuid: "uuid-1",
+    machineId: "machine-1",
+    protocolVersion: REMOTE_PROTOCOL_VERSION,
+    swampVersion: "1.0.0",
+    platform: "linux",
+    arch: "x86_64",
+    labels: {},
+  });
+  let dispatched = false;
+  workerChannel.register(WorkerMethod.dispatch, async (params) => {
+    const p = params as DispatchParams;
+    await service.recordFirstWrite({
+      workerName: "w1",
+      dispatchId: p.dispatchId,
+      leaseId: p.leaseId,
+      modelDef: builtinModelDef,
+      modelType: MODEL_TYPE,
+      modelId: "m-1",
+      methodName: "run",
+      definitionName: "test-def",
+      definitionTags: {},
+    });
+    dispatched = true;
+    return await new Promise(() => {});
+  });
+
+  const step = service.executeRemote(stepRequest());
+  await waitFor(() => dispatched, "dispatch reached the worker");
+  await gateway.revokeToken("w1", "revoked");
+
+  await assertRejects(() => step, Error, "write-then-drop");
+  assertEquals(transitions, ["acquire", "mark_writes", "fail"]);
+  gateway.dispose();
 });

@@ -54,7 +54,14 @@ type AnyOptions = any;
 export const workerTokenRevokeCommand = withRemoteOptions(
   new Command()
     .name("revoke")
-    .description("Invalidate a worker enrollment token before it expires")
+    .description(
+      `Invalidate a worker enrollment token before it expires
+
+Workers already connected on the token are disconnected and their
+credentials revoked. With --server this happens at once; otherwise a
+running orchestrator does it at its next token check, about every 30
+seconds.`,
+    )
     .example("Revoke a token", "swamp worker token revoke ci-runner-3")
     .arguments("<name:string>")
     .option(

@@ -2178,6 +2178,14 @@ export async function handleWorkerTokenRevoke(
       }),
     );
 
+    // The revoke is persisted even if the request was cancelled, and an
+    // already-revoked token may still hold workers this instance missed, so
+    // every worker enrolled on any mint of the name is cut off now.
+    const disconnectedWorkers = await ctx.workerGateway?.revokeToken(
+      payload.name,
+      "revoked",
+    );
+
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -2186,7 +2194,11 @@ export async function handleWorkerTokenRevoke(
     send(socket, {
       type: "worker.token.revoke",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: {
+        data: disconnectedWorkers === undefined
+          ? result ?? {}
+          : { ...result, disconnectedWorkers },
+      },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
