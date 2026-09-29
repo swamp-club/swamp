@@ -26,10 +26,9 @@ import type { Principal } from "../domain/access/principal.ts";
 import type { AuthMode } from "../domain/access/serve_auth_config.ts";
 import type { WorkflowRepository } from "../domain/workflows/repositories.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import {
-  resolveWorkflow,
-  workflowAccessFields,
-} from "./handlers/workflow_handlers.ts";
+import type { Workflow } from "../domain/workflows/workflow.ts";
+import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
+import { workflowAccessFields } from "./handlers/workflow_handlers.ts";
 
 const logger = getSwampLogger(["serve", "trigger-authorizer"]);
 
@@ -74,9 +73,18 @@ export function createTriggerAuthorizer(
   deps: TriggerAuthorizerDeps,
 ): TriggerAuthorizer {
   return async (principal, configured) => {
-    // A workflow that does not resolve is decided on the configured value and
+    // A workflow that does not exist is decided on the configured value and
     // then fails in execution exactly as it did before authorization existed.
-    const workflow = await resolveWorkflow(deps.workflowRepo, configured);
+    // A lookup that throws is different: deciding without the workflow's
+    // name and tags would skip denies written against them, so it refuses.
+    let workflow: Workflow | null = null;
+    let lookupError: string | undefined;
+    try {
+      workflow = await deps.workflowRepo.findByName(configured) ??
+        await deps.workflowRepo.findById(createWorkflowId(configured));
+    } catch (error) {
+      lookupError = error instanceof Error ? error.message : String(error);
+    }
     const workflowIdOrName = workflow?.name ?? configured;
     const resource: AccessResource = {
       kind: "workflow",
@@ -95,6 +103,13 @@ export function createTriggerAuthorizer(
 
     if (deps.authMode === "none") {
       return { allowed: true, workflowIdOrName, resource, decision: null };
+    }
+    if (lookupError !== undefined) {
+      logger.error(
+        "Looking up {workflow} failed, refusing the run: {error}",
+        { workflow: configured, error: lookupError },
+      );
+      return refuse(`authorization_error: ${lookupError}`, null);
     }
     const loader = deps.policySnapshotLoader;
     if (!loader) {

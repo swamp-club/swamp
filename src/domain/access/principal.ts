@@ -29,16 +29,14 @@ export type PrincipalKind = z.infer<typeof PrincipalKindSchema>;
  */
 export const SERVICE_PRINCIPAL_IDS = ["scheduler", "webhook"] as const;
 
-/** Why a `service:` id is refused, or null when it names a built-in. */
-export function unknownServiceIdError(
-  value: string,
-  id: string,
-): string | null {
-  if ((SERVICE_PRINCIPAL_IDS as readonly string[]).includes(id)) return null;
-  const expected = SERVICE_PRINCIPAL_IDS.map((known) => `"service:${known}"`)
-    .join(" or ");
-  return `Invalid principal "${value}": expected ${expected}`;
+export function isServicePrincipalId(id: string): boolean {
+  return (SERVICE_PRINCIPAL_IDS as readonly string[]).includes(id);
 }
+
+/** The valid service principals, as named in error messages. */
+export const SERVICE_PRINCIPAL_CHOICES = SERVICE_PRINCIPAL_IDS.map((id) =>
+  `"service:${id}"`
+).join(" or ");
 
 /** Joins quoted items as `"a", "b" or "c"` for error messages. */
 function describeAlternatives(items: readonly string[]): string {
@@ -87,9 +85,10 @@ export function parsePrincipalOfKinds(
       }`,
     );
   }
-  if (parsed.data === "service") {
-    const error = unknownServiceIdError(value, id);
-    if (error) throw new Error(error);
+  if (parsed.data === "service" && !isServicePrincipalId(id)) {
+    throw new Error(
+      `Invalid principal "${value}": expected ${SERVICE_PRINCIPAL_CHOICES}`,
+    );
   }
   return { kind: parsed.data, id };
 }

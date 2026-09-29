@@ -175,3 +175,30 @@ Deno.test("createTriggerAuthorizer: a failing decision refuses without throwing"
   assertEquals(result.allowed, false);
   assertStringIncludes(result.reason ?? "", "snapshot unavailable");
 });
+
+Deno.test("createTriggerAuthorizer: a workflow lookup that throws refuses rather than deciding without tags", async () => {
+  const failing: WorkflowRepository = {
+    ...repoWith([deploy]),
+    findByName: () => Promise.reject(new Error("datastore unreachable")),
+  };
+  const authorize = createTriggerAuthorizer({
+    authMode: "token",
+    policySnapshotLoader: loaderWith([]),
+    workflowRepo: failing,
+  });
+  const result = await authorize(WEBHOOK_PRINCIPAL, deploy.id);
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason ?? "", "datastore unreachable");
+});
+
+Deno.test("createTriggerAuthorizer: auth mode none still allows when the lookup throws", async () => {
+  const failing: WorkflowRepository = {
+    ...repoWith([deploy]),
+    findByName: () => Promise.reject(new Error("datastore unreachable")),
+  };
+  const authorize = createTriggerAuthorizer({
+    authMode: "none",
+    workflowRepo: failing,
+  });
+  assertEquals((await authorize(SCHEDULER_PRINCIPAL, "deploy")).allowed, true);
+});

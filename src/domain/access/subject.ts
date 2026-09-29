@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import { SERVICE_PRINCIPAL_IDS } from "./principal.ts";
+import {
+  isServicePrincipalId,
+  SERVICE_PRINCIPAL_CHOICES,
+} from "./principal.ts";
 
 export const SubjectKindSchema = z.enum([
   "user",
@@ -66,14 +69,9 @@ export function parseSubject(value: string): Subject {
       }`,
     );
   }
-  if (
-    parsed.data === "service" &&
-    !(SERVICE_PRINCIPAL_IDS as readonly string[]).includes(name)
-  ) {
+  if (parsed.data === "service" && !isServicePrincipalId(name)) {
     throw new Error(
-      `Invalid subject "${value}": expected ${
-        SERVICE_PRINCIPAL_IDS.map((id) => `"service:${id}"`).join(" or ")
-      }`,
+      `Invalid subject "${value}": expected ${SERVICE_PRINCIPAL_CHOICES}`,
     );
   }
   return { kind: parsed.data, name };

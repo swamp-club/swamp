@@ -43,7 +43,9 @@ Service principals exist only in-process. Every token mint path (local CLI,
 `access.token.mint`, the `swamp/server-token` model) refuses a service
 principal, and a stored token naming one is refused at authentication with
 `401 invalid-principal`, so no caller can act as the scheduler or the webhook
-receiver. A service principal is never an admin: `--admins` rejects it.
+receiver. `--admins` rejects a service principal. A grant or group can still
+name one explicitly; do not give it `admin`, since every scheduled or webhook
+run would then act with it.
 
 Each run is authorized when it starts executing, so a queued or replayed run is
 checked against the current policy (`src/serve/trigger_authorizer.ts`). The
