@@ -1602,10 +1602,11 @@ stale row never crashes a command (swamp-club#2490):
   empty type after the winning row is gone, because its fingerprint still
   matches. The per-kind `bundle_meta` marker `typeless-row-heal-v1:<kind>` is
   absent after an upgrade and is cleared whenever a row that claims a type is
-  deleted. While it is absent, the next warm pass imports the existing bundle of
-  each seen, typeless `Indexed` row to learn its type. It writes the type back
-  only when no row claims it, for at most one row per type. The pass then sets
-  the marker. This writes the catalog only and never the registry, so a pulled
+  deleted or upserted with a different type. While it is absent, the next warm
+  pass imports the existing bundle of each seen, typeless `Indexed` row to learn
+  its type. It writes the type back only when no row claims it, for at most one
+  row per type: a local row before a pulled one, then the smallest path. The
+  pass then sets the marker. This writes the catalog only and never the registry, so a pulled
   row cannot displace a local override. The heal is also skipped, with the
   marker left unset, while the kind has a local row in a failed state whose
   source still exists: a failed row claims no type, so a broken local override

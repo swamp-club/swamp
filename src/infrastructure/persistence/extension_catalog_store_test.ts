@@ -2780,7 +2780,7 @@ Deno.test("settle then resolveOriginConflicts leaves only the local override typ
   });
 });
 
-Deno.test("typeless heal marker: cleared only by deleting a typed row of that kind", () => {
+Deno.test("typeless heal marker: cleared by deleting a typed row of that kind", () => {
   withStore((store) => {
     store.markTypelessHealDone("model");
     store.markTypelessHealDone("vault");
@@ -2796,6 +2796,34 @@ Deno.test("typeless heal marker: cleared only by deleting a typed row of that ki
     store.markTypelessHealDone("model");
     store.upsert(makeRow({ source_path: "/repo/dir/c.ts" }));
     assertEquals(store.removeBySourcePrefix("/repo/dir/"), 1);
+    assertEquals(store.isTypelessHealDone("model"), false);
+  });
+});
+
+Deno.test("typeless heal marker: cleared when an upsert changes the type a row claims", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: "/repo/a.ts" }));
+    store.markTypelessHealDone("model");
+
+    // Rewriting the same type, or typing a typeless row, frees nothing.
+    store.upsert(makeRow({ source_path: "/repo/a.ts" }));
+    store.upsert(makeRow({ type_normalized: "", source_path: "/repo/b.ts" }));
+    store.upsert(
+      makeRow({ source_path: "/repo/b.ts", type_normalized: "@a/b" }),
+    );
+    assertEquals(store.isTypelessHealDone("model"), true);
+
+    store.upsert(
+      makeRow({ source_path: "/repo/a.ts", type_normalized: "@a/v2" }),
+    );
+    assertEquals(store.isTypelessHealDone("model"), false);
+
+    store.markTypelessHealDone("model");
+    store.upsertWithIdentity({
+      ...makeRow({ source_path: "/repo/a.ts", type_normalized: "@a/v3" }),
+      extension_name: "@a/ext",
+      extension_version: "1.0.0",
+    });
     assertEquals(store.isTypelessHealDone("model"), false);
   });
 });

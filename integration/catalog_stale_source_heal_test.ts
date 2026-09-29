@@ -626,3 +626,40 @@ Deno.test("catalog heal: deleting a broken local override lets the pulled type b
     assertEquals(repo.catalog.isTypelessHealDone("model"), true);
   });
 });
+
+Deno.test("catalog heal: the heal restores a type to a local row before a pulled one", async () => {
+  await withRepo(async (repo) => {
+    const { local, warmPass } = await withIndexedOverride(repo);
+    // A second local override sorts after the first, so it is left
+    // typeless; the pulled row is typeless too. Both could take the type
+    // back once the first override is gone, and `.swamp/` sorts before
+    // `extensions/`, so path order alone would pick the pulled row.
+    const second = join(repo.modelsDir, "override2.ts");
+    await writeModel(second, repo.type);
+    await warmPass();
+    assertEquals(typedRows(repo), [canonicalizePath(local)]);
+
+    await Deno.remove(local);
+    await warmPass();
+
+    assertEquals(typedRows(repo), [canonicalizePath(second)]);
+  });
+});
+
+Deno.test("catalog heal: an override that changes its type gives the old one back", async () => {
+  await withRepo(async (repo) => {
+    const { local, pulled, warmPass } = await withIndexedOverride(repo);
+    modelRegistry.invalidateType(`${repo.type}-unrelated`);
+
+    // No row is deleted: the override's row is upserted with a new type.
+    await writeModel(local, `${repo.type}-v2`);
+    await warmPass();
+
+    assertEquals(typedRows(repo), [canonicalizePath(pulled)]);
+    assertEquals(
+      repo.catalog.findBySourcePath(local)?.type_normalized,
+      `${repo.type}-v2`,
+    );
+    modelRegistry.invalidateType(`${repo.type}-v2`);
+  });
+});

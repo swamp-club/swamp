@@ -659,8 +659,12 @@ export class ExtensionLoader {
       }
 
       // Checked again: a rebundle in this pass may have just recorded a
-      // local failure, or fixed the one that blocked the heal above.
-      if (healPending && !this.hasLiveLocalFailure(catalog)) {
+      // local failure, fixed the one that blocked the heal above, or
+      // re-armed the heal by changing the type a row claims.
+      if (
+        !catalog.isTypelessHealDone(this.adapter.catalogKinds[0]) &&
+        !this.hasLiveLocalFailure(catalog)
+      ) {
         await this.healTypelessRows(catalog, scan.typeless);
         catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
       }
@@ -1172,8 +1176,10 @@ export class ExtensionLoader {
    * matches. Each row's EXISTING bundle is imported to learn its exported
    * type (this works for wrapped exports, which source-text extraction
    * misses), and the type is written back only when no row claims it,
-   * for at most one row per type: the smallest canonical path, the
-   * Extension aggregate's I2 tie-break.
+   * for at most one row per type, chosen by
+   * {@link compareExtensionPrecedence}: a local row before a pulled one,
+   * then the smallest canonical path, the Extension aggregate's I2
+   * tie-break.
    *
    * Catalog-only: nothing is registered here, so a pulled row can never
    * take a type from a local override in the registry, and a failure
@@ -1217,11 +1223,14 @@ export class ExtensionLoader {
     }
 
     for (const [typeNormalized, sourcePaths] of candidates) {
-      const [winner] = [...sourcePaths].sort((a, b) => {
-        const ca = canonicalizePath(a);
-        const cb = canonicalizePath(b);
-        return ca < cb ? -1 : ca > cb ? 1 : 0;
-      });
+      const [{ sourcePath: winner }] = sourcePaths
+        .map((sourcePath) => ({
+          sourcePath,
+          contributor: this.contributorFor(sourcePath),
+        }))
+        .sort((a, b) =>
+          compareExtensionPrecedence(a.contributor, b.contributor)
+        );
       // Check and write together, so two processes cannot each restore
       // a different candidate.
       catalog.runInTransaction(() => {

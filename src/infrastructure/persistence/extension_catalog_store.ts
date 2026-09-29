@@ -853,6 +853,7 @@ export class ExtensionCatalogStore {
     const MAX_RETRIES = 5;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
+        this.resetTypelessHealOnRetype(params[0], row.type_normalized);
         const stmt = this.db.prepare(sql);
         stmt.run(...params);
         return;
@@ -958,6 +959,24 @@ export class ExtensionCatalogStore {
     const stmt = this.db.prepare("DELETE FROM bundle_meta WHERE key = ?");
     for (const kind of kinds) {
       stmt.run(`${TYPELESS_ROW_HEAL_KEY_PREFIX}${kind}`);
+    }
+  }
+
+  /**
+   * Clears the typeless-row heal marker when an upsert is about to change
+   * the type an existing row claims: the type it gives up may be the one
+   * another row of its kind lost to it, just as when the row is deleted
+   * (swamp-club#2490).
+   */
+  private resetTypelessHealOnRetype(
+    sourcePath: string,
+    newType: string,
+  ): void {
+    const previous = this.db.prepare(
+      "SELECT kind, type_normalized FROM bundle_types WHERE source_path = ?",
+    ).get(sourcePath) as Record<string, unknown> | undefined;
+    if (previous && previous.type_normalized !== newType) {
+      this.resetTypelessHealFor([previous]);
     }
   }
 
@@ -1310,8 +1329,10 @@ export class ExtensionCatalogStore {
         extension_version  = excluded.extension_version,
         last_error         = excluded.last_error
     `);
+    const sourcePath = canonicalizePath(row.source_path);
+    this.resetTypelessHealOnRetype(sourcePath, row.type_normalized);
     stmt.run(
-      canonicalizePath(row.source_path),
+      sourcePath,
       row.type_normalized,
       row.kind,
       row.bundle_path,
