@@ -42,6 +42,7 @@ import {
 } from "./pull.ts";
 import { createLibSwampContext } from "../context.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { PulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import { UserError } from "../../domain/errors.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
@@ -1542,6 +1543,157 @@ Deno.test(
       assertEquals(checksumFetched, false);
       assertEquals(lockfile.getEntry(name), null);
       assertEquals(await exists(join(repoDir, ".claude")), false);
+    });
+  },
+);
+
+// ===== Pulled-extensions lock (swamp-club#2709) =====
+//
+// installExtension holds the checkout's pulled-extensions lock around
+// apply only. A second PulledExtensionsLock instance has its own
+// in-process state, so its tryWithLock probes the cross-process file
+// lock the way another swamp process would.
+
+Deno.test(
+  "installExtension: the lock is free while the top-level prepare downloads, and held for a dependency's",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const { parent, dep, archives } = await buildParentWithDependency();
+      const otherProcess = new PulledExtensionsLock();
+      const freeDuringDownload: Record<string, boolean> = {};
+      const ctx = skillInstallContext(repoDir, lockfile, archives);
+      await installExtension({ name: parent, version: SKILL_VERSION }, {
+        ...ctx,
+        downloadArchive: async (name, version, channel) => {
+          const probe = await otherProcess.tryWithLock(
+            repoDir,
+            () => Promise.resolve(),
+          );
+          freeDuringDownload[name] = probe.acquired;
+          return await ctx.downloadArchive(name, version, channel);
+        },
+      });
+      // A dependency downloads under its parent's lease, by design.
+      assertEquals(freeDuringDownload, { [parent]: true, [dep]: false });
+      assertEquals(lockfile.getEntry(dep)?.version, SKILL_VERSION);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a ConflictError reaches the caller with the lock released",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      await ensureDir(join(repoDir, ".claude", "skills", "foo"));
+      await Deno.writeTextFile(
+        join(repoDir, ".claude", "skills", "foo", "notes.md"),
+        "mine",
+      );
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      await assertRejects(
+        () =>
+          installExtension(
+            { name, version: null },
+            skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          ),
+        ConflictError,
+      );
+      // The CLI prompts here; another process must be able to proceed.
+      assertEquals(
+        await new PulledExtensionsLock().tryWithLock(
+          repoDir,
+          () => Promise.resolve(),
+        ),
+        { acquired: true, value: undefined },
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: apply prunes against the entry on disk, not the context's stale snapshot",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const lockfilePath = lockfile.lockfilePath;
+      const withSkill = (skill: string) =>
+        buildSkillArchive({ name, skills: { [skill]: { "SKILL.md": skill } } });
+
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, {
+          [name]: await withSkill("a"),
+        }),
+      );
+      // This context's snapshot records skill "a"...
+      const stale = await LockfileRepository.create(lockfilePath);
+      // ...then another install replaces it with skill "b".
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(
+          repoDir,
+          await LockfileRepository.create(lockfilePath),
+          { [name]: await withSkill("b") },
+        ),
+      );
+
+      // Read from the stale snapshot, "b" would be an unowned dir (a
+      // conflict) and would never be pruned.
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, stale, { [name]: await withSkill("c") }),
+      );
+      const skills = join(repoDir, ".claude", "skills");
+      assertEquals(await exists(join(skills, "b")), false);
+      assertEquals(await exists(join(skills, "c", "SKILL.md")), true);
+      const files = (await LockfileRepository.create(lockfilePath))
+        .getEntry(name)?.files ?? [];
+      assertEquals(files.includes(relative(repoDir, join(skills, "c"))), true);
+      assertEquals(files.includes(relative(repoDir, join(skills, "b"))), false);
+    });
+  },
+);
+
+Deno.test(
+  "applyInstall: prepare and apply called directly install each extension of a dependency cycle once",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const a = uniqueExtName();
+      const b = uniqueExtName();
+      const archives = {
+        [a]: await buildSkillArchive({
+          name: a,
+          skills: { [a.slice(3)]: { "SKILL.md": "a" } },
+          dependencies: [b],
+        }),
+        [b]: await buildSkillArchive({
+          name: b,
+          skills: { [b.slice(3)]: { "SKILL.md": "b" } },
+          dependencies: [a],
+        }),
+      };
+      const downloads: string[] = [];
+      const base = skillInstallContext(repoDir, lockfile, archives);
+      const ctx: InstallContext = {
+        ...base,
+        downloadArchive: (name, version, channel) => {
+          downloads.push(name);
+          return base.downloadArchive(name, version, channel);
+        },
+      };
+
+      const prepared = await prepareInstall({ name: a, version: null }, ctx);
+      try {
+        await applyInstall(prepared, ctx);
+      } finally {
+        await prepared.dispose();
+      }
+      assertEquals(downloads, [a, b]);
+      assertEquals(ctx.alreadyPulled.has(a), true);
     });
   },
 );

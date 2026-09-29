@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { stubInstallExtension } from "./install_test_helpers.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { join, relative } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -27,6 +28,7 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { FaultingStubRepository } from "../../infrastructure/persistence/test_helpers/faulting_stub_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import {
   bundleNamespace,
   swampPath,
@@ -203,7 +205,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               "1.0.0",
@@ -212,7 +214,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/model.ts`,
             ]);
-          },
+          }),
         });
         await installSvc.execute(
           { name: extName, version: "1.0.0" },
@@ -286,7 +288,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               "1.0.0",
@@ -295,7 +297,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/model.ts`,
             ]);
-          },
+          }),
         });
         await installSvc.execute(
           { name: extName, version: "1.0.0" },
@@ -369,7 +371,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             const fileName = ref.name === extA ? "a.ts" : "b.ts";
             await ctx.lockfileRepository.writeEntry(
               ref.name,
@@ -379,7 +381,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/${fileName}`,
             ]);
-          },
+          }),
         });
         await installSvc.execute(
           { name: extA, version: "1.0.0" },
@@ -439,7 +441,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               "1.0.0",
@@ -450,7 +452,7 @@ Deno.test(
               "1.0.0",
               [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
             );
-          },
+          }),
         });
         await installSvc.execute(
           { name: extName, version: "1.0.0" },
@@ -578,7 +580,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               "1.0.0",
@@ -587,7 +589,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/model.ts`,
             ]);
-          },
+          }),
         });
         await installSvc.execute(
           { name: extName, version: "1.0.0" },
@@ -653,7 +655,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             const fileName = ref.name === extA ? "a.ts" : "b.ts";
             await ctx.lockfileRepository.writeEntry(
               ref.name,
@@ -663,7 +665,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/${fileName}`,
             ]);
-          },
+          }),
         });
         await installSvc.execute(
           { name: extA, version: "1.0.0" },
@@ -742,7 +744,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               "1.0.0",
@@ -751,7 +753,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/model.ts`,
             ]);
-          },
+          }),
         });
         await installSvc.execute(
           { name: extName, version: "1.0.0" },
@@ -1049,7 +1051,7 @@ Deno.test(
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               "2026.01.01.1",
@@ -1058,7 +1060,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, "2026.01.01.1", [
               relTargetPath,
             ]);
-          },
+          }),
         });
         await installSvc.execute(
           { name: targetExt, version: "2026.01.01.1" },
@@ -1144,10 +1146,10 @@ async function installStubExtension(
   const installSvc = new InstallExtensionService({
     denoRuntime: testDenoRuntime,
     repository,
-    installExtensionFn: async (ref, ctx) => {
+    installExtensionFn: stubInstallExtension(async (ref, ctx) => {
       await ctx.lockfileRepository.writeEntry(ref.name, "1.0.0", files);
       return makeStubInstallResult(ref.name, "1.0.0", files);
-    },
+    }),
   });
   await installSvc.execute(
     { name: extName, version: "1.0.0" },
@@ -1428,6 +1430,99 @@ Deno.test(
 
         assertEquals(await exists(link), false);
         assertEquals(await Deno.readTextFile(join(target, "keep.md")), "keep");
+      },
+    );
+  },
+);
+
+// =============================================================
+// Pulled-extensions lock (swamp-club#2709)
+// =============================================================
+
+Deno.test(
+  "RemoveExtensionService.execute: reads claims from the lockfile on disk, not a stale snapshot",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const owner = `@test/owner-${id}`;
+        const other = `@test/other-${id}`;
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(skillDir);
+        await Deno.writeTextFile(join(skillDir, "SKILL.md"), "owner");
+        await Deno.writeTextFile(join(skillDir, "other.md"), "other");
+        const root = relative(repoDir, skillDir);
+        await lockfileRepository.writeEntry(owner, "1.0.0", [root]);
+        // Another process installs `other` after rm's deps were built,
+        // so the rm's snapshot does not know about its claim.
+        await (await LockfileRepository.create(lockfileRepository.lockfilePath))
+          .writeEntry(other, "1.0.0", [
+            relative(repoDir, join(skillDir, "other.md")),
+          ]);
+
+        const result = await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(owner);
+
+        assertEquals(result.retainedFiles, [{
+          path: root,
+          claimedBy: [other],
+        }]);
+        assertEquals(
+          await Deno.readTextFile(join(skillDir, "other.md")),
+          "other",
+        );
+        assertEquals(lockfileRepository.getEntry(other)?.version, "1.0.0");
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: waits for a held lock and sees what the holder wrote",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const owner = `@test/owner-${id}`;
+        const other = `@test/other-${id}`;
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(skillDir);
+        await Deno.writeTextFile(join(skillDir, "SKILL.md"), "owner");
+        const root = relative(repoDir, skillDir);
+        await lockfileRepository.writeEntry(owner, "1.0.0", [root]);
+
+        // Another install holds the lock and is about to record a claim
+        // on the same skill dir.
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const holder = pulledExtensionsLock.withLock(repoDir, async () => {
+          entered.resolve();
+          await release.promise;
+        });
+        await entered.promise;
+
+        const removal = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(owner);
+        await (await LockfileRepository.create(lockfileRepository.lockfilePath))
+          .writeEntry(other, "1.0.0", [root]);
+        release.resolve();
+        await holder;
+
+        const result = await removal;
+        assertEquals(result.retainedFiles, [{
+          path: root,
+          claimedBy: [other],
+        }]);
+        assertEquals(
+          await Deno.readTextFile(join(skillDir, "SKILL.md")),
+          "owner",
+        );
       },
     );
   },

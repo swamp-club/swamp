@@ -66,9 +66,16 @@ export interface WriteEntryOptions {
  *   re-read step. The local cache update means the writer can read its
  *   own write back from this same instance.
  *
+ * - **{@link refresh}** re-reads disk into the cache. Installs and
+ *   removals call it first thing under the pulled-extensions lock
+ *   (`pulled_extensions_lock.ts`), so the prior entry they act on is the
+ *   one on disk, not the one captured when their context was built
+ *   (swamp-club#2709).
+ *
  * Future contributors: do NOT "fix" the cached read to be live. The
- * snapshot semantics are deliberate. If a caller needs current disk state,
- * they construct a new {@link LockfileRepository}.
+ * snapshot semantics are deliberate. A caller that needs current disk
+ * state calls {@link refresh} (under the pulled-extensions lock, when it
+ * is about to change the checkout) or constructs a new instance.
  *
  * Filed as the W2 prequel for swamp-club#231.
  */
@@ -96,6 +103,14 @@ export class LockfileRepository {
   constructor(lockfilePath: string, cache: UpstreamExtensionsMap = {}) {
     this.lockfilePath = lockfilePath;
     this.cache = cache;
+  }
+
+  /**
+   * Re-reads the lockfile from disk into the cache. A missing file
+   * yields an empty cache, as in {@link create}.
+   */
+  async refresh(): Promise<void> {
+    this.cache = await readUpstreamExtensions(this.lockfilePath);
   }
 
   /** Returns the cached entry for `name`, or null if absent. */

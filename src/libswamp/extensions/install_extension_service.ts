@@ -22,6 +22,7 @@ import {
   type ExtensionRef,
   type InstallContext,
   installExtension,
+  type InstallExtensionFn,
   type InstallResult,
 } from "./pull.ts";
 import {
@@ -87,6 +88,8 @@ type KindDir = typeof KIND_DIRS[number];
  * **Snapshot semantics inherited from `InstallContext`.** The
  * `lockfileRepository` on the context captures a snapshot at
  * construction. Single-use only — see {@link InstallContext} JSDoc.
+ * installExtension refreshes it under the pulled-extensions lock, and
+ * the prior entry used for FS rollback is read after that refresh.
  *
  * **W4-inherits.** When the unified loader (KindAdapter) lands in W4,
  * the per-loader `bundleAndIndexOne` calls in `buildExtensionFromDisk`
@@ -96,10 +99,7 @@ type KindDir = typeof KIND_DIRS[number];
 export class InstallExtensionService {
   private readonly denoRuntime: DenoRuntime;
   private readonly repository: ExtensionRepository;
-  private readonly installExtensionFn: (
-    ref: ExtensionRef,
-    ctx: InstallContext,
-  ) => Promise<InstallResult | undefined>;
+  private readonly installExtensionFn: InstallExtensionFn;
 
   constructor(args: {
     denoRuntime: DenoRuntime;
@@ -110,12 +110,11 @@ export class InstallExtensionService {
      * {@link InstallResult} so phase 8 can be exercised against a
      * pre-staged on-disk subtree without driving a real registry,
      * tarball, or filesystem write. Production callers always omit
-     * this.
+     * this. A stub must call `options.underLock` with its result, or
+     * phase 8 does not run: use `stubInstallExtension` from
+     * `install_test_helpers.ts`.
      */
-    installExtensionFn?: (
-      ref: ExtensionRef,
-      ctx: InstallContext,
-    ) => Promise<InstallResult | undefined>;
+    installExtensionFn?: InstallExtensionFn;
   }) {
     this.denoRuntime = args.denoRuntime;
     this.repository = args.repository;
@@ -137,18 +136,29 @@ export class InstallExtensionService {
     ref: ExtensionRef,
     ctx: InstallContext,
   ): Promise<InstallResult | undefined> {
-    // Snapshot the lockfile entry BEFORE install so FS rollback can
-    // restore it on a catalog-side failure. The snapshot survives
-    // installExtension's own writeEntry call (which only mutates the
-    // shared lockfileRepository's cache from this point forward).
-    const priorEntry = ctx.lockfileRepository.getEntry(ref.name);
+    // Phases 1-7: download → extract → copy → prune → lockfile write,
+    // then phase 8 in the underLock hook. installExtension runs apply
+    // and the hook in one pulled-extensions lock section, so the catalog
+    // save and any rollback cannot interleave with another install or
+    // removal on this checkout (swamp-club#2709). Deps recurse inside
+    // installExtension and land in the same section.
+    return await this.installExtensionFn(ref, ctx, {
+      underLock: ({ result, priorEntry }) =>
+        this.indexInstalled(ref, result, priorEntry, ctx),
+    });
+  }
 
-    // Phases 1-7: download → extract → copy → prune → lockfile write.
-    // (Recursion into deps is internal to installExtension; deps land
-    // in the same lockfile snapshot.)
-    const result = await this.installExtensionFn(ref, ctx);
-    if (!result) return result; // alreadyPulled short-circuit
-
+  /**
+   * Phase 8, under the lock. `priorEntry` is the extension's lockfile
+   * entry read after the refresh at the start of the section, so FS
+   * rollback restores the entry that was on disk.
+   */
+  private async indexInstalled(
+    ref: ExtensionRef,
+    result: InstallResult,
+    priorEntry: UpstreamExtensionEntry | null,
+    ctx: InstallContext,
+  ): Promise<void> {
     // Phase 8: build Extension aggregates for top-level + each freshly-
     // installed dep. **Atomic upgrade pattern** — for each new
     // extension, tombstone any existing aggregates with the SAME name
@@ -222,8 +232,6 @@ export class InstallExtensionService {
           `\`swamp extension pull ${ref.name}\` to reconcile.`,
       );
     }
-
-    return result;
   }
 
   /**

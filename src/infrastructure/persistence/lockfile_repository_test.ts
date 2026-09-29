@@ -335,3 +335,50 @@ Deno.test("LockfileRepository: in-memory constructor takes explicit cache (test 
   assertEquals(repo.getLockedVersion("@scope/preset"), "9.9.9");
   assertEquals(repo.getEntry("@scope/preset")?.version, "9.9.9");
 });
+
+Deno.test("LockfileRepository.refresh: observes an entry written by another instance", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const repoA = await LockfileRepository.create(path);
+    const repoB = await LockfileRepository.create(path);
+
+    await repoB.writeEntry("@scope/new", "2026.01.01.1", ["models/new.ts"]);
+    // The snapshot is unchanged until refresh() is called.
+    assertEquals(repoA.getEntry("@scope/new"), null);
+
+    await repoA.refresh();
+    assertEquals(repoA.getLockedVersion("@scope/new"), "2026.01.01.1");
+    assertEquals(repoA.getEntry("@scope/new")?.files, ["models/new.ts"]);
+  });
+});
+
+Deno.test("LockfileRepository.refresh: drops an entry another instance removed", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const repoA = await LockfileRepository.create(path);
+    await repoA.writeEntry("@scope/gone", "2026.01.01.1", ["models/gone.ts"]);
+    const repoB = await LockfileRepository.create(path);
+
+    await repoB.removeEntry("@scope/gone");
+    assertNotEquals(repoA.getEntry("@scope/gone"), null);
+
+    await repoA.refresh();
+    assertEquals(repoA.getEntry("@scope/gone"), null);
+  });
+});
+
+Deno.test("LockfileRepository.refresh: a missing lockfile yields an empty cache", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const repo = new LockfileRepository(path, {
+      "@scope/in-memory": {
+        version: "2026.01.01.1",
+        pulledAt: "2026-01-01T00:00:00.000Z",
+        files: [],
+      },
+    });
+
+    await repo.refresh();
+    assertEquals(repo.getAllEntries(), {});
+  });
+});

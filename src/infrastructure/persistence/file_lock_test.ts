@@ -559,3 +559,64 @@ Deno.test("FileLock - contention message includes lock file path", async () => {
     await initializeLogging({ _reset: true });
   });
 });
+
+Deno.test("FileLock.tryAcquire: takes a free lock and releases it", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 5000 });
+    assertEquals(await lock.tryAcquire(), true);
+    assertEquals((await lock.inspect())?.pid, Deno.pid);
+    await lock.release();
+    assertEquals(await lock.inspect(), null);
+  });
+});
+
+Deno.test("FileLock.tryAcquire: returns false while a live holder has the lock", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 60_000 });
+    await holder.acquire();
+    const holderNonce = (await holder.inspect())?.nonce;
+
+    const contender = new FileLock(dir, { ttlMs: 60_000 });
+    assertEquals(await contender.tryAcquire(), false);
+    // The holder's lock file is untouched.
+    assertEquals((await holder.inspect())?.nonce, holderNonce);
+
+    await holder.release();
+    assertEquals(await contender.tryAcquire(), true);
+    await contender.release();
+  });
+});
+
+Deno.test("FileLock.tryAcquire: clears a stale holder and takes the lock", async () => {
+  await withTempDir(async (dir) => {
+    const staleLockInfo: LockInfo = {
+      holder: "stale@host",
+      hostname: "host",
+      pid: 99999,
+      acquiredAt: new Date(Date.now() - 120_000).toISOString(),
+      ttlMs: 5000,
+    };
+    await Deno.writeTextFile(
+      join(dir, ".datastore.lock"),
+      JSON.stringify(staleLockInfo, null, 2),
+    );
+
+    const lock = new FileLock(dir, { ttlMs: 5000 });
+    assertEquals(await lock.tryAcquire(), true);
+    assertEquals((await lock.inspect())?.pid, Deno.pid);
+    await lock.release();
+  });
+});
+
+Deno.test("FileLock.tryAcquire: a fresh unreadable lock file counts as held", async () => {
+  await withTempDir(async (dir) => {
+    // A live holder's file is empty between create and write
+    // (swamp-club#2571), so a fresh empty file must not be cleared.
+    const lockPath = join(dir, ".datastore.lock");
+    await Deno.writeTextFile(lockPath, "");
+
+    const lock = new FileLock(dir, { ttlMs: 60_000 });
+    assertEquals(await lock.tryAcquire(), false);
+    assertEquals(await Deno.readTextFile(lockPath), "");
+  });
+});

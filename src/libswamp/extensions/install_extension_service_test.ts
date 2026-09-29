@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { stubInstallExtension } from "./install_test_helpers.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join, relative } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -198,12 +199,13 @@ Deno.test(
         const service = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: () =>
+          installExtensionFn: stubInstallExtension(() =>
             Promise.resolve(
               makeStubInstallResult(extName, "1.0.0", [
                 `.swamp/pulled-extensions/${extName}/models/noop.ts`,
               ]),
-            ),
+            )
+          ),
         });
         const ctx = makeInstallContext(repoDir, lockfileRepository);
 
@@ -274,7 +276,7 @@ Deno.test(
         const service = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               "1.0.0",
@@ -283,7 +285,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/noop.ts`,
             ]);
-          },
+          }),
         });
 
         await service.execute(
@@ -331,12 +333,13 @@ Deno.test(
         const serviceA = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: () =>
+          installExtensionFn: stubInstallExtension(() =>
             Promise.resolve(
               makeStubInstallResult(extA, "1.0.0", [
                 `.swamp/pulled-extensions/${extA}/models/model.ts`,
               ]),
-            ),
+            )
+          ),
         });
         await serviceA.execute(
           { name: extA, version: "1.0.0" } as ExtensionRef,
@@ -359,10 +362,11 @@ Deno.test(
         const serviceB = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: () =>
+          installExtensionFn: stubInstallExtension(() =>
             Promise.resolve(
               makeStubInstallResult(extB, "1.0.0", bExtractedFiles),
-            ),
+            )
+          ),
         });
 
         const thrown = await assertRejects(
@@ -429,12 +433,13 @@ Deno.test(
         await new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: () =>
+          installExtensionFn: stubInstallExtension(() =>
             Promise.resolve(
               makeStubInstallResult(extA, "1.0.0", [
                 `.swamp/pulled-extensions/${extA}/models/model.ts`,
               ]),
-            ),
+            )
+          ),
         }).execute(
           { name: extA, version: "1.0.0" } as ExtensionRef,
           makeInstallContext(repoDir, lockfileRepository),
@@ -458,14 +463,14 @@ Deno.test(
             new InstallExtensionService({
               denoRuntime: testDenoRuntime,
               repository,
-              installExtensionFn: async (_ref, ctx) => {
+              installExtensionFn: stubInstallExtension(async (_ref, ctx) => {
                 await ctx.lockfileRepository.writeEntry(
                   extB,
                   "1.0.0",
                   bExtractedFiles,
                 );
                 return makeStubInstallResult(extB, "1.0.0", bExtractedFiles);
-              },
+              }),
             }).execute(
               { name: extB, version: "1.0.0" } as ExtensionRef,
               makeInstallContext(repoDir, lockfileRepository),
@@ -509,12 +514,13 @@ Deno.test(
         const serviceA = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: () =>
+          installExtensionFn: stubInstallExtension(() =>
             Promise.resolve(
               makeStubInstallResult(extA, "1.0.0", [
                 `.swamp/pulled-extensions/${extA}/models/model.ts`,
               ]),
-            ),
+            )
+          ),
         });
         await serviceA.execute(
           { name: extA, version: "1.0.0" } as ExtensionRef,
@@ -538,12 +544,13 @@ Deno.test(
         const serviceB = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: () =>
+          installExtensionFn: stubInstallExtension(() =>
             Promise.resolve(
               makeStubInstallResult(extB, "1.0.0", [
                 `.swamp/pulled-extensions/${extB}/models/model.ts`,
               ]),
-            ),
+            )
+          ),
         });
 
         await serviceB.execute(
@@ -598,7 +605,7 @@ Deno.test(
         const service = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository: faultingRepo,
-          installExtensionFn: async (ref, ctx) => {
+          installExtensionFn: stubInstallExtension(async (ref, ctx) => {
             await ctx.lockfileRepository.writeEntry(
               ref.name,
               ref.version ?? "1.0.0",
@@ -607,7 +614,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, ref.version ?? "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/noop.ts`,
             ]);
-          },
+          }),
         });
 
         // First attempt: faults inside saveAll. The lifecycle service
@@ -685,10 +692,11 @@ Deno.test(
         const service = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: () =>
+          installExtensionFn: stubInstallExtension(() =>
             Promise.resolve(
               makeStubInstallResult(extName, "1.0.0", []),
-            ),
+            )
+          ),
         });
 
         const thrown = await assertRejects(
@@ -737,8 +745,9 @@ async function runCollidingInstall(
   await new InstallExtensionService({
     denoRuntime: testDenoRuntime,
     repository,
-    installExtensionFn: () =>
-      Promise.resolve(makeStubInstallResult(extA, "1.0.0", [aFile])),
+    installExtensionFn: stubInstallExtension(() =>
+      Promise.resolve(makeStubInstallResult(extA, "1.0.0", [aFile]))
+    ),
   }).execute(
     { name: extA, version: "1.0.0" } as ExtensionRef,
     makeInstallContext(repoDir, lockfileRepository),
@@ -750,7 +759,7 @@ async function runCollidingInstall(
       new InstallExtensionService({
         denoRuntime: testDenoRuntime,
         repository,
-        installExtensionFn: () =>
+        installExtensionFn: stubInstallExtension(() =>
           Promise.resolve(
             makeStubInstallResult(
               extB,
@@ -758,7 +767,8 @@ async function runCollidingInstall(
               [bFile, ...extraExtracted],
               [bFile, ...extraCreated],
             ),
-          ),
+          )
+        ),
       }).execute(
         { name: extB, version: "1.0.0" } as ExtensionRef,
         makeInstallContext(repoDir, lockfileRepository),
