@@ -38,6 +38,9 @@ export function runWithParentTrace<T>(
  * Wraps an async generator to run each iteration within the trace context
  * extracted from the given W3C headers. When no traceparent is provided,
  * yields from the generator unchanged.
+ *
+ * When the consumer stops early, `return()` is forwarded to the inner
+ * iterator (inside the extracted context) so its `finally` blocks still run.
  */
 export async function* withGeneratorTraceContext<T>(
   traceparent: string | undefined,
@@ -52,9 +55,26 @@ export async function* withGeneratorTraceContext<T>(
   if (tracestate) headers.tracestate = tracestate;
   const parentCtx = propagation.extract(context.active(), headers);
   const iterator = generator[Symbol.asyncIterator]();
-  while (true) {
-    const result = await context.with(parentCtx, () => iterator.next());
-    if (result.done) break;
-    yield result.value;
+  let done = false;
+  try {
+    while (true) {
+      let result: IteratorResult<T>;
+      try {
+        result = await context.with(parentCtx, () => iterator.next());
+      } catch (error) {
+        // The inner iterator threw, so it has already finished.
+        done = true;
+        throw error;
+      }
+      if (result.done) {
+        done = true;
+        return;
+      }
+      yield result.value;
+    }
+  } finally {
+    if (!done) {
+      await context.with(parentCtx, () => iterator.return?.());
+    }
   }
 }

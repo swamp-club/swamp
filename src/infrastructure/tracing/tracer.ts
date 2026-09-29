@@ -19,6 +19,7 @@
 
 import {
   type Attributes,
+  type Context,
   context,
   type Span,
   SpanKind,
@@ -50,22 +51,37 @@ export function getTracer(): Tracer {
  * parented.
  *
  * Events with `kind: "error"` are detected and recorded on the span.
+ *
+ * When the consumer stops early, `return()` is forwarded to the inner
+ * iterator (inside the span context) before the span ends, so the inner
+ * generator's `finally` blocks still run.
  */
 export async function* withGeneratorSpan<T extends { kind: string }>(
   name: string,
   attributes: Attributes,
   generator: AsyncIterable<T>,
 ): AsyncGenerator<T> {
+  const iterator = generator[Symbol.asyncIterator]();
   const tracer = getTracer();
   const span = tracer.startSpan(name, { attributes });
   const ctx = trace.setSpan(context.active(), span);
   let hasError = false;
+  let done = false;
   try {
     // Bind each iteration to the span's context so child spans are parented
-    const iterator = generator[Symbol.asyncIterator]();
     while (true) {
-      const result = await context.with(ctx, () => iterator.next());
-      if (result.done) break;
+      let result: IteratorResult<T>;
+      try {
+        result = await context.with(ctx, () => iterator.next());
+      } catch (error) {
+        // The inner iterator threw, so it has already finished.
+        done = true;
+        throw error;
+      }
+      if (result.done) {
+        done = true;
+        break;
+      }
       const event = result.value;
       if (event.kind === "error") {
         hasError = true;
@@ -77,20 +93,45 @@ export async function* withGeneratorSpan<T extends { kind: string }>(
       span.setStatus({ code: SpanStatusCode.OK });
     }
   } catch (error) {
-    span.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: error instanceof Error ? error.message : String(error),
-    });
-    if (error instanceof Error) {
-      span.addEvent("exception", {
-        "exception.type": error.name,
-        "exception.message": error.message,
-        "exception.stacktrace": error.stack ?? "",
-      });
-    }
+    recordSpanError(span, error);
     throw error;
   } finally {
-    span.end();
+    try {
+      if (!done) await returnInSpan(span, ctx, iterator);
+    } finally {
+      span.end();
+    }
+  }
+}
+
+/**
+ * Forwards `return()` to an unfinished iterator inside `ctx`, recording an
+ * error thrown by its `finally` blocks on `span` before rethrowing it.
+ */
+async function returnInSpan(
+  span: Span,
+  ctx: Context,
+  iterator: AsyncIterator<unknown>,
+): Promise<void> {
+  try {
+    await context.with(ctx, () => iterator.return?.());
+  } catch (error) {
+    recordSpanError(span, error);
+    throw error;
+  }
+}
+
+function recordSpanError(span: Span, error: unknown): void {
+  span.setStatus({
+    code: SpanStatusCode.ERROR,
+    message: error instanceof Error ? error.message : String(error),
+  });
+  if (error instanceof Error) {
+    span.addEvent("exception", {
+      "exception.type": error.name,
+      "exception.message": error.message,
+      "exception.stacktrace": error.stack ?? "",
+    });
   }
 }
 

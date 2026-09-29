@@ -119,6 +119,155 @@ Deno.test("withGeneratorSpan: propagates error kind events without throwing", as
   assertEquals(events[0].kind, "error");
 });
 
+// libswamp generators wrapped by withGeneratorSpan release sinks, locks and
+// child spans in finally blocks, which only run if an early exit reaches them.
+
+Deno.test("withGeneratorSpan: a consumer break runs the inner finally once, inside the span context", async () => {
+  await withRecordedSpans(async (recorder) => {
+    let finallyRuns = 0;
+    async function* inner() {
+      try {
+        yield { kind: "first" as const };
+        yield { kind: "second" as const };
+      } finally {
+        finallyRuns++;
+        getTracer().startSpan("in-finally").end();
+      }
+    }
+
+    for await (const _ of withGeneratorSpan("wrapper", {}, inner())) {
+      break;
+    }
+
+    // The break has resolved only after the inner finally ran.
+    assertEquals(finallyRuns, 1);
+    const wrapper = findSpan(recorder.ended, "wrapper");
+    assert(isChildOf(findSpan(recorder.ended, "in-finally"), wrapper));
+    // The child ended before the wrapper span did.
+    assertEquals(recorder.ended.map((s) => s.name), ["in-finally", "wrapper"]);
+    assertEquals(wrapper.status.code, SpanStatusCode.UNSET);
+  });
+});
+
+Deno.test("withGeneratorSpan: an explicit return() runs the inner finally once", async () => {
+  let finallyRuns = 0;
+  async function* inner() {
+    try {
+      yield { kind: "first" as const };
+      yield { kind: "second" as const };
+    } finally {
+      finallyRuns++;
+    }
+  }
+
+  const gen = withGeneratorSpan("wrapper", {}, inner());
+  assertEquals((await gen.next()).value, { kind: "first" });
+  assertEquals(await gen.return(undefined), { value: undefined, done: true });
+
+  assertEquals(finallyRuns, 1);
+});
+
+Deno.test("withGeneratorSpan: does not forward return() once the inner generator completed", async () => {
+  let returnCalls = 0;
+  let finallyRuns = 0;
+  async function* body() {
+    try {
+      yield { kind: "only" as const };
+    } finally {
+      finallyRuns++;
+    }
+  }
+  const inner = body();
+  const originalReturn = inner.return.bind(inner);
+  inner.return = (value) => {
+    returnCalls++;
+    return originalReturn(value);
+  };
+
+  const gen = withGeneratorSpan("wrapper", {}, inner);
+  assertEquals((await gen.next()).done, false);
+  assertEquals((await gen.next()).done, true);
+  await gen.return(undefined);
+
+  assertEquals(finallyRuns, 1);
+  assertEquals(returnCalls, 0);
+});
+
+Deno.test("withGeneratorSpan: does not forward return() after the inner generator threw", async () => {
+  let returnCalls = 0;
+  async function* body() {
+    yield { kind: "first" as const };
+    throw new Error("inner failed");
+  }
+  const inner = body();
+  const originalReturn = inner.return.bind(inner);
+  inner.return = (value) => {
+    returnCalls++;
+    return originalReturn(value);
+  };
+
+  await assertRejects(
+    () => collectEvents(withGeneratorSpan("wrapper", {}, inner)),
+    Error,
+    "inner failed",
+  );
+  assertEquals(returnCalls, 0);
+});
+
+Deno.test("withGeneratorSpan: an error from the inner finally surfaces to the consumer and is recorded", async () => {
+  await withRecordedSpans(async (recorder) => {
+    async function* inner() {
+      try {
+        yield { kind: "first" as const };
+      } finally {
+        // deno-lint-ignore no-unsafe-finally
+        throw new Error("cleanup failed");
+      }
+    }
+
+    await assertRejects(
+      async () => {
+        for await (const _ of withGeneratorSpan("wrapper", {}, inner())) {
+          break;
+        }
+      },
+      Error,
+      "cleanup failed",
+    );
+
+    const wrapper = findSpan(recorder.ended, "wrapper");
+    assertEquals(wrapper.status.code, SpanStatusCode.ERROR);
+    assertEquals(wrapper.status.message, "cleanup failed");
+  });
+});
+
+Deno.test("withGeneratorSpan: forwards an early break with no tracer registered", async () => {
+  // Tracing is off for most runs, so the no-op span and context must still
+  // unwind every layer.
+  const unwound: string[] = [];
+  async function* innermost() {
+    try {
+      yield { kind: "first" as const };
+      yield { kind: "second" as const };
+    } finally {
+      unwound.push("inner");
+    }
+  }
+  async function* middle() {
+    try {
+      yield* withGeneratorSpan("middle", {}, innermost());
+    } finally {
+      unwound.push("middle");
+    }
+  }
+
+  for await (const _ of withGeneratorSpan("outer", {}, middle())) {
+    break;
+  }
+
+  assertEquals(unwound, ["inner", "middle"]);
+});
+
 // ── withServerSpan tests ────────────────────────────────────────────
 
 Deno.test("withServerSpan: starts a SERVER span with the given attributes", async () => {
