@@ -170,6 +170,7 @@ import {
   type ConnectionContext,
   emitRunCancelAudit,
   getConnectionSourceIp,
+  isAuthorized,
   isRestrictedCommand,
   MAX_CANCEL_REASON_LENGTH,
   MAX_PREDICATE_LENGTH,
@@ -3771,8 +3772,11 @@ async function handleCancelRun(
     resourceKind,
     run.resourceName,
   );
+  // A refusal is silent, like a cancel of an unknown id, so the reply never
+  // confirms the run exists or names its resource (swamp-club#2649). The
+  // denial is still audited.
   if (
-    authorizeOrReject(
+    isAuthorized(
       socket,
       requestId,
       principal,
@@ -3783,7 +3787,7 @@ async function handleCancelRun(
         fields: cancelFields,
       },
       ctx,
-    ).allowed
+    )
   ) {
     const cancelled = ctx.activeRunRegistry!.cancel(
       requestId,

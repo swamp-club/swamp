@@ -409,7 +409,19 @@ All of this is in `handleRunAttach`
   in-flight request, its controller is aborted. Otherwise `handleCancelRun`
   checks for a `run` grant on the run's resource and calls
   `activeRunRegistry.cancel(requestId)`, with no grace wait and no
-  `cancellation_requested` result (`src/serve/connection.ts`).
+  `cancellation_requested` result (`src/serve/connection.ts`). A caller
+  without the grant gets no reply, as for an unknown id, so a refusal never
+  confirms the run exists or names its resource; the denial is audited.
+- The WebSocket `workflow.cancel` request cancels a run by id: one this
+  instance is driving through the registry, otherwise a persisted suspended
+  run (`handleWorkflowCancel` in `src/serve/handlers/workflow_handlers.ts`).
+  For a persisted run, `cancelSuspendedRunAndPush`
+  (`src/serve/suspended_run_cancel.ts`) first locates the run and checks a
+  `run` grant on the workflow it belongs to, holding neither the sync gate
+  nor the run id's reservation. A missing, mismatched or refused run gets the
+  same `No cancellable run with id <id>` reply, and never holds the gate or
+  blocks another operation on the run. Only an allowed cancel takes the gate
+  and the reservation, then re-reads, saves and pushes the run.
 
 Serve's `CANCEL_GRACE_MS` is not the 30 s constant of the same name in
 `src/domain/remote/rpc_channel.ts`, which bounds RPC cancel confirmation.

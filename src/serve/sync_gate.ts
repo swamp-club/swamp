@@ -150,7 +150,10 @@ export function pollerGateTiming(pollIntervalMs: number): PollerGateTiming {
  *
  * `workflow.cancel` is absent on purpose: it waits for an aborted run, which
  * needs the gate for its final push, so it gates only its persisted cancel
- * and push (`cancelSuspendedRunAndPush`), not the whole handler.
+ * and push, not the whole handler. `cancelSuspendedRunAndPush` locates the
+ * run and authorizes the caller before taking the gate, so an unknown or
+ * refused run id never holds it (swamp-club#2648); only the reserve, re-read,
+ * save and push run under it.
  *
  * `vault.put` is absent on purpose: `acquireVaultSync`'s flush is a documented
  * no-op because vault secrets live in always-local `.swamp/secrets` and never

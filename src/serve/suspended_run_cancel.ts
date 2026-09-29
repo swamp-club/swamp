@@ -22,14 +22,17 @@ import {
   type CancelTargetWorkflow,
   createLibSwampContext,
   createWorkflowCancelSuspendedDeps,
+  locateSuspendedRunToCancel,
   type SwampError,
   workflowCancelSuspended,
+  type WorkflowCancelSuspendedDeps,
 } from "../libswamp/mod.ts";
 import {
   type ConnectionContext,
   pushChangedToRemote,
 } from "./handlers/shared.ts";
 import type { ActiveRunRegistry } from "./active_run_registry.ts";
+import { withSyncGate } from "./sync_gate.ts";
 
 export interface SuspendedRunCancelRequest {
   runId: string;
@@ -51,83 +54,111 @@ export type SuspendedRunCancelResult =
 export const SUSPENDED_RUN_BUSY_MESSAGE =
   "Another operation on this run is in progress; try again";
 
-/**
- * Cancels a persisted suspended run that no process in this serve instance is
- * driving. Holds the run id's reservation in the active-run registry for the
- * whole load, check and save, so it never interleaves with a resume, approve
- * or reject of the same run in this process, and releases it however the
- * cancel settles. It neither takes the sync gate nor pushes: the caller runs
- * it inside `withSyncGate` and pushes afterwards, like any handler mutation.
- *
- * `authorize` is asked about the run's own workflow before anything about the
- * run is revealed; a refusal is reported as not found.
- */
-export async function cancelSuspendedRunInServe(
-  ctx: ConnectionContext,
-  request: SuspendedRunCancelRequest,
-  authorize: (workflow: CancelTargetWorkflow) => Promise<boolean> | boolean,
-): Promise<SuspendedRunCancelResult> {
-  const notFound: SuspendedRunCancelResult = {
+function suspendedRunNotFound(runId: string): SuspendedRunCancelResult {
+  return {
     status: "not_found",
-    message: `No cancellable run with id ${request.runId}`,
+    message: `No cancellable run with id ${runId}`,
   };
-  const registry = ctx.activeRunRegistry;
-  // Without a registry nothing can serialize the cancel against a resume.
-  if (!registry) return notFound;
-
-  const release = registry.reserve(request.runId);
-  if (!release) {
-    return registry.get(request.runId)
-      ? { status: "active" }
-      : { status: "busy", message: SUSPENDED_RUN_BUSY_MESSAGE };
-  }
-  try {
-    const deps = createWorkflowCancelSuspendedDeps(
-      ctx.repoContext.workflowRepo,
-      ctx.repoContext.workflowRunRepo,
-      authorize,
-      ctx.runTracker,
-    );
-    let failure: SwampError | undefined;
-    let result: SuspendedRunCancelResult | undefined;
-    for await (
-      const event of workflowCancelSuspended(createLibSwampContext(), deps, {
-        runId: request.runId,
-        workflowIdOrName: request.workflowIdOrName,
-        reason: request.reason,
-      })
-    ) {
-      if (event.kind === "completed") {
-        result = {
-          status: "cancelled",
-          runId: event.data.runId,
-          workflowName: event.data.workflowName,
-        };
-      } else if (event.kind === "error") {
-        failure = event.error;
-      }
-    }
-    if (result) return result;
-    if (failure?.code === CANCEL_SUSPENDED_NOT_SUSPENDED) {
-      return { status: "not_suspended", message: failure.message };
-    }
-    return notFound;
-  } finally {
-    release();
-  }
 }
 
 /**
- * Runs {@link cancelSuspendedRunInServe} and pushes the result. Callers run it
- * inside `withSyncGate`, as one handler mutation unit.
+ * Cancels a persisted suspended run that no process in this serve instance is
+ * driving, and pushes the result. Callers do not take the sync gate: this
+ * takes it itself, only once the caller is known to be allowed.
+ *
+ * The run is first located and `authorize` asked about its own workflow while
+ * holding neither the sync gate nor the run id's reservation, so a caller
+ * refused or naming an unknown run gets not found without ever blocking other
+ * handlers or another operation on the run (swamp-club#2648, #2649). Only then
+ * is the gate taken and the id reserved for the fresh read, check, save and
+ * push, so the cancel never interleaves with a resume, approve or reject of the
+ * same run in this process.
  */
 export async function cancelSuspendedRunAndPush(
   ctx: ConnectionContext,
   request: SuspendedRunCancelRequest,
   authorize: (workflow: CancelTargetWorkflow) => Promise<boolean> | boolean,
 ): Promise<SuspendedRunCancelResult> {
+  const notFound = suspendedRunNotFound(request.runId);
+  const registry = ctx.activeRunRegistry;
+  // Without a registry nothing can serialize the cancel against a resume.
+  if (!registry) return notFound;
+
+  const deps = createWorkflowCancelSuspendedDeps(
+    ctx.repoContext.workflowRepo,
+    ctx.repoContext.workflowRunRepo,
+    authorize,
+    ctx.runTracker,
+  );
+  const located = await locateSuspendedRunToCancel(deps, {
+    runId: request.runId,
+    workflowIdOrName: request.workflowIdOrName,
+  });
+  if (!located) {
+    // A resume may have registered the run since the caller looked; the
+    // caller authorizes a registered run against its registry entry.
+    return registry.get(request.runId) ? { status: "active" } : notFound;
+  }
+  return await withSyncGate(
+    ctx.syncGate,
+    () =>
+      cancelLocatedRunAndPush(
+        ctx,
+        registry,
+        deps,
+        request,
+        located.workflowId,
+      ),
+  );
+}
+
+/**
+ * The gated half of {@link cancelSuspendedRunAndPush}: reserves the run id,
+ * cancels the run read afresh from the workflow it was located in, releases
+ * the reservation however that settles, and pushes.
+ */
+async function cancelLocatedRunAndPush(
+  ctx: ConnectionContext,
+  registry: ActiveRunRegistry,
+  deps: WorkflowCancelSuspendedDeps,
+  request: SuspendedRunCancelRequest,
+  workflowId: string,
+): Promise<SuspendedRunCancelResult> {
   try {
-    return await cancelSuspendedRunInServe(ctx, request, authorize);
+    const release = registry.reserve(request.runId);
+    if (!release) {
+      return registry.get(request.runId)
+        ? { status: "active" }
+        : { status: "busy", message: SUSPENDED_RUN_BUSY_MESSAGE };
+    }
+    try {
+      let failure: SwampError | undefined;
+      let result: SuspendedRunCancelResult | undefined;
+      for await (
+        const event of workflowCancelSuspended(createLibSwampContext(), deps, {
+          runId: request.runId,
+          workflowId,
+          reason: request.reason,
+        })
+      ) {
+        if (event.kind === "completed") {
+          result = {
+            status: "cancelled",
+            runId: event.data.runId,
+            workflowName: event.data.workflowName,
+          };
+        } else if (event.kind === "error") {
+          failure = event.error;
+        }
+      }
+      if (result) return result;
+      if (failure?.code === CANCEL_SUSPENDED_NOT_SUSPENDED) {
+        return { status: "not_suspended", message: failure.message };
+      }
+      return suspendedRunNotFound(request.runId);
+    } finally {
+      release();
+    }
   } finally {
     await pushChangedToRemote(ctx);
   }

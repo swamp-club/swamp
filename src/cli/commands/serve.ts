@@ -41,7 +41,6 @@ import {
   RUN_CANCEL_GRACE_MS,
   type SuspendedRunCancelResult,
 } from "../../serve/suspended_run_cancel.ts";
-import { withSyncGate } from "../../serve/sync_gate.ts";
 import { createTriggerAuthorizer } from "../../serve/trigger_authorizer.ts";
 import {
   auditScheduledEvent,
@@ -5206,14 +5205,10 @@ export const serveCommand = new Command()
                   // The endpoint already required admin on every resource, so
                   // the run's own workflow needs no further check.
                   cancelSuspended: (id) =>
-                    withSyncGate(
-                      connectionCtx.syncGate,
-                      () =>
-                        cancelSuspendedRunAndPush(
-                          connectionCtx,
-                          { runId: id, reason },
-                          () => true,
-                        ),
+                    cancelSuspendedRunAndPush(
+                      connectionCtx,
+                      { runId: id, reason },
+                      () => true,
                     ),
                 },
               );
