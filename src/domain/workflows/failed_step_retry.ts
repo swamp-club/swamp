@@ -27,6 +27,7 @@
  */
 
 import { UserError } from "../errors.ts";
+import { quoteShellWord } from "../shell_word.ts";
 import type { Workflow } from "./workflow.ts";
 import type { FailedStepRef, WorkflowRun } from "./workflow_run.ts";
 
@@ -58,7 +59,7 @@ export function entryTemplateOf(step: FailedStepRef): string {
  * - each entry template is a step of the same job in the current workflow;
  * - step names are unique across the workflow and across the stored run.
  *
- * Refusals stay short and path-free: serve truncates client errors at 200
+ * Refusals stay short and path-free: serve truncates client errors at 512
  * characters and hides any message that contains a filesystem path.
  */
 export function selectRetryTemplates(
@@ -73,7 +74,7 @@ export function selectRetryTemplates(
     throw new UserError(
       `Step "${rejected.stepName}" in job "${rejected.jobName}" was rejected; ` +
         `retry won't re-open it. Add --from ${
-          entryTemplateOf(rejected)
+          quoteShellWord(entryTemplateOf(rejected))
         } to ask again. ${history}`,
     );
   }
@@ -92,7 +93,9 @@ export function selectRetryTemplates(
     for (const step of job.steps) {
       if (TERMINAL_STATUSES.has(step.status)) continue;
       const hint = step.status === "pending"
-        ? ` Add --from ${step.forEachTemplate ?? step.stepName} to run it.`
+        ? ` Add --from ${
+          quoteShellWord(step.forEachTemplate ?? step.stepName)
+        } to run it.`
         : "";
       throw new UserError(
         `Step "${step.stepName}" in job "${job.jobName}" is ${step.status}; ` +

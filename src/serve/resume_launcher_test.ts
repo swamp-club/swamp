@@ -24,7 +24,10 @@ import {
   startDetachedResume,
 } from "./resume_launcher.ts";
 import { type ActiveRun, ActiveRunRegistry } from "./active_run_registry.ts";
-import type { ConnectionContext } from "./handlers/shared.ts";
+import {
+  type ConnectionContext,
+  MAX_CLIENT_ERROR_LENGTH,
+} from "./handlers/shared.ts";
 import type { BufferTerminal } from "./run_event_buffer.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { InputsSchema } from "../domain/definitions/definition.ts";
@@ -201,7 +204,11 @@ for (const from of ["deploy", undefined]) {
           result.message,
           `Step "verify" in job "main" is not in the run. Start a new run.`,
         );
-        assertEquals(result.message.length <= 200, true, result.message);
+        assertEquals(
+          result.message.length <= MAX_CLIENT_ERROR_LENGTH,
+          true,
+          result.message,
+        );
       }
       assertEquals(registry.registered.length, 0);
     },

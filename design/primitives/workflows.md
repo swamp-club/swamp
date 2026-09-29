@@ -509,7 +509,7 @@ store iterations without `forEachTemplate`), so once the other job has started,
 or it holds records named like iterations, the step counts as already there.
 
 The refusal leaves the run suspended. It starts with the way out, so serve's
-200-character error limit cuts the job and step detail rather than the command:
+512-character error limit cuts the job and step detail rather than the command:
 
 ```
 The workflow changed shape since the run started. To cancel it: 'swamp workflow cancel <wf> --run <id>'. Step "lint" in job "main" is not in the run.

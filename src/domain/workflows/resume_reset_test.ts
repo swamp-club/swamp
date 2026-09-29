@@ -30,7 +30,7 @@ import { TriggerCondition } from "./trigger_condition.ts";
 import { Workflow } from "./workflow.ts";
 import { type StepRunRef, WorkflowRun } from "./workflow_run.ts";
 
-const MAX_CLIENT_ERROR_LENGTH = 200;
+const MAX_CLIENT_ERROR_LENGTH = 512;
 const ABSOLUTE_PATH = /(?:^|[\s"'`(])\/[a-z]/i;
 
 function plain(name: string, dependsOn: string[] = []): Step {
@@ -703,7 +703,7 @@ function suspendedRun(wf: Workflow): WorkflowRun {
 
 /**
  * Asserts that the check refuses `run` without changing it, and that serve's
- * 200-character error limit keeps the whole way out.
+ * 512-character error limit keeps the whole way out.
  */
 function suspendedRefusal(wf: Workflow, run: WorkflowRun): string {
   const before = JSON.stringify(run.toData());
@@ -1247,14 +1247,14 @@ Deno.test("checkSuspendedRunResume: accepts a run that suspended again at a gate
   checkSuspendedRunResume(wf, run);
 });
 
-Deno.test("checkSuspendedRunResume: serve's error limit keeps the way out for realistic names", () => {
-  // Serve cuts errors at 200 characters, so the way out comes first. These
+Deno.test("checkSuspendedRunResume: serve's error limit keeps the way out for long names", () => {
+  // Serve cuts errors at 512 characters, so the way out comes first. These
   // names make the whole message longer than that.
   const name = "deploy-production-infrastructure";
   const [main, post, notify] = [
-    "deploy-production",
-    "post-deploy",
-    "notify-slack-channel",
+    "deploy-production-".repeat(8),
+    "post-deploy-".repeat(8),
+    "notify-slack-channel-".repeat(8),
   ];
   const before = workflow([
     {

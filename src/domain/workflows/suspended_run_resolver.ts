@@ -221,7 +221,7 @@ function noRunsInStateMessage(
     latest.id,
   );
   // A failed run's hint already names the run id, so it is not repeated
-  // here; that keeps the message within serve's 200-character error limit.
+  // here; that keeps the message within serve's 512-character error limit.
   const id = latest.status === "failed" ? "" : ` (${latest.id})`;
   return `${base}. The latest run is ${latest.status}${id}.${suggestion}`;
 }

@@ -48,6 +48,7 @@ import {
 } from "../domain/auth/server_url.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
+import { quoteShellWord } from "../domain/shell_word.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   gutterLine,
@@ -76,15 +77,6 @@ export function resolveServeUrl(
   return flagValue ?? Deno.env.get("SWAMP_SERVE_URL") ??
     Deno.env.get("SWAMP_SERVER_URL") ?? markerValue ??
     _cachedMarkerServerAddress;
-}
-
-/** A POSIX shell word made only of these characters needs no quoting. */
-const SHELL_SAFE_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
-
-function quoteShellWord(value: string): string {
-  return SHELL_SAFE_WORD.test(value)
-    ? value
-    : `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 /**

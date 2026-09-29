@@ -96,7 +96,7 @@ export async function pushChangedToRemote(
   }
 }
 
-export const MAX_CLIENT_ERROR_LENGTH = 200;
+export const MAX_CLIENT_ERROR_LENGTH = 512;
 
 export const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s"'`(])\/(?:opt|home|var|tmp|etc|usr|root|Users|private|proc|sys|mnt|srv|run)\//;

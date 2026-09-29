@@ -382,7 +382,7 @@ Deno.test("resolveSuspendedRun: ignores failed runs, as approve and reject need"
   );
 });
 
-Deno.test("resolveResumableRun: the failed-run hint fits serve's 200-character error limit", async () => {
+Deno.test("resolveResumableRun: the failed-run hint fits serve's 512-character error limit", async () => {
   const wf = createWorkflow("retry-failed-steps");
   const run = createFailedRun(wf);
   const { workflowRepo, runRepo } = stubRepos(wf, [run]);
@@ -391,7 +391,7 @@ Deno.test("resolveResumableRun: the failed-run hint fits serve's 200-character e
     () => resolveResumableRun(workflowRepo, runRepo, "retry-failed-steps"),
     Error,
   );
-  assertEquals(error.message.length <= 200, true, error.message);
+  assertEquals(error.message.length <= 512, true, error.message);
 });
 
 Deno.test("resolveSuspendedRun: approve and reject on a failed run name the resume command", async () => {
