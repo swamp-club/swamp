@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Definition } from "../../domain/definitions/definition.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../../domain/models/model_lookup.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -28,6 +31,7 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 
@@ -59,6 +63,17 @@ export type DataVersionsEvent =
 
 export interface DataVersionsInput {
   modelIdOrName: string;
+  /**
+   * Treat `modelIdOrName` as a definition id the caller already resolved,
+   * and look it up by id only, so the operation acts on the model the caller
+   * authorized.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
   dataName: string;
 }
 
@@ -72,8 +87,14 @@ interface DataEntry {
 
 /** Dependencies for the data versions operation. */
 export interface DataVersionsDeps {
+  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
+  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+  /** Looks up by exact id only; required for a `byId` request. */
+  lookupDefinitionById?: (
+    id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   listVersions: (
     type: ModelType,
@@ -110,6 +131,8 @@ export function createDataVersionsDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     listVersions: (type, definitionId, name) =>
       dataRepo.listVersions(type, definitionId, name),
     findByName: (type, definitionId, name, version) =>
@@ -129,7 +152,14 @@ export async function* dataVersions(
     (async function* () {
       yield { kind: "resolving" };
 
-      const result = await deps.lookupDefinition(input.modelIdOrName);
+      const lookupDefinition = selectLookup(
+        "data versions",
+        input.byId,
+        deps.lookupDefinition,
+        deps.lookupDefinitionById,
+        input.expectedName,
+      );
+      const result = await lookupDefinition(input.modelIdOrName);
       if (!result) {
         yield { kind: "error", error: notFound("Model", input.modelIdOrName) };
         return;

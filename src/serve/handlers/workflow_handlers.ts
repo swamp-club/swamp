@@ -164,6 +164,18 @@ import {
 import type { TriggerOverride } from "../../libswamp/mod.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
+import {
+  findWorkflowById,
+  findWorkflowByIdOrName,
+} from "../../domain/workflows/workflow_lookup.ts";
+import {
+  authorizeResolved,
+  resolveRecordedWorkflow,
+  resolveWorkflowTarget,
+  type ResourceResolution,
+  targetArgument,
+  unresolvedAccessResource,
+} from "./resource_resolution.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -189,11 +201,26 @@ export async function resolveWorkflow(
   idOrName: string,
 ): Promise<Workflow | null> {
   try {
-    return await workflowRepo.findByName(idOrName) ??
-      await workflowRepo.findById(createWorkflowId(idOrName));
+    return await findWorkflowByIdOrName(workflowRepo, idOrName);
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolves the workflow a request names — including a workflow file that
+ * fails to parse — so the handler authorizes its canonical name
+ * (swamp-club#2674).
+ */
+function resolveWorkflowRequest(
+  ctx: ConnectionContext,
+  idOrName: string,
+): Promise<ResourceResolution> {
+  return resolveWorkflowTarget(
+    ctx.repoContext.workflowRepo,
+    idOrName,
+    workflowsDirFor(ctx.repoDir),
+  );
 }
 
 export function workflowAccessFields(
@@ -214,17 +241,23 @@ export async function handleWorkflowRun(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowIdOrName,
-  );
+  const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "run", {
-      kind: "workflow",
-      name: payload.workflowIdOrName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "run",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_execution_failed",
+    )
   ) return;
+  const workflow = targetArgument(target, payload.workflowIdOrName);
+  const resourceName = target.resource.name;
+  const resourceId = target.status === "found" ? target.id : undefined;
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
   const registry = ctx.activeRunRegistry;
@@ -236,7 +269,9 @@ export async function handleWorkflowRun(
         ctx.repoContext,
         ctx.datastoreConfig,
         {
-          workflowIdOrName: payload.workflowIdOrName,
+          workflowIdOrName: workflow.idOrName,
+          byId: workflow.byId,
+          expectedName: workflow.expectedName,
           inputs: payload.inputs,
           lastEvaluated: payload.lastEvaluated,
           verbose: payload.verbose,
@@ -318,7 +353,8 @@ export async function handleWorkflowRun(
     registry.register({
       runId,
       kind: "workflow-run",
-      resourceName: payload.workflowIdOrName,
+      resourceName,
+      resourceId,
       buffer,
       controller: runController,
       startedAt,
@@ -347,7 +383,9 @@ export async function handleWorkflowRun(
         ctx.repoContext,
         ctx.datastoreConfig,
         {
-          workflowIdOrName: payload.workflowIdOrName,
+          workflowIdOrName: workflow.idOrName,
+          byId: workflow.byId,
+          expectedName: workflow.expectedName,
           inputs: payload.inputs,
           lastEvaluated: payload.lastEvaluated,
           verbose: payload.verbose,
@@ -381,7 +419,8 @@ export async function handleWorkflowRun(
                     oldRunId,
                     domainRunId,
                     {
-                      resourceName: payload.workflowIdOrName,
+                      resourceName,
+                      resourceId,
                       runKind: "workflow-run",
                       startedAt: startedAt.toISOString(),
                     },
@@ -449,7 +488,8 @@ export async function handleWorkflowRun(
 
   if (ctx.controlPlaneStore && ctx.instanceId) {
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
-      resourceName: payload.workflowIdOrName,
+      resourceName,
+      resourceId,
       runKind: "workflow-run",
       startedAt: startedAt.toISOString(),
     });
@@ -627,17 +667,21 @@ export async function handleWorkflowGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowIdOrName,
-  );
+  const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: payload.workflowIdOrName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_get_failed",
+    )
   ) return;
+  const workflow = targetArgument(target, payload.workflowIdOrName);
 
   try {
     const libCtx = createLibSwampContext();
@@ -645,7 +689,10 @@ export async function handleWorkflowGet(
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      workflowGet(libCtx, deps, payload.workflowIdOrName),
+      workflowGet(libCtx, deps, workflow.idOrName, {
+        byId: workflow.byId,
+        expectedName: workflow.expectedName,
+      }),
       {
         resolving: () => {},
         completed: (e) => {
@@ -1089,24 +1136,28 @@ export async function handleWorkflowApprove(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowIdOrName,
-  );
+  const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "approve", {
-      kind: "workflow",
-      name: payload.workflowIdOrName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "approve",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_approve_failed",
+    )
   ) return;
+  const workflow = targetArgument(target, payload.workflowIdOrName);
 
   let result: WorkflowApproveData | undefined;
   let release: (() => void) | undefined;
   try {
     const reserved = await reserveSuspendedRun(
       ctx,
-      payload.workflowIdOrName,
+      workflow,
       payload.runId,
     );
     if (!reserved.ok) {
@@ -1123,7 +1174,9 @@ export async function handleWorkflowApprove(
 
     await consumeStream(
       workflowApprove(libCtx, deps, {
-        workflowIdOrName: payload.workflowIdOrName,
+        workflowIdOrName: workflow.idOrName,
+        byId: workflow.byId,
+        expectedName: workflow.expectedName,
         stepName: payload.stepName,
         reason: payload.reason,
         runId: reserved.runId,
@@ -1198,23 +1251,27 @@ export async function handleWorkflowReject(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowIdOrName,
-  );
+  const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "approve", {
-      kind: "workflow",
-      name: payload.workflowIdOrName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "approve",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_reject_failed",
+    )
   ) return;
+  const workflow = targetArgument(target, payload.workflowIdOrName);
 
   let release: (() => void) | undefined;
   try {
     const reserved = await reserveSuspendedRun(
       ctx,
-      payload.workflowIdOrName,
+      workflow,
       payload.runId,
     );
     if (!reserved.ok) {
@@ -1233,7 +1290,9 @@ export async function handleWorkflowReject(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       workflowReject(libCtx, deps, {
-        workflowIdOrName: payload.workflowIdOrName,
+        workflowIdOrName: workflow.idOrName,
+        byId: workflow.byId,
+        expectedName: workflow.expectedName,
         stepName: payload.stepName,
         reason: payload.reason,
         runId: reserved.runId,
@@ -1291,14 +1350,15 @@ type ReservedSuspendedRun =
  */
 async function reserveSuspendedRun(
   ctx: ConnectionContext,
-  workflowIdOrName: string,
+  workflow: { idOrName: string; byId: boolean; expectedName?: string },
   runId: string | undefined,
 ): Promise<ReservedSuspendedRun> {
   const { run } = await resolveSuspendedRun(
     ctx.repoContext.workflowRepo,
     ctx.repoContext.workflowRunRepo,
-    workflowIdOrName,
+    workflow.idOrName,
     runId,
+    { byId: workflow.byId, expectedName: workflow.expectedName },
   );
   const registry = ctx.activeRunRegistry;
   if (!registry) return { ok: true, runId: run.id, release: undefined };
@@ -1330,15 +1390,31 @@ export async function handleWorkflowCancel(
 ): Promise<void> {
   const notFound = `No cancellable run with id ${payload.runId}`;
   const reason = cancelReasonFor(cancelActor(principal, ctx), payload.reason);
-  const mayCancel = async (workflowName: string): Promise<boolean> =>
-    isAuthorized(socket, requestId, principal, "run", {
-      kind: "workflow",
-      name: workflowName,
-      fields: await resolveWorkflowFields(
+  // Authorized on the run's workflow as found by id when known, so its
+  // fields come from that workflow, not whatever now holds its name. A
+  // failed lookup refuses.
+  const mayCancel = async (
+    target: { id?: string; name: string },
+  ): Promise<boolean> => {
+    const resolution = target.id
+      ? await resolveRecordedWorkflow(
         ctx.repoContext.workflowRepo,
-        workflowName,
-      ),
-    }, ctx);
+        target.id,
+        target.name,
+      )
+      : await resolveWorkflowTarget(ctx.repoContext.workflowRepo, target.name);
+    if (resolution.status === "failed") return false;
+    return isAuthorized(
+      socket,
+      requestId,
+      principal,
+      "run",
+      resolution.status === "found"
+        ? resolution.resource
+        : unresolvedAccessResource("workflow", target.name),
+      ctx,
+    );
+  };
   const cancelPersisted = () =>
     withSyncGate(ctx.syncGate, () =>
       cancelSuspendedRunAndPush(
@@ -1348,7 +1424,7 @@ export async function handleWorkflowCancel(
           workflowIdOrName: payload.workflowIdOrName,
           reason,
         },
-        (workflow) => mayCancel(workflow.name),
+        (workflow) => mayCancel(workflow),
       ));
   const reply = (workflowName: string, status: string) =>
     send(socket, {
@@ -1422,21 +1498,36 @@ async function abortActiveWorkflowRun(
   ctx: ConnectionContext,
   payload: WorkflowCancelPayload,
   active: import("../active_run_registry.ts").ActiveRun,
-  mayCancel: (workflowName: string) => Promise<boolean>,
+  mayCancel: (target: { id?: string; name: string }) => Promise<boolean>,
   reason: string,
 ): Promise<string | undefined> {
   if (active.kind === "method-run") return undefined;
-  const workflow = await ctx.repoContext.workflowRepo.findByName(
-    active.resourceName,
-  ) ??
-    await ctx.repoContext.workflowRepo.findById(
-      createWorkflowId(active.resourceName),
+  // By the id recorded at registration when there is one, so a rename during
+  // the run cannot point the check at a workflow that took the old name.
+  // Ids are not guaranteed unique, so prefer the workflow with both the id
+  // and the recorded name; failing that it was renamed, so take the id alone.
+  const workflow = active.resourceId
+    ? await findWorkflowById(
+      ctx.repoContext.workflowRepo,
+      active.resourceId,
+      active.resourceName,
+    ) ??
+      await findWorkflowById(ctx.repoContext.workflowRepo, active.resourceId)
+    : await findWorkflowByIdOrName(
+      ctx.repoContext.workflowRepo,
+      active.resourceName,
     );
   const workflowName = workflow?.name ?? active.resourceName;
   const matches = payload.workflowIdOrName === undefined ||
     payload.workflowIdOrName === workflowName ||
     payload.workflowIdOrName === workflow?.id;
-  if (!matches || !(await mayCancel(workflowName))) return undefined;
+  if (
+    !matches ||
+    !(await mayCancel({
+      id: workflow?.id ?? active.resourceId,
+      name: workflowName,
+    }))
+  ) return undefined;
   ctx.activeRunRegistry?.cancel(payload.runId, reason);
   return workflowName;
 }
@@ -1449,17 +1540,21 @@ export async function handleWorkflowResume(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowIdOrName,
-  );
+  const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "run", {
-      kind: "workflow",
-      name: payload.workflowIdOrName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "run",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_resume_failed",
+    )
   ) return;
+  const workflow = targetArgument(target, payload.workflowIdOrName);
 
   const registry = ctx.activeRunRegistry;
   if (!registry) {
@@ -1470,9 +1565,13 @@ export async function handleWorkflowResume(
       const { run, workflowName } = await resolveResumableRun(
         workflowRepo,
         runRepo,
-        payload.workflowIdOrName,
+        workflow.idOrName,
         payload.runId,
-        { fromStep: payload.from },
+        {
+          fromStep: payload.from,
+          byId: workflow.byId,
+          expectedName: workflow.expectedName,
+        },
       );
 
       const stepLockHook = createStepLockHook(
@@ -1583,7 +1682,9 @@ export async function handleWorkflowResume(
   }
 
   const launched = await startDetachedResume(ctx, registry, {
-    workflowIdOrName: payload.workflowIdOrName,
+    workflowIdOrName: workflow.idOrName,
+    byId: workflow.byId,
+    expectedName: workflow.expectedName,
     runId: payload.runId,
     from: payload.from,
     inputs: payload.inputs,
@@ -1678,17 +1779,21 @@ export async function handleWorkflowDelete(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowIdOrName,
-  );
+  const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "workflow",
-      name: payload.workflowIdOrName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "write",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_delete_failed",
+    )
   ) return;
+  const workflow = targetArgument(target, payload.workflowIdOrName);
 
   try {
     const libCtx = createLibSwampContext();
@@ -1702,7 +1807,9 @@ export async function handleWorkflowDelete(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       workflowDelete(libCtx, deps, {
-        workflowIdOrName: payload.workflowIdOrName,
+        workflowIdOrName: workflow.idOrName,
+        byId: workflow.byId,
+        expectedName: workflow.expectedName,
       }),
       {
         deleting: () => {},
@@ -1795,10 +1902,11 @@ export async function handleWorkflowEdit(
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      // Workflow ids are UUIDs, which workflowEdit looks up by id only, so
-      // the edit acts on the workflow authorized above.
+      // By id only, so the edit acts on the workflow authorized above.
       workflowEdit(libCtx, deps, {
         workflowIdOrName: workflow.id,
+        byId: true,
+        expectedName: workflow.name,
         stdinContent: payload.content,
         // Every save is authorized against the edited workflow too, so a
         // rename or retag needs write on the result. It runs on every save
@@ -1867,17 +1975,39 @@ export async function handleWorkflowValidate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const resourceName = payload?.workflowIdOrName ?? "*";
-  const workflowFields = resourceName !== "*"
-    ? await resolveWorkflowFields(ctx.repoContext.workflowRepo, resourceName)
-    : {};
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: resourceName,
-      fields: workflowFields,
-    }, ctx).allowed
-  ) return;
+  // Without a workflow this validates every workflow and authorizes "*"; how
+  // that form authorizes is swamp-club#2675. A named workflow is resolved
+  // first.
+  const workflowIdOrName = payload?.workflowIdOrName;
+  let workflow:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
+  // An empty string reads as absent, exactly as libswamp reads it.
+  if (!workflowIdOrName) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", {
+        kind: "workflow",
+        name: "*",
+        fields: {},
+      }, ctx).allowed
+    ) return;
+  } else {
+    const target = await resolveWorkflowRequest(ctx, workflowIdOrName);
+    if (
+      !authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        workflowIdOrName,
+        "workflow",
+        ctx,
+        "workflow_validate_failed",
+      )
+    ) return;
+    workflow = targetArgument(target, workflowIdOrName);
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1890,7 +2020,9 @@ export async function handleWorkflowValidate(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       workflowValidate(libCtx, deps, {
-        workflowIdOrName: payload?.workflowIdOrName,
+        workflowIdOrName: workflow?.idOrName,
+        byId: workflow?.byId,
+        expectedName: workflow?.expectedName,
       }),
       {
         resolving: () => {},
@@ -1927,17 +2059,39 @@ export async function handleWorkflowEvaluate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const resourceName = payload?.workflowIdOrName ?? "*";
-  const workflowFields = resourceName !== "*"
-    ? await resolveWorkflowFields(ctx.repoContext.workflowRepo, resourceName)
-    : {};
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: resourceName,
-      fields: workflowFields,
-    }, ctx).allowed
-  ) return;
+  // Without a workflow this evaluates every workflow and authorizes "*"; how
+  // that form authorizes is swamp-club#2675. A named workflow is resolved
+  // first.
+  const workflowIdOrName = payload?.workflowIdOrName;
+  let workflow:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
+  // An empty string reads as absent, exactly as libswamp reads it.
+  if (!workflowIdOrName) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", {
+        kind: "workflow",
+        name: "*",
+        fields: {},
+      }, ctx).allowed
+    ) return;
+  } else {
+    const target = await resolveWorkflowRequest(ctx, workflowIdOrName);
+    if (
+      !authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        workflowIdOrName,
+        "workflow",
+        ctx,
+        "workflow_evaluate_failed",
+      )
+    ) return;
+    workflow = targetArgument(target, workflowIdOrName);
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1951,7 +2105,9 @@ export async function handleWorkflowEvaluate(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       workflowEvaluate(libCtx, deps, {
-        workflowIdOrName: payload?.workflowIdOrName,
+        workflowIdOrName: workflow?.idOrName,
+        byId: workflow?.byId,
+        expectedName: workflow?.expectedName,
         inputs: payload?.inputs ?? {},
       }),
       {
@@ -1991,16 +2147,22 @@ export async function handleWorkflowTriggerSet(
   _controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowName,
-  );
+  // Authorize the workflow the name resolves to, by its canonical name. The
+  // override stays keyed by the name as given, and applies even before the
+  // workflow exists, so a name that resolves to nothing is authorized as is.
+  const target = await resolveWorkflowRequest(ctx, payload.workflowName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "workflow",
-      name: payload.workflowName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "write",
+      target,
+      payload.workflowName,
+      "workflow",
+      ctx,
+      "workflow_trigger_set_failed",
+    )
   ) return;
 
   try {
@@ -2043,16 +2205,22 @@ export async function handleWorkflowTriggerGet(
   _controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowName,
-  );
+  // Authorize the workflow the name resolves to, by its canonical name. The
+  // override stays keyed by the name as given, and applies even before the
+  // workflow exists, so a name that resolves to nothing is authorized as is.
+  const target = await resolveWorkflowRequest(ctx, payload.workflowName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: payload.workflowName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      payload.workflowName,
+      "workflow",
+      ctx,
+      "workflow_trigger_get_failed",
+    )
   ) return;
 
   try {
@@ -2107,16 +2275,22 @@ export async function handleWorkflowTriggerRemove(
   _controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const workflowFields = await resolveWorkflowFields(
-    ctx.repoContext.workflowRepo,
-    payload.workflowName,
-  );
+  // Authorize the workflow the name resolves to, by its canonical name. The
+  // override stays keyed by the name as given, and applies even before the
+  // workflow exists, so a name that resolves to nothing is authorized as is.
+  const target = await resolveWorkflowRequest(ctx, payload.workflowName);
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "workflow",
-      name: payload.workflowName,
-      fields: workflowFields,
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "write",
+      target,
+      payload.workflowName,
+      "workflow",
+      ctx,
+      "workflow_trigger_remove_failed",
+    )
   ) return;
 
   try {

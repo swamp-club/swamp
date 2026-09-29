@@ -23,10 +23,11 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
-  createWorkflowId,
-  type WorkflowId,
-} from "../../domain/workflows/workflow_id.ts";
+  findWorkflowById,
+  findWorkflowByIdOrName,
+} from "../../domain/workflows/workflow_lookup.ts";
 import {
   containsExpression,
   extractExpressions,
@@ -98,6 +99,17 @@ export type WorkflowEvaluateEvent =
 export interface WorkflowEvaluateInput {
   workflowIdOrName?: string;
   inputs: Record<string, unknown>;
+  /**
+   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
+   * and look it up by id only, so evaluate acts on the workflow the caller
+   * authorized.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Type guard to check if data is WorkflowEvaluateAllData. */
@@ -465,9 +477,16 @@ async function* evaluateSingle(
   deps: WorkflowEvaluateDeps,
   workflowIdOrName: string,
   inputs: Record<string, unknown>,
+  byId: boolean,
+  expectedName?: string,
 ): AsyncIterable<WorkflowEvaluateEvent> {
-  const workflow = await deps.findWorkflowByName(workflowIdOrName) ??
-    await deps.findWorkflowById(createWorkflowId(workflowIdOrName));
+  const lookupRepo = {
+    findByName: deps.findWorkflowByName,
+    findById: deps.findWorkflowById,
+  };
+  const workflow = byId
+    ? await findWorkflowById(lookupRepo, workflowIdOrName, expectedName)
+    : await findWorkflowByIdOrName(lookupRepo, workflowIdOrName);
 
   if (!workflow) {
     yield { kind: "error", error: notFound("Workflow", workflowIdOrName) };
@@ -490,6 +509,13 @@ export async function* workflowEvaluate(
   if (!input.workflowIdOrName) {
     yield* evaluateAll(ctx, deps, input.inputs);
   } else {
-    yield* evaluateSingle(ctx, deps, input.workflowIdOrName, input.inputs);
+    yield* evaluateSingle(
+      ctx,
+      deps,
+      input.workflowIdOrName,
+      input.inputs,
+      input.byId ?? false,
+      input.expectedName,
+    );
   }
 }

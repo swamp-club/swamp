@@ -20,7 +20,11 @@
 import { DataMetadataSchema } from "./data_metadata.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../models/model_lookup.ts";
+import type { ModelRefOptions } from "./data_delete_service.ts";
 
 /**
  * Result of a data rename operation.
@@ -53,12 +57,14 @@ export class DataRenameService {
    * @param modelRef - Model name or ID
    * @param oldName - Current data name
    * @param newName - New data name
+   * @param options - `byId` resolves `modelRef` as an exact definition id
    * @returns The rename result
    */
   async rename(
     modelRef: string,
     oldName: string,
     newName: string,
+    options: ModelRefOptions = {},
   ): Promise<RenameResult> {
     // Validate new name passes schema checks
     const nameValidation = DataMetadataSchema.shape.name.safeParse(newName);
@@ -71,10 +77,13 @@ export class DataRenameService {
     }
 
     // Resolve the model
-    const result = await findDefinitionByIdOrName(
-      this.definitionRepo,
-      modelRef,
-    );
+    const result = options.byId
+      ? await findDefinitionByIdGlobal(
+        this.definitionRepo,
+        modelRef,
+        options.expectedName,
+      )
+      : await findDefinitionByIdOrName(this.definitionRepo, modelRef);
     if (!result) {
       throw new Error(`Model not found: ${modelRef}`);
     }

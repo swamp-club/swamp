@@ -40,10 +40,11 @@ import {
   type StepLockHook,
   WorkflowExecutionService,
 } from "../domain/workflows/execution_service.ts";
+import type { WorkflowRunId } from "../domain/workflows/workflow_id.ts";
 import {
-  createWorkflowId,
-  type WorkflowRunId,
-} from "../domain/workflows/workflow_id.ts";
+  findWorkflowById,
+  findWorkflowByIdOrName,
+} from "../domain/workflows/workflow_lookup.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
 import { TriggerInputResolver } from "../domain/workflows/trigger_input_resolver.ts";
@@ -53,7 +54,10 @@ import { ModelType } from "../domain/models/model_type.ts";
 import { resolveOrCreateDefinition } from "../libswamp/mod.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { DefinitionId } from "../domain/definitions/definition.ts";
-import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../domain/models/model_lookup.ts";
 import { resolveModelType } from "../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
@@ -112,10 +116,7 @@ export async function createWorkflowRunDeps(
     workflowRepo: repoContext.workflowRepo,
     runRepo: repoContext.workflowRunRepo,
     repoDir,
-    lookupWorkflow: async (repo, idOrName) => {
-      return await repo.findByName(idOrName) ??
-        await repo.findById(createWorkflowId(idOrName));
-    },
+    lookupWorkflow: (repo, idOrName) => findWorkflowByIdOrName(repo, idOrName),
     createExecutionService: (
       wfRepo,
       rnRepo,
@@ -248,6 +249,8 @@ export async function createModelMethodRunDeps(
     repoDir,
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(repoContext.definitionRepo, id, expectedName),
     getModelDef: (type) => resolveModelType(type, getAutoResolver()),
     createEvaluationService: () => {
       const dqs = new DataQueryService(
@@ -403,13 +406,16 @@ export async function executeWorkflowWithLocks(
     initiatedBy?: string;
   },
 ): Promise<void> {
-  // Pre-lookup workflow for trigger.inputs resolution
+  // Pre-lookup workflow for trigger.inputs resolution — by the same rule the
+  // run itself uses, so both see the same workflow.
   const workflowRepo = repoContext.workflowRepo;
-  const workflow = await workflowRepo.findByName(
-    input.workflowIdOrName,
-  ) ?? await workflowRepo.findById(
-    createWorkflowId(input.workflowIdOrName),
-  );
+  const workflow = input.byId
+    ? await findWorkflowById(
+      workflowRepo,
+      input.workflowIdOrName,
+      input.expectedName,
+    )
+    : await findWorkflowByIdOrName(workflowRepo, input.workflowIdOrName);
 
   const stepLockHook = createStepLockHook(
     repoDir,

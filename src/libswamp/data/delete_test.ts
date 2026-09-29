@@ -402,3 +402,65 @@ Deno.test("dataBatchDeletePreview: returns matching items without deleting", asy
   assertEquals(preview.matchingItems.length, 2);
   assertEquals(batchDeleteCalled, false);
 });
+
+Deno.test("dataDelete: forwards byId to the delete service", async () => {
+  const calls: Array<boolean | undefined> = [];
+  const base = makeDeps();
+  const deps = makeDeps({
+    delete: (modelIdOrName, dataName, version, byId) => {
+      calls.push(byId);
+      return base.delete(modelIdOrName, dataName, version);
+    },
+  });
+
+  const events = await collect<DataDeleteEvent>(
+    dataDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "00000000-0000-4000-8000-000000000001",
+      dataName: "my-data",
+      byId: true,
+    }),
+  );
+
+  assertEquals(events[1].kind, "completed");
+  assertEquals(calls, [true]);
+});
+
+Deno.test("dataDelete: leaves byId unset when the caller does not pass it", async () => {
+  const calls: Array<boolean | undefined> = [];
+  const base = makeDeps();
+  const deps = makeDeps({
+    delete: (modelIdOrName, dataName, version, byId) => {
+      calls.push(byId);
+      return base.delete(modelIdOrName, dataName, version);
+    },
+  });
+
+  await collect<DataDeleteEvent>(
+    dataDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      dataName: "my-data",
+    }),
+  );
+
+  assertEquals(calls, [undefined]);
+});
+
+Deno.test("dataDeletePreview: forwards byId to the preview service", async () => {
+  const calls: Array<boolean | undefined> = [];
+  const base = makeDeps();
+  const deps = makeDeps({
+    preview: (modelIdOrName, dataName, byId) => {
+      calls.push(byId);
+      return base.preview(modelIdOrName, dataName);
+    },
+  });
+
+  const preview = await dataDeletePreview(createLibSwampContext(), deps, {
+    modelIdOrName: "00000000-0000-4000-8000-000000000001",
+    dataName: "my-data",
+    byId: true,
+  });
+
+  assertEquals(preview.versionsCount, 3);
+  assertEquals(calls, [true]);
+});

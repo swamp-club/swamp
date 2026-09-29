@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 import { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
@@ -130,4 +130,65 @@ Deno.test("modelMethodDescribe yields error with unknown_method when method does
   >;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "unknown_method");
+});
+
+Deno.test("modelMethodDescribe: byId resolves through lookupDefinitionById, never the name-first lookup", async () => {
+  const id = crypto.randomUUID();
+  const calls: string[] = [];
+  const deps = makeDeps({
+    lookupDefinition: (idOrName) => {
+      calls.push(`name:${idOrName}`);
+      return Promise.reject(new Error("name-first lookup must not be used"));
+    },
+    lookupDefinitionById: (lookupId) => {
+      calls.push(`id:${lookupId}`);
+      return Promise.resolve({
+        definition: Definition.create({ id, name: "by-id-model", version: 1 }),
+        type: makeModelType(),
+      });
+    },
+  });
+
+  const events = await collect<ModelMethodDescribeEvent>(
+    modelMethodDescribe(createLibSwampContext(), deps, id, "start", {
+      byId: true,
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    ModelMethodDescribeEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.modelName, "by-id-model");
+  assertEquals(calls, [`id:${id}`]);
+});
+
+Deno.test("modelMethodDescribe: byId without lookupDefinitionById fails instead of falling back to name lookup", async () => {
+  let nameLookups = 0;
+  const deps = makeDeps({
+    lookupDefinition: () => {
+      nameLookups++;
+      return Promise.resolve({
+        definition: makeDefinition(),
+        type: makeModelType(),
+      });
+    },
+  });
+
+  await assertRejects(
+    () =>
+      collect<ModelMethodDescribeEvent>(
+        modelMethodDescribe(
+          createLibSwampContext(),
+          deps,
+          crypto.randomUUID(),
+          "start",
+          { byId: true },
+        ),
+      ),
+    Error,
+    "none is wired",
+  );
+  assertEquals(nameLookups, 0);
 });

@@ -83,7 +83,10 @@ import type {
   ModelTypeSearchPayload,
   ModelValidatePayload,
 } from "../protocol.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  type DefinitionLookupResult,
+  findDefinitionByIdOrName,
+} from "../../domain/models/model_lookup.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
@@ -126,6 +129,14 @@ import {
   wasRequestErrored,
 } from "./shared.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import {
+  authorizeResolved,
+  modelAccessResource,
+  resolveModelTarget,
+  type ResourceResolution,
+  targetArgument,
+  unresolvedAccessResource,
+} from "./resource_resolution.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 
@@ -145,6 +156,128 @@ export async function isMethodMutating(
   }
 }
 
+/** What a method run is authorized as, and what it then acts on. */
+interface MethodRunTarget {
+  /** The existing definition, when the reference resolves to one. */
+  definition: DefinitionLookupResult | null;
+  /** The resource `run` is authorized on. */
+  resource: AccessResource;
+  /** The argument and lookup mode handed to modelMethodRun. */
+  modelIdOrName: string;
+  byId: boolean;
+  /** The name the model was authorized on, when acting by id. */
+  expectedName?: string;
+  /** The id of the model run by id, recorded for cancel and attach. */
+  resourceId?: string;
+}
+
+/**
+ * Resolves a method run's model. The standard path authorizes the model's
+ * canonical name and full fields, then runs it by id (swamp-club#2674). A
+ * direct type execution (a type and a definition name) may create its
+ * definition, so it keeps authorizing the requested name and running by it;
+ * how that path authorizes the definition it writes is swamp-club#2672.
+ * Throws when the lookup fails.
+ */
+async function resolveMethodRunTarget(
+  ctx: ConnectionContext,
+  payload: ModelMethodRunPayload,
+): Promise<MethodRunTarget> {
+  const definition = await findDefinitionByIdOrName(
+    ctx.repoContext.definitionRepo,
+    payload.modelIdOrName,
+  );
+  const methodName = payload.methodName;
+  if (payload.typeArg && payload.definitionName) {
+    const fields: Record<string, unknown> = definition
+      ? { ...modelAccessResource(definition).fields }
+      : {};
+    return {
+      definition,
+      resource: {
+        kind: "model",
+        name: payload.modelIdOrName,
+        fields: { ...fields, methodName },
+      },
+      modelIdOrName: payload.modelIdOrName,
+      byId: false,
+    };
+  }
+  const resolution: ResourceResolution = definition
+    ? {
+      status: "found",
+      resource: modelAccessResource(definition),
+      id: definition.definition.id,
+      name: definition.definition.name,
+    }
+    : {
+      status: "missing",
+      resource: unresolvedAccessResource("model", payload.modelIdOrName),
+    };
+  const { idOrName, byId, expectedName } = targetArgument(
+    resolution,
+    payload.modelIdOrName,
+  );
+  return {
+    definition,
+    resource: {
+      ...resolution.resource,
+      fields: { ...resolution.resource.fields, methodName },
+    },
+    modelIdOrName: idOrName,
+    byId,
+    expectedName,
+    resourceId: definition?.definition.id,
+  };
+}
+
+/**
+ * Authorizes a method run: admin for a restricted model type, otherwise run
+ * on the target model and, for a direct type execution, on the type.
+ */
+function authorizeMethodRun(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  payload: ModelMethodRunPayload,
+  target: MethodRunTarget,
+  ctx: ConnectionContext,
+): boolean {
+  if (
+    isAdminOnlyModelType(
+      payload.typeArg,
+      target.definition?.type.normalized,
+      ctx.authConfig.restrictedModelTypes,
+    )
+  ) {
+    return authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: target.resource.fields,
+    }, ctx).allowed;
+  }
+  if (
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "run",
+      target.resource,
+      ctx,
+    )
+      .allowed
+  ) return false;
+  if (payload.typeArg) {
+    const executionTarget = ModelType.create(payload.typeArg).normalized;
+    return authorizeOrReject(socket, requestId, principal, "run", {
+      kind: "model",
+      name: executionTarget,
+      fields: {},
+    }, ctx).allowed;
+  }
+  return true;
+}
+
 export async function handleModelMethodRun(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -160,54 +293,11 @@ export async function handleModelMethodRun(
     const initiatedBy = principal ? principalToString(principal) : "ghost";
     const telemetry = createCommandTelemetry(initiatedBy);
     try {
-      const preResult = await findDefinitionByIdOrName(
-        ctx.repoContext.definitionRepo,
-        payload.modelIdOrName,
-      );
-
-      const modelFields: Record<string, unknown> = {};
-      if (preResult) {
-        modelFields.modelType = preResult.type.normalized;
-        modelFields.name = preResult.definition.name;
-        const tags = preResult.definition.tags;
-        if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
-      }
-      modelFields.methodName = payload.methodName;
-
+      const target = await resolveMethodRunTarget(ctx, payload);
       if (
-        isAdminOnlyModelType(
-          payload.typeArg,
-          preResult?.type.normalized,
-          ctx.authConfig.restrictedModelTypes,
-        )
-      ) {
-        if (
-          !authorizeOrReject(socket, requestId, principal, "admin", {
-            kind: "access",
-            name: "*",
-            fields: modelFields,
-          }, ctx).allowed
-        ) return;
-      } else {
-        if (
-          !authorizeOrReject(socket, requestId, principal, "run", {
-            kind: "model",
-            name: payload.modelIdOrName,
-            fields: modelFields,
-          }, ctx).allowed
-        ) return;
-
-        if (payload.typeArg) {
-          const executionTarget = ModelType.create(payload.typeArg).normalized;
-          if (
-            !authorizeOrReject(socket, requestId, principal, "run", {
-              kind: "model",
-              name: executionTarget,
-              fields: {},
-            }, ctx).allowed
-          ) return;
-        }
-      }
+        !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
+      ) return;
+      const preResult = target.definition;
 
       if (preResult) {
         mutating = await isMethodMutating(
@@ -251,7 +341,9 @@ export async function handleModelMethodRun(
       const runMethod = async () => {
         for await (
           const event of modelMethodRun(libCtx, deps, {
-            modelIdOrName: payload.modelIdOrName,
+            modelIdOrName: target.modelIdOrName,
+            byId: target.byId,
+            expectedName: target.expectedName,
             methodName: payload.methodName,
             inputs: payload.inputs ?? {},
             lastEvaluated: payload.lastEvaluated ?? false,
@@ -349,63 +441,18 @@ export async function handleModelMethodRun(
   }
 
   // Pre-lookup and authorization for the detached path
-  let preResult: Awaited<
-    ReturnType<typeof findDefinitionByIdOrName>
-  >;
+  let target: MethodRunTarget;
   try {
-    preResult = await findDefinitionByIdOrName(
-      ctx.repoContext.definitionRepo,
-      payload.modelIdOrName,
-    );
+    target = await resolveMethodRunTarget(ctx, payload);
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "method_execution_failed", message);
     return;
   }
-
-  const modelFields: Record<string, unknown> = {};
-  if (preResult) {
-    modelFields.modelType = preResult.type.normalized;
-    modelFields.name = preResult.definition.name;
-    const tags = preResult.definition.tags;
-    if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
-  }
-  modelFields.methodName = payload.methodName;
-
   if (
-    isAdminOnlyModelType(
-      payload.typeArg,
-      preResult?.type.normalized,
-      ctx.authConfig.restrictedModelTypes,
-    )
-  ) {
-    if (
-      !authorizeOrReject(socket, requestId, principal, "admin", {
-        kind: "access",
-        name: "*",
-        fields: modelFields,
-      }, ctx).allowed
-    ) return;
-  } else {
-    if (
-      !authorizeOrReject(socket, requestId, principal, "run", {
-        kind: "model",
-        name: payload.modelIdOrName,
-        fields: modelFields,
-      }, ctx).allowed
-    ) return;
-
-    if (payload.typeArg) {
-      const executionTarget = ModelType.create(payload.typeArg).normalized;
-      if (
-        !authorizeOrReject(socket, requestId, principal, "run", {
-          kind: "model",
-          name: executionTarget,
-          fields: {},
-        }, ctx).allowed
-      ) return;
-    }
-  }
+    !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
+  ) return;
+  const preResult = target.definition;
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
@@ -424,7 +471,8 @@ export async function handleModelMethodRun(
     registry.register({
       runId,
       kind: "method-run",
-      resourceName: payload.modelIdOrName,
+      resourceName: target.resource.name,
+      resourceId: target.resourceId,
       buffer,
       controller: runController,
       startedAt,
@@ -489,7 +537,9 @@ export async function handleModelMethodRun(
       const doRun = async () => {
         for await (
           const event of modelMethodRun(libCtx, deps, {
-            modelIdOrName: payload.modelIdOrName,
+            modelIdOrName: target.modelIdOrName,
+            byId: target.byId,
+            expectedName: target.expectedName,
             methodName: payload.methodName,
             inputs: payload.inputs ?? {},
             lastEvaluated: payload.lastEvaluated ?? false,
@@ -610,7 +660,8 @@ export async function handleModelMethodRun(
 
   if (ctx.controlPlaneStore && ctx.instanceId) {
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
-      resourceName: payload.modelIdOrName,
+      resourceName: target.resource.name,
+      resourceId: target.resourceId,
       runKind: "method-run",
       startedAt: startedAt.toISOString(),
     });
@@ -702,13 +753,24 @@ export async function handleModelMethodDescribe(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const target = await resolveModelTarget(
+    ctx.repoContext.definitionRepo,
+    payload.modelIdOrName,
+  );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload.modelIdOrName,
-      fields: {},
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      payload.modelIdOrName,
+      "model",
+      ctx,
+      "model_method_describe_failed",
+    )
   ) return;
+  const model = targetArgument(target, payload.modelIdOrName);
 
   try {
     await modelRegistry.ensureLoaded();
@@ -723,8 +785,9 @@ export async function handleModelMethodDescribe(
       modelMethodDescribe(
         libCtx,
         deps,
-        payload.modelIdOrName,
+        model.idOrName,
         payload.methodName,
+        { byId: model.byId, expectedName: model.expectedName },
       ),
       {
         resolving: () => {},
@@ -766,13 +829,24 @@ export async function handleModelGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const target = await resolveModelTarget(
+    ctx.repoContext.definitionRepo,
+    payload.modelIdOrName,
+  );
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload.modelIdOrName,
-      fields: {},
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      payload.modelIdOrName,
+      "model",
+      ctx,
+      "model_get_failed",
+    )
   ) return;
+  const model = targetArgument(target, payload.modelIdOrName);
 
   try {
     const libCtx = createLibSwampContext();
@@ -783,7 +857,10 @@ export async function handleModelGet(
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      modelGet(libCtx, deps, payload.modelIdOrName),
+      modelGet(libCtx, deps, model.idOrName, {
+        byId: model.byId,
+        expectedName: model.expectedName,
+      }),
       {
         resolving: () => {},
         completed: (e) => {
@@ -923,13 +1000,24 @@ export async function handleModelDelete(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const target = await resolveModelTarget(
+    ctx.repoContext.definitionRepo,
+    payload.modelIdOrName,
+  );
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "model",
-      name: payload.modelIdOrName,
-      fields: {},
-    }, ctx).allowed
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "write",
+      target,
+      payload.modelIdOrName,
+      "model",
+      ctx,
+      "model_delete_failed",
+    )
   ) return;
+  const model = targetArgument(target, payload.modelIdOrName);
 
   try {
     const libCtx = createLibSwampContext();
@@ -944,7 +1032,12 @@ export async function handleModelDelete(
     const preview = await modelDeletePreview(
       libCtx,
       deps,
-      { modelIdOrName: payload.modelIdOrName, force: payload.force ?? false },
+      {
+        modelIdOrName: model.idOrName,
+        byId: model.byId,
+        expectedName: model.expectedName,
+        force: payload.force ?? false,
+      },
     );
 
     const hasData = preview.dataArtifactCount > 0 ||
@@ -962,7 +1055,9 @@ export async function handleModelDelete(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       modelDelete(libCtx, deps, {
-        modelIdOrName: payload.modelIdOrName,
+        modelIdOrName: model.idOrName,
+        byId: model.byId,
+        expectedName: model.expectedName,
         force: payload.force ?? false,
       }),
       {
@@ -1521,13 +1616,41 @@ export async function handleModelValidate(
   principal: Principal | null,
   payload?: ModelValidatePayload,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload?.modelIdOrName ?? "*",
-      fields: {},
-    }, ctx).allowed
-  ) return;
+  // Without a model this validates every model and authorizes "*"; how that
+  // form authorizes is swamp-club#2675. A named model is resolved first.
+  const modelIdOrName = payload?.modelIdOrName;
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
+  // An empty string reads as absent, exactly as libswamp reads it.
+  if (!modelIdOrName) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", {
+        kind: "model",
+        name: "*",
+        fields: {},
+      }, ctx).allowed
+    ) return;
+  } else {
+    const target = await resolveModelTarget(
+      ctx.repoContext.definitionRepo,
+      modelIdOrName,
+    );
+    if (
+      !authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        modelIdOrName,
+        "model",
+        ctx,
+        "model_validate_failed",
+      )
+    ) return;
+    model = targetArgument(target, modelIdOrName);
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1546,7 +1669,9 @@ export async function handleModelValidate(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       modelValidate(libCtx, deps, {
-        modelIdOrName: payload?.modelIdOrName,
+        modelIdOrName: model?.idOrName,
+        byId: model?.byId,
+        expectedName: model?.expectedName,
       }),
       {
         resolving: () => {},
@@ -1583,13 +1708,41 @@ export async function handleModelEvaluate(
   principal: Principal | null,
   payload?: ModelEvaluatePayload,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: payload?.modelIdOrName ?? "*",
-      fields: {},
-    }, ctx).allowed
-  ) return;
+  // Without a model this validates every model and authorizes "*"; how that
+  // form authorizes is swamp-club#2675. A named model is resolved first.
+  const modelIdOrName = payload?.modelIdOrName;
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
+  // An empty string reads as absent, exactly as libswamp reads it.
+  if (!modelIdOrName) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", {
+        kind: "model",
+        name: "*",
+        fields: {},
+      }, ctx).allowed
+    ) return;
+  } else {
+    const target = await resolveModelTarget(
+      ctx.repoContext.definitionRepo,
+      modelIdOrName,
+    );
+    if (
+      !authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        modelIdOrName,
+        "model",
+        ctx,
+        "model_evaluate_failed",
+      )
+    ) return;
+    model = targetArgument(target, modelIdOrName);
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1604,7 +1757,9 @@ export async function handleModelEvaluate(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       modelEvaluate(libCtx, deps, {
-        modelIdOrName: payload?.modelIdOrName,
+        modelIdOrName: model?.idOrName,
+        byId: model?.byId,
+        expectedName: model?.expectedName,
       }),
       {
         evaluating: () => {},
@@ -1697,6 +1852,7 @@ export async function handleModelEdit(
       modelEdit(libCtx, deps, {
         modelIdOrName: resolved.definition.id,
         byId: true,
+        expectedName: resolved.definition.name,
         stdinContent: payload.content,
         // Every save is authorized against the edited model too, so a rename
         // or retag needs write on the result. It runs on every save rather

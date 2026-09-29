@@ -20,6 +20,7 @@
 import type { DeferredExpression } from "../../domain/expressions/deferred_expression.ts";
 import { cancelled, type SwampError, validationFailed } from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
+import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
@@ -191,8 +192,14 @@ export interface RunLog {
  */
 export interface ModelMethodRunDeps {
   repoDir: string;
+  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
+  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+  /** Looks up by exact id only; required for a `byId` request. */
+  lookupDefinitionById?: (
+    id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   getModelDef: (
     type: ModelType,
@@ -244,6 +251,18 @@ export interface ModelMethodRunDeps {
  */
 export interface ModelMethodRunInput {
   modelIdOrName: string;
+  /**
+   * Treat `modelIdOrName` as a definition id the caller already resolved,
+   * and look it up by id only, so the run executes the model the caller
+   * authorized. Applies to the standard path only; direct type execution
+   * resolves `definitionName` itself.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
   methodName: string;
   inputs: Record<string, unknown>;
   lastEvaluated: boolean;
@@ -409,7 +428,14 @@ export async function* modelMethodRun(
           };
         } else {
           // Standard path: look up existing definition
-          const lookupResult = await deps.lookupDefinition(input.modelIdOrName);
+          const lookupDefinition = selectLookup(
+            "model method run",
+            input.byId,
+            deps.lookupDefinition,
+            deps.lookupDefinitionById,
+            input.expectedName,
+          );
+          const lookupResult = await lookupDefinition(input.modelIdOrName);
           if (!lookupResult) {
             yield { kind: "error", error: modelNotFound(input.modelIdOrName) };
             return;

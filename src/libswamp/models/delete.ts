@@ -22,7 +22,10 @@ import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { Data } from "../../domain/data/data.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdGlobal,
+  findDefinitionByIdOrName,
+} from "../../domain/models/model_lookup.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
@@ -38,6 +41,7 @@ import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_servic
 import { createModelOutputId } from "../../domain/models/model_output.ts";
 import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -73,16 +77,47 @@ export type ModelDeleteEvent =
   | { kind: "completed"; data: ModelDeleteData }
   | { kind: "error"; error: SwampError };
 
+/** Looks up the model by name then exact id, or by id only with `byId`. */
+function lookupModel(
+  deps: ModelDeleteDeps,
+  input: ModelDeleteInput,
+): Promise<{ definition: Definition; type: ModelType } | null> {
+  return selectLookup(
+    "model delete",
+    input.byId,
+    deps.lookupDefinition,
+    deps.lookupDefinitionById,
+    input.expectedName,
+  )(input.modelIdOrName);
+}
+
 /** Input for the model delete operation. */
 export interface ModelDeleteInput {
   modelIdOrName: string;
   force: boolean;
+  /**
+   * Treat `modelIdOrName` as a definition id the caller already resolved,
+   * and look it up by id only, so the delete acts on the model the caller
+   * authorized.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Dependencies for the model delete operation. */
 export interface ModelDeleteDeps {
+  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
+  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+  /** Looks up by exact id only; required for a `byId` request. */
+  lookupDefinitionById?: (
+    id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   findAllWorkflows: () => Promise<Workflow[]>;
   findDataArtifacts: (
@@ -104,7 +139,11 @@ export interface ModelDeleteDeps {
     defId: DefinitionId,
     name: string,
   ) => Promise<void>;
-  deleteDefinition: (type: ModelType, id: DefinitionId) => Promise<void>;
+  deleteDefinition: (
+    type: ModelType,
+    id: DefinitionId,
+    name?: string,
+  ) => Promise<void>;
   deleteEvaluatedDefinition: (
     type: ModelType,
     id: DefinitionId,
@@ -166,6 +205,8 @@ export function createModelDeleteDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     findAllWorkflows: () => workflowRepo.findAll(),
     findDataArtifacts: (type, id) => unifiedDataRepo.findAllForModel(type, id),
     findOutputs: (type, id) => outputRepo.findByDefinition(type, id),
@@ -174,7 +215,7 @@ export function createModelDeleteDeps(
       outputRepo.delete(type, methodName, createModelOutputId(id)),
     deleteData: (type, defId, name) =>
       unifiedDataRepo.delete(type, defId, name),
-    deleteDefinition: (type, id) => definitionRepo.delete(type, id),
+    deleteDefinition: (type, id, name) => definitionRepo.delete(type, id, name),
     deleteEvaluatedDefinition: (type, id) =>
       evaluatedDefinitionRepo.delete(type, id),
     isExpired: (data) => lifecycleService.isExpired(data),
@@ -247,7 +288,7 @@ export async function modelDeletePreview(
   input: ModelDeleteInput,
 ): Promise<ModelDeletePreview> {
   ctx.logger.debug`Looking up model: ${input.modelIdOrName}`;
-  const result = await deps.lookupDefinition(input.modelIdOrName);
+  const result = await lookupModel(deps, input);
   if (!result) {
     throw notFound("Model", input.modelIdOrName);
   }
@@ -290,7 +331,7 @@ export async function* modelDelete(
     (async function* () {
       yield { kind: "deleting" };
 
-      const result = await deps.lookupDefinition(input.modelIdOrName);
+      const result = await lookupModel(deps, input);
       if (!result) {
         yield { kind: "error", error: notFound("Model", input.modelIdOrName) };
         return;
@@ -371,7 +412,7 @@ export async function* modelDelete(
 
       // Delete definition
       ctx.logger.debug`Deleting definition: ${definition.id}`;
-      await deps.deleteDefinition(modelType, definition.id);
+      await deps.deleteDefinition(modelType, definition.id, definition.name);
 
       yield {
         kind: "completed",

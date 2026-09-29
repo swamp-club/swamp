@@ -44,6 +44,8 @@ export interface TriggerAuthorization {
    * id). The decided workflow's canonical name is on `resource`.
    */
   readonly workflowIdOrName: string;
+  /** The id of the workflow decided on, when it exists. */
+  readonly workflowId?: string;
   readonly resource: AccessResource;
   readonly decision: AccessDecision | null;
   /** Why the run was refused; unset when allowed. */
@@ -90,6 +92,7 @@ export function createTriggerAuthorizer(
     }
     // Resolved in the same order execution uses (findByName, then findById).
     const workflowIdOrName = configured;
+    const workflowId = workflow?.id;
     const resource: AccessResource = {
       kind: "workflow",
       name: workflow?.name ?? configured,
@@ -100,13 +103,20 @@ export function createTriggerAuthorizer(
     const refuse = (reason: string, decision: AccessDecision | null) => ({
       allowed: false,
       workflowIdOrName,
+      workflowId,
       resource,
       decision,
       reason,
     });
 
     if (deps.authMode === "none") {
-      return { allowed: true, workflowIdOrName, resource, decision: null };
+      return {
+        allowed: true,
+        workflowIdOrName,
+        workflowId,
+        resource,
+        decision: null,
+      };
     }
     if (lookupError !== undefined) {
       logger.error(
@@ -132,7 +142,7 @@ export function createTriggerAuthorizer(
       );
       if (decision) {
         return decision.effect === "allow"
-          ? { allowed: true, workflowIdOrName, resource, decision }
+          ? { allowed: true, workflowIdOrName, workflowId, resource, decision }
           : refuse(`denied by grant ${decision.grantId}`, decision);
       }
       const admin = loader.decisionService.decide(
@@ -141,7 +151,13 @@ export function createTriggerAuthorizer(
         { kind: "access", name: "*", fields: {} },
       );
       return admin?.effect === "allow"
-        ? { allowed: true, workflowIdOrName, resource, decision: admin }
+        ? {
+          allowed: true,
+          workflowIdOrName,
+          workflowId,
+          resource,
+          decision: admin,
+        }
         : refuse("no grant allows it", null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

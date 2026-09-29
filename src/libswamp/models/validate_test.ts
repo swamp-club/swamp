@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
@@ -419,4 +419,67 @@ Deno.test("modelValidate passes the entries of a failed Expression paths check t
       }),
   });
   assertEquals(data.validations[0].expressionErrors, expressionErrors);
+});
+
+Deno.test("modelValidate: byId resolves through lookupDefinitionById, never the name-first lookup", async () => {
+  const id = crypto.randomUUID();
+  const calls: string[] = [];
+  const deps = makeDeps({
+    lookupDefinition: (idOrName) => {
+      calls.push(`name:${idOrName}`);
+      return Promise.reject(new Error("name-first lookup must not be used"));
+    },
+    lookupDefinitionById: (lookupId) => {
+      calls.push(`id:${lookupId}`);
+      return Promise.resolve({
+        definition: Definition.create({
+          id: lookupId,
+          name: "by-id-model",
+          version: 1,
+        }),
+        type: ModelType.create("aws/ec2"),
+      });
+    },
+  });
+
+  const events = await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), deps, {
+      modelIdOrName: id,
+      byId: true,
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    ModelValidateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  const data = completed.data as ModelValidateData;
+  assertEquals(data.modelId, id);
+  assertEquals(data.modelName, "by-id-model");
+  assertEquals(calls, [`id:${id}`]);
+});
+
+Deno.test("modelValidate: byId without lookupDefinitionById fails instead of falling back to name lookup", async () => {
+  let nameLookups = 0;
+  const fallback = makeDeps();
+  const deps = makeDeps({
+    lookupDefinition: (idOrName) => {
+      nameLookups++;
+      return fallback.lookupDefinition(idOrName);
+    },
+  });
+
+  await assertRejects(
+    () =>
+      collect<ModelValidateEvent>(
+        modelValidate(createLibSwampContext(), deps, {
+          modelIdOrName: crypto.randomUUID(),
+          byId: true,
+        }),
+      ),
+    Error,
+    "none is wired",
+  );
+  assertEquals(nameLookups, 0);
 });

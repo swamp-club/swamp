@@ -91,7 +91,12 @@ async function withFixture(
   options: { baseHasProbe?: boolean },
   fn: (f: Fixture) => Promise<void>,
 ): Promise<void> {
-  const repoDir = await Deno.makeTempDir({ prefix: "swamp_2562_prec_" });
+  // The loader resolves source paths to their real path, and macOS temp dirs
+  // sit under the /var symlink, so compare against the real path
+  // (swamp-club#2718).
+  const repoDir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "swamp_2562_prec_" }),
+  );
   const type = `@test/prec-${crypto.randomUUID().slice(0, 8)}`;
   const bundleDir = join(repoDir, ".swamp", "bundles");
   await ensureDir(bundleDir);

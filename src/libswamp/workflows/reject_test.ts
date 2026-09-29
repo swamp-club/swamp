@@ -16,34 +16,31 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-
 import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
-  workflowApprove,
-  type WorkflowApproveDeps,
-  type WorkflowApproveEvent,
-} from "./approve.ts";
+  workflowReject,
+  type WorkflowRejectDeps,
+  type WorkflowRejectEvent,
+} from "./reject.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 
-function makeWorkflow(gateNames: string[], name = "gated"): Workflow {
+function makeWorkflow(name: string): Workflow {
   return Workflow.create({
     name,
     jobs: [
       Job.create({
         name: "main",
         steps: [
-          ...gateNames.map((name) =>
-            Step.create({
-              name,
-              task: StepTask.manualApproval(`Approve ${name}`),
-            })
-          ),
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve gate"),
+          }),
           Step.create({
             name: "deploy",
             task: StepTask.model("deployer", "run"),
@@ -54,81 +51,17 @@ function makeWorkflow(gateNames: string[], name = "gated"): Workflow {
   });
 }
 
-/** Suspends a run with every named gate parked in waiting_approval. */
-function suspendAtGates(workflow: Workflow, gateNames: string[]): WorkflowRun {
+function suspendAtGate(workflow: Workflow): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
   const job = run.getJob("main")!;
   job.start();
-  for (const name of gateNames) {
-    const step = job.getStep(name)!;
-    step.start();
-    step.waitForApproval();
-  }
+  const step = job.getStep("gate")!;
+  step.start();
+  step.waitForApproval();
   run.suspend();
   return run;
 }
-
-function makeDeps(workflow: Workflow, run: WorkflowRun): WorkflowApproveDeps {
-  return {
-    workflowRepo: {
-      findByName: (name: string) =>
-        Promise.resolve(name === workflow.name ? workflow : null),
-      findById: () => Promise.resolve(null),
-    } as unknown as WorkflowApproveDeps["workflowRepo"],
-    runRepo: {
-      findById: () => Promise.resolve(run),
-      findAllByWorkflowId: () => Promise.resolve([run]),
-      save: () => Promise.resolve(),
-    } as unknown as WorkflowApproveDeps["runRepo"],
-  };
-}
-
-async function approve(
-  deps: WorkflowApproveDeps,
-  stepName: string,
-): Promise<WorkflowApproveEvent | undefined> {
-  const events = await collect<WorkflowApproveEvent>(
-    workflowApprove(createLibSwampContext(), deps, {
-      workflowIdOrName: "gated",
-      stepName,
-      decidedBy: "approver",
-    }),
-  );
-  return events.at(-1);
-}
-
-Deno.test("workflowApprove: reports allGatesDecided when the last gate is approved", async () => {
-  const workflow = makeWorkflow(["gate"]);
-  const run = suspendAtGates(workflow, ["gate"]);
-
-  const last = await approve(makeDeps(workflow, run), "gate");
-
-  assertEquals(last?.kind, "completed");
-  if (last?.kind === "completed") {
-    assertEquals(last.data.allGatesDecided, true);
-    assertEquals(last.data.runId, run.id);
-    assertEquals(last.data.workflowName, "gated");
-  }
-});
-
-Deno.test("workflowApprove: reports allGatesDecided false while a sibling gate still waits", async () => {
-  const workflow = makeWorkflow(["gate-a", "gate-b"]);
-  const run = suspendAtGates(workflow, ["gate-a", "gate-b"]);
-  const deps = makeDeps(workflow, run);
-
-  const first = await approve(deps, "gate-a");
-  assertEquals(first?.kind, "completed");
-  if (first?.kind === "completed") {
-    assertEquals(first.data.allGatesDecided, false);
-  }
-
-  const second = await approve(deps, "gate-b");
-  assertEquals(second?.kind, "completed");
-  if (second?.kind === "completed") {
-    assertEquals(second.data.allGatesDecided, true);
-  }
-});
 
 /**
  * Deps holding `target` and an impostor workflow named with `target`'s id,
@@ -136,16 +69,16 @@ Deno.test("workflowApprove: reports allGatesDecided false while a sibling gate s
  * saved.
  */
 function makeCollidingDeps(): {
-  deps: WorkflowApproveDeps;
+  deps: WorkflowRejectDeps;
   target: Workflow;
   targetRun: WorkflowRun;
   impostorRun: WorkflowRun;
   savedFor: string[];
 } {
-  const target = makeWorkflow(["gate"]);
-  const impostor = makeWorkflow(["gate"], target.id);
-  const targetRun = suspendAtGates(target, ["gate"]);
-  const impostorRun = suspendAtGates(impostor, ["gate"]);
+  const target = makeWorkflow("gated");
+  const impostor = makeWorkflow(target.id);
+  const targetRun = suspendAtGate(target);
+  const impostorRun = suspendAtGate(impostor);
   const workflows = [target, impostor];
   const runs = new Map<string, WorkflowRun>([
     [target.id, targetRun],
@@ -163,7 +96,7 @@ function makeCollidingDeps(): {
           Promise.resolve(workflows.find((w) => w.name === name) ?? null),
         findById: (id: string) =>
           Promise.resolve(workflows.find((w) => w.id === id) ?? null),
-      } as unknown as WorkflowApproveDeps["workflowRepo"],
+      } as unknown as WorkflowRejectDeps["workflowRepo"],
       runRepo: {
         findById: (wfId: string) => Promise.resolve(runs.get(wfId) ?? null),
         findAllByWorkflowId: (wfId: string) =>
@@ -172,16 +105,17 @@ function makeCollidingDeps(): {
           savedFor.push(wfId);
           return Promise.resolve();
         },
-      } as unknown as WorkflowApproveDeps["runRepo"],
+      } as unknown as WorkflowRejectDeps["runRepo"],
     },
   };
 }
 
-Deno.test("workflowApprove: byId approves the workflow whose id matches, not one named with that id", async () => {
-  const { deps, target, targetRun, savedFor } = makeCollidingDeps();
+Deno.test("workflowReject: byId rejects the workflow whose id matches, not one named with that id", async () => {
+  const { deps, target, targetRun, impostorRun, savedFor } =
+    makeCollidingDeps();
 
-  const events = await collect<WorkflowApproveEvent>(
-    workflowApprove(createLibSwampContext(), deps, {
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
       workflowIdOrName: target.id,
       byId: true,
       stepName: "gate",
@@ -196,13 +130,15 @@ Deno.test("workflowApprove: byId approves the workflow whose id matches, not one
     assertEquals(last.data.workflowName, "gated");
   }
   assertEquals(savedFor, [target.id]);
+  assertEquals(targetRun.status, "failed");
+  assertEquals(impostorRun.status, "suspended");
 });
 
-Deno.test("workflowApprove: without byId a workflow named with the id wins", async () => {
+Deno.test("workflowReject: without byId a workflow named with the id wins", async () => {
   const { deps, target, impostorRun } = makeCollidingDeps();
 
-  const events = await collect<WorkflowApproveEvent>(
-    workflowApprove(createLibSwampContext(), deps, {
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
       workflowIdOrName: target.id,
       stepName: "gate",
       decidedBy: "approver",
@@ -213,5 +149,24 @@ Deno.test("workflowApprove: without byId a workflow named with the id wins", asy
   assertEquals(last?.kind, "completed");
   if (last?.kind === "completed") {
     assertEquals(last.data.runId, impostorRun.id);
+  }
+});
+
+Deno.test("workflowReject: byId does not fall back to a name lookup", async () => {
+  const { deps } = makeCollidingDeps();
+
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      byId: true,
+      stepName: "gate",
+      decidedBy: "approver",
+    }),
+  );
+  const last = events.at(-1);
+
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.message.includes("Workflow not found"), true);
   }
 });

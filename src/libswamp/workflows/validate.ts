@@ -37,14 +37,14 @@ import { zodToJsonSchema } from "../types/schema_helpers.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { type BrokenWorkflow, listBrokenWorkflows } from "./broken_workflow.ts";
-/** UUID regex pattern for detecting if an argument is a UUID (versions 1-8). */
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import {
+  findWorkflowById,
+  findWorkflowByIdOrName,
+} from "../../domain/workflows/workflow_lookup.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 
 /** Checks if a string looks like a UUID. */
-export function isUuid(value: string): boolean {
-  return UUID_PATTERN.test(value);
-}
+export { isUuid };
 
 /** Validation result for a single check. */
 export interface ValidationItemData {
@@ -82,6 +82,17 @@ export type WorkflowValidateEvent =
 
 export interface WorkflowValidateInput {
   workflowIdOrName?: string;
+  /**
+   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
+   * and look it up by id only, so validate acts on the workflow the caller
+   * authorized. A broken workflow file is then matched by its id only.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Dependencies for the workflow validate operation. */
@@ -327,14 +338,16 @@ async function* validateAll(
 async function* validateSingle(
   deps: WorkflowValidateDeps,
   workflowIdOrName: string,
+  byId: boolean,
+  expectedName?: string,
 ): AsyncIterable<WorkflowValidateEvent> {
-  let workflow: Workflow | null = null;
-
-  if (isUuid(workflowIdOrName)) {
-    workflow = await deps.findWorkflowById(workflowIdOrName);
-  } else {
-    workflow = await deps.findWorkflowByName(workflowIdOrName);
-  }
+  const lookupRepo = {
+    findByName: deps.findWorkflowByName,
+    findById: (id: string) => deps.findWorkflowById(id),
+  };
+  const workflow = byId
+    ? await findWorkflowById(lookupRepo, workflowIdOrName, expectedName)
+    : await findWorkflowByIdOrName(lookupRepo, workflowIdOrName);
 
   if (!workflow) {
     // The file may exist but fail schema parsing, making it invisible to
@@ -342,7 +355,11 @@ async function* validateSingle(
     // instead of a misleading "not found".
     if (deps.listBrokenWorkflows) {
       const broken = (await deps.listBrokenWorkflows()).find(
-        (b) => b.name === workflowIdOrName || b.id === workflowIdOrName,
+        (b) =>
+          byId
+            ? b.id === workflowIdOrName &&
+              (expectedName === undefined || b.name === expectedName)
+            : b.id === workflowIdOrName || b.name === workflowIdOrName,
       );
       if (broken) {
         yield { kind: "completed", data: toBrokenValidateData(broken) };
@@ -388,7 +405,12 @@ export async function* workflowValidate(
       if (!input.workflowIdOrName) {
         yield* validateAll(deps);
       } else {
-        yield* validateSingle(deps, input.workflowIdOrName);
+        yield* validateSingle(
+          deps,
+          input.workflowIdOrName,
+          input.byId ?? false,
+          input.expectedName,
+        );
       }
     })(),
   );

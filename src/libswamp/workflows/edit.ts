@@ -42,15 +42,8 @@ import {
 } from "./broken_workflow.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * UUID regex pattern for detecting if an argument is a UUID (versions 1-8).
- */
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function isUuid(value: string): boolean {
-  return UUID_PATTERN.test(value);
-}
+import { isUuid } from "../../domain/models/model_lookup.ts";
+import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 
 /**
  * Data structure for the workflow edit output.
@@ -82,6 +75,17 @@ export interface WorkflowEditTarget {
 export interface WorkflowEditInput {
   workflowIdOrName: string;
   stdinContent?: string | null;
+  /**
+   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
+   * and look it up by id only, so the edit acts on the workflow the caller
+   * authorized.
+   */
+  byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
   /**
    * Called before every stdin update is saved, with the stored and the edited
    * workflow. Returning false leaves the file untouched. Serve uses it to
@@ -177,33 +181,8 @@ export async function* workflowEdit(
       let workflow: Workflow | null = null;
       let filePath: string | null = null;
 
-      if (isUuid(workflowIdOrName)) {
-        ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
-        try {
-          const id: WorkflowId = createWorkflowId(workflowIdOrName);
-          workflow = await deps.findById(id);
-        } catch (error) {
-          ctx.logger
-            .debug`Workflow lookup by ID failed, will try symlink fallback: ${error}`;
-        }
-
-        if (workflow) {
-          filePath = deps.getPath(workflow.id);
-        } else {
-          const broken = await deps.findBrokenWorkflow(workflowIdOrName);
-          if (broken) {
-            ctx.logger
-              .debug`Found broken workflow by ID, opening file: ${broken.file}`;
-            filePath = broken.file;
-          } else {
-            yield {
-              kind: "error",
-              error: notFound("Workflow", workflowIdOrName),
-            };
-            return;
-          }
-        }
-      } else {
+      // Name first, then exact id — or id only when the caller resolved it.
+      if (!input.byId) {
         ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
         try {
           workflow = await deps.findByName(workflowIdOrName);
@@ -211,28 +190,48 @@ export async function* workflowEdit(
           ctx.logger
             .debug`Workflow lookup by name failed, will try symlink fallback: ${error}`;
         }
+      }
+      if (!workflow && isUuid(workflowIdOrName)) {
+        ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
+        try {
+          const id: WorkflowId = createWorkflowId(workflowIdOrName);
+          workflow = input.byId && input.expectedName !== undefined
+            ? await findWorkflowById(deps, workflowIdOrName, input.expectedName)
+            : await deps.findById(id);
+        } catch (error) {
+          ctx.logger
+            .debug`Workflow lookup by ID failed, will try symlink fallback: ${error}`;
+        }
+      }
 
-        if (workflow) {
-          filePath = deps.getPath(workflow.id);
+      if (workflow) {
+        filePath = deps.getPath(workflow.id);
+      } else {
+        const resolvedPath = input.byId
+          ? null
+          : await deps.resolveSymlink(workflowIdOrName);
+        if (resolvedPath) {
+          ctx.logger
+            .debug`Using symlink fallback for broken workflow: ${resolvedPath}`;
+          filePath = resolvedPath;
         } else {
-          const resolvedPath = await deps.resolveSymlink(workflowIdOrName);
-          if (resolvedPath) {
+          const broken = await deps.findBrokenWorkflow(workflowIdOrName);
+          if (
+            broken &&
+            (!input.byId ||
+              (broken.id === workflowIdOrName &&
+                (input.expectedName === undefined ||
+                  broken.name === input.expectedName)))
+          ) {
             ctx.logger
-              .debug`Using symlink fallback for broken workflow: ${resolvedPath}`;
-            filePath = resolvedPath;
+              .debug`Found broken workflow, opening file: ${broken.file}`;
+            filePath = broken.file;
           } else {
-            const broken = await deps.findBrokenWorkflow(workflowIdOrName);
-            if (broken) {
-              ctx.logger
-                .debug`Found broken workflow by name, opening file: ${broken.file}`;
-              filePath = broken.file;
-            } else {
-              yield {
-                kind: "error",
-                error: notFound("Workflow", workflowIdOrName),
-              };
-              return;
-            }
+            yield {
+              kind: "error",
+              error: notFound("Workflow", workflowIdOrName),
+            };
+            return;
           }
         }
       }

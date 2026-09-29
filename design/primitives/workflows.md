@@ -766,6 +766,14 @@ Workflows live in `workflows/workflow-{name}.yaml` (legacy
 `workflow-{uuid}.yaml` files are also supported). Each has a unique id, a
 globally unique name, a set of jobs, and optional workflow inputs.
 
+A workflow reference — a CLI argument, a `workflowIdOrName` — resolves by name
+first, then by exact id, the same rule as model definitions
+(`src/domain/workflows/workflow_lookup.ts`). A name may be a UUID, so a
+workflow named with another workflow's id wins over the workflow with that id.
+Only a file that declares an id is returned for that id, even though a
+workflow named with the UUID is stored at the same `workflow-{uuid}.yaml`
+path.
+
 ### Workflow Inputs
 
 Like model definitions, workflows can declare their own inputs (workflow

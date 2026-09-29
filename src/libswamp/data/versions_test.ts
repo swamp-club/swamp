@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
@@ -154,3 +154,74 @@ Deno.test(
     }
   },
 );
+
+function otherDefinitionResult() {
+  return {
+    definition: Definition.create({
+      id: "00000000-0000-4000-8000-000000000002",
+      name: "00000000-0000-4000-8000-000000000001",
+      version: 1,
+    }),
+    type: ModelType.create("aws/ec2"),
+  };
+}
+
+Deno.test("dataVersions: byId resolves the model by id only, never by name", async () => {
+  const byIdLookups: string[] = [];
+  const listedFor: string[] = [];
+  const definition = Definition.create({
+    id: "00000000-0000-4000-8000-000000000001",
+    name: "my-model",
+    version: 1,
+  });
+  const deps = makeDeps({
+    lookupDefinition: () => {
+      throw new Error("name-first lookup must not be used with byId");
+    },
+    lookupDefinitionById: (id) => {
+      byIdLookups.push(id);
+      return Promise.resolve({
+        definition,
+        type: ModelType.create("aws/ec2"),
+      });
+    },
+    listVersions: (_type, definitionId) => {
+      listedFor.push(definitionId);
+      return Promise.resolve([1]);
+    },
+  });
+  const events = await collect<DataVersionsEvent>(
+    dataVersions(createLibSwampContext(), deps, {
+      modelIdOrName: definition.id,
+      byId: true,
+      dataName: "output",
+    }),
+  );
+
+  assertEquals(events[1].kind, "completed");
+  assertEquals(byIdLookups, [definition.id]);
+  assertEquals(listedFor, [definition.id]);
+});
+
+Deno.test("dataVersions: byId without a by-id lookup fails instead of looking up by name", async () => {
+  let nameLookups = 0;
+  const deps = makeDeps({
+    lookupDefinition: () => {
+      nameLookups++;
+      return Promise.resolve(otherDefinitionResult());
+    },
+  });
+  await assertRejects(
+    () =>
+      collect<DataVersionsEvent>(
+        dataVersions(createLibSwampContext(), deps, {
+          modelIdOrName: "00000000-0000-4000-8000-000000000001",
+          byId: true,
+          dataName: "output",
+        }),
+      ),
+    Error,
+    "by-id lookup was requested but none is wired",
+  );
+  assertEquals(nameLookups, 0);
+});
