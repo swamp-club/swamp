@@ -670,9 +670,11 @@ export async function configureStartupExtensions(
         repaired = reconciled;
       } catch (error) {
         reconciled = true;
-        logger.warn`Extension catalog repair failed: ${
-          error instanceof Error ? error.message : String(error)
-        }. Run ${"swamp doctor extensions"} to inspect.`;
+        // Error messages usually end in a period; drop it before the hint.
+        const reason = (error instanceof Error ? error.message : String(error))
+          .replace(/\.$/, "");
+        logger
+          .warn`Extension catalog repair failed: ${reason}. Run ${"swamp doctor extensions"} to inspect.`;
       }
       if (checkLocalFiles && repaired) {
         await checkMissing((w) => deferredWarnings.push(w));

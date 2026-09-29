@@ -1630,10 +1630,12 @@ export class ExtensionCatalogStore {
    * an extension pulled later; `upsert` keeps a row's rowid, so a
    * rebundle does not reset its seniority.
    *
-   * Loader-only (swamp-club#2490): the loader's own catalog writes can
-   * type two pulled rows the same, and I-Repo-1 would then reject every
-   * later save. `ExtensionRepository.saveAll` does not call this, so a
-   * conflicting install still fails with DuplicateTypeError.
+   * The loader calls it after its own catalog writes, which can type two
+   * pulled rows the same; I-Repo-1 would then reject every later save
+   * (swamp-club#2490). `ExtensionRepository.saveAll` calls it only when
+   * asked (`settlePulledTypeConflicts: true`), which only the reconcile
+   * does (swamp-club#2702), so a conflicting install still fails with
+   * DuplicateTypeError.
    */
   settlePulledTypeConflicts(repoRoot: string): PulledTypeConflict[] {
     const canonicalRoot = canonicalizePath(repoRoot);

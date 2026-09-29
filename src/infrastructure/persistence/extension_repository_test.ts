@@ -560,14 +560,29 @@ Deno.test("ExtensionRepository.saveAll: settlePulledTypeConflicts still rejects 
       });
     };
 
+    // A pulled conflict settled in the same save is not reported once the
+    // local duplicate rolls it back.
+    const pulled = (name: string) =>
+      pulledExtension({
+        repoRoot,
+        name,
+        version: "1.0.0",
+        sources: [{ relPath: "models/y.ts", type: "@dup/y" }],
+      });
     assertThrows(
       () =>
-        repo.saveAll([local("a", "@local/a"), local("b", "@local/b")], {
+        repo.saveAll([
+          pulled("@scope/a"),
+          pulled("@scope/b"),
+          local("a", "@local/a"),
+          local("b", "@local/b"),
+        ], {
           settlePulledTypeConflicts: true,
         }),
       DuplicateTypeError,
     );
     assertEquals(cat.findAll().length, 0);
+    assertEquals(repo.lastPulledTypeConflicts.length, 0);
   });
 });
 

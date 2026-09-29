@@ -164,7 +164,7 @@ export class ExtensionRepository {
 
   /**
    * The pulled-vs-pulled conflicts the last `saveAll` settled. Empty
-   * unless it ran with `settlePulledTypeConflicts`.
+   * unless it committed with `settlePulledTypeConflicts`.
    */
   get lastPulledTypeConflicts(): readonly PulledTypeConflict[] {
     return this._lastPulledTypeConflicts;
@@ -277,10 +277,14 @@ export class ExtensionRepository {
     },
   ): void {
     let staleRows: ExtensionTypeRow[] = [];
+    let settled: PulledTypeConflict[] = [];
+    // Published only once the save commits, so a rolled-back save never
+    // reports conflicts that were not kept.
+    this._lastPulledTypeConflicts = [];
     this.catalog.runInTransaction(() => {
       // runInTransaction re-runs this callback on lock contention.
       staleRows = [];
-      this._lastPulledTypeConflicts = [];
+      settled = [];
       const protectedPaths = new Set<string>();
       for (const ext of extensions) {
         for (const source of ext.sources.values()) {
@@ -313,14 +317,14 @@ export class ExtensionRepository {
       // Pulled-vs-pulled first, then pulled-vs-local, so a local override
       // ends up the only claimant however many pulled rows share a type.
       if (options?.settlePulledTypeConflicts) {
-        this._lastPulledTypeConflicts = this.catalog
-          .settlePulledTypeConflicts(this.repoRoot);
+        settled = this.catalog.settlePulledTypeConflicts(this.repoRoot);
       }
       this._lastOriginConflicts = this.catalog.resolveOriginConflicts(
         this.repoRoot,
       );
       this.assertIRepo1();
     });
+    this._lastPulledTypeConflicts = settled;
     evictRemovedBundles(staleRows, this.catalog);
   }
 

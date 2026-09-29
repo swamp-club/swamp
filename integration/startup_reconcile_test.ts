@@ -276,6 +276,8 @@ Deno.test("configureStartupExtensions: a reconcile that fails is reported once a
     assertEquals(failures.length, 1);
     assertStringIncludes(failures[0], "I-Repo-1");
     assertStringIncludes(failures[0], "swamp doctor extensions");
+    // One period between the reason and the hint, not two.
+    assertStringIncludes(failures[0], "ROLLBACK applied. Run");
   });
 });
 
