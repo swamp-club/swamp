@@ -663,3 +663,52 @@ Deno.test("catalog heal: an override that changes its type gives the old one bac
     modelRegistry.invalidateType(`${repo.type}-v2`);
   });
 });
+
+Deno.test("catalog heal: a type moved to an earlier file in one upgrade stays available", async () => {
+  await withRepo(async (repo) => {
+    registerManagedConfig(repo.repoDir, false);
+    const name = "@test/ext";
+    const modelsDir = join(
+      swampPath(repo.repoDir, "pulled-extensions"),
+      name,
+      "models",
+    );
+    const oldFile = join(modelsDir, "z_old.ts");
+    const newFile = join(modelsDir, "a_new.ts");
+    const { repository, lockfileRepository } = await repositoryFor(
+      repo,
+      join(repo.modelsDir, "upstream_extensions.json"),
+    );
+    await lockfileRepository.writeEntry(name, "1.0.0", [
+      `.swamp/pulled-extensions/${name}/models/a_new.ts`,
+      `.swamp/pulled-extensions/${name}/models/z_old.ts`,
+    ]);
+    const dirs = { additionalDirs: [modelsDir], indexOnly: true };
+    const pass = async () => {
+      await loaderFor(repo, repository).buildIndex(repo.modelsDir, dirs);
+    };
+    const moved = `${repo.type}-v2`;
+    try {
+      await writeModel(oldFile, repo.type);
+      await pass();
+      await pass();
+      assertEquals(repo.catalog.isTypelessHealDone("model"), true);
+      assertEquals(typedRows(repo), [canonicalizePath(oldFile)]);
+
+      // The upgrade moves the type to a file that sorts first and gives
+      // the old file a new type. The new file is rebundled while the old
+      // row still holds the type, so it is written typeless at first.
+      await writeModel(newFile, repo.type);
+      await writeModel(oldFile, moved);
+      await pass();
+
+      assertEquals(typedRows(repo), [canonicalizePath(newFile)]);
+      assertEquals(
+        repo.catalog.findBySourcePath(oldFile)?.type_normalized,
+        moved,
+      );
+    } finally {
+      modelRegistry.invalidateType(moved);
+    }
+  });
+});

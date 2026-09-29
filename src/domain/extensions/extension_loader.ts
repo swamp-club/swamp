@@ -601,9 +601,13 @@ export class ExtensionLoader {
 
       const kindDir = extensionKindToKindDir(this.adapter.kind);
       const typesNeedingExtensionAttach = new Set<string>();
+      // Rows written typeless in this pass: the row that outranked one may
+      // give its type up later in the same pass, and they are not in
+      // `scan.typeless`, which holds only rows that were already fresh.
+      const outrankedRows: TypelessRow[] = [];
       for (const { absolutePath, relativePath, baseDir } of staleFiles) {
         try {
-          const { registeredType, extensionTarget } = await this
+          const { registeredType, extensionTarget, outranked } = await this
             .rebundleAndUpdateCatalog(
               absolutePath,
               relativePath,
@@ -617,6 +621,7 @@ export class ExtensionLoader {
           if (extensionTarget) {
             typesNeedingExtensionAttach.add(extensionTarget);
           }
+          if (outranked) outrankedRows.push(outranked);
           result.loaded.push(relativePath);
         } catch (error) {
           result.failed.push({ file: relativePath, error: String(error) });
@@ -665,7 +670,10 @@ export class ExtensionLoader {
         !catalog.isTypelessHealDone(this.adapter.catalogKinds[0]) &&
         !this.hasLiveLocalFailure(catalog)
       ) {
-        await this.healTypelessRows(catalog, scan.typeless);
+        await this.healTypelessRows(catalog, [
+          ...scan.typeless,
+          ...outrankedRows,
+        ]);
         catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
       }
 
@@ -1473,7 +1481,13 @@ export class ExtensionLoader {
     denoPath: string,
     baseDir: string,
     catalog: ExtensionCatalogStore,
-  ): Promise<{ registeredType?: string; extensionTarget?: string }> {
+  ): Promise<
+    {
+      registeredType?: string;
+      extensionTarget?: string;
+      outranked?: TypelessRow;
+    }
+  > {
     const source = await Deno.readTextFile(absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
       return {};
@@ -1564,7 +1578,19 @@ export class ExtensionLoader {
       });
 
       if (outranked) {
-        return {};
+        return {
+          outranked: {
+            absolutePath,
+            relativePath,
+            baseDir,
+            row: {
+              source_path: canonicalizePath(absolutePath),
+              bundle_path: bundlePath,
+              source_fingerprint: effectiveFingerprint,
+              type_normalized: "",
+            },
+          },
+        };
       }
       if (!this.adapter.hasType(typeNormalized)) {
         this.adapter.register(

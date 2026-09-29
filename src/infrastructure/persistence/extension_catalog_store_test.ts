@@ -2685,6 +2685,24 @@ Deno.test("pruneStaleSources: keeps both pulled roots when the active root is un
   });
 });
 
+Deno.test("pruneStaleSources: keeps both pulled roots when the active root matches neither", () => {
+  withStore((store) => {
+    store.upsert(makeRow({ source_path: `${LEGACY}/@a/b/models/x.ts` }));
+    store.upsert(makeRow({
+      type_normalized: "@a/b/y",
+      source_path: `${MANAGED}/@a/b/models/y.ts`,
+    }));
+    // The managed root, spelled differently from the repo root it was
+    // derived from.
+    store.pruneStaleSources({
+      canonicalRepoRoot: "/repo",
+      activePulledRoot: "/elsewhere/.swamp/config/pulled-extensions",
+      sourceExists: () => true,
+    });
+    assertEquals(store.count(), 2);
+  });
+});
+
 Deno.test("pruneStaleSources: matches the active root in Windows canonical form", () => {
   const windows = canonicalizePathFor("C:\\Users\\Me\\Repo", true);
   withStore((store) => {

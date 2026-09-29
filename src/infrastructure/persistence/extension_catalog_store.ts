@@ -1530,7 +1530,8 @@ export class ExtensionCatalogStore {
    *   - (a) a row that claims a type (or, for `kind = 'extension'`, a
    *     base type) whose source file is missing — importing it crashes
    *     with ENOENT, or silently runs a stale bundle;
-   *   - (b) when `activePulledRoot` is known, a row under the other
+   *   - (b) when `activePulledRoot` is known and is one of the two
+   *     pulled roots, a row under the other
    *     pulled root (`.swamp/pulled-extensions/` vs
    *     `.swamp/config/pulled-extensions/`), which a managedConfig
    *     migration copies rather than moves. Datastore rows are exempt:
@@ -1557,7 +1558,10 @@ export class ExtensionCatalogStore {
     if (args.activePulledRoot !== undefined) {
       const active = canonicalizePath(args.activePulledRoot);
       const activeWithSep = active.endsWith("/") ? active : `${active}/`;
-      inactiveRoot = activeWithSep === managedRoot ? legacyRoot : managedRoot;
+      // An active root spelled unlike either one names no inactive root,
+      // so rule (b) is skipped rather than aimed at the wrong root.
+      if (activeWithSep === managedRoot) inactiveRoot = legacyRoot;
+      else if (activeWithSep === legacyRoot) inactiveRoot = managedRoot;
     }
 
     const pruned: ExtensionTypeRow[] = [];
