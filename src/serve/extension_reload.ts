@@ -27,6 +27,7 @@ import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import {
+  enumeratePulledDatastoreExtensionsOnDisk,
   enumeratePulledExtensionDirs,
   LockfileRepository,
   ReconcileFromDiskService,
@@ -69,6 +70,15 @@ import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapte
 import { reportKindAdapter } from "../domain/extensions/report_kind_adapter.ts";
 import { webhookKindAdapter } from "../domain/extensions/webhook_kind_adapter.ts";
 import type { KindAdapter } from "../domain/extensions/kind_adapter.ts";
+import { pulledExtensionsLock } from "../infrastructure/persistence/pulled_extensions_lock.ts";
+import { transitionalInstalledNames } from "../infrastructure/persistence/installed_entries.ts";
+import { isExtensionBackedDatastore } from "../infrastructure/persistence/managed_config_lockfile.ts";
+import {
+  capturePulledTypes,
+  type PulledTypeRef,
+  type PulledTypeSnapshot,
+  unregisterPulledType,
+} from "./pulled_type_snapshot.ts";
 
 const logger = getSwampLogger(["serve", "reload"]);
 
@@ -76,6 +86,237 @@ let reloading = false;
 
 export function isReloading(): boolean {
   return reloading;
+}
+
+/**
+ * The last pulled-type snapshot per pulled root, taken at serve boot and
+ * after every reload. It is how a reload finds the types of an extension
+ * whose catalog rows `extension rm` already deleted (swamp-club#2742).
+ */
+const pulledTypeSnapshots = new Map<string, PulledTypeSnapshot>();
+
+/**
+ * Records which types the installed pulled extensions register, so the
+ * first reload after boot can unregister an extension removed since.
+ * Serve calls it where it takes the config poller's lockfile baseline, and
+ * again once the registries have loaded: on an extension-backed datastore
+ * the startup catalog repair waits for that load, so a fresh checkout has
+ * no rows yet at the baseline. Each call merges into the snapshot, keeping
+ * an extension the earlier call recorded for the next reload to sweep.
+ */
+export async function seedPulledTypeSnapshot(
+  repoDir: string,
+  lockfilePath: string,
+  pulledExtensionsRoot?: string,
+): Promise<void> {
+  const pulledRoot = pulledExtensionsRoot ??
+    resolvePulledExtensionsRoot(repoDir);
+  const lockfile = await LockfileRepository.create(lockfilePath);
+  const catalog = new ExtensionCatalogStore(
+    swampPath(repoDir, "_extension_catalog.db"),
+  );
+  try {
+    const key = canonicalizePath(pulledRoot);
+    const captured = capturePulledTypes(catalog, pulledRoot, [
+      ...await installedPulledNames(repoDir, lockfile, lockfilePath),
+    ]);
+    pulledTypeSnapshots.set(
+      key,
+      new Map([...(pulledTypeSnapshots.get(key) ?? []), ...captured]),
+    );
+  } finally {
+    catalog.close();
+  }
+}
+
+/**
+ * The pulled extensions this checkout still has installed: the lockfile's
+ * entries, the transitional in-repo lockfile's, and, on an
+ * extension-backed datastore, the datastore extensions found on disk.
+ * The same set the startup reconcile never orphans.
+ */
+async function installedPulledNames(
+  repoDir: string,
+  lockfile: LockfileRepository,
+  lockfilePath: string,
+): Promise<Set<string>> {
+  const names = new Set(Object.keys(lockfile.getAllEntries()));
+  let marker: RepoMarkerData | null = null;
+  try {
+    marker = await new RepoMarkerRepository().read(RepoPath.create(repoDir));
+  } catch {
+    // Not in a swamp repo or marker unreadable — lockfile entries only
+  }
+  for (
+    const name of await transitionalInstalledNames(
+      repoDir,
+      marker,
+      lockfilePath,
+    )
+  ) {
+    names.add(name);
+  }
+  if (isExtensionBackedDatastore(marker)) {
+    for (
+      const found of await enumeratePulledDatastoreExtensionsOnDisk(
+        repoDir,
+        true,
+      )
+    ) {
+      names.add(found.name);
+    }
+  }
+  return names;
+}
+
+/** The canonical source-path prefix of one extension's pulled dir. */
+function pulledPrefix(pulledRoot: string, name: string): string {
+  return canonicalizePath(join(pulledRoot, name) + "/");
+}
+
+/** True when the lockfile exists. A missing one reads as no entries. */
+async function lockfileExists(lockfilePath: string): Promise<boolean> {
+  try {
+    await Deno.stat(lockfilePath);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+/** What {@link sweepRemovedPulledExtensions} leaves for the next snapshot. */
+interface SweepResult {
+  /** The installed pulled extensions, when the sweep could read them. */
+  installed?: ReadonlySet<string>;
+  /** Types of extensions that could not be swept, kept for a retry. */
+  unswept: Map<string, readonly PulledTypeRef[]>;
+}
+
+/**
+ * Unregisters the types of pulled extensions that are no longer installed,
+ * and retires their catalog rows so the loader cannot register them again
+ * (swamp-club#2742). A peer's `extension rm` leaves this checkout's rows
+ * and files in place; the files stay until swamp-club#2612. Extensions that
+ * could not be swept stay in the snapshot for the next reload to retry.
+ */
+async function sweepRemovedPulledExtensions(args: {
+  catalog: ExtensionCatalogStore;
+  lockfile: LockfileRepository;
+  lockfilePath: string;
+  repoDir: string;
+  pulledRoot: string;
+  previous: PulledTypeSnapshot | undefined;
+}): Promise<SweepResult> {
+  const { catalog, lockfile, lockfilePath, repoDir, pulledRoot, previous } =
+    args;
+  const keepPrevious = (): SweepResult => ({
+    unswept: new Map(previous ?? []),
+  });
+  const repository = new ExtensionRepository({
+    catalog,
+    lockfileRepository: lockfile,
+    repoRoot: repoDir,
+  });
+  let installed: Set<string>;
+  const candidates = new Set<string>();
+  try {
+    // A missing lockfile reads as no entries, which would sweep every
+    // extension. Removing the last extension leaves an empty lockfile, so
+    // a missing one is a sync in progress: wait for the next poll.
+    if (!await lockfileExists(lockfilePath)) {
+      logger.debug(
+        "Hot-reload: extension lockfile {path} is missing, skipping the removed-extension sweep",
+        { path: lockfilePath },
+      );
+      return keepPrevious();
+    }
+    installed = await installedPulledNames(repoDir, lockfile, lockfilePath);
+    for (const name of previous?.keys() ?? []) {
+      if (!installed.has(name)) candidates.add(name);
+    }
+    // By location, not by origin: without the local manifest identity the
+    // repository reports every name outside @local/ as pulled, including
+    // manifest-named locals and source mounts.
+    for (const extension of repository.loadAll()) {
+      if (installed.has(extension.name)) continue;
+      const prefix = pulledPrefix(pulledRoot, extension.name);
+      for (const source of extension.sources.values()) {
+        if (source.id.canonicalPath.startsWith(prefix)) {
+          candidates.add(extension.name);
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      "Hot-reload: could not look for removed extensions: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    return keepPrevious();
+  }
+
+  const unswept = new Map<string, readonly PulledTypeRef[]>();
+  for (const name of candidates) {
+    const prefix = pulledPrefix(pulledRoot, name);
+    let refs: PulledTypeRef[] = [...(previous?.get(name) ?? [])];
+    try {
+      const removed = await pulledExtensionsLock.withLock(repoDir, async () => {
+        // An install that landed since the check above wins.
+        if (!await lockfileExists(lockfilePath)) return false;
+        await lockfile.refresh();
+        const nowInstalled = await installedPulledNames(
+          repoDir,
+          lockfile,
+          lockfilePath,
+        );
+        if (nowInstalled.has(name)) return false;
+        // Only the rows under this extension's pulled dir: an aggregate of
+        // the same name can also own local or source-mounted sources.
+        refs = [
+          ...refs,
+          ...(capturePulledTypes(catalog, pulledRoot, [name]).get(name) ??
+            []),
+        ];
+        catalog.removeBySourcePrefix(prefix);
+        return true;
+      });
+      if (!removed) continue;
+
+      const unregistered = new Set<string>();
+      for (const ref of refs) {
+        const key = `${ref.kind}\0${ref.type}`;
+        if (unregistered.has(key)) continue;
+        // Another extension or a local source still provides this type.
+        if (catalog.findAllByType(ref.type, ref.kind).length > 0) continue;
+        unregisterPulledType(ref);
+        unregistered.add(key);
+      }
+      if (unregistered.size > 0) {
+        logger.info(
+          "Hot-reload: unregistered {count} type(s) of removed extension {extension}",
+          { count: unregistered.size, extension: name },
+        );
+      } else {
+        logger.debug(
+          "Hot-reload: removed extension {extension} left no types to unregister",
+          { extension: name },
+        );
+      }
+    } catch (err) {
+      // `refs` includes types read from rows this attempt already retired,
+      // so the retry can still find them.
+      unswept.set(name, refs);
+      logger.warn(
+        "Hot-reload: failed to unregister removed extension {extension}, retrying on the next reload: {error}",
+        {
+          extension: name,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
+  return { installed, unswept };
 }
 
 /**
@@ -161,6 +402,17 @@ export async function reloadPulledExtensions(
 
     const pulledRoot = pulledExtensionsRoot ??
       resolvePulledExtensionsRoot(repoDir);
+    const snapshotKey = canonicalizePath(pulledRoot);
+    const previous = pulledTypeSnapshots.get(snapshotKey);
+    const swept = await sweepRemovedPulledExtensions({
+      catalog,
+      lockfile,
+      lockfilePath,
+      repoDir,
+      pulledRoot,
+      previous,
+    });
+
     const rebundled = new Set<string>();
     let denoRuntime: DenoRuntime | undefined = denoRuntimeOverride;
     let denoPath: string | undefined;
@@ -308,6 +560,17 @@ export async function reloadPulledExtensions(
         }
       }
     }
+
+    // Re-read: an extension installed while this reload ran must be in
+    // the snapshot, or an rm before the next reload would miss its types.
+    const installedNow = await lockfile.refresh()
+      .then(() => installedPulledNames(repoDir, lockfile, lockfilePath))
+      .catch(() => swept.installed ?? new Set(Object.keys(entries)));
+    const next = capturePulledTypes(catalog, pulledRoot, [...installedNow]);
+    for (const [name, refs] of swept.unswept) {
+      if (refs.length > 0 && !next.has(name)) next.set(name, [...refs]);
+    }
+    pulledTypeSnapshots.set(snapshotKey, next);
     return reloadedCount;
   } finally {
     catalog.close();
