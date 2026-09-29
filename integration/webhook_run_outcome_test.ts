@@ -51,6 +51,7 @@ import {
   WebhookService,
 } from "../src/serve/webhook.ts";
 import { hmacSha256Hex } from "../src/serve/webhook_verifiers.ts";
+import { createTriggerAuthorizer } from "../src/serve/trigger_authorizer.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -88,7 +89,9 @@ async function runWebhook(
   route: string,
   workflow: Workflow | undefined,
   settled: (events: readonly WebhookEvent[]) => boolean,
-  extraDeps: Partial<ConstructorParameters<typeof WebhookService>[0]> = {},
+  extraDeps: (
+    repoContext: ConstructorParameters<typeof WebhookService>[0]["repoContext"],
+  ) => Partial<ConstructorParameters<typeof WebhookService>[0]> = () => ({}),
 ): Promise<WebhookEvent[]> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-webhook-outcome-" });
   try {
@@ -132,7 +135,7 @@ async function runWebhook(
       ],
       syncService,
       syncGate: undefined,
-      ...extraDeps,
+      ...extraDeps(repoContext),
     });
 
     const events: WebhookEvent[] = [];
@@ -266,11 +269,24 @@ Deno.test({
       "/hooks/by-id",
       workflow,
       () => records.length > 0,
-      {
-        instanceId: "instance-a",
-        controlPlaneStore: store as unknown as ConstructorParameters<
-          typeof WebhookService
-        >[0]["controlPlaneStore"],
+      (repoContext) => {
+        // The real trigger authorizer, so the run records the id of the
+        // workflow it decided on.
+        const authorize = createTriggerAuthorizer({
+          authMode: "none",
+          workflowRepo: repoContext.workflowRepo,
+        });
+        return {
+          instanceId: "instance-a",
+          controlPlaneStore: store as unknown as ConstructorParameters<
+            typeof WebhookService
+          >[0]["controlPlaneStore"],
+          authorizeRun: (request) =>
+            authorize(
+              { kind: "user", id: "webhook" },
+              request.workflowIdOrName,
+            ),
+        };
       },
     );
 

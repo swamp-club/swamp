@@ -110,7 +110,13 @@ export function createTriggerAuthorizer(
     });
 
     if (deps.authMode === "none") {
-      return { allowed: true, workflowIdOrName, workflowId, resource, decision: null };
+      return {
+        allowed: true,
+        workflowIdOrName,
+        workflowId,
+        resource,
+        decision: null,
+      };
     }
     if (lookupError !== undefined) {
       logger.error(
@@ -145,7 +151,13 @@ export function createTriggerAuthorizer(
         { kind: "access", name: "*", fields: {} },
       );
       return admin?.effect === "allow"
-        ? { allowed: true, workflowIdOrName, workflowId, resource, decision: admin }
+        ? {
+          allowed: true,
+          workflowIdOrName,
+          workflowId,
+          resource,
+          decision: admin,
+        }
         : refuse("no grant allows it", null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
