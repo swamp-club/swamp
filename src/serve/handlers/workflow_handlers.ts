@@ -1937,7 +1937,8 @@ export async function handleWorkflowValidate(
   // first.
   const workflowIdOrName = payload?.workflowIdOrName;
   let workflow: { idOrName: string; byId: boolean } | undefined;
-  if (workflowIdOrName === undefined) {
+  // An empty string reads as absent, exactly as libswamp reads it.
+  if (!workflowIdOrName) {
     if (
       !authorizeOrReject(socket, requestId, principal, "read", {
         kind: "workflow",
@@ -2017,7 +2018,8 @@ export async function handleWorkflowEvaluate(
   // first.
   const workflowIdOrName = payload?.workflowIdOrName;
   let workflow: { idOrName: string; byId: boolean } | undefined;
-  if (workflowIdOrName === undefined) {
+  // An empty string reads as absent, exactly as libswamp reads it.
+  if (!workflowIdOrName) {
     if (
       !authorizeOrReject(socket, requestId, principal, "read", {
         kind: "workflow",

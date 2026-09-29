@@ -1610,7 +1610,8 @@ export async function handleModelValidate(
   // form authorizes is swamp-club#2675. A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
   let model: { idOrName: string; byId: boolean } | undefined;
-  if (modelIdOrName === undefined) {
+  // An empty string reads as absent, exactly as libswamp reads it.
+  if (!modelIdOrName) {
     if (
       !authorizeOrReject(socket, requestId, principal, "read", {
         kind: "model",
@@ -1698,7 +1699,8 @@ export async function handleModelEvaluate(
   // form authorizes is swamp-club#2675. A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
   let model: { idOrName: string; byId: boolean } | undefined;
-  if (modelIdOrName === undefined) {
+  // An empty string reads as absent, exactly as libswamp reads it.
+  if (!modelIdOrName) {
     if (
       !authorizeOrReject(socket, requestId, principal, "read", {
         kind: "model",

@@ -775,3 +775,39 @@ Deno.test("serve id-deny conformance: a run's cancel fails, rather than proceedi
     assertEquals(controller.signal.aborted, false);
   });
 });
+
+Deno.test("serve id-deny conformance: an empty name is authorized as the every-resource form it runs as", async () => {
+  await withFixtures(async (f) => {
+    // libswamp treats an empty name as absent — validate or evaluate
+    // everything — so it must be authorized as that form, never as a
+    // resource named "".
+    const ctx = createServeCtx(f.repo, [
+      grant({
+        actions: ACTIONS,
+        resource: { kind: "model", pattern: "dev-*" },
+      }),
+      grant({
+        actions: ACTIONS,
+        resource: { kind: "workflow", pattern: "dev-*" },
+      }),
+    ]);
+    for (
+      const [type, field, kind] of [
+        ["model.validate", "modelIdOrName", "model"],
+        ["model.evaluate", "modelIdOrName", "model"],
+        ["workflow.validate", "workflowIdOrName", "workflow"],
+        ["workflow.evaluate", "workflowIdOrName", "workflow"],
+      ] as const
+    ) {
+      for (const payload of [{ [field]: "" }, {}]) {
+        const frames = await sendRequest(ctx, request(type, payload));
+        const error = errorFrame(frames);
+        assertEquals(error?.error?.code, "unauthorized", type);
+        assert(
+          error!.error!.message.endsWith(`${kind}:*`),
+          `${type} ${JSON.stringify(payload)}: ${error!.error!.message}`,
+        );
+      }
+    }
+  });
+});

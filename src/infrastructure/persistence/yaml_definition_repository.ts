@@ -922,7 +922,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
-  /** Whether `path` holds a readable definition that declares an id not `id`. */
   /**
    * Returns the definition with this id from the file the repository last
    * saw it in, without scanning, when that file still declares the id. The
@@ -968,6 +967,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
+  /** Whether `path` holds a readable definition that declares an id not `id`. */
   private async declaresOtherId(
     path: string,
     id: DefinitionId,
