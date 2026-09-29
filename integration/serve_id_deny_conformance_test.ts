@@ -836,3 +836,40 @@ Deno.test("serve id-deny conformance: an empty data model name takes the every-m
     assertNotEquals(listed?.error?.code, "unauthorized");
   });
 });
+
+Deno.test("serve id-deny conformance: cancelling a run whose workflow was deleted is not judged by a newcomer that took its name", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, [
+      grant({ actions: ACTIONS, resource: { kind: "workflow", pattern: "*" } }),
+      grant({
+        effect: "deny",
+        actions: ACTIONS,
+        resource: { kind: "workflow", pattern: "*" },
+        condition: 'tags.env == "prod"',
+      }),
+    ], { detached: true });
+    const original = await saveWorkflow(f.repo, "reused", f.devModel);
+    const { runId, controller } = registerRun(ctx, {
+      kind: "workflow-run",
+      resourceName: "reused",
+      resourceId: original.id,
+    });
+    controller.signal.addEventListener(
+      "abort",
+      () => ctx.activeRunRegistry!.deregister(runId),
+    );
+    await f.repo.repoContext.workflowRepo.delete(original.id);
+    await saveWorkflow(f.repo, "reused", f.devModel, { env: "prod" });
+
+    await sendRequest(
+      ctx,
+      request("workflow.cancel", { runId }),
+      undefined,
+      { awaitRuns: false },
+    );
+
+    // The run is authorized on its own workflow — gone, so on its recorded
+    // name — never on the newcomer's tags.
+    assertEquals(controller.signal.aborted, true);
+  });
+});

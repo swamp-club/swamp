@@ -171,8 +171,10 @@ import {
 import {
   authorizeResolved,
   resolveWorkflowTarget,
+  resolveWorkflowTargetById,
   type ResourceResolution,
   targetArgument,
+  unresolvedAccessResource,
 } from "./resource_resolution.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
@@ -1383,15 +1385,27 @@ export async function handleWorkflowCancel(
 ): Promise<void> {
   const notFound = `No cancellable run with id ${payload.runId}`;
   const reason = cancelReasonFor(cancelActor(principal, ctx), payload.reason);
-  const mayCancel = async (workflowName: string): Promise<boolean> =>
-    isAuthorized(socket, requestId, principal, "run", {
-      kind: "workflow",
-      name: workflowName,
-      fields: await resolveWorkflowFields(
-        ctx.repoContext.workflowRepo,
-        workflowName,
-      ),
-    }, ctx);
+  // Authorized on the run's workflow as found by id when known, so its
+  // fields come from that workflow, not whatever now holds its name. A
+  // failed lookup refuses.
+  const mayCancel = async (
+    target: { id?: string; name: string },
+  ): Promise<boolean> => {
+    const resolution = target.id
+      ? await resolveWorkflowTargetById(ctx.repoContext.workflowRepo, target.id)
+      : await resolveWorkflowTarget(ctx.repoContext.workflowRepo, target.name);
+    if (resolution.status === "failed") return false;
+    return isAuthorized(
+      socket,
+      requestId,
+      principal,
+      "run",
+      resolution.status === "found"
+        ? resolution.resource
+        : unresolvedAccessResource("workflow", target.name),
+      ctx,
+    );
+  };
   const cancelPersisted = () =>
     withSyncGate(ctx.syncGate, () =>
       cancelSuspendedRunAndPush(
@@ -1401,7 +1415,7 @@ export async function handleWorkflowCancel(
           workflowIdOrName: payload.workflowIdOrName,
           reason,
         },
-        (workflow) => mayCancel(workflow.name),
+        (workflow) => mayCancel(workflow),
       ));
   const reply = (workflowName: string, status: string) =>
     send(socket, {
@@ -1475,7 +1489,7 @@ async function abortActiveWorkflowRun(
   ctx: ConnectionContext,
   payload: WorkflowCancelPayload,
   active: import("../active_run_registry.ts").ActiveRun,
-  mayCancel: (workflowName: string) => Promise<boolean>,
+  mayCancel: (target: { id?: string; name: string }) => Promise<boolean>,
   reason: string,
 ): Promise<string | undefined> {
   if (active.kind === "method-run") return undefined;
@@ -1491,7 +1505,13 @@ async function abortActiveWorkflowRun(
   const matches = payload.workflowIdOrName === undefined ||
     payload.workflowIdOrName === workflowName ||
     payload.workflowIdOrName === workflow?.id;
-  if (!matches || !(await mayCancel(workflowName))) return undefined;
+  if (
+    !matches ||
+    !(await mayCancel({
+      id: workflow?.id ?? active.resourceId,
+      name: workflowName,
+    }))
+  ) return undefined;
   ctx.activeRunRegistry?.cancel(payload.runId, reason);
   return workflowName;
 }

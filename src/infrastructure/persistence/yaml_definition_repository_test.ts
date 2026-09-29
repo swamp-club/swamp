@@ -143,6 +143,35 @@ Deno.test("YamlDefinitionRepository.delete leaves a definition named with the de
   });
 });
 
+Deno.test("YamlDefinitionRepository.findById and delete find a misfiled definition under the type it declares", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const declared = ModelType.create("test/declared-type");
+    const definition = createTestDefinition("misfiled-def");
+    await repo.save(testType, definition);
+    // Filed under testType's directory but declaring another type, as a
+    // hand-edited file can be.
+    const path = repo.getPath(testType, definition.id);
+    await Deno.writeTextFile(
+      path,
+      (await Deno.readTextFile(path)).replace(
+        `type: ${testType.normalized}`,
+        `type: ${declared.normalized}`,
+      ),
+    );
+    await repo.findAll(testType);
+
+    assertEquals(
+      (await repo.findById(declared, definition.id))?.id,
+      definition.id,
+    );
+    assertEquals(await repo.findById(testType, definition.id), null);
+
+    await repo.delete(declared, definition.id);
+    assertEquals(await new YamlDefinitionRepository(dir).findAll(testType), []);
+  });
+});
+
 Deno.test("YamlDefinitionRepository.findAll skips broken YAML files", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);

@@ -160,24 +160,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // by id across types reports the wrong type.
     const cachedPath = this.idToActualPath.get(id);
     if (cachedPath && cachedPath !== legacyPath) {
-      if (this.isPathOfType(cachedPath, type)) {
-        try {
-          const content = await Deno.readTextFile(cachedPath);
-          const data = parseYaml(content) as DefinitionData | null;
-          if (data) {
-            const definition = Definition.fromData(data);
-            if (definition.id === id) return definition;
-          }
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) {
-            throw error;
-          }
-        }
-      } else if ((await this.readDeclared(cachedPath))?.id === id) {
-        // The definition with this id lives in another type's directory, and
-        // ids are unique, so it is not of this type: answer without scanning
-        // every file of this type.
-        return null;
+      const cached = await this.readDeclared(cachedPath);
+      if (cached?.id === id) {
+        // It is this type's when it sits in this type's directory or declares
+        // this type, as a lookup by name reports it. Otherwise it belongs to
+        // another type, and ids are unique, so answer without scanning every
+        // file of this type.
+        return this.isOfType(cachedPath, cached, type) ? cached : null;
       }
     }
 
@@ -879,7 +868,11 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const pathsToTry = new Set([this.getLegacyPath(type, id)]);
     // Never delete a same-id file that belongs to another type.
     const hintedPath = this.idToActualPath.get(id);
-    const cachedPath = hintedPath && this.isPathOfType(hintedPath, type)
+    const hinted = hintedPath ? await this.readDeclared(hintedPath) : null;
+    const cachedPath = hintedPath &&
+        (hinted?.id === id
+          ? this.isOfType(hintedPath, hinted, type)
+          : this.isPathOfType(hintedPath, type))
       ? hintedPath
       : undefined;
     if (cachedPath) pathsToTry.add(cachedPath);
@@ -1049,6 +1042,25 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
   private getTypeDir(type: ModelType): string {
     return join(this.baseDir, type.toDirectoryPath());
+  }
+
+  /**
+   * Whether `definition`, read from `path`, is of `type`: in `type`'s
+   * directory, or declaring `type` wherever it is filed.
+   */
+  private isOfType(
+    path: string,
+    definition: Definition,
+    type: ModelType,
+  ): boolean {
+    if (definition.type) {
+      try {
+        return ModelType.create(definition.type).normalized === type.normalized;
+      } catch {
+        return false;
+      }
+    }
+    return this.isPathOfType(path, type);
   }
 
   /** Whether `path` is a definition file directly in `type`'s directory. */
