@@ -2278,6 +2278,7 @@ Deno.test(
         }),
       );
       const firstCompleted = first.find((e) => e.kind === "completed");
+      assertEquals(firstCompleted?.kind, "completed");
       if (firstCompleted?.kind === "completed") {
         assertEquals(firstCompleted.data.failed, 1);
       }

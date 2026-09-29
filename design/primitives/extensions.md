@@ -1286,7 +1286,11 @@ current layout, install compares:
    before installing its dependencies, so a dependency install that fails, or a
    hand-edited lockfile, otherwise leaves the dependency missing on every later
    restore (swamp-club#2646). A dependency that does not parse as an extension
-   ref also re-pulls the parent, which then fails that entry.
+   ref also re-pulls the parent, which then fails that entry. Such a dependency,
+   or one the registry no longer serves, re-downloads the parent and reports it
+   failed on every restore until the parent's manifest or the registry changes.
+   A dependency removed with `extension rm` while a parent still declares it
+   (rm warns about such dependents) is reinstalled by the next restore.
 
 `doctor extensions --repair` restores the pinned version for the same reason:
 re-pulling the latest would rewrite the entry and silently drop the pin.
