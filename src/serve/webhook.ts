@@ -373,7 +373,7 @@ function toHttpResponse(response: WebhookResponse): Response {
  * Read a request body with a byte budget. Returns null if the body
  * exceeds the limit, cancelling the stream to avoid full allocation.
  */
-async function readBodyWithLimit(
+export async function readBodyWithLimit(
   req: Request,
   maxBytes: number,
 ): Promise<Uint8Array | null> {

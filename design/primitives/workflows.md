@@ -1322,9 +1322,12 @@ SIGTERM, so a run it already finished keeps that record; a cancelled one gets
 the `--reason` as its `cancel_reason` tag.
 
 `swamp workflow cancel --all` cancels all active runs across all workflows.
-With `--server`, `--run <id>` is required, `--all` is rejected, and `--reason`
-is ignored, because the cancel endpoint takes no reason
-(`src/cli/commands/workflow_cancel.ts`). The CLI waits up to
+With `--server`, `--run <id>` is required and `--all` is rejected. `--reason`
+is sent in the request body, and the run records it as
+`<reason> (cancelled by <principal>)`, as a WebSocket `workflow.cancel` does.
+The CLI reports the reason the server says it applied; a serve too old to
+return one gets a warning and no `reason` in `--json`. A refusal shows the
+server's message without its JSON (`src/cli/commands/workflow_cancel.ts`). The CLI waits up to
 `SERVER_CANCEL_TIMEOUT_MS` for the answer: serve's grace period for an aborted
 run, plus its longest sync-gate wait, plus a margin for the suspended-run
 check that may follow. If it gets no answer, it says the cancel may still

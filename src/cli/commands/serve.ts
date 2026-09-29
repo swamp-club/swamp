@@ -53,6 +53,7 @@ import {
   emitRunCancelAudit,
   emitSystemAuditEvent,
   listTokenSessions,
+  MAX_CANCEL_REASON_LENGTH,
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
@@ -174,6 +175,7 @@ import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
   isSensitiveHeader,
   parseWebhookFlag,
+  readBodyWithLimit,
   resolveExtensionWebhookEndpoints,
   resolveSecret,
   type WebhookEndpoint,
@@ -509,8 +511,7 @@ export async function cancelExecution(
       status: "not_found",
       executionType,
       executionId,
-      message:
-        `No active ${executionType} with id ${executionId} in this serve instance`,
+      message: `No cancellable ${executionType} with id ${executionId}`,
     };
   }
   const activeRun = deps.activeRunRegistry?.get(executionId);
@@ -549,6 +550,77 @@ export async function cancelExecution(
     return { status: "cancellation_requested", executionType, executionId };
   }
   return { status: "cancelled", executionType, executionId };
+}
+
+/** The largest body a single-run cancel request may send. */
+export const MAX_CANCEL_BODY_BYTES = 8 * 1024;
+
+export type CancelRequestReason =
+  | { ok: true; reason?: string }
+  | { ok: false; status: 400 | 413; message: string };
+
+/**
+ * Reads the optional reason from a single-run cancel request. An empty body
+ * gives no reason, so clients that post nothing keep working; otherwise the
+ * body must be a JSON object whose `reason`, if present, is a string of at most
+ * {@link MAX_CANCEL_REASON_LENGTH} characters. An empty reason counts as none.
+ */
+export async function readCancelRequestReason(
+  req: Request,
+): Promise<CancelRequestReason> {
+  const bytes = await readBodyWithLimit(req, MAX_CANCEL_BODY_BYTES);
+  if (bytes === null) {
+    return {
+      ok: false,
+      status: 413,
+      message: `Request body exceeds ${MAX_CANCEL_BODY_BYTES} bytes`,
+    };
+  }
+  const text = new TextDecoder().decode(bytes);
+  if (text.trim() === "") return { ok: true };
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return { ok: false, status: 400, message: "Request body must be JSON" };
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return {
+      ok: false,
+      status: 400,
+      message: "Request body must be a JSON object",
+    };
+  }
+  const reason = (body as Record<string, unknown>).reason;
+  if (reason === undefined) return { ok: true };
+  if (typeof reason !== "string") {
+    return { ok: false, status: 400, message: "reason must be a string" };
+  }
+  if (reason.length > MAX_CANCEL_REASON_LENGTH) {
+    return {
+      ok: false,
+      status: 400,
+      message: `reason must be at most ${MAX_CANCEL_REASON_LENGTH} characters`,
+    };
+  }
+  return reason === "" ? { ok: true } : { ok: true, reason };
+}
+
+/**
+ * The body of a successful single-run cancel response. A workflow run also
+ * gets the `cancel_reason` serve applied; a method run records no reason, so
+ * reporting one would claim a record that does not exist.
+ */
+export function cancelSuccessBody(
+  result: CancelResult,
+  reason: string,
+): Record<string, unknown> {
+  return {
+    status: result.status,
+    executionType: result.executionType,
+    executionId: result.executionId,
+    ...(result.executionType === "workflow-run" ? { reason } : {}),
+  };
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -5050,8 +5122,16 @@ export const serveCommand = new Command()
           if (cancelMatch) {
             const executionType = cancelMatch[1] as ExecutionType;
             const executionId = cancelMatch[2];
+            const requested = await readCancelRequestReason(req);
+            if (!requested.ok) {
+              return Response.json({
+                status: "error",
+                message: requested.message,
+              }, { status: requested.status });
+            }
             const reason = cancelReasonFor(
               cancelActor(cancelAuditPrincipal, connectionCtx),
+              requested.reason,
             );
             const audit = {
               action: "cancel",
@@ -5119,11 +5199,7 @@ export const serveCommand = new Command()
                 message: result.message,
               }, { status: 409 });
             }
-            return Response.json({
-              status: result.status,
-              executionType: result.executionType,
-              executionId: result.executionId,
-            });
+            return Response.json(cancelSuccessBody(result, reason));
           }
           if (url.pathname === "/api/v1/cancel") {
             const body = await req.json().catch(() => ({}));

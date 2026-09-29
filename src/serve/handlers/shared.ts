@@ -1355,6 +1355,9 @@ export function cancelActor(
   return principalToString(principal);
 }
 
+/** The longest reason a serve cancel request may give, in UTF-16 code units. */
+export const MAX_CANCEL_REASON_LENGTH = 1024;
+
 /** The `cancel_reason` a run cancelled through serve records. */
 export function cancelReasonFor(actor: string, reason?: string): string {
   return reason ? `${reason} (cancelled by ${actor})` : `cancelled by ${actor}`;
