@@ -137,7 +137,7 @@ export type EnrollmentBindingVerdict =
  * Decides whether a worker enrolled on the mint `boundCreatedAt` of a token
  * may stay connected. `token` is the current record, or null when it no
  * longer exists (or no longer parses). Minting after a revoke reuses the
- * name, so a record whose `createdAt` differs is a different credential.
+ * name, so a record with a newer `createdAt` is a different credential.
  * Expiry is not a cause here: the gateway arms its own timer from
  * `expiresAt` at enrollment.
  */
@@ -151,7 +151,9 @@ export function enrollmentTokenBindingVerdict(
   if (token.state === "revoked") {
     return { keep: false, cause: "revoked" };
   }
-  if (token.createdAt !== boundCreatedAt) {
+  // Only a newer mint is a re-mint; an older record is a stale read of the
+  // mint the worker holds, never a reason to cut it off.
+  if (Date.parse(token.createdAt) > Date.parse(boundCreatedAt)) {
     return { keep: false, cause: "reminted" };
   }
   return { keep: true };

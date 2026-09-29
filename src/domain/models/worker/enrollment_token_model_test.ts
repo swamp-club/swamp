@@ -600,6 +600,14 @@ Deno.test("enrollmentTokenBindingVerdict: a re-minted name cuts off workers on t
   );
 });
 
+Deno.test("enrollmentTokenBindingVerdict: an older record is a stale read, not a re-mint", () => {
+  const token = tokenRecord({ createdAt: "2026-01-01T00:00:00.000Z" });
+  assertEquals(
+    enrollmentTokenBindingVerdict(token, "2026-01-01T00:05:00.000Z"),
+    { keep: true },
+  );
+});
+
 Deno.test("enrollmentTokenBindingVerdict: a missing record cuts the worker off", () => {
   assertEquals(
     enrollmentTokenBindingVerdict(null, "2026-01-01T00:00:00.000Z"),

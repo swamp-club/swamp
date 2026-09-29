@@ -5814,6 +5814,8 @@ export const serveCommand = new Command()
       if (heartbeatService) {
         await heartbeatService.stop();
       }
+      // Stop revalidation before the gateway it cuts workers off from.
+      await workerTokenRevalidationService.dispose();
       workerGateway.dispose();
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
@@ -5821,7 +5823,6 @@ export const serveCommand = new Command()
       if (tokenSessionRevalidationService) {
         await tokenSessionRevalidationService.dispose();
       }
-      await workerTokenRevalidationService.dispose();
       if (clubHeartbeatService) {
         clubHeartbeatService.stop();
       }

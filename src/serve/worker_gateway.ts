@@ -35,7 +35,11 @@ import {
   createWorkerModelRunDeps,
   modelMethodRun,
 } from "../libswamp/mod.ts";
-import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
+import {
+  ChannelClosedError,
+  RpcChannel,
+  RpcError,
+} from "../domain/remote/rpc_channel.ts";
 import type { RpcTransport } from "../domain/remote/rpc_channel.ts";
 import {
   type DispatchParams,
@@ -47,6 +51,7 @@ import {
   RemoteMethod,
   type RpcStreamEvent,
   type SessionRefreshResult,
+  withoutQuotedNames,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import { SessionCredentialService } from "../domain/remote/session_credential.ts";
@@ -70,6 +75,30 @@ export const DEFAULT_GRACE_WINDOW_MS = 60_000;
 
 /** The enrollment-token model's single resource name. */
 const TOKEN_DATA_NAME = "token-main";
+
+/**
+ * Redeem rejections, matched on the message with quoted names removed, and
+ * the code the worker decides on. Anything unmatched is rethrown as is and
+ * reaches the worker as a retryable `handler_failed`.
+ */
+const REDEEM_FAILURE_CODES: readonly [string, string][] = [
+  ["has been revoked", "token_revoked"],
+  ["has expired", "token_expired"],
+  ["does not match", "token_mismatch"],
+  ["does not exist", "token_not_found"],
+  ["allowance exhausted", "enrollment_allowance_exhausted"],
+];
+
+function codedRedeemFailure(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const reason = withoutQuotedNames(error.message);
+  for (const [phrase, code] of REDEEM_FAILURE_CODES) {
+    if (reason.includes(phrase)) {
+      return new RpcError({ code, message: error.message });
+    }
+  }
+  return error;
+}
 
 /** Human wording for each way a token loses its authority. */
 const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
@@ -446,11 +475,19 @@ export class WorkerGateway {
     );
 
     try {
+      // The worker may have been removed (token revoked or expired) or
+      // dropped while the busy status was recorded.
+      const channel = entry.channel;
+      if (channel === null || channel.closed) {
+        throw new ChannelClosedError(
+          `Worker '${name}' disconnected before dispatch`,
+        );
+      }
       const dispatchParams = {
         ...params,
         dispatchCredential: dispatchCredential.credential,
       };
-      const raw = await entry.channel.call(
+      const raw = await channel.call(
         WorkerMethod.dispatch,
         dispatchParams,
         {
@@ -559,15 +596,19 @@ export class WorkerGateway {
       // appends a binding on first enrollment or re-auths a known machine.
       // Must happen before the already-connected check because the worker
       // name depends on maxEnrollments (fleet vs single-machine).
-      await this.#runModelMethod({
-        typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
-        definitionName: name,
-        methodName: "redeem",
-        inputs: {
-          presentedToken: secret,
-          machineId: params.machineId,
-        },
-      });
+      try {
+        await this.#runModelMethod({
+          typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
+          definitionName: name,
+          methodName: "redeem",
+          inputs: {
+            presentedToken: secret,
+            machineId: params.machineId,
+          },
+        });
+      } catch (error) {
+        throw codedRedeemFailure(error);
+      }
 
       // One read of the record redeem just validated supplies the mint the
       // worker is bound to, its lifetime, and fleet naming.

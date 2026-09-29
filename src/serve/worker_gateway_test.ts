@@ -991,3 +991,59 @@ Deno.test("WorkerGateway: readTokenRecords resolves a duplicated name to the new
   assertEquals(records.get("dup")?.createdAt, fresh.createdAt);
   assertEquals(records.get("dup")?.state, "enrolled");
 });
+
+Deno.test("WorkerGateway: redeem rejections reach the worker coded, whatever the token is named", async () => {
+  const cases: [string, string][] = [
+    ["Enrollment token 'expired-runners' has been revoked", "token_revoked"],
+    ["Enrollment token 'revoked-fleet' has expired", "token_expired"],
+    ["Enrollment token 'ci' does not match", "token_mismatch"],
+    [
+      "Enrollment token 'ci' does not exist — mint it first",
+      "token_not_found",
+    ],
+    [
+      "Enrollment token 'ci': enrollment allowance exhausted",
+      "enrollment_allowance_exhausted",
+    ],
+    // A name alone never supplies the reason.
+    ["Enrollment token 'has-been-revoked' vault unavailable", "handler_failed"],
+  ];
+  for (const [message, code] of cases) {
+    const h = createHarness({
+      runModelMethod: (input) =>
+        input.methodName === "redeem"
+          ? Promise.reject(new Error(message))
+          : Promise.resolve(),
+    });
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    const error = await assertRejects(() => enroll(workerChannel), RpcError);
+    assertEquals(error.code, code, message);
+    assertEquals(error.message, message);
+  }
+});
+
+Deno.test("WorkerGateway: a dispatch whose worker drops while its busy status is recorded fails as a lost worker", async () => {
+  let releaseBusy!: () => void;
+  const busyGate = new Promise<void>((r) => {
+    releaseBusy = r;
+  });
+  let busyStarted = false;
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    runModelMethod: async (input) => {
+      if (input.methodName === "set_status" && input.inputs.status === "busy") {
+        busyStarted = true;
+        await busyGate;
+      }
+    },
+  });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  const dispatch = h.gateway.dispatch("ci-runner-3", dispatchParams());
+  await waitFor(() => busyStarted, "busy status recording");
+  dropSocket();
+  releaseBusy();
+
+  await assertRejects(() => dispatch, ChannelClosedError, "before dispatch");
+});

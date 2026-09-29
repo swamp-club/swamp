@@ -47,7 +47,7 @@ const arbToken: fc.Arbitrary<EnrollmentToken | null> = fc.option(
   { nil: null },
 );
 
-Deno.test("enrollmentTokenBindingVerdict: keeps a worker exactly when its record exists, is not revoked, and is the bound mint", () => {
+Deno.test("enrollmentTokenBindingVerdict: keeps a worker exactly when its record exists, is not revoked, and is not a newer mint", () => {
   fc.assert(
     fc.property(
       arbToken,
@@ -58,9 +58,10 @@ Deno.test("enrollmentTokenBindingVerdict: keeps a worker exactly when its record
         const boundCreatedAt = sameMint && token ? token.createdAt : otherMint;
         const verdict = enrollmentTokenBindingVerdict(token, boundCreatedAt);
 
+        // Only a newer mint is a re-mint; an older record is a stale read.
         const shouldKeep = token !== null &&
           token.state !== "revoked" &&
-          token.createdAt === boundCreatedAt;
+          Date.parse(token.createdAt) <= Date.parse(boundCreatedAt);
         assertEquals(verdict.keep, shouldKeep);
       },
     ),

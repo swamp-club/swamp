@@ -514,8 +514,8 @@ When two records carry one name, the newest mint wins. `WorkerGateway.revokeToke
 fleet members included, with **no reconnection grace window**. It revokes
 their session and dispatch credentials at once and closes their control
 sockets. A step in flight fails under the usual lost-worker rules (a no-write
-step re-dispatches, a write fails the run). The worker treats the `revoked` or
-`expired` rejection of its re-enrollment as permanent and stops. Workers are
+step re-dispatches, a write fails the run). The worker treats the `token_revoked` or
+`token_expired` rejection of its re-enrollment as permanent and stops. Workers are
 cut off in three ways:
 
 - **Immediately on revoke through serve.** `handleWorkerTokenRevoke` calls
@@ -1246,10 +1246,18 @@ from token auth, or a network-level rejection), the worker treats it as a
 connection error with two guards:
 
 - **Permanent failure detection.** `isPermanentEnrollmentFailure`
-  (`src/worker/connect.ts`) checks the error message against seven permanent
-  patterns: `revoked`, `expired`, `does not match`, `already bound`,
-  `protocol version`, `does not exist` and `allowance exhausted`. On a match the
-  worker stops at once with a clear error, because retrying cannot fix these.
+  (`src/worker/connect.ts`) decides a coded rejection by its code. The gateway
+  codes redeem failures (`token_revoked`, `token_expired`, `token_mismatch`,
+  `token_not_found`, `enrollment_allowance_exhausted`), and these plus
+  `protocol_mismatch` and `invalid_token` make up
+  `PERMANENT_ENROLLMENT_ERROR_CODES` (`src/domain/remote/protocol.ts`). Any
+  other coded rejection, such as `token_unreadable`, is retried. An uncoded
+  error (from an orchestrator that predates the codes, or the transport) is
+  matched against seven phrases (`revoked`, `expired`, `does not match`,
+  `already bound`, `protocol version`, `does not exist` and
+  `allowance exhausted`) with quoted names removed first, so a token named
+  like `expired-runners` cannot make a retryable failure permanent. On a
+  permanent failure the worker stops at once with a clear error.
 
 - **Consecutive failure cap.** Otherwise the worker counts the failure and
   throws on the third in a row (`MAX_PRE_ENROLL_FAILURES`). The count resets
