@@ -398,11 +398,14 @@ export async function handleVaultDelete(
       // Handled before the not-found branch below so force never turns a
       // missing vault into a success.
       const clientError = new LibSwampStreamError(error);
+      const missingVault = error.code === "not_found" &&
+        (error.details as { entityType?: unknown } | undefined)?.entityType ===
+          "Vault";
       sendError(
         socket,
         requestId,
         "vault_delete_failed",
-        error.code === "not_found"
+        missingVault
           ? `Vault not found: ${payload.vaultName}`
           : sanitizeErrorForClient(clientError),
         clientErrorDetails(clientError),

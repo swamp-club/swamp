@@ -55,10 +55,9 @@ import type {
   AccessResource,
 } from "../../domain/access/access_decision_service.ts";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
-import {
-  isSwampError,
-  type ScheduledExecutionService,
-  type SwampError,
+import type {
+  ScheduledExecutionService,
+  SwampError,
 } from "../../libswamp/mod.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
@@ -106,17 +105,8 @@ export const WINDOWS_PATH_PATTERN = /[A-Z]:\\/i;
 
 export const SWAMP_INTERNAL_PATH_PATTERN = /\/.swamp\//;
 
-/**
- * Converts a caught value into a message safe to send to a client: path-like
- * text is replaced and long text is truncated.
- *
- * The message of a thrown `SwampError` is sent to the client, so a libswamp
- * error message must not carry data the caller may not be authorized to see.
- */
 export function sanitizeErrorForClient(error: unknown): string {
-  const raw = error instanceof Error || isSwampError(error)
-    ? error.message
-    : String(error);
+  const raw = error instanceof Error ? error.message : String(error);
   if (
     ABSOLUTE_PATH_PATTERN.test(raw) ||
     WINDOWS_PATH_PATTERN.test(raw) ||

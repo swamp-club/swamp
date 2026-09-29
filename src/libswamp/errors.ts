@@ -30,12 +30,16 @@ export interface SwampError {
 }
 
 /**
- * True when a value has the shape of a `SwampError`. Some libswamp functions
- * throw a `SwampError` rather than an `Error`, so a catch block that reads
- * `error.message` must check for this shape first.
+ * True when a value is a thrown `SwampError`. Some libswamp functions throw a
+ * `SwampError` (a plain object) rather than an `Error`, so a catch block that
+ * reads `error.message` must check for it first. This is a shape check, not a
+ * brand check. `Error` instances are excluded even when they carry a string
+ * `code` (Deno's `ENOENT`, SDK errors such as Azure's `RestError`), so
+ * provider errors keep their own handling.
  */
 export function isSwampError(value: unknown): value is SwampError {
   return typeof value === "object" && value !== null &&
+    !(value instanceof Error) &&
     typeof (value as Record<string, unknown>).code === "string" &&
     typeof (value as Record<string, unknown>).message === "string";
 }

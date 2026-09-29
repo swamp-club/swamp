@@ -82,6 +82,14 @@ Deno.test("isSwampError: accepts a SwampError from a factory", () => {
 
 Deno.test("isSwampError: rejects values that are not SwampError-shaped", () => {
   assertEquals(isSwampError(new Error("boom")), false);
+  assertEquals(
+    isSwampError(
+      Object.assign(new Error("A secret was not found"), {
+        code: "SecretNotFound",
+      }),
+    ),
+    false,
+  );
   assertEquals(isSwampError(null), false);
   assertEquals(isSwampError(undefined), false);
   assertEquals(isSwampError("not_found"), false);
