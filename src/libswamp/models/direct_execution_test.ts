@@ -1202,7 +1202,9 @@ Deno.test("resolveOrCreateDefinition: with lockDir race loser removes global arg
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.definition.globalArguments, { message: "b" });
+      assertEquals(result.globalArgsUpdated, true);
     }
     assertEquals(saved.length, 1);
+    assertEquals(saved[0].globalArguments, { message: "b" });
   });
 });
