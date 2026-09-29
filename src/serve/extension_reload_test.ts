@@ -1397,3 +1397,61 @@ Deno.test("reloadPulledExtensions: never sweeps local or source-mounted extensio
     }
   });
 });
+
+Deno.test("seedPulledTypeSnapshot: a later call adds rows catalogued after the first and keeps what the first recorded (swamp-club#2742)", async () => {
+  const id = crypto.randomUUID();
+  const late = { ext: `@test/late-${id}`, type: `@test/late-model-${id}` };
+  const early = { ext: `@test/early-${id}`, type: `@test/early-model-${id}` };
+  await withPulledRepo(
+    [late.ext, early.ext],
+    async ({ repoDir, lockfilePath, catalog }) => {
+      const pulledRoot = swampPath(repoDir, "pulled-extensions");
+      const addRow = ({ ext, type }: { ext: string; type: string }) => {
+        const sourcePath = canonicalizePath(
+          join(pulledRoot, ext, "models", "m.ts"),
+        );
+        catalog.upsert({
+          type_normalized: type,
+          kind: "model",
+          bundle_path: "",
+          source_path: sourcePath,
+          version: "",
+          description: "",
+          extends_type: "",
+          source_mtime: "",
+          source_fingerprint: "",
+        });
+        modelRegistry.registerLazy({
+          type: ModelType.create(type),
+          bundlePath: "",
+          sourcePath,
+          version: "",
+        });
+      };
+      const dropRows = (ext: string) =>
+        catalog.removeBySourcePrefix(
+          canonicalizePath(join(pulledRoot, ext) + "/"),
+        );
+      try {
+        // Boot baseline: only `early` has rows yet.
+        addRow(early);
+        await seedPulledTypeSnapshot(repoDir, lockfilePath);
+        // The startup load catalogues `late`; `early` is removed meanwhile.
+        addRow(late);
+        dropRows(early.ext);
+        await seedPulledTypeSnapshot(repoDir, lockfilePath);
+
+        // `extension rm` of `late` on this instance, then the reload.
+        dropRows(late.ext);
+        await removeLockfileEntries(lockfilePath);
+        await reload(repoDir, lockfilePath);
+
+        assertEquals(modelRegistry.has(late.type), false, "recorded late");
+        assertEquals(modelRegistry.has(early.type), false, "kept from boot");
+      } finally {
+        modelRegistry.invalidateType(late.type);
+        modelRegistry.invalidateType(early.type);
+      }
+    },
+  );
+});

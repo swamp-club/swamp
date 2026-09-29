@@ -98,7 +98,11 @@ const pulledTypeSnapshots = new Map<string, PulledTypeSnapshot>();
 /**
  * Records which types the installed pulled extensions register, so the
  * first reload after boot can unregister an extension removed since.
- * Serve calls it where it takes the config poller's lockfile baseline.
+ * Serve calls it where it takes the config poller's lockfile baseline, and
+ * again once the registries have loaded: on an extension-backed datastore
+ * the startup catalog repair waits for that load, so a fresh checkout has
+ * no rows yet at the baseline. Each call merges into the snapshot, keeping
+ * an extension the earlier call recorded for the next reload to sweep.
  */
 export async function seedPulledTypeSnapshot(
   repoDir: string,
@@ -112,11 +116,13 @@ export async function seedPulledTypeSnapshot(
     swampPath(repoDir, "_extension_catalog.db"),
   );
   try {
+    const key = canonicalizePath(pulledRoot);
+    const captured = capturePulledTypes(catalog, pulledRoot, [
+      ...await installedPulledNames(repoDir, lockfile, lockfilePath),
+    ]);
     pulledTypeSnapshots.set(
-      canonicalizePath(pulledRoot),
-      capturePulledTypes(catalog, pulledRoot, [
-        ...await installedPulledNames(repoDir, lockfile, lockfilePath),
-      ]),
+      key,
+      new Map([...(pulledTypeSnapshots.get(key) ?? []), ...captured]),
     );
   } finally {
     catalog.close();

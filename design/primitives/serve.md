@@ -542,16 +542,18 @@ edit) invalidate catalogs but do not reload extension registries. A reload that
 overlaps another (`Reload already in progress`) is retried on the next poll. A
 failed reload is retried up to three times per lockfile version.
 
-Every reload first unregisters the types of pulled extensions that are no
-longer installed (swamp-club#2742). Serve records which types each installed
-pulled extension registered, at boot and after every reload, because on the
-instance that ran `rm` the catalog rows and files are already gone. A pulled
+Every reload first unregisters the types of pulled extensions that are no longer
+installed (swamp-club#2742). Serve records which types each installed pulled
+extension registered, at boot and after every reload, because on the instance
+that ran `rm` the catalog rows and files are already gone. The boot record is
+taken at the poller's lockfile baseline and again after the startup registry
+load, which is when an extension-backed datastore repairs the catalog. A pulled
 extension counts as installed when the config-tier lockfile or the transitional
 in-repo lockfile lists it, or, on an extension-backed datastore, when it is a
 datastore extension found on disk. This follows the startup reconcile's orphan
 rule, except that the reconcile spares on-disk datastore sources by directory
-and the sweep spares the whole extension. Only sources under the extension's
-own directory in the pulled root are considered, so local and source-mounted
+and the sweep spares the whole extension. Only sources under the extension's own
+directory in the pulled root are considered, so local and source-mounted
 extensions are never swept, whatever their name. A missing lockfile skips the
 sweep until the next poll, because it reads as no entries and removing the last
 extension leaves an empty file. On a peer, the reload also retires the removed

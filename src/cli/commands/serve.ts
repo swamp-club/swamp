@@ -2396,14 +2396,17 @@ export const serveCommand = new Command()
       )
       : undefined;
     // The pulled types that lockfile version registers, so a reload can
-    // unregister an extension removed since (swamp-club#2742).
-    await seedPulledTypeSnapshot(resolvedRepoDir, extensionLockfilePath)
-      .catch((error: unknown) => {
-        logger.warn(
-          "Could not record the pulled extension types at boot; an extension removed before the next reload may stay registered until serve restarts: {error}",
-          { error: error instanceof Error ? error.message : String(error) },
-        );
-      });
+    // unregister an extension removed since (swamp-club#2742). Recorded
+    // again once the registries have loaded, below.
+    const recordPulledTypes = () =>
+      seedPulledTypeSnapshot(resolvedRepoDir, extensionLockfilePath)
+        .catch((error: unknown) => {
+          logger.warn(
+            "Could not record the pulled extension types at boot; an extension removed before the next reload may stay registered until serve restarts: {error}",
+            { error: error instanceof Error ? error.message : String(error) },
+          );
+        });
+    await recordPulledTypes();
 
     // Re-enumerates pulled extension workflow dirs and, once the scheduler
     // exists, rescans schedules. Shared by `serve reload` and the config
@@ -2432,6 +2435,9 @@ export const serveCommand = new Command()
       reportRegistry.ensureLoaded(),
       webhookTypeRegistry.ensureLoaded(),
     ]);
+    // On an extension-backed datastore the catalog repair ran in that load,
+    // after the baseline record: add what it catalogued.
+    await recordPulledTypes();
 
     // Probe deployment stack and resolve durability mode.
     const datastoreClass: DatastoreClassification =
