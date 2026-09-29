@@ -364,3 +364,50 @@ Deno.test("PulledExtensionsLock.withLock: the timeout names the lock file and it
     }
   });
 });
+
+Deno.test("PulledExtensionsLock.withLock: a waiter behind a section in this process times out", async () => {
+  await withTempDir(async (repoDir) => {
+    const lock = new PulledExtensionsLock({ maxWaitMs: 100 });
+    const held = holdLock(lock, repoDir, [], "a");
+    await held.entered;
+
+    const error = await assertRejects(
+      () => lock.withLock(repoDir, () => Promise.resolve()),
+      LockTimeoutError,
+    );
+    assertStringIncludes(error.message, "this swamp process");
+    assertStringIncludes(error.message, lockFilePath(repoDir));
+    // The abandoned place does not count as a holder.
+    held.release();
+    await held.done;
+    assertEquals(
+      await lock.tryWithLock(repoDir, () => Promise.resolve(1)),
+      { acquired: true, value: 1 },
+    );
+  });
+});
+
+Deno.test("PulledExtensionsLock.withLock: a section queued behind a timed-out waiter still waits for the holder", async () => {
+  await withTempDir(async (repoDir) => {
+    const lock = new PulledExtensionsLock({ maxWaitMs: 100 });
+    const events: string[] = [];
+    const held = holdLock(lock, repoDir, events, "holder");
+    await held.entered;
+    await assertRejects(
+      () => lock.withLock(repoDir, () => Promise.resolve()),
+      LockTimeoutError,
+    );
+
+    const next = lock.withLock(repoDir, () => {
+      events.push("next:start");
+      return Promise.resolve();
+    });
+    assertEquals(
+      await lock.tryWithLock(repoDir, () => Promise.resolve()),
+      { acquired: false },
+    );
+    held.release();
+    await Promise.all([held.done, next]);
+    assertEquals(events, ["holder:start", "holder:end", "next:start"]);
+  });
+});

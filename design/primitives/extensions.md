@@ -1355,18 +1355,27 @@ that does not match the tree.
 A section takes two layers: an in-process first-come-first-served mutex keyed
 by the checkout, so concurrent `swamp serve` requests queue without polling,
 then a `FileLock` on `.swamp/pulled-extensions.lock` for other processes. Its
-TTL (30s) and heartbeat clear a crashed holder. A waiter gives up after 180s
-with a `LockTimeoutError` naming the lock file and its holder.
-`tryWithLock` reports busy instead of waiting.
+TTL (30s) and heartbeat clear a crashed holder. A waiter's 180s budget covers
+both layers: time queued behind a section in its own process, then time waiting
+for another process's file lock. Past it, the waiter gets a `LockTimeoutError`
+naming the lock file (and, when another process holds it, that holder). A
+waiter that times out gives up its place in the queue without blocking the
+sections behind it. `tryWithLock` reports busy instead of waiting.
 
 Where it is held:
 
 - **Install**: `installExtension` takes it around apply only. Prepare
-  (registry lookup, download, checksum and safety checks) runs before it, so a
-  download never holds up another process, and a `ConflictError` leaves the
+  (registry lookup, download, checksum and safety checks) runs before it, so
+  the extension's own download never holds up another process (a dependency's
+  does; see below), and a `ConflictError` leaves the
   section before the CLI's conflict prompt. Every install path goes through
   `installExtension`: pull, update, the lockfile restore in
-  `extension install`, auto-resolve, and the `swamp serve` admin handlers.
+  `extension install`, auto-resolve, and the `swamp serve` admin handlers. One
+  exception: when `extension install` migrates an entry from a legacy layout,
+  it deletes the old-layout paths (`sweepLegacyPaths`) after `installExtension`
+  returns, outside the lock. Those paths lie outside every extension's own
+  subtree (`.swamp/pulled-extensions/<ext-name>/`, where names are scoped as
+  `@x/...`), so no current-layout install writes them.
 - **Catalog save**: `InstallExtensionService` runs its catalog save and the
   `DuplicateTypeError` rollback in the same section, through
   `installExtension`'s `underLock` hook.

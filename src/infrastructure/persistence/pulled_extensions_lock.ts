@@ -81,40 +81,61 @@ interface Lease {
  * lock while holding this one.
  */
 export class PulledExtensionsLock {
-  readonly #tails = new Map<string, Promise<void>>();
+  readonly #queues = new Map<string, MutexQueue>();
   readonly #leases = new AsyncLocalStorage<Lease>();
-  readonly #createFileLock: (swampDir: string) => PulledExtensionsFileLock;
+  readonly #maxWaitMs: number;
+  readonly #createFileLock: (
+    swampDir: string,
+    maxWaitMs: number,
+  ) => PulledExtensionsFileLock;
 
   constructor(options?: {
     /**
-     * Test seam: builds the cross-process layer for a checkout's
-     * `.swamp` dir. Called once per section, so each section gets a
-     * fresh lock instance.
+     * Total time a section waits for both layers before throwing
+     * {@link LockTimeoutError}. Defaults to 180s.
      */
-    createFileLock?: (swampDir: string) => PulledExtensionsFileLock;
+    maxWaitMs?: number;
+    /**
+     * Test seam: builds the cross-process layer for a checkout's
+     * `.swamp` dir, waiting at most `maxWaitMs` (what is left of the
+     * section's budget). Called once per section, so each section gets
+     * a fresh lock instance.
+     */
+    createFileLock?: (
+      swampDir: string,
+      maxWaitMs: number,
+    ) => PulledExtensionsFileLock;
   }) {
+    this.#maxWaitMs = options?.maxWaitMs ?? PULLED_EXTENSIONS_LOCK_MAX_WAIT_MS;
     this.#createFileLock = options?.createFileLock ??
-      ((swampDir) =>
+      ((swampDir, maxWaitMs) =>
         new FileLock(swampDir, {
           lockKey: PULLED_EXTENSIONS_LOCK_KEY,
           ttlMs: PULLED_EXTENSIONS_LOCK_TTL_MS,
-          maxWaitMs: PULLED_EXTENSIONS_LOCK_MAX_WAIT_MS,
+          maxWaitMs,
           retryIntervalMs: PULLED_EXTENSIONS_LOCK_RETRY_INTERVAL_MS,
         }));
   }
 
   /**
    * Runs `fn` holding the lock for `repoDir`, waiting for it if needed.
-   * Throws {@link LockTimeoutError} naming the lock file and its holder
-   * when another process holds it past the max wait.
+   * The wait behind other sections in this process and the wait for
+   * another process's file lock share one budget. Past it, throws
+   * {@link LockTimeoutError} naming the lock file (and, for another
+   * process, its holder).
    */
   async withLock<T>(repoDir: string, fn: () => Promise<T>): Promise<T> {
     const key = lockKey(repoDir);
     if (this.#holds(key)) return await fn();
 
-    const exitMutex = await this.#enterMutex(key);
+    const deadline = Date.now() + this.#maxWaitMs;
+    const exitMutex = await this.#enterMutex(key, repoDir);
     try {
-      const fileLock = this.#createFileLock(swampPath(repoDir));
+      const fileLock = this.#createFileLock(
+        swampPath(repoDir),
+        // FileLock gives up before its first attempt at 0.
+        Math.max(1, deadline - Date.now()),
+      );
       try {
         await fileLock.acquire();
       } catch (error) {
@@ -147,7 +168,10 @@ export class PulledExtensionsLock {
     const exitMutex = this.#tryEnterMutex(key);
     if (!exitMutex) return { acquired: false };
     try {
-      const fileLock = this.#createFileLock(swampPath(repoDir));
+      const fileLock = this.#createFileLock(
+        swampPath(repoDir),
+        this.#maxWaitMs,
+      );
       if (!await fileLock.tryAcquire()) return { acquired: false };
       try {
         return { acquired: true, value: await this.#runLeased(key, fn) };
@@ -179,31 +203,71 @@ export class PulledExtensionsLock {
     }
   }
 
-  /** Queues behind the current holder; resolves to the release function. */
-  async #enterMutex(key: string): Promise<() => void> {
-    const prev = this.#tails.get(key) ?? Promise.resolve();
-    const exit = this.#queue(key, prev);
-    await prev;
+  /**
+   * Queues behind the current holder and resolves to the release
+   * function. Gives up after the max wait: the abandoned place is
+   * released, so sections queued behind it wait only for the ones
+   * ahead of it.
+   */
+  async #enterMutex(key: string, repoDir: string): Promise<() => void> {
+    const { entered, exit } = this.#queue(key);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), this.#maxWaitMs);
+    });
+    try {
+      if (!await Promise.race([entered.then(() => true), timedOut])) {
+        exit();
+        throw timeoutError(
+          swampPath(repoDir, PULLED_EXTENSIONS_LOCK_KEY),
+          null,
+          this.#maxWaitMs,
+          "Another operation in this swamp process",
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
     return exit;
   }
 
   /** Enters only when nobody holds or waits for `key`. */
   #tryEnterMutex(key: string): (() => void) | undefined {
-    if (this.#tails.has(key)) return undefined;
-    return this.#queue(key, Promise.resolve());
+    if (this.#queues.has(key)) return undefined;
+    return this.#queue(key).exit;
   }
 
-  #queue(key: string, prev: Promise<void>): () => void {
+  /**
+   * Takes a place at the back of `key`'s queue. `entered` resolves when
+   * every place ahead has exited. The queue's map entry is dropped once
+   * every place has exited, so the map does not grow and a later
+   * {@link tryWithLock} sees the checkout free.
+   */
+  #queue(key: string): { entered: Promise<void>; exit: () => void } {
+    const queue = this.#queues.get(key) ?? { tail: Promise.resolve(), size: 0 };
+    const entered = queue.tail;
     let release!: () => void;
     const mine = new Promise<void>((r) => release = r);
-    const tail = prev.then(() => mine);
-    this.#tails.set(key, tail);
-    return () => {
-      release();
-      // Drop the entry once the queue drains so the map does not grow.
-      if (this.#tails.get(key) === tail) this.#tails.delete(key);
+    queue.tail = entered.then(() => mine);
+    queue.size++;
+    this.#queues.set(key, queue);
+    let exited = false;
+    return {
+      entered,
+      exit: () => {
+        if (exited) return;
+        exited = true;
+        release();
+        if (--queue.size === 0) this.#queues.delete(key);
+      },
     };
   }
+}
+
+/** A checkout's in-process FIFO: the last place's promise, and places held. */
+interface MutexQueue {
+  tail: Promise<void>;
+  size: number;
 }
 
 /** One key per checkout, whichever form of its path a caller passes. */
@@ -219,15 +283,28 @@ function lockKey(repoDir: string): string {
 }
 
 function describeTimeout(error: LockTimeoutError): LockTimeoutError {
-  const holder = error.holder
-    ? ` held by ${error.holder.holder} (pid ${error.holder.pid})`
-    : "";
-  return new LockTimeoutError(error.lockKey, error.holder, error.waitedMs, {
-    message:
-      `Another swamp process is changing this repository's pulled extensions: ` +
-      `lock ${error.lockKey}${holder} — timed out after ${error.waitedMs}ms. ` +
+  return timeoutError(
+    error.lockKey,
+    error.holder,
+    error.waitedMs,
+    "Another swamp process",
+    error,
+  );
+}
+
+function timeoutError(
+  lockPath: string,
+  holder: LockTimeoutError["holder"],
+  waitedMs: number,
+  who: string,
+  cause?: unknown,
+): LockTimeoutError {
+  const heldBy = holder ? ` held by ${holder.holder} (pid ${holder.pid})` : "";
+  return new LockTimeoutError(lockPath, holder, waitedMs, {
+    message: `${who} is changing this repository's pulled extensions: ` +
+      `lock ${lockPath}${heldBy} — timed out after ${waitedMs}ms. ` +
       `Retry once it finishes.`,
-    cause: error,
+    cause,
   });
 }
 
