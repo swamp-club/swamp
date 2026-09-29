@@ -27,6 +27,10 @@ import {
 } from "../../domain/vaults/vault_config.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
+  type LocalEncryptionConfig,
+  moveLocalEncryptionSecrets,
+} from "../../domain/vaults/local_encryption_vault_provider.ts";
+import {
   isValidVaultName,
   VAULT_NAME_RULE,
 } from "../../domain/vaults/vault_name.ts";
@@ -60,6 +64,10 @@ export interface VaultEditData {
   status: "opened" | "updated";
   name: string;
   type: string;
+  /** The vault's previous name, when the edit renamed it. */
+  renamedFrom?: string;
+  /** Whether a rename moved stored secrets to the new name. */
+  secretsMoved?: boolean;
 }
 
 export type VaultEditEvent =
@@ -116,6 +124,15 @@ export interface VaultEditDeps extends VaultEditLookupDeps {
    * declares none. Mirrors `vault create`: only extension types are checked.
    */
   getConfigSchema: (type: string) => Promise<z.ZodTypeAny | undefined>;
+  /**
+   * Moves the stored secrets of a vault being renamed to `toName`, for vault
+   * types that key their storage on the vault name. Returns a callback that
+   * moves them back, or null when nothing moved.
+   */
+  moveSecrets: (
+    stored: VaultConfigData,
+    toName: string,
+  ) => Promise<(() => Promise<void>) | null>;
 }
 
 /** Wires real infrastructure into VaultEditDeps. */
@@ -141,7 +158,10 @@ export function createVaultEditDeps(
         throw error;
       }
     },
-    prepareEditor: (path) => editorService.prepareOpenFile(path),
+    // Wait for GUI editors too, so a rename made in the editor is seen after
+    // it closes and the vault's secrets can move with it (swamp-club#2681).
+    prepareEditor: (path) =>
+      editorService.prepareOpenFile(path, { wait: true }),
     readConfigData: async (config) =>
       (await repo.findById(config.type, config.id))?.toData() ?? null,
     saveConfigData: (data) => repo.save(VaultConfig.fromData(data)),
@@ -153,6 +173,23 @@ export function createVaultEditDeps(
         return undefined;
       }
       return typeInfo.configSchema;
+    },
+    moveSecrets: async (stored, toName) => {
+      if (stored.type !== "local_encryption") return null;
+      // The storage root comes from the stored config only: over --server
+      // the edited config is client-controlled. VaultService falls back to
+      // the repo dir when base_dir is unset, so this does too.
+      const baseDir = (stored.config as LocalEncryptionConfig).base_dir ??
+        repoDir;
+      const moved = await moveLocalEncryptionSecrets(
+        baseDir,
+        stored.name,
+        toName,
+      );
+      if (!moved) return null;
+      return async () => {
+        await moveLocalEncryptionSecrets(baseDir, toName, stored.name);
+      };
     },
   };
 }
@@ -285,7 +322,30 @@ async function* updateVaultFromStdin(
     }
   }
 
-  await deps.saveConfigData(updated);
+  // Secrets move before the save, so a failed move leaves the vault as it
+  // was, and a failed save moves them back.
+  let undoMove: (() => Promise<void>) | null = null;
+  if (renamed) {
+    try {
+      undoMove = await deps.moveSecrets(existing, updated.name);
+    } catch (error) {
+      yield {
+        kind: "error",
+        error: validationFailed(
+          `Cannot rename vault '${existing.name}' to '${updated.name}': ${
+            errorMessage(error)
+          }`,
+        ),
+      };
+      return;
+    }
+  }
+  try {
+    await deps.saveConfigData(updated);
+  } catch (error) {
+    if (undoMove) await undoMove();
+    throw error;
+  }
   yield {
     kind: "completed",
     data: {
@@ -293,7 +353,68 @@ async function* updateVaultFromStdin(
       status: "updated",
       name: updated.name,
       type: updated.type,
+      ...(renamed
+        ? { renamedFrom: existing.name, secretsMoved: undoMove !== null }
+        : {}),
     },
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Checks the vault after an editor session and, when it was renamed, moves
+ * its secrets to the new name. A rename that is invalid or whose secrets
+ * cannot move is reverted, keeping the user's other edits, so the config and
+ * the stored secrets always agree. Returns the error to report, or the new
+ * name when the vault was renamed.
+ */
+async function reconcileEditorRename(
+  deps: VaultEditDeps,
+  stored: VaultConfigData,
+): Promise<
+  { error: SwampError } | { renamedTo: string; secretsMoved: boolean } | null
+> {
+  let edited: VaultConfigData | null;
+  try {
+    edited = await deps.readConfigData(stored);
+  } catch (error) {
+    return {
+      error: validationFailed(
+        `Vault '${stored.name}' is not valid after editing: ${
+          errorMessage(error)
+        }. Its stored secrets were not moved.`,
+      ),
+    };
+  }
+  if (!edited || edited.name === stored.name) return null;
+
+  let reason: string | null = null;
+  if (!isValidVaultName(edited.name)) {
+    reason = `Invalid vault name: ${edited.name}. ${VAULT_NAME_RULE}`;
+  } else {
+    const clash = await deps.findByName(edited.name);
+    if (clash && clash.id !== stored.id) {
+      reason = `A vault named '${edited.name}' already exists.`;
+    }
+  }
+  if (!reason) {
+    try {
+      const undo = await deps.moveSecrets(stored, edited.name);
+      return { renamedTo: edited.name, secretsMoved: undo !== null };
+    } catch (error) {
+      reason = errorMessage(error);
+    }
+  }
+
+  await deps.saveConfigData({ ...edited, name: stored.name });
+  return {
+    error: validationFailed(
+      `Cannot rename vault '${stored.name}' to '${edited.name}': ${reason} ` +
+        `The name was changed back to '${stored.name}'; other edits were kept.`,
+    ),
   };
 }
 
@@ -367,6 +488,10 @@ export async function* vaultEdit(
         return;
       }
 
+      // A config that no longer parses can still be opened to fix it; there
+      // is then no stored name to compare a rename against.
+      const stored = await deps.readConfigData(config).catch(() => null);
+
       ctx.logger.debug`Opening file: ${filePath}`;
       const launch = await deps.prepareEditor(filePath);
       yield {
@@ -379,14 +504,23 @@ export async function* vaultEdit(
       };
       const result = await launch.open();
 
+      const rename = stored ? await reconcileEditorRename(deps, stored) : null;
+      if (rename && "error" in rename) {
+        yield { kind: "error", error: rename.error };
+        return;
+      }
+
       yield {
         kind: "completed",
         data: {
           path: filePath,
           editor: result.editor,
           status: "opened",
-          name: config.name,
+          name: rename ? rename.renamedTo : config.name,
           type: config.type,
+          ...(rename
+            ? { renamedFrom: config.name, secretsMoved: rename.secretsMoved }
+            : {}),
         },
       };
     })(),

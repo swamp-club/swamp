@@ -117,3 +117,32 @@ Deno.test("vault edit renderer: json mode passes a stdin update through without 
   assertEquals(parsed.name, "my-vault");
   assertEquals("editor" in parsed, false);
 });
+
+const vaultRenamed = {
+  kind: "completed" as const,
+  data: {
+    ...vaultUpdated.data,
+    name: "renamed",
+    renamedFrom: "my-vault",
+    secretsMoved: true,
+  },
+};
+
+Deno.test("vault edit renderer: log mode reports a rename that moved secrets", () => {
+  createVaultEditRenderer("log").handlers().completed(vaultRenamed);
+});
+
+Deno.test("vault edit renderer: json mode carries the previous name and whether secrets moved", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (message: string) => logs.push(message);
+  try {
+    createVaultEditRenderer("json").handlers().completed(vaultRenamed);
+  } finally {
+    console.log = originalLog;
+  }
+  const parsed = JSON.parse(logs[0]);
+  assertEquals(parsed.name, "renamed");
+  assertEquals(parsed.renamedFrom, "my-vault");
+  assertEquals(parsed.secretsMoved, true);
+});
