@@ -1006,7 +1006,7 @@ export async function prepareInstall(
         formatArchiveBytes(archiveBytes.byteLength)
       }, over the ${
         formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
-      } archive size limit.`,
+      } archive size limit. This version cannot be installed; ask the extension author to publish a smaller archive.`,
     );
   }
 
@@ -1059,9 +1059,9 @@ export async function prepareInstall(
   const archiveReadError = (action: string, error: unknown): UserError => {
     if (error instanceof ArchiveSizeLimitError) {
       return new UserError(
-        `Extension archive ${ref.name}@${version} decompresses to more than ${
+        `Extension archive ${ref.name}@${version} decompresses past the ${
           formatArchiveBytes(error.maxDecompressedBytes)
-        }, over the decompressed archive size limit.`,
+        } decompressed archive size limit. This version cannot be installed; ask the extension author to publish a smaller archive.`,
       );
     }
     const message = error instanceof Error ? error.message : String(error);

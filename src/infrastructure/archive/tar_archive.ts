@@ -96,17 +96,20 @@ function byteLimitStream(
   });
 }
 
-/** gunzip → optional byte limit → untar. */
+/**
+ * gunzip → optional byte limit → untar. Aborting `signal` cancels `source`.
+ */
 function untarGz(
   source: ReadableStream<Uint8Array>,
   options: TarGzReadOptions,
+  signal?: AbortSignal,
 ) {
   // `pipeThrough` typings on `ReadableStream<Uint8Array>` are tighter than
   // what `DecompressionStream` accepts as its writable side; cast to the
   // BufferSource-shaped stream that `DecompressionStream` actually needs.
   const compressed = source as unknown as ReadableStream<BufferSource>;
   let decompressed = compressed
-    .pipeThrough(new DecompressionStream("gzip"))
+    .pipeThrough(new DecompressionStream("gzip"), { signal })
     .pipeThrough(toUint8ArrayStream());
   if (options.maxDecompressedBytes !== undefined) {
     decompressed = decompressed.pipeThrough(
@@ -114,6 +117,25 @@ function untarGz(
     );
   }
   return decompressed.pipeThrough(new UntarStream());
+}
+
+/**
+ * Iterates `stream`, aborting `abort` if the consumer leaves the loop early
+ * (e.g. throws on an entry). `UntarStream`'s readable side does not forward
+ * cancellation to its input, so without this a large archive's source (an
+ * `FsFile.readable`) would stay open once backpressure stops reading.
+ */
+async function* abortOnEarlyExit<T>(
+  stream: ReadableStream<T>,
+  abort: AbortController,
+): AsyncGenerator<T> {
+  let finished = false;
+  try {
+    for await (const item of stream) yield item;
+    finished = true;
+  } finally {
+    if (!finished) abort.abort();
+  }
 }
 
 /**
@@ -206,9 +228,10 @@ export async function extractTarGz(
     throw error;
   }
 
-  const stream = untarGz(source, options);
+  const abort = new AbortController();
+  const stream = untarGz(source, options, abort.signal);
 
-  for await (const entry of stream) {
+  for await (const entry of abortOnEarlyExit(stream, abort)) {
     const typeflag = entry.header.typeflag;
 
     // PAX extended-header entries (typeflag 'x' / 'g') and macOS AppleDouble

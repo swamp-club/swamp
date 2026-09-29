@@ -872,7 +872,7 @@ async function readArchiveBody(
     new UserError(
       `Extension archive ${label} exceeds the ${
         formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
-      } archive size limit.`,
+      } archive size limit. This version cannot be installed; ask the extension author to publish a smaller archive.`,
     );
 
   const declared = Number(res.headers.get("content-length"));

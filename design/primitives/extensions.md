@@ -1108,7 +1108,8 @@ bytes as they arrive, and refuses an oversize `Content-Length` before reading
 anything. `installExtension` checks it again before verifying checksums or
 writing to the temp dir, so every download source is bounded, not just HTTP.
 Push checks it in `extensionPushPrepare`, so `extension push`, `--dry-run` and
-`extension quality` report an archive that consumers could not install.
+`extension quality` (when it packages a fresh archive) report an archive that
+consumers could not download. Push does not check the decompressed limit.
 
 The decompressed limit is a byte-counting stream placed right after gunzip in
 `listTarGzEntries` and `extractTarGz`. The listing pass and the extract pass

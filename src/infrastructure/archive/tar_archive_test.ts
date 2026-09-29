@@ -572,30 +572,70 @@ handleTest(
   },
 );
 
+/**
+ * Writes a `.tar.gz` whose first entry is `firstPath`, followed by 4 MiB of
+ * incompressible data. The tail is larger than the stream buffers, so a
+ * failure on the first entry leaves most of the file unread.
+ */
+async function writeArchiveWithLargeTail(
+  path: string,
+  firstPath: string,
+): Promise<void> {
+  const { TarStream } = await import("@std/tar/tar-stream");
+  const tail = new Uint8Array(4 * 1024 * 1024);
+  for (let i = 0; i < tail.length; i += 65536) {
+    crypto.getRandomValues(tail.subarray(i, i + 65536));
+  }
+  const payload = new TextEncoder().encode("first");
+  const bytes = await new Response(
+    ReadableStream.from([
+      {
+        type: "file" as const,
+        path: firstPath,
+        size: payload.length,
+        readable: ReadableStream.from([payload]),
+      },
+      {
+        type: "file" as const,
+        path: "tail.bin",
+        size: tail.length,
+        readable: ReadableStream.from([tail]),
+      },
+    ])
+      .pipeThrough(new TarStream())
+      .pipeThrough(new CompressionStream("gzip")),
+  ).bytes();
+  await Deno.writeFile(path, bytes);
+}
+
 handleTest(
   "extractTarGz: releases the source file when an entry is rejected",
   async (root) => {
-    const { TarStream } = await import("@std/tar/tar-stream");
     const path = join(root, "bad.tar.gz");
-    const payload = new TextEncoder().encode("malicious");
-    const bytes = await new Response(
-      ReadableStream.from([
-        {
-          type: "file" as const,
-          path: "../escape.txt",
-          size: payload.length,
-          readable: ReadableStream.from([payload]),
-        },
-      ])
-        .pipeThrough(new TarStream())
-        .pipeThrough(new CompressionStream("gzip")),
-    ).bytes();
-    await Deno.writeFile(path, bytes);
+    await writeArchiveWithLargeTail(path, "../escape.txt");
     const file = await Deno.open(path, { read: true });
     await assertRejects(
       () => extractTarGz(file.readable, join(root, "dst")),
       Error,
       "unsafe path",
+    );
+    return file;
+  },
+);
+
+handleTest(
+  "extractTarGz: releases the source file when onEntry throws",
+  async (root) => {
+    const path = join(root, "a.tar.gz");
+    await writeArchiveWithLargeTail(path, "first.txt");
+    const file = await Deno.open(path, { read: true });
+    await assertRejects(
+      () =>
+        extractTarGz(file.readable, join(root, "dst"), () => {
+          throw new Error("rejected by caller");
+        }),
+      Error,
+      "rejected by caller",
     );
     return file;
   },

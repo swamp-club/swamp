@@ -856,7 +856,8 @@ export async function extensionPushPrepare(
     totalBundles = built.totalBundles;
     archiveBytes = built.archiveBytes;
   }
-  // Same limit pull enforces, so a pushed archive is always installable.
+  // Same compressed limit pull enforces, so consumers can download what is
+  // pushed. The decompressed limit is enforced at install only.
   if (archiveBytes.byteLength > MAX_EXTENSION_ARCHIVE_BYTES) {
     throw validationFailed(
       `Extension archive is ${

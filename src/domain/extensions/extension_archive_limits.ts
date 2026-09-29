@@ -37,8 +37,13 @@ export const MAX_EXTENSION_ARCHIVE_BYTES = 50 * MIB;
  */
 export const MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES = 500 * MIB;
 
-/** Renders an archive size or limit in MiB for error messages. */
+/**
+ * Renders an archive size or limit in MiB for error messages. Rounds up, so
+ * a size just over a limit never prints as equal to it.
+ */
 export function formatArchiveBytes(bytes: number): string {
   const mib = bytes / MIB;
-  return `${Number.isInteger(mib) ? mib : mib.toFixed(1)} MiB`;
+  return `${
+    Number.isInteger(mib) ? mib : (Math.ceil(mib * 10) / 10).toFixed(1)
+  } MiB`;
 }
