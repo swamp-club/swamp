@@ -166,7 +166,9 @@ Deno.test("server token auth: direct ingress is read-only and emits a secret-fre
     assertEquals(sink.events.length, 1);
     assertEquals(sink.events[0].action, "auth.token.used");
     assertEquals(sink.events[0].resourceName, name);
-    assertEquals(sink.events[0].principalId, "user:integration");
+    assertEquals(sink.events[0].principalKind, "user");
+    assertEquals(sink.events[0].principalId, "integration");
+    assertEquals(sink.events[0].initiatedBy, "user:integration");
     assertEquals(sink.events[0].detail, "websocket:bearer");
     assertEquals(JSON.stringify(sink.events[0]).includes(secret), false);
   } finally {
