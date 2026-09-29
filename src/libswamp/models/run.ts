@@ -199,6 +199,7 @@ export interface ModelMethodRunDeps {
   /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   getModelDef: (
     type: ModelType,
@@ -257,6 +258,11 @@ export interface ModelMethodRunInput {
    * resolves `definitionName` itself.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
   methodName: string;
   inputs: Record<string, unknown>;
   lastEvaluated: boolean;
@@ -427,6 +433,7 @@ export async function* modelMethodRun(
             input.byId,
             deps.lookupDefinition,
             deps.lookupDefinitionById,
+            input.expectedName,
           );
           const lookupResult = await lookupDefinition(input.modelIdOrName);
           if (!lookupResult) {

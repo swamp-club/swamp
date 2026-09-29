@@ -88,6 +88,11 @@ export interface WorkflowValidateInput {
    * authorized. A broken workflow file is then matched by its id only.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Dependencies for the workflow validate operation. */
@@ -334,13 +339,14 @@ async function* validateSingle(
   deps: WorkflowValidateDeps,
   workflowIdOrName: string,
   byId: boolean,
+  expectedName?: string,
 ): AsyncIterable<WorkflowValidateEvent> {
   const lookupRepo = {
     findByName: deps.findWorkflowByName,
     findById: (id: string) => deps.findWorkflowById(id),
   };
   const workflow = byId
-    ? await findWorkflowById(lookupRepo, workflowIdOrName)
+    ? await findWorkflowById(lookupRepo, workflowIdOrName, expectedName)
     : await findWorkflowByIdOrName(lookupRepo, workflowIdOrName);
 
   if (!workflow) {
@@ -350,8 +356,10 @@ async function* validateSingle(
     if (deps.listBrokenWorkflows) {
       const broken = (await deps.listBrokenWorkflows()).find(
         (b) =>
-          b.id === workflowIdOrName ||
-          (!byId && b.name === workflowIdOrName),
+          byId
+            ? b.id === workflowIdOrName &&
+              (expectedName === undefined || b.name === expectedName)
+            : b.id === workflowIdOrName || b.name === workflowIdOrName,
       );
       if (broken) {
         yield { kind: "completed", data: toBrokenValidateData(broken) };
@@ -401,6 +409,7 @@ export async function* workflowValidate(
           deps,
           input.workflowIdOrName,
           input.byId ?? false,
+          input.expectedName,
         );
       }
     })(),

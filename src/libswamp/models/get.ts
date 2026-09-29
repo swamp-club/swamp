@@ -92,7 +92,10 @@ export interface ModelGetDeps {
   /** Looks up by name, then by exact id. */
   lookupDefinition: (idOrName: string) => Promise<ModelGetLookupResult>;
   /** Looks up by exact id only; required for a `byId` request. */
-  lookupDefinitionById?: (id: string) => Promise<ModelGetLookupResult>;
+  lookupDefinitionById?: (
+    id: string,
+    expectedName?: string,
+  ) => Promise<ModelGetLookupResult>;
   getModelDef: (
     type: ModelType,
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
@@ -125,8 +128,10 @@ export async function createModelGetDeps(
   return {
     lookupDefinition: async (idOrName) =>
       withAutoCreated(await findDefinitionByIdOrName(definitionRepo, idOrName)),
-    lookupDefinitionById: async (id) =>
-      withAutoCreated(await findDefinitionByIdGlobal(definitionRepo, id)),
+    lookupDefinitionById: async (id, expectedName) =>
+      withAutoCreated(
+        await findDefinitionByIdGlobal(definitionRepo, id, expectedName),
+      ),
     getModelDef: async (type) => {
       await modelRegistry.ensureTypeLoaded(type);
       return modelRegistry.get(type);
@@ -152,6 +157,7 @@ export async function* modelGet(
         options.byId,
         deps.lookupDefinition,
         deps.lookupDefinitionById,
+        options.expectedName,
       );
       const result = await lookup(modelIdOrName);
       if (!result) {

@@ -63,6 +63,7 @@ export interface ModelMethodDescribeDeps {
   /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   resolveModelType: (
     type: ModelType,
@@ -79,7 +80,8 @@ export function createModelMethodDescribeDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     resolveModelType: (type) => resolveModelType(type, null),
   };
 }
@@ -103,6 +105,7 @@ export async function* modelMethodDescribe(
         options.byId,
         deps.lookupDefinition,
         deps.lookupDefinitionById,
+        options.expectedName,
       );
       const result = await lookup(modelIdOrName);
       if (!result) {

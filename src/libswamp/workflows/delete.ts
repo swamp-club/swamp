@@ -67,6 +67,11 @@ export interface WorkflowDeleteInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Dependencies for the workflow delete operation. */
@@ -82,7 +87,7 @@ export interface WorkflowDeleteDeps {
   /** Deletes the per-run evaluated-workflow snapshots of the given runs. */
   deleteRunSnapshots: (runIds: readonly string[]) => Promise<void>;
   deleteEvaluated: (workflowId: WorkflowId) => Promise<void>;
-  deleteWorkflow: (workflowId: WorkflowId) => Promise<void>;
+  deleteWorkflow: (workflowId: WorkflowId, name?: string) => Promise<void>;
 }
 
 /** Wires real infrastructure into WorkflowDeleteDeps. */
@@ -142,7 +147,7 @@ export function createWorkflowDeleteDeps(
       }
     },
     deleteEvaluated: (workflowId) => evaluatedWorkflowRepo.delete(workflowId),
-    deleteWorkflow: (workflowId) => workflowRepo.delete(workflowId),
+    deleteWorkflow: (workflowId, name) => workflowRepo.delete(workflowId, name),
   };
 }
 
@@ -152,7 +157,7 @@ function findWorkflow(
   input: WorkflowDeleteInput,
 ): Promise<Workflow | null> {
   return input.byId
-    ? findWorkflowById(deps, input.workflowIdOrName)
+    ? findWorkflowById(deps, input.workflowIdOrName, input.expectedName)
     : findWorkflowByIdOrName(deps, input.workflowIdOrName);
 }
 
@@ -229,7 +234,7 @@ export async function* workflowDelete(
 
       // Delete workflow
       ctx.logger.debug`Deleting workflow: ${workflow.id}`;
-      await deps.deleteWorkflow(workflow.id);
+      await deps.deleteWorkflow(workflow.id, workflow.name);
 
       yield {
         kind: "completed",

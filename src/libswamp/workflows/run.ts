@@ -313,6 +313,11 @@ export interface WorkflowRunInput {
    * run executes the workflow the caller authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
   lastEvaluated?: boolean;
   inputs?: Record<string, unknown>;
   /**
@@ -658,7 +663,11 @@ export async function* workflowRun(
 
         // Look up workflow
         const workflow = input.byId
-          ? await findWorkflowById(deps.workflowRepo, input.workflowIdOrName)
+          ? await findWorkflowById(
+            deps.workflowRepo,
+            input.workflowIdOrName,
+            input.expectedName,
+          )
           : await deps.lookupWorkflow(
             deps.workflowRepo,
             input.workflowIdOrName,
@@ -671,7 +680,10 @@ export async function* workflowRun(
             workflowsDirFor(deps.repoDir),
             input.workflowIdOrName,
           );
-          const broken = input.byId && found?.id !== input.workflowIdOrName
+          const broken = input.byId &&
+              (found?.id !== input.workflowIdOrName ||
+                (input.expectedName !== undefined &&
+                  found?.name !== input.expectedName))
             ? null
             : found;
           yield {
@@ -765,6 +777,7 @@ export async function* workflowRun(
           for await (
             const event of service.run(resolvedInput.workflowIdOrName, {
               byId: resolvedInput.byId,
+              expectedName: resolvedInput.expectedName,
               lastEvaluated: resolvedInput.lastEvaluated,
               inputs: resolvedInput.inputs,
               runtimeTags: resolvedInput.runtimeTags,

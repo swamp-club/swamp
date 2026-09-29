@@ -22,7 +22,7 @@ import {
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRepository } from "./yaml_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -106,6 +106,30 @@ Deno.test("YamlWorkflowRepository.delete leaves a workflow named with the delete
     const fresh = new YamlWorkflowRepository(dir);
     assertEquals(await fresh.findByName("target"), null);
     assertEquals((await fresh.findByName(target.id))?.id, impostor.id);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.delete with a name leaves another workflow sharing the id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const prod = createTestWorkflow("prod-flow");
+    await repo.save(prod);
+    const path = repo.getPath(prod.id);
+    await Deno.writeTextFile(
+      join(dirname(path), "workflow-safe-flow.yaml"),
+      (await Deno.readTextFile(path)).replace(
+        "name: prod-flow",
+        "name: safe-flow",
+      ),
+    );
+    await repo.findByName("safe-flow");
+    await repo.findByName("prod-flow");
+
+    await repo.delete(prod.id, "safe-flow");
+
+    const fresh = new YamlWorkflowRepository(dir);
+    assertEquals(await fresh.findByName("safe-flow"), null);
+    assertEquals((await fresh.findByName("prod-flow"))?.id, prod.id);
   });
 });
 

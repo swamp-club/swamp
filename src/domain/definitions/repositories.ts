@@ -106,7 +106,7 @@ export interface DefinitionRepository {
    * @param type - The model type
    * @param id - The definition ID
    */
-  delete(type: ModelType, id: DefinitionId): Promise<void>;
+  delete(type: ModelType, id: DefinitionId, name?: string): Promise<void>;
 
   /**
    * Generates a new unique ID.

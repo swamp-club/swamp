@@ -91,6 +91,11 @@ export interface ModelRefOptions {
    * resolved, and look it up by id only.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the model name the caller authorized: ids are not
+   * guaranteed unique, so only a model with this name and the id matches.
+   */
+  expectedName?: string;
 }
 
 /**
@@ -101,10 +106,10 @@ export interface ModelRefOptions {
 function lookupModel(
   definitionRepo: DefinitionRepository,
   modelRef: string,
-  byId: boolean | undefined,
+  options: ModelRefOptions,
 ) {
-  return byId
-    ? findDefinitionByIdGlobal(definitionRepo, modelRef)
+  return options.byId
+    ? findDefinitionByIdGlobal(definitionRepo, modelRef, options.expectedName)
     : findDefinitionByIdOrName(definitionRepo, modelRef);
 }
 
@@ -135,7 +140,7 @@ export class DataDeleteService {
     const lookup = await lookupModel(
       this.definitionRepo,
       modelRef,
-      options.byId,
+      options,
     );
     if (!lookup) {
       throw new Error(`Model not found: ${modelRef}`);
@@ -182,7 +187,7 @@ export class DataDeleteService {
     const lookup = await lookupModel(
       this.definitionRepo,
       modelRef,
-      options.byId,
+      options,
     );
     if (!lookup) {
       throw new Error(`Model not found: ${modelRef}`);

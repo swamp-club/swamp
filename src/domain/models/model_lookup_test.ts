@@ -413,6 +413,38 @@ Deno.test("findDefinitionByIdGlobal answers a definition just found by name with
   });
 });
 
+Deno.test("findDefinitionByIdGlobal with an expected name accepts only the definition with both the id and the name", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const shell = ModelType.create("command/shell");
+    const prod = Definition.create({ name: "prod-db", globalArguments: {} });
+    await repo.save(shell, prod);
+    // A copied file that kept prod-db's id, renamed.
+    const path = repo.getPath(shell, prod.id);
+    await Deno.writeTextFile(
+      join(dir, "models", shell.toDirectoryPath(), "safe-model.yaml"),
+      (await Deno.readTextFile(path)).replace(
+        "name: prod-db",
+        "name: safe-model",
+      ),
+    );
+    await repo.findByNameGlobal("safe-model");
+    await repo.findByNameGlobal("prod-db");
+
+    assertEquals(
+      (await findDefinitionByIdGlobal(repo, prod.id, "safe-model"))?.definition
+        .name,
+      "safe-model",
+    );
+    assertEquals(
+      (await findDefinitionByIdGlobal(repo, prod.id, "prod-db"))?.definition
+        .name,
+      "prod-db",
+    );
+    assertEquals(await findDefinitionByIdGlobal(repo, prod.id, "other"), null);
+  });
+});
+
 Deno.test("findDefinitionByIdGlobal returns null for a non-UUID without scanning", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);

@@ -106,6 +106,11 @@ export interface DataListInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
   workflowName?: string;
   runId?: string;
   typeFilter?: string;
@@ -156,6 +161,7 @@ export interface DataListDeps {
   /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   findAllForModel: (
     type: ModelType,
@@ -220,7 +226,8 @@ export function createDataListDeps(
     namespace,
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     findAllForModel: (type, definitionId) =>
       dataRepo.findAllForModel(type, definitionId),
     findWorkflow: async (nameOrId) => {
@@ -390,6 +397,7 @@ async function* modelScopedList(
     input.byId,
     deps.lookupDefinition,
     deps.lookupDefinitionById,
+    input.expectedName,
   );
   const result = await lookupDefinition(modelIdOrName);
   if (!result) {

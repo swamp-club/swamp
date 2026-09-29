@@ -114,9 +114,21 @@ export interface DefinitionLookupResult {
 export async function findDefinitionByIdGlobal(
   definitionRepo: DefinitionRepository,
   id: string,
+  expectedName?: string,
 ): Promise<DefinitionLookupResult | null> {
   if (!isUuid(id)) return null;
   const definitionId = createDefinitionId(id) as DefinitionId;
+
+  // A caller acting on a definition it authorized passes the name it
+  // authorized. Ids are not guaranteed unique — a copied file keeps its id —
+  // so find it the way authorization did, by that name, and accept it only
+  // if it still has this id. Otherwise the authorized definition is gone.
+  if (expectedName !== undefined) {
+    const byName = await definitionRepo.findByNameGlobal(expectedName);
+    return byName?.definition.id === definitionId
+      ? { definition: byName.definition, type: byName.type }
+      : null;
+  }
 
   // A definition just found by name is usually cached: one read, no scan of
   // the type directories that come before it in registry order.

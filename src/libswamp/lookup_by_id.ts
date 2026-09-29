@@ -24,6 +24,11 @@ export interface LookupOptions {
    * by id only, so the operation acts on the resource the caller authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized. Ids are not guaranteed
+   * unique, so the lookup accepts only a resource with this name and the id.
+   */
+  expectedName?: string;
 }
 
 /**
@@ -40,7 +45,8 @@ export function selectLookup<T>(
   operation: string,
   byId: boolean | undefined,
   byIdOrName: (idOrName: string) => Promise<T>,
-  byIdOnly: ((id: string) => Promise<T>) | undefined,
+  byIdOnly: ((id: string, expectedName?: string) => Promise<T>) | undefined,
+  expectedName?: string,
 ): (idOrName: string) => Promise<T> {
   if (!byId) return byIdOrName;
   if (!byIdOnly) {
@@ -48,5 +54,5 @@ export function selectLookup<T>(
       `${operation}: a by-id lookup was requested but none is wired`,
     );
   }
-  return byIdOnly;
+  return (id) => byIdOnly(id, expectedName);
 }

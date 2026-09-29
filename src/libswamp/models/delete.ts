@@ -87,6 +87,7 @@ function lookupModel(
     input.byId,
     deps.lookupDefinition,
     deps.lookupDefinitionById,
+    input.expectedName,
   )(input.modelIdOrName);
 }
 
@@ -100,6 +101,11 @@ export interface ModelDeleteInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Dependencies for the model delete operation. */
@@ -111,6 +117,7 @@ export interface ModelDeleteDeps {
   /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   findAllWorkflows: () => Promise<Workflow[]>;
   findDataArtifacts: (
@@ -132,7 +139,11 @@ export interface ModelDeleteDeps {
     defId: DefinitionId,
     name: string,
   ) => Promise<void>;
-  deleteDefinition: (type: ModelType, id: DefinitionId) => Promise<void>;
+  deleteDefinition: (
+    type: ModelType,
+    id: DefinitionId,
+    name?: string,
+  ) => Promise<void>;
   deleteEvaluatedDefinition: (
     type: ModelType,
     id: DefinitionId,
@@ -194,7 +205,8 @@ export function createModelDeleteDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     findAllWorkflows: () => workflowRepo.findAll(),
     findDataArtifacts: (type, id) => unifiedDataRepo.findAllForModel(type, id),
     findOutputs: (type, id) => outputRepo.findByDefinition(type, id),
@@ -203,7 +215,7 @@ export function createModelDeleteDeps(
       outputRepo.delete(type, methodName, createModelOutputId(id)),
     deleteData: (type, defId, name) =>
       unifiedDataRepo.delete(type, defId, name),
-    deleteDefinition: (type, id) => definitionRepo.delete(type, id),
+    deleteDefinition: (type, id, name) => definitionRepo.delete(type, id, name),
     deleteEvaluatedDefinition: (type, id) =>
       evaluatedDefinitionRepo.delete(type, id),
     isExpired: (data) => lifecycleService.isExpired(data),
@@ -400,7 +412,7 @@ export async function* modelDelete(
 
       // Delete definition
       ctx.logger.debug`Deleting definition: ${definition.id}`;
-      await deps.deleteDefinition(modelType, definition.id);
+      await deps.deleteDefinition(modelType, definition.id, definition.name);
 
       yield {
         kind: "completed",

@@ -172,6 +172,33 @@ Deno.test("YamlDefinitionRepository.findById and delete find a misfiled definiti
   });
 });
 
+Deno.test("YamlDefinitionRepository.delete with a name leaves another definition sharing the id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = createTestDefinition("prod-def");
+    await repo.save(testType, prod);
+    const path = repo.getPath(testType, prod.id);
+    await Deno.writeTextFile(
+      join(dir, "models", testType.toDirectoryPath(), "safe-def.yaml"),
+      (await Deno.readTextFile(path)).replace(
+        "name: prod-def",
+        "name: safe-def",
+      ),
+    );
+    await repo.findByNameGlobal("safe-def");
+    await repo.findByNameGlobal("prod-def");
+
+    await repo.delete(testType, prod.id, "safe-def");
+
+    const fresh = new YamlDefinitionRepository(dir);
+    assertEquals(await fresh.findByNameGlobal("safe-def"), null);
+    assertEquals(
+      (await fresh.findByNameGlobal("prod-def"))?.definition.id,
+      prod.id,
+    );
+  });
+});
+
 Deno.test("YamlDefinitionRepository.findAll skips broken YAML files", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);

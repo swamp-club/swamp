@@ -98,9 +98,9 @@ import {
 import {
   authorizeResolved,
   resolveModelTarget,
-  resolveModelTargetById,
+  resolveRecordedModel,
+  resolveRecordedWorkflow,
   resolveWorkflowTarget,
-  resolveWorkflowTargetById,
   type ResourceResolution,
   unresolvedAccessResource,
 } from "./handlers/resource_resolution.ts";
@@ -3852,11 +3852,11 @@ async function resolveRunResource(
   let resolution: ResourceResolution;
   if (resourceKind === "model") {
     resolution = resourceId
-      ? await resolveModelTargetById(definitionRepo, resourceId)
+      ? await resolveRecordedModel(definitionRepo, resourceId, resourceName)
       : await resolveModelTarget(definitionRepo, resourceName);
   } else {
     resolution = resourceId
-      ? await resolveWorkflowTargetById(workflowRepo, resourceId)
+      ? await resolveRecordedWorkflow(workflowRepo, resourceId, resourceName)
       : await resolveWorkflowTarget(workflowRepo, resourceName);
   }
   return resolution.status === "missing"

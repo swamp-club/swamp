@@ -249,8 +249,8 @@ export async function createModelMethodRunDeps(
     repoDir,
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
-    lookupDefinitionById: (id) =>
-      findDefinitionByIdGlobal(repoContext.definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(repoContext.definitionRepo, id, expectedName),
     getModelDef: (type) => resolveModelType(type, getAutoResolver()),
     createEvaluationService: () => {
       const dqs = new DataQueryService(
@@ -410,7 +410,11 @@ export async function executeWorkflowWithLocks(
   // run itself uses, so both see the same workflow.
   const workflowRepo = repoContext.workflowRepo;
   const workflow = input.byId
-    ? await findWorkflowById(workflowRepo, input.workflowIdOrName)
+    ? await findWorkflowById(
+      workflowRepo,
+      input.workflowIdOrName,
+      input.expectedName,
+    )
     : await findWorkflowByIdOrName(workflowRepo, input.workflowIdOrName);
 
   const stepLockHook = createStepLockHook(

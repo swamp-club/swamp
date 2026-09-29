@@ -45,15 +45,20 @@ export interface WorkflowLookupOptions {
    * it up by id only, so the operation acts on the workflow it authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 function lookupWorkflow(
   workflowRepo: WorkflowRepository,
   workflowIdOrName: string,
-  byId: boolean | undefined,
+  lookup: WorkflowLookupOptions,
 ): Promise<Workflow | null> {
-  return byId
-    ? findWorkflowById(workflowRepo, workflowIdOrName)
+  return lookup.byId
+    ? findWorkflowById(workflowRepo, workflowIdOrName, lookup.expectedName)
     : findWorkflowByIdOrName(workflowRepo, workflowIdOrName);
 }
 
@@ -67,7 +72,7 @@ export async function resolveSuspendedRun(
   const workflow = await lookupWorkflow(
     workflowRepo,
     workflowIdOrName,
-    lookup.byId,
+    lookup,
   );
   if (!workflow) {
     throw new UserError(`Workflow not found: ${workflowIdOrName}`);
@@ -160,7 +165,7 @@ export async function resolveResumableRun(
       runRepo,
       workflowIdOrName,
       runId,
-      { byId: options.byId },
+      { byId: options.byId, expectedName: options.expectedName },
     );
     checkSuspendedRunResume(resolved.workflow, resolved.run);
     return resolved;
@@ -169,7 +174,7 @@ export async function resolveResumableRun(
   const workflow = await lookupWorkflow(
     workflowRepo,
     workflowIdOrName,
-    options.byId,
+    options,
   );
   if (!workflow) {
     throw new UserError(`Workflow not found: ${workflowIdOrName}`);

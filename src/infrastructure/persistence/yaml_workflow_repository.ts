@@ -336,10 +336,15 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     }
   }
 
-  async delete(id: WorkflowId): Promise<void> {
+  /**
+   * Deletes the workflow with this id. Ids are not guaranteed unique — a
+   * copied file keeps its id — so with `name` only a file declaring both is
+   * removed, never another workflow that shares the id.
+   */
+  async delete(id: WorkflowId, name?: string): Promise<void> {
     // Get the workflow before deleting for the event and to find the right file
     const workflow = await this.findById(id);
-    const workflowName = workflow?.name;
+    const workflowName = name ?? workflow?.name;
 
     // Try removing both possible file paths
     const pathsToTry = new Set([
@@ -357,8 +362,9 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     let deleted = false;
     for (const path of pathsToTry) {
       // The id-named path is also where a workflow named with this UUID
-      // lives; never remove another workflow's file.
-      if (await this.declaresOtherId(path, id)) continue;
+      // lives, and a copied file can share the id; never remove another
+      // workflow's file.
+      if (await this.declaresOther(path, id, name)) continue;
       try {
         await Deno.remove(path);
         deleted = true;
@@ -379,16 +385,22 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     }
   }
 
-  /** Whether `path` holds a readable workflow that declares an id not `id`. */
-  private async declaresOtherId(
+  /**
+   * Whether `path` holds a readable workflow that declares an id not `id`,
+   * or — when `name` is given — a name not `name`.
+   */
+  private async declaresOther(
     path: string,
     id: WorkflowId,
+    name?: string,
   ): Promise<boolean> {
     try {
       const data = parseYaml(await Deno.readTextFile(path)) as
-        | { id?: unknown }
+        | { id?: unknown; name?: unknown }
         | null;
-      return typeof data?.id === "string" && data.id !== id;
+      if (typeof data?.id === "string" && data.id !== id) return true;
+      return name !== undefined && typeof data?.name === "string" &&
+        data.name !== name;
     } catch {
       return false;
     }

@@ -178,6 +178,27 @@ export function resolveModelTargetById(
   );
 }
 
+/**
+ * Resolves a model recorded as `id` and `name` — a run's resource. Ids are not
+ * guaranteed unique, so the definition with both is preferred; if none has
+ * both, the model was renamed since, and it is found by id alone.
+ */
+export async function resolveRecordedModel(
+  definitionRepo: DefinitionRepository,
+  id: string,
+  name: string,
+  kind: ModelResourceKind = "model",
+): Promise<ResourceResolution> {
+  const exact = await resolveModel(
+    () => findDefinitionByIdGlobal(definitionRepo, id, name),
+    id,
+    kind,
+  );
+  return exact.status === "missing"
+    ? await resolveModelTargetById(definitionRepo, id, kind)
+    : exact;
+}
+
 async function resolveWorkflow(
   lookup: () => Promise<Workflow | null>,
   idOrName: string,
@@ -257,25 +278,55 @@ export function resolveWorkflowTargetById(
 }
 
 /**
+ * Resolves a workflow recorded as `id` and `name` — a run's workflow. Ids are
+ * not guaranteed unique, so the workflow with both is preferred; if none has
+ * both, it was renamed since, and it is found by id alone.
+ */
+export async function resolveRecordedWorkflow(
+  workflowRepo: WorkflowRepository,
+  id: string,
+  name: string,
+): Promise<ResourceResolution> {
+  const exact = await resolveWorkflow(
+    () => findWorkflowById(workflowRepo, id, name),
+    id,
+    undefined,
+    () => false,
+  );
+  return exact.status === "missing"
+    ? await resolveWorkflowTargetById(workflowRepo, id)
+    : exact;
+}
+
+/**
  * The argument to hand the operation after authorizing `resolution`.
  *
- * A resolved resource is passed by id with `byId`, so the operation looks it
- * up by id only and cannot land on a resource named with that id. A missing
- * one passes the raw string by id only too: the operation reports its own
- * not-found exactly as before, and can only ever act on a resource whose id
- * is the very string that was authorized. A broken workflow file passes the
- * raw string as sent: no parsed workflow matches it, so the operation falls
- * through to the same broken file and reports its load error as before.
+ * A resolved resource is passed by its id with `byId` and its authorized name
+ * as `expectedName`: the operation accepts only a resource with both, so it
+ * cannot land on a resource named with that id, nor on another file that
+ * declares the same id (ids are not guaranteed unique). A broken workflow
+ * file that declares an id is passed the same way. A missing resource passes
+ * the raw string by id only: the operation reports its own not-found as
+ * before, and can only ever act on a resource whose id is the very string
+ * that was authorized. A broken file with no readable id passes the raw
+ * string as sent: no parsed workflow matches it, so the operation reaches the
+ * same broken file.
  */
 export function targetArgument(
   resolution: SettledResolution,
   idOrName: string,
-): { idOrName: string; byId: boolean } {
+): { idOrName: string; byId: boolean; expectedName?: string } {
   switch (resolution.status) {
     case "found":
-      return { idOrName: resolution.id, byId: true };
+      return {
+        idOrName: resolution.id,
+        byId: true,
+        expectedName: resolution.name,
+      };
     case "broken":
-      return { idOrName, byId: false };
+      return resolution.id
+        ? { idOrName: resolution.id, byId: true, expectedName: resolution.name }
+        : { idOrName, byId: false };
     case "missing":
       return { idOrName, byId: true };
   }

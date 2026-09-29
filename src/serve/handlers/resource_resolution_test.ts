@@ -85,6 +85,7 @@ Deno.test("resolveModelTarget: authorizes a model by id on its canonical name an
     assertEquals(targetArgument(resolution, definition.id), {
       idOrName: definition.id,
       byId: true,
+      expectedName: "prod-db",
     });
   });
 });
@@ -187,11 +188,12 @@ Deno.test("resolveWorkflowTarget: a broken workflow file is authorized on the na
       assertEquals(resolution.status, "broken", idOrName);
       if (resolution.status !== "broken") continue;
       assertEquals(resolution.resource.name, "prod-broken");
-      // Passed on as sent: no parsed workflow matches it, so the operation
-      // reaches the same broken file and reports its load error.
+      // Passed by the id and name it declares, so the operation reaches this
+      // file and no other.
       assertEquals(targetArgument(resolution, idOrName), {
-        idOrName,
-        byId: false,
+        idOrName: id,
+        byId: true,
+        expectedName: "prod-broken",
       });
     }
   });
@@ -210,5 +212,25 @@ Deno.test("resolveWorkflowTargetById: matches a broken workflow file by its id o
       dir,
     );
     assertEquals(resolution.status, "missing");
+  });
+});
+
+Deno.test("resolveWorkflowTarget: a broken workflow file without an id is passed on as sent", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "workflow-no-id.yaml"),
+      "name: no-id\njobs: not-a-list\n",
+    );
+    const resolution = await resolveWorkflowTarget(
+      workflowRepo([]),
+      "no-id",
+      dir,
+    );
+    assertEquals(resolution.status, "broken");
+    if (resolution.status !== "broken") return;
+    assertEquals(targetArgument(resolution, "no-id"), {
+      idOrName: "no-id",
+      byId: false,
+    });
   });
 });

@@ -39,6 +39,7 @@ import {
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
+import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -871,5 +872,90 @@ Deno.test("serve id-deny conformance: cancelling a run whose workflow was delete
     // The run is authorized on its own workflow — gone, so on its recorded
     // name — never on the newcomer's tags.
     assertEquals(controller.signal.aborted, true);
+  });
+});
+
+/** Writes a hand-copied definition file: `source`'s content, renamed. */
+async function copyDefinitionAs(
+  f: Fixtures,
+  source: Definition,
+  name: string,
+): Promise<void> {
+  const path = f.repo.repoContext.definitionRepo.getPath(
+    f.repo.modelType,
+    source.id,
+  );
+  await Deno.writeTextFile(
+    join(dirname(path), `${name}.yaml`),
+    (await Deno.readTextFile(path)).replace(
+      `name: ${source.name}`,
+      `name: ${name}`,
+    ),
+  );
+}
+
+Deno.test("serve id-deny conformance: a model sharing a denied model's id is acted on as itself, never as the denied one", async () => {
+  await withFixtures(async (f) => {
+    // safe-model is a copied file that kept prod-db's id. A scan of the
+    // definitions leaves the id cache pointing at whichever file came last.
+    await copyDefinitionAs(f, f.prodModel, "safe-model");
+    // Earlier requests read both by name; the later one, for prod-db, leaves
+    // the shared id cache pointing at prod-db's file.
+    await f.repo.repoContext.definitionRepo.findByNameGlobal("safe-model");
+    await f.repo.repoContext.definitionRepo.findByNameGlobal("prod-db");
+
+    const got = await sendRequest(
+      f.ctx,
+      request("model.get", { modelIdOrName: "safe-model" }),
+    );
+    assertAllowed(got, "model.get");
+    assertEquals(
+      (got.at(-1)?.payload?.data as { name?: string } | undefined)?.name,
+      "safe-model",
+    );
+
+    const deleted = await sendRequest(
+      f.ctx,
+      request("model.delete", { modelIdOrName: "safe-model", force: true }),
+    );
+    assertAllowed(deleted, "model.delete");
+    await prodModelKept(f);
+    assertEquals(
+      await f.repo.repoContext.definitionRepo.findByNameGlobal("safe-model"),
+      null,
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: a workflow sharing a denied workflow's id is acted on as itself, never as the denied one", async () => {
+  await withFixtures(async (f) => {
+    const workflowRepo = f.repo.repoContext.workflowRepo;
+    const path = workflowRepo.getPath(f.prodWorkflow.id);
+    await Deno.writeTextFile(
+      join(dirname(path), "workflow-safe-flow.yaml"),
+      (await Deno.readTextFile(path)).replace(
+        "name: prod-flow",
+        "name: safe-flow",
+      ),
+    );
+    await workflowRepo.findByName("safe-flow");
+    await workflowRepo.findByName("prod-flow");
+
+    const got = await sendRequest(
+      f.ctx,
+      request("workflow.get", { workflowIdOrName: "safe-flow" }),
+    );
+    assertAllowed(got, "workflow.get");
+    assertEquals(
+      (got.at(-1)?.payload?.data as { name?: string } | undefined)?.name,
+      "safe-flow",
+    );
+
+    const deleted = await sendRequest(
+      f.ctx,
+      request("workflow.delete", { workflowIdOrName: "safe-flow" }),
+    );
+    assertAllowed(deleted, "workflow.delete");
+    await prodWorkflowKept(f);
   });
 });

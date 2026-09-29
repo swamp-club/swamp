@@ -78,7 +78,11 @@ export class DataRenameService {
 
     // Resolve the model
     const result = options.byId
-      ? await findDefinitionByIdGlobal(this.definitionRepo, modelRef)
+      ? await findDefinitionByIdGlobal(
+        this.definitionRepo,
+        modelRef,
+        options.expectedName,
+      )
       : await findDefinitionByIdOrName(this.definitionRepo, modelRef);
     if (!result) {
       throw new Error(`Model not found: ${modelRef}`);

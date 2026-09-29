@@ -99,6 +99,11 @@ export interface ModelValidateInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Raw validation result from the domain service. */
@@ -137,6 +142,7 @@ export interface ModelValidateDeps {
   /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   findAllDefinitions: () => Promise<
     Array<{ definition: Definition; type: ModelType }>
@@ -220,7 +226,8 @@ export function createModelValidateDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     findAllDefinitions: () => definitionRepo.findAllGlobal(),
     isAutoDefinition: (definition, type) =>
       definitionRepo.isAutoDefinition(definition, type),
@@ -342,12 +349,14 @@ async function* validateSingle(
   deps: ModelValidateDeps,
   modelIdOrName: string,
   byId: boolean,
+  expectedName?: string,
 ): AsyncIterable<ModelValidateEvent> {
   const lookupDefinition = selectLookup(
     "model validate",
     byId,
     deps.lookupDefinition,
     deps.lookupDefinitionById,
+    expectedName,
   );
   const result = await lookupDefinition(modelIdOrName);
   if (!result) {
@@ -413,7 +422,12 @@ export async function* modelValidate(
       if (!input.modelIdOrName) {
         yield* validateAll(deps);
       } else {
-        yield* validateSingle(deps, input.modelIdOrName, input.byId ?? false);
+        yield* validateSingle(
+          deps,
+          input.modelIdOrName,
+          input.byId ?? false,
+          input.expectedName,
+        );
       }
     })(),
   );

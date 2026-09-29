@@ -2228,6 +2228,11 @@ export class WorkflowExecutionService {
        * authorized rather than one named with that id.
        */
       byId?: boolean;
+      /**
+       * With `byId`, the name the caller authorized: ids are not guaranteed
+       * unique, so only a workflow with this name and the id is run.
+       */
+      expectedName?: string;
       lastEvaluated?: boolean;
       inputs?: Record<string, unknown>;
       runtimeTags?: Record<string, string>;
@@ -2302,7 +2307,11 @@ export class WorkflowExecutionService {
       try {
         // Look up workflow
         const found = options?.byId
-          ? await findWorkflowById(this.workflowRepo, idOrName)
+          ? await findWorkflowById(
+            this.workflowRepo,
+            idOrName,
+            options.expectedName,
+          )
           : await this.lookupWorkflow(idOrName);
         if (!found) {
           throw new Error(`Workflow not found: ${idOrName}`);

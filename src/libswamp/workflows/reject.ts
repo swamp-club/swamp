@@ -55,6 +55,11 @@ export interface WorkflowRejectInput {
    * caller authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
   stepName: string;
   reason?: string;
   runId?: string;
@@ -101,7 +106,7 @@ export async function* workflowReject(
           deps.runRepo,
           input.workflowIdOrName,
           input.runId,
-          { byId: input.byId },
+          { byId: input.byId, expectedName: input.expectedName },
         );
       } catch (error) {
         yield {

@@ -165,6 +165,8 @@ interface MethodRunTarget {
   /** The argument and lookup mode handed to modelMethodRun. */
   modelIdOrName: string;
   byId: boolean;
+  /** The name the model was authorized on, when acting by id. */
+  expectedName?: string;
   /** The id of the model run by id, recorded for cancel and attach. */
   resourceId?: string;
 }
@@ -212,7 +214,7 @@ async function resolveMethodRunTarget(
       status: "missing",
       resource: unresolvedAccessResource("model", payload.modelIdOrName),
     };
-  const { idOrName, byId } = targetArgument(
+  const { idOrName, byId, expectedName } = targetArgument(
     resolution,
     payload.modelIdOrName,
   );
@@ -224,6 +226,7 @@ async function resolveMethodRunTarget(
     },
     modelIdOrName: idOrName,
     byId,
+    expectedName,
     resourceId: definition?.definition.id,
   };
 }
@@ -340,6 +343,7 @@ export async function handleModelMethodRun(
           const event of modelMethodRun(libCtx, deps, {
             modelIdOrName: target.modelIdOrName,
             byId: target.byId,
+            expectedName: target.expectedName,
             methodName: payload.methodName,
             inputs: payload.inputs ?? {},
             lastEvaluated: payload.lastEvaluated ?? false,
@@ -535,6 +539,7 @@ export async function handleModelMethodRun(
           const event of modelMethodRun(libCtx, deps, {
             modelIdOrName: target.modelIdOrName,
             byId: target.byId,
+            expectedName: target.expectedName,
             methodName: payload.methodName,
             inputs: payload.inputs ?? {},
             lastEvaluated: payload.lastEvaluated ?? false,
@@ -782,7 +787,7 @@ export async function handleModelMethodDescribe(
         deps,
         model.idOrName,
         payload.methodName,
-        { byId: model.byId },
+        { byId: model.byId, expectedName: model.expectedName },
       ),
       {
         resolving: () => {},
@@ -852,7 +857,10 @@ export async function handleModelGet(
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      modelGet(libCtx, deps, model.idOrName, { byId: model.byId }),
+      modelGet(libCtx, deps, model.idOrName, {
+        byId: model.byId,
+        expectedName: model.expectedName,
+      }),
       {
         resolving: () => {},
         completed: (e) => {
@@ -1027,6 +1035,7 @@ export async function handleModelDelete(
       {
         modelIdOrName: model.idOrName,
         byId: model.byId,
+        expectedName: model.expectedName,
         force: payload.force ?? false,
       },
     );
@@ -1048,6 +1057,7 @@ export async function handleModelDelete(
       modelDelete(libCtx, deps, {
         modelIdOrName: model.idOrName,
         byId: model.byId,
+        expectedName: model.expectedName,
         force: payload.force ?? false,
       }),
       {
@@ -1609,7 +1619,9 @@ export async function handleModelValidate(
   // Without a model this validates every model and authorizes "*"; how that
   // form authorizes is swamp-club#2675. A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
-  let model: { idOrName: string; byId: boolean } | undefined;
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!modelIdOrName) {
     if (
@@ -1659,6 +1671,7 @@ export async function handleModelValidate(
       modelValidate(libCtx, deps, {
         modelIdOrName: model?.idOrName,
         byId: model?.byId,
+        expectedName: model?.expectedName,
       }),
       {
         resolving: () => {},
@@ -1698,7 +1711,9 @@ export async function handleModelEvaluate(
   // Without a model this validates every model and authorizes "*"; how that
   // form authorizes is swamp-club#2675. A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
-  let model: { idOrName: string; byId: boolean } | undefined;
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!modelIdOrName) {
     if (
@@ -1744,6 +1759,7 @@ export async function handleModelEvaluate(
       modelEvaluate(libCtx, deps, {
         modelIdOrName: model?.idOrName,
         byId: model?.byId,
+        expectedName: model?.expectedName,
       }),
       {
         evaluating: () => {},
@@ -1836,6 +1852,7 @@ export async function handleModelEdit(
       modelEdit(libCtx, deps, {
         modelIdOrName: resolved.definition.id,
         byId: true,
+        expectedName: resolved.definition.name,
         stdinContent: payload.content,
         // Every save is authorized against the edited model too, so a rename
         // or retag needs write on the result. It runs on every save rather

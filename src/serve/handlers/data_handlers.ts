@@ -136,7 +136,9 @@ export async function handleDataGet(
   // model, and without either the request reads "*"; how those forms
   // authorize is swamp-club#2675. A model-scoped read resolves its model
   // first and authorizes the model's canonical name (swamp-club#2674).
-  let model: { idOrName: string; byId: boolean } | undefined;
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
   if (payload.workflowName || !payload.modelIdOrName) {
     // An empty name reads as absent, exactly as libswamp reads it.
     const resourceName = payload.modelIdOrName || "*";
@@ -187,6 +189,7 @@ export async function handleDataGet(
       dataGet(libCtx, deps, {
         modelIdOrName: model?.idOrName ?? payload.modelIdOrName,
         byId: model?.byId,
+        expectedName: model?.expectedName,
         dataName: payload.dataName,
         workflowName: payload.workflowName,
         runId: payload.runId,
@@ -338,7 +341,9 @@ export async function handleDataList(
   // An empty name reads as absent, exactly as libswamp reads it, so it takes
   // the "*" form and its per-item filtering.
   const resourceName = payload.modelIdOrName || "*";
-  let model: { idOrName: string; byId: boolean } | undefined;
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
   if (resourceName !== "*") {
     const target = await resolveModelTarget(
       ctx.repoContext.definitionRepo,
@@ -388,6 +393,7 @@ export async function handleDataList(
       dataList(libCtx, deps, {
         modelIdOrName: model?.idOrName ?? payload.modelIdOrName,
         byId: model?.byId,
+        expectedName: model?.expectedName,
         workflowName: payload.workflowName,
         runId: payload.runId,
         typeFilter: payload.typeFilter,
@@ -617,6 +623,7 @@ export async function handleDataVersions(
       dataVersions(libCtx, deps, {
         modelIdOrName: model.idOrName,
         byId: model.byId,
+        expectedName: model.expectedName,
         dataName: payload.dataName,
       }),
       {
@@ -699,6 +706,7 @@ export async function handleDataDelete(
       dataDelete(libCtx, deps, {
         modelIdOrName: model.idOrName,
         byId: model.byId,
+        expectedName: model.expectedName,
         dataName: payload.dataName,
         version: payload.version,
       }),
@@ -778,6 +786,7 @@ export async function handleDataRename(
       dataRename(libCtx, deps, {
         modelIdOrName: model.idOrName,
         byId: model.byId,
+        expectedName: model.expectedName,
         oldName: payload.oldName,
         newName: payload.newName,
       }),

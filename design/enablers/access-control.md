@@ -231,9 +231,10 @@ name or by UUID, so serve resolves it first and authorizes the resource it
 resolves to: its canonical name and full fields (`modelType` and tags for a
 model, `ns` and tags for its data, tags for a workflow). A request by the UUID
 of `prod-db` is therefore denied by `deny model:prod-*` just as a request by
-name is. The operation then acts on the resolved id, looked up by id only, so
-the resource acted on is the resource authorized, even when another resource
-is named with that UUID.
+name is. The operation then acts on exactly that resource: it is handed the
+resolved id and the authorized name, and accepts only a resource with both.
+Ids alone are not enough — a resource may be named with another's UUID, and a
+copied file keeps its id — so neither can redirect the action.
 
 - A string that matches nothing is authorized as sent. The operation then
   reports its usual not-found, and can only ever act on a resource whose id is

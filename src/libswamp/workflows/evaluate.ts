@@ -105,6 +105,11 @@ export interface WorkflowEvaluateInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Type guard to check if data is WorkflowEvaluateAllData. */
@@ -473,13 +478,14 @@ async function* evaluateSingle(
   workflowIdOrName: string,
   inputs: Record<string, unknown>,
   byId: boolean,
+  expectedName?: string,
 ): AsyncIterable<WorkflowEvaluateEvent> {
   const lookupRepo = {
     findByName: deps.findWorkflowByName,
     findById: deps.findWorkflowById,
   };
   const workflow = byId
-    ? await findWorkflowById(lookupRepo, workflowIdOrName)
+    ? await findWorkflowById(lookupRepo, workflowIdOrName, expectedName)
     : await findWorkflowByIdOrName(lookupRepo, workflowIdOrName);
 
   if (!workflow) {
@@ -509,6 +515,7 @@ export async function* workflowEvaluate(
       input.workflowIdOrName,
       input.inputs,
       input.byId ?? false,
+      input.expectedName,
     );
   }
 }

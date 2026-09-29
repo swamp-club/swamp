@@ -73,6 +73,11 @@ export interface DataDeleteInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the model name the caller authorized: ids are not
+   * guaranteed unique, so only a model with this name and the id matches.
+   */
+  expectedName?: string;
 }
 
 /** Dependencies for the data delete operation. */
@@ -82,11 +87,13 @@ export interface DataDeleteDeps {
     dataName: string,
     version?: number,
     byId?: boolean,
+    expectedName?: string,
   ) => Promise<DeleteResult>;
   preview: (
     modelIdOrName: string,
     dataName: string,
     byId?: boolean,
+    expectedName?: string,
   ) => Promise<DeletePreview>;
   batchDelete: (
     modelIdOrName: string,
@@ -128,10 +135,13 @@ export function createDataDeleteDeps(
     );
   const service = new DataDeleteService(dataRepo, definitionRepo);
   return {
-    delete: (modelIdOrName, dataName, version, byId) =>
-      service.delete(modelIdOrName, dataName, version, { byId }),
-    preview: (modelIdOrName, dataName, byId) =>
-      service.previewDelete(modelIdOrName, dataName, { byId }),
+    delete: (modelIdOrName, dataName, version, byId, expectedName) =>
+      service.delete(modelIdOrName, dataName, version, {
+        byId,
+        expectedName,
+      }),
+    preview: (modelIdOrName, dataName, byId, expectedName) =>
+      service.previewDelete(modelIdOrName, dataName, { byId, expectedName }),
     batchDelete: (modelIdOrName, filter) =>
       service.batchDelete(modelIdOrName, filter),
     batchPreview: (modelIdOrName, filter) =>
@@ -143,7 +153,12 @@ export function createDataDeleteDeps(
 export async function dataDeletePreview(
   ctx: LibSwampContext,
   deps: DataDeleteDeps,
-  input: { modelIdOrName: string; dataName: string; byId?: boolean },
+  input: {
+    modelIdOrName: string;
+    dataName: string;
+    byId?: boolean;
+    expectedName?: string;
+  },
 ): Promise<DataDeletePreview> {
   ctx.logger
     .debug`Previewing data delete: model=${input.modelIdOrName}, dataName=${input.dataName}`;
@@ -151,6 +166,7 @@ export async function dataDeletePreview(
     input.modelIdOrName,
     input.dataName,
     input.byId,
+    input.expectedName,
   );
   return {
     modelId: preview.modelId,
@@ -186,6 +202,7 @@ export async function* dataDelete(
           input.dataName,
           input.version,
           input.byId,
+          input.expectedName,
         );
       } catch (error) {
         yield {

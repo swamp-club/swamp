@@ -95,6 +95,11 @@ export interface DataGetInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
   dataName?: string;
   workflowName?: string;
   runId?: string;
@@ -164,6 +169,7 @@ export interface DataGetDeps {
   /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   findWorkflow: (idOrName: string) => Promise<WorkflowInfo | null>;
   findWorkflowRun: (
@@ -233,7 +239,8 @@ export function createDataGetDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     findWorkflow: async (idOrName) =>
       await workflowRepo.findByName(idOrName) ??
         await workflowRepo.findById(createWorkflowId(idOrName)),
@@ -319,6 +326,7 @@ export async function* dataGet(
           repoDir,
           input.includeContent,
           input.byId ?? false,
+          input.expectedName,
         );
       }
     })(),
@@ -442,6 +450,7 @@ async function* modelScopedGet(
   repoDir: string,
   includeContent: boolean,
   byId: boolean,
+  expectedName?: string,
 ): AsyncIterable<DataGetEvent> {
   if (!dataName) {
     yield {
@@ -458,6 +467,7 @@ async function* modelScopedGet(
     byId,
     deps.lookupDefinition,
     deps.lookupDefinitionById,
+    expectedName,
   );
   const result = await lookupDefinition(modelIdOrName);
   if (!result) {

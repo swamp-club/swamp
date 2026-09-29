@@ -40,3 +40,14 @@ Deno.test("selectLookup: byId without an id-only lookup throws instead of fallin
     "model get: a by-id lookup was requested but none is wired",
   );
 });
+
+Deno.test("selectLookup: passes the expected name to the id-only lookup", async () => {
+  const lookup = selectLookup(
+    "op",
+    true,
+    byIdOrName,
+    (id: string, name?: string) => Promise.resolve(`id-only:${id}:${name}`),
+    "authorized-name",
+  );
+  assertEquals(await lookup("x"), "id-only:x:authorized-name");
+});

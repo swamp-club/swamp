@@ -69,6 +69,11 @@ export interface DataVersionsInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
   dataName: string;
 }
 
@@ -89,6 +94,7 @@ export interface DataVersionsDeps {
   /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   listVersions: (
     type: ModelType,
@@ -125,7 +131,8 @@ export function createDataVersionsDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     listVersions: (type, definitionId, name) =>
       dataRepo.listVersions(type, definitionId, name),
     findByName: (type, definitionId, name, version) =>
@@ -150,6 +157,7 @@ export async function* dataVersions(
         input.byId,
         deps.lookupDefinition,
         deps.lookupDefinitionById,
+        input.expectedName,
       );
       const result = await lookupDefinition(input.modelIdOrName);
       if (!result) {

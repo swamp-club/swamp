@@ -43,6 +43,7 @@ import {
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
+import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 
 /**
  * Data structure for the workflow edit output.
@@ -80,6 +81,11 @@ export interface WorkflowEditInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a workflow with this name and the id is accepted.
+   */
+  expectedName?: string;
   /**
    * Called before every stdin update is saved, with the stored and the edited
    * workflow. Returning false leaves the file untouched. Serve uses it to
@@ -189,7 +195,9 @@ export async function* workflowEdit(
         ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
         try {
           const id: WorkflowId = createWorkflowId(workflowIdOrName);
-          workflow = await deps.findById(id);
+          workflow = input.byId && input.expectedName !== undefined
+            ? await findWorkflowById(deps, workflowIdOrName, input.expectedName)
+            : await deps.findById(id);
         } catch (error) {
           ctx.logger
             .debug`Workflow lookup by ID failed, will try symlink fallback: ${error}`;
@@ -208,7 +216,13 @@ export async function* workflowEdit(
           filePath = resolvedPath;
         } else {
           const broken = await deps.findBrokenWorkflow(workflowIdOrName);
-          if (broken && (!input.byId || broken.id === workflowIdOrName)) {
+          if (
+            broken &&
+            (!input.byId ||
+              (broken.id === workflowIdOrName &&
+                (input.expectedName === undefined ||
+                  broken.name === input.expectedName)))
+          ) {
             ctx.logger
               .debug`Found broken workflow, opening file: ${broken.file}`;
             filePath = broken.file;

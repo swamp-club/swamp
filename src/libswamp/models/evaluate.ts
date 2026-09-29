@@ -73,6 +73,11 @@ export interface ModelEvaluateInput {
    * authorized.
    */
   byId?: boolean;
+  /**
+   * With `byId`, the name the caller authorized: ids are not guaranteed
+   * unique, so only a resource with this name and the id is accepted.
+   */
+  expectedName?: string;
 }
 
 /** Type guard to check if data is ModelEvaluateAllData. */
@@ -91,6 +96,7 @@ export interface ModelEvaluateDeps {
   /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
+    expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   evaluateDefinition: (
     definition: Definition,
@@ -145,7 +151,8 @@ export function createModelEvaluateDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    lookupDefinitionById: (id) => findDefinitionByIdGlobal(definitionRepo, id),
+    lookupDefinitionById: (id, expectedName) =>
+      findDefinitionByIdGlobal(definitionRepo, id, expectedName),
     evaluateDefinition: (definition, type) =>
       evaluationService.evaluateDefinition(definition, type),
     evaluateAllDefinitions: () => evaluationService.evaluateAllDefinitions(),
@@ -192,12 +199,14 @@ async function* evaluateSingle(
   deps: ModelEvaluateDeps,
   modelIdOrName: string,
   byId: boolean,
+  expectedName?: string,
 ): AsyncIterable<ModelEvaluateEvent> {
   const lookupDefinition = selectLookup(
     "model evaluate",
     byId,
     deps.lookupDefinition,
     deps.lookupDefinitionById,
+    expectedName,
   );
   const lookupResult = await lookupDefinition(modelIdOrName);
   if (!lookupResult) {
@@ -237,6 +246,11 @@ export async function* modelEvaluate(
   if (!input.modelIdOrName) {
     yield* evaluateAll(deps);
   } else {
-    yield* evaluateSingle(deps, input.modelIdOrName, input.byId ?? false);
+    yield* evaluateSingle(
+      deps,
+      input.modelIdOrName,
+      input.byId ?? false,
+      input.expectedName,
+    );
   }
 }

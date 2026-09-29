@@ -96,3 +96,19 @@ Deno.test("findWorkflowById: returns null for a non-UUID without scanning", asyn
   assertEquals(await findWorkflowById(repo, "deploy"), null);
   assertEquals(repo.idLookups, []);
 });
+
+Deno.test("findWorkflowById: with an expected name, only a workflow with both the id and the name", async () => {
+  const target = workflow("target");
+  // A copied file: another workflow that kept target's id.
+  const copy = Workflow.fromData({
+    ...workflow("copy").toData(),
+    id: target.id,
+  });
+  const repo = repoOf([copy, target]);
+  assertEquals(
+    (await findWorkflowById(repo, target.id, "target"))?.name,
+    "target",
+  );
+  assertEquals((await findWorkflowById(repo, target.id, "copy"))?.name, "copy");
+  assertEquals(await findWorkflowById(repo, target.id, "other"), null);
+});

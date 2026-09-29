@@ -170,8 +170,8 @@ import {
 } from "../../domain/workflows/workflow_lookup.ts";
 import {
   authorizeResolved,
+  resolveRecordedWorkflow,
   resolveWorkflowTarget,
-  resolveWorkflowTargetById,
   type ResourceResolution,
   targetArgument,
   unresolvedAccessResource,
@@ -271,6 +271,7 @@ export async function handleWorkflowRun(
         {
           workflowIdOrName: workflow.idOrName,
           byId: workflow.byId,
+          expectedName: workflow.expectedName,
           inputs: payload.inputs,
           lastEvaluated: payload.lastEvaluated,
           verbose: payload.verbose,
@@ -384,6 +385,7 @@ export async function handleWorkflowRun(
         {
           workflowIdOrName: workflow.idOrName,
           byId: workflow.byId,
+          expectedName: workflow.expectedName,
           inputs: payload.inputs,
           lastEvaluated: payload.lastEvaluated,
           verbose: payload.verbose,
@@ -689,6 +691,7 @@ export async function handleWorkflowGet(
     await consumeStream(
       workflowGet(libCtx, deps, workflow.idOrName, {
         byId: workflow.byId,
+        expectedName: workflow.expectedName,
       }),
       {
         resolving: () => {},
@@ -1173,6 +1176,7 @@ export async function handleWorkflowApprove(
       workflowApprove(libCtx, deps, {
         workflowIdOrName: workflow.idOrName,
         byId: workflow.byId,
+        expectedName: workflow.expectedName,
         stepName: payload.stepName,
         reason: payload.reason,
         runId: reserved.runId,
@@ -1288,6 +1292,7 @@ export async function handleWorkflowReject(
       workflowReject(libCtx, deps, {
         workflowIdOrName: workflow.idOrName,
         byId: workflow.byId,
+        expectedName: workflow.expectedName,
         stepName: payload.stepName,
         reason: payload.reason,
         runId: reserved.runId,
@@ -1345,7 +1350,7 @@ type ReservedSuspendedRun =
  */
 async function reserveSuspendedRun(
   ctx: ConnectionContext,
-  workflow: { idOrName: string; byId: boolean },
+  workflow: { idOrName: string; byId: boolean; expectedName?: string },
   runId: string | undefined,
 ): Promise<ReservedSuspendedRun> {
   const { run } = await resolveSuspendedRun(
@@ -1353,7 +1358,7 @@ async function reserveSuspendedRun(
     ctx.repoContext.workflowRunRepo,
     workflow.idOrName,
     runId,
-    { byId: workflow.byId },
+    { byId: workflow.byId, expectedName: workflow.expectedName },
   );
   const registry = ctx.activeRunRegistry;
   if (!registry) return { ok: true, runId: run.id, release: undefined };
@@ -1392,7 +1397,11 @@ export async function handleWorkflowCancel(
     target: { id?: string; name: string },
   ): Promise<boolean> => {
     const resolution = target.id
-      ? await resolveWorkflowTargetById(ctx.repoContext.workflowRepo, target.id)
+      ? await resolveRecordedWorkflow(
+        ctx.repoContext.workflowRepo,
+        target.id,
+        target.name,
+      )
       : await resolveWorkflowTarget(ctx.repoContext.workflowRepo, target.name);
     if (resolution.status === "failed") return false;
     return isAuthorized(
@@ -1495,8 +1504,15 @@ async function abortActiveWorkflowRun(
   if (active.kind === "method-run") return undefined;
   // By the id recorded at registration when there is one, so a rename during
   // the run cannot point the check at a workflow that took the old name.
+  // Ids are not guaranteed unique, so prefer the workflow with both the id
+  // and the recorded name; failing that it was renamed, so take the id alone.
   const workflow = active.resourceId
-    ? await findWorkflowById(ctx.repoContext.workflowRepo, active.resourceId)
+    ? await findWorkflowById(
+      ctx.repoContext.workflowRepo,
+      active.resourceId,
+      active.resourceName,
+    ) ??
+      await findWorkflowById(ctx.repoContext.workflowRepo, active.resourceId)
     : await findWorkflowByIdOrName(
       ctx.repoContext.workflowRepo,
       active.resourceName,
@@ -1551,7 +1567,11 @@ export async function handleWorkflowResume(
         runRepo,
         workflow.idOrName,
         payload.runId,
-        { fromStep: payload.from, byId: workflow.byId },
+        {
+          fromStep: payload.from,
+          byId: workflow.byId,
+          expectedName: workflow.expectedName,
+        },
       );
 
       const stepLockHook = createStepLockHook(
@@ -1664,6 +1684,7 @@ export async function handleWorkflowResume(
   const launched = await startDetachedResume(ctx, registry, {
     workflowIdOrName: workflow.idOrName,
     byId: workflow.byId,
+    expectedName: workflow.expectedName,
     runId: payload.runId,
     from: payload.from,
     inputs: payload.inputs,
@@ -1788,6 +1809,7 @@ export async function handleWorkflowDelete(
       workflowDelete(libCtx, deps, {
         workflowIdOrName: workflow.idOrName,
         byId: workflow.byId,
+        expectedName: workflow.expectedName,
       }),
       {
         deleting: () => {},
@@ -1884,6 +1906,7 @@ export async function handleWorkflowEdit(
       workflowEdit(libCtx, deps, {
         workflowIdOrName: workflow.id,
         byId: true,
+        expectedName: workflow.name,
         stdinContent: payload.content,
         // Every save is authorized against the edited workflow too, so a
         // rename or retag needs write on the result. It runs on every save
@@ -1956,7 +1979,9 @@ export async function handleWorkflowValidate(
   // that form authorizes is swamp-club#2675. A named workflow is resolved
   // first.
   const workflowIdOrName = payload?.workflowIdOrName;
-  let workflow: { idOrName: string; byId: boolean } | undefined;
+  let workflow:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!workflowIdOrName) {
     if (
@@ -1997,6 +2022,7 @@ export async function handleWorkflowValidate(
       workflowValidate(libCtx, deps, {
         workflowIdOrName: workflow?.idOrName,
         byId: workflow?.byId,
+        expectedName: workflow?.expectedName,
       }),
       {
         resolving: () => {},
@@ -2037,7 +2063,9 @@ export async function handleWorkflowEvaluate(
   // that form authorizes is swamp-club#2675. A named workflow is resolved
   // first.
   const workflowIdOrName = payload?.workflowIdOrName;
-  let workflow: { idOrName: string; byId: boolean } | undefined;
+  let workflow:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!workflowIdOrName) {
     if (
@@ -2079,6 +2107,7 @@ export async function handleWorkflowEvaluate(
       workflowEvaluate(libCtx, deps, {
         workflowIdOrName: workflow?.idOrName,
         byId: workflow?.byId,
+        expectedName: workflow?.expectedName,
         inputs: payload?.inputs ?? {},
       }),
       {

@@ -43,11 +43,21 @@ export async function findWorkflowByIdOrName(
 /**
  * Finds a workflow by exact id only, for callers that already resolved the
  * workflow and must act on exactly that one.
+ *
+ * With `expectedName` — the name the caller authorized — the workflow must
+ * have both: ids are not guaranteed unique (a copied file keeps its id), so it
+ * is found by that name, as authorization found it, and accepted only if it
+ * still has this id. Otherwise the authorized workflow is gone.
  */
 export async function findWorkflowById(
-  workflowRepo: Pick<WorkflowRepository, "findById">,
+  workflowRepo: Pick<WorkflowRepository, "findById" | "findByName">,
   id: string,
+  expectedName?: string,
 ): Promise<Workflow | null> {
   if (!isUuid(id)) return null;
+  if (expectedName !== undefined) {
+    const byName = await workflowRepo.findByName(expectedName);
+    return byName?.id === id ? byName : null;
+  }
   return await workflowRepo.findById(createWorkflowId(id));
 }

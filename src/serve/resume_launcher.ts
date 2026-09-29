@@ -63,6 +63,8 @@ export interface DetachedResumeRequest {
    * and authorized, and look it up by id only.
    */
   byId?: boolean;
+  /** With `byId`, the workflow name the caller authorized. */
+  expectedName?: string;
   /** Resume from a failed step instead of a decided approval gate. */
   from?: string;
   /**
@@ -110,6 +112,7 @@ export async function startDetachedResume(
         fromStep: request.from,
         suspendedOnly: request.suspendedOnly,
         byId: request.byId,
+        expectedName: request.expectedName,
       },
     );
     resolvedRun = result.run;

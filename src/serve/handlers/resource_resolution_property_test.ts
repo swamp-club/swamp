@@ -41,7 +41,8 @@ const IDS = Array.from({ length: 6 }, () => crypto.randomUUID());
 
 /**
  * A workflow set whose names are drawn from plain names and the other
- * workflows' ids, so collisions are common.
+ * workflows' ids, so collisions are common. Ids may repeat too, as a copied
+ * workflow file keeps its id.
  */
 const workflowSet = fc.uniqueArray(
   fc.record({
@@ -52,12 +53,9 @@ const workflowSet = fc.uniqueArray(
     ),
   }),
   { selector: (w) => w.name, maxLength: 6 },
-).map((entries) => {
-  const seen = new Set<string>();
-  return entries
-    .filter((e) => !seen.has(e.id) && seen.add(e.id))
-    .map((e) => Workflow.create({ id: e.id, name: e.name }));
-});
+).map((entries) =>
+  entries.map((e) => Workflow.create({ id: e.id, name: e.name }))
+);
 
 function repoOf(workflows: Workflow[]): WorkflowRepository {
   return {
@@ -80,10 +78,13 @@ Deno.test("resolveWorkflowTarget property: the workflow authorized is the workfl
         const repo = repoOf(workflows);
         const resolution = await resolveWorkflowTarget(repo, requested);
         if (resolution.status === "failed") throw resolution.error;
-        const { idOrName, byId } = targetArgument(resolution, requested);
+        const { idOrName, byId, expectedName } = targetArgument(
+          resolution,
+          requested,
+        );
         // What an operation handed that argument looks up.
         const actedOn = byId
-          ? await findWorkflowById(repo, idOrName)
+          ? await findWorkflowById(repo, idOrName, expectedName)
           : await findWorkflowByIdOrName(repo, idOrName);
 
         if (resolution.status === "found") {

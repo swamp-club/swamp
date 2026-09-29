@@ -84,7 +84,10 @@ export interface WorkflowGetDeps {
   /** Looks up by name, then by exact id. */
   findWorkflow: (idOrName: string) => Promise<Workflow | null>;
   /** Looks up by exact id only; required for a `byId` request. */
-  findWorkflowById?: (id: string) => Promise<Workflow | null>;
+  findWorkflowById?: (
+    id: string,
+    expectedName?: string,
+  ) => Promise<Workflow | null>;
   getWorkflowPath: (id: WorkflowId) => string;
 }
 
@@ -94,7 +97,8 @@ export function createWorkflowGetDeps(
 ): WorkflowGetDeps {
   return {
     findWorkflow: (idOrName) => findWorkflowByIdOrName(workflowRepo, idOrName),
-    findWorkflowById: (id) => findWorkflowById(workflowRepo, id),
+    findWorkflowById: (id, expectedName) =>
+      findWorkflowById(workflowRepo, id, expectedName),
     getWorkflowPath: (id) => workflowRepo.getPath(id),
   };
 }
@@ -117,6 +121,7 @@ export async function* workflowGet(
         options.byId,
         deps.findWorkflow,
         deps.findWorkflowById,
+        options.expectedName,
       );
       const workflow = await findWorkflow(workflowIdOrName);
 
