@@ -19,6 +19,10 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { LIFECYCLE_SUMMARY_MAX_CHARS, SwampClubClient } from "./swamp_club.ts";
+import {
+  FAKE_SWAMP_CLUB_URL,
+  FakeSwampClub,
+} from "./fake_swamp_club_test_helper.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -513,4 +517,185 @@ Deno.test("fetchIssue: drops an author id that is not a string", async () => {
   } finally {
     restore();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Linked issues — status walks, PR links and relationships
+// ---------------------------------------------------------------------------
+
+async function withFake(
+  setup: (club: FakeSwampClub) => void,
+  run: (club: FakeSwampClub, client: SwampClubClient) => Promise<void>,
+): Promise<void> {
+  const club = new FakeSwampClub();
+  setup(club);
+  const restore = club.install();
+  try {
+    await run(club, new SwampClubClient(FAKE_SWAMP_CLUB_URL, "k", 10));
+  } finally {
+    restore();
+  }
+}
+
+Deno.test("forIssue: targets the other issue without probing health again", async () => {
+  await withFake((c) => {
+    c.addIssue({ number: 10 });
+    c.addIssue({ number: 11, title: "Other" });
+  }, async (club, client) => {
+    const other = await client.forIssue(11).fetchIssue();
+    assertEquals(other?.title, "Other");
+    assertEquals(club.calls.some((c) => c.path === "/healthz"), false);
+  });
+});
+
+Deno.test("walkStatusTo: steps through every status in order", async () => {
+  await withFake((c) => c.addIssue({ number: 10 }), async (club, client) => {
+    assertEquals((await client.walkStatusTo("shipped")).ok, true);
+    assertEquals(club.issues.get(10)!.status, "shipped");
+    const statuses = club.calls
+      .filter((c) => c.method === "PATCH")
+      .map((c) => c.body?.status);
+    assertEquals(statuses, ["triaged", "in_progress", "shipped"]);
+  });
+});
+
+Deno.test("walkStatusTo: reopens a closed issue first", async () => {
+  await withFake(
+    (c) => c.addIssue({ number: 10, status: "closed" }),
+    async (club, client) => {
+      assertEquals((await client.walkStatusTo("triaged")).ok, true);
+      assertEquals(club.issues.get(10)!.status, "triaged");
+    },
+  );
+});
+
+Deno.test("walkStatusTo: leaves an issue that is already further along", async () => {
+  await withFake(
+    (c) => c.addIssue({ number: 10, status: "in_progress" }),
+    async (club, client) => {
+      assertEquals((await client.walkStatusTo("triaged")).ok, true);
+      assertEquals(club.calls.some((c) => c.method === "PATCH"), false);
+    },
+  );
+});
+
+Deno.test("walkStatusTo: stops at the first refused step and reports it", async () => {
+  await withFake((c) => {
+    c.addIssue({ number: 10 });
+    c.failWhen = (call) =>
+      call.method === "PATCH" && call.body?.status === "in_progress"
+        ? new Response("boom", { status: 500 })
+        : undefined;
+  }, async (club, client) => {
+    const outcome = await client.walkStatusTo("shipped");
+    assertEquals(outcome.ok, false);
+    assertEquals(club.issues.get(10)!.status, "triaged");
+    assertEquals(
+      club.calls.some((c) => c.body?.status === "shipped"),
+      false,
+    );
+  });
+});
+
+Deno.test("walkStatusTo: a re-run after a partial walk carries on from there", async () => {
+  await withFake(
+    (c) => c.addIssue({ number: 10, status: "triaged" }),
+    async (club, client) => {
+      assertEquals((await client.walkStatusTo("shipped")).ok, true);
+      assertEquals(club.issues.get(10)!.status, "shipped");
+    },
+  );
+});
+
+Deno.test("linkPr: records the URL and PR number on the issue", async () => {
+  await withFake((c) => c.addIssue({ number: 10 }), async (club, client) => {
+    const url = "https://github.com/swamp-club/swamp/pull/77";
+    assertEquals((await client.linkPr(url)).ok, true);
+    assertEquals(club.issues.get(10)!.githubPrUrl, url);
+    assertEquals(club.issues.get(10)!.githubPrNumber, 77);
+  });
+});
+
+Deno.test("linkPr: sends no PR number when the URL has none", async () => {
+  await withFake((c) => c.addIssue({ number: 10 }), async (club, client) => {
+    await client.linkPr("https://example.com/review/abc");
+    const patch = club.calls.find((c) => c.method === "PATCH");
+    assertEquals(patch?.body, {
+      githubPrUrl: "https://example.com/review/abc",
+    });
+  });
+});
+
+Deno.test("fetchIssue: reads the PR from the issue and from its lifecycle entries", async () => {
+  await withFake((c) => {
+    c.addIssue({ number: 10 });
+    c.addEntry(10, "pr_linked", { url: "https://x/pull/1" });
+    c.addEntry(10, "pr_linked", { url: "https://x/pull/2" });
+    c.addEntry(10, "pr_merged", { url: "https://x/pull/2" });
+    c.addEntry(10, "pr_linked", { url: "https://x/pull/3" });
+    c.addIssue({ number: 11, githubPrUrl: "https://x/pull/9" });
+    c.addIssue({ number: 12 });
+    c.addEntry(12, "pr_linked", { url: "https://x/pull/4" });
+    c.addEntry(12, "pr_linked", { url: "https://x/pull/5" });
+  }, async (_club, client) => {
+    const merged = await client.fetchIssue();
+    assertEquals(merged?.lifecyclePrUrl, "https://x/pull/2");
+    assertEquals(merged?.githubPrUrl, undefined);
+    const onIssue = await client.forIssue(11).fetchIssue();
+    assertEquals(onIssue?.githubPrUrl, "https://x/pull/9");
+    assertEquals(onIssue?.lifecyclePrUrl, undefined);
+    const linkedOnly = await client.forIssue(12).fetchIssue();
+    assertEquals(linkedOnly?.lifecyclePrUrl, "https://x/pull/5");
+  });
+});
+
+Deno.test("addRelationship: creates the link once and reports a repeat as success", async () => {
+  await withFake((c) => {
+    c.addIssue({ number: 10 });
+    c.addIssue({ number: 11 });
+  }, async (club, client) => {
+    assertEquals((await client.addRelationship("related_to", 11)).ok, true);
+    assertEquals((await client.addRelationship("related_to", 11)).ok, true);
+    assertEquals(club.relationships.length, 1);
+    const fetched = await client.forIssue(11).fetchIssue();
+    assertEquals(fetched?.relationships, [{
+      id: club.relationships[0].id,
+      type: "related_to",
+      direction: "incoming",
+      otherIssueNumber: 10,
+    }]);
+  });
+});
+
+Deno.test("addRelationship: reports swamp-club's refusal with its reason", async () => {
+  await withFake((c) => {
+    c.addIssue({ number: 10 });
+    c.addIssue({ number: 11 });
+    c.addIssue({ number: 12 });
+    c.relationships.push({
+      id: "r",
+      type: "duplicate_of",
+      sourceIssueNumber: 11,
+      targetIssueNumber: 12,
+    });
+  }, async (_club, client) => {
+    const outcome = await client.addRelationship("duplicate_of", 11);
+    assertEquals(outcome.ok, false);
+    if (!outcome.ok && outcome.reason === "rejected") {
+      assertEquals(outcome.status, 422);
+      assertEquals(outcome.body.includes("#12"), true);
+    }
+  });
+});
+
+Deno.test("removeRelationship: deletes the link by id", async () => {
+  await withFake((c) => {
+    c.addIssue({ number: 10 });
+    c.addIssue({ number: 11 });
+  }, async (club, client) => {
+    await client.addRelationship("related_to", 11);
+    const outcome = await client.removeRelationship(club.relationships[0].id);
+    assertEquals(outcome.ok, true);
+    assertEquals(club.relationships, []);
+  });
 });
