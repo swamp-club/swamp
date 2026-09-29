@@ -82,6 +82,11 @@ const logger = getLogger(["definition-repo"]);
 export class YamlDefinitionRepository implements DefinitionRepository {
   private readonly baseDir: string;
   private readonly secondaryBaseDir: string | undefined;
+  /**
+   * Id → the file a definition was last read from or written to. Holds paths
+   * in the secondary auto-definitions directory too, so getPath, save and
+   * delete act on the real file whichever lookup found it.
+   */
   private readonly idToActualPath = new Map<DefinitionId, string>();
   /**
    * Name → file path hints, so a repeated lookup for a definition whose file is
@@ -175,18 +180,27 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const found = definitions.find((d) => d.id === id);
     if (found) return found;
 
-    // Fall back to secondary dir
+    // Fall back to secondary dir. Record where the match lives so getPath,
+    // delete and save act on the auto-definition file, as
+    // searchDefinitionByName already does for findByNameGlobal.
     if (this.secondaryBaseDir) {
-      return this.findByIdInDir(this.secondaryBaseDir, type, id);
+      const located = await this.locateByIdInDir(
+        this.secondaryBaseDir,
+        type,
+        id,
+      );
+      if (!located) return null;
+      this.idToActualPath.set(id, located.path);
+      return located.definition;
     }
     return null;
   }
 
-  private async findByIdInDir(
+  private async locateByIdInDir(
     dir: string,
     type: ModelType,
     id: DefinitionId,
-  ): Promise<Definition | null> {
+  ): Promise<{ definition: Definition; path: string } | null> {
     // Fast path: try UUID-based filename, which must declare this id
     const path = join(dir, type.toDirectoryPath(), `${id}.yaml`);
     try {
@@ -194,7 +208,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       const data = parseYaml(content) as DefinitionData | null;
       if (data) {
         const definition = Definition.fromData(data);
-        if (definition.id === id) return definition;
+        if (definition.id === id) return { definition, path };
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
@@ -207,13 +221,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     try {
       for await (const entry of Deno.readDir(typeDir)) {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
+          const entryPath = join(typeDir, entry.name);
           try {
-            const content = await Deno.readTextFile(join(typeDir, entry.name));
+            const content = await Deno.readTextFile(entryPath);
             const data = parseYaml(content) as DefinitionData | null;
             if (!data) continue;
             const definition = Definition.fromData(data);
             if (definition.id === id) {
-              return definition;
+              return { definition, path: entryPath };
             }
           } catch {
             // Skip broken files
@@ -327,7 +342,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       // answer: the primary definition of the same name always wins.
       if (hint && !hint.primary) {
         const hinted = await this.readDefinitionIfNamed(hint.path, name);
-        if (hinted) return hinted;
+        if (hinted) {
+          this.idToActualPath.set(hinted.id as DefinitionId, hint.path);
+          return hinted;
+        }
         this.nameToActualPath.delete(hintKey);
       }
       const secondaryDir = join(this.secondaryBaseDir, type.toDirectoryPath());
@@ -336,6 +354,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         d.definition.name === name
       );
       if (secondaryMatch) {
+        this.idToActualPath.set(
+          secondaryMatch.definition.id as DefinitionId,
+          secondaryMatch.path,
+        );
         this.nameToActualPath.set(hintKey, {
           path: secondaryMatch.path,
           primary: false,
@@ -678,16 +700,17 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   async save(type: ModelType, definition: Definition): Promise<void> {
-    const dir = this.getTypeDir(type);
-    await assertSafePath(dir, this.baseDir);
+    const writeBaseDir = await this.resolveSaveBaseDir(type, definition);
+    const dir = this.getTypeDir(type, writeBaseDir);
+    await assertSafePath(dir, writeBaseDir);
     await ensureDir(dir);
 
-    const targetPath = this.resolveWritePath(type, definition);
+    const targetPath = this.resolveWritePath(type, definition, writeBaseDir);
     await this.notifyDirty(targetPath);
     const previousPath = this.idToActualPath.get(definition.id);
 
     // Check if this is a new definition or an update
-    const legacyPath = this.getLegacyPath(type, definition.id);
+    const legacyPath = this.getLegacyPath(type, definition.id, writeBaseDir);
     const isNew = !(await this.exists(targetPath)) &&
       !(previousPath && await this.exists(previousPath)) &&
       !(await this.exists(legacyPath));
@@ -860,20 +883,23 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Deletes the definition with this id. Ids are not guaranteed unique — a
-   * copied file keeps its id — so with `name` only a file declaring both is
-   * removed, never another definition that shares the id.
+   * Deletes the definition with this id, from the definitions directory or
+   * the auto-definitions directory. Ids are not guaranteed unique — a copied
+   * file keeps its id — so with `name` only a file declaring both is removed,
+   * never another definition that shares the id.
    */
   async delete(
     type: ModelType,
     id: DefinitionId,
     name?: string,
   ): Promise<void> {
-    // Populate cache so we discover name-based files on a cold instance
+    // Populate cache so we discover name-based and secondary files on a cold
+    // instance
     const definition = await this.findById(type, id);
-    const definitionName = name ?? definition?.name;
+    let definitionName = name ?? definition?.name;
 
-    // Try removing all possible file paths
+    // Try removing all possible file paths; declaresOther below skips any
+    // that holds a different definition.
     const pathsToTry = new Set([this.getLegacyPath(type, id)]);
     // Never delete a same-id file that belongs to another type.
     const hintedPath = this.idToActualPath.get(id);
@@ -888,6 +914,18 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     if (definitionName && isFilenameSafeDefinitionName(definitionName)) {
       pathsToTry.add(this.getNamePath(type, definitionName));
     }
+    // The definition may also (or only) live in the auto-definitions dir.
+    if (this.secondaryBaseDir) {
+      const located = await this.locateByIdInDir(
+        this.secondaryBaseDir,
+        type,
+        id,
+      );
+      if (located) {
+        pathsToTry.add(located.path);
+        definitionName ??= located.definition.name;
+      }
+    }
 
     const resolvedPath = cachedPath ?? this.getLegacyPath(type, id);
     await this.notifyDirty(resolvedPath);
@@ -899,11 +937,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       // definition's file.
       if (await this.declaresOther(path, id, name)) continue;
       try {
+        if (path !== resolvedPath && await this.exists(path)) {
+          await this.notifyDirty(path);
+        }
         await Deno.remove(path);
         deleted = true;
 
         // Clean up empty parent directories
-        await cleanupEmptyParentDirs(path, this.baseDir);
+        await cleanupEmptyParentDirs(path, this.ownerBaseDir(path));
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -922,6 +963,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         );
         await this.eventBus.publish(event);
       }
+    } else {
+      logger.debug`No definition file found to delete for ${id}`;
     }
   }
 
@@ -956,6 +999,11 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
     return undefined;
+  }
+
+  /** Whether `path` holds a readable definition declaring `id`. */
+  private async declaresId(path: string, id: DefinitionId): Promise<boolean> {
+    return (await this.readDeclared(path))?.id === id;
   }
 
   /** Parses the definition in `path`, or null if it is missing or invalid. */
@@ -1041,23 +1089,81 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   private resolveWritePath(
     type: ModelType,
     definition: Definition,
+    base: string = this.baseDir,
   ): string {
     if (isFilenameSafeDefinitionName(definition.name)) {
-      return this.getNamePath(type, definition.name);
+      return this.getNamePath(type, definition.name, base);
     }
-    return this.getLegacyPath(type, definition.id);
+    return this.getLegacyPath(type, definition.id, base);
   }
 
-  private getNamePath(type: ModelType, name: string): string {
-    return join(this.getTypeDir(type), `${name}.yaml`);
+  private getNamePath(
+    type: ModelType,
+    name: string,
+    base: string = this.baseDir,
+  ): string {
+    return join(this.getTypeDir(type, base), `${name}.yaml`);
   }
 
-  private getLegacyPath(type: ModelType, id: DefinitionId): string {
-    return join(this.getTypeDir(type), `${id}.yaml`);
+  private getLegacyPath(
+    type: ModelType,
+    id: DefinitionId,
+    base: string = this.baseDir,
+  ): string {
+    return join(this.getTypeDir(type, base), `${id}.yaml`);
   }
 
-  private getTypeDir(type: ModelType): string {
-    return join(this.baseDir, type.toDirectoryPath());
+  private getTypeDir(type: ModelType, base: string = this.baseDir): string {
+    return join(base, type.toDirectoryPath());
+  }
+
+  /**
+   * Picks the directory an existing definition is saved back into.
+   *
+   * A definition that lives only in the secondary auto-definitions directory
+   * stays there. Otherwise a save through this repository would write it to the
+   * primary directory, then remove the auto-definition as its previous path (or
+   * leave it behind as a stale copy when no lookup cached that path).
+   *
+   * Only the cached path and the two filenames save() writes are checked, so
+   * this never scans a directory.
+   */
+  private async resolveSaveBaseDir(
+    type: ModelType,
+    definition: Definition,
+  ): Promise<string> {
+    if (!this.secondaryBaseDir) return this.baseDir;
+    const id = definition.id;
+    const cachedPath = this.idToActualPath.get(id);
+    if (cachedPath && isWithinDir(cachedPath, this.baseDir)) {
+      return this.baseDir;
+    }
+    if (
+      await this.exists(this.getLegacyPath(type, id)) ||
+      await this.declaresId(this.getNamePath(type, definition.name), id)
+    ) {
+      return this.baseDir;
+    }
+    const secondary = this.secondaryBaseDir;
+    if (
+      (cachedPath && isWithinDir(cachedPath, secondary) &&
+        await this.declaresId(cachedPath, id)) ||
+      await this.exists(this.getLegacyPath(type, id, secondary)) ||
+      await this.declaresId(
+        this.getNamePath(type, definition.name, secondary),
+        id,
+      )
+    ) {
+      return secondary;
+    }
+    return this.baseDir;
+  }
+
+  /** The directory owning a definition file: primary, or secondary. */
+  private ownerBaseDir(path: string): string {
+    return this.secondaryBaseDir && isWithinDir(path, this.secondaryBaseDir)
+      ? this.secondaryBaseDir
+      : this.baseDir;
   }
 
   /**
@@ -1098,6 +1204,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
  */
 function nameHintKey(type: ModelType, name: string): string {
   return JSON.stringify([type.toDirectoryPath(), name]);
+}
+
+/** True when `path` is inside `dir` (or is `dir`). */
+function isWithinDir(path: string, dir: string): boolean {
+  const rel = relative(dir, path);
+  return rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${SEPARATOR}`) && !isAbsolute(rel));
 }
 
 function canonicalJson(data: Record<string, unknown>): string {

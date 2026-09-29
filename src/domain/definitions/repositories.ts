@@ -101,7 +101,9 @@ export interface DefinitionRepository {
   save(type: ModelType, definition: Definition): Promise<void>;
 
   /**
-   * Deletes a definition.
+   * Deletes a definition, whether it lives in the definitions directory or
+   * the auto-definitions directory. Only files declaring `id` are removed.
+   * Deleting a definition that does not exist is a no-op.
    *
    * @param type - The model type
    * @param id - The definition ID
