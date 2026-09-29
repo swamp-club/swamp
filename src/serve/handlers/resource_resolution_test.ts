@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import {
   authorizeReferenceAccess,
@@ -464,6 +464,8 @@ Deno.test("resolveOutputAccess: an ambiguous prefix is authorized on each match'
       ],
     );
     assertEquals(lookups(), 2);
+    // Matches with the same owners share one array, decided once.
+    assertStrictEquals(access.candidates[0], access.candidates[2]);
   });
 });
 
@@ -597,6 +599,7 @@ Deno.test("resolveRunAccess: an ambiguous prefix is authorized on each run's wor
     [["prod-flow"], ["dev-flow"], ["prod-flow"]],
   );
   assertEquals(lookups(), 2 * single.lookups());
+  assertStrictEquals(access.candidates[0], access.candidates[2]);
   assertEquals(access.narrow([1]).reference, {
     kind: "ambiguous",
     ids: [runs[1].id],
@@ -751,6 +754,41 @@ Deno.test("authorizeReferenceAccess: an ambiguous prefix keeps only the readable
   assertEquals(
     audit.map((e) => [e.outcome, e.resourceName]),
     [["denied", "prod-cache"], ["denied", "prod-db"]],
+  );
+});
+
+Deno.test("authorizeReferenceAccess: an ambiguous prefix decides and audits each distinct owner once, however many matches share it", () => {
+  const { ctx, audit } = policyCtx();
+  const prod = [modelResource("prod-db")];
+  const dev = [modelResource("dev-db")];
+  const candidates = Array.from(
+    { length: 1000 },
+    (_, i) => i % 2 === 0 ? prod : dev,
+  );
+  const { socket, sent } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const result = authorizeReferenceAccess(
+    socket,
+    "req-1",
+    PRINCIPAL,
+    "read",
+    {
+      status: "ambiguous",
+      resolved: [],
+      candidates,
+      narrow: (readable: number[]) => readable,
+    },
+    "abc",
+    ["model"],
+    ctx,
+    "model_output_get_failed",
+  );
+  assertEquals(result?.length, 500);
+  assertEquals(result?.every((i) => i % 2 === 1), true);
+  assertEquals(sent, []);
+  assertEquals(
+    audit.map((e) => [e.outcome, e.resourceName]),
+    [["denied", "prod-db"]],
   );
 });
 

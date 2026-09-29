@@ -277,8 +277,10 @@ check (swamp-club#2673):
   whose workflow was deleted, on its recorded workflow name (without tags).
 - A prefix matching several outputs or runs is authorized on the owners of
   each match, looked up once per model or recorded workflow. The ambiguity
-  error lists only the matches whose owners the caller may all read; each
-  match left out is audited as a denial. When none is readable, the read is
+  error lists only the matches whose owners the caller may all read. Each
+  distinct owner is decided and audited once, however many matches share
+  it, so the audit log grows with the owners involved, not with the size of
+  the history. When none is readable, the read is
   refused as a unique prefix of the first match would be (swamp-club#2743).
   Without enforcement, serve lists every match, as the CLI does.
 - A prefix matching nothing is authorized as sent.

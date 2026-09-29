@@ -391,7 +391,8 @@ export function authorizeResolved(
  * A prefix matching several outputs or runs is `ambiguous`: `candidates`
  * holds the owners of each match, in the order of the reference's `ids`, and
  * `narrow` keeps only the matches at the given indexes, so the ambiguity
- * error lists only what the caller may read (swamp-club#2743).
+ * error lists only what the caller may read (swamp-club#2743). Matches with
+ * the same owners share one array, so each owner is decided once.
  */
 export type ReferenceAccess<T> =
   | { status: "resolved"; resolved: T; resources: AccessResource[] }
@@ -496,15 +497,17 @@ export async function resolveOutputAccess<
           const key = JSON.stringify([type.normalized, output.definitionId]);
           let found = owners.get(key);
           if (!found) {
-            found = await outputOwners(
-              definitionRepo,
-              output.definitionId,
-              type,
-              kinds,
+            found = distinct(
+              await outputOwners(
+                definitionRepo,
+                output.definitionId,
+                type,
+                kinds,
+              ),
             );
             owners.set(key, found);
           }
-          candidates.push(distinct(found));
+          candidates.push(found);
         }
         return {
           status: "ambiguous",
@@ -675,8 +678,10 @@ export function authorizeReferenceAccess<T>(
 
 /**
  * Keeps the matches of an ambiguous prefix whose owners the caller may all
- * read. The first match is decided last, so that when no other is readable
- * its refusal is the one replied, and every match is audited exactly once.
+ * read. Each distinct owner array is decided and audited once, however many
+ * matches share it, so a short prefix over a large history cannot flood the
+ * audit log. The first match is decided last, so that when no other is
+ * readable its refusal is the one replied.
  */
 function authorizeAmbiguous<T>(
   socket: WebSocket,
@@ -686,10 +691,17 @@ function authorizeAmbiguous<T>(
   access: Extract<ReferenceAccess<T>, { status: "ambiguous" }>,
   ctx: ConnectionContext,
 ): T | null {
-  const allows = (resources: AccessResource[]): boolean =>
-    resources.every((resource) =>
-      isAuthorized(socket, requestId, principal, action, resource, ctx)
-    );
+  const decided = new Map<AccessResource[], boolean>();
+  const allows = (resources: AccessResource[]): boolean => {
+    let allowed = decided.get(resources);
+    if (allowed === undefined) {
+      allowed = resources.every((resource) =>
+        isAuthorized(socket, requestId, principal, action, resource, ctx)
+      );
+      decided.set(resources, allowed);
+    }
+    return allowed;
+  };
   const readable: number[] = [];
   for (let i = 1; i < access.candidates.length; i++) {
     if (allows(access.candidates[i])) readable.push(i);
