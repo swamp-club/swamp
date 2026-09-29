@@ -411,7 +411,9 @@ All of this is in `handleRunAttach`
   `activeRunRegistry.cancel(requestId)`, with no grace wait and no
   `cancellation_requested` result (`src/serve/connection.ts`). A caller
   without the grant gets no reply, as for an unknown id, so a refusal never
-  confirms the run exists or names its resource; the denial is audited.
+  confirms the run exists or names its resource. The denial is audited, and
+  so is a refusal for a missing policy snapshot or principal, which on this
+  path also sends no reply.
 - The WebSocket `workflow.cancel` request cancels a run by id: one this
   instance is driving through the registry, otherwise a persisted suspended
   run (`handleWorkflowCancel` in `src/serve/handlers/workflow_handlers.ts`).

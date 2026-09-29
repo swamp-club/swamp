@@ -1349,7 +1349,7 @@ both the registry and the `ScheduledExecutionService` running map.
 none of those registries. When they all miss, the cancel API falls back to a
 persisted run: it finds the run by id alone among suspended runs, cancels it,
 and saves (`cancelExecution` in `src/cli/commands/serve.ts`,
-`cancelSuspendedRunInServe` in `src/serve/suspended_run_cancel.ts`, and
+`cancelSuspendedRunAndPush` in `src/serve/suspended_run_cancel.ts`, and
 `workflowCancelSuspended` in `src/libswamp/workflows/cancel_suspended.ts`).
 This is how a run `swamp serve` started is cleared once it suspends. That
 includes a run with an expired gate and one whose resume refuses a changed
@@ -1390,7 +1390,9 @@ run. Scheduled and webhook runs are held in `RunCancelRegistry` and the
 scheduled runs instead, so they are cancelled over HTTP. It is not gated at
 dispatch: it waits for an aborted run, which needs the sync gate for its final
 push, so it takes the gate only for the persisted cancel and its push
-(`cancelSuspendedRunAndPush`). It authorizes the `run` action on the
+(`cancelSuspendedRunAndPush`). It finds the persisted run and authorizes the
+caller before taking the gate, so a refused or unknown run id never holds it
+(swamp-club#2648). It authorizes the `run` action on the
 workflow the run belongs to, as the server knows it, never the payload's name.
 So does the bare `cancel` when its id names a run in the registry rather than
 one of the connection's own requests. By design, any principal with `run` on a
@@ -1402,14 +1404,17 @@ another workflow than the payload names all get the same
 `No cancellable run with id <id>` error. The bare `cancel` sends no reply when
 it aborts. For one of the connection's own requests it only aborts that
 request, which detaches its stream. A refused bare `cancel` of a registered run
-still replies through `authorizeOrReject`, with an `unauthorized` error that
-names the workflow.
+gets no reply either, like an unknown id, so it never confirms the run exists
+or names its workflow; the denial, including a missing policy snapshot or
+principal, goes only to the audit log.
 
 Within one serve process, the cancel serializes with a resume, approve or
 reject of the same run through `ActiveRunRegistry.reserve`. That is a claim on
 the run id that makes `register` refuse it until released; it is released in
-a `finally`. The cancel reserves before it loads the run, so it never saves
-over a resume. A resume that registered first is aborted through the registry
+a `finally`. The cancel finds and authorizes the run first, then reserves
+the id and reads the run again before it saves, so it never saves over a
+resume. Only an allowed caller reserves, so a refused one can neither hold the
+run nor learn from the busy reply that it exists (swamp-club#2649). A resume that registered first is aborted through the registry
 instead. A resume that read the run before the cancel re-reads it, finds it
 cancelled, and refuses. Approve and reject reserve the run they resolved, so
 an approval cannot put a cancelled run back to `suspended` and auto-resume it.
