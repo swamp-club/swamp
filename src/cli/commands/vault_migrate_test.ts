@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -26,6 +26,7 @@ import { RepoService } from "../../domain/repo/repo_service.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import { MockVaultProvider } from "../../domain/vaults/mock_vault_provider.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS } from "../../domain/vaults/local_encryption_key_source.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { VERSION } from "./version.ts";
 
@@ -147,4 +148,17 @@ Deno.test("vaultMigrateCommand: a local migrate keeps a local_encryption key sou
   } finally {
     vaultTypeRegistry.invalidateType(sourceType);
   }
+});
+
+Deno.test("vaultMigrateCommand: help says --server refuses non-default local_encryption key-source fields (swamp-club#2737)", async () => {
+  const { vaultMigrateCommand } = await import("./vault_migrate.ts");
+  const description = vaultMigrateCommand.getDescription();
+  assertStringIncludes(description, "--server");
+  for (const field of LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS) {
+    assertStringIncludes(description, field);
+  }
+  const config = vaultMigrateCommand.getOptions().find((o) =>
+    o.name === "config"
+  );
+  assertEquals(config?.description.includes("always"), false);
 });

@@ -47,6 +47,7 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS } from "../../domain/vaults/local_encryption_key_source.ts";
 import type { VaultEditResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -55,7 +56,14 @@ type AnyOptions = any;
 export const vaultEditCommand = withRemoteOptions(
   new Command()
     .name("edit")
-    .description("Edit a vault configuration file")
+    .description(
+      `Edit a vault configuration file
+
+With --server, a local_encryption vault's key-source fields
+(${LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS.join(", ")}) must keep their
+stored values. Repairing a vault whose YAML no longer parses refuses any
+value for them other than the server's defaults, and stores those defaults.`,
+    )
     .example("Edit a vault", "swamp vault edit my-vault")
     .example("Interactive search", "swamp vault edit")
     .example(
