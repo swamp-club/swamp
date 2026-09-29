@@ -87,7 +87,7 @@ export const vaultCreateCommand = withRemoteOptions(
     )
     .option(
       "--config <json:string>",
-      "Provider configuration as JSON",
+      "Provider configuration as JSON (with --server, a local_encryption vault always uses the server's key source)",
     )
     .option(
       "--audit-reads",

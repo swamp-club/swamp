@@ -196,6 +196,7 @@ export async function vaultMigratePreview(
     targetTypeInfo,
     input.repoDir,
     input.trustKeySource,
+    input.vaultName,
   );
 
   // Verify we can create a provider for the target type (catches config issues early)
@@ -226,6 +227,7 @@ function resolveTargetConfig(
   typeInfo: VaultTypeInfo,
   repoDir: string,
   trustKeySource: boolean | undefined,
+  vaultName: string,
 ): Record<string, unknown> {
   if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
     const config = providedConfig ?? {};
@@ -246,9 +248,10 @@ function resolveTargetConfig(
     const refused = findNonDefaultKeySourceFields(providedConfig, repoDir);
     if (refused.length > 0) {
       throw validationFailed(
-        `Cannot set ${refused.join(", ")} for the migrated vault: a ` +
+        `Cannot set ${refused.join(", ")} for vault '${vaultName}': a ` +
           `local_encryption vault migrated remotely uses the server's key ` +
-          `source. Leave these fields out.`,
+          `source. Leave these fields out, or run the command on the host ` +
+          `running swamp.`,
       );
     }
     return withServerDefaultKeySource(providedConfig, repoDir);
@@ -317,6 +320,7 @@ export async function* vaultMigrate(
         targetTypeInfo,
         input.repoDir,
         input.trustKeySource,
+        input.vaultName,
       );
 
       // Create target provider

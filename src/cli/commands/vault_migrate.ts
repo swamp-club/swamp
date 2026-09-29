@@ -73,7 +73,7 @@ Both the source and target vaults must be different types.`,
     .option("--to-type <type:string>", "Target vault type")
     .option(
       "--config <config:string>",
-      'Provider-specific config as JSON (e.g. \'{"region":"us-east-1"}\')',
+      'Provider-specific config as JSON (e.g. \'{"region":"us-east-1"}\'; with --server, a local_encryption target always uses the server\'s key source)',
     )
     .option("-y, --yes", "Skip confirmation prompt")
     .option("-f, --force", "Skip confirmation prompt (alias for --yes)")

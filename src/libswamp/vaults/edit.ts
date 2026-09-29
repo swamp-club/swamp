@@ -575,7 +575,7 @@ async function* repairVaultFromStdin(
         kind: "error",
         error: validationFailed(
           `Cannot repair vault '${target.id}' remotely: the server's key ` +
-            `source is not known.`,
+            `source is not known. Repair it on the host running swamp.`,
         ),
       };
       return;
@@ -590,7 +590,8 @@ async function* repairVaultFromStdin(
         error: validationFailed(
           `Cannot set ${refused.join(", ")} when repairing vault ` +
             `'${target.id}' remotely: the server's key source is used. ` +
-            `Leave these fields out.`,
+            `Leave these fields out, or repair the vault on the host ` +
+            `running swamp.`,
         ),
       };
       return;

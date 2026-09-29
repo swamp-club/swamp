@@ -222,7 +222,7 @@ export async function* vaultCreate(
             error: validationFailed(
               `Cannot set ${refused.join(", ")} for vault '${input.name}': ` +
                 `a local_encryption vault created remotely uses the server's ` +
-                `key source. Leave these fields out.`,
+                `key source. Leave these fields out, or run the command on the host running swamp.`,
             ),
           };
           return;

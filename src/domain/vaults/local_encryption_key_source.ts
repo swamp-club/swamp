@@ -77,6 +77,11 @@ export function findChangedKeySourceFields(
 /**
  * The key-source fields `config` sets to something other than the server
  * default: the ones a remote caller may not supply.
+ *
+ * `base_dir` must equal `repoDir` as a string. An equivalent spelling (a
+ * trailing slash, `..`, a symlinked prefix) is refused on purpose: the
+ * caller can leave the field out, and normalizing here would put path
+ * resolution on the security decision.
  */
 export function findNonDefaultKeySourceFields(
   config: Record<string, unknown>,
