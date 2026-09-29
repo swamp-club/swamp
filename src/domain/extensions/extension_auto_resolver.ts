@@ -24,6 +24,7 @@ import { type ModelDefinition, modelRegistry } from "../models/model.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import { webhookTypeRegistry } from "../webhooks/webhook_type_registry.ts";
+import { LockTimeoutError } from "../datastore/distributed_lock.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
@@ -131,6 +132,13 @@ export interface ExtensionInstallerPort {
    * registry collective (swamp-club#1672).
    */
   failedLocalSourceMatchesType(typeNormalized: string): boolean;
+  /**
+   * Runs `fn` while holding a lock that serializes auto-installs across
+   * processes sharing the repository (swamp-club#2571).
+   */
+  withInstallLock<T>(fn: () => Promise<T>): Promise<T>;
+  /** Whether `normalizedType` is registered in any type registry. */
+  providesType(normalizedType: string): Promise<boolean>;
 }
 
 /**
@@ -353,6 +361,32 @@ export class ExtensionAutoResolver {
       return false;
     }
 
+    try {
+      return await extensionInstaller.withInstallLock(() =>
+        this.installAndLoadLocked(
+          extensionName,
+          normalizedType,
+          extInfo,
+          version,
+        )
+      );
+    } catch (error) {
+      if (error instanceof LockTimeoutError) {
+        logger.warn`${error.message}`;
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async installAndLoadLocked(
+    extensionName: string,
+    normalizedType: string,
+    extInfo: ExtensionLookupInfo,
+    version: string,
+  ): Promise<boolean> {
+    const { extensionInstaller, output } = this.config;
+
     // Inspect the on-disk state before deciding to install. Issue #121
     // introduced the "never overwrite on-disk extensions without --force"
     // rule to protect user WIP; swamp-club#133 extended that rule to
@@ -363,6 +397,18 @@ export class ExtensionAutoResolver {
       extensionName,
     );
     if (inspection.state === "intact") {
+      // Another process may have installed the extension after this one
+      // loaded its registries: load it before blaming the install
+      // (swamp-club#2571).
+      const adopted = await this.hotLoadAll();
+      if (await extensionInstaller.providesType(normalizedType)) {
+        output.installed(
+          extensionName,
+          inspection.installedVersion ?? version,
+          adopted,
+        );
+        return true;
+      }
       // Only blame local edits when a source actually failed to load (or
       // the adapter cannot tell). An install that loaded cleanly but lacks
       // the type is usually an older version (swamp-club#2476).
@@ -412,14 +458,21 @@ export class ExtensionAutoResolver {
     if (!installResult) return false;
 
     // Hot-load newly installed models, vaults, datastores, and webhooks
-    const newModelsCount = await extensionInstaller.hotLoadModels();
-    await extensionInstaller.hotLoadVaults();
-    await extensionInstaller.hotLoadDatastores();
-    await extensionInstaller.hotLoadWebhooks();
+    const newModelsCount = await this.hotLoadAll();
 
     output.installed(extensionName, installResult.version, newModelsCount);
 
     return true;
+  }
+
+  /** Hot-loads every kind; returns the number of models loaded. */
+  private async hotLoadAll(): Promise<number> {
+    const { extensionInstaller } = this.config;
+    const newModelsCount = await extensionInstaller.hotLoadModels();
+    await extensionInstaller.hotLoadVaults();
+    await extensionInstaller.hotLoadDatastores();
+    await extensionInstaller.hotLoadWebhooks();
+    return newModelsCount;
   }
 
   /**
@@ -581,8 +634,9 @@ export async function resolveModelType(
 
   if (!resolver) return undefined;
   const resolved = await resolver.resolve(normalized);
-  if (resolved) return modelRegistry.get(type);
-  return undefined;
+  if (!resolved) return undefined;
+  await modelRegistry.ensureTypeLoaded(type);
+  return modelRegistry.get(type);
 }
 
 /**

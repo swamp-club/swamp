@@ -28,6 +28,7 @@ import {
   resolveModelType,
   resolveVaultType,
 } from "./extension_auto_resolver.ts";
+import { LockTimeoutError } from "../datastore/distributed_lock.ts";
 import { modelRegistry } from "../models/model.ts";
 import { ModelType } from "../models/model_type.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
@@ -121,25 +122,50 @@ function createMockInstaller(
   version = "2026.03.16.1",
   inspection: InstallationInspection = { state: "missing" },
   failedLocalSourceTypes: string[] = [],
+  options: {
+    /** What providesType answers. */
+    providesType?: boolean;
+    /** Error withInstallLock rejects with instead of running fn. */
+    lockError?: Error;
+  } = {},
 ): ExtensionInstallerPort & {
   installCalls: string[];
   inspectCalls: string[];
+  /** Lock, inspect, install and hot-load calls in the order they ran. */
+  events: string[];
 } {
   const installCalls: string[] = [];
   const inspectCalls: string[] = [];
+  const events: string[] = [];
   return {
     installCalls,
     inspectCalls,
+    events,
+    async withInstallLock<T>(fn: () => Promise<T>): Promise<T> {
+      if (options.lockError) throw options.lockError;
+      events.push("lock");
+      try {
+        return await fn();
+      } finally {
+        events.push("unlock");
+      }
+    },
+    providesType() {
+      return Promise.resolve(options.providesType ?? false);
+    },
     inspectInstallation(extensionName: string) {
       inspectCalls.push(extensionName);
+      events.push("inspect");
       return Promise.resolve(inspection);
     },
     install(extensionName: string) {
       installCalls.push(extensionName);
+      events.push("install");
       if (!shouldSucceed) return Promise.resolve(null);
       return Promise.resolve({ version });
     },
     hotLoadModels() {
+      events.push("hotLoadModels");
       return Promise.resolve(3);
     },
     hotLoadVaults() {
@@ -1053,5 +1079,157 @@ Deno.test("updateAllowedCollectives: clears warned-untrusted set", async () => {
     output.calls.filter((c) => c.startsWith("collectiveNotTrusted")).length,
     2,
     "after updateAllowedCollectives, warn hint should fire again",
+  );
+});
+
+const AWS_LOOKUP = {
+  "@swamp/aws": {
+    description: "AWS models",
+    latestVersion: "2026.03.16.1",
+  },
+};
+
+Deno.test("ExtensionAutoResolver - inspects, installs and hot-loads inside the install lock", async () => {
+  const installer = createMockInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output: createMockOutput(),
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(installer.events, [
+    "lock",
+    "inspect",
+    "install",
+    "hotLoadModels",
+    "unlock",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - loads an intact install that another process just installed", async () => {
+  // swamp-club#2571: a concurrent process installed the extension after this
+  // one loaded its registries. Load it instead of reporting the type missing.
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    {
+      state: "intact",
+      path: "/fake/pulled-extensions/@swamp/aws",
+      installedVersion: "2026.03.16.1",
+      loadFailures: false,
+    },
+    [],
+    { providesType: true },
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(installer.installCalls, []);
+  assertEquals(installer.events, [
+    "lock",
+    "inspect",
+    "hotLoadModels",
+    "unlock",
+  ]);
+  assertEquals(output.calls, [
+    "searching:@swamp/aws/ec2/instance",
+    "installed:@swamp/aws@2026.03.16.1:3",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - returns false when the install lock times out", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    { state: "missing" },
+    [],
+    { lockError: new LockTimeoutError(".extension-install.lock", null, 1) },
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), false);
+  assertEquals(installer.inspectCalls, []);
+  assertEquals(installer.installCalls, []);
+  assertEquals(output.calls, ["searching:@swamp/aws/ec2/instance"]);
+});
+
+Deno.test("ExtensionAutoResolver - installs once when two types from one extension resolve concurrently", async () => {
+  // The per-type re-entrancy guard does not cover two different types from
+  // one extension. The install lock serializes them, and the second loads
+  // what the first installed (swamp-club#2571).
+  let installed = false;
+  let lockChain = Promise.resolve();
+  const installCalls: string[] = [];
+  const installer: ExtensionInstallerPort = {
+    async withInstallLock<T>(fn: () => Promise<T>): Promise<T> {
+      const previous = lockChain;
+      let release = () => {};
+      lockChain = new Promise((resolve) => release = resolve);
+      await previous;
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    },
+    providesType: () => Promise.resolve(installed),
+    inspectInstallation: () =>
+      Promise.resolve(
+        installed
+          ? {
+            state: "intact",
+            path: "/fake/pulled-extensions/@swamp/aws",
+            installedVersion: "2026.03.16.1",
+            loadFailures: false,
+          }
+          : { state: "missing" },
+      ),
+    install: async (name: string) => {
+      installCalls.push(name);
+      await Promise.resolve();
+      installed = true;
+      return { version: "2026.03.16.1" };
+    },
+    hotLoadModels: () => Promise.resolve(installed ? 1 : 0),
+    hotLoadVaults: () => Promise.resolve(),
+    hotLoadDatastores: () => Promise.resolve(),
+    hotLoadWebhooks: () => Promise.resolve(),
+    failedLocalSourceMatchesType: () => false,
+  };
+  const output = createMockOutput();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const results = await Promise.all([
+    resolver.resolve("@swamp/aws/ec2/instance"),
+    resolver.resolve("@swamp/aws/s3/bucket"),
+  ]);
+  assertEquals(results, [true, true]);
+  assertEquals(installCalls, ["@swamp/aws"]);
+  assertEquals(
+    output.calls.filter((c) => c.startsWith("installed:")).length,
+    2,
+  );
+  assertEquals(
+    output.calls.filter((c) => c.startsWith("installing:")).length,
+    1,
   );
 });

@@ -1344,3 +1344,87 @@ Deno.test("auto_resolver_adapters: install re-installs a pinned beta entry on it
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
+
+function installLockPath(repoDir: string): string {
+  return join(repoDir, ".swamp", ".extension-install.lock");
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function adapterFor(repoDir: string) {
+  return createAutoResolveInstallerAdapter({
+    ...stubCallbacks,
+    lockfilePath: join(
+      repoDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    ),
+    repoDir,
+    denoRuntime: stubDenoRuntime,
+  });
+}
+
+Deno.test("auto_resolver_adapters: withInstallLock holds the repo install lock while fn runs and releases it after", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const result = await adapterFor(tmpDir).withInstallLock(async () => {
+      assertEquals(await exists(installLockPath(tmpDir)), true);
+      return "done";
+    });
+    assertEquals(result, "done");
+    assertEquals(await exists(installLockPath(tmpDir)), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: withInstallLock releases the lock when fn throws", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    await assertRejects(
+      () =>
+        adapterFor(tmpDir).withInstallLock(() =>
+          Promise.reject(new Error("install failed"))
+        ),
+      Error,
+      "install failed",
+    );
+    assertEquals(await exists(installLockPath(tmpDir)), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: withInstallLock serializes installs from separate adapters on one repo", async () => {
+  // Two adapters stand in for two processes sharing the repo
+  // (swamp-club#2571): their critical sections must never interleave.
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const events: string[] = [];
+    const section = (name: string) => async () => {
+      events.push(`${name}:start`);
+      // Filesystem I/O yields, giving the other caller a chance to run.
+      for (let i = 0; i < 5; i++) await exists(installLockPath(tmpDir));
+      events.push(`${name}:end`);
+    };
+    await Promise.all([
+      adapterFor(tmpDir).withInstallLock(section("a")),
+      adapterFor(tmpDir).withInstallLock(section("b")),
+    ]);
+    assertEquals(events.length, 4);
+    for (let i = 0; i < events.length; i += 2) {
+      const name = events[i].split(":")[0];
+      assertEquals(events.slice(i, i + 2), [`${name}:start`, `${name}:end`]);
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

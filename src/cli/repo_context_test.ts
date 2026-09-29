@@ -3228,6 +3228,8 @@ async function withRecordingAutoResolver(
         hotLoadDatastores: () => Promise.resolve(),
         hotLoadWebhooks: () => Promise.resolve(),
         failedLocalSourceMatchesType: () => false,
+        withInstallLock: (fn) => fn(),
+        providesType: () => Promise.resolve(false),
       },
       // A no-op for every output event.
       output: new Proxy({}, { get: () => () => {} }) as AutoResolveOutputPort,
