@@ -64,6 +64,80 @@ interface EncryptedData {
 }
 
 /**
+ * The directory holding a local_encryption vault's secrets, key, annotations
+ * and refresh hooks: {base_dir}/.swamp/secrets/local_encryption/{vault_name}.
+ * Storage is keyed on the vault name, so a rename must move this directory.
+ */
+export function localEncryptionSecretsDir(
+  baseDir: string,
+  vaultName: string,
+): string {
+  return swampPath(
+    baseDir,
+    SWAMP_SUBDIRS.secrets,
+    "local_encryption",
+    vaultName,
+  );
+}
+
+/**
+ * Moves a local_encryption vault's storage from one vault name to another
+ * under the same base directory (swamp-club#2681). The whole directory moves
+ * in one rename, so the auto-generated key moves with the secrets it
+ * encrypts.
+ *
+ * Returns false when the vault has no stored secrets yet. An empty directory
+ * under the new name is replaced; a non-empty one is refused, because it holds
+ * another vault's secrets under a different key.
+ */
+export async function moveLocalEncryptionSecrets(
+  baseDir: string,
+  fromName: string,
+  toName: string,
+): Promise<boolean> {
+  const boundary = swampPath(baseDir);
+  const fromDir = localEncryptionSecretsDir(baseDir, fromName);
+  const toDir = localEncryptionSecretsDir(baseDir, toName);
+  await assertSafePath(fromDir, boundary);
+  await assertSafePath(toDir, boundary);
+
+  try {
+    await Deno.lstat(fromDir);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+
+  if (!(await isAbsentOrEmptyDir(toDir))) {
+    throw new Error(
+      `Secrets are already stored under vault name '${toName}'. ` +
+        `Remove them before renaming vault '${fromName}' to '${toName}'.`,
+    );
+  }
+  try {
+    await Deno.remove(toDir);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+
+  await Deno.rename(fromDir, toDir);
+  return true;
+}
+
+async function isAbsentOrEmptyDir(path: string): Promise<boolean> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return true;
+    throw error;
+  }
+  if (!info.isDirectory) return false;
+  for await (const _entry of Deno.readDir(path)) return false;
+  return true;
+}
+
+/**
  * Local encryption vault provider that stores encrypted secrets in local files.
  * Uses Web Crypto API with AES-GCM encryption and SSH key-based key derivation.
  * Supports both SSH private key files and auto-generated encryption keys.
@@ -84,16 +158,9 @@ export class LocalEncryptionVaultProvider
   constructor(name: string, config: LocalEncryptionConfig = {}) {
     this.name = name;
     this.config = config;
-    // Compute secrets directory from base_dir + vault name
-    // Path: {base_dir}/.swamp/secrets/local_encryption/{vault_name}
     const baseDir = config.base_dir ?? Deno.cwd();
     this.secretsBoundary = swampPath(baseDir);
-    this.vaultDir = swampPath(
-      baseDir,
-      SWAMP_SUBDIRS.secrets,
-      "local_encryption",
-      name,
-    );
+    this.vaultDir = localEncryptionSecretsDir(baseDir, name);
   }
 
   async get(secretKey: string): Promise<string> {

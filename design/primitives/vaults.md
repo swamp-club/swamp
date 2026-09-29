@@ -300,6 +300,13 @@ have their own sections. The group also has:
   search when no name is given), or update it from YAML piped on stdin. With
   `--server`, stdin is required: the server never opens an editor, and it
   authorizes the vault by name, plus the new name on a rename
+  - A rename of a `local_encryption` vault moves its secrets directory
+    (secrets, auto-generated key, annotations, refresh hooks) to the new name
+    under the stored `base_dir`; the edited `base_dir` is never used for the
+    move. A rename onto a name that already has stored secrets is refused
+    (stdin) or reverted (editor). Editor renames are seen only when the editor
+    waits for the file to close, so `vault edit` passes the wait flag to GUI
+    editors that have one
 - `swamp vault search [keyword]`: browse configured vaults
 - `swamp vault type-search [keyword]`: browse registered vault types
   (built-in and extension)

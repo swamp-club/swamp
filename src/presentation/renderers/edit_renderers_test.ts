@@ -23,7 +23,31 @@ import { createModelEditRenderer } from "./model_edit.ts";
 import { createVaultEditRenderer } from "./vault_edit.ts";
 import { createWorkflowEditRenderer } from "./workflow_edit.ts";
 
-await initializeLogging({});
+// noColor: true selects LogTape's text formatter, so a captured record is
+// one pre-rendered string.
+await initializeLogging({ noColor: true });
+
+function captureLog(fn: () => void): string {
+  const lines: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((m) => [m, console[m]] as const);
+  for (const [m] of originals) {
+    console[m] = (...args: unknown[]) => {
+      lines.push(
+        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+      );
+    };
+  }
+  try {
+    fn();
+  } finally {
+    for (const [m, orig] of originals) {
+      console[m] = orig;
+    }
+  }
+  // deno-lint-ignore no-control-regex
+  return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+}
 
 const launch = {
   kind: "launching" as const,
@@ -116,4 +140,52 @@ Deno.test("vault edit renderer: json mode passes a stdin update through without 
   assertEquals(parsed.status, "updated");
   assertEquals(parsed.name, "my-vault");
   assertEquals("editor" in parsed, false);
+});
+
+const vaultRenamed = {
+  kind: "completed" as const,
+  data: {
+    ...vaultUpdated.data,
+    name: "renamed",
+    renamedFrom: "my-vault",
+    secretsMoved: true,
+  },
+};
+
+Deno.test("vault edit renderer: log mode reports a rename that moved secrets", () => {
+  const out = captureLog(() =>
+    createVaultEditRenderer("log").handlers().completed(vaultRenamed)
+  );
+
+  assertStringIncludes(
+    out,
+    'Renamed vault "my-vault" to "renamed"; its stored secrets moved with it',
+  );
+});
+
+Deno.test("vault edit renderer: log mode does not claim secrets moved when none did", () => {
+  const out = captureLog(() =>
+    createVaultEditRenderer("log").handlers().completed({
+      ...vaultRenamed,
+      data: { ...vaultRenamed.data, secretsMoved: false },
+    })
+  );
+
+  assertStringIncludes(out, 'Renamed vault "my-vault" to "renamed"');
+  assertEquals(out.includes("secrets moved"), false);
+});
+
+Deno.test("vault edit renderer: json mode carries the previous name and whether secrets moved", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (message: string) => logs.push(message);
+  try {
+    createVaultEditRenderer("json").handlers().completed(vaultRenamed);
+  } finally {
+    console.log = originalLog;
+  }
+  const parsed = JSON.parse(logs[0]);
+  assertEquals(parsed.name, "renamed");
+  assertEquals(parsed.renamedFrom, "my-vault");
+  assertEquals(parsed.secretsMoved, true);
 });

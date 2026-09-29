@@ -22,7 +22,9 @@ import { join } from "@std/path";
 import {
   type LocalEncryptionConfig,
   LocalEncryptionVaultProvider,
+  moveLocalEncryptionSecrets,
 } from "./local_encryption_vault_provider.ts";
+import { VaultAnnotation } from "./vault_annotation.ts";
 
 /**
  * Windows-only helper: grants Everyone Read access to a file via icacls.
@@ -1279,4 +1281,112 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
       });
     },
   );
+});
+
+Deno.test("moveLocalEncryptionSecrets: secrets, key and annotations stay readable under the new name", async () => {
+  await withTempDir(async (dir) => {
+    const config: LocalEncryptionConfig = {
+      auto_generate: true,
+      base_dir: dir,
+    };
+    const before = new LocalEncryptionVaultProvider("old-vault", config);
+    await before.put("API_KEY", "s3cret");
+    await before.putAnnotation(
+      "API_KEY",
+      VaultAnnotation.create({ notes: "api key" }),
+    );
+
+    const moved = await moveLocalEncryptionSecrets(
+      dir,
+      "old-vault",
+      "new-vault",
+    );
+
+    assertEquals(moved, true);
+    const after = new LocalEncryptionVaultProvider("new-vault", config);
+    assertEquals(await after.get("API_KEY"), "s3cret");
+    assertEquals(await after.list(), ["API_KEY"]);
+    assertEquals(
+      (await after.getAnnotation("API_KEY"))?.notes,
+      "api key",
+    );
+    await assertRejects(() => Deno.lstat(secretsDir(dir, "old-vault")));
+  });
+});
+
+Deno.test("moveLocalEncryptionSecrets: returns false when the vault has no stored secrets", async () => {
+  await withTempDir(async (dir) => {
+    const moved = await moveLocalEncryptionSecrets(
+      dir,
+      "old-vault",
+      "new-vault",
+    );
+
+    assertEquals(moved, false);
+    await assertRejects(() => Deno.lstat(secretsDir(dir, "new-vault")));
+  });
+});
+
+Deno.test("moveLocalEncryptionSecrets: replaces an empty directory under the new name", async () => {
+  await withTempDir(async (dir) => {
+    const config: LocalEncryptionConfig = {
+      auto_generate: true,
+      base_dir: dir,
+    };
+    await new LocalEncryptionVaultProvider("old-vault", config).put("K", "v");
+    await Deno.mkdir(secretsDir(dir, "new-vault"), { recursive: true });
+
+    assertEquals(
+      await moveLocalEncryptionSecrets(dir, "old-vault", "new-vault"),
+      true,
+    );
+    const after = new LocalEncryptionVaultProvider("new-vault", config);
+    assertEquals(await after.get("K"), "v");
+  });
+});
+
+Deno.test("moveLocalEncryptionSecrets: refuses when secrets already exist under the new name", async () => {
+  await withTempDir(async (dir) => {
+    const config: LocalEncryptionConfig = {
+      auto_generate: true,
+      base_dir: dir,
+    };
+    await new LocalEncryptionVaultProvider("old-vault", config).put("K", "old");
+    await new LocalEncryptionVaultProvider("new-vault", config).put("K", "new");
+
+    const error = await assertRejects(() =>
+      moveLocalEncryptionSecrets(dir, "old-vault", "new-vault")
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Secrets are already stored under vault name 'new-vault'",
+    );
+    assertEquals(
+      await new LocalEncryptionVaultProvider("old-vault", config).get("K"),
+      "old",
+    );
+    assertEquals(
+      await new LocalEncryptionVaultProvider("new-vault", config).get("K"),
+      "new",
+    );
+  });
+});
+
+Deno.test("moveLocalEncryptionSecrets: refuses a file under the new name without deleting it", async () => {
+  await withTempDir(async (dir) => {
+    const config: LocalEncryptionConfig = {
+      auto_generate: true,
+      base_dir: dir,
+    };
+    await new LocalEncryptionVaultProvider("old-vault", config).put("K", "v");
+    await Deno.writeTextFile(secretsDir(dir, "new-vault"), "not a dir");
+
+    await assertRejects(() =>
+      moveLocalEncryptionSecrets(dir, "old-vault", "new-vault")
+    );
+    assertEquals(
+      await Deno.readTextFile(secretsDir(dir, "new-vault")),
+      "not a dir",
+    );
+  });
 });
