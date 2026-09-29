@@ -2400,7 +2400,7 @@ export const serveCommand = new Command()
     await seedPulledTypeSnapshot(resolvedRepoDir, extensionLockfilePath)
       .catch((error: unknown) => {
         logger.warn(
-          "Could not record the pulled extension types at boot: {error}",
+          "Could not record the pulled extension types at boot; an extension removed before the next reload may stay registered until serve restarts: {error}",
           { error: error instanceof Error ? error.message : String(error) },
         );
       });

@@ -548,7 +548,11 @@ extension registered, at boot and after every reload, because on the instance
 that ran `rm` the catalog rows and files are already gone. A pulled extension
 counts as installed when the config-tier lockfile or the transitional in-repo
 lockfile lists it, or, on an extension-backed datastore, when it is a datastore
-extension found on disk. This is the same rule the startup reconcile uses. On a
+extension found on disk. This follows the startup reconcile's orphan rule,
+except that the reconcile spares on-disk datastore sources by directory and the
+sweep spares the whole extension. A missing lockfile skips the sweep until the
+next poll, because it reads as no entries and removing the last extension
+leaves an empty file. On a
 peer, the reload also retires the removed extension's catalog rows, so the
 loader cannot register them again. The peer's files stay in its pulled root
 until swamp-club#2612. A type that another extension or a local source still
