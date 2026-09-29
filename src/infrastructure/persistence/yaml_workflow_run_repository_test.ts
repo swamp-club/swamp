@@ -1410,3 +1410,37 @@ Deno.test("YamlWorkflowRunRepository.listRunIds: lists run IDs across workflows 
     assertEquals(await repo.listRunIds(), new Set([run.id, otherRunId]));
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: never reports a run ID that is not one path segment", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    for (const badId of ["", "..", "a/b"]) {
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      run.cancel("test");
+      await repo.save(workflow.id, run);
+      // Rewrite the persisted ID as a tampered or corrupt record would.
+      const path = repo.getPath(workflow.id, run.id);
+      const content = await Deno.readTextFile(path);
+      await Deno.writeTextFile(
+        path,
+        content.replace(`id: ${run.id}`, `id: ${JSON.stringify(badId)}`),
+      );
+    }
+    // Empty (unparseable) files whose filename yields "." or "..".
+    await Deno.writeTextFile(join(runsDir, "workflow-run-..yaml"), "");
+    await Deno.writeTextFile(join(runsDir, "workflow-run-...yaml"), "");
+
+    const result = await repo.deleteOlderThan(new Date(Date.now() + 60_000));
+
+    assertEquals(result.deleted, 5);
+    // The filename fallback yields the real run IDs for the three tampered
+    // records; the two dot names are dropped.
+    assertEquals(result.deletedRunIds.length, 3);
+    assertEquals(result.deletedRunIds.includes(""), false);
+    assertEquals(result.deletedRunIds.includes(".."), false);
+    assertEquals(result.deletedRunIds.includes("."), false);
+  });
+});

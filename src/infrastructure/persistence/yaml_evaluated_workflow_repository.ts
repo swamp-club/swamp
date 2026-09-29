@@ -28,7 +28,7 @@ import { z } from "zod";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
-import { assertSafePath } from "./safe_path.ts";
+import { assertSafePath, isSinglePathSegment } from "./safe_path.ts";
 import {
   isFilenameSafeName,
   Workflow,
@@ -335,8 +335,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   async saveForRun(runId: string, workflow: Workflow): Promise<void> {
-    const dir = join(this.baseDir, "runs", runId);
-    await assertSafePath(dir, this.baseDir);
+    const dir = await this.runDir(runId);
     await ensureDir(dir);
 
     const targetPath = join(dir, "evaluated-workflow.yaml");
@@ -348,8 +347,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   async findByRunId(runId: string): Promise<Workflow | null> {
-    const dir = join(this.baseDir, "runs", runId);
-    await assertSafePath(dir, this.baseDir);
+    const dir = await this.runDir(runId);
     const targetPath = join(dir, "evaluated-workflow.yaml");
     try {
       const content = await Deno.readTextFile(targetPath);
@@ -370,7 +368,10 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     const snapshots: RunSnapshotInfo[] = [];
     try {
       for await (const entry of Deno.readDir(runsDir)) {
-        if (!entry.isDirectory || entry.name.startsWith(".")) continue;
+        if (
+          !entry.isDirectory || entry.name.startsWith(".") ||
+          !isSinglePathSegment(entry.name)
+        ) continue;
         // An unknown mtime counts as fresh, so the orphan age guard never
         // collects a snapshot whose age it cannot establish.
         try {
@@ -407,8 +408,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   async deleteForRun(runId: string): Promise<void> {
-    const dir = join(this.baseDir, "runs", runId);
-    await assertSafePath(dir, this.baseDir);
+    const dir = await this.runDir(runId);
     await this.notifyDirty(dir);
     try {
       await Deno.remove(dir, { recursive: true });
@@ -417,6 +417,22 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         throw error;
       }
     }
+  }
+
+  /**
+   * Resolves `runs/<runId>/`. The run ID must be a single path segment:
+   * `""`, `.` or `..` would resolve to `runs/` or the repository base itself,
+   * which `assertSafePath` accepts because it equals or sits inside the base.
+   */
+  private async runDir(runId: string): Promise<string> {
+    if (!isSinglePathSegment(runId)) {
+      throw new Error(
+        `Invalid run ID for a workflow snapshot path: ${JSON.stringify(runId)}`,
+      );
+    }
+    const dir = join(this.baseDir, "runs", runId);
+    await assertSafePath(dir, this.baseDir);
+    return dir;
   }
 
   private resolveWritePath(workflow: Workflow): string {

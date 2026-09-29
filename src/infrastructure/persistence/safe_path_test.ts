@@ -22,6 +22,7 @@ import { dirname, join } from "@std/path";
 import {
   assertContainedPath,
   assertSafePath,
+  isSinglePathSegment,
   PathTraversalError,
 } from "./safe_path.ts";
 
@@ -295,4 +296,15 @@ Deno.test("assertContainedPath", async (t) => {
     assertContainedPath("dir/..config", boundary);
     assertContainedPath("...hidden.txt", boundary);
   });
+});
+
+Deno.test("isSinglePathSegment: accepts plain names and rejects anything that is not one safe segment", () => {
+  assertEquals(isSinglePathSegment(crypto.randomUUID()), true);
+  assertEquals(isSinglePathSegment("run-1"), true);
+  assertEquals(isSinglePathSegment("..run"), true);
+  for (const name of ["", ".", "..", "a/b", "a\\b", "../x", "a\0b"]) {
+    assertEquals(isSinglePathSegment(name), false, JSON.stringify(name));
+  }
+  assertEquals(isSinglePathSegment(42), false);
+  assertEquals(isSinglePathSegment(undefined), false);
 });

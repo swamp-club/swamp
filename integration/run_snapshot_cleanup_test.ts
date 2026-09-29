@@ -20,7 +20,7 @@
 // Per-run evaluated-workflow snapshots share their run's lifetime: run GC and
 // workflow delete remove them together with the run records (swamp-club#2522).
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import {
@@ -215,5 +215,41 @@ Deno.test("workflow delete: removes the snapshots of every run it deletes", asyn
 
     assertEquals(runsDeleted, runIds.length);
     assertEquals(await snapshotIds(repoDir), []);
+  });
+});
+
+Deno.test("workflow delete: a run record with a tampered ID deletes nothing", async () => {
+  await withRepo(async (repoDir) => {
+    const workflow = snapshotWorkflow();
+    await new YamlWorkflowRepository(repoDir).save(workflow);
+    const [runId] = await runWorkflow(repoDir, workflow, 1);
+    // A snapshot that belongs to some other run and must survive.
+    const bystander = crypto.randomUUID();
+    await new YamlEvaluatedWorkflowRepository(repoDir).saveForRun(
+      bystander,
+      workflow,
+    );
+
+    const runRepo = new YamlWorkflowRunRepository(repoDir);
+    const path = runRepo.getPath(workflow.id, createWorkflowRunId(runId));
+    const content = await Deno.readTextFile(path);
+    await Deno.writeTextFile(path, content.replace(`id: ${runId}`, 'id: ".."'));
+
+    // Loading the run rejects the non-UUID ID, so the delete fails before
+    // any snapshot or run is removed.
+    await assertRejects(async () => {
+      for await (
+        const _event of workflowDelete(
+          createLibSwampContext(),
+          createWorkflowDeleteDeps(repoDir),
+          { workflowIdOrName: workflow.name },
+        )
+      ) {
+        // drain
+      }
+    });
+
+    assertEquals(await snapshotIds(repoDir), [bystander, runId].sort());
+    await Deno.stat(path);
   });
 });

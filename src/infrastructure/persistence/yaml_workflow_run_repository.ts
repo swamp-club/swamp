@@ -41,7 +41,7 @@ import {
   toAbsolutePath,
   toRelativePath,
 } from "./paths.ts";
-import { assertSafePath } from "./safe_path.ts";
+import { assertSafePath, isSinglePathSegment } from "./safe_path.ts";
 import {
   createWorkflowRunId,
   type WorkflowId,
@@ -737,7 +737,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 }
                 deleted++;
                 bytesReclaimed += fileBytes;
-                deletedRunIds.push(runIdFromFileName(fileEntry.name));
+                const fileRunId = runIdFromFileName(fileEntry.name);
+                if (isSinglePathSegment(fileRunId)) {
+                  deletedRunIds.push(fileRunId);
+                }
                 continue;
               }
               if (!TERMINAL_STATUSES.has(data.status)) continue;
@@ -781,7 +784,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
               deleted++;
               bytesReclaimed += fileBytes;
-              deletedRunIds.push(data.id ?? runIdFromFileName(fileEntry.name));
+              // The ID is read back from persisted data; only a single safe
+              // path segment may name a snapshot directory.
+              const runId = isSinglePathSegment(data.id)
+                ? data.id
+                : runIdFromFileName(fileEntry.name);
+              if (isSinglePathSegment(runId)) deletedRunIds.push(runId);
             } catch (error) {
               if (error instanceof Deno.errors.NotFound) continue;
               throw error;
@@ -827,7 +835,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               fileEntry.name.startsWith("workflow-run-") &&
               fileEntry.name.endsWith(".yaml")
             ) {
-              ids.add(runIdFromFileName(fileEntry.name));
+              const runId = runIdFromFileName(fileEntry.name);
+              if (isSinglePathSegment(runId)) ids.add(runId);
             }
           }
         } catch (error) {

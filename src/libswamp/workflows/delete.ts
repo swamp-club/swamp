@@ -26,6 +26,7 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { isSinglePathSegment } from "../../infrastructure/persistence/safe_path.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
@@ -130,6 +131,9 @@ export function createWorkflowDeleteDeps(
     deleteRunSnapshots: async (workflowId) => {
       const runs = await workflowRunRepo.findAllByWorkflowId(workflowId);
       for (const run of runs) {
+        // Run IDs come from persisted run records; skip any that cannot
+        // name a snapshot directory rather than abort the delete.
+        if (!isSinglePathSegment(run.id)) continue;
         await evaluatedWorkflowRepo.deleteForRun(run.id);
       }
     },
