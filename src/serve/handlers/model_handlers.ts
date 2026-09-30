@@ -1932,8 +1932,28 @@ export async function handleModelEvaluate(
       payload: { data },
     });
   } catch (error) {
-    const message = sanitizeErrorForClient(error);
+    // Evaluating every model can fail on one the caller may not read, and
+    // the error may name it, so such a caller gets no detail.
+    const message = !model &&
+        !(await readsEveryModel(socket, principal, ctx))
+      ? "Evaluating every model failed"
+      : sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_evaluate_failed", message);
+  }
+}
+
+/** Whether the caller may read every model definition in the repository. */
+async function readsEveryModel(
+  socket: WebSocket,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): Promise<boolean> {
+  try {
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    const all = await ctx.repoContext.definitionRepo.findAllGlobal();
+    return all.every((entry) => readable(modelAccessResource(entry, "model")));
+  } catch {
+    return false;
   }
 }
 

@@ -119,16 +119,25 @@ export async function* vaultAuditTrail(
       ctx.logger
         .debug`Querying vault audit trail: vault=${input.vaultName}, key=${input.secretKey}, action=${input.action}, since=${since.toISOString()}, until=${until.toISOString()}, limit=${limit}`;
 
-      // With a filter the store cannot apply, the whole bounded range is read
-      // and the limit applied after filtering.
-      const fetchLimit = input.include ? undefined : limit + 1;
-      const fetched = await deps.findByTimeRange(since, until, {
-        vaultName: input.vaultName,
-        secretKey: input.secretKey,
-        action: input.action,
-        limit: fetchLimit,
-      });
-      const entries = input.include ? fetched.filter(input.include) : fetched;
+      // With a filter the store cannot apply, fetch in growing batches until
+      // limit + 1 entries are accepted or the range is exhausted, so hidden
+      // entries never shorten a page and the range is not read all at once.
+      let fetchLimit = limit + 1;
+      let entries: VaultAuditEntry[];
+      while (true) {
+        const fetched = await deps.findByTimeRange(since, until, {
+          vaultName: input.vaultName,
+          secretKey: input.secretKey,
+          action: input.action,
+          limit: fetchLimit,
+        });
+        entries = input.include ? fetched.filter(input.include) : fetched;
+        if (
+          !input.include || entries.length > limit ||
+          fetched.length < fetchLimit
+        ) break;
+        fetchLimit *= 4;
+      }
 
       const truncated = entries.length > limit;
       const returnedEntries = truncated ? entries.slice(0, limit) : entries;

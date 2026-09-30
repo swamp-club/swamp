@@ -2351,3 +2351,24 @@ Deno.test("DataQueryService: include drops records before select projects them",
   assertEquals(seen.sort(), ["ingest", "secret"]);
   catalog.close();
 });
+
+Deno.test("DataQueryService: with include, the limit counts accepted records only", async () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({
+    content_type: "application/json",
+    model_id: "model-002",
+    model_name: "secret",
+    data_name: "a-secret",
+    id: "00000000-0000-1000-8000-000000000098",
+  }));
+  catalog.upsert(makeRow({ content_type: "application/json" }));
+
+  const results = await service.query("true", {
+    select: "name",
+    limit: 1,
+    include: (record) => Promise.resolve(record.modelName !== "secret"),
+  }) as string[];
+
+  assertEquals(results, ["my-data"]);
+  catalog.close();
+});

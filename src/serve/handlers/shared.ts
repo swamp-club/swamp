@@ -995,7 +995,9 @@ function replyToOutcome(
           socket,
           requestId,
           "unauthorized",
-          `Access denied: ${principalStr} has a deny grant (${decision.grantId}) for '${action}' on ${resource.kind} resources, and an operation over every ${resource.kind} resource needs '${action}' on all of them`,
+          `Access denied: ${principalStr} has a ${
+            decision.condition ? "conditional " : ""
+          }deny grant (${decision.grantId}) for '${action}' on ${resource.kind} resources, and an operation over every ${resource.kind} resource needs '${action}' on all of them`,
         );
       } else if (decision && decision.effect === "deny") {
         sendError(

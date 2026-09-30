@@ -35,7 +35,7 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { serverRequestPayloadFields } from "../src/serve/connection.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
-import type { Definition } from "../src/domain/definitions/definition.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
 import type { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Data } from "../src/domain/data/data.ts";
 import {
@@ -512,5 +512,51 @@ Deno.test("serve condition-fields conformance: reports are read as their owner's
       ),
     );
     assertEquals(named?.error?.code, "unauthorized");
+  });
+});
+
+Deno.test("serve condition-fields conformance: a failing evaluate-everything names nothing the caller may not read", async () => {
+  await withServeRepo(async (repo) => {
+    await saveModel(repo, "dev-db");
+    // Two prod models that reference each other: evaluation fails on the
+    // cycle, and the cycle error names them.
+    for (
+      const [name, other] of [["prod-secret-a", "prod-secret-b"], [
+        "prod-secret-b",
+        "prod-secret-a",
+      ]]
+    ) {
+      await repo.repoContext.definitionRepo.save(
+        repo.modelType,
+        Definition.create({
+          name,
+          globalArguments: { peer: `\${{ model.${other}.definition.name }}` },
+          tags: { env: "prod" },
+        }),
+      );
+    }
+
+    const open = errorFrame(
+      await sendRequest(
+        createServeCtx(repo, ALLOW_GRANTS),
+        request("model.evaluate", {}),
+      ),
+    );
+    assert(
+      open?.error?.message?.includes("prod-secret"),
+      `evaluating a cycle fails and names it: ${JSON.stringify(open)}`,
+    );
+
+    const hidden = errorFrame(
+      await sendRequest(
+        createServeCtx(repo, TAG_GRANTS),
+        request("model.evaluate", {}),
+      ),
+    );
+    assertEquals(hidden?.error?.code, "model_evaluate_failed");
+    assert(
+      !JSON.stringify(hidden).includes("prod-secret"),
+      JSON.stringify(hidden),
+    );
   });
 });

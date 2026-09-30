@@ -149,11 +149,11 @@ Deno.test("vaultAuditTrail: include filters entries before the limit, so hidden 
     makeEntry({ vaultName: "dev-vault", secretKey: "B" }),
     makeEntry({ vaultName: "dev-vault", secretKey: "C" }),
   ];
-  let askedLimit: number | undefined = -1;
+  const askedLimits: Array<number | undefined> = [];
   const deps: VaultAuditTrailDeps = {
     findByTimeRange: (_since, _until, options) => {
-      askedLimit = options?.limit;
-      return Promise.resolve(entries);
+      askedLimits.push(options?.limit);
+      return Promise.resolve(entries.slice(0, options?.limit));
     },
   };
 
@@ -168,7 +168,8 @@ Deno.test("vaultAuditTrail: include filters entries before the limit, so hidden 
     VaultAuditTrailEvent,
     { kind: "completed" }
   >;
-  assertEquals(askedLimit, undefined);
+  // Three accepted entries needed: a batch of 3 finds one, 12 finds all.
+  assertEquals(askedLimits, [3, 12]);
   assertEquals(completed.data.entries.map((e) => e.secretKey), ["A", "B"]);
   assertEquals(completed.data.truncated, true);
 });

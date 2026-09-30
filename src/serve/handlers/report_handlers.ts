@@ -32,6 +32,7 @@ import {
   type ReportSearchDeps,
   reportTypeSearch,
   type ReportTypeSearchDeps,
+  workflowsDirFor,
 } from "../../libswamp/mod.ts";
 import type {
   ReportDescribePayload,
@@ -100,6 +101,7 @@ export async function handleReportGet(
     const target = await resolveWorkflowTarget(
       ctx.repoContext.workflowRepo,
       payload.workflow,
+      workflowsDirFor(ctx.repoDir),
     );
     if (
       !authorizeResolved(
