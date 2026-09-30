@@ -30,6 +30,7 @@ import {
   HttpUpdateChecker,
 } from "./http_update_checker.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
+import { ABANDONED_TEMP_FILE_MAX_AGE_MS } from "../persistence/abandoned_temp_files.ts";
 
 Deno.test("stable URL is constructed correctly for darwin aarch64", () => {
   const platform = Platform.from("darwin", "aarch64");
@@ -260,6 +261,10 @@ Deno.test({
       // Simulate a stale temp file from a previous crashed update
       const stalePath = join(tempDir, ".swamp.tmp.stale-uuid");
       await Deno.writeTextFile(stalePath, "stale");
+      const staleTime = new Date(
+        Date.now() - ABANDONED_TEMP_FILE_MAX_AGE_MS - 60_000,
+      );
+      await Deno.utime(stalePath, staleTime, staleTime);
 
       const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
         return new Response(body, {
@@ -287,6 +292,48 @@ Deno.test({
           staleExists,
           false,
           "stale .swamp.tmp file should be cleaned up during update",
+        );
+      } finally {
+        await server.shutdown();
+      }
+    } finally {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "HttpUpdateChecker.downloadAndInstall: keeps a fresh .swamp.tmp file owned by a concurrent update",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const tempDir = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+    try {
+      const { body, checksum } = await buildFakeSwampTarball();
+      const binaryPath = join(tempDir, "swamp");
+
+      // Simulate a temp file another update process is still copying
+      const inFlightPath = join(tempDir, ".swamp.tmp.in-flight-uuid");
+      await Deno.writeTextFile(inFlightPath, "in-flight");
+
+      const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+        return new Response(body, {
+          headers: { "content-type": "application/gzip" },
+        });
+      });
+
+      try {
+        const port = server.addr.port;
+        const url = `http://localhost:${port}/swamp.tar.gz`;
+
+        const checker = new HttpUpdateChecker();
+        await checker.downloadAndInstall(url, binaryPath, checksum);
+
+        const info = await Deno.stat(inFlightPath);
+        assertEquals(
+          info.isFile,
+          true,
+          "fresh .swamp.tmp file should survive a concurrent update",
         );
       } finally {
         await server.shutdown();

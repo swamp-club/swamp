@@ -28,6 +28,7 @@ import {
 } from "../../domain/update/integrity.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { extractTarGz } from "../archive/tar_archive.ts";
+import { removeAbandonedTempFiles } from "../persistence/abandoned_temp_files.ts";
 
 async function extractZip(
   archivePath: string,
@@ -112,21 +113,10 @@ async function replaceBinary(
   sourcePath: string,
   targetPath: string,
 ): Promise<void> {
-  // Clean up stale temp files from a previous crashed update
+  // Clean up temp files abandoned by a previous crashed update. Fresh ones
+  // are kept — they may belong to a concurrent update still copying.
   const targetDir = dirname(targetPath);
-  try {
-    for await (const entry of Deno.readDir(targetDir)) {
-      if (entry.name.startsWith(".swamp.tmp.")) {
-        try {
-          await Deno.remove(join(targetDir, entry.name));
-        } catch {
-          // Best-effort cleanup
-        }
-      }
-    }
-  } catch {
-    // readDir may fail on permission errors — not fatal
-  }
+  await removeAbandonedTempFiles(targetDir, ".swamp.tmp.");
 
   if (Deno.build.os === "windows") {
     await replaceBinaryWindows(sourcePath, targetPath);
