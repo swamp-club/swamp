@@ -24,6 +24,7 @@ import type { Principal } from "../domain/access/principal.ts";
 import {
   clearRequestErrored,
   resolveDisplayPrincipal,
+  takeAuditedResource,
   wasRequestErrored,
 } from "./handlers/shared.ts";
 
@@ -56,6 +57,13 @@ export function audited(
     })
     : "ghost";
 
+  // The resolved name a handler recorded, when it resolved one, replaces the
+  // identifier the client sent (swamp-club#2603).
+  const resourceName = (): string =>
+    (options.socket
+      ? takeAuditedResource(options.socket, options.requestId)
+      : undefined) ?? options.resourceName;
+
   return handler.then(() => {
     const errored = options.socket
       ? wasRequestErrored(options.socket, options.requestId)
@@ -70,7 +78,7 @@ export function audited(
       outcome: errored ? "failure" : "success",
       action: options.action,
       resourceKind: options.resourceKind,
-      resourceName: options.resourceName,
+      resourceName: resourceName(),
       principalKind,
       principalId,
       initiatedBy,
@@ -90,7 +98,7 @@ export function audited(
       outcome: "failure",
       action: options.action,
       resourceKind: options.resourceKind,
-      resourceName: options.resourceName,
+      resourceName: resourceName(),
       principalKind,
       principalId,
       initiatedBy,

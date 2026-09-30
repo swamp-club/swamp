@@ -57,6 +57,7 @@ import {
   authorizeOrReject,
   type ConnectionContext,
   isAuthorized,
+  recordAuditedResource,
   sanitizeErrorForClient,
   sendError,
 } from "./shared.ts";
@@ -408,6 +409,11 @@ export function authorizeResolved(
       sanitizeErrorForClient(resolution.error),
     );
     return false;
+  }
+  // The response is audited under the resolved name, not the id the client
+  // sent (swamp-club#2603). A string that matched nothing keeps it.
+  if (resolution.status !== "missing") {
+    recordAuditedResource(socket, requestId, resolution.name, ctx);
   }
   return true;
 }

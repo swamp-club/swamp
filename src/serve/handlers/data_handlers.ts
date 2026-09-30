@@ -86,6 +86,7 @@ import {
   LibSwampStreamError,
   MAX_QUERY_RESULTS,
   pushChangedToRemote,
+  recordAuditedResource,
   resourceDecider,
   sanitizeErrorForClient,
   send,
@@ -98,9 +99,7 @@ import {
   resolveModelTarget,
   resolveWorkflowTarget,
   targetArgument,
-  unresolvedAccessResource,
 } from "./resource_resolution.ts";
-import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
@@ -307,6 +306,13 @@ async function authorizeWorkflowData(
         .allowed
     ) return null;
   }
+  // Audited as the data read — its owners — not the workflow asked for.
+  recordAuditedResource(
+    socket,
+    requestId,
+    owners.map((owner) => owner.name).join(", "),
+    ctx,
+  );
   return {
     workflowId: found.id,
     workflowName: found.name,

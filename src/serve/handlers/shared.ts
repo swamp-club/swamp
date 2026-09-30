@@ -1337,6 +1337,45 @@ export function send(socket: WebSocket, message: ServerMessage): void {
 const MAX_ERRORED_REQUESTS = 10_000;
 const erroredRequests = new WeakMap<WebSocket, Set<string>>();
 
+/**
+ * The resolved name a request's response audit event records in place of the
+ * identifier the client sent (swamp-club#2603): a model asked for by UUID is
+ * audited under its name. Recorded only when an audit emitter will consume
+ * it, capped per socket like {@link erroredRequests}, and taken — removed —
+ * by the audit wrapper on every outcome.
+ */
+const auditedResources = new WeakMap<WebSocket, Map<string, string>>();
+
+export function recordAuditedResource(
+  socket: WebSocket,
+  requestId: string,
+  name: string,
+  ctx: Pick<ConnectionContext, "auditEmitter">,
+): void {
+  if (!ctx.auditEmitter) return;
+  let names = auditedResources.get(socket);
+  if (!names) {
+    names = new Map();
+    auditedResources.set(socket, names);
+  }
+  names.set(requestId, name);
+  if (names.size > MAX_ERRORED_REQUESTS) {
+    const first = names.keys().next().value!;
+    names.delete(first);
+  }
+}
+
+/** Returns and forgets the resolved name recorded for a request, if any. */
+export function takeAuditedResource(
+  socket: WebSocket,
+  requestId: string,
+): string | undefined {
+  const names = auditedResources.get(socket);
+  const name = names?.get(requestId);
+  names?.delete(requestId);
+  return name;
+}
+
 export function sendError(
   socket: WebSocket,
   id: string,

@@ -82,3 +82,36 @@ Deno.test("serve handlers authorize resolved resources, not raw payload identifi
       "targetArgument(...) — see swamp-club#2674.",
   );
 });
+
+/**
+ * A `*` resource name never matches a name-scoped deny, and a condition on
+ * resource fields fails closed against one, so no handler authorizes a
+ * model, data or workflow resource named `*` (swamp-club#2675). A request
+ * over many resources checks each one (filterByResources, an include
+ * filter), a check on a kind itself uses kindResource, and an operation over
+ * every resource uses authorizeAllOrReject.
+ */
+Deno.test("serve handlers never authorize a model, data or workflow resource named *", async () => {
+  const handlers = join(SERVE_DIR, "handlers");
+  const found: string[] = [];
+  for await (const entry of Deno.readDir(handlers)) {
+    if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
+    if (entry.name.endsWith("_test.ts")) continue;
+    const path = join(handlers, entry.name);
+    const text = await Deno.readTextFile(path);
+    const star =
+      /kind: "(model|data|workflow)",\s*name: "\*"|name: "\*",\s*kind: "(model|data|workflow)"/g;
+    for (const match of text.matchAll(star)) {
+      const line = text.slice(0, match.index).split("\n").length;
+      found.push(`${normalise(relative(ROOT, path))}:${line}`);
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    [],
+    "Authorization of a resource named *",
+    "Filter per resource with filterByResources or an include filter, use " +
+      "kindResource for a check on the kind itself, or authorizeAllOrReject " +
+      "for an operation over every resource — see swamp-club#2675.",
+  );
+});
