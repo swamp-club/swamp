@@ -34,7 +34,10 @@ import {
   parseTimeout,
   parseTimerDuration,
 } from "../duration_parser.ts";
-import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
+import {
+  buildServeAuthConfig,
+  type ServeAuthConfig,
+} from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import {
   cancelSuspendedRunAndPush,
@@ -207,6 +210,7 @@ import {
 } from "../../domain/vaults/control_plane_vault_provider.ts";
 import {
   loadServeConfig,
+  type MergedServeOptions,
   mergeServeOptions,
   parseAuditConfig,
   parseExplicitFlags,
@@ -956,13 +960,13 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.remoteOnly) {
     args.push("--remote-only");
   }
-  if (options.maxConcurrentRuns) {
+  if (options.maxConcurrentRuns !== undefined) {
     args.push(
       "--max-concurrent-runs",
       String(options.maxConcurrentRuns),
     );
   }
-  if (options.maxRunsPerPrincipal) {
+  if (options.maxRunsPerPrincipal !== undefined) {
     args.push(
       "--max-runs-per-principal",
       String(options.maxRunsPerPrincipal),
@@ -984,6 +988,49 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
     args.push("--auto-resume");
   }
   return args;
+}
+
+/**
+ * Runs serve's startup checks on the options a `swamp serve daemon enable`
+ * unit will start with, so enable refuses arguments that would make the unit
+ * fail on every start. Options are resolved as the daemon process sees them:
+ * explicit flags are the ones written into the unit, env vars come from the
+ * unit environment alone (never the enabling shell), and a relative --config
+ * resolves against the repository, which is the unit's working directory.
+ */
+export function validateServeDaemonArgs(
+  options: AnyOptions,
+  repoDir: string,
+  unitEnv: Readonly<Record<string, string>>,
+): ServeStartupSettings {
+  const unitArgs = [
+    "--repo-dir",
+    repoDir,
+    "--port",
+    String(options.port),
+    "--host",
+    options.host as string,
+  ];
+  if (options.certFile) {
+    unitArgs.push("--cert-file", options.certFile as string);
+  }
+  if (options.keyFile) {
+    unitArgs.push("--key-file", options.keyFile as string);
+  }
+  unitArgs.push(...collectServeExtraArgs(options));
+
+  const configPath = options.config as string | undefined;
+  const configFile = loadServeConfig(
+    configPath === undefined ? undefined : resolve(repoDir, configPath),
+    repoDir,
+  );
+  const merged = mergeServeOptions(
+    configFile,
+    options,
+    parseExplicitFlags(unitArgs),
+    (name) => unitEnv[name],
+  );
+  return resolveServeStartupSettings(merged);
 }
 
 /** Shutdown drain deadline when `--shutdown-drain-timeout` is unset. */
@@ -1075,6 +1122,159 @@ function parseTokenGcDuration(
   return drivesTimer
     ? parseTimerDuration(raw, flagName)
     : parseTimeout(raw, flagName);
+}
+
+/** Startup settings parsed from the merged serve options. */
+export interface ServeStartupSettings {
+  authConfig: ServeAuthConfig;
+  tlsEnabled: boolean;
+  wsIdleTimeoutSeconds?: number;
+  queueTimeoutMs?: number;
+  heartbeatIntervalMs?: number;
+  staleTtlMs?: number;
+  reconciliationIntervalMs?: number;
+  shutdownDrainTimeoutMs: number;
+  hydrationTimeoutMs: number;
+  datastorePollIntervalMs?: number;
+  tokenGcSettings: TokenGcSettings;
+  maxConcurrentRuns?: number;
+  maxRunsPerPrincipal?: number;
+  maxRunDurationMs?: number;
+  grantReloadMode: "manual" | "auto";
+}
+
+/**
+ * Runs the startup checks that depend only on the merged serve options and
+ * returns the parsed settings. It does no I/O, so `swamp serve daemon enable`
+ * runs the same checks before it writes a unit that would otherwise fail on
+ * every start.
+ */
+export function resolveServeStartupSettings(
+  merged: MergedServeOptions,
+): ServeStartupSettings {
+  const { certFile, keyFile } = merged;
+  if ((certFile && !keyFile) || (!certFile && keyFile)) {
+    throw new UserError(
+      "Both --cert-file and --key-file must be provided together for TLS",
+    );
+  }
+  const tlsEnabled = Boolean(certFile && keyFile);
+
+  const wsIdleTimeoutRaw = merged.wsIdleTimeout;
+  let wsIdleTimeoutSeconds: number | undefined;
+  if (wsIdleTimeoutRaw !== undefined) {
+    if (wsIdleTimeoutRaw === "0") {
+      wsIdleTimeoutSeconds = 0;
+    } else {
+      wsIdleTimeoutSeconds = Math.round(
+        parseTimeout(wsIdleTimeoutRaw) / 1000,
+      );
+    }
+  }
+
+  const queueTimeoutRaw = merged.queueTimeout;
+  let queueTimeoutMs: number | undefined;
+  if (queueTimeoutRaw !== undefined) {
+    const normalized = queueTimeoutRaw.trim().replace(/^0[smhdw].*$/i, "0");
+    queueTimeoutMs = normalized === "0"
+      ? 0
+      : parseTimeout(queueTimeoutRaw, "--queue-timeout");
+  }
+
+  const heartbeatIntervalMs = merged.heartbeatInterval !== undefined
+    ? parseTimerDuration(merged.heartbeatInterval, "--heartbeat-interval")
+    : undefined;
+
+  const staleTtlMs = merged.staleTtl !== undefined
+    ? parseTimeout(merged.staleTtl, "--stale-ttl")
+    : undefined;
+
+  const reconciliationIntervalMs = merged.reconciliationInterval !== undefined
+    ? parseTimerDuration(
+      merged.reconciliationInterval,
+      "--reconciliation-interval",
+      MAX_TIMER_DELAY_MS - RECONCILIATION_JITTER_MS,
+    )
+    : undefined;
+
+  const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
+    merged.shutdownDrainTimeout,
+  );
+
+  const hydrationTimeoutMs = merged.hydrationTimeout !== undefined
+    ? parseTimerDuration(merged.hydrationTimeout, "--hydration-timeout")
+    : 60_000;
+
+  const datastorePollIntervalMs = parseDatastorePollInterval(
+    merged.datastorePollInterval,
+  );
+
+  const tokenGcSettings = parseTokenGcSettings(
+    merged.tokenGcInterval,
+    merged.tokenGcGracePeriod,
+  );
+
+  const maxConcurrentRuns = merged.maxConcurrentRuns;
+  if (
+    maxConcurrentRuns !== undefined &&
+    (!Number.isInteger(maxConcurrentRuns) || maxConcurrentRuns < 1)
+  ) {
+    throw new UserError(
+      `--max-concurrent-runs must be a positive integer, got ${maxConcurrentRuns}`,
+    );
+  }
+  const maxRunsPerPrincipal = merged.maxRunsPerPrincipal;
+  if (
+    maxRunsPerPrincipal !== undefined &&
+    (!Number.isInteger(maxRunsPerPrincipal) || maxRunsPerPrincipal < 1)
+  ) {
+    throw new UserError(
+      `--max-runs-per-principal must be a positive integer, got ${maxRunsPerPrincipal}`,
+    );
+  }
+  const maxRunDurationMs = merged.maxRunDuration !== undefined
+    ? parseTimerDuration(String(merged.maxRunDuration), "--max-run-duration")
+    : undefined;
+
+  const authConfig = buildServeAuthConfig({
+    authMode: merged.authMode,
+    admins: merged.admins,
+    allowedCollectives: merged.allowedCollectives,
+    allowedUsers: merged.allowedUsers,
+    oauthProvider: merged.oauthProvider,
+    oauthClientId: merged.oauthClientId,
+    groupsField: merged.groupsField,
+    restrictedModelTypes: merged.restrictedModelTypes,
+    restrictedCommands: merged.restrictedCommands,
+    approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
+  });
+
+  assertOffLoopbackSecurity(merged.host, tlsEnabled, authConfig.mode);
+
+  const grantReloadMode = merged.grantReload;
+  if (grantReloadMode !== "manual" && grantReloadMode !== "auto") {
+    throw new UserError(
+      `Invalid --grant-reload value "${grantReloadMode}": must be "manual" or "auto"`,
+    );
+  }
+
+  return {
+    authConfig,
+    tlsEnabled,
+    wsIdleTimeoutSeconds,
+    queueTimeoutMs,
+    heartbeatIntervalMs,
+    staleTtlMs,
+    reconciliationIntervalMs,
+    shutdownDrainTimeoutMs,
+    hydrationTimeoutMs,
+    datastorePollIntervalMs,
+    tokenGcSettings,
+    maxConcurrentRuns,
+    maxRunsPerPrincipal,
+    maxRunDurationMs,
+    grantReloadMode,
+  };
 }
 
 export interface ReapResult {
@@ -1415,8 +1615,10 @@ const daemonEnableCommand = new Command()
     "swamp serve daemon enable --config /etc/swamp/serve.yaml",
   )
   .action(async function (options: AnyOptions) {
-    const authMode = (options.authMode as string | undefined) ?? "none";
-    if (authMode === "oauth" || authMode === "token") {
+    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
+    const env = buildServeDaemonEnv();
+    const { authConfig } = validateServeDaemonArgs(options, repoDir, env);
+    if (authConfig.mode === "oauth" || authConfig.mode === "token") {
       requireAuthenticated("swamp serve is a team feature", "serve:*");
       requireScope("serve:*");
     }
@@ -1426,7 +1628,6 @@ const daemonEnableCommand = new Command()
       "daemon",
       "enable",
     ]);
-    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
     const mode = await resolveServiceMode({
       user: options.user as boolean | undefined,
     });
@@ -1441,7 +1642,7 @@ const daemonEnableCommand = new Command()
       certFile: options.certFile as string | undefined,
       keyFile: options.keyFile as string | undefined,
       extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
-      env: buildServeDaemonEnv(),
+      env,
     });
 
     renderDaemonEnabled(ctx.outputMode, toServiceMode(mode));
@@ -2097,11 +2298,25 @@ export const serveCommand = new Command()
     const certFile = merged.certFile;
     const keyFile = merged.keyFile;
 
-    if ((certFile && !keyFile) || (!certFile && keyFile)) {
-      throw new Error(
-        "Both --cert-file and --key-file must be provided together for TLS",
-      );
-    }
+    const {
+      authConfig,
+      tlsEnabled,
+      wsIdleTimeoutSeconds,
+      queueTimeoutMs,
+      heartbeatIntervalMs,
+      staleTtlMs,
+      reconciliationIntervalMs,
+      shutdownDrainTimeoutMs,
+      hydrationTimeoutMs,
+      datastorePollIntervalMs,
+      tokenGcSettings,
+      maxConcurrentRuns,
+      maxRunsPerPrincipal,
+      maxRunDurationMs,
+      grantReloadMode,
+    } = resolveServeStartupSettings(merged);
+    const heartbeatIntervalRaw = merged.heartbeatInterval;
+    const staleTtlRaw = merged.staleTtl;
 
     let cert: string | undefined;
     let key: string | undefined;
@@ -2109,7 +2324,6 @@ export const serveCommand = new Command()
       cert = await Deno.readTextFile(certFile);
       key = await Deno.readTextFile(keyFile);
     }
-    const tlsEnabled = cert !== undefined;
 
     if (cert) {
       for (const warning of validateEndEntityCert(cert)) {
@@ -2117,102 +2331,6 @@ export const serveCommand = new Command()
       }
     }
     const trustProxy = merged.trustProxy;
-
-    const wsIdleTimeoutRaw = merged.wsIdleTimeout;
-    let wsIdleTimeoutSeconds: number | undefined;
-    if (wsIdleTimeoutRaw !== undefined) {
-      if (wsIdleTimeoutRaw === "0") {
-        wsIdleTimeoutSeconds = 0;
-      } else {
-        wsIdleTimeoutSeconds = Math.round(
-          parseTimeout(wsIdleTimeoutRaw) / 1000,
-        );
-      }
-    }
-
-    const queueTimeoutRaw = merged.queueTimeout;
-    let queueTimeoutMs: number | undefined;
-    if (queueTimeoutRaw !== undefined) {
-      const normalized = queueTimeoutRaw.trim().replace(/^0[smhdw].*$/i, "0");
-      queueTimeoutMs = normalized === "0"
-        ? 0
-        : parseTimeout(queueTimeoutRaw, "--queue-timeout");
-    }
-
-    const heartbeatIntervalRaw = merged.heartbeatInterval;
-    const heartbeatIntervalMs = heartbeatIntervalRaw !== undefined
-      ? parseTimerDuration(heartbeatIntervalRaw, "--heartbeat-interval")
-      : undefined;
-
-    const staleTtlRaw = merged.staleTtl;
-    const staleTtlMs = staleTtlRaw !== undefined
-      ? parseTimeout(staleTtlRaw, "--stale-ttl")
-      : undefined;
-
-    const reconciliationIntervalRaw = merged.reconciliationInterval;
-    const reconciliationIntervalMs = reconciliationIntervalRaw !== undefined
-      ? parseTimerDuration(
-        reconciliationIntervalRaw,
-        "--reconciliation-interval",
-        MAX_TIMER_DELAY_MS - RECONCILIATION_JITTER_MS,
-      )
-      : undefined;
-
-    const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
-      merged.shutdownDrainTimeout,
-    );
-
-    const hydrationTimeoutRaw = merged.hydrationTimeout;
-    const hydrationTimeoutMs = hydrationTimeoutRaw !== undefined
-      ? parseTimerDuration(hydrationTimeoutRaw, "--hydration-timeout")
-      : 60_000;
-
-    const datastorePollIntervalMs = parseDatastorePollInterval(
-      merged.datastorePollInterval,
-    );
-
-    const tokenGcSettings = parseTokenGcSettings(
-      merged.tokenGcInterval,
-      merged.tokenGcGracePeriod,
-    );
-
-    const maxConcurrentRuns = merged.maxConcurrentRuns;
-    if (
-      maxConcurrentRuns !== undefined &&
-      (!Number.isInteger(maxConcurrentRuns) || maxConcurrentRuns < 1)
-    ) {
-      throw new UserError(
-        `--max-concurrent-runs must be a positive integer, got ${maxConcurrentRuns}`,
-      );
-    }
-    const maxRunsPerPrincipal = merged.maxRunsPerPrincipal;
-    if (
-      maxRunsPerPrincipal !== undefined &&
-      (!Number.isInteger(maxRunsPerPrincipal) || maxRunsPerPrincipal < 1)
-    ) {
-      throw new UserError(
-        `--max-runs-per-principal must be a positive integer, got ${maxRunsPerPrincipal}`,
-      );
-    }
-    const maxRunDurationRaw = merged.maxRunDuration !== undefined
-      ? String(merged.maxRunDuration)
-      : undefined;
-    const maxRunDurationMs = maxRunDurationRaw !== undefined
-      ? parseTimerDuration(maxRunDurationRaw, "--max-run-duration")
-      : undefined;
-
-    const authConfig = buildServeAuthConfig({
-      authMode: merged.authMode,
-      admins: merged.admins,
-      allowedCollectives: merged.allowedCollectives,
-      allowedUsers: merged.allowedUsers,
-      oauthProvider: merged.oauthProvider,
-      oauthClientId: merged.oauthClientId,
-      groupsField: merged.groupsField,
-      restrictedModelTypes: merged.restrictedModelTypes,
-      restrictedCommands: merged.restrictedCommands,
-      approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
-    });
 
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
       logger.warn(
@@ -2262,8 +2380,6 @@ export const serveCommand = new Command()
           "See https://swamp-club.com/manual/how-to/swamp-serve/set-up-token-auth",
       );
     }
-
-    assertOffLoopbackSecurity(host, tlsEnabled, authConfig.mode);
 
     const trustedHostsRaw = merged.trustedHosts;
     const trustedHosts = trustedHostsRaw
@@ -2518,13 +2634,6 @@ export const serveCommand = new Command()
       );
     } else {
       logger.info("Mode: local — runs survive process restart");
-    }
-
-    const grantReloadMode = merged.grantReload;
-    if (grantReloadMode !== "manual" && grantReloadMode !== "auto") {
-      throw new UserError(
-        `Invalid --grant-reload value "${grantReloadMode}": must be "manual" or "auto"`,
-      );
     }
 
     const modelsDir = join(resolvedRepoDir, "models");

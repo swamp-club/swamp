@@ -32,6 +32,7 @@ import {
   parseTokenGcSettings,
   readCancelRequestReason,
   reapOrphanedWorkflowRuns,
+  resolveServeStartupSettings,
   shouldWarnGroupRefreshIgnored,
   validateWebSocketOrigin,
 } from "./serve.ts";
@@ -42,6 +43,7 @@ import {
 import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
 import { RunEventBuffer } from "../../serve/run_event_buffer.ts";
 import { UserError } from "../../domain/errors.ts";
+import { mergeServeOptions } from "../../serve/serve_config.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
@@ -1658,3 +1660,85 @@ function refusalFields(h: CancelAuthHarness) {
     sourceIp: e.sourceIp,
   }));
 }
+
+/** Merged serve options with Cliffy's defaults and the given flags set. */
+function mergedServeOptions(flags: Record<string, unknown> = {}) {
+  return mergeServeOptions(
+    null,
+    {
+      port: 9090,
+      host: "127.0.0.1",
+      schedule: true,
+      grantReload: "manual",
+      authMode: "none",
+      ...flags,
+    },
+    new Set(
+      Object.keys(flags).map((k) =>
+        k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)
+      ),
+    ),
+    () => undefined,
+  );
+}
+
+Deno.test("resolveServeStartupSettings: applies the startup defaults", () => {
+  const settings = resolveServeStartupSettings(mergedServeOptions());
+  assertEquals(settings.authConfig.mode, "none");
+  assertEquals(settings.tlsEnabled, false);
+  assertEquals(settings.hydrationTimeoutMs, 60_000);
+  assertEquals(settings.shutdownDrainTimeoutMs, 30_000);
+  assertEquals(settings.wsIdleTimeoutSeconds, undefined);
+  assertEquals(settings.queueTimeoutMs, undefined);
+  assertEquals(settings.grantReloadMode, "manual");
+});
+
+Deno.test("resolveServeStartupSettings: 0 disables the ws idle and queue timeouts", () => {
+  const settings = resolveServeStartupSettings(
+    mergedServeOptions({ wsIdleTimeout: "0", queueTimeout: "0s" }),
+  );
+  assertEquals(settings.wsIdleTimeoutSeconds, 0);
+  assertEquals(settings.queueTimeoutMs, 0);
+});
+
+Deno.test("resolveServeStartupSettings: TLS is enabled when both cert and key are set", () => {
+  const settings = resolveServeStartupSettings(
+    mergedServeOptions({ certFile: "cert.pem", keyFile: "key.pem" }),
+  );
+  assertEquals(settings.tlsEnabled, true);
+});
+
+Deno.test("resolveServeStartupSettings: rejects --key-file without --cert-file", () => {
+  assertThrows(
+    () =>
+      resolveServeStartupSettings(mergedServeOptions({ keyFile: "key.pem" })),
+    UserError,
+    "Both --cert-file and --key-file must be provided together for TLS",
+  );
+});
+
+Deno.test("resolveServeStartupSettings: rejects an invalid --grant-reload value", () => {
+  assertThrows(
+    () =>
+      resolveServeStartupSettings(
+        mergedServeOptions({ grantReload: "sometimes" }),
+      ),
+    UserError,
+    'Invalid --grant-reload value "sometimes"',
+  );
+});
+
+Deno.test("resolveServeStartupSettings: refuses an off-loopback bind without TLS", () => {
+  assertThrows(
+    () =>
+      resolveServeStartupSettings(
+        mergedServeOptions({
+          host: "0.0.0.0",
+          authMode: "token",
+          admins: "user:alice",
+        }),
+      ),
+    UserError,
+    "Off-loopback binding requires TLS",
+  );
+});
