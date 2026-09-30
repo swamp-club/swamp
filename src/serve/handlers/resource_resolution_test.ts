@@ -21,6 +21,7 @@ import { assertEquals, assertStrictEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import {
   authorizeReferenceAccess,
+  CanonicalResources,
   type ReferenceAccess,
   resolveModelTarget,
   resolveModelTargetById,
@@ -914,4 +915,144 @@ Deno.test("authorizeReferenceAccess: an ambiguous prefix lists every match when 
   assertEquals(result, ["prod-db", "dev-db"]);
   assertEquals(sent, []);
   assertEquals(audit, []);
+});
+
+// --- CanonicalResources (swamp-club#2675) ---
+
+Deno.test("CanonicalResources.modelOwners: every definition sharing the id, with full fields", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = Definition.create({
+      name: "prod-db",
+      globalArguments: {},
+      tags: { env: "prod" },
+    });
+    await repo.save(SHELL, prod);
+    await copyDefinitionFile(repo, prod, "safe-model");
+
+    const canonical = new CanonicalResources(repo, workflowRepo([]));
+    const owners = await canonical.modelOwners(
+      prod.id,
+      "command/shell",
+      "recorded-name",
+      "data",
+    );
+
+    assertEquals(
+      owners.map((o) => o.name).sort(),
+      ["prod-db", "safe-model"],
+    );
+    for (const owner of owners) {
+      assertEquals(owner.kind, "data");
+      assertEquals(owner.fields.ns, "");
+      assertEquals(owner.fields.tags, { env: "prod" });
+    }
+  });
+});
+
+Deno.test("CanonicalResources.modelOwners: a deleted model is judged on its recorded name with empty tags", async () => {
+  await withTempDir(async (dir) => {
+    const canonical = new CanonicalResources(
+      new YamlDefinitionRepository(dir),
+      workflowRepo([]),
+    );
+    assertEquals(
+      await canonical.modelOwners(
+        crypto.randomUUID(),
+        "@acme/db",
+        "gone-db",
+        "data",
+      ),
+      [{
+        kind: "data",
+        name: "gone-db",
+        fields: { name: "gone-db", ns: "acme", tags: {} },
+      }],
+    );
+  });
+});
+
+Deno.test("CanonicalResources.model: a listed definition is judged as itself, not its copy", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = Definition.create({
+      name: "prod-db",
+      globalArguments: {},
+      tags: { env: "prod" },
+    });
+    await repo.save(SHELL, prod);
+    await copyDefinitionFile(repo, prod, "safe-model");
+
+    const canonical = new CanonicalResources(repo, workflowRepo([]));
+    const resources = await canonical.model(
+      prod.id,
+      "safe-model",
+      "command/shell",
+    );
+
+    assertEquals(resources.map((r) => r.name), ["safe-model"]);
+    assertEquals(resources[0].fields.modelType, "command/shell");
+  });
+});
+
+Deno.test("CanonicalResources.workflowOwners: a renamed workflow counts under both names", async () => {
+  const wf = Workflow.create({ name: "prod-flow", tags: { env: "prod" } });
+  const canonical = new CanonicalResources(
+    {} as DefinitionRepository,
+    workflowRepo([wf]),
+  );
+
+  const owners = await canonical.workflowOwners(wf.id, "old-flow");
+
+  assertEquals(owners, [
+    {
+      kind: "workflow",
+      name: "old-flow",
+      fields: { name: "old-flow", tags: {} },
+    },
+    {
+      kind: "workflow",
+      name: "prod-flow",
+      fields: { name: "prod-flow", tags: { env: "prod" } },
+    },
+  ]);
+});
+
+Deno.test("CanonicalResources.dataOwners: workflow-scope data is named by its workflow with its tags", async () => {
+  const wf = Workflow.create({ name: "nightly", tags: { env: "prod" } });
+  const canonical = new CanonicalResources(
+    {} as DefinitionRepository,
+    workflowRepo([wf]),
+  );
+
+  const owners = await canonical.dataOwners({
+    modelType: "workflow",
+    modelId: wf.id,
+    modelName: "nightly",
+  });
+
+  assertEquals(owners, [{
+    kind: "data",
+    name: "nightly",
+    fields: { name: "nightly", ns: "", tags: { env: "prod" } },
+  }]);
+});
+
+Deno.test("CanonicalResources: looks each id up once per request", async () => {
+  let lookups = 0;
+  const wf = Workflow.create({ name: "w" });
+  const repo = {
+    findById: (id: string) => {
+      lookups++;
+      return Promise.resolve(id === wf.id ? wf : null);
+    },
+    findByName: () => Promise.resolve(null),
+  } as unknown as WorkflowRepository;
+  const canonical = new CanonicalResources({} as DefinitionRepository, repo);
+
+  await canonical.workflowOwners(wf.id, "w");
+  const before = lookups;
+  await canonical.workflowOwners(wf.id, "w");
+
+  assertEquals(lookups, before);
 });

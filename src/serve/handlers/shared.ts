@@ -1091,16 +1091,21 @@ export function resolveDisplayPrincipal(
   return principalToString(principal);
 }
 
-export function filterByAuthorization<T>(
+/**
+ * Keeps the items the principal may `action`: an item is kept only when
+ * every resource `resourcesOf` returns for it is allowed — an item with
+ * several owners (a copied model shares its data) needs them all. A resource
+ * no grant decides is allowed only for an admin. Decisions are made once per distinct
+ * resource and are not audited, as filtering never refuses the request.
+ */
+export async function filterByResources<T>(
   items: T[],
-  nameExtractor: (item: T) => string | undefined,
-  fieldsExtractor: (item: T) => Record<string, unknown>,
+  resourcesOf: (item: T) => Promise<AccessResource[]>,
   socket: WebSocket,
   principal: Principal | null,
   action: Action,
-  kind: ResourceKind,
   ctx: ConnectionContext,
-): T[] {
+): Promise<T[]> {
   if (ctx.authConfig.mode === "none") return items;
   if (!ctx.policySnapshotLoader || !principal) return [];
 
@@ -1108,7 +1113,6 @@ export function filterByAuthorization<T>(
   const groups = connectionGroups.get(socket) ?? [];
   const service = ctx.policySnapshotLoader.decisionService;
   const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
-
   const adminDecision = service.decide(
     accessPrincipal,
     "admin",
@@ -1116,24 +1120,29 @@ export function filterByAuthorization<T>(
   );
   const isAdmin = adminDecision !== null && adminDecision.effect === "allow";
 
-  return items.filter((item) => {
-    const name = nameExtractor(item);
-    if (name === undefined) return false;
-    const resource: AccessResource = {
-      kind,
-      name,
-      fields: fieldsExtractor(item),
-    };
-    const decision = service.decide(accessPrincipal, action, resource);
-    if (decision && decision.effect === "allow") return true;
-    if (decision && decision.effect === "deny") return false;
-    return isAdmin;
-  });
+  const decided = new Map<string, boolean>();
+  const allows = (resource: AccessResource): boolean => {
+    const key = JSON.stringify([resource.kind, resource.name, resource.fields]);
+    let allowed = decided.get(key);
+    if (allowed === undefined) {
+      const decision = service.decide(accessPrincipal, action, resource);
+      allowed = decision ? decision.effect === "allow" : isAdmin;
+      decided.set(key, allowed);
+    }
+    return allowed;
+  };
+
+  const kept: T[] = [];
+  for (const item of items) {
+    const resources = await resourcesOf(item);
+    if (resources.length > 0 && resources.every(allows)) kept.push(item);
+  }
+  return kept;
 }
 
 /**
  * Slices one page out of an already-authorized result list. Apply after
- * {@link filterByAuthorization} so `total` and page boundaries reflect only
+ * {@link filterByResources} so `total` and page boundaries reflect only
  * what the principal may read. An omitted `limit` returns everything from
  * `offset` on.
  */

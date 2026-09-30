@@ -136,7 +136,7 @@ import {
   clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
-  filterByAuthorization,
+  filterByResources,
   isAuthorized,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
@@ -149,7 +149,6 @@ import {
   subscribeUntilDetach,
   wasRequestErrored,
 } from "./shared.ts";
-import { resolveDataFields } from "./data_handlers.ts";
 import type { ResourceReadPolicy } from "../../domain/workflows/step_output_resolver.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -170,6 +169,7 @@ import {
   findWorkflowByIdOrName,
 } from "../../domain/workflows/workflow_lookup.ts";
 import {
+  canonicalResources,
   authorizeReferenceAccess,
   authorizeResolved,
   resolveRecordedWorkflow,
@@ -540,17 +540,16 @@ export async function handleWorkflowSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ name: string }>;
+      results?: Array<{ id: string; name: string }>;
     };
+    const canonical = canonicalResources(ctx);
     const { page, total } = paginate(
-      filterByAuthorization(
+      await filterByResources(
         data.results ?? [],
-        (item) => item.name,
-        (item) => ({ name: item.name }),
+        (item) => canonical.workflowOwners(item.id, item.name),
         socket,
         principal,
         "read",
-        "workflow",
         ctx,
       ),
       payload?.offset,
@@ -630,17 +629,16 @@ export async function handleWorkflowApprovals(
     }
 
     const data = (result ?? {}) as {
-      approvals?: Array<{ workflowName: string }>;
+      approvals?: Array<{ workflowId: string; workflowName: string }>;
     };
     if (data.approvals) {
-      data.approvals = filterByAuthorization(
+      const canonical = canonicalResources(ctx);
+      data.approvals = await filterByResources(
         data.approvals,
-        (item) => item.workflowName,
-        (item) => ({ name: item.workflowName }),
+        (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
         socket,
         principal,
         "read",
-        "workflow",
         ctx,
       );
     }
@@ -733,25 +731,16 @@ function dataReadPolicy(
   ctx: ConnectionContext,
   principal: Principal | null,
 ): ResourceReadPolicy {
-  const fieldsByModel = new Map<string, Promise<Record<string, unknown>>>();
-  return async (ref) => {
-    let fields = fieldsByModel.get(ref.modelId);
-    if (!fields) {
-      fields = resolveDataFields(ctx.repoContext.definitionRepo, ref.modelId);
-      fieldsByModel.set(ref.modelId, fields);
-    }
-    const resolved = await fields;
-    return filterByAuthorization(
+  const canonical = canonicalResources(ctx);
+  return async (ref) =>
+    (await filterByResources(
       [ref],
-      () => resolved.name as string,
-      () => resolved,
+      (item) => canonical.dataOwners(item),
       socket,
       principal,
       "read",
-      "data",
       ctx,
-    ).length === 1;
-  };
+    )).length === 1;
 }
 
 export async function handleWorkflowHistoryGet(
@@ -989,17 +978,16 @@ export async function handleWorkflowHistorySearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ workflowName: string }>;
+      results?: Array<{ workflowId: string; workflowName: string }>;
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      const canonical = canonicalResources(ctx);
+      data.results = await filterByResources(
         data.results,
-        (item) => item.workflowName,
-        (item) => ({ name: item.workflowName }),
+        (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
         socket,
         principal,
         "read",
-        "workflow",
         ctx,
       );
     }
@@ -1075,19 +1063,18 @@ export async function handleWorkflowRunSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ workflowName: string }>;
+      results?: Array<{ workflowId: string; workflowName: string }>;
     };
     // Page after the authorization filter, never inside libswamp: slicing
     // first would let unreadable runs shorten a page and skew `total`.
+    const canonical = canonicalResources(ctx);
     const { page, total } = paginate(
-      filterByAuthorization(
+      await filterByResources(
         data.results ?? [],
-        (item) => item.workflowName,
-        (item) => ({ name: item.workflowName }),
+        (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
         socket,
         principal,
         "read",
-        "workflow",
         ctx,
       ),
       payload?.offset,

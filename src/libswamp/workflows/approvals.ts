@@ -31,6 +31,7 @@ import { getLogger } from "@logtape/logtape";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export interface PendingApproval {
+  workflowId: string;
   workflowName: string;
   runId: string;
   stepName: string;
@@ -139,6 +140,7 @@ export async function* workflowApprovals(
           }
 
           pending.push({
+            workflowId: workflow.id,
             workflowName: workflow.name,
             runId: run.id,
             stepName: waiting.stepName,

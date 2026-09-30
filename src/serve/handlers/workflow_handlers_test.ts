@@ -205,7 +205,13 @@ function makeSearchCtx(
   const ctx: Record<string, unknown> = {
     authConfig: { ...searchAuthBase, mode: grants ? "token" : "none" },
     repoContext: {
-      workflowRepo: { findAll: () => Promise.resolve(workflows) },
+      workflowRepo: {
+        findAll: () => Promise.resolve(workflows),
+        findById: (id: string) =>
+          Promise.resolve(workflows.find((w) => w.id === id) ?? null),
+        findByName: (name: string) =>
+          Promise.resolve(workflows.find((w) => w.name === name) ?? null),
+      },
       workflowRunRepo: {
         findAllSummariesFromIndex: (workflowId: string) => {
           const i = workflows.findIndex((w) => w.id === workflowId);
@@ -472,6 +478,13 @@ function makeHistoryCtx(
             definitionNames[id]
               ? { name: definitionNames[id], tags: {} }
               : null,
+          ),
+        findAllGlobal: () =>
+          Promise.resolve(
+            Object.entries(definitionNames).map(([id, name]) => ({
+              definition: { id, name, tags: {} },
+              type: { normalized: "command/shell" },
+            })),
           ),
       },
     },

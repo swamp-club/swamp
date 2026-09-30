@@ -37,7 +37,7 @@ import {
   type ConnectionContext,
   emitRunCancelAudit,
   emitSystemAuditEvent,
-  filterByAuthorization,
+  filterByResources,
   isAuthorized,
   LibSwampStreamError,
   listTokenSessions,
@@ -60,6 +60,7 @@ import {
 } from "./shared.ts";
 import type { ServerMessage } from "../protocol.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
+import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 
 function makeGrant(overrides: Partial<Grant> = {}): Grant {
   return {
@@ -84,7 +85,7 @@ function makeCtx(
   grants: Grant[],
   mode: "none" | "token" | "oauth" = "token",
 ): ConnectionContext {
-  const snapshot = new PolicySnapshot(grants, []);
+  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
   const service = new GrantBasedAccessDecisionService(snapshot);
   return {
     repoDir: "/tmp/test",
@@ -126,43 +127,53 @@ const testItems: TestItem[] = [
   { name: "@other/run", type: "@other" },
 ];
 
-Deno.test("filterByAuthorization: returns all items when auth mode is none", () => {
+Deno.test("filterByResources: returns all items when auth mode is none", async () => {
   const socket = makeSocket();
   setConnectionCollectives(socket, [], []);
   const ctx = makeCtx([], "none");
-  const result = filterByAuthorization(
+  const result = await filterByResources(
     testItems,
-    (item) => item.name,
-    (item) => ({ name: item.name }),
+    (item) =>
+      Promise.resolve(
+        item.name === undefined ? [] : [{
+          kind: "model",
+          name: item.name,
+          fields: { name: item.name, tags: {} },
+        }],
+      ),
     socket,
     makePrincipal("adam"),
     "read",
-    "model",
     ctx,
   );
   assertEquals(result.length, 3);
 });
 
-Deno.test("filterByAuthorization: returns empty when no principal", () => {
+Deno.test("filterByResources: returns empty when no principal", async () => {
   const socket = makeSocket();
   setConnectionCollectives(socket, [], []);
   const ctx = makeCtx([
     makeGrant({ resource: { kind: "model", pattern: "*" } }),
   ]);
-  const result = filterByAuthorization(
+  const result = await filterByResources(
     testItems,
-    (item) => item.name,
-    (item) => ({ name: item.name }),
+    (item) =>
+      Promise.resolve(
+        item.name === undefined ? [] : [{
+          kind: "model",
+          name: item.name,
+          fields: { name: item.name, tags: {} },
+        }],
+      ),
     socket,
     null,
     "read",
-    "model",
     ctx,
   );
   assertEquals(result.length, 0);
 });
 
-Deno.test("filterByAuthorization: returns all items for admin user", () => {
+Deno.test("filterByResources: returns all items for admin user", async () => {
   const socket = makeSocket();
   setConnectionCollectives(socket, [], []);
   const ctx = makeCtx([
@@ -171,33 +182,43 @@ Deno.test("filterByAuthorization: returns all items for admin user", () => {
       resource: { kind: "access", pattern: "*" },
     }),
   ]);
-  const result = filterByAuthorization(
+  const result = await filterByResources(
     testItems,
-    (item) => item.name,
-    (item) => ({ name: item.name }),
+    (item) =>
+      Promise.resolve(
+        item.name === undefined ? [] : [{
+          kind: "model",
+          name: item.name,
+          fields: { name: item.name, tags: {} },
+        }],
+      ),
     socket,
     makePrincipal("adam"),
     "read",
-    "model",
     ctx,
   );
   assertEquals(result.length, 3);
 });
 
-Deno.test("filterByAuthorization: filters by scoped grant", () => {
+Deno.test("filterByResources: filters by scoped grant", async () => {
   const socket = makeSocket();
   setConnectionCollectives(socket, [], []);
   const ctx = makeCtx([
     makeGrant({ resource: { kind: "model", pattern: "@acme/*" } }),
   ]);
-  const result = filterByAuthorization(
+  const result = await filterByResources(
     testItems,
-    (item) => item.name,
-    (item) => ({ name: item.name }),
+    (item) =>
+      Promise.resolve(
+        item.name === undefined ? [] : [{
+          kind: "model",
+          name: item.name,
+          fields: { name: item.name, tags: {} },
+        }],
+      ),
     socket,
     makePrincipal("adam"),
     "read",
-    "model",
     ctx,
   );
   assertEquals(result.length, 2);
@@ -205,7 +226,7 @@ Deno.test("filterByAuthorization: filters by scoped grant", () => {
   assertEquals(result[1].name, "@acme/build");
 });
 
-Deno.test("filterByAuthorization: excludes items with undefined name", () => {
+Deno.test("filterByResources: excludes items with undefined name", async () => {
   const socket = makeSocket();
   setConnectionCollectives(socket, [], []);
   const ctx = makeCtx([
@@ -215,20 +236,25 @@ Deno.test("filterByAuthorization: excludes items with undefined name", () => {
     { modelName: "@acme/deploy" },
     { modelName: undefined },
   ];
-  const result = filterByAuthorization(
+  const result = await filterByResources(
     items,
-    (item) => item.modelName,
-    (item) => ({ name: item.modelName }),
+    (item) =>
+      Promise.resolve(
+        item.modelName === undefined ? [] : [{
+          kind: "model",
+          name: item.modelName,
+          fields: { name: item.modelName, tags: {} },
+        }],
+      ),
     socket,
     makePrincipal("adam"),
     "read",
-    "model",
     ctx,
   );
   assertEquals(result.length, 1);
 });
 
-Deno.test("filterByAuthorization: deny grant excludes matching items", () => {
+Deno.test("filterByResources: deny grant excludes matching items", async () => {
   const socket = makeSocket();
   setConnectionCollectives(socket, [], []);
   const ctx = makeCtx([
@@ -238,14 +264,19 @@ Deno.test("filterByAuthorization: deny grant excludes matching items", () => {
       resource: { kind: "model", pattern: "@other/*" },
     }),
   ]);
-  const result = filterByAuthorization(
+  const result = await filterByResources(
     testItems,
-    (item) => item.name,
-    (item) => ({ name: item.name }),
+    (item) =>
+      Promise.resolve(
+        item.name === undefined ? [] : [{
+          kind: "model",
+          name: item.name,
+          fields: { name: item.name, tags: {} },
+        }],
+      ),
     socket,
     makePrincipal("adam"),
     "read",
-    "model",
     ctx,
   );
   assertEquals(result.length, 2);
@@ -253,7 +284,7 @@ Deno.test("filterByAuthorization: deny grant excludes matching items", () => {
   assertEquals(result[1].name, "@acme/build");
 });
 
-Deno.test("filterByAuthorization: admin with deny grant respects deny", () => {
+Deno.test("filterByResources: admin with deny grant respects deny", async () => {
   const socket = makeSocket();
   setConnectionCollectives(socket, [], []);
   const ctx = makeCtx([
@@ -271,14 +302,19 @@ Deno.test("filterByAuthorization: admin with deny grant respects deny", () => {
     ...testItems,
     { name: "@secret/keys", type: "@secret" },
   ];
-  const result = filterByAuthorization(
+  const result = await filterByResources(
     itemsWithSecret,
-    (item) => item.name,
-    (item) => ({ name: item.name }),
+    (item) =>
+      Promise.resolve(
+        item.name === undefined ? [] : [{
+          kind: "model",
+          name: item.name,
+          fields: { name: item.name, tags: {} },
+        }],
+      ),
     socket,
     makePrincipal("adam"),
     "read",
-    "model",
     ctx,
   );
   assertEquals(result.length, 3);
@@ -1312,4 +1348,65 @@ Deno.test("emitRunCancelAudit: records the cancel, its outcome and who made it",
   assertEquals(events[1].action, "cancel.all");
   assertEquals(events[1].principalKind, "anonymous");
   assertEquals(events[1].initiatedBy, "ghost");
+});
+
+Deno.test("filterByResources: keeps an item only when every owner is allowed", async () => {
+  const socket = makeSocket();
+  setConnectionCollectives(socket, [], []);
+  const ctx = makeCtx([
+    makeGrant({ resource: { kind: "data", pattern: "*" } }),
+    makeGrant({
+      effect: "deny",
+      resource: { kind: "data", pattern: "prod-db" },
+    }),
+  ]);
+  const owner = (name: string) => ({
+    kind: "data" as const,
+    name,
+    fields: { name, ns: "", tags: {} },
+  });
+  const items = [
+    { owners: [owner("dev-db")] },
+    { owners: [owner("dev-db"), owner("prod-db")] },
+  ];
+  const result = await filterByResources(
+    items,
+    (item) => Promise.resolve(item.owners),
+    socket,
+    makePrincipal("adam"),
+    "read",
+    ctx,
+  );
+  assertEquals(result, [items[0]]);
+});
+
+Deno.test("filterByResources: a tags deny drops the tagged item and keeps an untagged one", async () => {
+  const socket = makeSocket();
+  setConnectionCollectives(socket, [], []);
+  const ctx = makeCtx([
+    makeGrant({ resource: { kind: "model", pattern: "*" } }),
+    makeGrant({
+      effect: "deny",
+      resource: { kind: "model", pattern: "*" },
+      condition: '"env" in tags && tags.env == "prod"',
+    }),
+  ]);
+  const items = [
+    { name: "a", tags: { env: "prod" } },
+    { name: "b", tags: {} },
+  ];
+  const result = await filterByResources(
+    items,
+    (item) =>
+      Promise.resolve([{
+        kind: "model" as const,
+        name: item.name,
+        fields: { name: item.name, modelType: "t", tags: item.tags },
+      }]),
+    socket,
+    makePrincipal("adam"),
+    "read",
+    ctx,
+  );
+  assertEquals(result.map((i) => i.name), ["b"]);
 });

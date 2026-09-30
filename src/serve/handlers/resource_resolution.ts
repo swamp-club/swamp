@@ -565,24 +565,152 @@ export async function resolveOutputAccess<
  * run is judged on the workflow that made it even if that workflow was
  * deleted or renamed, or a copy now shares its id.
  */
-async function runOwners(
+function runOwners(
   workflowRepo: WorkflowRepository,
   run: WorkflowRun,
 ): Promise<AccessResource[]> {
-  const resolution = await resolveRecordedWorkflow(
-    workflowRepo,
-    run.workflowId,
-    run.workflowName,
-  );
+  return recordedWorkflowOwners(workflowRepo, run.workflowId, run.workflowName);
+}
+
+/**
+ * The workflows something recorded as workflow `id` named `name` belongs to,
+ * by the rule {@link runOwners} describes.
+ */
+async function recordedWorkflowOwners(
+  workflowRepo: WorkflowRepository,
+  id: string,
+  name: string,
+): Promise<AccessResource[]> {
+  const resolution = await resolveRecordedWorkflow(workflowRepo, id, name);
   if (resolution.status === "failed") throw resolution.error;
-  const recorded = workflowAccessResource({
-    name: run.workflowName,
-    tags: {},
-  });
+  const recorded = workflowAccessResource({ name, tags: {} });
   if (resolution.status === "missing") return [recorded];
-  return resolution.name === run.workflowName
+  return resolution.name === name
     ? [resolution.resource]
     : [recorded, resolution.resource];
+}
+
+/**
+ * The owner a stored item records: a model or, for workflow-scope data such
+ * as workflow reports, a workflow (model type `workflow`).
+ */
+export interface RecordedOwner {
+  readonly modelType: string;
+  readonly modelId: string;
+  readonly modelName: string;
+}
+
+/** The model type workflow-scope data is stored under. */
+const WORKFLOW_OWNER_TYPE = "workflow";
+
+/**
+ * Complete access resources for items a collection returns, looked up by id
+ * and memoized for one request (swamp-club#2675). Items are judged on the
+ * resources that own them now — by id, not by the name recorded when they
+ * were written — with every resource field present, so conditional denies
+ * decide on them. An owner no longer found is judged on its recorded name,
+ * as it is today.
+ */
+export class CanonicalResources {
+  readonly #definitionRepo: DefinitionRepository;
+  readonly #workflowRepo: WorkflowRepository;
+  readonly #definitions = new Map<string, Promise<DefinitionLookupResult[]>>();
+  readonly #workflows = new Map<string, Promise<AccessResource[]>>();
+
+  constructor(
+    definitionRepo: DefinitionRepository,
+    workflowRepo: WorkflowRepository,
+  ) {
+    this.#definitionRepo = definitionRepo;
+    this.#workflowRepo = workflowRepo;
+  }
+
+  #definitionsById(id: string): Promise<DefinitionLookupResult[]> {
+    let found = this.#definitions.get(id);
+    if (!found) {
+      found = findDefinitionsByIdGlobal(this.#definitionRepo, id);
+      this.#definitions.set(id, found);
+    }
+    return found;
+  }
+
+  /**
+   * A model definition a collection lists, as itself: the definition with
+   * that id and name, or — when none has both — every definition with the
+   * id, since a copy shares its id.
+   */
+  async model(
+    id: string,
+    name: string,
+    modelType: string,
+  ): Promise<AccessResource[]> {
+    const owners = await this.#definitionsById(id);
+    const named = owners.filter((o) => o.definition.name === name);
+    const chosen = named.length > 0 ? named : owners;
+    if (chosen.length > 0) {
+      return distinct(chosen.map((o) => modelAccessResource(o, "model")));
+    }
+    return [{
+      kind: "model",
+      name,
+      fields: modelTypeFields(name, modelType, undefined, "model"),
+    }];
+  }
+
+  /**
+   * Every model owning what is stored under `modelId`, as `kind`. Ids are
+   * not unique and a copy shares its original's outputs and data, so each
+   * definition declaring the id counts.
+   */
+  async modelOwners(
+    modelId: string,
+    modelType: string,
+    recordedName: string,
+    kind: ModelResourceKind,
+  ): Promise<AccessResource[]> {
+    const owners = await this.#definitionsById(modelId);
+    if (owners.length > 0) {
+      return distinct(owners.map((o) => modelAccessResource(o, kind)));
+    }
+    return [{
+      kind,
+      name: recordedName,
+      fields: modelTypeFields(recordedName, modelType, undefined, kind),
+    }];
+  }
+
+  /** The workflows something recorded as workflow `id` named `name` belongs to. */
+  workflowOwners(id: string, name: string): Promise<AccessResource[]> {
+    const key = JSON.stringify([id, name]);
+    let found = this.#workflows.get(key);
+    if (!found) {
+      found = recordedWorkflowOwners(this.#workflowRepo, id, name);
+      this.#workflows.set(key, found);
+    }
+    return found;
+  }
+
+  /**
+   * The resources owning a stored data item, as `data`: its models, or for
+   * workflow-scope data its workflows — named by the workflow, with the
+   * workflow's tags, so it has one identity wherever it is read.
+   */
+  async dataOwners(owner: RecordedOwner): Promise<AccessResource[]> {
+    if (owner.modelType !== WORKFLOW_OWNER_TYPE) {
+      return await this.modelOwners(
+        owner.modelId,
+        owner.modelType,
+        owner.modelName,
+        "data",
+      );
+    }
+    const workflows = await this.workflowOwners(owner.modelId, owner.modelName);
+    return workflows.map((workflow) => ({
+      kind: "data",
+      name: workflow.name,
+      fields: { name: workflow.name, ns: "", tags: workflow.fields.tags ?? {} },
+    }));
+  }
 }
 
 /**
@@ -749,4 +877,12 @@ function authorizeAmbiguous<T>(
     owners === first || others.has(i) ? [i] : []
   );
   return access.narrow(readable);
+}
+
+/** A {@link CanonicalResources} for one request on `ctx`'s repository. */
+export function canonicalResources(ctx: ConnectionContext): CanonicalResources {
+  return new CanonicalResources(
+    ctx.repoContext.definitionRepo,
+    ctx.repoContext.workflowRepo,
+  );
 }

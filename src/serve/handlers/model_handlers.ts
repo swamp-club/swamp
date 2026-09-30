@@ -52,6 +52,7 @@ import {
   modelOutputLogs,
   modelOutputSearch,
   type ModelOutputSearchDeps,
+  type ModelOutputSearchItem,
   modelSearch,
   type ModelSearchDeps,
   modelValidate,
@@ -119,7 +120,7 @@ import {
   clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
-  filterByAuthorization,
+  filterByResources,
   isAdminOnlyModelType,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
@@ -132,6 +133,7 @@ import {
 } from "./shared.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
+  canonicalResources,
   authorizeReferenceAccess,
   authorizeResolved,
   modelAccessResource,
@@ -489,6 +491,7 @@ export async function handleModelMethodRun(
       kind: "method-run",
       resourceName: target.resource.name,
       resourceId: target.resourceId,
+      methodName: payload.methodName,
       buffer,
       controller: runController,
       startedAt,
@@ -678,6 +681,7 @@ export async function handleModelMethodRun(
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
       resourceName: target.resource.name,
       resourceId: target.resourceId,
+      methodName: payload.methodName,
       runKind: "method-run",
       startedAt: startedAt.toISOString(),
     });
@@ -735,17 +739,16 @@ export async function handleModelSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ name: string; type: string }>;
+      results?: Array<{ id: string; name: string; type: string }>;
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      const canonical = canonicalResources(ctx);
+      data.results = await filterByResources(
         data.results,
-        (item) => item.name,
-        (item) => ({ name: item.name, modelType: item.type }),
+        (item) => canonical.model(item.id, item.name, item.type),
         socket,
         principal,
         "read",
-        "model",
         ctx,
       );
     }
@@ -1449,17 +1452,13 @@ export async function handleModelOutputSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ modelName?: string; type: string }>;
+      results?: ModelOutputSearchItem[];
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      data.results = await filterOutputItems(
         data.results,
-        (item) => item.modelName,
-        (item) => ({ name: item.modelName, modelType: item.type }),
         socket,
         principal,
-        "read",
-        "model",
         ctx,
       );
     }
@@ -1710,17 +1709,13 @@ export async function handleModelMethodHistorySearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ modelName?: string; type: string }>;
+      results?: ModelOutputSearchItem[];
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      data.results = await filterOutputItems(
         data.results,
-        (item) => item.modelName,
-        (item) => ({ name: item.modelName, modelType: item.type }),
         socket,
         principal,
-        "read",
-        "model",
         ctx,
       );
     }
@@ -2169,4 +2164,35 @@ export async function handleModelTypeSearch(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_type_search_failed", message);
   }
+}
+
+/**
+ * Keeps the output or method-run items the caller may read: each is judged on
+ * every model owning its definition id, with the method it ran, so a
+ * methods-scoped or tag-conditioned grant applies to it (swamp-club#2675).
+ */
+function filterOutputItems(
+  items: ModelOutputSearchItem[],
+  socket: WebSocket,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): Promise<ModelOutputSearchItem[]> {
+  const canonical = canonicalResources(ctx);
+  return filterByResources(
+    items,
+    async (item) =>
+      (await canonical.modelOwners(
+        item.definitionId,
+        item.type,
+        item.modelName ?? item.definitionId,
+        "model",
+      )).map((owner) => ({
+        ...owner,
+        fields: { ...owner.fields, methodName: item.methodName },
+      })),
+    socket,
+    principal,
+    "read",
+    ctx,
+  );
 }

@@ -75,7 +75,7 @@ import {
   clientErrorDetails,
   type ConnectionContext,
   DEFAULT_QUERY_LIMIT,
-  filterByAuthorization,
+  filterByResources,
   LibSwampStreamError,
   MAX_QUERY_RESULTS,
   pushChangedToRemote,
@@ -85,6 +85,8 @@ import {
 } from "./shared.ts";
 import {
   authorizeResolved,
+  canonicalResources,
+  type RecordedOwner,
   resolveModelTarget,
   targetArgument,
   unresolvedAccessResource,
@@ -306,18 +308,17 @@ export async function handleDataQuery(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ modelName: string; modelType: string }>;
+      results?: RecordedOwner[];
       total?: number;
     };
     if (!payload.select && data.results) {
-      data.results = filterByAuthorization(
+      const canonical = canonicalResources(ctx);
+      data.results = await filterByResources(
         data.results,
-        (item) => item.modelName,
-        (item) => ({ name: item.modelName, modelType: item.modelType }),
+        (item) => canonical.dataOwners(item),
         socket,
         principal,
         "read",
-        "data",
         ctx,
       );
       data.total = data.results.length;
@@ -425,26 +426,25 @@ export async function handleDataList(
 
     if (resourceName === "*") {
       const listData = result as {
+        modelId?: string;
         modelName?: string;
         modelType?: string;
-        groups?: Array<{
-          type: string;
-          items: Array<{ modelName: string; modelType: string }>;
-        }>;
+        groups?: Array<{ type: string; items: RecordedOwner[] }>;
         total?: number;
       };
+      const canonical = canonicalResources(ctx);
       if (listData.modelName) {
-        const filtered = filterByAuthorization(
-          [listData],
-          (item) => item.modelName,
-          (item) => ({
-            name: item.modelName,
-            modelType: item.modelType,
-          }),
+        const owner: RecordedOwner = {
+          modelId: listData.modelId ?? "",
+          modelName: listData.modelName,
+          modelType: listData.modelType ?? "",
+        };
+        const filtered = await filterByResources(
+          [owner],
+          (item) => canonical.dataOwners(item),
           socket,
           principal,
           "read",
-          "data",
           ctx,
         );
         if (filtered.length === 0) {
@@ -454,17 +454,12 @@ export async function handleDataList(
       } else if (listData.groups) {
         let total = 0;
         for (const group of listData.groups) {
-          group.items = filterByAuthorization(
+          group.items = await filterByResources(
             group.items,
-            (item) => item.modelName,
-            (item) => ({
-              name: item.modelName,
-              modelType: item.modelType,
-            }),
+            (item) => canonical.dataOwners(item),
             socket,
             principal,
             "read",
-            "data",
             ctx,
           );
           total += group.items.length;
@@ -557,18 +552,17 @@ export async function handleDataSearch(
     }
 
     const data = (result ?? { results: [], total: 0 }) as {
-      results?: Array<{ modelName: string; modelType: string }>;
+      results?: RecordedOwner[];
       total?: number;
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      const canonical = canonicalResources(ctx);
+      data.results = await filterByResources(
         data.results,
-        (item) => item.modelName,
-        (item) => ({ name: item.modelName, modelType: item.modelType }),
+        (item) => canonical.dataOwners(item),
         socket,
         principal,
         "read",
-        "data",
         ctx,
       );
       data.total = data.results.length;

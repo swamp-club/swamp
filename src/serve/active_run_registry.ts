@@ -52,6 +52,11 @@ export interface ActiveRun {
    * cannot point them at a different resource that took the old name.
    */
   readonly resourceId?: string;
+  /**
+   * The method a method run executes. Cancel and attach authorize with it,
+   * so a methods-scoped grant judges them as it judged the run.
+   */
+  readonly methodName?: string;
   readonly buffer: RunEventBuffer;
   readonly controller: AbortController;
   readonly startedAt: Date;

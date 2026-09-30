@@ -32,6 +32,12 @@ export interface ActiveRunRecord {
    * written by older instances carry only a name.
    */
   resourceId?: string;
+  /**
+   * The method a method run executes. Absent for workflow runs and in records
+   * written by older instances, which cancel and attach then authorize
+   * without a method, as before.
+   */
+  methodName?: string;
   runKind: RunKind;
   startedAt: string;
 }

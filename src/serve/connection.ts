@@ -3803,6 +3803,7 @@ async function handleCancelRun(
     resourceKind,
     run.resourceName,
     run.resourceId,
+    run.methodName,
   );
   // A refusal is silent, like a cancel of an unknown id, so the reply never
   // confirms the run exists or names its resource (swamp-club#2649). The
@@ -3854,6 +3855,31 @@ async function resolveRunResource(
   resourceKind: "model" | "workflow",
   resourceName: string,
   resourceId: string | undefined,
+  methodName?: string,
+): Promise<ResourceResolution> {
+  const resolution = await resolveRunTarget(
+    ctx,
+    resourceKind,
+    resourceName,
+    resourceId,
+  );
+  // A method run is judged with its method, as the run itself was, so a
+  // methods-scoped grant applies to its cancel and attach (swamp-club#2675).
+  if (!methodName || resolution.status === "failed") return resolution;
+  return {
+    ...resolution,
+    resource: {
+      ...resolution.resource,
+      fields: { ...resolution.resource.fields, methodName },
+    },
+  };
+}
+
+async function resolveRunTarget(
+  ctx: ConnectionContext,
+  resourceKind: "model" | "workflow",
+  resourceName: string,
+  resourceId: string | undefined,
 ): Promise<ResourceResolution> {
   const { definitionRepo, workflowRepo } = ctx.repoContext;
   let resolution: ResourceResolution;
@@ -3898,6 +3924,7 @@ async function handleRunAttach(
           resourceKind,
           result.record.resourceName,
           result.record.resourceId,
+          result.record.methodName,
         );
         if (
           !authorizeResolved(
@@ -3957,6 +3984,7 @@ async function handleRunAttach(
     resourceKind,
     run.resourceName,
     run.resourceId,
+    run.methodName,
   );
   if (
     !authorizeResolved(
