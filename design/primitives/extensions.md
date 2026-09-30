@@ -1981,9 +1981,14 @@ and a structured `duplicateType` object in `--json` mode:
 }
 ```
 
+`existing` is the extension that already held the type in the catalog and
+`conflicting` is the one being installed, whichever sorts first: the repository
+decides this from which sources are in the failing save, not from catalog row
+order.
+
 The message suggests `swamp extension rm <existing-name>`. A conflict may come
 from a **ghost catalog row**, whose source file was deleted outside swamp. The
-service then detects the missing path via `Deno.stat` and suggests
+service then stats the `existing` side's path via `Deno.stat` and suggests
 `swamp doctor extensions` instead, the right fix for orphaned rows. The
 `isGhostRow` flag on `DuplicateTypeUserError` is then `true` and appears in the
 `--json` output's `duplicateType` object.

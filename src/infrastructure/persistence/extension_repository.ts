@@ -322,7 +322,7 @@ export class ExtensionRepository {
       this._lastOriginConflicts = this.catalog.resolveOriginConflicts(
         this.repoRoot,
       );
-      this.assertIRepo1();
+      this.assertIRepo1(protectedPaths);
     });
     this._lastPulledTypeConflicts = settled;
     evictRemovedBundles(staleRows, this.catalog);
@@ -683,8 +683,13 @@ export class ExtensionRepository {
    * {@link DuplicateTypeError} on first conflict found — caller's
    * transaction wrapper rolls back. Naming both source paths is a hard
    * requirement.
+   *
+   * `savedPaths` are the canonical paths of the sources in the current
+   * save. When exactly one side of a conflict is among them, the other
+   * side was already in the catalog and is reported as `firstSource`,
+   * whatever the scan order (swamp-club#2762).
    */
-  private assertIRepo1(): void {
+  private assertIRepo1(savedPaths: ReadonlySet<string>): void {
     const rows = this.catalog.findAll();
     const occupants = new Map<string, ExtensionTypeRow>();
     for (const row of rows) {
@@ -696,18 +701,23 @@ export class ExtensionRepository {
       const key = `${row.kind}::${row.type_normalized}`;
       const prior = occupants.get(key);
       if (prior) {
+        const priorSaved = savedPaths.has(canonicalizePath(prior.source_path));
+        const rowSaved = savedPaths.has(canonicalizePath(row.source_path));
+        const [first, second] = priorSaved && !rowSaved
+          ? [row, prior]
+          : [prior, row];
         throw new DuplicateTypeError({
           kind: row.kind,
           typeNormalized: row.type_normalized,
           firstSource: {
-            extensionName: prior.extension_name ?? "",
-            extensionVersion: prior.extension_version ?? "",
-            canonicalPath: prior.source_path,
+            extensionName: first.extension_name ?? "",
+            extensionVersion: first.extension_version ?? "",
+            canonicalPath: first.source_path,
           },
           secondSource: {
-            extensionName: row.extension_name ?? "",
-            extensionVersion: row.extension_version ?? "",
-            canonicalPath: row.source_path,
+            extensionName: second.extension_name ?? "",
+            extensionVersion: second.extension_version ?? "",
+            canonicalPath: second.source_path,
           },
         });
       }

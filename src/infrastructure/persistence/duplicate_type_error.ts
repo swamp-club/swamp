@@ -27,6 +27,10 @@ import type { ExtensionKind } from "./extension_catalog_store.ts";
  * Both `firstSource` and `secondSource` MUST be populated — naming both
  * paths is a hard requirement of the design. Naming only one is the
  * "first-wins" silent corruption W1b is closing.
+ *
+ * When exactly one side belongs to the save that failed, `firstSource`
+ * is the occupant already in the catalog and `secondSource` the one
+ * being saved. Otherwise the two are in catalog order.
  */
 export interface DuplicateTypeOccupant {
   readonly extensionName: string;

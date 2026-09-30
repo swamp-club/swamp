@@ -480,7 +480,9 @@ async function collectTsFiles(dir: string): Promise<string[]> {
  * renders a clean single-line message in log mode AND emits the
  * pinned JSON shape in JSON mode (plan v4 step 11). Both source paths
  * are named — the W2 user-visible payoff that replaces W1b's silent
- * first-wins.
+ * first-wins. The repository reports the occupant already in the
+ * catalog as `firstSource` and the one being installed as
+ * `secondSource`, so they map to `existing` and `conflicting`.
  */
 function mapDuplicateTypeErrorToUserError(
   error: DuplicateTypeError,
@@ -496,7 +498,8 @@ function mapDuplicateTypeErrorToUserError(
 }
 
 async function isGhostRow(error: DuplicateTypeError): Promise<boolean> {
-  // Only check firstSource (the pre-existing catalog occupant).
+  // Only check firstSource, which the repository reports as the
+  // pre-existing catalog occupant when the other side is being saved.
   // secondSource is the extension being installed — its files are
   // always absent after rollbackOnCollision, so it can never be a
   // meaningful ghost-row signal.
