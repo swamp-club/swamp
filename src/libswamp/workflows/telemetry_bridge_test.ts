@@ -20,7 +20,8 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { CommandInvocationData } from "../../domain/telemetry/command_invocation.ts";
 import type { WorkflowContextData } from "../../domain/telemetry/workflow_context.ts";
-import type { WorkflowRunEvent, WorkflowTelemetrySink } from "./run.ts";
+import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
+import type { WorkflowTelemetrySink } from "./run.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
 
 interface RecordedCall {
@@ -56,10 +57,11 @@ class FakeSink implements WorkflowTelemetrySink {
   }
 }
 
-const STARTED_EVENT: WorkflowRunEvent = {
+const STARTED_EVENT: WorkflowExecutionEvent = {
   kind: "started",
   runId: "run-1",
   workflowName: "deploy",
+  logPath: "/tmp/log",
   jobs: [],
 };
 
@@ -72,6 +74,7 @@ Deno.test("bridge records success entry on method_executing → step_completed",
     kind: "model_resolved",
     jobId: "build",
     stepId: "validate",
+    runId: "run-1",
     modelName: "shell-step",
     modelType: "@swamp/shell",
     modelId: "test-model-id",
@@ -81,6 +84,7 @@ Deno.test("bridge records success entry on method_executing → step_completed",
     kind: "method_executing",
     jobId: "build",
     stepId: "validate",
+    runId: "run-1",
     modelName: "shell-step",
     methodName: "run",
   });
@@ -88,6 +92,7 @@ Deno.test("bridge records success entry on method_executing → step_completed",
     kind: "step_completed",
     jobId: "build",
     stepId: "validate",
+    runId: "run-1",
   });
   await bridge.finalize();
 
@@ -115,6 +120,7 @@ Deno.test("bridge records error entry on method_executing → step_failed (post-
     kind: "model_resolved",
     jobId: "build",
     stepId: "transform",
+    runId: "run-1",
     modelName: "etl",
     modelType: "@swamp/python",
     modelId: "test-model-id",
@@ -124,6 +130,7 @@ Deno.test("bridge records error entry on method_executing → step_failed (post-
     kind: "method_executing",
     jobId: "build",
     stepId: "transform",
+    runId: "run-1",
     modelName: "etl",
     methodName: "transform",
   });
@@ -131,6 +138,7 @@ Deno.test("bridge records error entry on method_executing → step_failed (post-
     kind: "step_failed",
     jobId: "build",
     stepId: "transform",
+    runId: "run-1",
     error: "transform threw",
   });
   await bridge.finalize();
@@ -149,6 +157,7 @@ Deno.test("bridge synthesizes durationMs=0 entry for pre-method-executing failur
     kind: "step_failed",
     jobId: "lookup",
     stepId: "fetch",
+    runId: "run-1",
     error: "model not found: missing",
     modelName: "missing",
     methodName: "enrich",
@@ -176,6 +185,7 @@ Deno.test("bridge skips workflow-task / structural step_failed (no modelName)", 
     kind: "step_failed",
     jobId: "orchestrate",
     stepId: "nested",
+    runId: "run-1",
     error: "Nested workflow failed",
   });
   await bridge.finalize();
@@ -192,6 +202,7 @@ Deno.test("bridge finalize() drains in-flight invocations as error entries", asy
     kind: "method_executing",
     jobId: "build",
     stepId: "long",
+    runId: "run-1",
     modelName: "slow",
     methodName: "process",
   });
@@ -220,6 +231,7 @@ Deno.test("bridge finalize() with custom reason propagates to drained entries", 
     kind: "method_executing",
     jobId: "build",
     stepId: "long",
+    runId: "run-1",
     modelName: "slow",
     methodName: "process",
   });
@@ -238,6 +250,7 @@ Deno.test("bridge finalize() is idempotent", async () => {
     kind: "method_executing",
     jobId: "j",
     stepId: "s",
+    runId: "run-1",
     modelName: "m",
     methodName: "go",
   });
@@ -257,6 +270,7 @@ Deno.test("bridge handles two sequential workflows independently (no state leak)
     kind: "method_executing",
     jobId: "j1",
     stepId: "s1",
+    runId: "run-1",
     modelName: "m1",
     methodName: "do",
   });
@@ -264,6 +278,7 @@ Deno.test("bridge handles two sequential workflows independently (no state leak)
     kind: "step_completed",
     jobId: "j1",
     stepId: "s1",
+    runId: "run-1",
   });
   await first.finalize();
 
@@ -274,12 +289,14 @@ Deno.test("bridge handles two sequential workflows independently (no state leak)
     kind: "started",
     runId: "run-2",
     workflowName: "etl",
+    logPath: "/tmp/log",
     jobs: [],
   });
   await second.observe({
     kind: "method_executing",
     jobId: "j2",
     stepId: "s2",
+    runId: "run-2",
     modelName: "m2",
     methodName: "go",
   });
@@ -287,6 +304,7 @@ Deno.test("bridge handles two sequential workflows independently (no state leak)
     kind: "step_completed",
     jobId: "j2",
     stepId: "s2",
+    runId: "run-2",
   });
   await second.finalize();
 
@@ -306,6 +324,7 @@ Deno.test("bridge emits one entry per forEach iteration (distinct stepNames)", a
       kind: "method_executing",
       jobId: "fan",
       stepId,
+      runId: "run-1",
       modelName: "shell",
       methodName: "run",
     });
@@ -313,6 +332,7 @@ Deno.test("bridge emits one entry per forEach iteration (distinct stepNames)", a
       kind: "step_completed",
       jobId: "fan",
       stepId,
+      runId: "run-1",
     });
   }
   await bridge.finalize();
@@ -333,6 +353,7 @@ Deno.test("bridge does not record allowedFailure: true differently from error", 
     kind: "method_executing",
     jobId: "build",
     stepId: "optional",
+    runId: "run-1",
     modelName: "shell",
     methodName: "run",
   });
@@ -340,6 +361,7 @@ Deno.test("bridge does not record allowedFailure: true differently from error", 
     kind: "step_failed",
     jobId: "build",
     stepId: "optional",
+    runId: "run-1",
     error: "exit 1",
     allowedFailure: true,
   });
@@ -358,6 +380,7 @@ Deno.test("bridge records the executor dimension from step_completed (swamp-club
     kind: "method_executing",
     jobId: "build",
     stepId: "train",
+    runId: "run-1",
     modelName: "gpu-model",
     methodName: "fit",
   });
@@ -365,6 +388,7 @@ Deno.test("bridge records the executor dimension from step_completed (swamp-club
     kind: "step_completed",
     jobId: "build",
     stepId: "train",
+    runId: "run-1",
     executor: "gpu-box-1",
   });
   // A loopback step records "loopback"; an event without the field stays
@@ -373,6 +397,7 @@ Deno.test("bridge records the executor dimension from step_completed (swamp-club
     kind: "method_executing",
     jobId: "build",
     stepId: "local",
+    runId: "run-1",
     modelName: "shell-step",
     methodName: "run",
   });
@@ -380,6 +405,7 @@ Deno.test("bridge records the executor dimension from step_completed (swamp-club
     kind: "step_completed",
     jobId: "build",
     stepId: "local",
+    runId: "run-1",
     executor: "loopback",
   });
   await bridge.finalize();
@@ -389,19 +415,21 @@ Deno.test("bridge records the executor dimension from step_completed (swamp-club
   assertEquals(sink.calls[1].workflowContext.executor, "loopback");
 });
 
-const NESTED_STARTED_EVENT: WorkflowRunEvent = {
+const NESTED_STARTED_EVENT: WorkflowExecutionEvent = {
   kind: "started",
   runId: "child-run",
   parentRunId: "run-1",
   workflowName: "provision",
+  logPath: "/tmp/log",
   jobs: [],
 };
 
-const GRANDCHILD_STARTED_EVENT: WorkflowRunEvent = {
+const GRANDCHILD_STARTED_EVENT: WorkflowExecutionEvent = {
   kind: "started",
   runId: "grandchild-run",
   parentRunId: "child-run",
   workflowName: "network",
+  logPath: "/tmp/log",
   jobs: [],
 };
 
@@ -418,11 +446,13 @@ Deno.test("bridge attributes a parent step after nested workflows to the top-lev
     kind: "step_completed",
     jobId: "deploy",
     stepId: "nested",
+    runId: "run-1",
   });
   await bridge.observe({
     kind: "method_executing",
     jobId: "deploy",
     stepId: "after",
+    runId: "run-1",
     modelName: "m",
     methodName: "run",
   });
@@ -430,6 +460,7 @@ Deno.test("bridge attributes a parent step after nested workflows to the top-lev
     kind: "step_completed",
     jobId: "deploy",
     stepId: "after",
+    runId: "run-1",
   });
   await bridge.finalize();
 
@@ -452,6 +483,7 @@ Deno.test("bridge records nested workflow steps under the top-level run with the
     kind: "method_executing",
     jobId: "vm",
     stepId: "create",
+    runId: "child-run",
     modelName: "m1",
     methodName: "create",
   });
@@ -459,12 +491,14 @@ Deno.test("bridge records nested workflow steps under the top-level run with the
     kind: "step_completed",
     jobId: "vm",
     stepId: "create",
+    runId: "child-run",
   });
   await bridge.observe(GRANDCHILD_STARTED_EVENT);
   await bridge.observe({
     kind: "method_executing",
     jobId: "net",
     stepId: "attach",
+    runId: "grandchild-run",
     modelName: "m2",
     methodName: "attach",
   });
@@ -472,6 +506,7 @@ Deno.test("bridge records nested workflow steps under the top-level run with the
     kind: "step_completed",
     jobId: "net",
     stepId: "attach",
+    runId: "grandchild-run",
   });
   await bridge.finalize();
 
@@ -501,6 +536,7 @@ Deno.test("bridge attributes synthesized and finalize-drained entries after a ne
     kind: "step_failed",
     jobId: "vm",
     stepId: "lookup",
+    runId: "child-run",
     error: "model not found: missing",
     modelName: "missing",
     methodName: "create",
@@ -510,6 +546,7 @@ Deno.test("bridge attributes synthesized and finalize-drained entries after a ne
     kind: "method_executing",
     jobId: "vm",
     stepId: "long",
+    runId: "child-run",
     modelName: "slow",
     methodName: "process",
   });
@@ -522,4 +559,234 @@ Deno.test("bridge attributes synthesized and finalize-drained entries after a ne
   }
   assertEquals(sink.calls[0].workflowContext.stepName, "lookup");
   assertEquals(sink.calls[1].workflowContext.stepName, "long");
+});
+
+// A nested workflow step forwards its child's events into the parent's
+// stream, and the child's job and step names can repeat those of a step
+// running concurrently in the parent or in a sibling nested run. Each run's
+// step records its own entry (swamp-club#2802).
+
+function methodExecuting(
+  runId: string,
+  jobId: string,
+  stepId: string,
+  modelName: string,
+  methodName: string,
+): WorkflowExecutionEvent {
+  return {
+    kind: "method_executing",
+    runId,
+    jobId,
+    stepId,
+    modelName,
+    methodName,
+  };
+}
+
+function stepCompleted(
+  runId: string,
+  jobId: string,
+  stepId: string,
+): WorkflowExecutionEvent {
+  return { kind: "step_completed", runId, jobId, stepId };
+}
+
+function nestedStarted(
+  runId: string,
+  parentRunId: string,
+): WorkflowExecutionEvent {
+  return {
+    kind: "started",
+    runId,
+    parentRunId,
+    workflowName: "child",
+    logPath: "/tmp/log",
+    jobs: [],
+  };
+}
+
+Deno.test("bridge records a parent step and a concurrent same-named nested step separately (swamp-club#2802)", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe({
+    kind: "model_resolved",
+    runId: "run-1",
+    jobId: "main",
+    stepId: "a",
+    modelName: "slow",
+    modelType: "command/shell",
+    modelId: "slow-id",
+    methodName: "execute",
+  });
+  await bridge.observe(
+    methodExecuting("run-1", "main", "a", "slow", "execute"),
+  );
+  await bridge.observe(nestedStarted("child-run", "run-1"));
+  await bridge.observe({
+    kind: "model_resolved",
+    runId: "child-run",
+    jobId: "main",
+    stepId: "a",
+    modelName: "fast",
+    modelType: "@swamp/echo",
+    modelId: "fast-id",
+    methodName: "ping",
+  });
+  await bridge.observe(
+    methodExecuting("child-run", "main", "a", "fast", "ping"),
+  );
+  await bridge.observe(stepCompleted("child-run", "main", "a"));
+  await bridge.observe(stepCompleted("run-1", "main", "b"));
+  await bridge.observe(stepCompleted("run-1", "main", "a"));
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 2);
+  assertEquals(sink.calls[0].invocation.args, ["run", "fast", "ping"]);
+  assertEquals(sink.calls[0].workflowContext.modelType, "@swamp/echo");
+  assertEquals(sink.calls[1].invocation.args, ["run", "slow", "execute"]);
+  assertEquals(sink.calls[1].workflowContext.modelType, "command/shell");
+  for (const call of sink.calls) {
+    assertEquals(call.error, null);
+    assertEquals(call.workflowContext.runId, "run-1");
+    assertEquals(call.workflowContext.jobName, "main");
+    assertEquals(call.workflowContext.stepName, "a");
+  }
+});
+
+Deno.test("bridge records same-named steps of two concurrent sibling nested runs separately (swamp-club#2802)", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe(nestedStarted("child-1", "run-1"));
+  await bridge.observe(nestedStarted("child-2", "run-1"));
+  await bridge.observe(methodExecuting("child-1", "main", "a", "m1", "one"));
+  await bridge.observe(methodExecuting("child-2", "main", "a", "m2", "two"));
+  await bridge.observe(stepCompleted("child-1", "main", "a"));
+  await bridge.observe(stepCompleted("child-2", "main", "a"));
+  await bridge.finalize();
+
+  assertEquals(
+    sink.calls.map((c) => c.invocation.args[2]),
+    ["one", "two"],
+  );
+  assertEquals(sink.calls.map((c) => c.error), [null, null]);
+});
+
+Deno.test("bridge records a nested step's failure without touching the parent's same-named in-flight step (swamp-club#2802)", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe(
+    methodExecuting("run-1", "main", "a", "slow", "execute"),
+  );
+  await bridge.observe(nestedStarted("child-run", "run-1"));
+  await bridge.observe(
+    methodExecuting("child-run", "main", "a", "fast", "ping"),
+  );
+  await bridge.observe({
+    kind: "step_failed",
+    runId: "child-run",
+    jobId: "main",
+    stepId: "a",
+    error: "ping failed",
+  });
+  await bridge.observe(stepCompleted("run-1", "main", "a"));
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 2);
+  assertEquals(sink.calls[0].invocation.args[2], "ping");
+  assertEquals(sink.calls[0].error?.message, "ping failed");
+  assertEquals(sink.calls[1].invocation.args[2], "execute");
+  assertEquals(sink.calls[1].error, null);
+});
+
+Deno.test("bridge finalize() drains same-named in-flight steps of different runs as separate entries (swamp-club#2802)", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe(
+    methodExecuting("run-1", "main", "a", "slow", "execute"),
+  );
+  await bridge.observe(nestedStarted("child-run", "run-1"));
+  await bridge.observe(
+    methodExecuting("child-run", "main", "a", "fast", "ping"),
+  );
+  await bridge.finalize("aborted by user");
+
+  assertEquals(sink.calls.length, 2);
+  for (const call of sink.calls) {
+    assertStringIncludes(call.error!.message, "aborted by user");
+    assertStringIncludes(call.error!.message, 'step "a" in job "main"');
+    assertEquals(call.workflowContext.jobName, "main");
+    assertEquals(call.workflowContext.stepName, "a");
+  }
+  assertEquals(
+    sink.calls.map((c) => c.invocation.args[2]).sort(),
+    ["execute", "ping"],
+  );
+});
+
+Deno.test("bridge gives a pre-method-executing failure its own run's modelType (swamp-club#2802)", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe({
+    kind: "model_resolved",
+    runId: "run-1",
+    jobId: "main",
+    stepId: "a",
+    modelName: "slow",
+    modelType: "command/shell",
+    modelId: "slow-id",
+    methodName: "execute",
+  });
+  await bridge.observe(nestedStarted("child-run", "run-1"));
+  await bridge.observe({
+    kind: "model_resolved",
+    runId: "child-run",
+    jobId: "main",
+    stepId: "a",
+    modelName: "fast",
+    modelType: "@swamp/echo",
+    modelId: "fast-id",
+    methodName: "ping",
+  });
+  await bridge.observe({
+    kind: "step_failed",
+    runId: "run-1",
+    jobId: "main",
+    stepId: "a",
+    error: "vault expression failed",
+    modelName: "slow",
+    methodName: "execute",
+  });
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 1);
+  assertEquals(sink.calls[0].workflowContext.modelType, "command/shell");
+});
+
+Deno.test("bridge finalize() names a job whose name contains a colon", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe(
+    methodExecuting("run-1", "deploy:prod", "apply", "infra", "apply"),
+  );
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 1);
+  assertStringIncludes(
+    sink.calls[0].error!.message,
+    'step "apply" in job "deploy:prod"',
+  );
+  assertEquals(sink.calls[0].workflowContext.jobName, "deploy:prod");
+  assertEquals(sink.calls[0].workflowContext.stepName, "apply");
 });

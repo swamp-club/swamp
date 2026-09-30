@@ -325,7 +325,12 @@ Deno.test("workflowRun forwards job and step events", async () => {
     },
     { kind: "job_started", jobId: "job1" },
     { kind: "step_started", jobId: "job1", stepId: "step1" },
-    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    {
+      kind: "step_completed",
+      jobId: "job1",
+      stepId: "step1",
+      runId: run.id,
+    },
     { kind: "job_completed", jobId: "job1", status: "succeeded" },
     { kind: "completed", run },
   ]);
@@ -405,7 +410,12 @@ Deno.test("workflowRun passes through report event jobId and stepId", async () =
       jobId: "job1",
       stepId: "step1",
     },
-    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    {
+      kind: "step_completed",
+      jobId: "job1",
+      stepId: "step1",
+      runId: run.id,
+    },
     { kind: "job_completed", jobId: "job1", status: "succeeded" },
     { kind: "completed", run },
   ]);
@@ -1030,6 +1040,7 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
       kind: "model_resolved",
       jobId: "job1",
       stepId: "step1",
+      runId: run.id,
       modelName: "my-model",
       modelType: "command/shell",
       modelId: "test-model-id",
@@ -1039,6 +1050,7 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
       kind: "method_executing",
       jobId: "job1",
       stepId: "step1",
+      runId: run.id,
       modelName: "my-model",
       methodName: "run",
     },
@@ -1051,7 +1063,12 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
       stream: "stdout" as const,
       line: "hello",
     },
-    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    {
+      kind: "step_completed",
+      jobId: "job1",
+      stepId: "step1",
+      runId: run.id,
+    },
     { kind: "job_completed", jobId: "job1", status: "succeeded" },
     { kind: "completed", run },
   ]);
@@ -1103,7 +1120,12 @@ Deno.test("workflowRun forwards method_event events", async () => {
         vaultKey: "my-key",
       },
     },
-    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    {
+      kind: "step_completed",
+      jobId: "job1",
+      stepId: "step1",
+      runId: run.id,
+    },
     { kind: "job_completed", jobId: "job1", status: "succeeded" },
     { kind: "completed", run },
   ]);
@@ -1157,6 +1179,7 @@ Deno.test("workflowRun collects report_completed events from execution service",
       kind: "model_resolved",
       jobId: "job1",
       stepId: "step1",
+      runId: run.id,
       modelName: "my-model",
       modelType: "command/shell",
       modelId: "test-model-id",
@@ -1174,7 +1197,12 @@ Deno.test("workflowRun collects report_completed events from execution service",
       markdown: "# Report",
       json: { status: "ok" },
     },
-    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    {
+      kind: "step_completed",
+      jobId: "job1",
+      stepId: "step1",
+      runId: run.id,
+    },
     { kind: "job_completed", jobId: "job1", status: "succeeded" },
     { kind: "completed", run },
   ]);
@@ -1229,7 +1257,12 @@ Deno.test("workflowRun collects report_failed events from execution service", as
       scope: "method",
       error: "report crashed",
     },
-    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    {
+      kind: "step_completed",
+      jobId: "job1",
+      stepId: "step1",
+      runId: run.id,
+    },
     { kind: "job_completed", jobId: "job1", status: "succeeded" },
     { kind: "completed", run },
   ]);
@@ -1356,6 +1389,7 @@ Deno.test("workflowRun bridge finalizes in-flight invocations when execution ser
             kind: "method_executing",
             jobId: "job1",
             stepId: "step1",
+            runId: "run-throw",
             modelName: "test-model",
             methodName: "run",
           };
@@ -1438,6 +1472,7 @@ Deno.test("mapWorkflowExecutionEvent: keeps step_failed dataHandles off the publ
     kind: "step_failed",
     jobId: "job1",
     stepId: "step1",
+    runId: "run-1",
     error: "deploy blew up",
     modelName: "failer",
     methodName: "run",
@@ -1584,4 +1619,135 @@ Deno.test("workflowRun: without byId uses the name-first lookup and passes no by
 
   assertEquals(looked, ["test-workflow"]);
   assertEquals(captured.options?.byId, undefined);
+});
+
+Deno.test("mapWorkflowExecutionEvent: keeps the owning run's id off published step events (swamp-club#2802)", () => {
+  const repo = new InMemoryWorkflowRunRepository();
+  const domainEvents: WorkflowExecutionEvent[] = [
+    {
+      kind: "model_resolved",
+      runId: "child-run",
+      jobId: "main",
+      stepId: "a",
+      modelName: "fast",
+      modelType: "command/shell",
+      modelId: "fast-id",
+      methodName: "execute",
+    },
+    {
+      kind: "method_executing",
+      runId: "child-run",
+      jobId: "main",
+      stepId: "a",
+      modelName: "fast",
+      methodName: "execute",
+    },
+    {
+      kind: "step_completed",
+      runId: "child-run",
+      jobId: "main",
+      stepId: "a",
+      executor: "loopback",
+    },
+  ];
+
+  const published = domainEvents.map((e) => mapWorkflowExecutionEvent(e, repo));
+
+  assertEquals(published, [
+    {
+      kind: "model_resolved",
+      jobId: "main",
+      stepId: "a",
+      modelName: "fast",
+      modelType: "command/shell",
+      modelId: "fast-id",
+      methodName: "execute",
+    },
+    {
+      kind: "method_executing",
+      jobId: "main",
+      stepId: "a",
+      modelName: "fast",
+      methodName: "execute",
+    },
+    {
+      kind: "step_completed",
+      jobId: "main",
+      stepId: "a",
+      executor: "loopback",
+    },
+  ]);
+});
+
+Deno.test("workflowRun records a parent step and a concurrent same-named nested step separately (swamp-club#2802)", async () => {
+  const workflow = createTestWorkflow();
+  const recorded: string[] = [];
+
+  const deps: WorkflowRunDeps = {
+    ...createTestDeps(workflow, []),
+    createExecutionService: (_wr, _rr, _rd, _cs) =>
+      ({
+        async *run(): AsyncGenerator<WorkflowExecutionEvent> {
+          yield {
+            kind: "started",
+            runId: "parent-run",
+            workflowName: "parent",
+            logPath: "/tmp/log",
+            jobs: [],
+          };
+          yield {
+            kind: "method_executing",
+            runId: "parent-run",
+            jobId: "main",
+            stepId: "a",
+            modelName: "slow",
+            methodName: "execute",
+          };
+          yield {
+            kind: "started",
+            runId: "child-run",
+            parentRunId: "parent-run",
+            workflowName: "child",
+            logPath: "/tmp/log",
+            jobs: [],
+          };
+          yield {
+            kind: "method_executing",
+            runId: "child-run",
+            jobId: "main",
+            stepId: "a",
+            modelName: "fast",
+            methodName: "ping",
+          };
+          yield {
+            kind: "step_completed",
+            runId: "child-run",
+            jobId: "main",
+            stepId: "a",
+          };
+          yield {
+            kind: "step_completed",
+            runId: "parent-run",
+            jobId: "main",
+            stepId: "a",
+          };
+        },
+        execute(): Promise<WorkflowRun> {
+          throw new Error("not implemented");
+        },
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+    telemetrySink: {
+      parentInvocationId: "parent-invocation",
+      recordChildInvocation: (invocation, _startedAt, _completedAt, error) => {
+        recorded.push(`${invocation.args[2]}:${error === null}`);
+        return Promise.resolve();
+      },
+    },
+  };
+
+  const ctx = createLibSwampContext();
+  await collect(workflowRun(ctx, deps, { workflowIdOrName: "test-workflow" }));
+
+  assertEquals(recorded, ["ping:true", "execute:true"]);
 });

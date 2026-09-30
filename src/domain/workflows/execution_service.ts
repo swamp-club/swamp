@@ -1407,6 +1407,7 @@ export class DefaultStepExecutor implements StepExecutor {
       kind: "model_resolved",
       jobId: ctx.jobName,
       stepId: ctx.stepName,
+      runId: ctx.workflowRunId,
       modelName: originalDefinition.name,
       modelType: modelType.normalized,
       modelId: originalDefinition.id,
@@ -1930,6 +1931,7 @@ export class DefaultStepExecutor implements StepExecutor {
       kind: "method_executing",
       jobId: ctx.jobName,
       stepId: ctx.stepName,
+      runId: ctx.workflowRunId,
       modelName: originalDefinition.name,
       methodName: task.methodName,
     });
@@ -4032,6 +4034,7 @@ export class WorkflowExecutionService {
             kind: "step_failed",
             jobId: job.name,
             stepId: stranded.stepName,
+            runId: run.id,
             error: stranded.error ?? "",
             forEachTemplate: stranded.forEachTemplate,
           };
@@ -4358,6 +4361,7 @@ export class WorkflowExecutionService {
           kind: "step_failed",
           jobId: job.name,
           stepId: stepName,
+          runId: run.id,
           error: `Guard expression failed: ${error}`,
           forEachTemplate,
           forEachIndex,
@@ -4497,6 +4501,7 @@ export class WorkflowExecutionService {
               kind: "step_completed",
               jobId: job.name,
               stepId: stepName,
+              runId: run.id,
               forEachTemplate,
               forEachIndex,
             };
@@ -4519,6 +4524,7 @@ export class WorkflowExecutionService {
               kind: "step_failed",
               jobId: job.name,
               stepId: stepName,
+              runId: run.id,
               error: resolvedMessage,
               allowedFailure: isAllowed || undefined,
               forEachTemplate,
@@ -4557,6 +4563,7 @@ export class WorkflowExecutionService {
             kind: "step_failed",
             jobId: job.name,
             stepId: stepName,
+            runId: run.id,
             error: errorMessage,
             forEachTemplate,
             forEachIndex,
@@ -4734,6 +4741,7 @@ export class WorkflowExecutionService {
         kind: "step_completed",
         jobId: job.name,
         stepId: stepName,
+        runId: run.id,
         dataHandles: stepDataHandles,
         executor,
         forEachTemplate,
@@ -4786,6 +4794,7 @@ export class WorkflowExecutionService {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
+        runId: run.id,
         error: errorMessage,
         allowedFailure: isAllowed || undefined,
         modelName: taskData.type === "model_method"
@@ -4904,6 +4913,7 @@ export class WorkflowExecutionService {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
+        runId: run.id,
         error: errorMessage,
         allowedFailure: allowFailure || undefined,
       };
@@ -4924,6 +4934,7 @@ export class WorkflowExecutionService {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
+        runId: run.id,
         error: errorMessage,
         allowedFailure: allowFailure || undefined,
       };
@@ -5071,6 +5082,7 @@ export class WorkflowExecutionService {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
+        runId: run.id,
         error: errorMessage,
         allowedFailure: allowFailure || undefined,
       };
@@ -5098,6 +5110,7 @@ export class WorkflowExecutionService {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
+        runId: run.id,
         error: errorMessage,
         allowedFailure: allowFailure || undefined,
       };
@@ -5121,7 +5134,12 @@ export class WorkflowExecutionService {
       runId: childRun.id,
       status: childRun.status,
     });
-    yield { kind: "step_completed", jobId: job.name, stepId: stepName };
+    yield {
+      kind: "step_completed",
+      jobId: job.name,
+      stepId: stepName,
+      runId: run.id,
+    };
     return childOutputs;
   }
 

@@ -621,22 +621,32 @@ export function mapWorkflowExecutionEvent(
     case "step_failed": {
       // dataHandles is domain-internal: it feeds the workflow summary. Keep
       // it off the published event so serve and JSON consumers see the same
-      // step_failed shape as before.
-      const { dataHandles: _dataHandles, ...published } = event;
+      // step_failed shape as before. runId is domain-internal too; see below.
+      const {
+        dataHandles: _dataHandles,
+        runId: _runId,
+        ...published
+      } = event;
+      return published;
+    }
+    case "step_completed":
+    case "model_resolved":
+    case "method_executing": {
+      // runId names the run that owns the step, for the telemetry bridge.
+      // Keep it off the published event: a remote client takes the runId of
+      // any event without parentRunId as the run to reattach to.
+      const { runId: _runId, ...published } = event;
       return published;
     }
     case "job_started":
     case "job_completed":
     case "job_skipped":
     case "step_started":
-    case "step_completed":
     case "step_skipped":
     case "approval_requested":
     case "step_queued":
     case "step_target_disconnected":
-    case "model_resolved":
     case "env_var_warning":
-    case "method_executing":
     case "method_output":
     case "method_event":
     case "assert_result":
@@ -832,9 +842,11 @@ export async function* workflowRun(
             );
 
             // Per-method telemetry observer — runs alongside existing
-            // event handling. Skipped when telemetry is disabled.
+            // event handling. Skipped when telemetry is disabled. It takes
+            // the domain event: pairing a step's events needs the owning
+            // run's id, which the mapped event deliberately omits.
             if (telemetryBridge) {
-              await telemetryBridge.observe(mapped);
+              await telemetryBridge.observe(event);
             }
 
             if (
