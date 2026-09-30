@@ -816,6 +816,23 @@ export function validateWebSocketOrigin(
   return { allowed: true };
 }
 
+/**
+ * Builds the environment baked into the service definition written by
+ * `swamp serve daemon enable`.
+ *
+ * Pins both the data dir and the config dir, resolved in the enabling
+ * user's environment. Pinning only SWAMP_HOME would move the config dir to
+ * `$SWAMP_HOME/config`, hiding the credentials `swamp auth login` wrote and
+ * crash-looping token and oauth daemons. Both paths are made absolute here
+ * because the service runs with the repository as its working directory.
+ */
+export function buildServeDaemonEnv(): Record<string, string> {
+  return {
+    SWAMP_HOME: resolve(getSwampDataDir()),
+    SWAMP_CONFIG_DIR: resolve(getSwampConfigDir()),
+  };
+}
+
 export function collectServeExtraArgs(options: AnyOptions): string[] {
   const args: string[] = [];
   if (options.config) {
@@ -1423,7 +1440,7 @@ const daemonEnableCommand = new Command()
       certFile: options.certFile as string | undefined,
       keyFile: options.keyFile as string | undefined,
       extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
-      env: { SWAMP_HOME: getSwampDataDir() },
+      env: buildServeDaemonEnv(),
     });
 
     renderDaemonEnabled(ctx.outputMode, toServiceMode(mode));
@@ -1768,11 +1785,15 @@ export const serveCommand = new Command()
       "Service deployments: swamp loads all extensions — including " +
       "already-pulled repo extensions — through an embedded runtime under the " +
       "swamp data directory (SWAMP_HOME, or ~/.swamp). `swamp serve daemon " +
-      "enable` sets SWAMP_HOME in the generated service unit automatically. " +
-      "If you author a service unit manually, set SWAMP_HOME or HOME in the " +
-      "unit environment, e.g. `Environment=SWAMP_HOME=/opt/swamp`. Without " +
-      'it, scheduled workflow runs fail with "Unknown model type" for pulled ' +
-      "extension types.",
+      "enable` sets SWAMP_HOME and SWAMP_CONFIG_DIR in the generated service " +
+      "unit automatically. If you author a service unit manually, set " +
+      "SWAMP_HOME or HOME in the unit environment, e.g. " +
+      "`Environment=SWAMP_HOME=/opt/swamp`. Without it, scheduled workflow " +
+      'runs fail with "Unknown model type" for pulled extension types. ' +
+      "SWAMP_HOME also moves the config directory, where `swamp auth login` " +
+      "stores credentials, to $SWAMP_HOME/config; for --auth-mode token or " +
+      "oauth, also set SWAMP_CONFIG_DIR to the config directory holding " +
+      "those credentials (~/.config/swamp by default).",
   )
   .example("Start server", "swamp serve")
   .example("Custom port", "swamp serve --port 8080")

@@ -169,6 +169,7 @@ Deno.test("toRelativePath and toAbsolutePath - round trip", () => {
 
 Deno.test("getSwampConfigDir uses XDG_CONFIG_HOME when set", () => {
   withMockedEnv({
+    SWAMP_CONFIG_DIR: undefined,
     SWAMP_HOME: undefined,
     XDG_CONFIG_HOME: "/custom/config",
   }, () => {
@@ -178,6 +179,7 @@ Deno.test("getSwampConfigDir uses XDG_CONFIG_HOME when set", () => {
 
 Deno.test("getSwampConfigDir falls back to HOME/.config/swamp", () => {
   withMockedEnv({
+    SWAMP_CONFIG_DIR: undefined,
     SWAMP_HOME: undefined,
     XDG_CONFIG_HOME: undefined,
     HOME: "/home/testuser",
@@ -188,6 +190,7 @@ Deno.test("getSwampConfigDir falls back to HOME/.config/swamp", () => {
 
 Deno.test("getSwampConfigDir falls back to USERPROFILE/.config/swamp", () => {
   withMockedEnv({
+    SWAMP_CONFIG_DIR: undefined,
     SWAMP_HOME: undefined,
     XDG_CONFIG_HOME: undefined,
     HOME: undefined,
@@ -202,6 +205,7 @@ Deno.test("getSwampConfigDir falls back to USERPROFILE/.config/swamp", () => {
 
 Deno.test("getSwampConfigDir throws when no home environment variable is set", () => {
   withMockedEnv({
+    SWAMP_CONFIG_DIR: undefined,
     SWAMP_HOME: undefined,
     XDG_CONFIG_HOME: undefined,
     HOME: undefined,
@@ -217,6 +221,7 @@ Deno.test("getSwampConfigDir throws when no home environment variable is set", (
 
 Deno.test("globalTelemetryDir is the telemetry subdir under the config dir", () => {
   withMockedEnv({
+    SWAMP_CONFIG_DIR: undefined,
     SWAMP_HOME: undefined,
     XDG_CONFIG_HOME: "/custom/config",
   }, () => {
@@ -226,6 +231,7 @@ Deno.test("globalTelemetryDir is the telemetry subdir under the config dir", () 
 
 Deno.test("globalTelemetryDir falls back to HOME/.config/swamp/telemetry", () => {
   withMockedEnv({
+    SWAMP_CONFIG_DIR: undefined,
     SWAMP_HOME: undefined,
     XDG_CONFIG_HOME: undefined,
     HOME: "/home/testuser",
@@ -234,6 +240,48 @@ Deno.test("globalTelemetryDir falls back to HOME/.config/swamp/telemetry", () =>
       globalTelemetryDir(),
       "/home/testuser/.config/swamp/telemetry",
     );
+  });
+});
+
+Deno.test("getSwampConfigDir: SWAMP_CONFIG_DIR takes precedence over every other input", () => {
+  withMockedEnv({
+    SWAMP_CONFIG_DIR: "/etc/swamp-config",
+    SWAMP_HOME: "/opt/swamp",
+    XDG_CONFIG_HOME: "/custom/config",
+    HOME: "/home/testuser",
+  }, () => {
+    assertEquals(getSwampConfigDir(), "/etc/swamp-config");
+  });
+});
+
+Deno.test("getSwampConfigDir: SWAMP_CONFIG_DIR set, no home variables succeeds", () => {
+  withMockedEnv({
+    SWAMP_CONFIG_DIR: "/etc/swamp-config",
+    SWAMP_HOME: undefined,
+    XDG_CONFIG_HOME: undefined,
+    HOME: undefined,
+    USERPROFILE: undefined,
+  }, () => {
+    assertEquals(getSwampConfigDir(), "/etc/swamp-config");
+  });
+});
+
+Deno.test("getSwampConfigDir: SWAMP_HOME relocates the config dir when SWAMP_CONFIG_DIR is unset", () => {
+  withMockedEnv({
+    SWAMP_CONFIG_DIR: undefined,
+    SWAMP_HOME: "/opt/swamp",
+    XDG_CONFIG_HOME: "/custom/config",
+  }, () => {
+    assertPathEquals(getSwampConfigDir(), "/opt/swamp/config");
+  });
+});
+
+Deno.test("globalTelemetryDir follows SWAMP_CONFIG_DIR", () => {
+  withMockedEnv({
+    SWAMP_CONFIG_DIR: "/etc/swamp-config",
+    SWAMP_HOME: "/opt/swamp",
+  }, () => {
+    assertPathEquals(globalTelemetryDir(), "/etc/swamp-config/telemetry");
   });
 });
 

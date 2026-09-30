@@ -17,8 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { collectServeExtraArgs } from "./serve.ts";
+import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import { isAbsolute, resolve } from "@std/path";
+import { buildServeDaemonEnv, collectServeExtraArgs } from "./serve.ts";
+import {
+  getSwampConfigDir,
+  getSwampDataDir,
+} from "../../infrastructure/persistence/paths.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("collectServeExtraArgs: returns empty for defaults", () => {
   const args = collectServeExtraArgs({
@@ -187,4 +193,104 @@ Deno.test("collectServeExtraArgs: combines multiple flags", () => {
     "user:oauth|admin-1",
     "--trust-proxy",
   ]);
+});
+
+// Every path input is listed so the runner's real environment never leaks in.
+type PathEnv = {
+  SWAMP_CONFIG_DIR: string | undefined;
+  SWAMP_HOME: string | undefined;
+  XDG_CONFIG_HOME: string | undefined;
+  HOME: string | undefined;
+  USERPROFILE: string | undefined;
+};
+
+const NO_PATH_ENV: PathEnv = {
+  SWAMP_CONFIG_DIR: undefined,
+  SWAMP_HOME: undefined,
+  XDG_CONFIG_HOME: undefined,
+  HOME: undefined,
+  USERPROFILE: undefined,
+};
+
+const ENABLING_SHELLS: Record<string, PathEnv> = {
+  "defaults from HOME": { ...NO_PATH_ENV, HOME: "/home/alice" },
+  "XDG_CONFIG_HOME set": {
+    ...NO_PATH_ENV,
+    HOME: "/home/alice",
+    XDG_CONFIG_HOME: "/home/alice/.cfg",
+  },
+  "SWAMP_HOME set": {
+    ...NO_PATH_ENV,
+    HOME: "/home/alice",
+    SWAMP_HOME: "/opt/swamp",
+  },
+  "relative SWAMP_HOME": {
+    ...NO_PATH_ENV,
+    HOME: "/home/alice",
+    SWAMP_HOME: "rel-swamp",
+  },
+  "relative XDG_CONFIG_HOME": {
+    ...NO_PATH_ENV,
+    HOME: "/home/alice",
+    XDG_CONFIG_HOME: "rel-config",
+  },
+};
+
+// Environments a service manager may supply before the unit's own entries.
+const SERVICE_MANAGERS: Record<string, PathEnv> = {
+  "system unit without HOME": NO_PATH_ENV,
+  "user unit with a different XDG_CONFIG_HOME": {
+    ...NO_PATH_ENV,
+    HOME: "/home/alice",
+    XDG_CONFIG_HOME: "/elsewhere",
+  },
+  "stale SWAMP_HOME and SWAMP_CONFIG_DIR": {
+    ...NO_PATH_ENV,
+    HOME: "/home/alice",
+    SWAMP_HOME: "/stale",
+    SWAMP_CONFIG_DIR: "/stale-config",
+  },
+};
+
+function resolveDirs(env: PathEnv): { configDir: string; dataDir: string } {
+  return withMockedEnv(env, () => ({
+    configDir: getSwampConfigDir(),
+    dataDir: getSwampDataDir(),
+  }));
+}
+
+Deno.test("buildServeDaemonEnv: pins absolute data and config dirs", () => {
+  const env = withMockedEnv(
+    ENABLING_SHELLS["relative SWAMP_HOME"],
+    buildServeDaemonEnv,
+  );
+  assertEquals(Object.keys(env).sort(), ["SWAMP_CONFIG_DIR", "SWAMP_HOME"]);
+  assert(isAbsolute(env.SWAMP_HOME));
+  assert(isAbsolute(env.SWAMP_CONFIG_DIR));
+});
+
+for (const [shellName, shellEnv] of Object.entries(ENABLING_SHELLS)) {
+  for (const [managerName, managerEnv] of Object.entries(SERVICE_MANAGERS)) {
+    Deno.test(`buildServeDaemonEnv: ${shellName} resolves the same dirs under ${managerName}`, () => {
+      const enabling = resolveDirs(shellEnv);
+      const unitEnv = withMockedEnv(shellEnv, buildServeDaemonEnv);
+
+      const inUnit = resolveDirs({ ...managerEnv, ...unitEnv });
+
+      assertEquals(inUnit.configDir, resolve(enabling.configDir));
+      assertEquals(inUnit.dataDir, resolve(enabling.dataDir));
+    });
+  }
+}
+
+Deno.test("buildServeDaemonEnv: pinning SWAMP_HOME alone moves the config dir (swamp-club#2824)", () => {
+  const shellEnv = ENABLING_SHELLS["defaults from HOME"];
+  const enabling = resolveDirs(shellEnv);
+
+  const inUnit = resolveDirs({
+    ...SERVICE_MANAGERS["user unit with a different XDG_CONFIG_HOME"],
+    SWAMP_HOME: resolve(enabling.dataDir),
+  });
+
+  assertNotEquals(inUnit.configDir, resolve(enabling.configDir));
 });

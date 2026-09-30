@@ -525,14 +525,23 @@ export function getSwampDataDir(): string {
  * Returns the user-level swamp configuration directory.
  *
  * Resolution order:
- * 1. `SWAMP_HOME` — if set, returns `$SWAMP_HOME/config`.
- * 2. `XDG_CONFIG_HOME` — returns `$XDG_CONFIG_HOME/swamp/`.
- * 3. `HOME` / `USERPROFILE` — falls back to `~/.config/swamp/`.
+ * 1. `SWAMP_CONFIG_DIR` — if set, returned directly. `swamp serve daemon
+ *    enable` sets it alongside `SWAMP_HOME` so the service reads the same
+ *    credentials as the user who enabled it.
+ * 2. `SWAMP_HOME` — if set, returns `$SWAMP_HOME/config`.
+ * 3. `XDG_CONFIG_HOME` — returns `$XDG_CONFIG_HOME/swamp/`.
+ * 4. `HOME` / `USERPROFILE` — falls back to `~/.config/swamp/`.
  *
  * @returns The absolute path to the swamp config directory
- * @throws Error if neither SWAMP_HOME, HOME, nor USERPROFILE is set
+ * @throws Error if none of SWAMP_CONFIG_DIR, SWAMP_HOME, HOME, or
+ *   USERPROFILE is set
  */
 export function getSwampConfigDir(): string {
+  const configDir = Deno.env.get("SWAMP_CONFIG_DIR");
+  if (configDir) {
+    return configDir;
+  }
+
   const swampHome = Deno.env.get("SWAMP_HOME");
   if (swampHome) {
     return join(swampHome, "config");
