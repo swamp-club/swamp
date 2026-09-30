@@ -1893,14 +1893,11 @@ export async function handleAuditTimeline(
   payload?: AuditTimelinePayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "read",
-      kindResource("model"),
-      ctx,
-    ).allowed
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "audit",
+      fields: {},
+    }, ctx).allowed
   ) return;
 
   try {

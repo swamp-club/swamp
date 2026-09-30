@@ -2221,7 +2221,7 @@ Deno.test("authorizeOrReject: vault.put with empty refreshFrom requires admin", 
   );
 });
 
-Deno.test("authorizeOrReject: audit.timeline rejected without read grant", () => {
+Deno.test("authorizeOrReject: audit.timeline rejected without audit admin grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const ctx = makeCtx(modeTokenConfig, []);
@@ -2243,7 +2243,76 @@ Deno.test("authorizeOrReject: audit.timeline rejected without read grant", () =>
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
   assertStringIncludes(
     String((msg.error as Record<string, unknown>).message),
-    "model:*",
+    "access:audit",
+  );
+});
+
+Deno.test("authorizeOrReject: audit.timeline rejected with only a model read grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["read"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "audit.timeline",
+      id: "auth-at-model-read",
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "access:audit",
+  );
+});
+
+Deno.test("authorizeOrReject: audit.timeline allowed with admin on access:audit", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "audit" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "audit.timeline",
+      id: "auth-at-audit-admin",
+    })),
+    testPrincipal,
+  );
+
+  await waitFor(
+    () => mock.sent.length >= 1,
+    "audit.timeline response sent",
+  );
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(
+    unauthorizedErrors.length,
+    0,
+    "audit admin should not be denied audit.timeline",
   );
 });
 
