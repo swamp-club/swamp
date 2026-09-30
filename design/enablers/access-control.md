@@ -142,13 +142,15 @@ stored as `swamp/grant` model instances with state `active` or `revoked`.
 | ------------------ | ----------------------------------------------- |
 | `method`           | Created via `swamp access grant create`         |
 | `config`           | Loaded from server configuration at startup     |
-| `file:<filename>`  | Reconciled from a YAML file in the grants directory |
+| `file:<filename>`  | Reconciled from a grants file: the bare filename for the repository `grants/` directory, the full path for `--grants-file` and `--grants-dir` files |
 | `extension:<name>` | Bundled with an extension                       |
 
 ### Grant files
 
-Operators can declare grants in YAML files in the grants directory, set with
-`--grants-dir`. Each file contains:
+Operators can declare grants in YAML files in the repository's `grants/`
+directory, and in one additional directory set with `--grants-dir`. A
+`--grants-dir` that is the repository `grants/` directory itself is read once,
+from `grants/`, so each file keeps a single source. Each file contains:
 
 ```yaml
 grants:

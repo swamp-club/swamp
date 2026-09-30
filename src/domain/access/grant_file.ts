@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
 import { type Action, ActionSchema } from "./action.ts";
@@ -267,6 +267,45 @@ export async function readGrantFiles(
   }
 
   return results;
+}
+
+// The repository grants directory is always read, so a grants-dir that is the
+// same directory is dropped: reading it again would reconcile each file under
+// two sources, `file:<name>` and `file:<full path>`.
+export async function resolveExternalGrantsDir(
+  repoGrantsDir: string,
+  configuredGrantsDir: string | undefined,
+): Promise<string | undefined> {
+  if (!configuredGrantsDir) return undefined;
+  const externalGrantsDir = resolve(configuredGrantsDir);
+  if (await isSameDirectory(repoGrantsDir, externalGrantsDir)) {
+    return undefined;
+  }
+  return externalGrantsDir;
+}
+
+async function isSameDirectory(a: string, b: string): Promise<boolean> {
+  let statA: Deno.FileInfo;
+  let statB: Deno.FileInfo;
+  try {
+    [statA, statB] = await Promise.all([Deno.stat(a), Deno.stat(b)]);
+  } catch {
+    // A directory that cannot be read is not the same as one that can; the
+    // caller's own read reports the real error.
+    return false;
+  }
+  // dev/ino identify a directory through symlinks and case-insensitive
+  // filesystems; they are null on some Windows builds, so fall back to paths.
+  if (statA.ino !== null && statB.ino !== null) {
+    return statA.dev === statB.dev && statA.ino === statB.ino;
+  }
+  const [realA, realB] = await Promise.all([
+    Deno.realPath(a),
+    Deno.realPath(b),
+  ]);
+  return Deno.build.os === "windows"
+    ? realA.toLowerCase() === realB.toLowerCase()
+    : realA === realB;
 }
 
 export function collectErrors(

@@ -319,6 +319,7 @@ import {
   collectErrors,
   parseGrantFile,
   readGrantFiles,
+  resolveExternalGrantsDir,
 } from "../../domain/access/grant_file.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import {
@@ -1210,7 +1211,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--grants-dir <path:string>",
-    "Path to a directory of grants YAML files loaded at startup",
+    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -1813,7 +1814,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--grants-dir <path:string>",
-    "Path to a directory of grants YAML files loaded at startup (env: SWAMP_GRANTS_DIR)",
+    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory (env: SWAMP_GRANTS_DIR)",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -3341,11 +3342,14 @@ export const serveCommand = new Command()
       }
     }
 
-    const externalGrantsDirPath = merged.grantsDir
-      ? (isAbsolute(merged.grantsDir)
-        ? merged.grantsDir
-        : resolve(merged.grantsDir))
-      : undefined;
+    const externalGrantsDirPath = await resolveExternalGrantsDir(
+      grantsDir,
+      merged.grantsDir,
+    );
+    if (merged.grantsDir && !externalGrantsDirPath) {
+      logger
+        .info`Grants directory ${merged.grantsDir} is the repository grants directory — its files are read once, from there`;
+    }
     if (externalGrantsDirPath) {
       let dirEntries: Deno.DirEntry[];
       try {
