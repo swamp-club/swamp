@@ -67,6 +67,8 @@ function suspendedServeRun(workflow: Workflow): WorkflowRun {
 
 interface Harness {
   deps: WorkflowCancelSuspendedDeps;
+  /** Every run and workflow repository call, as `repo.method`. */
+  calls: string[];
   saved: WorkflowRun[];
   authorized: CancelTargetWorkflow[];
   tracked: { runId: string; status: ActiveRunStatus; reason?: string }[];
@@ -77,30 +79,42 @@ function harness(
   runs: WorkflowRun[],
   allow: (wf: CancelTargetWorkflow) => boolean = () => true,
 ): Harness {
+  const calls: string[] = [];
   const saved: WorkflowRun[] = [];
   const authorized: CancelTargetWorkflow[] = [];
   const tracked: Harness["tracked"] = [];
   const deps: WorkflowCancelSuspendedDeps = {
     workflowRepo: {
-      findByName: (name: string) =>
-        Promise.resolve(workflows.find((w) => w.name === name) ?? null),
-      findById: (id: string) =>
-        Promise.resolve(workflows.find((w) => w.id === id) ?? null),
+      findByName: (name: string) => {
+        calls.push("workflowRepo.findByName");
+        return Promise.resolve(workflows.find((w) => w.name === name) ?? null);
+      },
+      findById: (id: string) => {
+        calls.push("workflowRepo.findById");
+        return Promise.resolve(workflows.find((w) => w.id === id) ?? null);
+      },
+      findAll: () => {
+        calls.push("workflowRepo.findAll");
+        return Promise.resolve(workflows);
+      },
     } as unknown as WorkflowCancelSuspendedDeps["workflowRepo"],
     runRepo: {
-      findById: (workflowId: string, runId: string) =>
-        Promise.resolve(
+      findById: (workflowId: string, runId: string) => {
+        calls.push("runRepo.findById");
+        return Promise.resolve(
           runs.find((r) => r.workflowId === workflowId && r.id === runId) ??
             null,
-        ),
-      findGlobalByStatus: (status: string) =>
-        Promise.resolve(
-          runs.filter((r) => r.status === status).map((run) => ({
-            run,
-            workflowId: run.workflowId,
-          })),
-        ),
+        );
+      },
+      findGlobalById: (runId: string) => {
+        calls.push("runRepo.findGlobalById");
+        const run = runs.find((r) => r.id === runId);
+        return Promise.resolve(
+          run ? { run, workflowId: run.workflowId } : null,
+        );
+      },
       save: (_workflowId: string, run: WorkflowRun) => {
+        calls.push("runRepo.save");
         saved.push(run);
         return Promise.resolve();
       },
@@ -115,7 +129,7 @@ function harness(
       return allow(wf);
     },
   };
-  return { deps, saved, authorized, tracked };
+  return { deps, calls, saved, authorized, tracked };
 }
 
 async function cancel(
@@ -315,7 +329,7 @@ Deno.test("workflowCancelSuspended: loads a located run from its workflow alone"
   const wf = makeWorkflow("deploy");
   const run = suspendedServeRun(wf);
   const h = harness([wf], [run]);
-  h.deps.runRepo.findGlobalByStatus = () => {
+  h.deps.runRepo.findGlobalById = () => {
     throw new Error("a located run must not be searched for");
   };
   h.deps.workflowRepo.findByName = () => {
@@ -358,4 +372,121 @@ Deno.test("workflowCancelSuspended: a caller refused after the run was located g
   assertEquals(calls, 2);
   assertEquals(h.saved.length, 0);
   assertEquals(run.status, "suspended");
+});
+
+Deno.test("workflowCancelSuspended: a run id that is not a UUID is not found without a repository read", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+
+  for (const runId of ["-", "not-a-uuid", "../x", run.id.slice(0, 8)]) {
+    for (const workflowIdOrName of [undefined, "deploy"]) {
+      const h = harness([wf], [run]);
+
+      const last = await cancel(h.deps, {
+        runId,
+        workflowIdOrName,
+        reason: "r",
+      });
+      const located = await locateSuspendedRunToCancel(h.deps, {
+        runId,
+        workflowIdOrName,
+      });
+
+      assertEquals(last?.kind, "error");
+      if (last?.kind === "error") {
+        assertEquals(last.error.code, CANCEL_SUSPENDED_NOT_FOUND);
+        assertEquals(last.error.message, `No cancellable run with id ${runId}`);
+      }
+      assertEquals(located, null);
+      assertEquals(h.calls, []);
+      assertEquals(h.authorized, []);
+    }
+  }
+  assertEquals(run.status, "suspended");
+});
+
+Deno.test("locateSuspendedRunToCancel: finds a run by its own file, with or without a workflow", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+
+  for (const workflowIdOrName of [undefined, "deploy", wf.id]) {
+    const h = harness([wf], [run]);
+
+    const located = await locateSuspendedRunToCancel(h.deps, {
+      runId: run.id,
+      workflowIdOrName,
+    });
+
+    assertEquals(located?.workflowId, wf.id);
+    assertEquals(h.calls, [
+      "runRepo.findGlobalById",
+      "workflowRepo.findById",
+    ]);
+  }
+});
+
+Deno.test("locateSuspendedRunToCancel: an unknown run named with a workflow does no workflow lookup", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+
+  for (const workflowIdOrName of ["deploy", "no-such-workflow"]) {
+    const h = harness([wf], [run]);
+
+    const located = await locateSuspendedRunToCancel(h.deps, {
+      runId: crypto.randomUUID(),
+      workflowIdOrName,
+    });
+
+    assertEquals(located, null);
+    assertEquals(h.calls, ["runRepo.findGlobalById"]);
+    assertEquals(h.authorized, []);
+  }
+});
+
+Deno.test("locateSuspendedRunToCancel: a run that is not suspended is not found without a workflow", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+  run.cancel("earlier");
+  const h = harness([wf], [run]);
+
+  assertEquals(
+    await locateSuspendedRunToCancel(h.deps, { runId: run.id }),
+    null,
+  );
+  assertEquals(h.authorized, []);
+});
+
+Deno.test("locateSuspendedRunToCancel: a run of a deleted workflow is matched and authorized by its recorded name", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+
+  const allowed = harness([], [run]);
+  assertEquals(
+    await locateSuspendedRunToCancel(allowed.deps, {
+      runId: run.id,
+      workflowIdOrName: "deploy",
+    }),
+    { workflowId: wf.id, workflow: { id: wf.id, name: "deploy" } },
+  );
+  assertEquals(allowed.authorized, [{ id: wf.id, name: "deploy" }]);
+
+  const denied = harness([], [run], () => false);
+  assertEquals(
+    await locateSuspendedRunToCancel(denied.deps, {
+      runId: run.id,
+      workflowIdOrName: "deploy",
+    }),
+    null,
+  );
+  assertEquals(denied.authorized, [{ id: wf.id, name: "deploy" }]);
+
+  const renamed = harness([], [run]);
+  assertEquals(
+    await locateSuspendedRunToCancel(renamed.deps, {
+      runId: run.id,
+      workflowIdOrName: "other",
+    }),
+    null,
+  );
+  assertEquals(renamed.authorized, []);
 });

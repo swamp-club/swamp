@@ -420,7 +420,11 @@ All of this is in `handleRunAttach`
   For a persisted run, `cancelSuspendedRunAndPush`
   (`src/serve/suspended_run_cancel.ts`) first locates the run and checks a
   `run` grant on the workflow it belongs to, holding neither the sync gate
-  nor the run id's reservation. A missing, mismatched or refused run gets the
+  nor the run id's reservation. A run id that is not a UUID is not found
+  before any repository read. Otherwise the run is found by its own run file
+  (`findGlobalById`), with no scan of other runs, and a `workflowIdOrName` is
+  only checked against the workflow of the run found, never looked up on its
+  own (swamp-club#2729). A missing, mismatched or refused run gets the
   same `No cancellable run with id <id>` reply, and never holds the gate or
   blocks another operation on the run. Only an allowed cancel takes the gate
   and the reservation, then re-reads, saves and pushes the run.

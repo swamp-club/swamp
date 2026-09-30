@@ -66,6 +66,8 @@ interface Harness {
   registry: ActiveRunRegistry;
   saved: WorkflowRun[];
   pushes: number;
+  /** Run and workflow repository calls. */
+  repoCalls: number;
 }
 
 /**
@@ -86,11 +88,14 @@ function harness(
     registry,
     saved: [],
     pushes: 0,
+    repoCalls: 0,
   };
-  const load = <T>(value: T): Promise<T> =>
-    options.failLoad
+  const load = <T>(value: T): Promise<T> => {
+    h.repoCalls++;
+    return options.failLoad
       ? Promise.reject(new Error("repository unavailable"))
       : Promise.resolve(value);
+  };
   h.ctx = {
     activeRunRegistry: options.registry === false ? undefined : registry,
     datastoreConfig: { type: "filesystem" },
@@ -102,10 +107,16 @@ function harness(
     },
     repoContext: {
       workflowRepo: {
-        findByName: (name: string) =>
-          Promise.resolve(workflows.find((w) => w.name === name) ?? null),
-        findById: (id: string) =>
-          Promise.resolve(workflows.find((w) => w.id === id) ?? null),
+        findByName: (name: string) => {
+          h.repoCalls++;
+          return Promise.resolve(
+            workflows.find((w) => w.name === name) ?? null,
+          );
+        },
+        findById: (id: string) => {
+          h.repoCalls++;
+          return Promise.resolve(workflows.find((w) => w.id === id) ?? null);
+        },
       },
       workflowRunRepo: {
         findById: (workflowId: string, runId: string) =>
@@ -115,13 +126,10 @@ function harness(
               runs.find((r) => r.workflowId === workflowId && r.id === runId) ??
                 null,
             ),
-        findGlobalByStatus: (status: string) =>
-          load(
-            runs.filter((r) => r.status === status).map((run) => ({
-              run,
-              workflowId: run.workflowId,
-            })),
-          ),
+        findGlobalById: (runId: string) => {
+          const run = runs.find((r) => r.id === runId);
+          return load(run ? { run, workflowId: run.workflowId } : null);
+        },
         save: (_workflowId: string, run: WorkflowRun) => {
           h.saved.push(run);
           return Promise.resolve();
@@ -272,6 +280,43 @@ Deno.test("cancelSuspendedRunAndPush: reports a refused caller as not found with
   assertEquals(h.saved.length, 0);
   assertEquals(reservations, 0);
   assertEquals(h.pushes, 0);
+});
+
+Deno.test("cancelSuspendedRunAndPush: a run id that is not a UUID is not found before any lookup", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedRun(wf);
+
+  for (const runId of ["-", "../x"]) {
+    for (const workflowIdOrName of [undefined, "deploy"]) {
+      const h = harness([wf], [run]);
+      let reservations = 0;
+      const reserve = h.registry.reserve.bind(h.registry);
+      h.registry.reserve = (id: string) => {
+        reservations++;
+        return reserve(id);
+      };
+      const asked: CancelTargetWorkflow[] = [];
+
+      const result = await cancelSuspendedRunAndPush(
+        h.ctx,
+        { runId, workflowIdOrName, reason: "r" },
+        (workflow) => {
+          asked.push(workflow);
+          return true;
+        },
+      );
+
+      assertEquals(result, {
+        status: "not_found",
+        message: `No cancellable run with id ${runId}`,
+      });
+      assertEquals(h.repoCalls, 0);
+      assertEquals(asked, []);
+      assertEquals(reservations, 0);
+      assertEquals(h.pushes, 0);
+    }
+  }
+  assertEquals(run.status, "suspended");
 });
 
 Deno.test("cancelSuspendedRunAndPush: a lookup that throws takes no reservation and pushes nothing", async () => {

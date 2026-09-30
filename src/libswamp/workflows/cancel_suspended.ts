@@ -23,10 +23,12 @@ import type {
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
   type WorkflowId,
+  type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -50,7 +52,11 @@ export type WorkflowCancelSuspendedEvent =
 
 export interface WorkflowCancelSuspendedInput {
   runId: string;
-  /** When given, the run must belong to this workflow (name or id). */
+  /**
+   * When given, the run must belong to this workflow (name or id). It is
+   * checked against the workflow of the run found by `runId`, never resolved
+   * on its own, so an unknown name costs no workflow lookup.
+   */
   workflowIdOrName?: string;
   /**
    * The id of the workflow {@link locateSuspendedRunToCancel} found the run
@@ -80,9 +86,22 @@ export interface CancelTargetWorkflow {
   name: string;
 }
 
+/**
+ * The run repository surface cancel needs: a run found by id alone, loading
+ * only that run's file, plus the workflow-scoped read and the save. Structural
+ * so the {@link WorkflowRunRepository} port does not grow `findGlobalById`.
+ */
+type CancelRunRepository =
+  & Pick<WorkflowRunRepository, "findById" | "save">
+  & {
+    findGlobalById(
+      runId: WorkflowRunId,
+    ): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | null>;
+  };
+
 export interface WorkflowCancelSuspendedDeps {
   workflowRepo: WorkflowRepository;
-  runRepo: WorkflowRunRepository;
+  runRepo: CancelRunRepository;
   runTracker?: RunTrackerRepository;
   /**
    * Decides whether the caller may cancel runs of the run's own workflow.
@@ -94,7 +113,7 @@ export interface WorkflowCancelSuspendedDeps {
 
 export function createWorkflowCancelSuspendedDeps(
   workflowRepo: WorkflowRepository,
-  runRepo: WorkflowRunRepository,
+  runRepo: CancelRunRepository,
   authorize: WorkflowCancelSuspendedDeps["authorize"],
   runTracker?: RunTrackerRepository,
 ): WorkflowCancelSuspendedDeps {
@@ -233,33 +252,35 @@ async function findAuthorizedRun(
   return { run, workflowId, target };
 }
 
+/**
+ * Finds the run by its id alone, so nothing the caller sent is resolved before
+ * a run exists: `workflowIdOrName` is checked afterwards against the run's own
+ * workflow by {@link findAuthorizedRun}. A run id is always a UUID, so any
+ * other id is not found without a repository read.
+ *
+ * Should one id ever sit under two workflows (only a hand-copied `.swamp`
+ * tree could do that), the first found is used and a name naming the other
+ * does not match.
+ */
 async function findRun(
   deps: WorkflowCancelSuspendedDeps,
   input: LocateSuspendedRunInput & { workflowId?: string },
 ): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | null> {
+  if (!isUuid(input.runId)) return null;
+  const runId = createWorkflowRunId(input.runId);
   if (input.workflowId !== undefined) {
     const workflowId = createWorkflowId(input.workflowId);
-    const run = await deps.runRepo.findById(
-      workflowId,
-      createWorkflowRunId(input.runId),
-    );
+    const run = await deps.runRepo.findById(workflowId, runId);
     return run ? { run, workflowId } : null;
   }
-  if (input.workflowIdOrName !== undefined) {
-    const workflow =
-      await deps.workflowRepo.findByName(input.workflowIdOrName) ??
-        await deps.workflowRepo.findById(
-          createWorkflowId(input.workflowIdOrName),
-        );
-    if (!workflow) return null;
-    const run = await deps.runRepo.findById(
-      workflow.id,
-      createWorkflowRunId(input.runId),
-    );
-    return run ? { run, workflowId: workflow.id } : null;
+  const found = await deps.runRepo.findGlobalById(runId);
+  if (!found) return null;
+  // Without a workflow to check against, only a suspended run is reported:
+  // any other status stays not found, as it always has on this path.
+  if (
+    input.workflowIdOrName === undefined && found.run.status !== "suspended"
+  ) {
+    return null;
   }
-  // Only a suspended run can be cancelled here, so the status index narrows
-  // the search without hydrating every run of every workflow.
-  const suspended = await deps.runRepo.findGlobalByStatus("suspended");
-  return suspended.find(({ run }) => run.id === input.runId) ?? null;
+  return found;
 }

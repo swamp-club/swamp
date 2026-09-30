@@ -96,6 +96,45 @@ Deno.test("YamlWorkflowRunRepository.findById returns null for nonexistent", asy
   });
 });
 
+Deno.test("YamlWorkflowRunRepository.findById loads the named run among several", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = [0, 1, 2].map(() => {
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      return run;
+    });
+    for (const run of runs) await repo.save(workflow.id, run);
+
+    for (const run of runs) {
+      assertEquals((await repo.findById(workflow.id, run.id))?.id, run.id);
+    }
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findById returns null for an id that is not a UUID without reading a file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const runsDir = dirname(repo.getPath(workflow.id, run.id));
+    // Unparseable, and named so that a substring match on "-" would read it.
+    await Deno.writeTextFile(join(runsDir, "workflow-run-broken-.yaml"), "{");
+    // Where a direct join of `../../x` would land.
+    await Deno.writeTextFile(join(runsDir, "x.yaml"), "{");
+
+    for (const id of ["-", "../../x", "", run.id.slice(0, 8)]) {
+      assertEquals(
+        await repo.findById(workflow.id, createWorkflowRunId(id)),
+        null,
+      );
+    }
+  });
+});
+
 Deno.test("YamlWorkflowRunRepository.findAllByWorkflowId returns all runs", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
@@ -1288,6 +1327,22 @@ Deno.test("YamlWorkflowRunRepository.findGlobalById: returns null for an unknown
     await repo.save(workflow.id, run);
 
     assertEquals(await repo.findGlobalById(repo.nextId()), null);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalById: returns null for an id that is not a UUID", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const runsDir = dirname(repo.getPath(workflow.id, run.id));
+    await Deno.writeTextFile(join(runsDir, "x.yaml"), "{");
+
+    for (const id of ["-", "../../x", run.id.slice(0, 8)]) {
+      assertEquals(await repo.findGlobalById(createWorkflowRunId(id)), null);
+    }
   });
 });
 
