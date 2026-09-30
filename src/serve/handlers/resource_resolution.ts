@@ -413,7 +413,7 @@ export function authorizeResolved(
   // The response is audited under the resolved name, not the id the client
   // sent (swamp-club#2603). A string that matched nothing keeps it.
   if (resolution.status !== "missing") {
-    recordAuditedResource(socket, requestId, resolution.name, ctx);
+    recordAuditedResource(socket, requestId, kind, resolution.name, ctx);
   }
   return true;
 }

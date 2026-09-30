@@ -61,7 +61,11 @@ export function audited(
   // identifier the client sent (swamp-club#2603).
   const resourceName = (): string =>
     (options.socket
-      ? takeAuditedResource(options.socket, options.requestId)
+      ? takeAuditedResource(
+        options.socket,
+        options.requestId,
+        options.resourceKind,
+      )
       : undefined) ?? options.resourceName;
 
   return handler.then(() => {

@@ -1655,3 +1655,39 @@ Deno.test("serve id-deny conformance: cancelling a method run is judged with its
     );
   });
 });
+
+Deno.test("serve id-deny conformance: a run attach is audited under its run id, not the model it authorized", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, GRANTS, { detached: true });
+    const audit: AuditEvent[] = [];
+    (ctx as { auditEmitter?: unknown }).auditEmitter = {
+      emit: (event: AuditEvent) => audit.push(event),
+    };
+    const { runId } = registerRun(ctx, {
+      kind: "method-run",
+      resourceName: f.devModel.name,
+      resourceId: f.devModel.id,
+    });
+
+    await sendRequest(ctx, request("run.attach", { runId }), undefined, {
+      awaitRuns: false,
+    });
+
+    const attach = audit.find((event) =>
+      event.action === "run.attach" && event.stage === "response"
+    );
+    assertEquals(attach?.resourceName, runId);
+  });
+});
+
+Deno.test("serve id-deny conformance: model.create with a type that does not parse gets an error reply", async () => {
+  await withFixtures(async (f) => {
+    const frames = await sendRequest(
+      f.ctx,
+      request("model.create", { typeArg: "", name: "new-model" }),
+    );
+    const error = errorFrame(frames);
+    assert(error, `an error frame: ${JSON.stringify(frames)}`);
+    assertNotEquals(error.error?.code, "unauthorized");
+  });
+});

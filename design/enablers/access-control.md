@@ -304,7 +304,11 @@ the workflow's name and tags.
 The response audit event of a request authorized this way records the name the
 request resolved to, not the id the client sent (a request by a model's UUID is
 audited under the model's name); a string that matched nothing is recorded as
-sent. Denials already carry the resolved resource.
+sent. A workflow-scoped `data.get` is audited under the names of the item's
+owners, joined with ", " when there are several. The resolved name replaces the
+sent identifier only when the event audits the same kind of resource: a
+`run.attach`, audited as the run, keeps the run id. Denials already carry the
+resolved resource.
 
 Direct type execution (`model.method.run` with a type and a definition name)
 and the name vaults are authorized under authorize differently today;
@@ -495,7 +499,8 @@ resources is authorized as `*` (swamp-club#2675):
 - `data.gc`, `data.prune`, `run.gc` and `summarise` reach every resource and
   cannot be narrowed, so they need the action on every resource of each kind
   they touch: any deny grant that applies to the caller for the kind and action
-  refuses them, whatever its pattern or condition (`decideAll`).
+  refuses them, whatever its pattern, condition or `methods` list
+  (`decideAll`); the refusal names the grant and says when it is conditional.
 
 Endpoints that return only type definitions or schemas (`model.type.search`,
 `model.type.describe`, `workflow.schema`, `report.type.search`,

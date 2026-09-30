@@ -142,9 +142,12 @@ export class PolicySnapshot {
         }`;
         return "missing-field";
       }
+      // A tag the resource does not carry, or a variable it lacks, is an
+      // expected outcome of a tag condition, not a fault: log it quietly.
       if (
         error instanceof Error &&
-        error.message.startsWith("Unknown variable:")
+        (error.message.startsWith("Unknown variable:") ||
+          error.message.startsWith("No such key:"))
       ) {
         logger.debug`Condition evaluation skipped for ${condition}: ${error}`;
       } else {

@@ -422,19 +422,31 @@ export class DataQueryService {
     await this.ensurePopulated();
     let results: DataRecord[] | unknown[];
     if (options?.include) {
-      // Match without the limit and apply it to accepted records, so hidden
-      // records never shorten a page.
+      // Apply the limit to accepted records, so hidden records never shorten
+      // a page: match in growing batches until the limit is met or the
+      // matches run out, never the whole catalog when a limit is set.
+      const include = options.include;
       const limit = options.limit ?? Infinity;
-      const matched = this.executeMatch(predicate, {
-        ...options,
-        limit: undefined,
-      });
-      const accepted: DataRecord[] = [];
-      for (const record of matched.records) {
-        if (accepted.length >= limit) break;
-        if (await options.include(record)) accepted.push(record);
+      let batch = Number.isFinite(limit) ? limit * 4 : undefined;
+      while (true) {
+        const matched = this.executeMatch(predicate, {
+          ...options,
+          limit: batch,
+        });
+        const accepted: DataRecord[] = [];
+        for (const record of matched.records) {
+          if (accepted.length >= limit) break;
+          if (await include(record)) accepted.push(record);
+        }
+        if (
+          accepted.length >= limit || batch === undefined ||
+          matched.records.length < batch
+        ) {
+          results = this.project(accepted, matched.selectParsed);
+          break;
+        }
+        batch *= 4;
       }
-      results = this.project(accepted, matched.selectParsed);
     } else {
       results = this.executeQuery(predicate, options);
     }

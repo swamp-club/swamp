@@ -298,7 +298,8 @@ async function* validateAll(
 ): AsyncIterable<ModelValidateEvent> {
   const allDefinitions = await deps.findAllDefinitions();
 
-  if (!allDefinitions.some(include)) {
+  const accepted = new Set(allDefinitions.filter(include));
+  if (accepted.size === 0) {
     yield {
       kind: "error",
       error: validationFailed("No models found"),
@@ -310,7 +311,7 @@ async function* validateAll(
   for (const entry of allDefinitions) {
     const { definition, type } = entry;
     const modelDef = await deps.resolveModelType(type);
-    if (!modelDef || !include(entry)) {
+    if (!modelDef || !accepted.has(entry)) {
       continue;
     }
 

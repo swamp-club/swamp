@@ -201,7 +201,7 @@ async function resolveMethodRunTarget(
       ? { ...modelAccessResource(definition).fields }
       : {
         name: payload.modelIdOrName,
-        modelType: ModelType.create(payload.typeArg).normalized,
+        modelType: normalizedTypeOrRaw(payload.typeArg),
         tags: {},
       };
     return {
@@ -943,7 +943,7 @@ export async function handleModelCreate(
         // A model being created has no tags yet; its type is the one named.
         fields: {
           name: payload.name ?? payload.typeArg,
-          modelType: ModelType.create(payload.typeArg).normalized,
+          modelType: normalizedTypeOrRaw(payload.typeArg),
           tags: {},
         },
       }, ctx).allowed
@@ -2236,4 +2236,17 @@ function filterOutputItems(
     "read",
     ctx,
   );
+}
+
+/**
+ * The normalized model type for authorization, or the raw string when it
+ * does not parse — the operation then reports the invalid type itself,
+ * inside its own error handling.
+ */
+function normalizedTypeOrRaw(typeArg: string): string {
+  try {
+    return ModelType.create(typeArg).normalized;
+  } catch {
+    return typeArg;
+  }
 }

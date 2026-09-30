@@ -1346,11 +1346,21 @@ const erroredRequests = new WeakMap<WebSocket, Set<string>>();
  * it, capped per socket like {@link erroredRequests}, and taken — removed —
  * by the audit wrapper on every outcome.
  */
-const auditedResources = new WeakMap<WebSocket, Map<string, string>>();
+const auditedResources = new WeakMap<
+  WebSocket,
+  Map<string, { kind: string; name: string }>
+>();
 
+/**
+ * Records the resolved name of a `kind` resource for the request's response
+ * audit event. It is used only when the event audits that kind — a run
+ * attach audited as the run keeps the run id, although it authorized the
+ * run's model.
+ */
 export function recordAuditedResource(
   socket: WebSocket,
   requestId: string,
+  kind: string,
   name: string,
   ctx: Pick<ConnectionContext, "auditEmitter">,
 ): void {
@@ -1360,22 +1370,26 @@ export function recordAuditedResource(
     names = new Map();
     auditedResources.set(socket, names);
   }
-  names.set(requestId, name);
+  names.set(requestId, { kind, name });
   if (names.size > MAX_ERRORED_REQUESTS) {
     const first = names.keys().next().value!;
     names.delete(first);
   }
 }
 
-/** Returns and forgets the resolved name recorded for a request, if any. */
+/**
+ * Returns and forgets the resolved name recorded for a request, if it was
+ * recorded for `kind`.
+ */
 export function takeAuditedResource(
   socket: WebSocket,
   requestId: string,
+  kind: string,
 ): string | undefined {
   const names = auditedResources.get(socket);
-  const name = names?.get(requestId);
+  const recorded = names?.get(requestId);
   names?.delete(requestId);
-  return name;
+  return recorded?.kind === kind ? recorded.name : undefined;
 }
 
 export function sendError(

@@ -310,6 +310,7 @@ async function authorizeWorkflowData(
   recordAuditedResource(
     socket,
     requestId,
+    "data",
     owners.map((owner) => owner.name).join(", "),
     ctx,
   );

@@ -273,7 +273,7 @@ Deno.test("audited: records the resolved name a handler recorded, then forgets i
 
   await audited(
     Promise.resolve().then(() =>
-      recordAuditedResource(socket, "req-1", "prod-db", {
+      recordAuditedResource(socket, "req-1", "model", "prod-db", {
         auditEmitter: emitter,
       })
     ),
@@ -287,7 +287,7 @@ Deno.test("audited: records the resolved name a handler recorded, then forgets i
   await emitter.flush();
 
   assertEquals(sink.events[0].resourceName, "prod-db");
-  assertEquals(takeAuditedResource(socket, "req-1"), undefined);
+  assertEquals(takeAuditedResource(socket, "req-1", "model"), undefined);
 });
 
 Deno.test("audited: a failing handler is also audited under the resolved name", async () => {
@@ -298,7 +298,7 @@ Deno.test("audited: a failing handler is also audited under the resolved name", 
   await assertRejects(() =>
     audited(
       Promise.resolve().then(() => {
-        recordAuditedResource(socket, "req-1", "prod-db", {
+        recordAuditedResource(socket, "req-1", "model", "prod-db", {
           auditEmitter: emitter,
         });
         throw new Error("boom");
@@ -309,7 +309,7 @@ Deno.test("audited: a failing handler is also audited under the resolved name", 
   await emitter.flush();
 
   assertEquals(sink.events[0].resourceName, "prod-db");
-  assertEquals(takeAuditedResource(socket, "req-1"), undefined);
+  assertEquals(takeAuditedResource(socket, "req-1", "model"), undefined);
 });
 
 Deno.test("audited: keeps the sent identifier when nothing was resolved", async () => {
@@ -329,8 +329,34 @@ Deno.test("audited: keeps the sent identifier when nothing was resolved", async 
 
 Deno.test("recordAuditedResource: records nothing without an audit emitter", () => {
   const socket = {} as WebSocket;
-  recordAuditedResource(socket, "req-1", "prod-db", {
+  recordAuditedResource(socket, "req-1", "model", "prod-db", {
     auditEmitter: undefined,
   });
-  assertEquals(takeAuditedResource(socket, "req-1"), undefined);
+  assertEquals(takeAuditedResource(socket, "req-1", "model"), undefined);
+});
+
+Deno.test("audited: a name recorded for another kind leaves the audited identifier alone", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+  const socket = {} as WebSocket;
+
+  await audited(
+    Promise.resolve().then(() =>
+      recordAuditedResource(socket, "req-1", "model", "prod-db", {
+        auditEmitter: emitter,
+      })
+    ),
+    {
+      ...baseOptions,
+      action: "run.attach",
+      resourceKind: "run",
+      resourceName: "run-123",
+      emitter,
+      socket,
+    },
+  );
+  await emitter.flush();
+
+  assertEquals(sink.events[0].resourceName, "run-123");
+  assertEquals(takeAuditedResource(socket, "req-1", "model"), undefined);
 });
