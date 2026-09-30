@@ -21,6 +21,8 @@
  * Model-domain request handlers (model.* verbs).
  */
 
+import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
+import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -2098,7 +2100,18 @@ export async function handleModelEdit(
   }
 }
 
+/**
+ * The resource an edit is authorized on, before and after. A control-plane
+ * model (grant, group, token, worker) is its access record, so editing one —
+ * or editing a model into one — needs admin (swamp-club#2756).
+ */
 function modelEditResource(target: ModelEditTarget): AccessResource {
+  if (isControlPlaneModelType(target.modelType)) {
+    return controlPlaneRecordResource(target.modelType, {
+      name: target.name,
+      tags: target.tags,
+    });
+  }
   return {
     kind: "model",
     name: target.name,

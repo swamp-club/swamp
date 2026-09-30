@@ -545,7 +545,8 @@ holding its secret, and a group record lists its members (swamp-club#2756).
   `modelAccessResource` and `CanonicalResources` make that mapping, so it
   holds on every path that goes through them: `data.get`, `data.list`,
   `data.versions`, `data.delete`, `data.rename`, `data.search`, `data.query`,
-  reports, workflow-history step data, `model.get`, `model.output.*` and
+  reports, workflow-history step data, `model.get`, `model.edit` (before and
+  after the edit), `model.output.*` and
   `model.method.history.*`. An owner no longer found is judged on its recorded
   type — a data item's or output's owner, and the model of a run whose cancel or
   attach arrives after its definition was deleted (the run records its model

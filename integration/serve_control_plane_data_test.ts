@@ -30,6 +30,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -278,6 +279,29 @@ Deno.test("serve control-plane data: write on data:* cannot delete or rename a s
       "token-main",
     );
     assertEquals(versions.length, 1, "the token record is untouched");
+  });
+});
+
+Deno.test("serve control-plane data: write on model:* cannot edit a control-plane definition", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, WRITER);
+    assertRefusedAsAdmin(
+      await sendRequest(
+        ctx,
+        request("model.edit", {
+          modelIdOrName: TOKEN_MODEL,
+          content: stringifyYaml({
+            ...JSON.parse(JSON.stringify(f.tokenDef.toData())),
+            tags: { retagged: "true" },
+          }),
+        }),
+      ),
+      "model.edit",
+    );
+    const token = await f.repo.repoContext.definitionRepo.findByNameGlobal(
+      TOKEN_MODEL,
+    );
+    assertEquals(token?.definition.tags ?? {}, {}, "the token is untouched");
   });
 });
 
