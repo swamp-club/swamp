@@ -40,14 +40,21 @@ export const CONTROL_PLANE_MODEL_TYPES: readonly string[] = [
 ];
 
 /**
+ * The normalized form of a model type string, as ModelType normalizes it,
+ * with a leading `@` dropped; null for a blank string.
+ */
+export function normalizeControlPlaneType(type: string): string | null {
+  const stripped = type.startsWith("@") ? type.slice(1) : type;
+  if (stripped.trim().length === 0) return null;
+  return ModelType.create(stripped).normalized;
+}
+
+/**
  * Whether `type` names a control-plane model type. The type is normalized
- * first, as ModelType normalizes it, so casing, separator and `@` variants
- * of a control-plane type all match.
+ * first, so casing, separator and `@` variants of a control-plane type all
+ * match.
  */
 export function isControlPlaneModelType(type: string): boolean {
-  const stripped = type.startsWith("@") ? type.slice(1) : type;
-  if (stripped.trim().length === 0) return false;
-  return CONTROL_PLANE_MODEL_TYPES.includes(
-    ModelType.create(stripped).normalized,
-  );
+  const normalized = normalizeControlPlaneType(type);
+  return normalized !== null && CONTROL_PLANE_MODEL_TYPES.includes(normalized);
 }

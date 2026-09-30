@@ -2542,3 +2542,53 @@ Deno.test("DataQueryService: excludeModelTypes hides an excluded latest record a
   );
   catalog.close();
 });
+
+Deno.test("getLatestRecord: excludeModelTypes holds while a full backfill is in flight", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-exclude-backfill-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  // Not populated, as after invalidate(): the next query starts a backfill.
+  createOnDiskData(dir, "swamp/grant", "grant-001", "grant-main", "grant-abc");
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const filling = service.ensurePopulated();
+  const record = await service.getLatestRecord(
+    "grant-abc",
+    "grant-main",
+    undefined,
+    { excludeModelTypes: EXCLUDED },
+  );
+  await filling;
+
+  assertEquals(record, null);
+  // The same lookup without the option finds it once populated.
+  assertEquals(
+    (await service.getLatestRecord("grant-abc", "grant-main"))?.modelType,
+    "swamp/grant",
+  );
+  catalog.close();
+  await Deno.remove(dir, { recursive: true }).catch(() => {});
+});
+
+Deno.test("getLatestRecord: an excluded newer row does not hide a same-named record of another type", async () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({
+    model_name: "shared",
+    data_name: "main",
+    type_normalized: "test-model",
+    id: "data-user-001",
+  }));
+  catalog.upsert(makeRow({
+    model_name: "shared",
+    data_name: "main",
+    type_normalized: "swamp/grant",
+    model_id: "grant-001",
+    id: "data-grant-001",
+  }));
+
+  const record = await service.getLatestRecord("shared", "main", undefined, {
+    excludeModelTypes: EXCLUDED,
+  });
+  assertEquals(record?.modelType, "test-model");
+  catalog.close();
+});

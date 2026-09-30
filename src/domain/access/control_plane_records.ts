@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { CONTROL_PLANE_MODEL_TYPES } from "../models/control_plane_types.ts";
-import { ModelType } from "../models/model_type.ts";
+import {
+  CONTROL_PLANE_MODEL_TYPES,
+  normalizeControlPlaneType,
+} from "../models/control_plane_types.ts";
 import type { AccessResource } from "./access_decision_service.ts";
 
 /**
@@ -31,8 +33,8 @@ import type { AccessResource } from "./access_decision_service.ts";
  * it (swamp-club#2756).
  */
 export function controlPlaneRecordResource(type: string): AccessResource {
-  const stripped = type.startsWith("@") ? type.slice(1) : type;
-  const name = ModelType.create(stripped).normalized;
+  const name = normalizeControlPlaneType(type);
+  if (name === null) throw new Error("Model type cannot be empty");
   return { kind: "access", name, fields: { name } };
 }
 

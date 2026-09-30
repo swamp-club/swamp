@@ -206,48 +206,36 @@ export class DataQueryService {
   ): Promise<DataRecord | null> {
     const includePath = options?.includeContentPath ?? false;
     const populated = this.catalogStore.isPopulated();
+    // Every lookup below goes through this one query, so excluded types are
+    // dropped in SQL on every path and never shadow another type's row.
+    const latestRow = () =>
+      this.catalogStore.findLatestRow(
+        modelName,
+        dataName,
+        namespace,
+        options?.excludeModelTypes,
+      );
 
     // If a full backfill is already in-flight, await it — it will populate
     // everything including our target.
     if (!populated && this.backfillPromise) {
       await this.backfillPromise;
-      return this.buildRecordFromRow(
-        modelName,
-        dataName,
-        namespace,
-        includePath,
-      );
+      return this.buildRecordFromRow(latestRow(), includePath);
     }
 
     // Tier 1: try the indexed SQL lookup.
-    const excluded = (r: CatalogRow | null) =>
-      r !== null &&
-      (options?.excludeModelTypes ?? []).includes(r.type_normalized);
-    const row = this.catalogStore.findLatestRow(modelName, dataName, namespace);
-    if (excluded(row)) return null;
+    const row = latestRow();
     if (row) {
       if (populated) {
         if (dataName === row.spec_name) {
           this.checkSpecNameAmbiguity(row.spec_name, modelName, namespace);
         }
-        return this.buildRecordFromRow(
-          modelName,
-          dataName,
-          namespace,
-          includePath,
-          row,
-        );
+        return this.buildRecordFromRow(row, includePath);
       }
       // Catalog not populated — verify the data still exists to guard
       // against stale rows left behind after invalidate().
       if (await this.rowHasContent(row)) {
-        return this.buildRecordFromRow(
-          modelName,
-          dataName,
-          namespace,
-          includePath,
-          row,
-        );
+        return this.buildRecordFromRow(row, includePath);
       }
       // Stale row — fall through to scoped backfill
     }
@@ -256,22 +244,12 @@ export class DataQueryService {
 
     // Tier 2: scoped backfill for just this (modelName, dataName) pair.
     await this.scopedBackfill(modelName, dataName);
-    const freshRow = this.catalogStore.findLatestRow(
-      modelName,
-      dataName,
-      namespace,
-    );
-    if (!freshRow || excluded(freshRow)) return null;
+    const freshRow = latestRow();
+    if (!freshRow) return null;
     // Verify the row points to real data (it may be the same stale row
     // that triggered the scoped backfill).
     if (!(await this.rowHasContent(freshRow))) return null;
-    return this.buildRecordFromRow(
-      modelName,
-      dataName,
-      namespace,
-      includePath,
-      freshRow,
-    );
+    return this.buildRecordFromRow(freshRow, includePath);
   }
 
   /**
@@ -341,19 +319,11 @@ export class DataQueryService {
   }
 
   private buildRecordFromRow(
-    modelName: string,
-    dataName: string,
-    namespace: string | undefined,
+    row: CatalogRow | null,
     includeContentPath: boolean,
-    row?: CatalogRow | null,
   ): DataRecord | null {
-    const r = row ?? this.catalogStore.findLatestRow(
-      modelName,
-      dataName,
-      namespace,
-    );
-    if (!r) return null;
-    return fromRow(r, this.dataRepo, true, true, includeContentPath);
+    if (!row) return null;
+    return fromRow(row, this.dataRepo, true, true, includeContentPath);
   }
 
   private async scopedBackfill(

@@ -549,25 +549,28 @@ export class CatalogStore {
     modelName: string,
     dataName: string,
     namespace?: string,
+    excludeModelTypes: readonly string[] = [],
   ): CatalogRow | null {
+    const clauses = ["model_name = ?", "data_name = ?", "is_latest = 1"];
+    const params: string[] = [modelName, dataName];
     if (namespace !== undefined) {
-      const stmt = this.db.prepare(
-        `SELECT * FROM catalog
-         WHERE model_name = ? AND data_name = ? AND is_latest = 1 AND namespace = ?
-         ORDER BY rowid DESC LIMIT 1`,
+      clauses.push("namespace = ?");
+      params.push(namespace);
+    }
+    if (excludeModelTypes.length > 0) {
+      clauses.push(
+        `type_normalized NOT IN (${
+          excludeModelTypes.map(() => "?").join(", ")
+        })`,
       );
-      return (stmt.get(
-        modelName,
-        dataName,
-        namespace,
-      ) as unknown as CatalogRow) ?? null;
+      for (const type of excludeModelTypes) params.push(type);
     }
     const stmt = this.db.prepare(
-      `SELECT * FROM catalog
-       WHERE model_name = ? AND data_name = ? AND is_latest = 1
-       ORDER BY rowid DESC LIMIT 1`,
+      `SELECT * FROM catalog WHERE ${
+        clauses.join(" AND ")
+      } ORDER BY rowid DESC LIMIT 1`,
     );
-    return (stmt.get(modelName, dataName) as unknown as CatalogRow) ?? null;
+    return (stmt.get(...params) as unknown as CatalogRow) ?? null;
   }
 
   /**
