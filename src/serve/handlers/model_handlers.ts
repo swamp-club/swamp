@@ -1840,17 +1840,22 @@ export async function handleModelEvaluate(
   payload?: ModelEvaluatePayload,
 ): Promise<void> {
   // Without a model this evaluates every model — evaluation orders them all
-  // in one dependency graph — and returns only those the caller may read
-  // (swamp-club#2675). A named model is resolved first.
+  // in one dependency graph — but saves and returns only those the caller
+  // may read (swamp-club#2675). A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
+  let include:
+    | ((entry: DefinitionLookupResult) => boolean)
     | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!modelIdOrName) {
     if (
       !authorizeAnyOrReject(socket, requestId, principal, "read", "model", ctx)
     ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (entry) => readable(modelAccessResource(entry, "model"));
   } else {
     const target = await resolveModelTarget(
       ctx.repoContext.definitionRepo,
@@ -1888,6 +1893,7 @@ export async function handleModelEvaluate(
         modelIdOrName: model?.idOrName,
         byId: model?.byId,
         expectedName: model?.expectedName,
+        include,
       }),
       {
         evaluating: () => {},
@@ -1905,26 +1911,7 @@ export async function handleModelEvaluate(
       return;
     }
 
-    const data = (result ?? {}) as {
-      items?: Array<
-        { id: string; name: string; type: string; hadExpressions: boolean }
-      >;
-      total?: number;
-      evaluated?: number;
-    };
-    if (!model && data.items) {
-      const canonical = canonicalResources(ctx);
-      data.items = await filterByResources(
-        data.items,
-        (item) => canonical.model(item.id, item.name, item.type),
-        socket,
-        principal,
-        "read",
-        ctx,
-      );
-      data.total = data.items.length;
-      data.evaluated = data.items.filter((item) => item.hadExpressions).length;
-    }
+    const data = result ?? {};
 
     send(socket, {
       type: "model.evaluate",

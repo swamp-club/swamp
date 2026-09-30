@@ -406,10 +406,25 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const principalKey = principalToString(principal.principal);
     const localGroups = snapshot.groupsForPrincipal(principalKey);
     const subjects = resolveSubjects(principal, localGroups);
+    const principalContext = buildPrincipalContext(principal, localGroups);
     for (const grant of snapshot.grantsForSubjects(subjects)) {
       if (grant.effect !== "deny" || grant.resource.kind !== kind) continue;
       const match = grantMatchesAction(grant, action, this.#runImpliesApprove);
-      if (match) return toDecision(grant, match);
+      if (!match) continue;
+      // A condition is evaluated with no resource fields at all: one that
+      // reads any of them — the name included — could hold for some
+      // resource, so it refuses; one on the principal alone is decided for
+      // this caller.
+      if (
+        grant.condition &&
+        snapshot.evaluateConditionOutcome(
+            grant.condition,
+            kind,
+            {},
+            principalContext,
+          ) === "no-match"
+      ) continue;
+      return toDecision(grant, match);
     }
     return this.decide(principal, action, {
       kind,

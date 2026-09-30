@@ -68,6 +68,8 @@ type Category =
   | "kind"
   /** Access-kind administration, whose only condition field is the name. */
   | "access"
+  /** Explains a decision for a named resource, judged as a request would be. */
+  | "explain"
   /** A vault, authorized with complete fields (naming is swamp-club#2676). */
   | "vault"
   /** Creates a resource, authorized on its name and type with no tags. */
@@ -149,8 +151,8 @@ const CATEGORIES: Record<string, Category> = {
   "run.doctor": "kind",
   "audit.timeline": "kind",
 
-  "access.can-i": "access",
-  "access.check": "access",
+  "access.can-i": "explain",
+  "access.check": "explain",
   "access.grant.list": "access",
   "access.group.list": "access",
   "access.group.list-idp": "access",
@@ -558,5 +560,53 @@ Deno.test("serve condition-fields conformance: a failing evaluate-everything nam
       !JSON.stringify(hidden).includes("prod-secret"),
       JSON.stringify(hidden),
     );
+  });
+});
+
+Deno.test("serve condition-fields conformance: access checks explain a tags deny as requests enforce it", async () => {
+  await withFixtures(async (f) => {
+    // access.check reads another subject's policy, which needs admin.
+    const admin = createServeCtx(f.repo, [
+      ...TAG_GRANTS,
+      grant({ actions: ["admin"], resource: { kind: "access", pattern: "*" } }),
+    ]);
+    const decisionFor = async (type: string, resource: string) => {
+      const payload = type === "access.check"
+        ? { subject: "user:caller", action: "read", resource }
+        : { action: "read", resource };
+      const ctx = type === "access.check" ? admin : f.ctx;
+      const body = JSON.parse(
+        reply(await sendRequest(ctx, request(type, payload)), type),
+      ) as {
+        payload?: { decisions?: Array<{ effect: string }> };
+      };
+      return body.payload?.decisions?.[0]?.effect;
+    };
+    for (const type of ["access.can-i", "access.check"]) {
+      assertEquals(await decisionFor(type, "model:prod-db"), "deny", type);
+      assertEquals(await decisionFor(type, "model:dev-db"), "allow", type);
+      assertEquals(await decisionFor(type, "data:dev-db"), "allow", type);
+      assertEquals(await decisionFor(type, "workflow:prod-flow"), "deny", type);
+    }
+  });
+});
+
+Deno.test("serve condition-fields conformance: data.query's page size says nothing about unreadable data", async () => {
+  await withFixtures(async (f) => {
+    for (const select of [undefined, "name"]) {
+      const body = JSON.parse(reply(
+        await sendRequest(
+          f.ctx,
+          request("data.query", {
+            predicate: 'modelName == "prod-db"',
+            limit: 1,
+            ...(select ? { select } : {}),
+          }),
+        ),
+        "data.query",
+      )) as { payload?: { data?: { total?: number; limited?: boolean } } };
+      assertEquals(body.payload?.data?.total, 0, `select=${select}`);
+      assertEquals(body.payload?.data?.limited, false, `select=${select}`);
+    }
   });
 });

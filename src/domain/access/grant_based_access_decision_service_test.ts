@@ -1565,3 +1565,65 @@ Deno.test("decideAll: an allow scoped to some resources does not cover every res
   );
   assertEquals(service.decideAll(makePrincipal("adam"), "write", "data"), null);
 });
+
+Deno.test("decideAll: a deny conditioned only on the principal applies only to principals it matches", () => {
+  const grants = ["adam", "eve"].flatMap((name) => [
+    makeGrant({
+      subject: { kind: "user", name },
+      effect: "allow",
+      actions: ["write"],
+      resource: { kind: "data", pattern: "*" },
+    }),
+    makeGrant({
+      subject: { kind: "user", name },
+      effect: "deny",
+      actions: ["write"],
+      resource: { kind: "data", pattern: "*" },
+      condition: '"contractors" in principal.groups',
+    }),
+  ]);
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      grants,
+      [makeGroup("contractors", ["eve"])],
+      celEvaluator,
+    ),
+  );
+  assertEquals(
+    service.decideAll(makePrincipal("adam"), "write", "data")?.effect,
+    "allow",
+  );
+  assertEquals(
+    service.decideAll(makePrincipal("eve"), "write", "data")?.effect,
+    "deny",
+  );
+});
+
+Deno.test("decideAll: a deny conditioned on the resource name or tags refuses", () => {
+  for (const condition of ['name == "prod-db"', 'tags.env == "prod"']) {
+    const service = new GrantBasedAccessDecisionService(
+      new PolicySnapshot(
+        [
+          makeGrant({
+            effect: "allow",
+            actions: ["write"],
+            resource: { kind: "data", pattern: "*" },
+          }),
+          makeGrant({
+            effect: "deny",
+            actions: ["write"],
+            resource: { kind: "data", pattern: "*" },
+            condition,
+          }),
+        ],
+        [],
+        celEvaluator,
+      ),
+    );
+    assertEquals(
+      service.decideAll(makePrincipal("adam"), "write", "data")?.effect,
+      "deny",
+      condition,
+    );
+  }
+});

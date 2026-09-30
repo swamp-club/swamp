@@ -78,45 +78,17 @@ export async function handleReportGet(
   if (
     !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
   ) return;
-  if (payload.model) {
-    const target = await resolveModelTarget(
-      ctx.repoContext.definitionRepo,
+  if (
+    !await authorizeReportScope(
+      socket,
+      ctx,
+      requestId,
+      principal,
       payload.model,
-      "data",
-    );
-    if (
-      !authorizeResolved(
-        socket,
-        requestId,
-        principal,
-        "read",
-        target,
-        payload.model,
-        "data",
-        ctx,
-        "report_get_failed",
-      )
-    ) return;
-  } else if (payload.workflow) {
-    const target = await resolveWorkflowTarget(
-      ctx.repoContext.workflowRepo,
       payload.workflow,
-      workflowsDirFor(ctx.repoDir),
-    );
-    if (
-      !authorizeResolved(
-        socket,
-        requestId,
-        principal,
-        "read",
-        target,
-        payload.workflow,
-        "workflow",
-        ctx,
-        "report_get_failed",
-      )
-    ) return;
-  }
+      "report_get_failed",
+    )
+  ) return;
   const canonical = canonicalResources(ctx);
   const readable = resourceDecider(socket, principal, "read", ctx);
   const include = async (
@@ -210,10 +182,22 @@ export async function handleReportSearch(
   principal: Principal | null,
   payload?: ReportSearchPayload,
 ): Promise<void> {
-  // Reports are data: results are filtered to owners the caller may read
-  // (swamp-club#2675).
+  // Reports are data: a named model or workflow is authorized first, so a
+  // search cannot tell a denied name from a missing one, and results are
+  // filtered to owners the caller may read (swamp-club#2675).
   if (
     !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
+  ) return;
+  if (
+    !await authorizeReportScope(
+      socket,
+      ctx,
+      requestId,
+      principal,
+      payload?.model,
+      payload?.workflow,
+      "report_search_failed",
+    )
   ) return;
 
   try {
@@ -418,4 +402,56 @@ export async function handleReportTypeSearch(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_type_search_failed", message);
   }
+}
+
+/**
+ * Authorizes the model (as `data`) or workflow a report read names, before
+ * the read looks it up. Returns whether the request may proceed.
+ */
+async function authorizeReportScope(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  model: string | undefined,
+  workflow: string | undefined,
+  failedCode: string,
+): Promise<boolean> {
+  if (model) {
+    const target = await resolveModelTarget(
+      ctx.repoContext.definitionRepo,
+      model,
+      "data",
+    );
+    return authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      model,
+      "data",
+      ctx,
+      failedCode,
+    );
+  }
+  if (workflow) {
+    const target = await resolveWorkflowTarget(
+      ctx.repoContext.workflowRepo,
+      workflow,
+      workflowsDirFor(ctx.repoDir),
+    );
+    return authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      workflow,
+      "workflow",
+      ctx,
+      failedCode,
+    );
+  }
+  return true;
 }

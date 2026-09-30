@@ -332,9 +332,10 @@ export async function handleDataQuery(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Results are filtered to what the caller may read: projected rows before
-  // they are projected, since a projection no longer says whose data it is
-  // (swamp-club#2675).
+  // Matched records are filtered to what the caller may read inside the
+  // query, before the limit, `limited` and any projection are computed, so
+  // neither a projection nor the page size says anything about data the
+  // caller may not read (swamp-club#2675).
   if (
     !authorizeAnyOrReject(
       socket,
@@ -347,10 +348,8 @@ export async function handleDataQuery(
   ) return;
   const canonical = canonicalResources(ctx);
   const readable = resourceDecider(socket, principal, "read", ctx);
-  const include = payload.select
-    ? async (record: DataRecord) =>
-      (await canonical.dataOwners(record)).every(readable)
-    : undefined;
+  const include = async (record: DataRecord) =>
+    (await canonical.dataOwners(record)).every(readable);
 
   try {
     const libCtx = createLibSwampContext();
@@ -390,21 +389,7 @@ export async function handleDataQuery(
       return;
     }
 
-    const data = (result ?? {}) as {
-      results?: RecordedOwner[];
-      total?: number;
-    };
-    if (!payload.select && data.results) {
-      data.results = await filterByResources(
-        data.results,
-        (item) => canonical.dataOwners(item),
-        socket,
-        principal,
-        "read",
-        ctx,
-      );
-      data.total = data.results.length;
-    }
+    const data = result ?? {};
 
     send(socket, {
       type: "data.query",
@@ -429,6 +414,9 @@ export async function handleDataList(
   // the "*" form and its per-item filtering.
   const resourceName = payload.modelIdOrName || "*";
   let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
+  let workflow:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
   if (resourceName !== "*") {
@@ -474,6 +462,7 @@ export async function handleDataList(
         "data_list_failed",
       )
     ) return;
+    workflow = targetArgument(target, payload.workflowName);
   } else {
     if (
       !authorizeAnyOrReject(
@@ -504,7 +493,9 @@ export async function handleDataList(
         modelIdOrName: model?.idOrName ?? payload.modelIdOrName,
         byId: model?.byId,
         expectedName: model?.expectedName,
-        workflowName: payload.workflowName,
+        workflowName: workflow?.idOrName ?? payload.workflowName,
+        workflowById: workflow?.byId,
+        expectedWorkflowName: workflow?.expectedName,
         runId: payload.runId,
         typeFilter: payload.typeFilter,
       }),

@@ -438,9 +438,10 @@ export class DataQueryService {
           if (accepted.length >= limit) break;
           if (await include(record)) accepted.push(record);
         }
+        // Stale rows dropped during hydration can shorten a batch, so only
+        // stopping short of the batch limit means the matches ran out.
         if (
-          accepted.length >= limit || batch === undefined ||
-          matched.records.length < batch
+          accepted.length >= limit || batch === undefined || !matched.hitLimit
         ) {
           results = this.project(accepted, matched.selectParsed);
           break;
@@ -561,6 +562,8 @@ export class DataQueryService {
   ): {
     records: DataRecord[];
     selectParsed?: (ctx: Record<string, unknown>) => unknown;
+    /** Whether matching stopped at the limit, so more rows may match. */
+    hitLimit: boolean;
   } {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
@@ -639,6 +642,7 @@ export class DataQueryService {
     // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
     // via a prototype-chain overlay — the record itself is not mutated.
     const results: DataRecord[] = [];
+    let hitLimit = false;
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
     for (const row of rows) {
@@ -690,7 +694,10 @@ export class DataQueryService {
           // (e.g. `<read error> || true`) resurfaces here.
           results.push(needsHydration ? record : load());
           if (needsHydration) matchedRows.push(row);
-          if (results.length >= limit) break;
+          if (results.length >= limit) {
+            hitLimit = true;
+            break;
+          }
         }
       } catch (error) {
         // Required body reads must fail the query, not skip the row.
@@ -740,7 +747,7 @@ export class DataQueryService {
       results.length = writeIndex;
     }
 
-    return { records: results, selectParsed };
+    return { records: results, selectParsed, hitLimit };
   }
 
   /**

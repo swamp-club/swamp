@@ -66,7 +66,18 @@ import {
   principalToString,
 } from "../../domain/access/principal.ts";
 import { ActionSchema } from "../../domain/access/action.ts";
-import { parseResourceSelector } from "../../domain/access/resource_selector.ts";
+import {
+  parseResourceSelector,
+  type ResourceKind,
+} from "../../domain/access/resource_selector.ts";
+import {
+  type AccessResource,
+  kindResource,
+} from "../../domain/access/access_decision_service.ts";
+import {
+  resolveModelTarget,
+  resolveWorkflowTarget,
+} from "./resource_resolution.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
 import {
@@ -368,7 +379,7 @@ export async function handleAccessGroupListIdp(
   }
 }
 
-export function handleAccessCheck(
+export async function handleAccessCheck(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
@@ -381,7 +392,7 @@ export function handleAccessCheck(
       name: "*",
       fields: {},
     }, ctx).allowed
-  ) return Promise.resolve();
+  ) return;
 
   try {
     if (!ctx.policySnapshotLoader) {
@@ -391,7 +402,7 @@ export function handleAccessCheck(
         "access_not_configured",
         "Access control is not configured on this server",
       );
-      return Promise.resolve();
+      return;
     }
 
     const targetPrincipal = parsePrincipal(payload.subject);
@@ -403,7 +414,7 @@ export function handleAccessCheck(
         "invalid_action",
         `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
       );
-      return Promise.resolve();
+      return;
     }
 
     const resource = parseResourceSelector(payload.resource);
@@ -416,7 +427,7 @@ export function handleAccessCheck(
     const decisions = service.explain(
       { principal: targetPrincipal, collectives, groups },
       actionResult.data,
-      { kind: resource.kind, name: resource.pattern, fields: {} },
+      await explainedResource(ctx, resource.kind, resource.pattern, {}),
     );
 
     send(socket, {
@@ -432,15 +443,15 @@ export function handleAccessCheck(
         approveRequiresExplicitGrant: !service.runImpliesApprove,
       },
     });
-    return Promise.resolve();
+    return;
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_check_failed", message);
-    return Promise.resolve();
+    return;
   }
 }
 
-export function handleAccessCanI(
+export async function handleAccessCanI(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
@@ -454,7 +465,7 @@ export function handleAccessCanI(
       "unauthorized",
       "can-i requires an authenticated connection — use --token or swamp auth server-login",
     );
-    return Promise.resolve();
+    return;
   }
 
   try {
@@ -465,7 +476,7 @@ export function handleAccessCanI(
         "access_not_configured",
         "Access control is not configured on this server",
       );
-      return Promise.resolve();
+      return;
     }
 
     const snapshot = ctx.policySnapshotLoader.snapshot;
@@ -483,7 +494,7 @@ export function handleAccessCanI(
           "invalid_action",
           `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
         );
-        return Promise.resolve();
+        return;
       }
 
       const resource = parseResourceSelector(payload.resource);
@@ -495,7 +506,7 @@ export function handleAccessCanI(
       const decisions = service.explain(
         accessPrincipal,
         actionResult.data,
-        { kind: resource.kind, name: resource.pattern, fields },
+        await explainedResource(ctx, resource.kind, resource.pattern, fields),
       );
 
       send(socket, {
@@ -551,11 +562,11 @@ export function handleAccessCanI(
         },
       });
     }
-    return Promise.resolve();
+    return;
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_can_i_failed", message);
-    return Promise.resolve();
+    return;
   }
 }
 
@@ -1117,4 +1128,35 @@ export async function handleAccessTokenMint(
   } finally {
     await pushChangedToRemote(ctx);
   }
+}
+
+/**
+ * The resource an access check explains, judged as a request would judge it
+ * (swamp-club#2675). A concrete model, data or workflow name is resolved to
+ * the resource it names, with all of its fields, so a condition on its tags
+ * decides as it would for a request; a name that matches nothing is a
+ * resource with no tags. A pattern with a wildcard, or an access resource,
+ * names no single resource and is explained as a check on the kind.
+ */
+async function explainedResource(
+  ctx: ConnectionContext,
+  kind: ResourceKind,
+  pattern: string,
+  extraFields: Record<string, unknown>,
+): Promise<AccessResource> {
+  const withExtra = (resource: AccessResource): AccessResource => ({
+    ...resource,
+    fields: { ...resource.fields, ...extraFields },
+  });
+  if (kind === "access" || pattern.includes("*")) {
+    return withExtra({ ...kindResource(kind), name: pattern });
+  }
+  const resolution = kind === "workflow"
+    ? await resolveWorkflowTarget(ctx.repoContext.workflowRepo, pattern)
+    : await resolveModelTarget(ctx.repoContext.definitionRepo, pattern, kind);
+  if (resolution.status === "failed") {
+    // Only the name is known, so conditions on anything else fail closed.
+    return withExtra({ kind, name: pattern, fields: { name: pattern } });
+  }
+  return withExtra(resolution.resource);
 }

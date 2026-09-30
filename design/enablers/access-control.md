@@ -486,10 +486,13 @@ A `*` resource name never matches a name-scoped deny, so no request over many
 resources is authorized as `*` (swamp-club#2675):
 
 - `model.validate`, `workflow.validate` and `workflow.evaluate` without a name
-  run only over the models or workflows the caller may read. `model.evaluate`
+  run only over the models or workflows the caller may read. A workflow file
+  that fails to parse is judged on the name it declares with no tags, since its
+  tags cannot be read, so a tag-conditioned deny does not hide it. `model.evaluate`
   without a name evaluates every model, since evaluation orders them all in one
-  dependency graph, and returns only the readable ones.
-- `data.query` with `select` drops unreadable records before projecting.
+  dependency graph, but saves and returns only the readable ones.
+- `data.query` drops unreadable records inside the query, before the limit,
+  `limited` and any `select` projection are computed.
 - Reports are data: `report.get` and `report.search` cover only reports whose
   owner the caller may read as `data`, and a named `--model` or `--workflow` is
   authorized first. The ambiguity error of `report.get` lists only readable
@@ -499,8 +502,15 @@ resources is authorized as `*` (swamp-club#2675):
 - `data.gc`, `data.prune`, `run.gc` and `summarise` reach every resource and
   cannot be narrowed, so they need the action on every resource of each kind
   they touch: any deny grant that applies to the caller for the kind and action
-  refuses them, whatever its pattern, condition or `methods` list
-  (`decideAll`); the refusal names the grant and says when it is conditional.
+  refuses them, whatever its pattern or `methods` list, unless its condition
+  reads only the principal and does not hold for this caller (`decideAll`);
+  the refusal names the grant and says when it is conditional.
+
+`access.can-i` and `access.check` explain a decision the way a request would
+make it: a concrete model, data or workflow name is resolved to the resource it
+names with all of its fields; a pattern with a wildcard names no single resource
+and is explained as a check on the kind, where conditions on resource fields
+decide nothing.
 
 Endpoints that return only type definitions or schemas (`model.type.search`,
 `model.type.describe`, `workflow.schema`, `report.type.search`,
