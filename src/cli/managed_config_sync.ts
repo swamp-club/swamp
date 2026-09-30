@@ -28,6 +28,11 @@ import { UserError } from "../domain/errors.ts";
 import { computeFileContentHashIfExists } from "../domain/extensions/extension_package_cache.ts";
 import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
+import {
+  clearLockfilePublishPending,
+  isLockfilePublishPending,
+  markLockfilePublishPending,
+} from "../infrastructure/persistence/pending_lockfile_publish.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
   buildMarkDirtyHook,
@@ -240,6 +245,11 @@ export async function snapshotLockfileHash(
  * fails on an unreachable datastore. A lockfile that cannot be read after
  * the command may hold an unpublished change, so it throws
  * {@link ManagedConfigUnpublishedError}.
+ *
+ * A failed publish is recorded locally, and while that record stands the
+ * lockfile is published even when this command left it unchanged, so
+ * re-running a command after a failed publish retries it instead of exiting
+ * 0 with the change still unpublished. A successful publish clears it.
  */
 export async function pushManagedLockfileIfChangedDeferred(
   repoDir: string,
@@ -249,14 +259,22 @@ export async function pushManagedLockfileIfChangedDeferred(
   push: typeof pushManagedConfigPathsDeferred = pushManagedConfigPathsDeferred,
 ): Promise<void> {
   if (marker?.datastore?.managedConfig !== true) return;
-  let hashAfter: string | null;
   try {
-    hashAfter = await computeFileContentHashIfExists(lockfilePath);
+    const hashAfter = await computeFileContentHashIfExists(lockfilePath);
+    if (
+      hashAfter === hashBefore && !await isLockfilePublishPending(repoDir)
+    ) {
+      return;
+    }
+    await push(repoDir, marker, [lockfilePath]);
   } catch (error) {
+    // Best effort: failing to record the retry must not replace the error
+    // that tells the user the change is unpublished.
+    await markLockfilePublishPending(repoDir).catch(() => {});
     throw toUnpublishedError(error);
   }
-  if (hashAfter === hashBefore) return;
-  await push(repoDir, marker, [lockfilePath]);
+  // Best effort: a stale record only costs one redundant publish later.
+  await clearLockfilePublishPending(repoDir).catch(() => {});
 }
 
 export interface PullManagedConfigAtBootDeps {

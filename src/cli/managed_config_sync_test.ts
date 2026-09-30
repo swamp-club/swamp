@@ -38,6 +38,10 @@ import {
   snapshotLockfileHash,
 } from "./managed_config_sync.ts";
 import { UserError } from "../domain/errors.ts";
+import {
+  isLockfilePublishPending,
+  markLockfilePublishPending,
+} from "../infrastructure/persistence/pending_lockfile_publish.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import type {
@@ -511,6 +515,96 @@ Deno.test("pushManagedLockfileIfChangedDeferred: an unreadable lockfile throws M
     );
 
     assertInstanceOf(error, ManagedConfigUnpublishedError);
+    assertEquals(calls, []);
+  });
+});
+
+Deno.test("pushManagedLockfileIfChangedDeferred: a re-run after a failed publish retries it though the lockfile is unchanged", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, ".swamp"));
+    const path = join(dir, "upstream_extensions.json");
+    const marker = makeMarker({ managedConfig: true });
+
+    // First run changes the lockfile, and its publish fails.
+    const before = await snapshotLockfileHash(path);
+    await Deno.writeTextFile(path, "{}");
+    await assertRejects(
+      () =>
+        pushManagedLockfileIfChangedDeferred(
+          dir,
+          marker,
+          path,
+          before,
+          () =>
+            Promise.reject(
+              new ManagedConfigUnpublishedError(new Error("S3 down")),
+            ),
+        ),
+      ManagedConfigUnpublishedError,
+    );
+    assertEquals(await isLockfilePublishPending(dir), true);
+
+    // The re-run leaves the lockfile unchanged but still publishes it.
+    const { calls, push } = createRecordingPush();
+    await pushManagedLockfileIfChangedDeferred(
+      dir,
+      marker,
+      path,
+      await snapshotLockfileHash(path),
+      push,
+    );
+    assertEquals(calls, [{ repoDir: dir, paths: [path] }]);
+    assertEquals(await isLockfilePublishPending(dir), false);
+
+    // Once published, an unchanged lockfile is left alone again.
+    await pushManagedLockfileIfChangedDeferred(
+      dir,
+      marker,
+      path,
+      await snapshotLockfileHash(path),
+      push,
+    );
+    assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("pushManagedLockfileIfChangedDeferred: an unreadable lockfile records the publish as pending", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, ".swamp"));
+    const path = join(dir, "upstream_extensions.json");
+    await ensureDir(path);
+
+    await assertRejects(
+      () =>
+        pushManagedLockfileIfChangedDeferred(
+          dir,
+          makeMarker({ managedConfig: true }),
+          path,
+          null,
+          createRecordingPush().push,
+        ),
+      ManagedConfigUnpublishedError,
+    );
+    assertEquals(await isLockfilePublishPending(dir), true);
+  });
+});
+
+Deno.test("pushManagedLockfileIfChangedDeferred: a pending record is ignored without managedConfig", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, ".swamp"));
+    await markLockfilePublishPending(dir);
+    const path = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(path, "{}");
+    const { calls, push } = createRecordingPush();
+
+    await pushManagedLockfileIfChangedDeferred(
+      dir,
+      makeMarker(),
+      path,
+      await snapshotLockfileHash(path),
+      push,
+    );
+
     assertEquals(calls, []);
   });
 });

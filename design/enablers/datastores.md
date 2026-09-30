@@ -1851,6 +1851,14 @@ the retry. `model delete` fails this way only when its lock flush fails after
 the delete completed; a flush failure while an earlier error propagates is
 logged, so it cannot replace that error (swamp-club#2752).
 
+The lockfile publish is gated on a content change, so on its own a re-run
+after a failed publish would find the lockfile unchanged and exit 0 with the
+change still unpublished. A failed lockfile publish therefore leaves a local
+record, `.swamp/managed-config-lockfile-unpublished` in the repo
+(`pending_lockfile_publish.ts`), and while it stands every gated command
+publishes the lockfile whether or not it changed it. A successful lockfile
+publish, `datastore sync --push` or a full `datastore sync` clears it.
+
 Auto-definitions are a normal datastore subdirectory
 (`DEFAULT_DATASTORE_SUBDIRS` includes `auto-definitions`). They sync through the
 usual write-command lifecycle (pull on lock acquire, push on flush), not the

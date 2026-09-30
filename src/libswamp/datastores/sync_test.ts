@@ -30,6 +30,11 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncOptions } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  isLockfilePublishPending,
+  markLockfilePublishPending,
+} from "../../infrastructure/persistence/pending_lockfile_publish.ts";
+import { join } from "@std/path";
 
 function makeDeps(
   overrides: Partial<DatastoreSyncDeps> = {},
@@ -220,6 +225,32 @@ Deno.test("createDatastoreSyncDeps: omits namespace when config has none", async
 
   const push = syncSpyCalls.find((c) => c.method === "pushChanged");
   assertEquals(push?.options?.namespace, undefined);
+});
+
+Deno.test("createDatastoreSyncDeps: a successful push or full sync clears a pending lockfile publish", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-sync-pending-" });
+  try {
+    await Deno.mkdir(join(dir, ".swamp"));
+    const deps = await createDatastoreSyncDeps(dir, makeResolver("my-ns"));
+
+    await markLockfilePublishPending(dir);
+    await deps.pushSync();
+    assertEquals(await isLockfilePublishPending(dir), false);
+
+    await markLockfilePublishPending(dir);
+    await deps.fullSync();
+    assertEquals(await isLockfilePublishPending(dir), false);
+
+    await markLockfilePublishPending(dir);
+    await deps.pullSync();
+    assertEquals(await isLockfilePublishPending(dir), true);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });
 
 // ============================================================================
