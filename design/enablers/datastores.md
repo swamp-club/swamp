@@ -1708,7 +1708,9 @@ or similar paths silently breaks. Use `swamp workflow run search --json`,
 The migration copies files to the cache (overwriting any partial cache from an
 earlier attempt), pushes to the remote (idempotent), and pulls from it. Only
 then does it clean up `.swamp/` and update `.swamp.yaml`, in that order for
-extension datastores (see [Initial Setup](#initial-setup)).
+extension datastores (see [Initial Setup](#initial-setup)). Under
+managedConfig, part of `.swamp/config` may be left out of the copy and the
+cleanup (see [Setup under managedConfig](#setup-under-managedconfig)).
 
 `swamp datastore setup filesystem` is the same: the config update waits for a
 successful migration, so a partial copy leaves `.swamp.yaml` unchanged and a
@@ -1732,6 +1734,33 @@ warning.
 
 Run `swamp datastore sync --pull` first so the cache is up to date before
 switching.
+
+### Setup under managedConfig
+
+Setup rewrites only the `.swamp.yaml` datastore keys it owns: `type`, `path`,
+`config`, `directories`, `namespace` and `hydrationStrategy`.
+`mergeSetupDatastoreBlock` (`src/domain/datastore/datastore_config.ts`) keeps
+the keys in `SETUP_PRESERVED_DATASTORE_KEYS` (`managedConfig`, `exclude`) from
+the existing block. A re-run or a backend switch therefore never turns
+managedConfig off. Keys from an old backend are still dropped.
+
+Under managedConfig, the repo's own `.swamp/config` is not always the config
+tier, so setup classifies it before migrating (`classifyInRepoConfig`). It
+compares that directory with the current datastore's resolved tier path
+(`resolveConfigTierPath` in `src/cli/resolve_datastore.ts`, the same resolver
+startup uses):
+
+- **Tier** (a filesystem datastore at `.swamp`): `config` migrates with the
+  datastore. `config/pulled-extensions` stays: it is neither copied nor removed,
+  because pulled extension sources stay in the repo (swamp-club#2612).
+- **Instance-local** (the tier is elsewhere, or the current datastore cannot be
+  resolved): `.swamp/config` holds only this instance's pulled extension
+  sources and the transitional auto-resolve lockfile. Setup leaves it out of
+  the copy, the push and the cleanup. Otherwise the push would upload it over
+  the shared remote tier (swamp-club#2837).
+
+The filesystem branch applies these skips only when it migrates from `.swamp`.
+An outgoing extension cache's `config` is the real tier and migrates as usual.
 
 ### Health Verification
 

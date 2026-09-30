@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join, resolve } from "@std/path";
+
 /**
  * Datastore configuration types for configurable runtime data storage.
  *
@@ -214,6 +216,101 @@ export function getDatastoreDirectories(
  */
 export function isAlwaysLocal(subdir: string): boolean {
   return (ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes(subdir);
+}
+
+/**
+ * Datastore block keys that `swamp datastore setup` does not own. Setup
+ * writes the keys that describe the backend (type, path, config,
+ * directories, namespace, hydrationStrategy); these belong to the user and
+ * survive a re-run or a backend switch. A new key added to
+ * {@link DatastoreConfigData} is dropped by setup unless it is listed here.
+ */
+export const SETUP_PRESERVED_DATASTORE_KEYS = [
+  "managedConfig",
+  "exclude",
+] as const satisfies readonly (keyof DatastoreConfigData)[];
+
+/**
+ * Builds the datastore block setup persists: the block setup produced, plus
+ * any {@link SETUP_PRESERVED_DATASTORE_KEYS} from the existing block that
+ * the new one does not set. Every other key of the existing block, such as
+ * an old backend's `path` or `config`, is dropped (swamp-club#2837).
+ */
+export function mergeSetupDatastoreBlock(
+  existing: DatastoreConfigData | undefined,
+  next: DatastoreConfigData,
+): DatastoreConfigData {
+  const merged: DatastoreConfigData = { ...next };
+  if (!existing) return merged;
+  for (const key of SETUP_PRESERVED_DATASTORE_KEYS) {
+    if (merged[key] === undefined && existing[key] !== undefined) {
+      (merged as unknown as Record<string, unknown>)[key] = existing[key];
+    }
+  }
+  return merged;
+}
+
+/**
+ * The directory under the config dir that holds pulled extension sources.
+ * Under managedConfig they stay in the repo's `.swamp/config` whatever the
+ * config tier (swamp-club#2612), so they never move with a datastore.
+ */
+export const PULLED_EXTENSIONS_SUBDIR = "pulled-extensions";
+
+/**
+ * What the repo's own `.swamp/config` holds, for datastore setup:
+ *
+ * - `unmanaged`: managedConfig is off; `config` is an ordinary datastore
+ *   subdir.
+ * - `tier`: managedConfig is on and `.swamp/config` is the config tier; it
+ *   moves with the datastore, except the pulled extension sources.
+ * - `instance_local`: managedConfig is on and the tier lives elsewhere (or
+ *   cannot be resolved), so `.swamp/config` holds only this instance's
+ *   state: pulled extension sources and the transitional auto-resolve
+ *   lockfile (swamp-club#2483). It never moves with a datastore.
+ */
+export type InRepoConfigRole = "unmanaged" | "tier" | "instance_local";
+
+/**
+ * Classifies the repo's `.swamp/config` directory.
+ *
+ * @param managedConfig Whether `.swamp.yaml` enables managedConfig.
+ * @param configTierPath The current datastore's resolved config tier path,
+ *   or undefined when the current datastore cannot be resolved. Only an
+ *   extension datastore can fail to resolve, and its tier is never in the
+ *   repo, so undefined classifies as `instance_local`.
+ * @param inRepoConfigPath The repo's `.swamp/config` path.
+ */
+export function classifyInRepoConfig(
+  managedConfig: boolean,
+  configTierPath: string | undefined,
+  inRepoConfigPath: string,
+): InRepoConfigRole {
+  if (!managedConfig) return "unmanaged";
+  if (
+    configTierPath !== undefined &&
+    resolve(configTierPath) === resolve(inRepoConfigPath)
+  ) {
+    return "tier";
+  }
+  return "instance_local";
+}
+
+/**
+ * Paths, relative to a migration source, that datastore setup must neither
+ * copy nor clean up for the given role of the in-repo `.swamp/config`.
+ */
+export function inRepoConfigMigrationSkips(
+  role: InRepoConfigRole,
+): readonly string[] {
+  switch (role) {
+    case "unmanaged":
+      return [];
+    case "tier":
+      return [join("config", PULLED_EXTENSIONS_SUBDIR)];
+    case "instance_local":
+      return ["config"];
+  }
 }
 
 /**

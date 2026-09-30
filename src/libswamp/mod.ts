@@ -1623,6 +1623,7 @@ export {
   datastoreSetupFilesystem,
   type DatastoreSetupFilesystemInput,
   type DatastoreSetupWarningData,
+  type ResolveConfigTierPath,
 } from "./datastores/setup.ts";
 export {
   createDatastoreLockReleaseDeps,

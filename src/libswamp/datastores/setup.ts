@@ -18,11 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import {
+  classifyInRepoConfig,
+  type DatastoreConfigData,
   DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
+  inRepoConfigMigrationSkips,
+  type InRepoConfigRole,
+  mergeSetupDatastoreBlock,
   SYNC_TIMEOUT_ENV_VAR,
 } from "../../domain/datastore/datastore_config.ts";
 import {
@@ -35,8 +40,14 @@ import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
-import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
-import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import {
+  getSwampDataDir,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import {
+  type RepoMarkerData,
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { summarizeSyncError } from "../../infrastructure/persistence/sync_error_diagnostic.ts";
 import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
 import { writeNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
@@ -105,10 +116,15 @@ export interface DatastoreSetupDeps {
     type: string;
     directories?: string[];
   }) => readonly string[];
+  /**
+   * Copies the datastore subdirs from `sourceDir` to `destPath`, leaving
+   * out `skip` (paths relative to `sourceDir`).
+   */
   migrateData: (
     sourceDir: string,
     destPath: string,
     config: { type: string; path: string },
+    skip?: readonly string[],
   ) => Promise<{
     filesCopied: number;
     bytesCopied: number;
@@ -119,8 +135,22 @@ export interface DatastoreSetupDeps {
     sourceDir: string,
     destPath: string,
     config: { type: string; path: string },
+    skip?: readonly string[],
   ) => Promise<{ valid: boolean; sourceCount: number; destCount: number }>;
-  cleanupSourceDirs: (sourceDir: string, dirs: string[]) => Promise<void>;
+  /**
+   * Removes the migrated `dirs` from `sourceDir`, leaving any `keep` path
+   * (relative to `sourceDir`) that lies inside one of them in place.
+   */
+  cleanupSourceDirs: (
+    sourceDir: string,
+    dirs: string[],
+    keep?: readonly string[],
+  ) => Promise<void>;
+  /**
+   * What the repo's `.swamp/config` holds, judged against the datastore
+   * the repo uses before setup switches it (swamp-club#2837).
+   */
+  resolveInRepoConfigRole: (repoDir: string) => Promise<InRepoConfigRole>;
   updateRepoConfig: (
     repoDir: string,
     datastoreConfig: Record<string, unknown>,
@@ -182,6 +212,7 @@ export async function* datastoreSetupFilesystem(
       let directoriesMigrated: string[] = [];
       const errors: string[] = [];
       let sourceDir = `${input.repoDir}/.swamp`;
+      let migrationSkips: readonly string[] = [];
 
       if (!input.skipMigration) {
         yield { kind: "migrating" };
@@ -203,6 +234,15 @@ export async function* datastoreSetupFilesystem(
           }
         }
 
+        // An outgoing cache's config dir is the real config tier. The
+        // repo's own .swamp/config may hold instance-local state that must
+        // not move (swamp-club#2837).
+        if (sourceDir === `${input.repoDir}/.swamp`) {
+          migrationSkips = inRepoConfigMigrationSkips(
+            await deps.resolveInRepoConfigRole(input.repoDir),
+          );
+        }
+
         ctx.logger.debug`Migrating data to ${input.datastorePath}...`;
         const config = {
           type: "filesystem" as const,
@@ -212,6 +252,7 @@ export async function* datastoreSetupFilesystem(
           sourceDir,
           input.datastorePath,
           config,
+          migrationSkips,
         );
         filesCopied = result.filesCopied;
         bytesCopied = result.bytesCopied;
@@ -223,6 +264,7 @@ export async function* datastoreSetupFilesystem(
           sourceDir,
           input.datastorePath,
           config,
+          migrationSkips,
         );
         if (!verification.valid) {
           errors.push(
@@ -249,7 +291,11 @@ export async function* datastoreSetupFilesystem(
         !input.skipMigration && errors.length === 0 &&
         directoriesMigrated.length > 0
       ) {
-        await deps.cleanupSourceDirs(sourceDir, directoriesMigrated);
+        await deps.cleanupSourceDirs(
+          sourceDir,
+          directoriesMigrated,
+          migrationSkips,
+        );
       }
 
       yield {
@@ -450,11 +496,21 @@ export async function* datastoreSetupExtension(
           directoriesMigrated: string[];
         }
         | undefined;
+      let migrationSkips: readonly string[] = [];
 
       if (!input.skipMigration && syncService) {
         yield { kind: "migrating" };
 
         const sourceDir = `${input.repoDir}/.swamp`;
+
+        // Under managedConfig the repo's .swamp/config is either the config
+        // tier or instance-local state (pulled extension sources, the
+        // transitional lockfile). Instance-local state must never reach the
+        // cache: the push below would upload it over the remote config tier
+        // (swamp-club#2837).
+        migrationSkips = inRepoConfigMigrationSkips(
+          await deps.resolveInRepoConfigRole(input.repoDir),
+        );
 
         // Migrate local .swamp/ data to cache path (namespace-scoped when set)
         const migrationDest = ns ? join(cachePath, ns) : cachePath;
@@ -463,6 +519,7 @@ export async function* datastoreSetupExtension(
           sourceDir,
           migrationDest,
           config,
+          migrationSkips,
         );
         for (const error of result.errors) errors.push(error);
         if (result.errors.length > 0) onlyTimeouts = false;
@@ -556,6 +613,7 @@ export async function* datastoreSetupExtension(
         await deps.cleanupSourceDirs(
           `${input.repoDir}/.swamp`,
           migrationResult.directoriesMigrated,
+          migrationSkips,
         );
       }
 
@@ -565,8 +623,9 @@ export async function* datastoreSetupExtension(
       // with `swamp datastore sync --push --timeout <big>`. Hard failures
       // (auth, network, config) still block the type commit.
       // Persist the datastore config to .swamp.yaml. Always include
-      // namespace when one was resolved — this replaces the entire
-      // datastore block, so omitting it would drop a pre-set namespace.
+      // namespace when one was resolved — setup owns the namespace key, so
+      // omitting it would drop a pre-set namespace. Keys setup does not own
+      // (managedConfig, exclude) are kept by updateRepoConfig.
       if (errors.length === 0 || onlyTimeouts) {
         const persistedConfig: Record<string, unknown> = {
           type: input.type,
@@ -681,9 +740,26 @@ async function hasSymlinks(dirPath: string): Promise<boolean> {
   return false;
 }
 
-/** Creates real infrastructure deps for datastore setup. */
+/**
+ * Resolves the config tier path of the datastore a repo uses now, or
+ * undefined when that datastore cannot be resolved. Supplied by the caller
+ * because resolving a datastore is a CLI concern.
+ */
+export type ResolveConfigTierPath = (
+  repoDir: string,
+  marker: RepoMarkerData,
+) => Promise<string | undefined>;
+
+/**
+ * Creates real infrastructure deps for datastore setup.
+ *
+ * @param resolveConfigTierPath Required so every caller decides, through
+ *   the same datastore resolution the CLI uses at startup, whether the
+ *   repo's `.swamp/config` is the config tier (swamp-club#2837).
+ */
 export function createDatastoreSetupDeps(
   _repoDir: string,
+  resolveConfigTierPath: ResolveConfigTierPath,
 ): DatastoreSetupDeps {
   return {
     requireUpgradedRepo,
@@ -694,25 +770,28 @@ export function createDatastoreSetupDeps(
     ensureDir,
     getDatastoreDirectories: (config) =>
       getDatastoreDirectories(config as FilesystemDatastoreConfig),
-    migrateData: (sourceDir, destPath, config) =>
+    migrateData: (sourceDir, destPath, config, skip) =>
       migrateDatastore(
         sourceDir,
         destPath,
         config as FilesystemDatastoreConfig,
+        skip,
       ),
-    verifyMigration: (sourceDir, destPath, config) =>
+    verifyMigration: (sourceDir, destPath, config, skip) =>
       verifyMigration(
         sourceDir,
         destPath,
         config as FilesystemDatastoreConfig,
+        skip,
       ),
-    cleanupSourceDirs: async (sourceDir: string, dirs: string[]) => {
+    cleanupSourceDirs: async (
+      sourceDir: string,
+      dirs: string[],
+      keep: readonly string[] = [],
+    ) => {
+      const kept = keep.map((p) => resolve(sourceDir, p));
       for (const subdir of dirs) {
-        try {
-          await Deno.remove(join(sourceDir, subdir), { recursive: true });
-        } catch {
-          // Non-fatal: source dir may already be gone
-        }
+        await removeExcept(resolve(sourceDir, subdir), kept);
       }
     },
     updateRepoConfig: async (
@@ -723,11 +802,51 @@ export function createDatastoreSetupDeps(
       const repoPath = RepoPath.create(dir);
       const marker = await markerRepo.read(repoPath);
       if (marker) {
-        marker.datastore =
-          datastoreConfig as unknown as typeof marker.datastore;
+        marker.datastore = mergeSetupDatastoreBlock(
+          marker.datastore,
+          datastoreConfig as unknown as DatastoreConfigData,
+        );
         await markerRepo.write(repoPath, marker);
       }
     },
+    resolveInRepoConfigRole: async (repoDir: string) => {
+      const marker = await new RepoMarkerRepository().read(
+        RepoPath.create(repoDir),
+      );
+      const managedConfig = marker?.datastore?.managedConfig === true;
+      const tierPath = marker && managedConfig
+        ? await resolveConfigTierPath(repoDir, marker)
+        : undefined;
+      return classifyInRepoConfig(
+        managedConfig,
+        tierPath,
+        swampPath(repoDir, "config"),
+      );
+    },
     collapseEnvVars,
   };
+}
+
+/**
+ * Removes `path` recursively, except any `kept` path inside it, which stays
+ * with its ancestors. Removal failures are non-fatal: the source may
+ * already be gone.
+ */
+async function removeExcept(
+  path: string,
+  kept: readonly string[],
+): Promise<void> {
+  if (kept.includes(path)) return;
+  const keptInside = kept.filter((k) => k.startsWith(path + SEPARATOR));
+  try {
+    if (keptInside.length === 0) {
+      await Deno.remove(path, { recursive: true });
+      return;
+    }
+    for await (const entry of Deno.readDir(path)) {
+      await removeExcept(join(path, entry.name), keptInside);
+    }
+  } catch {
+    // Non-fatal: source dir may already be gone
+  }
 }

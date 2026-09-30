@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join, relative } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import { getDatastoreDirectories } from "./datastore_config.ts";
 import type { DatastoreConfig } from "./datastore_config.ts";
 
@@ -41,11 +41,16 @@ export interface MigrationResult {
  *
  * Copies all files from the source directories (based on the
  * datastore config's directory list) to the destination path.
+ *
+ * @param skip Paths relative to `sourceDir` that are left behind: a
+ *   skipped top-level subdir is not copied or reported as migrated, and a
+ *   skipped nested path is left out of its subdir's copy.
  */
 export async function migrateDatastore(
   sourceDir: string,
   destDir: string,
   config: DatastoreConfig,
+  skip: readonly string[] = [],
 ): Promise<MigrationResult> {
   const result: MigrationResult = {
     filesCopied: 0,
@@ -55,10 +60,12 @@ export async function migrateDatastore(
   };
 
   const directories = getDatastoreDirectories(config);
+  const skipped = skipSet(sourceDir, skip);
 
   for (const subdir of directories) {
     const srcPath = join(sourceDir, subdir);
     const destPath = join(destDir, subdir);
+    if (skipped.has(resolve(srcPath))) continue;
 
     try {
       const stat = await Deno.stat(srcPath);
@@ -69,7 +76,7 @@ export async function migrateDatastore(
     }
 
     try {
-      await copyDirectory(srcPath, destPath, result);
+      await copyDirectory(srcPath, destPath, result, skipped);
       result.directoriesMigrated.push(subdir);
     } catch (error) {
       result.errors.push(
@@ -83,6 +90,11 @@ export async function migrateDatastore(
   return result;
 }
 
+/** Resolves paths relative to `root` into a set of absolute paths. */
+function skipSet(root: string, skip: readonly string[]): Set<string> {
+  return new Set(skip.map((p) => resolve(root, p)));
+}
+
 /**
  * Recursively copies a directory.
  */
@@ -90,15 +102,17 @@ async function copyDirectory(
   src: string,
   dest: string,
   result: MigrationResult,
+  skipped: ReadonlySet<string>,
 ): Promise<void> {
   await ensureDir(dest);
 
   for await (const entry of Deno.readDir(src)) {
     const srcPath = join(src, entry.name);
     const destPath = join(dest, entry.name);
+    if (skipped.has(resolve(srcPath))) continue;
 
     if (entry.isDirectory) {
-      await copyDirectory(srcPath, destPath, result);
+      await copyDirectory(srcPath, destPath, result, skipped);
     } else if (entry.isFile) {
       try {
         await Deno.copyFile(srcPath, destPath);
@@ -148,19 +162,25 @@ async function copyDirectory(
 
 /**
  * Verifies a migration by comparing file counts between source and destination.
+ *
+ * @param skip The same relative paths passed to {@link migrateDatastore};
+ *   they are left out of both counts.
  */
 export async function verifyMigration(
   sourceDir: string,
   destDir: string,
   config: DatastoreConfig,
+  skip: readonly string[] = [],
 ): Promise<{ valid: boolean; sourceCount: number; destCount: number }> {
   const directories = getDatastoreDirectories(config);
+  const sourceSkipped = skipSet(sourceDir, skip);
+  const destSkipped = skipSet(destDir, skip);
   let sourceCount = 0;
   let destCount = 0;
 
   for (const subdir of directories) {
-    sourceCount += await countFiles(join(sourceDir, subdir));
-    destCount += await countFiles(join(destDir, subdir));
+    sourceCount += await countFiles(join(sourceDir, subdir), sourceSkipped);
+    destCount += await countFiles(join(destDir, subdir), destSkipped);
   }
 
   return {
@@ -170,14 +190,19 @@ export async function verifyMigration(
   };
 }
 
-async function countFiles(dir: string): Promise<number> {
+async function countFiles(
+  dir: string,
+  skipped: ReadonlySet<string>,
+): Promise<number> {
+  if (skipped.has(resolve(dir))) return 0;
   let count = 0;
   try {
     for await (const entry of Deno.readDir(dir)) {
+      if (skipped.has(resolve(dir, entry.name))) continue;
       if (entry.isFile || entry.isSymlink) {
         count++;
       } else if (entry.isDirectory) {
-        count += await countFiles(join(dir, entry.name));
+        count += await countFiles(join(dir, entry.name), skipped);
       }
     }
   } catch {
