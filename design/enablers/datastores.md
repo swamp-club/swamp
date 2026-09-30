@@ -1991,17 +1991,23 @@ extension-backed datastores:
    fetch the shared lockfile with a `config`-scoped `pullChanged`, and replay
    any change an earlier transaction failed to publish.
 3. Under the pulled-extensions lock, apply the change to the lockfile.
-4. Record the whole outstanding change (any earlier record merged with the
-   diff against the fetched lockfile) in
+4. Record the whole outstanding change (any earlier record merged with what
+   this change did to the lockfile it started from) in
    `.swamp/managed-config-lockfile-unpublished`, publish exactly the
    lockfile, clear the record, and release the global lock. This also runs
-   when the change throws after writing the lockfile. Before the change
-   runs, the record is marked `incomplete`, so a process killed mid-change
-   leaves its local entries for the next transaction to keep.
+   when the change throws after writing the lockfile.
+
+A process killed during step 3 (Ctrl-C during a dependency download, say)
+records nothing: the next fetch replaces the local lockfile, and the
+interrupted change must be run again. Any earlier record is untouched.
 
 `extension rm`'s preview, `extension update`'s target selection and
 `extension install`'s restore fetch under the lock first, so they read what
-other checkouts wrote. A dependency that the fetched lockfile lists but whose
+other checkouts wrote. `repo upgrade`'s install pass does not: it restores
+from the local lockfile, so an upgrade with nothing to restore never contacts
+the datastore, while each entry it does install still goes through a
+transaction. If that pass fails to publish, the upgrade result is reported
+first and the command then exits with the publish error. A dependency that the fetched lockfile lists but whose
 files are missing from this checkout is installed at the version it pins, not
 skipped. When the fetch fails nothing changes
 (`ManagedLockfileUnavailableError`); when the publish fails the change stays

@@ -63,15 +63,8 @@ export interface ManagedLockfileLock {
 /** Where a lockfile change that failed to publish is recorded. */
 export interface PendingLockfileDeltaStore {
   read(): Promise<PendingLockfilePublish>;
-  /**
-   * Records the outstanding change, replacing any earlier record.
-   * `incomplete` marks a record written before a change runs, with the
-   * lockfile as it stood then.
-   */
-  write(
-    delta: LockfileEntryDelta,
-    options?: { incomplete?: { base: UpstreamExtensionsMap } },
-  ): Promise<void>;
+  /** Records the outstanding change, replacing any earlier record. */
+  write(delta: LockfileEntryDelta): Promise<void>;
   clear(): Promise<void>;
 }
 
@@ -136,15 +129,14 @@ export interface ManagedLockfileTransactionOptions {
  *
  * 1. fetches the datastore's lockfile into the cache,
  * 2. replays any change an earlier transaction failed to publish,
- * 3. records that a change is under way (an `incomplete` record holding
- *    the lockfile as it stands), so if the process dies during the change
- *    the next transaction replays exactly what the change did locally,
- * 4. runs the caller's change,
- * 5. records the whole outstanding change (any earlier record merged with
- *    the diff against the fetched lockfile), publishes, and clears the
- *    record.
+ * 3. runs the caller's change,
+ * 4. records the whole outstanding change (any earlier record merged with
+ *    what the change did), publishes, and clears the record.
  *
- * Step 5 also runs when the change throws, since an install can fail after
+ * A process killed during step 3 records nothing: the next fetch replaces
+ * the local lockfile, so an interrupted change must be run again.
+ *
+ * Step 4 also runs when the change throws, since an install can fail after
  * its lockfile entry landed; the original error is rethrown. Lock order:
  * this lock, then the pulled-extensions lock, then the lockfile's own
  * advisory lock. An install downloads before `run`, outside every lock;
@@ -182,65 +174,34 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
   }
 
   async refresh(): Promise<void> {
-    if (this.#leases.getStore()?.active) return;
-    await this.#lock.acquire();
-    try {
-      await this.#runLocked(() => Promise.resolve(), { readOnly: true });
-    } finally {
-      await this.#lock.release().catch((error) =>
-        this.#onWarning("Failed to release the datastore lock", error)
-      );
-    }
+    await this.run(() => Promise.resolve());
   }
 
-  async #runLocked<T>(
-    fn: () => Promise<T>,
-    options?: { readOnly?: boolean },
-  ): Promise<T> {
+  async #runLocked<T>(fn: () => Promise<T>): Promise<T> {
     const pending = await this.#pending.read();
     let prior = pending.kind === "delta"
       ? pending.delta
       : emptyLockfileDelta<UpstreamExtensionEntry>();
-    // An interrupted change: what it did locally is the difference between
-    // the lockfile before it (the recorded base) and the lockfile now.
-    if (pending.kind === "delta" && "base" in pending) {
-      prior = mergeLockfileDeltas(
-        prior,
-        diffLockfileEntries(pending.base, await this.#readEntries()),
-      );
-    }
-    // An older swamp recorded that a change was unpublished but not what
-    // it was: keep every local entry. Nothing added is lost, though an
-    // entry another checkout removed or changed may be reverted.
     if (pending.kind === "unknown") {
+      // An older swamp recorded that a change was unpublished but not what
+      // it was: keep every local entry. Nothing added is lost, though it
+      // may undo another checkout's removal or upgrade of those entries.
       this.#onWarning(
         "An earlier extension lockfile change was not published and its " +
-          "content was not recorded; merging the local entries into the " +
-          "datastore's lockfile.",
+          "content was not recorded; merging every local entry into the " +
+          "datastore's lockfile, which may undo other checkouts' removals " +
+          "or upgrades of those extensions.",
       );
       prior = { upserts: await this.#readEntries(), removals: [] };
-    }
-    // A change worked out from the local lockfile is saved before the
-    // fetch, which may overwrite that lockfile and then fail.
-    if (
-      pending.kind === "unknown" ||
-      (pending.kind === "delta" && "base" in pending)
-    ) {
+      // Saved before the fetch, which may overwrite the local lockfile and
+      // then fail.
       await this.#pending.write(prior);
     }
     await this.#sync.hydrate();
-    const fetched = await this.#readEntries();
-    let current = fetched;
+    let current = await this.#readEntries();
     if (pending.kind !== "none") {
       current = applyLockfileDelta(current, prior);
       await this.#writeEntries(current);
-    }
-    // Written ahead of the change, with the lockfile as it stands: if the
-    // process dies before the record below replaces it, the next
-    // transaction replays what the change did locally. A read changes
-    // nothing, so it skips this write.
-    if (!options?.readOnly) {
-      await this.#pending.write(prior, { incomplete: { base: current } });
     }
 
     const lease = { active: true };
@@ -255,11 +216,11 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
 
     const hadPending = pending.kind !== "none";
     if (result.ok) {
-      await this.#settle(fetched, prior, hadPending, false);
+      await this.#settle(current, prior, hadPending, false);
       return result.value;
     }
     try {
-      await this.#settle(fetched, prior, hadPending, true);
+      await this.#settle(current, prior, hadPending, true);
     } catch (error) {
       this.#onWarning("Failed to publish the extension lockfile", error);
     }
@@ -268,34 +229,32 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
 
   /**
    * Records and publishes the outstanding change: the earlier record merged
-   * with everything the local lockfile changed relative to the fetched one.
+   * with what the change did, the diff between the lockfile it started from
+   * (`start`: fetched, with the earlier record replayed) and the lockfile
+   * now.
    *
-   * The earlier record is merged in, never replaced, and with one the
-   * lockfile is published even when the diff is empty. A fetch that found
-   * nothing to download (no lockfile in the datastore yet, or a sync
-   * service that keeps a locally changed file) leaves the earlier change in
-   * the fetched copy, so the diff alone cannot show it (swamp-club#2752).
+   * With an earlier record the lockfile is published even when the change
+   * did nothing: a fetch that found nothing to download (no lockfile in the
+   * datastore yet, or a sync service that keeps a locally changed file)
+   * leaves the earlier change unpublished (swamp-club#2752).
    */
   async #settle(
-    fetched: UpstreamExtensionsMap,
+    start: UpstreamExtensionsMap,
     prior: LockfileEntryDelta,
     hadPending: boolean,
     changeFailed: boolean,
   ): Promise<void> {
     const record = mergeLockfileDeltas(
       prior,
-      diffLockfileEntries(fetched, await this.#readEntries()),
+      diffLockfileEntries(start, await this.#readEntries()),
     );
-    if (isEmptyLockfileDelta(record) && !hadPending) {
-      await this.#pending.clear();
-      return;
-    }
+    if (isEmptyLockfileDelta(record) && !hadPending) return;
     const tolerate = changeFailed || this.#publishFailure === "defer";
     try {
       await this.#pending.write(record);
     } catch (error) {
-      // The incomplete record written before the change still stands, so
-      // the change is not lost; the publish below may still succeed.
+      // The publish below may still succeed; if it fails too, the change
+      // is lost when the next fetch overwrites the local lockfile.
       this.#onWarning("Failed to record the extension lockfile change", error);
     }
     try {
@@ -422,8 +381,7 @@ export function createRepoPendingLockfileStore(
 ): PendingLockfileDeltaStore {
   return {
     read: () => readLockfilePublishPending(repoDir),
-    write: (delta, options) =>
-      markLockfilePublishPending(repoDir, delta, options),
+    write: (delta) => markLockfilePublishPending(repoDir, delta),
     clear: () => clearLockfilePublishPending(repoDir),
   };
 }

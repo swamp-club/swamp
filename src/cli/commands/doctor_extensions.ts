@@ -131,13 +131,6 @@ export function rescanSkippedFor(
   }
 }
 
-/**
- * `swamp doctor extensions` — re-runs the extension loaders across
- * all five user registries and reports any load failures. Exits
- * non-zero on any failure so the command composes into CI preflight
- * checks.
- */
-
 /** What one `doctor extensions --repair` re-pull did. */
 export interface RepullOutcome {
   repaired: boolean;
@@ -181,6 +174,13 @@ export async function runRepull(
     return { repaired: false };
   }
 }
+
+/**
+ * `swamp doctor extensions` — re-runs the extension loaders across
+ * all five user registries and reports any load failures. Exits
+ * non-zero on any failure so the command composes into CI preflight
+ * checks.
+ */
 
 export const doctorExtensionsCommand = withRemoteOptions(
   new Command()

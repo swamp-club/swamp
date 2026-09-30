@@ -204,10 +204,11 @@ export const repoUpgradeCommand = new Command()
     let extensionInstallDeps: ExtensionInstallDeps | undefined;
     let extensionInstallSkippedReason: string | undefined;
     try {
-      extensionInstallDeps = await createExtensionInstallDeps(
-        repoDir,
-        cliCtx.logger,
-      );
+      extensionInstallDeps = {
+        ...await createExtensionInstallDeps(repoDir, cliCtx.logger),
+        // An upgrade with nothing to restore must not need the datastore.
+        refreshFromDatastore: false,
+      };
     } catch (error) {
       const skippable = error instanceof ManagedConfigUnresolvedError ||
         (error instanceof UserError && error.code === "lock_timeout");

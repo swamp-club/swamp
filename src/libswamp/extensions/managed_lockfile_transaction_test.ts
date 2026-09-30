@@ -90,21 +90,9 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
         },
         pending: {
           read: () => Promise.resolve(pending.value),
-          write: (
-            delta: LockfileEntryDelta,
-            options?: { incomplete?: { base: UpstreamExtensionsMap } },
-          ) => {
-            events.push(
-              options?.incomplete ? "pending-ahead" : "pending-write",
-            );
-            pending.value = options?.incomplete
-              ? {
-                kind: "delta",
-                delta,
-                incomplete: true,
-                base: options.incomplete.base,
-              }
-              : { kind: "delta", delta };
+          write: (delta: LockfileEntryDelta) => {
+            events.push("pending-write");
+            pending.value = { kind: "delta", delta };
             return Promise.resolve();
           },
           clear: () => {
@@ -146,7 +134,6 @@ Deno.test("ManagedLockfileTransaction.run: fetches under the lock, keeps a peer'
     assertEquals(h.events, [
       "acquire",
       "hydrate",
-      "pending-ahead",
       "change",
       "pending-write",
       "publish",
@@ -161,7 +148,6 @@ Deno.test("ManagedLockfileTransaction.run: a change that writes nothing publishe
   await withHarness(async (h) => {
     h.remote.entries = { "@peer/p": entry("1") };
     await h.transaction().refresh();
-    // A read writes no record.
     assertEquals(h.events, ["acquire", "hydrate", "release"]);
     assertEquals(h.pending.value, { kind: "none" });
     assertEquals(await readUpstreamExtensions(h.lockfilePath), {
@@ -354,7 +340,6 @@ Deno.test("inManagedLockfileTransaction: runs through the ambient transaction on
     assertEquals(h.events, [
       "acquire",
       "hydrate",
-      "pending-ahead",
       "change",
       "release",
     ]);
@@ -406,15 +391,8 @@ Deno.test("ManagedLockfileTransaction.run: a pending change is published even wh
         },
         pending: {
           read: () => Promise.resolve(pending.value),
-          write: (delta, options) => {
-            pending.value = options?.incomplete
-              ? {
-                kind: "delta",
-                delta,
-                incomplete: true,
-                base: options.incomplete.base,
-              }
-              : { kind: "delta", delta };
+          write: (delta) => {
+            pending.value = { kind: "delta", delta };
             return Promise.resolve();
           },
           clear: () => {
@@ -472,15 +450,8 @@ Deno.test("ManagedLockfileTransaction.run: a second failed publish keeps the fir
         },
         pending: {
           read: () => Promise.resolve(pending.value),
-          write: (delta, options) => {
-            pending.value = options?.incomplete
-              ? {
-                kind: "delta",
-                delta,
-                incomplete: true,
-                base: options.incomplete.base,
-              }
-              : { kind: "delta", delta };
+          write: (delta) => {
+            pending.value = { kind: "delta", delta };
             return Promise.resolve();
           },
           clear: () => {
@@ -514,55 +485,6 @@ Deno.test("ManagedLockfileTransaction.run: a second failed publish keeps the fir
   });
 });
 
-Deno.test("ManagedLockfileTransaction.run: a change interrupted before it settled keeps its local entries", async () => {
-  await withHarness(async (h) => {
-    // What a process killed mid-change leaves: the entry it wrote locally,
-    // and the record written ahead of the change.
-    await new LockfileRepository(h.lockfilePath).replaceAll({
-      "@me/x": entry("1"),
-    });
-    const interrupted: PendingLockfilePublish = {
-      kind: "delta",
-      delta: { upserts: {}, removals: [] },
-      incomplete: true,
-      base: {},
-    };
-    h.pending.value = interrupted;
-    h.remote.entries = { "@peer/p": entry("1") };
-
-    await h.transaction().refresh();
-
-    assertEquals(Object.keys(h.remote.entries).sort(), ["@me/x", "@peer/p"]);
-    assertEquals<PendingLockfilePublish>(h.pending.value, { kind: "none" });
-  });
-});
-
-Deno.test("ManagedLockfileTransaction.run: recovering an interrupted change replays only what it changed, not a peer's later upgrade", async () => {
-  await withHarness(async (h) => {
-    // Interrupted while installing @me/new, when @peer/p was at v1.
-    await new LockfileRepository(h.lockfilePath).replaceAll({
-      "@peer/p": entry("1"),
-      "@me/new": entry("1"),
-    });
-    const interrupted: PendingLockfilePublish = {
-      kind: "delta",
-      delta: { upserts: {}, removals: [] },
-      incomplete: true,
-      base: { "@peer/p": entry("1") },
-    };
-    h.pending.value = interrupted;
-    // The peer upgraded @peer/p meanwhile.
-    h.remote.entries = { "@peer/p": entry("2") };
-
-    await h.transaction().refresh();
-
-    assertEquals(h.remote.entries, {
-      "@peer/p": entry("2"),
-      "@me/new": entry("1"),
-    });
-  });
-});
-
 Deno.test("ManagedLockfileTransaction.run: a failed publish surfaces as ManagedLockfileUnpublishedError", async () => {
   await withHarness(async (h) => {
     h.failPublish.value = true;
@@ -581,19 +503,13 @@ Deno.test("ManagedLockfileTransaction.run: a failed publish surfaces as ManagedL
   });
 });
 
-Deno.test("ManagedLockfileTransaction.run: a recovered change survives a fetch that overwrites the lockfile and then fails", async () => {
+Deno.test("ManagedLockfileTransaction.run: a legacy record's local entries survive a fetch that overwrites the lockfile and then fails", async () => {
   await withHarness(async (h) => {
-    // Interrupted while installing @me/new.
+    // An older swamp's record: the change is not described.
     await new LockfileRepository(h.lockfilePath).replaceAll({
       "@me/new": entry("1"),
     });
-    const interrupted: PendingLockfilePublish = {
-      kind: "delta",
-      delta: { upserts: {}, removals: [] },
-      incomplete: true,
-      base: {},
-    };
-    h.pending.value = interrupted;
+    h.pending.value = { kind: "unknown" };
     h.remote.entries = { "@peer/p": entry("1") };
 
     // A fetch that downloads the lockfile, then fails on a later file.
@@ -614,15 +530,8 @@ Deno.test("ManagedLockfileTransaction.run: a recovered change survives a fetch t
       },
       pending: {
         read: () => Promise.resolve(h.pending.value),
-        write: (delta, options) => {
-          h.pending.value = options?.incomplete
-            ? {
-              kind: "delta",
-              delta,
-              incomplete: true,
-              base: options.incomplete.base,
-            }
-            : { kind: "delta", delta };
+        write: (delta) => {
+          h.pending.value = { kind: "delta", delta };
           return Promise.resolve();
         },
         clear: () => {
@@ -639,5 +548,30 @@ Deno.test("ManagedLockfileTransaction.run: a recovered change survives a fetch t
 
     await h.transaction().refresh();
     assertEquals(Object.keys(h.remote.entries).sort(), ["@me/new", "@peer/p"]);
+  });
+});
+
+Deno.test("ManagedLockfileTransaction.run: removing an extension an unpublished change added is recorded as a removal", async () => {
+  await withHarness(async (h) => {
+    h.failPublish.value = true;
+    const change = (fn: (repo: LockfileRepository) => Promise<void>) =>
+      h.transaction().run(async () =>
+        fn(await LockfileRepository.create(h.lockfilePath))
+      );
+    await assertRejects(
+      () => change((repo) => repo.writeEntry("@me/x", "1", [])),
+      ManagedLockfileUnpublishedError,
+    );
+    await assertRejects(
+      () => change((repo) => repo.removeEntry("@me/x")),
+      ManagedLockfileUnpublishedError,
+    );
+
+    h.failPublish.value = false;
+    await h.transaction().refresh();
+
+    assertEquals(h.remote.entries, {});
+    assertEquals(await readUpstreamExtensions(h.lockfilePath), {});
+    assertEquals(h.pending.value, { kind: "none" });
   });
 });

@@ -102,32 +102,3 @@ Deno.test("clearLockfilePublishPending: clears the record and tolerates a missin
     assertEquals(await readLockfilePublishPending(dir), { kind: "none" });
   });
 });
-
-Deno.test("markLockfilePublishPending: an incomplete record round-trips its base", async () => {
-  await withRepoDir(async (dir) => {
-    await markLockfilePublishPending(dir, { upserts: {}, removals: [] }, {
-      incomplete: { base: { "@a/x": ENTRY } },
-    });
-    assertEquals(await readLockfilePublishPending(dir), {
-      kind: "delta",
-      delta: { upserts: {}, removals: [] },
-      incomplete: true,
-      base: { "@a/x": ENTRY },
-    });
-  });
-});
-
-Deno.test("readLockfilePublishPending: an incomplete record without a readable base reads as unknown", async () => {
-  await withRepoDir(async (dir) => {
-    await Deno.writeTextFile(
-      join(dir, ".swamp", "managed-config-lockfile-unpublished"),
-      JSON.stringify({
-        version: 1,
-        upserts: {},
-        removals: [],
-        incomplete: true,
-      }),
-    );
-    assertEquals(await readLockfilePublishPending(dir), { kind: "unknown" });
-  });
-});

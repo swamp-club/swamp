@@ -20,10 +20,7 @@
 import type { LockfileDelta } from "../../domain/extensions/lockfile_delta.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { swampPath } from "./paths.ts";
-import type {
-  UpstreamExtensionEntry,
-  UpstreamExtensionsMap,
-} from "./upstream_extensions.ts";
+import type { UpstreamExtensionEntry } from "./upstream_extensions.ts";
 
 /**
  * Local record that a managed-config lockfile change failed to reach the
@@ -47,21 +44,10 @@ const PENDING_FORMAT_VERSION = 1;
 /** A lockfile change that has not reached the datastore. */
 export type LockfileEntryDelta = LockfileDelta<UpstreamExtensionEntry>;
 
-/**
- * What the pending record says about the local lockfile. An `incomplete`
- * delta was written before a change ran and not replaced after it, so the
- * change was interrupted: the local lockfile may differ from `base`, the
- * lockfile as it stood before the change, in ways the delta does not name.
- */
+/** What the pending record says about the local lockfile. */
 export type PendingLockfilePublish =
   | { kind: "none" }
   | { kind: "delta"; delta: LockfileEntryDelta }
-  | {
-    kind: "delta";
-    delta: LockfileEntryDelta;
-    incomplete: true;
-    base: UpstreamExtensionsMap;
-  }
   | { kind: "unknown" };
 
 function pendingPath(repoDir: string): string {
@@ -71,23 +57,17 @@ function pendingPath(repoDir: string): string {
 /**
  * Records `delta` as the lockfile change the datastore has not received.
  * It replaces any earlier record, so pass the whole outstanding change.
- * `incomplete` marks a record written before a change runs, with the
- * lockfile as it stood then. Without a delta, records a change of unknown
- * content.
+ * Without a delta, records a change of unknown content.
  */
 export async function markLockfilePublishPending(
   repoDir: string,
   delta?: LockfileEntryDelta,
-  options?: { incomplete?: { base: UpstreamExtensionsMap } },
 ): Promise<void> {
   const content = delta
     ? JSON.stringify({
       version: PENDING_FORMAT_VERSION,
       upserts: delta.upserts,
       removals: delta.removals,
-      ...(options?.incomplete
-        ? { incomplete: true, base: options.incomplete.base }
-        : {}),
     })
     : new Date().toISOString();
   await atomicWriteTextFile(pendingPath(repoDir), content);
@@ -107,16 +87,8 @@ export async function readLockfilePublishPending(
     if (error instanceof Deno.errors.NotFound) return { kind: "none" };
     return { kind: "unknown" };
   }
-  const parsed = parseDelta(content);
-  if (!parsed) return { kind: "unknown" };
-  return parsed.base
-    ? {
-      kind: "delta",
-      delta: parsed.delta,
-      incomplete: true,
-      base: parsed.base,
-    }
-    : { kind: "delta", delta: parsed.delta };
+  const delta = parseDelta(content);
+  return delta ? { kind: "delta", delta } : { kind: "unknown" };
 }
 
 /** Clears the record once the lockfile has reached the datastore. */
@@ -130,9 +102,7 @@ export async function clearLockfilePublishPending(
   }
 }
 
-function parseDelta(
-  content: string,
-): { delta: LockfileEntryDelta; base?: UpstreamExtensionsMap } | undefined {
+function parseDelta(content: string): LockfileEntryDelta | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
@@ -150,20 +120,10 @@ function parseDelta(
       return undefined;
     }
   }
-  const delta = {
+  return {
     upserts: upserts as Record<string, UpstreamExtensionEntry>,
     removals: removals as string[],
   };
-  if (parsed.incomplete !== true) return { delta };
-  // An interrupted record without a readable base cannot be replayed
-  // precisely; reading it as unknown keeps every local entry instead.
-  if (!isRecord(parsed.base)) return undefined;
-  for (const entry of Object.values(parsed.base)) {
-    if (!isRecord(entry) || typeof entry.version !== "string") {
-      return undefined;
-    }
-  }
-  return { delta, base: parsed.base as UpstreamExtensionsMap };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
