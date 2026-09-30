@@ -69,7 +69,11 @@ interface InFlightMethodInvocation {
 export class WorkflowTelemetryBridge {
   /** Key shape: `${jobId}:${stepId}` */
   private readonly inFlight = new Map<string, InFlightMethodInvocation>();
-  /** Captured from the `started` event so workflowContext can populate runId/workflowName. */
+  /**
+   * Captured from the top-level run's `started` event so workflowContext can
+   * populate runId/workflowName. Nested workflows, at any depth, are
+   * attributed to the top-level run.
+   */
   private workflowName = "";
   private runId = "";
   /** Captured from `model_resolved` so workflowContext can carry modelType. */
@@ -93,6 +97,9 @@ export class WorkflowTelemetryBridge {
 
     switch (event.kind) {
       case "started": {
+        // A nested workflow step forwards its child's started event into
+        // this stream; keep attributing to the top-level run.
+        if (event.parentRunId !== undefined) return;
         this.workflowName = event.workflowName;
         this.runId = event.runId;
         return;

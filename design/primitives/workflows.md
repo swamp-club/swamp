@@ -1724,7 +1724,9 @@ invocations the same way. Per-executor and per-model-type queries read
   workflow step is the unit of measurement.
 - **Workflow-task steps** (steps whose task is a nested workflow) emit no child
   entry of their own. The nested workflow's model-method steps produce child
-  entries linked to the same parent CLI invocation.
+  entries linked to the same parent CLI invocation. At any nesting depth, those
+  entries carry the top-level run's `workflowName` and `runId`, with the nested
+  workflow's own `jobName` and `stepName`.
 - **Failures before workflow validation** (e.g. workflow not found, input
   schema validation) produce no child entry, because no method was resolved.
 - **Cancellation** during a method invocation (AbortSignal, timeout) records
