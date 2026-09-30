@@ -365,6 +365,7 @@ Deno.test("modelEvaluate: --all writes sensitive values outside arguments as ref
     ),
     true,
   );
+});
 
 Deno.test("modelEvaluate all with include saves and reports only accepted models", async () => {
   const modelType = ModelType.create("aws/ec2");
