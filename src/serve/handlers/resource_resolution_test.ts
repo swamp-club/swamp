@@ -1056,3 +1056,36 @@ Deno.test("CanonicalResources: looks each id up once per request", async () => {
 
   assertEquals(lookups, before);
 });
+
+Deno.test("CanonicalResources: one definition scan serves every id in a request", async () => {
+  let scans = 0;
+  let perIdScans = 0;
+  const definitions = Array.from({ length: 50 }, (_, i) => ({
+    definition: Definition.create({ name: `m-${i}`, globalArguments: {} }),
+    type: SHELL,
+  }));
+  const repo = {
+    findAllIncludingAutoGlobal: () => {
+      scans++;
+      return Promise.resolve(definitions);
+    },
+    findAllByIdGlobal: () => {
+      perIdScans++;
+      return Promise.resolve([]);
+    },
+  } as unknown as DefinitionRepository;
+  const canonical = new CanonicalResources(repo, workflowRepo([]));
+
+  for (const { definition } of definitions) {
+    const owners = await canonical.modelOwners(
+      definition.id,
+      "command/shell",
+      definition.name,
+      "data",
+    );
+    assertEquals(owners.map((o) => o.name), [definition.name]);
+  }
+
+  assertEquals(scans, 1);
+  assertEquals(perIdScans, 0);
+});

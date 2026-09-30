@@ -621,6 +621,7 @@ export class CanonicalResources {
   readonly #definitionRepo: DefinitionRepository;
   readonly #workflowRepo: WorkflowRepository;
   readonly #definitions = new Map<string, Promise<DefinitionLookupResult[]>>();
+  #index: Promise<Map<string, DefinitionLookupResult[]>> | undefined;
   readonly #workflows = new Map<string, Promise<AccessResource[]>>();
 
   constructor(
@@ -632,6 +633,24 @@ export class CanonicalResources {
   }
 
   #definitionsById(id: string): Promise<DefinitionLookupResult[]> {
+    // One scan of every definition per request, grouped by id, when the
+    // repository offers it; a scan per id would make a collection of N items
+    // cost N full scans.
+    if (this.#definitionRepo.findAllIncludingAutoGlobal) {
+      this.#index ??= this.#definitionRepo.findAllIncludingAutoGlobal().then(
+        (all) => {
+          const index = new Map<string, DefinitionLookupResult[]>();
+          for (const entry of all) {
+            const key = entry.definition.id as string;
+            const owners = index.get(key);
+            if (owners) owners.push(entry);
+            else index.set(key, [entry]);
+          }
+          return index;
+        },
+      );
+      return this.#index.then((index) => index.get(id) ?? []);
+    }
     let found = this.#definitions.get(id);
     if (!found) {
       found = findDefinitionsByIdGlobal(this.#definitionRepo, id);
