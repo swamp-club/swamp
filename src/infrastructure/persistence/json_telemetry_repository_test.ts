@@ -38,7 +38,12 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 function createTestEntry(
-  overrides: { id?: string; date?: Date; platform?: string } = {},
+  overrides: {
+    id?: string;
+    date?: Date;
+    platform?: string;
+    endpoint?: string;
+  } = {},
 ): TelemetryEntry {
   const startedAt = overrides.date ?? new Date("2024-01-15T10:00:00Z");
   const completedAt = new Date(startedAt.getTime() + 1000);
@@ -61,6 +66,7 @@ function createTestEntry(
     swampVersion: "1.0.0",
     denoVersion: "1.40.0",
     platform: overrides.platform ?? "linux",
+    endpoint: overrides.endpoint,
   });
 }
 
@@ -390,6 +396,61 @@ Deno.test("JsonTelemetryRepository.findUnflushed respects limit", async () => {
     assertEquals(unflushed[0].id, "limit-uuid-0");
     assertEquals(unflushed[1].id, "limit-uuid-1");
     assertEquals(unflushed[2].id, "limit-uuid-2");
+  });
+});
+
+Deno.test("JsonTelemetryRepository.findUnflushed with an endpoint returns entries stamped for it and unstamped ones", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+
+    await repo.save(createTestEntry({
+      id: "stamped-a",
+      date: new Date("2024-03-10T10:00:00Z"),
+      endpoint: "https://a.example",
+    }));
+    await repo.save(createTestEntry({
+      id: "stamped-b",
+      date: new Date("2024-03-11T10:00:00Z"),
+      endpoint: "https://b.example",
+    }));
+    await repo.save(createTestEntry({
+      id: "legacy",
+      date: new Date("2024-03-12T10:00:00Z"),
+    }));
+
+    const forA = await repo.findUnflushed(25, "https://a.example");
+    assertEquals(forA.map((e) => e.id), ["stamped-a", "legacy"]);
+    assertEquals(forA[0].endpoint, "https://a.example");
+
+    // Without an endpoint the repository does not filter.
+    const all = await repo.findUnflushed(25);
+    assertEquals(all.length, 3);
+  });
+});
+
+Deno.test("JsonTelemetryRepository.findUnflushed applies the limit after the endpoint filter", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+
+    // The oldest entries belong to another endpoint; they must not crowd the
+    // matching ones out of the batch.
+    for (let i = 0; i < 3; i++) {
+      await repo.save(createTestEntry({
+        id: `other-${i}`,
+        date: new Date(`2024-03-${10 + i}T10:00:00Z`),
+        endpoint: "https://other.example",
+      }));
+    }
+    for (let i = 0; i < 3; i++) {
+      await repo.save(createTestEntry({
+        id: `mine-${i}`,
+        date: new Date(`2024-03-${20 + i}T10:00:00Z`),
+        endpoint: "https://mine.example",
+      }));
+    }
+
+    const batch = await repo.findUnflushed(2, "https://mine.example");
+    assertEquals(batch.map((e) => e.id), ["mine-0", "mine-1"]);
   });
 });
 

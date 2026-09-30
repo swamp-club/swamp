@@ -523,3 +523,57 @@ Deno.test("TelemetryEntry omits initiatedBy for CLI invocations", () => {
   assertEquals(entry.initiatedBy, undefined);
   assertEquals("initiatedBy" in entry.toData(), false);
 });
+
+Deno.test("TelemetryEntry: endpoint round-trips and stays absent on legacy entries", () => {
+  const props = {
+    invocation: {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success" as const, exitCode: 0 },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:01Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  };
+
+  const stamped = TelemetryEntry.create({
+    ...props,
+    endpoint: "https://collector.example",
+  });
+  const restored = TelemetryEntry.fromData(stamped.toData());
+  assertEquals(restored.endpoint, "https://collector.example");
+
+  const legacy = TelemetryEntry.create(props);
+  assertEquals("endpoint" in legacy.toData(), false);
+  assertEquals(TelemetryEntry.fromData(legacy.toData()).endpoint, undefined);
+});
+
+Deno.test("TelemetryEntry.isFlushableTo: only its own endpoint, or any when unstamped", () => {
+  const base = {
+    invocation: {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success" as const, exitCode: 0 },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:01Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  };
+  const stamped = TelemetryEntry.create({
+    ...base,
+    endpoint: "https://a.example",
+  });
+  assertEquals(stamped.isFlushableTo("https://a.example"), true);
+  assertEquals(stamped.isFlushableTo("https://b.example"), false);
+
+  const legacy = TelemetryEntry.create(base);
+  assertEquals(legacy.isFlushableTo("https://b.example"), true);
+});

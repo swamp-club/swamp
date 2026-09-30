@@ -52,15 +52,19 @@ export class HttpTelemetrySender implements TelemetrySender {
     // one per POST and the same invocation is counted twice in the downstream
     // rollups. The entry id is already a stable per-invocation UUID, which is
     // exactly the key we want.
-    const events = entries.map((entry) => ({
-      event: "cli_invocation",
-      distinct_id: distinctId,
-      insert_id: entry.id,
-      properties: {
-        ...entry.toData(),
-        ...(repoId ? { $repo_id: repoId } : {}),
-      },
-    }));
+    // `endpoint` is local routing state for the spool, not event data.
+    const events = entries.map((entry) => {
+      const { endpoint: _endpoint, ...data } = entry.toData();
+      return {
+        event: "cli_invocation",
+        distinct_id: distinctId,
+        insert_id: entry.id,
+        properties: {
+          ...data,
+          ...(repoId ? { $repo_id: repoId } : {}),
+        },
+      };
+    });
 
     const body = events.length === 1
       ? JSON.stringify(events[0])

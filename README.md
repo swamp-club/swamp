@@ -500,38 +500,41 @@ swamp telemetry stats --days 7  # last 7 days
 
 ### Disabling Telemetry
 
-Per-invocation:
+Every opt-out below disables telemetry on its own. If any of them applies,
+nothing is recorded or sent, and no other setting can turn telemetry back on.
+
+| Opt-out                                          | Scope                                 |
+| ------------------------------------------------ | ------------------------------------- |
+| `swamp config set telemetry.collection disabled` | You, for every run, in any repository |
+| `.swamp.yaml`: `telemetryDisabled: true`         | Everyone running swamp in that repo   |
+| `SWAMP_NO_TELEMETRY=1`                           | Every run in that environment         |
+| `DO_NOT_TRACK=1`                                 | Every run in that environment         |
+| `--no-telemetry`                                 | That one invocation                   |
+
+For the two environment variables, any value other than `0`, `false`, or empty
+disables telemetry.
+
+The user-level setting is the one to use to opt out everywhere:
 
 ```bash
-swamp --no-telemetry workflow run my-workflow
+swamp config set telemetry.collection disabled
+swamp config get telemetry.collection   # disabled
 ```
 
-Via environment variable (useful for CI/UAT environments):
+It is stored in `~/.config/swamp/telemetry.yaml` (XDG-aware, like the spool). A
+file written by hand with `disabled: true` has the same effect. A running
+`swamp serve` daemon reads it at startup, so restart the daemon after changing
+it.
 
-```bash
-export SWAMP_NO_TELEMETRY=1
-swamp workflow run my-workflow
-```
+A repository-scoped command pointed at a repository with `--repo-dir` or
+`SWAMP_REPO_DIR` records nothing when no `.swamp.yaml` is found there — that
+repository's own opt-out and endpoint are unknown.
 
-Permanently for a repository — add to `.swamp.yaml`:
-
-```yaml
-telemetryDisabled: true
-```
-
-Permanently for all repo-less runs — create `~/.config/swamp/telemetry.yaml`:
-
-```yaml
-disabled: true
-```
-
-This suppresses telemetry when running swamp outside any repository (e.g.
-`swamp telemetry stats`, `swamp auth login`). Inside a repository the
-`.swamp.yaml` `telemetryDisabled` field takes precedence.
-
-Priority order (highest to lowest): `--no-telemetry` flag → `SWAMP_NO_TELEMETRY`
-env var → `.swamp.yaml` `telemetryDisabled: true` (per-repo) →
-`~/.config/swamp/telemetry.yaml` `disabled: true` (user-global, repo-less runs).
+Each event is sent only to the telemetry endpoint in effect when it was
+recorded. Events from a repository that sets `telemetryEndpoint` in
+`.swamp.yaml` stay in the spool until a run that resolves the same endpoint
+sends them; a run outside that repository never sends them to the default
+endpoint.
 
 ### Migrating from Repo-Local Telemetry
 

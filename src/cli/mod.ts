@@ -84,6 +84,7 @@ import {
   getExtensionsDirFromArgs,
   getRepoDirFromArgs,
   type GlobalOptions,
+  hasExplicitRepoDir,
   isStdinTty,
 } from "./context.ts";
 import {
@@ -273,15 +274,52 @@ export function isTelemetryDisabledByConfig(
 }
 
 /**
- * Checks whether telemetry is disabled via SWAMP_NO_TELEMETRY environment variable.
- * Any value other than "0", "false", or empty string disables telemetry.
+ * Checks whether telemetry is disabled via the SWAMP_NO_TELEMETRY or the
+ * cross-tool DO_NOT_TRACK environment variable. For either, any value other
+ * than "0", "false", or empty string disables telemetry.
  *
  * @internal Exported for testing
  */
 export function isTelemetryDisabledByEnv(): boolean {
-  const val = Deno.env.get("SWAMP_NO_TELEMETRY");
+  return isOptOutEnvSet("SWAMP_NO_TELEMETRY") || isOptOutEnvSet("DO_NOT_TRACK");
+}
+
+function isOptOutEnvSet(name: string): boolean {
+  const val = Deno.env.get(name);
   if (val === undefined) return false;
   return val !== "0" && val !== "false" && val !== "";
+}
+
+/** Inputs to {@link isTelemetryOptedOut} read from disk and the invocation. */
+export interface TelemetryOptOutSources {
+  /** The repo marker, or null when no marker resolved for the repo dir. */
+  marker: RepoMarkerData | null;
+  /** The user-level `telemetry.yaml` `disabled` setting. */
+  userDisabled: boolean;
+  /** The repo dir came from `--repo-dir` or `SWAMP_REPO_DIR`, not the cwd. */
+  explicitRepoDir: boolean;
+  /** The command operates on a repo (see {@link isRepoScopedCommand}). */
+  repoScoped: boolean;
+}
+
+/**
+ * Whether the repo marker or the user's settings opt this invocation out of
+ * telemetry. The `--no-telemetry` flag and the opt-out env vars are checked
+ * before this, at the pre-parse gate in `runInvocation`.
+ *
+ * Every source can only opt out: the user-level setting applies inside repos
+ * as well as outside, and no repo setting can turn it back on. A repo-scoped
+ * command pointed at an explicit repo dir with no marker is also opted out —
+ * that repo's own opt-out and endpoint are unknown, so nothing is recorded
+ * rather than guessing.
+ *
+ * @internal Exported for testing
+ */
+export function isTelemetryOptedOut(sources: TelemetryOptOutSources): boolean {
+  if (sources.userDisabled) return true;
+  if (isTelemetryDisabledByConfig(sources.marker)) return true;
+  return sources.marker === null && sources.explicitRepoDir &&
+    sources.repoScoped;
 }
 
 /**
@@ -313,6 +351,37 @@ const NON_REPO_COMMANDS = new Set([
   "issue",
   "quest",
 ]);
+
+/**
+ * Whether a command operates on a swamp repo. Repo-less commands and
+ * `repo init` — whose own run writes the marker — are not repo-scoped.
+ *
+ * @internal Exported for testing
+ */
+export function isRepoScopedCommand(
+  commandInfo: Pick<CommandInvocationData, "command" | "subcommand">,
+): boolean {
+  if (NON_REPO_COMMANDS.has(commandInfo.command)) return false;
+  return !(commandInfo.command === "repo" && commandInfo.subcommand === "init");
+}
+
+/**
+ * Whether this invocation is `swamp config set telemetry.collection disabled`.
+ * The opt-out is read before the command writes it, so without this the
+ * command that opts out would itself be recorded and sent.
+ *
+ * @internal Exported for testing
+ */
+export function isTelemetryOptOutInvocation(
+  commandInfo: Pick<CommandInvocationData, "command" | "subcommand">,
+  args: string[],
+): boolean {
+  if (commandInfo.command !== "config" || commandInfo.subcommand !== "set") {
+    return false;
+  }
+  const keyIndex = args.indexOf("telemetry.collection");
+  return keyIndex !== -1 && args[keyIndex + 1] === "disabled";
+}
 
 /**
  * Checks whether a command may need the extension loader infrastructure.
@@ -1681,18 +1750,32 @@ import { resolveTrustedCollectives } from "../libswamp/mod.ts";
  * ({@link globalTelemetryDir}) whether or not it happened inside a swamp repo.
  * A repo marker, when present, only *enriches* the event (repoId, configured
  * tools, datastore, endpoint, keepFlushed) and can opt the repo out; it no
- * longer gates telemetry or selects the spool. Repo-less runs honor a
- * persistent user-level opt-out at `<config>/telemetry.yaml`.
+ * longer gates telemetry or selects the spool. The user-level opt-out at
+ * `<config>/telemetry.yaml` applies to every run, inside a repo or not
+ * (see {@link isTelemetryOptedOut}).
  *
  * Returns null only when telemetry is disabled for this run.
  */
 async function initTelemetryService(
   repoDir: string,
+  explicitRepoDir: boolean,
+  repoScoped: boolean,
 ): Promise<TelemetryContext | null> {
   try {
     const markerRepo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(repoDir);
     const marker = await markerRepo.read(repoPath);
+    const prefs = await new TelemetryPreferencesFileRepository().read();
+    if (
+      isTelemetryOptedOut({
+        marker,
+        userDisabled: prefs.disabled,
+        explicitRepoDir,
+        repoScoped,
+      })
+    ) {
+      return null;
+    }
 
     // Enrichment fields default to the repo-less state; a marker decorates the
     // event with repo-specific detail when the run happened inside a repo.
@@ -1705,10 +1788,6 @@ async function initTelemetryService(
     let keepFlushed = false;
 
     if (marker) {
-      if (isTelemetryDisabledByConfig(marker)) {
-        return null; // Per-repo opt-out via marker telemetryDisabled
-      }
-
       // Lazy-migrate repoId if missing
       repoId = marker.repoId;
       if (!repoId) {
@@ -1749,12 +1828,6 @@ async function initTelemetryService(
 
       markerEndpoint = marker.telemetryEndpoint;
       keepFlushed = marker.telemetryKeepFlushed ?? false;
-    } else {
-      // Repo-less: honor the persistent user-level opt-out.
-      const prefs = await new TelemetryPreferencesFileRepository().read();
-      if (prefs.disabled) {
-        return null;
-      }
     }
 
     // Resolve user-level identity (lazy-creates ~/.config/swamp/identity.json)
@@ -1800,15 +1873,22 @@ async function initTelemetryService(
       datastoreType,
       externalVault,
     );
-    const service = new TelemetryService(
-      repository,
-      VERSION,
-      invocationContext,
-    );
     const telemetryEndpoint = resolveTelemetryEndpoint(
       markerEndpoint,
       authServerUrl,
       Deno.env.get("SWAMP_TELEMETRY_ENDPOINT"),
+    );
+    // Entries are stamped with the endpoint resolved here and only ever
+    // flushed to it, so a later run elsewhere (outside the repo, or in a repo
+    // with a different endpoint) cannot send them to its own endpoint.
+    const service = new TelemetryService(
+      repository,
+      VERSION,
+      invocationContext,
+      undefined,
+      undefined,
+      undefined,
+      telemetryEndpoint,
     );
 
     return {
@@ -1974,7 +2054,8 @@ async function runInvocation(
 
   // Pre-parse check for telemetry disable flag
   const telemetryDisabled = isTelemetryDisabled(args) ||
-    isTelemetryDisabledByEnv();
+    isTelemetryDisabledByEnv() ||
+    isTelemetryOptOutInvocation(commandInfo, args);
 
   // Hook commands (audit record --from-hook) run as PostToolUse hooks and
   // must be as fast as possible. Skip all non-essential startup and teardown
@@ -1986,7 +2067,11 @@ async function runInvocation(
   // Initialize telemetry service (only if in a swamp repo)
   let telemetryCtx: TelemetryContext | null = null;
   if (!telemetryDisabled && !hookMode) {
-    telemetryCtx = await initTelemetryService(repoDir);
+    telemetryCtx = await initTelemetryService(
+      repoDir,
+      hasExplicitRepoDir(args),
+      isRepoScopedCommand(commandInfo),
+    );
   }
 
   // Surface the active service for command actions that emit child

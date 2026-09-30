@@ -68,6 +68,11 @@ export interface CreateTelemetryEntryProps {
   workflowContext?: WorkflowContextData;
   triggerSource?: WorkflowTriggerSource;
   initiatedBy?: string;
+  /**
+   * The telemetry endpoint in effect for the run that recorded the entry.
+   * The entry is only ever flushed to this endpoint.
+   */
+  endpoint?: string;
 }
 
 /**
@@ -92,6 +97,11 @@ export interface TelemetryEntryData {
   workflowContext?: WorkflowContextData;
   triggerSource?: WorkflowTriggerSource;
   initiatedBy?: string;
+  /**
+   * The telemetry endpoint in effect for the run that recorded the entry.
+   * The entry is only ever flushed to this endpoint.
+   */
+  endpoint?: string;
 }
 
 /**
@@ -113,6 +123,7 @@ export class TelemetryEntry {
     readonly workflowContext?: WorkflowContext,
     readonly triggerSource?: WorkflowTriggerSource,
     readonly initiatedBy?: string,
+    readonly endpoint?: string,
   ) {}
 
   /**
@@ -143,6 +154,7 @@ export class TelemetryEntry {
         : undefined,
       props.triggerSource,
       props.initiatedBy,
+      props.endpoint,
     );
   }
 
@@ -173,7 +185,16 @@ export class TelemetryEntry {
         ? data.triggerSource
         : undefined,
       data.initiatedBy,
+      typeof data.endpoint === "string" ? data.endpoint : undefined,
     );
+  }
+
+  /**
+   * Whether this entry may be sent to `endpoint`. Entries written before
+   * endpoint stamping carry none and may go anywhere, as they always could.
+   */
+  isFlushableTo(endpoint: string): boolean {
+    return this.endpoint === undefined || this.endpoint === endpoint;
   }
 
   /**
@@ -205,6 +226,9 @@ export class TelemetryEntry {
     }
     if (this.initiatedBy) {
       data.initiatedBy = this.initiatedBy;
+    }
+    if (this.endpoint) {
+      data.endpoint = this.endpoint;
     }
     return data;
   }

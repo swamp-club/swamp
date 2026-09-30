@@ -71,10 +71,15 @@ export interface TelemetryRepository {
    * Finds unflushed telemetry entries, sorted oldest first.
    * "Unflushed" entries are those that have not been sent to the remote endpoint.
    *
+   * With `endpoint`, only entries stamped for that endpoint, or carrying no
+   * stamp, are returned; the limit applies after filtering so entries for
+   * other endpoints cannot crowd a batch out.
+   *
    * @param limit - Maximum number of entries to return
+   * @param endpoint - Only return entries flushable to this endpoint
    * @returns Array of unflushed telemetry entries (oldest first)
    */
-  findUnflushed(limit: number): Promise<TelemetryEntry[]>;
+  findUnflushed(limit: number, endpoint?: string): Promise<TelemetryEntry[]>;
 
   /**
    * Marks a telemetry entry as flushed (sent to remote endpoint).
