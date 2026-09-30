@@ -361,6 +361,20 @@ export function getRepoDirFromArgs(args: string[]): string {
 }
 
 /**
+ * Whether {@link getRepoDirFromArgs} takes the repo dir from the
+ * `--repo-dir` flag or `SWAMP_REPO_DIR` rather than from the cwd.
+ */
+export function hasExplicitRepoDir(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--repo-dir" && i + 1 < args.length) return true;
+    if (arg.startsWith("--repo-dir=")) return true;
+  }
+  const envDir = Deno.env.get("SWAMP_REPO_DIR");
+  return envDir !== undefined && envDir.length > 0;
+}
+
+/**
  * Resolves the repository directory for a command action, given the Cliffy
  * parsed `--repo-dir` option value.
  *

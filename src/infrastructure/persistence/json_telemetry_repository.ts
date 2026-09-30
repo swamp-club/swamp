@@ -198,10 +198,15 @@ export class JsonTelemetryRepository implements TelemetryRepository {
    * Finds unflushed telemetry entries, sorted oldest first.
    *
    * Uses filename-based sorting (date prefix is chronologically sortable)
-   * and only reads/parses the first `limit` files. This avoids O(n) file
-   * reads when the spool contains thousands of accumulated entries.
+   * and stops reading once `limit` entries are collected. This avoids O(n)
+   * file reads when the spool contains thousands of accumulated entries;
+   * with an `endpoint` filter, entries for other endpoints are read and
+   * skipped until the limit is met.
    */
-  async findUnflushed(limit: number): Promise<TelemetryEntry[]> {
+  async findUnflushed(
+    limit: number,
+    endpoint?: string,
+  ): Promise<TelemetryEntry[]> {
     const filenames: string[] = [];
 
     try {
@@ -232,12 +237,16 @@ export class JsonTelemetryRepository implements TelemetryRepository {
 
     const telemetryDir = this.getTelemetryDir();
     const entries: TelemetryEntry[] = [];
-    for (const filename of filenames.slice(0, limit)) {
+    for (const filename of filenames) {
+      if (entries.length >= limit) break;
       try {
         const path = join(telemetryDir, filename);
         const content = await Deno.readTextFile(path);
         const data = JSON.parse(content) as TelemetryEntryData;
-        entries.push(TelemetryEntry.fromData(data));
+        const entry = TelemetryEntry.fromData(data);
+        if (endpoint === undefined || entry.isFlushableTo(endpoint)) {
+          entries.push(entry);
+        }
       } catch {
         // Skip files that can't be parsed
       }

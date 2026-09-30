@@ -447,3 +447,40 @@ Deno.test("HttpTelemetrySender.sendBatch omits parentInvocationId / workflowCont
 
   await server.shutdown();
 });
+
+Deno.test("HttpTelemetrySender.sendBatch does not send the spool endpoint stamp", async () => {
+  let capturedBody: string | undefined;
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedBody = await req.text();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const sender = new HttpTelemetrySender(
+    `http://localhost:${server.addr.port}`,
+  );
+  const date = new Date("2024-03-10T10:00:00Z");
+  const entry = TelemetryEntry.create({
+    id: "stamped-uuid",
+    invocation: {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: date,
+    completedAt: date,
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    endpoint: "https://private.example",
+  });
+
+  await sender.sendBatch([entry], "user-id");
+
+  const parsed = JSON.parse(capturedBody!);
+  assertEquals(parsed.properties.id, "stamped-uuid");
+  assertEquals("endpoint" in parsed.properties, false);
+
+  await server.shutdown();
+});

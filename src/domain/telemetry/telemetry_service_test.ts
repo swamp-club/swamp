@@ -65,7 +65,11 @@ class MockTelemetryRepository implements TelemetryRepository {
     return Promise.resolve(3);
   }
 
-  findUnflushed(_limit: number): Promise<TelemetryEntry[]> {
+  /** Endpoint passed to the most recent findUnflushed call. */
+  findUnflushedEndpoint: string | undefined = undefined;
+
+  findUnflushed(_limit: number, endpoint?: string): Promise<TelemetryEntry[]> {
+    this.findUnflushedEndpoint = endpoint;
     return Promise.resolve(this.mockUnflushedEntries);
   }
 
@@ -851,4 +855,102 @@ Deno.test("TelemetryService.flushTelemetry skips ids the caller already delivere
 
   assertEquals(sender.sentBatches.length, 0);
   assertEquals(outcome.sentCount, 0);
+});
+
+const ENDPOINT_TEST_INVOCATION = {
+  command: "model",
+  subcommand: "create",
+  args: ["<REDACTED>"],
+  optionKeys: [],
+  globalOptions: [],
+};
+
+Deno.test("TelemetryService stamps its endpoint on every record path", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(
+    repo,
+    "1.0.0",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "https://collector.example",
+  );
+  const now = new Date();
+
+  await service.recordSuccess(ENDPOINT_TEST_INVOCATION, now);
+  await service.recordError(ENDPOINT_TEST_INVOCATION, now, new Error("boom"));
+  await service.recordChildInvocation(
+    ENDPOINT_TEST_INVOCATION,
+    now,
+    now,
+    null,
+    service.invocationId,
+    { workflowName: "wf", runId: "run", jobName: "job", stepName: "step" },
+  );
+  await service.forkForRun("webhook").recordSuccess(
+    ENDPOINT_TEST_INVOCATION,
+    now,
+  );
+
+  assertEquals(repo.savedEntries.length, 4);
+  for (const entry of repo.savedEntries) {
+    assertEquals(entry.endpoint, "https://collector.example");
+  }
+});
+
+Deno.test("TelemetryService.flushTelemetry asks the repository only for entries for its endpoint", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(
+    repo,
+    "1.0.0",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "https://collector.example",
+  );
+
+  await service.flushTelemetry({ sender, distinctId: "user" });
+  assertEquals(repo.findUnflushedEndpoint, "https://collector.example");
+
+  await service.findUnflushedForIsolation(5);
+  assertEquals(repo.findUnflushedEndpoint, "https://collector.example");
+});
+
+Deno.test("TelemetryService.flushEntry never sends an entry recorded for another endpoint", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(
+    repo,
+    "1.0.0",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "https://public.example",
+  );
+  const now = new Date();
+  const foreign = TelemetryEntry.create({
+    invocation: ENDPOINT_TEST_INVOCATION,
+    result: { status: "success", exitCode: 0 },
+    startedAt: now,
+    completedAt: now,
+    swampVersion: "1.0.0",
+    denoVersion: "2.0.0",
+    platform: "linux",
+    endpoint: "https://private.example",
+  });
+
+  const outcome = await service.flushEntry({
+    entry: foreign,
+    sender,
+    distinctId: "user",
+  });
+
+  assertEquals(outcome.sentCount, 0);
+  assertEquals(sender.sentBatches.length, 0);
+  // Left spooled for a run that resolves its own endpoint.
+  assertEquals(repo.flushedEntries.length, 0);
 });

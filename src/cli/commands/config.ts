@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
+import { TelemetryPreferencesFileRepository } from "../../infrastructure/persistence/telemetry_preferences_file_repository.ts";
 import {
   createScheduler,
   isRunningAsRoot,
@@ -41,6 +42,11 @@ const CONFIG_KEYS: Record<string, { description: string; values?: string[] }> =
     "update.cadence": {
       description: "How often to check for updates",
       values: ["hourly", "daily", "weekly"],
+    },
+    "telemetry.collection": {
+      description:
+        "Enable or disable usage telemetry for every run, in any repository",
+      values: ["enabled", "disabled"],
     },
   };
 
@@ -70,6 +76,11 @@ const configGetCommand = new Command()
       case "update.cadence":
         value = prefs.cadence;
         break;
+      case "telemetry.collection": {
+        const telemetry = await new TelemetryPreferencesFileRepository().read();
+        value = telemetry.disabled ? "disabled" : "enabled";
+        break;
+      }
       default:
         throw new UserError(`Unknown config key: ${key}`);
     }
@@ -103,6 +114,26 @@ const configSetCommand = new Command()
           meta.values.map((v) => `"${v}"`).join(" or ")
         }.`,
       );
+    }
+
+    // Telemetry is a plain user-level file with no scheduler behind it, so it
+    // never needs the root check the update.* keys do.
+    if (key === "telemetry.collection") {
+      const disabled = value === "disabled";
+      const telemetryRepo = new TelemetryPreferencesFileRepository();
+      await telemetryRepo.write({ ...(await telemetryRepo.read()), disabled });
+
+      if (ctx.outputMode === "json") {
+        console.log(JSON.stringify({ key, value }));
+      } else {
+        ctx.logger.info(
+          disabled
+            ? "Telemetry disabled for every run, in any repository"
+            : "User-level telemetry opt-out removed; --no-telemetry, SWAMP_NO_TELEMETRY, DO_NOT_TRACK and a repository's telemetryDisabled still apply",
+        );
+        ctx.logger.info("Restart any running swamp serve daemon to apply it");
+      }
+      return;
     }
 
     const prefsRepo = new UpdatePreferencesFileRepository();
@@ -176,10 +207,12 @@ const configListCommand = new Command()
 
     const prefsRepo = new UpdatePreferencesFileRepository();
     const prefs = await prefsRepo.read();
+    const telemetry = await new TelemetryPreferencesFileRepository().read();
 
     const values: Record<string, string> = {
       "update.auto": prefs.enabled ? "enabled" : "disabled",
       "update.cadence": prefs.cadence,
+      "telemetry.collection": telemetry.disabled ? "disabled" : "enabled",
     };
 
     if (ctx.outputMode === "json") {

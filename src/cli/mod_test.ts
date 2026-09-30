@@ -23,8 +23,11 @@ import {
   type DeferredWarning,
   isHookCommand,
   isLocalhostUrl,
+  isRepoScopedCommand,
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
+  isTelemetryOptedOut,
+  isTelemetryOptOutInvocation,
   isThinClientCommand,
   isUpdateCheckDisabledByEnv,
   resolveAutoResolverLockfilePath,
@@ -175,37 +178,43 @@ Deno.test("isTelemetryDisabledByConfig returns true when field is true", () => {
 });
 
 Deno.test("isTelemetryDisabledByEnv returns false when env var is not set", () => {
-  withMockedEnv({ SWAMP_NO_TELEMETRY: undefined }, () => {
-    assertEquals(isTelemetryDisabledByEnv(), false);
-  });
+  withMockedEnv(
+    { SWAMP_NO_TELEMETRY: undefined, DO_NOT_TRACK: undefined },
+    () => {
+      assertEquals(isTelemetryDisabledByEnv(), false);
+    },
+  );
 });
 
 Deno.test("isTelemetryDisabledByEnv returns true when env var is '1'", () => {
-  withMockedEnv({ SWAMP_NO_TELEMETRY: "1" }, () => {
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "1", DO_NOT_TRACK: undefined }, () => {
     assertEquals(isTelemetryDisabledByEnv(), true);
   });
 });
 
 Deno.test("isTelemetryDisabledByEnv returns true when env var is 'true'", () => {
-  withMockedEnv({ SWAMP_NO_TELEMETRY: "true" }, () => {
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "true", DO_NOT_TRACK: undefined }, () => {
     assertEquals(isTelemetryDisabledByEnv(), true);
   });
 });
 
 Deno.test("isTelemetryDisabledByEnv returns false when env var is '0'", () => {
-  withMockedEnv({ SWAMP_NO_TELEMETRY: "0" }, () => {
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "0", DO_NOT_TRACK: undefined }, () => {
     assertEquals(isTelemetryDisabledByEnv(), false);
   });
 });
 
 Deno.test("isTelemetryDisabledByEnv returns false when env var is 'false'", () => {
-  withMockedEnv({ SWAMP_NO_TELEMETRY: "false" }, () => {
-    assertEquals(isTelemetryDisabledByEnv(), false);
-  });
+  withMockedEnv(
+    { SWAMP_NO_TELEMETRY: "false", DO_NOT_TRACK: undefined },
+    () => {
+      assertEquals(isTelemetryDisabledByEnv(), false);
+    },
+  );
 });
 
 Deno.test("isTelemetryDisabledByEnv returns false when env var is ''", () => {
-  withMockedEnv({ SWAMP_NO_TELEMETRY: "" }, () => {
+  withMockedEnv({ SWAMP_NO_TELEMETRY: "", DO_NOT_TRACK: undefined }, () => {
     assertEquals(isTelemetryDisabledByEnv(), false);
   });
 });
@@ -659,6 +668,162 @@ Deno.test("isThinClientCommand: local commands and serve are not thin clients", 
       extractCommandInfo(["serve"]),
       (n) => n === "SWAMP_SERVE_URL" ? "https://s" : undefined,
     ),
+    false,
+  );
+});
+
+Deno.test("isTelemetryDisabledByEnv honours DO_NOT_TRACK like SWAMP_NO_TELEMETRY", () => {
+  for (
+    const [value, expected] of [
+      ["1", true],
+      ["true", true],
+      ["0", false],
+      ["false", false],
+      ["", false],
+      [undefined, false],
+    ] as const
+  ) {
+    withMockedEnv(
+      { SWAMP_NO_TELEMETRY: undefined, DO_NOT_TRACK: value },
+      () => {
+        assertEquals(
+          isTelemetryDisabledByEnv(),
+          expected,
+          `DO_NOT_TRACK=${value}`,
+        );
+      },
+    );
+  }
+});
+
+Deno.test("isTelemetryOptedOut: any source opts out and none turns it back on", () => {
+  const marker = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01T00:00:00Z",
+  };
+  const optedOutMarker = { ...marker, telemetryDisabled: true };
+
+  const cases = [
+    // Nothing opts out.
+    { marker, userDisabled: false, explicit: false, scoped: true, out: false },
+    {
+      marker: null,
+      userDisabled: false,
+      explicit: false,
+      scoped: true,
+      out: false,
+    },
+    // The user setting applies inside a repo as well as outside one.
+    { marker, userDisabled: true, explicit: false, scoped: true, out: true },
+    {
+      marker: null,
+      userDisabled: true,
+      explicit: false,
+      scoped: false,
+      out: true,
+    },
+    // The repo marker opts out whatever the user setting is.
+    {
+      marker: optedOutMarker,
+      userDisabled: false,
+      explicit: false,
+      scoped: true,
+      out: true,
+    },
+    {
+      marker: optedOutMarker,
+      userDisabled: true,
+      explicit: true,
+      scoped: true,
+      out: true,
+    },
+    // An explicit repo dir with no marker opts a repo-scoped command out...
+    {
+      marker: null,
+      userDisabled: false,
+      explicit: true,
+      scoped: true,
+      out: true,
+    },
+    // ...but not a repo-less command or repo init.
+    {
+      marker: null,
+      userDisabled: false,
+      explicit: true,
+      scoped: false,
+      out: false,
+    },
+    // An explicit repo dir that resolves a marker is an ordinary repo run.
+    { marker, userDisabled: false, explicit: true, scoped: true, out: false },
+  ];
+  for (const c of cases) {
+    assertEquals(
+      isTelemetryOptedOut({
+        marker: c.marker,
+        userDisabled: c.userDisabled,
+        explicitRepoDir: c.explicit,
+        repoScoped: c.scoped,
+      }),
+      c.out,
+      JSON.stringify(c),
+    );
+  }
+});
+
+Deno.test("isRepoScopedCommand: repo-less commands and repo init are not repo-scoped", () => {
+  assertEquals(
+    isRepoScopedCommand({ command: "model", subcommand: "run" }),
+    true,
+  );
+  assertEquals(
+    isRepoScopedCommand({ command: "repo", subcommand: "upgrade" }),
+    true,
+  );
+  assertEquals(
+    isRepoScopedCommand({ command: "repo", subcommand: "init" }),
+    false,
+  );
+  assertEquals(isRepoScopedCommand({ command: "init" }), false);
+  for (const command of ["auth", "config", "issue", "telemetry", "update"]) {
+    assertEquals(isRepoScopedCommand({ command }), false, command);
+  }
+});
+
+Deno.test("isTelemetryOptOutInvocation: only config set telemetry.collection disabled", () => {
+  const configSet = { command: "config", subcommand: "set" };
+  assertEquals(
+    isTelemetryOptOutInvocation(configSet, [
+      "config",
+      "set",
+      "telemetry.collection",
+      "disabled",
+    ]),
+    true,
+  );
+  assertEquals(
+    isTelemetryOptOutInvocation(configSet, [
+      "config",
+      "set",
+      "telemetry.collection",
+      "enabled",
+    ]),
+    false,
+  );
+  assertEquals(
+    isTelemetryOptOutInvocation(configSet, [
+      "config",
+      "set",
+      "update.auto",
+      "disabled",
+    ]),
+    false,
+  );
+  assertEquals(
+    isTelemetryOptOutInvocation({ command: "config", subcommand: "get" }, [
+      "config",
+      "get",
+      "telemetry.collection",
+    ]),
     false,
   );
 });

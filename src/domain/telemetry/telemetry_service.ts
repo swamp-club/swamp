@@ -168,6 +168,13 @@ export class TelemetryService {
     invocationId?: TelemetryId,
     private readonly triggerSource?: WorkflowTriggerSource,
     private readonly initiatedBy?: string,
+    /**
+     * The endpoint this invocation resolved. Every entry this service records
+     * is stamped with it, and a flush only drains entries stamped for it (or
+     * written before stamping existed), so an entry is never sent to an
+     * endpoint other than the one in effect when it was recorded.
+     */
+    private readonly endpoint?: string,
   ) {
     this.invocationId = invocationId ?? generateTelemetryId();
   }
@@ -201,6 +208,7 @@ export class TelemetryService {
       generateTelemetryId(),
       triggerSource ?? this.triggerSource,
       initiatedBy,
+      this.endpoint,
     );
   }
 
@@ -226,6 +234,7 @@ export class TelemetryService {
       invocationContext: this.invocationContext,
       triggerSource: this.triggerSource,
       initiatedBy: this.initiatedBy,
+      endpoint: this.endpoint,
     });
 
     await this.repository.save(entry);
@@ -263,6 +272,7 @@ export class TelemetryService {
       invocationContext: this.invocationContext,
       triggerSource: this.triggerSource,
       initiatedBy: this.initiatedBy,
+      endpoint: this.endpoint,
     });
 
     await this.repository.save(entry);
@@ -320,6 +330,7 @@ export class TelemetryService {
       workflowContext,
       triggerSource: this.triggerSource,
       initiatedBy: this.initiatedBy,
+      endpoint: this.endpoint,
     });
 
     await this.repository.save(entry);
@@ -449,7 +460,7 @@ export class TelemetryService {
     limit: number,
     skipIds?: ReadonlySet<string>,
   ): Promise<TelemetryEntry[]> {
-    const entries = await this.repository.findUnflushed(limit);
+    const entries = await this.repository.findUnflushed(limit, this.endpoint);
     return skipIds?.size
       ? entries.filter((entry) => !skipIds.has(entry.id))
       : entries;
@@ -466,6 +477,14 @@ export class TelemetryService {
     config: TelemetrySingleFlushConfig,
   ): Promise<TelemetryFlushOutcome> {
     return this.#serialize(async () => {
+      // Never send an entry recorded for another endpoint; it stays spooled
+      // for a run that resolves that endpoint.
+      if (
+        this.endpoint !== undefined &&
+        !config.entry.isFlushableTo(this.endpoint)
+      ) {
+        return { result: { ok: true }, unmarkedIds: [], sentCount: 0 };
+      }
       try {
         const result = await config.sender.sendBatch(
           [config.entry],
@@ -513,7 +532,10 @@ export class TelemetryService {
     signal?: AbortSignal,
     skipIds?: ReadonlySet<string>,
   ): Promise<TelemetryFlushOutcome> {
-    const found = await this.repository.findUnflushed(batchSize);
+    const found = await this.repository.findUnflushed(
+      batchSize,
+      this.endpoint,
+    );
     // Entries the caller already delivered but could not mark are still on
     // disk. Re-sending them would count the same invocation twice.
     const entries = skipIds?.size

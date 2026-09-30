@@ -28,10 +28,11 @@ const PREFERENCES_FILE_NAME = "telemetry.yaml";
  * User-level telemetry preferences, persisted at
  * `<config>/telemetry.yaml` (XDG-aware).
  *
- * This is the persistent opt-out for the repo-less telemetry path: outside a
- * swamp repo there is no marker to carry `telemetryDisabled`, so this file is
- * the durable equivalent. `disabled` mirrors the marker's `telemetryDisabled`
- * polarity (default `false` = telemetry enabled).
+ * This is the user's persistent opt-out, set with
+ * `swamp config set telemetry.collection disabled`. It applies to every run,
+ * inside a swamp repo or not, and a repo marker cannot override it.
+ * `disabled` mirrors the marker's `telemetryDisabled` polarity (default
+ * `false` = telemetry enabled).
  */
 export interface TelemetryPreferences {
   readonly disabled: boolean;

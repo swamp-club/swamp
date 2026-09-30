@@ -28,6 +28,7 @@ import {
   getOutputModeFromArgs,
   getRepoDirFromArgs,
   type GlobalOptions,
+  hasExplicitRepoDir,
   resolveColorEnabled,
   resolveExtensionsDir,
   resolveRepoDir,
@@ -751,4 +752,21 @@ Deno.test("applyColorPolicy: an option value written with = is not the flag", ()
     true,
   );
   assertEquals(spy.calls, []);
+});
+
+Deno.test("hasExplicitRepoDir: true for --repo-dir in either form or SWAMP_REPO_DIR", () => {
+  withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
+    assertEquals(hasExplicitRepoDir(["model", "run"]), false);
+    assertEquals(hasExplicitRepoDir(["model", "--repo-dir", "/tmp/r"]), true);
+    assertEquals(hasExplicitRepoDir(["model", "--repo-dir=/tmp/r"]), true);
+    // A trailing flag with no value is not a repo dir (matches
+    // getRepoDirFromArgs, which falls back to the cwd).
+    assertEquals(hasExplicitRepoDir(["model", "--repo-dir"]), false);
+  });
+  withMockedEnv({ SWAMP_REPO_DIR: "/tmp/r" }, () => {
+    assertEquals(hasExplicitRepoDir(["model", "run"]), true);
+  });
+  withMockedEnv({ SWAMP_REPO_DIR: "" }, () => {
+    assertEquals(hasExplicitRepoDir(["model", "run"]), false);
+  });
 });
