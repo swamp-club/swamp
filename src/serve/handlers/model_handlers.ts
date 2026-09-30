@@ -52,6 +52,7 @@ import {
   modelOutputLogs,
   modelOutputSearch,
   type ModelOutputSearchDeps,
+  type ModelOutputSearchItem,
   modelSearch,
   type ModelSearchDeps,
   modelValidate,
@@ -119,11 +120,12 @@ import {
   clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
-  filterByAuthorization,
+  filterByResources,
   isAdminOnlyModelType,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
   rejectEditWithoutContent,
+  resourceDecider,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -134,6 +136,7 @@ import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
   authorizeReferenceAccess,
   authorizeResolved,
+  canonicalResources,
   modelAccessResource,
   resolveModelTarget,
   resolveOutputAccess,
@@ -193,9 +196,14 @@ async function resolveMethodRunTarget(
   );
   const methodName = payload.methodName;
   if (payload.typeArg && payload.definitionName) {
+    // A definition not created yet has no tags; its type is the one named.
     const fields: Record<string, unknown> = definition
       ? { ...modelAccessResource(definition).fields }
-      : {};
+      : {
+        name: payload.modelIdOrName,
+        modelType: normalizedTypeOrRaw(payload.typeArg),
+        tags: {},
+      };
     return {
       definition,
       resource: {
@@ -273,10 +281,17 @@ function authorizeMethodRun(
   ) return false;
   if (payload.typeArg) {
     const executionTarget = ModelType.create(payload.typeArg).normalized;
+    // A type carries no tags; every resource field is present so a
+    // conditional deny decides on it rather than failing closed.
     return authorizeOrReject(socket, requestId, principal, "run", {
       kind: "model",
       name: executionTarget,
-      fields: {},
+      fields: {
+        name: executionTarget,
+        modelType: executionTarget,
+        tags: {},
+        methodName: payload.methodName,
+      },
     }, ctx).allowed;
   }
   return true;
@@ -477,6 +492,7 @@ export async function handleModelMethodRun(
       kind: "method-run",
       resourceName: target.resource.name,
       resourceId: target.resourceId,
+      methodName: payload.methodName,
       buffer,
       controller: runController,
       startedAt,
@@ -666,6 +682,7 @@ export async function handleModelMethodRun(
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
       resourceName: target.resource.name,
       resourceId: target.resourceId,
+      methodName: payload.methodName,
       runKind: "method-run",
       startedAt: startedAt.toISOString(),
     });
@@ -723,17 +740,16 @@ export async function handleModelSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ name: string; type: string }>;
+      results?: Array<{ id: string; name: string; type: string }>;
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      const canonical = canonicalResources(ctx);
+      data.results = await filterByResources(
         data.results,
-        (item) => item.name,
-        (item) => ({ name: item.name, modelType: item.type }),
+        (item) => canonical.model(item.id, item.name, item.type),
         socket,
         principal,
         "read",
-        "model",
         ctx,
       );
     }
@@ -924,7 +940,12 @@ export async function handleModelCreate(
       !authorizeOrReject(socket, requestId, principal, "write", {
         kind: "model",
         name: payload.name ?? payload.typeArg,
-        fields: {},
+        // A model being created has no tags yet; its type is the one named.
+        fields: {
+          name: payload.name ?? payload.typeArg,
+          modelType: normalizedTypeOrRaw(payload.typeArg),
+          tags: {},
+        },
       }, ctx).allowed
     ) return;
   }
@@ -1432,17 +1453,13 @@ export async function handleModelOutputSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ modelName?: string; type: string }>;
+      results?: ModelOutputSearchItem[];
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      data.results = await filterOutputItems(
         data.results,
-        (item) => item.modelName,
-        (item) => ({ name: item.modelName, modelType: item.type }),
         socket,
         principal,
-        "read",
-        "model",
         ctx,
       );
     }
@@ -1693,17 +1710,13 @@ export async function handleModelMethodHistorySearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ modelName?: string; type: string }>;
+      results?: ModelOutputSearchItem[];
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      data.results = await filterOutputItems(
         data.results,
-        (item) => item.modelName,
-        (item) => ({ name: item.modelName, modelType: item.type }),
         socket,
         principal,
-        "read",
-        "model",
         ctx,
       );
     }
@@ -1732,21 +1745,22 @@ export async function handleModelValidate(
   principal: Principal | null,
   payload?: ModelValidatePayload,
 ): Promise<void> {
-  // Without a model this validates every model and authorizes "*"; how that
-  // form authorizes is swamp-club#2675. A named model is resolved first.
+  // Without a model this validates every model the caller may read, and only
+  // those (swamp-club#2675). A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let include:
+    | ((entry: DefinitionLookupResult) => boolean)
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!modelIdOrName) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "model",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
+      !authorizeAnyOrReject(socket, requestId, principal, "read", "model", ctx)
     ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (entry) => readable(modelAccessResource(entry, "model"));
   } else {
     const target = await resolveModelTarget(
       ctx.repoContext.definitionRepo,
@@ -1788,6 +1802,7 @@ export async function handleModelValidate(
         modelIdOrName: model?.idOrName,
         byId: model?.byId,
         expectedName: model?.expectedName,
+        include,
       }),
       {
         resolving: () => {},
@@ -1824,21 +1839,23 @@ export async function handleModelEvaluate(
   principal: Principal | null,
   payload?: ModelEvaluatePayload,
 ): Promise<void> {
-  // Without a model this validates every model and authorizes "*"; how that
-  // form authorizes is swamp-club#2675. A named model is resolved first.
+  // Without a model this evaluates every model — evaluation orders them all
+  // in one dependency graph — but saves and returns only those the caller
+  // may read (swamp-club#2675). A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let include:
+    | ((entry: DefinitionLookupResult) => boolean)
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!modelIdOrName) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "model",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
+      !authorizeAnyOrReject(socket, requestId, principal, "read", "model", ctx)
     ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (entry) => readable(modelAccessResource(entry, "model"));
   } else {
     const target = await resolveModelTarget(
       ctx.repoContext.definitionRepo,
@@ -1876,6 +1893,7 @@ export async function handleModelEvaluate(
         modelIdOrName: model?.idOrName,
         byId: model?.byId,
         expectedName: model?.expectedName,
+        include,
       }),
       {
         evaluating: () => {},
@@ -1893,14 +1911,36 @@ export async function handleModelEvaluate(
       return;
     }
 
+    const data = result ?? {};
+
     send(socket, {
       type: "model.evaluate",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
-    const message = sanitizeErrorForClient(error);
+    // Evaluating every model can fail on one the caller may not read, and
+    // the error may name it, so such a caller gets no detail.
+    const message = !model &&
+        !(await readsEveryModel(socket, principal, ctx))
+      ? "Evaluating every model failed"
+      : sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_evaluate_failed", message);
+  }
+}
+
+/** Whether the caller may read every model definition in the repository. */
+async function readsEveryModel(
+  socket: WebSocket,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): Promise<boolean> {
+  try {
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    const all = await ctx.repoContext.definitionRepo.findAllGlobal();
+    return all.every((entry) => readable(modelAccessResource(entry, "model")));
+  } catch {
+    return false;
   }
 }
 
@@ -1942,7 +1982,7 @@ export async function handleModelEdit(
       "write",
       current
         ? modelEditResource(current)
-        : { kind: "model", name: payload.modelIdOrName, fields: {} },
+        : unresolvedAccessResource("model", payload.modelIdOrName),
       ctx,
     ).allowed
   ) return;
@@ -2033,12 +2073,15 @@ export async function handleModelEdit(
 }
 
 function modelEditResource(target: ModelEditTarget): AccessResource {
-  const fields: Record<string, unknown> = {
-    modelType: target.modelType,
+  return {
+    kind: "model",
     name: target.name,
+    fields: {
+      modelType: target.modelType,
+      name: target.name,
+      tags: target.tags,
+    },
   };
-  if (Object.keys(target.tags).length > 0) fields.tags = target.tags;
-  return { kind: "model", name: target.name, fields };
 }
 
 export async function handleModelTypeDescribe(
@@ -2148,5 +2191,49 @@ export async function handleModelTypeSearch(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_type_search_failed", message);
+  }
+}
+
+/**
+ * Keeps the output or method-run items the caller may read: each is judged on
+ * every model owning its definition id, with the method it ran, so a
+ * methods-scoped or tag-conditioned grant applies to it (swamp-club#2675).
+ */
+function filterOutputItems(
+  items: ModelOutputSearchItem[],
+  socket: WebSocket,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): Promise<ModelOutputSearchItem[]> {
+  const canonical = canonicalResources(ctx);
+  return filterByResources(
+    items,
+    async (item) =>
+      (await canonical.modelOwners(
+        item.definitionId,
+        item.type,
+        item.modelName ?? item.definitionId,
+        "model",
+      )).map((owner) => ({
+        ...owner,
+        fields: { ...owner.fields, methodName: item.methodName },
+      })),
+    socket,
+    principal,
+    "read",
+    ctx,
+  );
+}
+
+/**
+ * The normalized model type for authorization, or the raw string when it
+ * does not parse — the operation then reports the invalid type itself,
+ * inside its own error handling.
+ */
+function normalizedTypeOrRaw(typeArg: string): string {
+  try {
+    return ModelType.create(typeArg).normalized;
+  } catch {
+    return typeArg;
   }
 }

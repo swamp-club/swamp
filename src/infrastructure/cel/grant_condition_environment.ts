@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Environment } from "cel-js";
-import type { PrincipalContext } from "../../domain/access/principal_context.ts";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
+import { CONDITION_FIELDS } from "../../domain/access/condition_fields.ts";
 import { registerArithmeticOverloads } from "./cel_evaluator.ts";
 
 export type { PrincipalContext } from "../../domain/access/principal_context.ts";
@@ -35,13 +35,6 @@ export interface GrantConditionValidationResult {
   valid: boolean;
   error?: string;
 }
-
-const RESOURCE_FIELDS: Record<ResourceKind, string[]> = {
-  workflow: ["name", "tags", "collective"],
-  model: ["name", "modelType", "tags", "collective", "methodName"],
-  data: ["name", "ns", "tags", "owner"],
-  access: ["name"],
-};
 
 interface ASTNode {
   op: string;
@@ -244,16 +237,8 @@ function createGrantConditionEnvironment(kind: ResourceKind): Environment {
   const env = new Environment({ unlistedVariablesAreDyn: false });
   registerArithmeticOverloads(env);
 
-  for (const field of RESOURCE_FIELDS[kind]) {
-    env.registerVariable(
-      field,
-      field === "tags" || field === "owner"
-        ? "map"
-        : field === "name" || field === "ns" || field === "modelType" ||
-            field === "collective" || field === "methodName"
-        ? "string"
-        : "dyn",
-    );
+  for (const field of CONDITION_FIELDS[kind]) {
+    env.registerVariable(field.name, field.type);
   }
 
   env.registerVariable("principal", "map");
@@ -332,32 +317,4 @@ export function validateGrantCondition(
   }
 
   return { valid: true };
-}
-
-const FIELD_ZERO_VALUES: Record<string, unknown> = {
-  tags: {},
-  owner: {},
-  name: "",
-  ns: "",
-  modelType: "",
-  collective: "",
-  methodName: "",
-};
-
-export function evaluateGrantCondition(
-  condition: string,
-  resourceKind: ResourceKind,
-  resourceFields: Record<string, unknown>,
-  principalContext: PrincipalContext,
-): boolean {
-  const env = createGrantConditionEnvironment(resourceKind);
-
-  const context: Record<string, unknown> = {};
-  for (const field of RESOURCE_FIELDS[resourceKind]) {
-    context[field] = resourceFields[field] ?? FIELD_ZERO_VALUES[field] ?? "";
-  }
-  context.principal = principalContext;
-
-  const result = env.evaluate(condition, context);
-  return result === true;
 }

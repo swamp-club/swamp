@@ -29,6 +29,7 @@ import {
   encodeContent,
 } from "../../domain/data/content_encoding.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -106,6 +107,24 @@ export interface DataGetInput {
   version?: number;
   includeContent: boolean;
   repoDir: string;
+  /**
+   * For a workflow-scoped read, the item the caller authorized, as
+   * {@link resolveWorkflowData} located it. The read then finds the workflow
+   * by this id and name only, reads exactly this run and version, and reports
+   * not-found if the item it lands on belongs to any other owner — so what is
+   * returned is what was authorized.
+   */
+  expectedOwner?: WorkflowDataPin;
+}
+
+/** The workflow-scoped item a caller authorized. */
+export interface WorkflowDataPin {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  modelType: string;
+  modelId: string;
+  version: number;
 }
 
 /** Minimal data item shape from model-scoped lookup. */
@@ -152,6 +171,8 @@ export interface WorkflowInfo {
 /** Minimal workflow run shape. */
 export interface WorkflowRunInfo {
   id: string;
+  /** The workflow the run belongs to; scopes its data lookup to that run. */
+  workflowId?: string;
   status?: string;
 }
 
@@ -172,6 +193,14 @@ export interface DataGetDeps {
     expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   findWorkflow: (idOrName: string) => Promise<WorkflowInfo | null>;
+  /**
+   * Looks a workflow up by exact id only — with `expectedName`, only a
+   * workflow with both. Required for a workflow-scoped read by id.
+   */
+  findWorkflowById?: (
+    id: string,
+    expectedName?: string,
+  ) => Promise<WorkflowInfo | null>;
   findWorkflowRun: (
     workflowId: string,
     runId?: string,
@@ -244,6 +273,8 @@ export function createDataGetDeps(
     findWorkflow: async (idOrName) =>
       await workflowRepo.findByName(idOrName) ??
         await workflowRepo.findById(createWorkflowId(idOrName)),
+    findWorkflowById: (id, expectedName) =>
+      findWorkflowById(workflowRepo, id, expectedName),
     findWorkflowRun: async (workflowId, runId) => {
       const wfId = createWorkflowId(workflowId);
       if (runId) {
@@ -257,6 +288,19 @@ export function createDataGetDeps(
     findDataByName: (modelType, modelId, name, version) =>
       dataRepo.findByName(modelType, modelId, name, version),
     findDataInWorkflowRun: async (run, dataNameArg, version) => {
+      if (run.workflowId) {
+        const fullRun = await runRepo.findById(
+          createWorkflowId(run.workflowId),
+          run.id as ReturnType<typeof runRepo.nextId>,
+        );
+        return fullRun
+          ? await workflowDataService.findByNameInWorkflowRun(
+            fullRun,
+            dataNameArg,
+            version,
+          )
+          : null;
+      }
       const allWorkflows = await workflowRepo.findAll();
       for (const wf of allWorkflows) {
         const fullRun = await runRepo.findById(
@@ -333,6 +377,98 @@ export async function* dataGet(
   );
 }
 
+/** A workflow-scoped item, located but not yet read. */
+export interface WorkflowDataLocation {
+  workflow: WorkflowInfo;
+  run: WorkflowRunInfo;
+  item: WorkflowDataItemInfo;
+}
+
+/** What {@link resolveWorkflowData} locates by. */
+export interface WorkflowDataQuery {
+  /** The workflow's id, looked up by id only (with `workflowName`, both). */
+  workflowId: string;
+  workflowName?: string;
+  runId?: string;
+  dataName: string;
+  version?: number;
+}
+
+/**
+ * Locates the item a workflow-scoped read would return — its workflow, run
+ * and owner — without reading its content, so a caller can authorize the
+ * owner first and then read exactly this item with
+ * {@link DataGetInput.expectedOwner}.
+ */
+export async function resolveWorkflowData(
+  deps: DataGetDeps,
+  query: WorkflowDataQuery,
+): Promise<
+  | { kind: "found"; location: WorkflowDataLocation }
+  | { kind: "error"; error: SwampError }
+> {
+  if (!deps.findWorkflowById) {
+    throw new Error("resolveWorkflowData requires findWorkflowById");
+  }
+  const workflow = await deps.findWorkflowById(
+    query.workflowId,
+    query.workflowName,
+  );
+  if (!workflow) {
+    return {
+      kind: "error",
+      error: notFound("Workflow", query.workflowName ?? query.workflowId),
+    };
+  }
+  return await locateInWorkflow(deps, workflow, query);
+}
+
+async function locateInWorkflow(
+  deps: DataGetDeps,
+  workflow: WorkflowInfo,
+  query: { runId?: string; dataName: string; version?: number },
+): Promise<
+  | { kind: "found"; location: WorkflowDataLocation }
+  | { kind: "error"; error: SwampError }
+> {
+  const found = await deps.findWorkflowRun(workflow.id, query.runId);
+  if (!found) {
+    const msg = query.runId
+      ? `Run "${query.runId}" not found for workflow: ${workflow.name}`
+      : `No runs found for workflow: ${workflow.name}`;
+    return { kind: "error", error: notFound("Workflow run", msg) };
+  }
+  const run: WorkflowRunInfo = { ...found, workflowId: workflow.id };
+
+  const { dataName, version } = query;
+  const item = await deps.findDataInWorkflowRun(run, dataName, version);
+  if (!item) {
+    const versionInfo = version ? ` (version ${version})` : "";
+    const activeStatuses = new Set(["running", "pending", "suspended"]);
+    if (run.status && activeStatuses.has(run.status)) {
+      return {
+        kind: "error",
+        error: {
+          code: "data_pending",
+          message:
+            `Data "${dataName}" not found in workflow "${workflow.name}"${versionInfo}. ` +
+            `The latest run (${run.id}) is ${run.status}. ` +
+            `If the producing step has completed, try the full instance name (e.g. '${dataName}-main'). ` +
+            `Check progress with 'swamp workflow history ${workflow.name}'.`,
+        },
+      };
+    }
+    return {
+      kind: "error",
+      error: notFound(
+        "Data",
+        `"${dataName}" in workflow "${workflow.name}"${versionInfo}`,
+      ),
+    };
+  }
+  return { kind: "found", location: { workflow, run, item } };
+}
+
 async function* workflowScopedGet(
   deps: DataGetDeps,
   input: DataGetInput,
@@ -363,48 +499,43 @@ async function* workflowScopedGet(
     return;
   }
 
-  const workflow = await deps.findWorkflow(workflowName);
-  if (!workflow) {
-    yield { kind: "error", error: notFound("Workflow", workflowName) };
-    return;
-  }
-
-  const run = await deps.findWorkflowRun(workflow.id, input.runId);
-  if (!run) {
-    const msg = input.runId
-      ? `Run "${input.runId}" not found for workflow: ${workflow.name}`
-      : `No runs found for workflow: ${workflow.name}`;
-    yield { kind: "error", error: notFound("Workflow run", msg) };
-    return;
-  }
-
-  const item = await deps.findDataInWorkflowRun(run, actualDataName, version);
-  if (!item) {
-    const versionInfo = version ? ` (version ${version})` : "";
-    const activeStatuses = new Set(["running", "pending", "suspended"]);
-    if (run.status && activeStatuses.has(run.status)) {
-      yield {
-        kind: "error",
-        error: {
-          code: "data_pending",
-          message:
-            `Data "${actualDataName}" not found in workflow "${workflow.name}"${versionInfo}. ` +
-            `The latest run (${run.id}) is ${run.status}. ` +
-            `If the producing step has completed, try the full instance name (e.g. '${actualDataName}-main'). ` +
-            `Check progress with 'swamp workflow history ${workflow.name}'.`,
-        },
+  const pin = input.expectedOwner;
+  let located;
+  if (pin) {
+    located = await resolveWorkflowData(deps, {
+      workflowId: pin.workflowId,
+      workflowName: pin.workflowName,
+      runId: pin.runId,
+      dataName: actualDataName,
+      version: pin.version,
+    });
+    if (
+      located.kind === "found" &&
+      !matchesPin(located.location, pin)
+    ) {
+      located = {
+        kind: "error" as const,
+        error: notFound(
+          "Data",
+          `"${actualDataName}" in workflow run ${pin.runId}`,
+        ),
       };
-      return;
     }
-    yield {
-      kind: "error",
-      error: notFound(
-        "Data",
-        `"${actualDataName}" in workflow "${workflow.name}"${versionInfo}`,
-      ),
-    };
+  } else {
+    const workflow = await deps.findWorkflow(workflowName);
+    located = workflow
+      ? await locateInWorkflow(deps, workflow, {
+        runId: input.runId,
+        dataName: actualDataName,
+        version,
+      })
+      : { kind: "error" as const, error: notFound("Workflow", workflowName) };
+  }
+  if (located.kind === "error") {
+    yield { kind: "error", error: located.error };
     return;
   }
+  const { item } = located.location;
 
   const output: DataGetData = {
     id: item.data.id,
@@ -537,4 +668,16 @@ async function* modelScopedGet(
   }
 
   yield { kind: "completed", data: output };
+}
+
+/** Whether a located item is exactly the one a caller authorized. */
+function matchesPin(
+  location: WorkflowDataLocation,
+  pin: WorkflowDataPin,
+): boolean {
+  return location.workflow.id === pin.workflowId &&
+    location.run.id === pin.runId &&
+    location.item.modelType.normalized === pin.modelType &&
+    location.item.modelId === pin.modelId &&
+    location.item.data.version === pin.version;
 }

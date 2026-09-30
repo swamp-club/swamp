@@ -84,6 +84,13 @@ export interface ModelEvaluateInput {
    * unique, so only a resource with this name and the id is accepted.
    */
   expectedName?: string;
+  /**
+   * Without a model, saves and reports only the models this accepts. Every
+   * model is still evaluated, since evaluation orders them all in one
+   * dependency graph, but the evaluated definitions of the others are
+   * neither written nor returned.
+   */
+  include?: (entry: { definition: Definition; type: ModelType }) => boolean;
 }
 
 /** Type guard to check if data is ModelEvaluateAllData. */
@@ -212,9 +219,13 @@ async function saveWithoutSecrets(
 /** Evaluates all model definitions. */
 async function* evaluateAll(
   deps: ModelEvaluateDeps,
+  include: (entry: { definition: Definition; type: ModelType }) => boolean =
+    () => true,
 ): AsyncIterable<ModelEvaluateEvent> {
   const sensitiveValues = new RunSensitiveValues();
-  const results = await deps.evaluateAllDefinitions(sensitiveValues);
+  const results = (await deps.evaluateAllDefinitions(sensitiveValues)).filter(
+    include,
+  );
   const items: ModelEvaluateItemData[] = [];
 
   for (const result of results) {
@@ -292,7 +303,7 @@ export async function* modelEvaluate(
   yield { kind: "evaluating" };
 
   if (!input.modelIdOrName) {
-    yield* evaluateAll(deps);
+    yield* evaluateAll(deps, input.include);
   } else {
     yield* evaluateSingle(
       deps,

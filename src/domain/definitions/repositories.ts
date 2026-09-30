@@ -96,6 +96,16 @@ export interface DefinitionRepository {
   ): Promise<{ definition: Definition; type: ModelType }[]>;
 
   /**
+   * Every definition wherever it is stored — every type's directory,
+   * auto-definitions included — primary definitions first, in one scan. For
+   * a caller that needs {@link findAllByIdGlobal} for many ids at once: it
+   * groups this by id instead of scanning once per id. Optional.
+   */
+  findAllIncludingAutoGlobal?(): Promise<
+    { definition: Definition; type: ModelType }[]
+  >;
+
+  /**
    * Finds a definition by id from where the repository last saw it, without
    * scanning, with the type the file declares. Optional; null when there is
    * no such hint or the file no longer declares the id.

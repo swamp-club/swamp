@@ -122,6 +122,11 @@ export interface DataQueryOptions {
    * not.
    */
   includeContentPath?: boolean;
+  /**
+   * Keeps only the matched records this accepts, before any projection, so
+   * a projected result never carries a record the caller may not read.
+   */
+  include?: (record: DataRecord) => Promise<boolean>;
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
@@ -415,7 +420,37 @@ export class DataQueryService {
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
     await this.ensurePopulated();
-    const results = this.executeQuery(predicate, options);
+    let results: DataRecord[] | unknown[];
+    if (options?.include) {
+      // Apply the limit to accepted records, so hidden records never shorten
+      // a page: match in growing batches until the limit is met or the
+      // matches run out, never the whole catalog when a limit is set.
+      const include = options.include;
+      const limit = options.limit ?? Infinity;
+      let batch = Number.isFinite(limit) ? limit * 4 : undefined;
+      while (true) {
+        const matched = this.executeMatch(predicate, {
+          ...options,
+          limit: batch,
+        });
+        const accepted: DataRecord[] = [];
+        for (const record of matched.records) {
+          if (accepted.length >= limit) break;
+          if (await include(record)) accepted.push(record);
+        }
+        // Stale rows dropped during hydration can shorten a batch, so only
+        // stopping short of the batch limit means the matches ran out.
+        if (
+          accepted.length >= limit || batch === undefined || !matched.hitLimit
+        ) {
+          results = this.project(accepted, matched.selectParsed);
+          break;
+        }
+        batch *= 4;
+      }
+    } else {
+      results = this.executeQuery(predicate, options);
+    }
 
     // Hydrate foreign namespace records whose content isn't available locally.
     if (this.foreignContentFetcher && Array.isArray(results)) {
@@ -513,6 +548,23 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
+    const matched = this.executeMatch(predicate, options);
+    return this.project(matched.records, matched.selectParsed);
+  }
+
+  /**
+   * Matches and hydrates records for a predicate, and parses the select
+   * expression — loading whatever it needs — without applying it.
+   */
+  private executeMatch(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): {
+    records: DataRecord[];
+    selectParsed?: (ctx: Record<string, unknown>) => unknown;
+    /** Whether matching stopped at the limit, so more rows may match. */
+    hitLimit: boolean;
+  } {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
     const limit = options?.limit ?? Infinity;
@@ -590,6 +642,7 @@ export class DataQueryService {
     // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
     // via a prototype-chain overlay — the record itself is not mutated.
     const results: DataRecord[] = [];
+    let hitLimit = false;
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
     for (const row of rows) {
@@ -641,7 +694,10 @@ export class DataQueryService {
           // (e.g. `<read error> || true`) resurfaces here.
           results.push(needsHydration ? record : load());
           if (needsHydration) matchedRows.push(row);
-          if (results.length >= limit) break;
+          if (results.length >= limit) {
+            hitLimit = true;
+            break;
+          }
         }
       } catch (error) {
         // Required body reads must fail the query, not skip the row.
@@ -691,6 +747,18 @@ export class DataQueryService {
       results.length = writeIndex;
     }
 
+    return { records: results, selectParsed, hitLimit };
+  }
+
+  /**
+   * Applies a select projection to matched records.
+   * Per-record errors (e.g. missing attribute keys) produce null instead of
+   * failing the entire query, so partial results are still useful.
+   */
+  private project(
+    results: DataRecord[],
+    selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined,
+  ): DataRecord[] | unknown[] {
     // Apply projection if select expression provided.
     // Per-record errors (e.g. missing attribute keys) produce null instead of
     // failing the entire query, so partial results are still useful.

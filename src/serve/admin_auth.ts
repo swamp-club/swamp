@@ -215,7 +215,7 @@ export async function authenticateAdmin(
 
 /**
  * Read decisions for one authenticated request, with the rules
- * `filterByAuthorization` applies over WebSocket: an explicit allow or deny
+ * `filterByResources` applies over WebSocket: an explicit allow or deny
  * wins, and a resource no grant covers is readable only by an admin. Each call
  * consults the current policy snapshot, so a long-lived stream follows grant
  * changes.

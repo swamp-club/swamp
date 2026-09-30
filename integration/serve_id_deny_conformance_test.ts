@@ -67,7 +67,9 @@ import {
   saveModel,
   saveOutput,
   saveRun,
+  saveRunWithData,
   saveWorkflow,
+  saveWorkflowData,
   sendRequest,
   type ServeRepo,
   withServeRepo,
@@ -84,8 +86,15 @@ const IDENTIFIER_FIELD =
  * it authorizes. Remove an entry when its issue lands; never add one without
  * an owning issue.
  */
-const EXEMPT: Record<string, string> = {
-  "workflow.schema": "swamp-club#2675 (authorizes *)",
+const EXEMPT: Record<string, string> = {};
+
+/**
+ * Request types whose identifier field names nothing the handler reads, each
+ * with why. They are checked on the kind, not on a resource.
+ */
+const IGNORES_IDENTIFIER: Record<string, string> = {
+  "workflow.schema":
+    "returns the workflow schema; workflowIdOrName is accepted but unused",
 };
 
 const ACTIONS: Grant["actions"] = ["read", "write", "run", "approve"];
@@ -116,7 +125,27 @@ interface Fixtures {
   devGated: Workflow;
 }
 
-async function withFixtures(fn: (f: Fixtures) => Promise<void>) {
+/**
+ * The same policy as GRANTS, but denying on tags rather than names: every
+ * prod fixture carries env: prod, so a request that authorizes a resource
+ * without its full fields is caught (swamp-club#2675).
+ */
+const TAG_GRANTS: Grant[] = (["model", "data", "workflow"] as const).flatMap((
+  kind,
+) => [
+  grant({ actions: ACTIONS, resource: { kind, pattern: "*" } }),
+  grant({
+    effect: "deny",
+    actions: ACTIONS,
+    resource: { kind, pattern: "*" },
+    condition: 'tags.env == "prod"',
+  }),
+]);
+
+async function withFixtures(
+  fn: (f: Fixtures) => Promise<void>,
+  grants: Grant[] = GRANTS,
+) {
   await withServeRepo(async (repo) => {
     const prodModel = await saveModel(repo, "prod-db", { env: "prod" });
     const devModel = await saveModel(repo, "dev-db");
@@ -124,13 +153,17 @@ async function withFixtures(fn: (f: Fixtures) => Promise<void>) {
     await saveData(repo, devModel, "state");
     await fn({
       repo,
-      ctx: createServeCtx(repo, GRANTS),
+      ctx: createServeCtx(repo, grants),
       admin: createServeCtx(repo),
       prodModel,
       devModel,
-      prodWorkflow: await saveWorkflow(repo, "prod-flow", prodModel),
+      prodWorkflow: await saveWorkflow(repo, "prod-flow", prodModel, {
+        env: "prod",
+      }),
       devWorkflow: await saveWorkflow(repo, "dev-flow", devModel),
-      prodGated: await saveGatedWorkflow(repo, "prod-gated", "gate"),
+      prodGated: await saveGatedWorkflow(repo, "prod-gated", "gate", {
+        env: "prod",
+      }),
       devGated: await saveGatedWorkflow(repo, "dev-gated", "gate"),
     });
   });
@@ -451,7 +484,7 @@ const CASES: Record<string, Case> = {
       const prod = await f.repo.repoContext.workflowRepo.findByName(
         "prod-flow",
       );
-      assertEquals(prod?.tags, {});
+      assertEquals(prod?.tags, f.prodWorkflow.tags);
     },
   ),
   "workflow.trigger.set": simple(
@@ -558,6 +591,7 @@ Deno.test("serve id-deny conformance: every request naming a resource has a case
       fields.some((field) => IDENTIFIER_FIELD.test(field))
     )
     .map(([type]) => type)
+    .filter((type) => !IGNORES_IDENTIFIER[type])
     .sort();
   const uncovered = named.filter((type) => !CASES[type] && !EXEMPT[type]);
   assertEquals(
@@ -568,6 +602,14 @@ Deno.test("serve id-deny conformance: every request naming a resource has a case
   );
   const stale = [...Object.keys(CASES), ...Object.keys(EXEMPT)]
     .filter((type) => !named.includes(type));
+  const knownTypes = [...serverRequestPayloadFields()].map(([type]) => type);
+  assertEquals(
+    Object.keys(IGNORES_IDENTIFIER).filter((type) =>
+      !knownTypes.includes(type)
+    ),
+    [],
+    "IGNORES_IDENTIFIER must name real request types",
+  );
   assertEquals(stale, [], "CASES and EXEMPT must name real request types");
   const both = Object.keys(CASES).filter((type) => EXEMPT[type]);
   assertEquals(both, [], "A covered type must not also be exempt");
@@ -587,6 +629,18 @@ for (const [type, testCase] of Object.entries(CASES)) {
     await withFixtures(async (f) => {
       assertAllowed(await testCase.send(f, "dev"), type);
     });
+  });
+
+  Deno.test(`serve id-deny conformance: ${type} is refused by a tags deny on the resource, and an untagged one is not`, async () => {
+    await withFixtures(async (f) => {
+      const frames = await testCase.send(f, "prod");
+      if (testCase.refused) testCase.refused(frames);
+      else assertDenied(frames, testCase.deniedAs);
+      await testCase.unchanged?.(f);
+    }, TAG_GRANTS);
+    await withFixtures(async (f) => {
+      assertAllowed(await testCase.send(f, "dev"), type);
+    }, TAG_GRANTS);
   });
 }
 
@@ -707,6 +761,7 @@ function registerRun(
     kind: "method-run" | "workflow-run";
     resourceName: string;
     resourceId?: string;
+    methodName?: string;
   },
 ): { runId: string; controller: AbortController } {
   const runId = crypto.randomUUID();
@@ -860,11 +915,12 @@ Deno.test("serve id-deny conformance: a run's cancel fails, rather than proceedi
   });
 });
 
-Deno.test("serve id-deny conformance: an empty name is authorized as the every-resource form it runs as", async () => {
+Deno.test("serve id-deny conformance: an empty name runs the every-resource form, over only what the caller may read", async () => {
   await withFixtures(async (f) => {
     // libswamp treats an empty name as absent — validate or evaluate
-    // everything — so it must be authorized as that form, never as a
-    // resource named "".
+    // everything — so it is never authorized as a resource named "". It
+    // runs over every resource the caller may read, and only those
+    // (swamp-club#2675): dev-* grants see dev-db and dev-flow, never prod.
     const ctx = createServeCtx(f.repo, [
       grant({
         actions: ACTIONS,
@@ -876,22 +932,41 @@ Deno.test("serve id-deny conformance: an empty name is authorized as the every-r
       }),
     ]);
     for (
-      const [type, field, kind] of [
-        ["model.validate", "modelIdOrName", "model"],
-        ["model.evaluate", "modelIdOrName", "model"],
-        ["workflow.validate", "workflowIdOrName", "workflow"],
-        ["workflow.evaluate", "workflowIdOrName", "workflow"],
+      const [type, field, visible] of [
+        ["model.validate", "modelIdOrName", "dev-db"],
+        ["model.evaluate", "modelIdOrName", "dev-db"],
+        ["workflow.validate", "workflowIdOrName", "dev-flow"],
+        ["workflow.evaluate", "workflowIdOrName", "dev-flow"],
       ] as const
     ) {
       for (const payload of [{ [field]: "" }, {}]) {
         const frames = await sendRequest(ctx, request(type, payload));
-        const error = errorFrame(frames);
-        assertEquals(error?.error?.code, "unauthorized", type);
-        assert(
-          error!.error!.message.endsWith(`${kind}:*`),
-          `${type} ${JSON.stringify(payload)}: ${error!.error!.message}`,
-        );
+        const label = `${type} ${JSON.stringify(payload)}`;
+        assertEquals(errorFrame(frames), undefined, label);
+        const reply = JSON.stringify(frames.find((fr) => fr.type === type));
+        assert(reply.includes(visible), `${label}: ${reply}`);
+        assert(!reply.includes("prod-"), `${label}: ${reply}`);
       }
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: validate and evaluate everything are refused without any read grant", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, [
+      grant({ actions: ACTIONS, resource: { kind: "data", pattern: "*" } }),
+    ]);
+    for (
+      const [type, kind] of [
+        ["model.validate", "model"],
+        ["model.evaluate", "model"],
+        ["workflow.validate", "workflow"],
+        ["workflow.evaluate", "workflow"],
+      ] as const
+    ) {
+      const error = errorFrame(await sendRequest(ctx, request(type, {})));
+      assertEquals(error?.error?.code, "unauthorized", type);
+      assert(error!.error!.message.includes(kind), error!.error!.message);
     }
   });
 });
@@ -902,15 +977,16 @@ Deno.test("serve id-deny conformance: an empty data model name takes the every-m
       grant({ actions: ACTIONS, resource: { kind: "data", pattern: "dev-*" } }),
     ]);
 
-    // data.get: authorized as "*", never as a model named "".
+    // data.get: never authorized as a model named "". With a read grant for
+    // the kind it reaches libswamp, which reports the missing name.
     const got = errorFrame(
       await sendRequest(
         ctx,
         request("data.get", { modelIdOrName: "", dataName: "state" }),
       ),
     );
-    assertEquals(got?.error?.code, "unauthorized");
-    assert(got!.error!.message.endsWith("data:*"), got!.error!.message);
+    assertEquals(got?.error?.code, "data_get_failed");
+    assertStringIncludes(got!.error!.message, "model name or --workflow");
 
     // data.list: takes the any-grant path whose results are filtered per
     // item, not a named check on "".
@@ -1370,5 +1446,248 @@ Deno.test("serve id-deny conformance: an output whose model's type is not regist
       code: "model_output_get_failed",
       message: `Output or model not found: ${prefix}`,
     });
+  });
+});
+
+// --- Workflow-scoped data reads (swamp-club#2603) ---
+
+/** A workflow whose run recorded both models' data, and that run. */
+async function mixedRun(f: Fixtures) {
+  const prodState = await saveData(f.repo, f.prodModel, "prod-state");
+  const devState = await saveData(f.repo, f.devModel, "dev-state");
+  const mix = await saveWorkflow(f.repo, "mix-flow", f.devModel);
+  const run = await saveRunWithData(f.repo, mix, [prodState, devState]);
+  return { mix, run };
+}
+
+Deno.test("serve id-deny conformance: workflow-scoped data.get is refused on the owner of the item it returns", async () => {
+  await withFixtures(async (f) => {
+    const { mix, run } = await mixedRun(f);
+    for (
+      const scope of [
+        { workflowName: "mix-flow" },
+        { workflowName: mix.id },
+        { workflowName: "mix-flow", runId: run.id },
+      ]
+    ) {
+      assertDenied(
+        await sendRequest(
+          f.ctx,
+          request("data.get", { ...scope, dataName: "prod-state" }),
+        ),
+        "data:prod-db",
+      );
+      assertAllowed(
+        await sendRequest(
+          f.ctx,
+          request("data.get", { ...scope, dataName: "dev-state" }),
+        ),
+        "data.get",
+      );
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: workflow-scoped data.get honours grants scoped to named resources", async () => {
+  await withFixtures(async (f) => {
+    await mixedRun(f);
+    const ctx = createServeCtx(f.repo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "mix-flow" },
+      }),
+      grant({
+        actions: ["read"],
+        resource: { kind: "data", pattern: "dev-db" },
+      }),
+    ]);
+    assertAllowed(
+      await sendRequest(
+        ctx,
+        request("data.get", {
+          workflowName: "mix-flow",
+          dataName: "dev-state",
+        }),
+      ),
+      "data.get",
+    );
+    assertDenied(
+      await sendRequest(
+        ctx,
+        request("data.get", {
+          workflowName: "mix-flow",
+          dataName: "prod-state",
+        }),
+      ),
+      "data:prod-db",
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: workflow-scoped data reads need read on the workflow before any run is looked up", async () => {
+  await withFixtures(async (f) => {
+    const { run } = await mixedRun(f);
+    const ctx = createServeCtx(f.repo, [
+      grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
+    ]);
+    for (
+      const [type, payload] of [
+        ["data.get", { workflowName: "mix-flow", dataName: "dev-state" }],
+        ["data.get", {
+          workflowName: "mix-flow",
+          runId: "nope",
+          dataName: "x",
+        }],
+        ["data.list", { workflowName: "mix-flow" }],
+      ] as const
+    ) {
+      const frames = await sendRequest(ctx, request(type, payload));
+      assertDenied(frames, "workflow:mix-flow");
+      assert(!JSON.stringify(frames).includes(run.id), type);
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: workflow-scope data is named, filtered and refused as its workflow", async () => {
+  await withFixtures(async (f) => {
+    const summary = await saveWorkflowData(f.repo, f.prodWorkflow, "summary");
+    await saveRunWithData(f.repo, f.prodWorkflow, [], [summary]);
+    const readAll = grant({
+      actions: ["read"],
+      resource: { kind: "workflow", pattern: "*" },
+    });
+    const denyProdData = grant({
+      effect: "deny",
+      actions: ["read"],
+      resource: { kind: "data", pattern: "prod-*" },
+    });
+    const dataAll = grant({
+      actions: ["read"],
+      resource: { kind: "data", pattern: "*" },
+    });
+
+    const open = createServeCtx(f.repo, [readAll, dataAll]);
+    const got = await sendRequest(
+      open,
+      request("data.get", { workflowName: "prod-flow", dataName: "summary" }),
+    );
+    assertAllowed(got, "data.get");
+    const reply = got.find((fr) => fr.type === "data.get") as {
+      payload?: { data?: { modelName?: string } };
+    };
+    assertEquals(reply.payload?.data?.modelName, "prod-flow");
+
+    const denied = createServeCtx(f.repo, [readAll, dataAll, denyProdData]);
+    assertDenied(
+      await sendRequest(
+        denied,
+        request("data.get", { workflowName: "prod-flow", dataName: "summary" }),
+      ),
+      "data:prod-flow",
+    );
+    const listed = JSON.stringify(
+      await sendRequest(
+        denied,
+        request("data.list", { workflowName: "prod-flow" }),
+      ),
+    );
+    assert(!listed.includes('"summary"'), listed);
+  });
+});
+
+Deno.test("serve id-deny conformance: a read by UUID is audited under the name it resolved to", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, GRANTS);
+    const audit: AuditEvent[] = [];
+    (ctx as { auditEmitter?: unknown }).auditEmitter = {
+      emit: (event: AuditEvent) => audit.push(event),
+    };
+    await sendRequest(
+      ctx,
+      request("data.get", { modelIdOrName: f.devModel.id, dataName: "state" }),
+    );
+    await sendRequest(
+      ctx,
+      request("model.get", { modelIdOrName: f.devModel.id }),
+    );
+    const responses = audit.filter((event) => event.stage === "response");
+    assertEquals(
+      responses.map((event) => [event.action, event.resourceName]),
+      [["data.get", "dev-db"], ["model.get", "dev-db"]],
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: cancelling a method run is judged with its method, as the run was", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, [
+      ...(["model", "data", "workflow"] as const).map((kind) =>
+        grant({ actions: ACTIONS, resource: { kind, pattern: "*" } })
+      ),
+      grant({
+        effect: "deny",
+        actions: ["run"],
+        resource: { kind: "model", pattern: "*" },
+        condition: 'methodName == "noop"',
+      }),
+    ], { detached: true });
+    const run = (methodName: string) =>
+      registerRun(ctx, {
+        kind: "method-run",
+        resourceName: f.devModel.name,
+        resourceId: f.devModel.id,
+        methodName,
+      });
+
+    const denied = run("noop");
+    await sendRequest(ctx, { type: "cancel", id: denied.runId }, undefined, {
+      awaitRuns: false,
+    });
+    assertEquals(denied.controller.signal.aborted, false);
+
+    const allowed = run("sync");
+    await sendRequest(ctx, { type: "cancel", id: allowed.runId }, undefined, {
+      awaitRuns: false,
+    });
+    await waitFor(
+      () => allowed.controller.signal.aborted,
+      "the sync run to be cancelled",
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: a run attach is audited under its run id, not the model it authorized", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, GRANTS, { detached: true });
+    const audit: AuditEvent[] = [];
+    (ctx as { auditEmitter?: unknown }).auditEmitter = {
+      emit: (event: AuditEvent) => audit.push(event),
+    };
+    const { runId } = registerRun(ctx, {
+      kind: "method-run",
+      resourceName: f.devModel.name,
+      resourceId: f.devModel.id,
+    });
+
+    await sendRequest(ctx, request("run.attach", { runId }), undefined, {
+      awaitRuns: false,
+    });
+
+    const attach = audit.find((event) =>
+      event.action === "run.attach" && event.stage === "response"
+    );
+    assertEquals(attach?.resourceName, runId);
+  });
+});
+
+Deno.test("serve id-deny conformance: model.create with a type that does not parse gets an error reply", async () => {
+  await withFixtures(async (f) => {
+    const frames = await sendRequest(
+      f.ctx,
+      request("model.create", { typeArg: "", name: "new-model" }),
+    );
+    const error = errorFrame(frames);
+    assert(error, `an error frame: ${JSON.stringify(frames)}`);
+    assertNotEquals(error.error?.code, "unauthorized");
   });
 });

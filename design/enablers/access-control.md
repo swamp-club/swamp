@@ -218,7 +218,7 @@ type. A grant on `model:@xero/segment/*` matches any instance whose type is
 under `@xero/segment/`, such as `segment-test-audiences` with type
 `@xero/segment/audience`. The name is checked first. If it does not match, the
 type from the model's definition is checked as a fallback. This holds on every
-evaluation path: `decide()`, `explain()`, and `filterByAuthorization` for
+evaluation path: `decide()`, `explain()`, and `filterByResources` for
 collection operations.
 
 Implementation: `src/domain/access/resource_selector.ts`,
@@ -289,9 +289,30 @@ check (swamp-club#2673):
   (swamp-club#2739). The other five return output or run metadata or the run
   log file and need only the `model` or `workflow` read.
 
-Direct type execution (`model.method.run` with a type and a definition name),
-`*` resources, and vaults authorize differently today; swamp-club#2672, #2675
-and #2676 track them.
+`data.get` and `data.list` scoped to a workflow (`workflowName`, optionally
+`runId`) read a run's data, which reveals the run and its steps, so they need
+`read` on the workflow — resolved as above — before any run is looked up: a
+missing run, a pending run or a run id reaches only a caller who may read that
+workflow's history (swamp-club#2603). `data.get` then authorizes `data` read on
+every owner of the item it will return and reads exactly that item: the
+workflow by id and name, the run, the owner and the version it authorized
+(`resolveWorkflowData` and `expectedOwner` in libswamp). Data a workflow owns
+itself, such as workflow-scope report output, is named by its workflow — in
+`data.get`, `data.list` and `data.search` alike — and authorized as `data` on
+the workflow's name and tags.
+
+The response audit event of a request authorized this way records the name the
+request resolved to, not the id the client sent (a request by a model's UUID is
+audited under the model's name); a string that matched nothing is recorded as
+sent. A workflow-scoped `data.get` is audited under the names of the item's
+owners, joined with ", " when there are several. The resolved name replaces the
+sent identifier only when the event audits the same kind of resource: a
+`run.attach`, audited as the run, keeps the run id. Denials already carry the
+resolved resource.
+
+Direct type execution (`model.method.run` with a type and a definition name)
+and the name vaults are authorized under authorize differently today;
+swamp-club#2672 and #2676 track them.
 
 Implementation: `src/serve/handlers/resource_resolution.ts`. Guards:
 `integration/serve_id_deny_conformance_test.ts`, which covers every request
@@ -389,6 +410,29 @@ resource kind:
 Every kind can also use `principal.sub`, `principal.groups` and
 `principal.collectives`.
 
+The same variable list (`src/domain/access/condition_fields.ts`) serves grant
+validation and the runtime evaluator. `methodName` is a request field: only
+method requests (a method run, its cancel and attach, output and method-run
+items) carry it, and a request without one evaluates it as `""`, so a condition
+on it simply does not match; a grant's `methods` list is matched the same way
+as before. `collective` and `owner` are declared but serve does not supply them
+yet: a deny that references them refuses every request of its kind, an allow
+never matches, and loading the policy logs a warning naming each such grant.
+
+**Missing fields fail closed** (swamp-club#2675). Serve authorizes every
+resource with all of its resource fields — `tags` is `{}` and `ns` is `""` when
+the resource has none, and `name` is always the resource name. A condition that
+references a resource field the resource does not carry cannot be evaluated: a
+deny that needs it refuses, and an allow that needs it does not match. The check
+is structural — the fields a condition references are read from its parsed
+expression — never inferred from an error message. A condition that reads a tag
+the resource does not have (`tags.env` on a resource with no `env` tag) is a
+different case: the resource carries its tags, so the condition decides nothing
+and other grants decide, as described above; guard such conditions with `in`.
+A check on a resource kind as a whole (`kindResource`: type and schema
+endpoints, extensions, datastores) touches no resource, so a condition on
+resource fields decides nothing there either.
+
 Each request has an **aggregate condition budget** of 100 CEL evaluations. If it
 runs out, the request is denied whatever grants remain.
 
@@ -427,23 +471,58 @@ operations (`model.search`, `workflow.search`, `data.search`, `data.query`, and
 their history, output and approval variants) return many results and cannot
 name one up front.
 
-These handlers run the query, then pass each item through `decide()` with the
-item's resource name. With `model:@acme/*`, `model search` shows only matching
-models. With `model:*` it shows everything. With no `read` grant for the kind,
-the result is empty.
+These handlers run the query, then keep only the items the caller may read.
+Each item is judged on the resources that own it now, looked up by id rather
+than by the name recorded when it was written, with every resource field
+present (`CanonicalResources`): a model item on its definition, an output or
+method run on every model declaring its model id (a copy shares its outputs and
+data) together with the method it ran, a data item on every owning model — or,
+for workflow-scope data, its workflow — and a run or approval on its workflow.
+An item with several owners is kept only when all of them are allowed. With
+`model:@acme/*`, `model search` shows only matching models. With `model:*` it
+shows everything. With no `read` grant for the kind, the request is refused.
+
+A `*` resource name never matches a name-scoped deny, so no request over many
+resources is authorized as `*` (swamp-club#2675):
+
+- `model.validate`, `workflow.validate` and `workflow.evaluate` without a name
+  run only over the models or workflows the caller may read. A workflow file
+  that fails to parse is judged on the name it declares with no tags, since its
+  tags cannot be read, so a tag-conditioned deny does not hide it. `model.evaluate`
+  without a name evaluates every model, since evaluation orders them all in one
+  dependency graph, but saves and returns only the readable ones.
+- `data.query` drops unreadable records inside the query, before the limit,
+  `limited` and any `select` projection are computed.
+- Reports are data: `report.get` and `report.search` cover only reports whose
+  owner the caller may read as `data`, and a named `--model` or `--workflow` is
+  authorized first. The ambiguity error of `report.get` lists only readable
+  owners.
+- `vault.audit-trail` without a vault keeps only the entries of vaults the
+  caller may read by name; the limit applies after filtering.
+- `data.gc`, `data.prune`, `run.gc` and `summarise` reach every resource and
+  cannot be narrowed, so they need the action on every resource of each kind
+  they touch: any deny grant that applies to the caller for the kind and action
+  refuses them, whatever its pattern or `methods` list, unless its condition
+  reads only the principal and does not hold for this caller (`decideAll`);
+  the refusal names the grant and says when it is conditional.
+
+`access.can-i` and `access.check` explain a decision the way a request would
+make it: a concrete model, data or workflow name is resolved to the resource it
+names with all of its fields; a pattern with a wildcard names no single resource
+and is explained as a check on the kind, where conditions on resource fields
+decide nothing.
 
 Endpoints that return only type definitions or schemas (`model.type.search`,
-`workflow.schema`) need at least one `read` grant for the kind but do not filter
-per item.
+`model.type.describe`, `workflow.schema`, `report.type.search`,
+`report.describe`, `vault.type.search`) need at least one `read` grant for the
+kind, or check the kind itself, and do not filter per item.
 
-**CEL conditions and search results**: search items carry only some condition
-fields, usually `name` and `modelType`. A condition that uses a missing field,
-such as `resource.tags`, fails closed because the evaluator returns `false` for
-unknown variables. Conditional grants can therefore be stricter on collection
-operations than on single-resource ones.
-
-Implementation: `filterByAuthorization` and `authorizeAnyOrReject` in
-`src/serve/handlers/shared.ts`.
+Implementation: `filterByResources`, `resourceDecider`, `authorizeAnyOrReject`
+and `authorizeAllOrReject` in `src/serve/handlers/shared.ts`;
+`CanonicalResources` in `src/serve/handlers/resource_resolution.ts`. Guards:
+`integration/serve_condition_fields_conformance_test.ts`, which classifies every
+request type, and the `*` rule in
+`integration/serve_canonical_authorization_rules_test.ts`.
 
 ## Workflow execution context
 

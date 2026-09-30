@@ -28,6 +28,7 @@ import {
   type DataGetDeps,
   type DataGetEvent,
   type DataItem,
+  resolveWorkflowData,
   type WorkflowDataItemInfo,
 } from "./get.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -357,4 +358,148 @@ Deno.test("dataGet: byId without a by-id lookup fails instead of looking up by n
     "by-id lookup was requested but none is wired",
   );
   assertEquals(nameLookups, 0);
+});
+
+// --- Workflow-scoped reads authorized before they read (swamp-club#2603) ---
+
+function pinnedDeps(overrides: Partial<DataGetDeps> = {}): DataGetDeps {
+  return makeDeps({
+    findWorkflowById: (id, expectedName) =>
+      Promise.resolve(
+        id === "wf-1" && (expectedName === undefined || expectedName === "wf")
+          ? { id: "wf-1", name: "wf" }
+          : null,
+      ),
+    ...overrides,
+  });
+}
+
+const PIN = {
+  workflowId: "wf-1",
+  workflowName: "wf",
+  runId: "run-1",
+  modelType: "model/type",
+  modelId: "00000000-0000-4000-8000-000000000001",
+  version: 1,
+};
+
+Deno.test("resolveWorkflowData: locates the workflow, run and owner without reading content", async () => {
+  let contentReads = 0;
+  const deps = pinnedDeps({
+    getContent: () => {
+      contentReads++;
+      return Promise.resolve(null);
+    },
+  });
+
+  const result = await resolveWorkflowData(deps, {
+    workflowId: "wf-1",
+    dataName: "output",
+  });
+
+  assertEquals(result.kind, "found");
+  if (result.kind !== "found") return;
+  assertEquals(result.location.workflow, { id: "wf-1", name: "wf" });
+  assertEquals(result.location.run.id, "run-1");
+  assertEquals(result.location.run.workflowId, "wf-1");
+  assertEquals(result.location.item.modelId, PIN.modelId);
+  assertEquals(contentReads, 0);
+});
+
+Deno.test("resolveWorkflowData: looks the workflow up by id only", async () => {
+  let byNameOrId = 0;
+  const deps = pinnedDeps({
+    findWorkflow: () => {
+      byNameOrId++;
+      return Promise.resolve({ id: "wf-1", name: "wf" });
+    },
+  });
+
+  const result = await resolveWorkflowData(deps, {
+    workflowId: "wf",
+    dataName: "output",
+  });
+
+  assertEquals(result.kind, "error");
+  assertEquals(byNameOrId, 0);
+});
+
+Deno.test("dataGet with expectedOwner reads the pinned item", async () => {
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), pinnedDeps(), {
+      workflowName: "ignored-when-pinned",
+      dataName: "output",
+      includeContent: false,
+      repoDir: ".",
+      expectedOwner: PIN,
+    }),
+  );
+
+  assertEquals(events[1].kind, "completed");
+});
+
+Deno.test("dataGet with expectedOwner is not-found when the item has another owner", async () => {
+  const other = {
+    data: makeDataItem(),
+    modelType: makeModelType(),
+    modelId: "00000000-0000-4000-8000-0000000000ff",
+    modelName: "other",
+    contentPath: "/p",
+  };
+  const events = await collect<DataGetEvent>(
+    dataGet(
+      createLibSwampContext(),
+      pinnedDeps({ findDataInWorkflowRun: () => Promise.resolve(other) }),
+      {
+        workflowName: "wf",
+        dataName: "output",
+        includeContent: true,
+        repoDir: ".",
+        expectedOwner: PIN,
+      },
+    ),
+  );
+
+  assertEquals(events[1].kind, "error");
+  if (events[1].kind !== "error") return;
+  assertEquals(events[1].error.code, "not_found");
+});
+
+Deno.test("dataGet with expectedOwner reads the pinned run, not a newer latest run", async () => {
+  const runsAsked: Array<string | undefined> = [];
+  const events = await collect<DataGetEvent>(
+    dataGet(
+      createLibSwampContext(),
+      pinnedDeps({
+        findWorkflowRun: (_workflowId, runId) => {
+          runsAsked.push(runId);
+          return Promise.resolve({ id: runId ?? "run-2" });
+        },
+      }),
+      {
+        workflowName: "wf",
+        dataName: "output",
+        includeContent: false,
+        repoDir: ".",
+        expectedOwner: PIN,
+      },
+    ),
+  );
+
+  assertEquals(runsAsked, ["run-1"]);
+  assertEquals(events[1].kind, "completed");
+});
+
+Deno.test("dataGet with expectedOwner is not-found when the pinned workflow was renamed", async () => {
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), pinnedDeps(), {
+      workflowName: "wf",
+      dataName: "output",
+      includeContent: false,
+      repoDir: ".",
+      expectedOwner: { ...PIN, workflowName: "old-name" },
+    }),
+  );
+
+  assertEquals(events[1].kind, "error");
 });

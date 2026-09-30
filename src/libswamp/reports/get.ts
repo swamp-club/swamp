@@ -34,6 +34,15 @@ export interface ReportGetInput {
   workflow?: string;
   version?: number;
   variant?: string;
+  /**
+   * Keeps only the reports whose owner this accepts, before variants or
+   * ambiguity are considered, so neither the result nor an ambiguity error
+   * names an owner the caller may not read. `modelName` is the owner's name
+   * as recorded on the report.
+   */
+  include?: (
+    owner: { modelType: string; modelId: string; modelName: string },
+  ) => Promise<boolean>;
 }
 
 /**
@@ -140,6 +149,20 @@ export async function* reportGet(
         // Global search
         const all = await deps.findAllGlobal();
         matches = all.filter((c) => isMatchingReport(c.data, input.reportName));
+      }
+
+      if (input.include) {
+        const accepted: typeof matches = [];
+        for (const m of matches) {
+          if (
+            await input.include({
+              modelType: m.modelType.normalized,
+              modelId: m.modelId,
+              modelName: m.data.tags.modelName ?? m.modelId,
+            })
+          ) accepted.push(m);
+        }
+        matches = accepted;
       }
 
       // Filter by variant when specified

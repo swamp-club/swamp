@@ -394,6 +394,10 @@ export {
   type DataGetDeps,
   type DataGetEvent,
   type DataGetInput,
+  resolveWorkflowData,
+  type WorkflowDataLocation,
+  type WorkflowDataPin,
+  type WorkflowDataQuery,
 } from "./data/get.ts";
 export {
   createDataVersionsDeps,

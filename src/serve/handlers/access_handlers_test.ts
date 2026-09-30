@@ -82,6 +82,13 @@ function createMockDecisionService(): {
     hasAnyGrantForKind() {
       return true;
     },
+    decideAll() {
+      return {
+        effect: "allow",
+        grantId: "mock-grant",
+        subject: { kind: "user" as const, name: "admin" },
+      };
+    },
   };
   return { service, calls };
 }

@@ -483,3 +483,53 @@ Deno.test("modelValidate: byId without lookupDefinitionById fails instead of fal
   );
   assertEquals(nameLookups, 0);
 });
+
+Deno.test("modelValidate all with include validates and reports only accepted models, resolving every type", async () => {
+  const a = Definition.create({ name: "keep", version: 1 });
+  const b = Definition.create({ name: "skip", version: 1 });
+  const typeA = ModelType.create("aws/ec2");
+  const typeB = ModelType.create("aws/s3");
+  const resolved: string[] = [];
+  const validated: string[] = [];
+  const deps = makeDeps({
+    findAllDefinitions: () =>
+      Promise.resolve([
+        { definition: a, type: typeA },
+        { definition: b, type: typeB },
+      ]),
+    resolveModelType: (type) => {
+      resolved.push(type.normalized);
+      return Promise.resolve({});
+    },
+    validateModel: (definition) => {
+      validated.push(definition.name);
+      return Promise.resolve({ results: [], warnings: [] });
+    },
+  });
+
+  const events = await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), deps, {
+      include: ({ definition }) => definition.name === "keep",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    ModelValidateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(isModelValidateAllData(completed.data), true);
+  if (!isModelValidateAllData(completed.data)) return;
+  assertEquals(completed.data.models.map((m) => m.modelName), ["keep"]);
+  assertEquals(validated, ["keep"]);
+  assertEquals(resolved, ["aws/ec2", "aws/s3"]);
+});
+
+Deno.test("modelValidate all with include that accepts nothing reports no models", async () => {
+  const events = await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), makeDeps(), {
+      include: () => false,
+    }),
+  );
+
+  assertEquals(events[1].kind, "error");
+});

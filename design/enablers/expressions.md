@@ -41,7 +41,10 @@ Swamp has three CEL surfaces:
    I/O receivers (`data.*`, `file.*`, `vault.*`, `env.*`), no extension
    registrations, and no host functions beyond the arithmetic baseline. The
    seal is permanent: conditions are deterministic pure functions over
-   (resource fields, principal context).
+   (resource fields, principal context). The variable list lives in
+   `src/domain/access/condition_fields.ts`, shared with the runtime evaluator
+   in `policy_snapshot_loader.ts`; how a condition on a field a resource does
+   not carry is decided is in `design/enablers/access-control.md`.
 
 All three share the arithmetic overloads from `registerArithmeticOverloads()`
 (bigint/double mixes), so arithmetic evaluates the same on every surface. They

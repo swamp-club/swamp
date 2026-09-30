@@ -24,6 +24,7 @@ import {
   findDefinitionByIdOrName,
 } from "../../domain/models/model_lookup.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -112,6 +113,13 @@ export interface DataListInput {
    */
   expectedName?: string;
   workflowName?: string;
+  /**
+   * Treat `workflowName` as a workflow id the caller already resolved and
+   * look it up by id only — with `expectedWorkflowName`, only a workflow with
+   * both — so the list reads the workflow the caller authorized.
+   */
+  workflowById?: boolean;
+  expectedWorkflowName?: string;
   runId?: string;
   typeFilter?: string;
 }
@@ -169,6 +177,11 @@ export interface DataListDeps {
   ) => Promise<RawDataEntry[]>;
   findWorkflow: (
     nameOrId: string,
+  ) => Promise<WorkflowInfo | null>;
+  /** Looks up by exact id only; required for a `workflowById` request. */
+  findWorkflowById?: (
+    id: string,
+    expectedName?: string,
   ) => Promise<WorkflowInfo | null>;
   findWorkflowRun: (
     workflowId: string,
@@ -233,6 +246,10 @@ export function createDataListDeps(
     findWorkflow: async (nameOrId) => {
       const wf = await workflowRepo.findByName(nameOrId) ??
         await workflowRepo.findById(createWorkflowId(nameOrId));
+      return wf ? { id: wf.id, name: wf.name } : null;
+    },
+    findWorkflowById: async (id, expectedName) => {
+      const wf = await findWorkflowById(workflowRepo, id, expectedName);
       return wf ? { id: wf.id, name: wf.name } : null;
     },
     findWorkflowRun: async (workflowId, runId) => {
@@ -315,7 +332,18 @@ async function* workflowScopedList(
 ): AsyncIterable<DataListEvent> {
   const workflowName = input.workflowName!;
 
-  const workflow = await deps.findWorkflow(workflowName);
+  let workflow: WorkflowInfo | null;
+  if (input.workflowById) {
+    if (!deps.findWorkflowById) {
+      throw new Error("A workflowById data list requires findWorkflowById");
+    }
+    workflow = await deps.findWorkflowById(
+      workflowName,
+      input.expectedWorkflowName,
+    );
+  } else {
+    workflow = await deps.findWorkflow(workflowName);
+  }
   if (!workflow) {
     yield { kind: "error", error: notFound("Workflow", workflowName) };
     return;

@@ -643,17 +643,21 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   async findAllByIdGlobal(
     id: DefinitionId,
   ): Promise<{ definition: Definition; type: ModelType }[]> {
+    return (await this.findAllIncludingAutoGlobal()).filter((entry) =>
+      entry.definition.id === id
+    );
+  }
+
+  async findAllIncludingAutoGlobal(): Promise<
+    { definition: Definition; type: ModelType }[]
+  > {
     const found: { definition: Definition; type: ModelType }[] = [];
     for (const dir of [this.baseDir, this.secondaryBaseDir]) {
       if (!dir) continue;
-      const results: { definition: Definition; type: ModelType }[] = [];
-      // Without recording paths: every definition declaring the id is read,
+      // Without recording paths: every definition declaring an id is read,
       // and the last one read must not become where findById looks next —
       // that would let an auto-definition shadow a primary one.
-      await this.collectAllDefinitions(dir, [], results, false);
-      for (const entry of results) {
-        if (entry.definition.id === id) found.push(entry);
-      }
+      await this.collectAllDefinitions(dir, [], found, false);
     }
     return found;
   }

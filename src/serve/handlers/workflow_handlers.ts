@@ -136,20 +136,20 @@ import {
   clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
-  filterByAuthorization,
+  filterByResources,
   isAuthorized,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
   paginate,
   pushChangedToRemote,
   rejectEditWithoutContent,
+  resourceDecider,
   sanitizeErrorForClient,
   send,
   sendError,
   subscribeUntilDetach,
   wasRequestErrored,
 } from "./shared.ts";
-import { resolveDataFields } from "./data_handlers.ts";
 import type { ResourceReadPolicy } from "../../domain/workflows/step_output_resolver.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -172,12 +172,14 @@ import {
 import {
   authorizeReferenceAccess,
   authorizeResolved,
+  canonicalResources,
   resolveRecordedWorkflow,
   resolveRunAccess,
   resolveWorkflowTarget,
   type ResourceResolution,
   targetArgument,
   unresolvedAccessResource,
+  workflowAccessResource,
 } from "./resource_resolution.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
@@ -219,11 +221,7 @@ function resolveWorkflowRequest(
 export function workflowAccessFields(
   target: WorkflowEditTarget,
 ): Record<string, unknown> {
-  const fields: Record<string, unknown> = { name: target.name };
-  if (target.tags && Object.keys(target.tags).length > 0) {
-    fields.tags = target.tags;
-  }
-  return fields;
+  return { name: target.name, tags: target.tags ?? {} };
 }
 
 export async function handleWorkflowRun(
@@ -544,17 +542,16 @@ export async function handleWorkflowSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ name: string }>;
+      results?: Array<{ id: string; name: string }>;
     };
+    const canonical = canonicalResources(ctx);
     const { page, total } = paginate(
-      filterByAuthorization(
+      await filterByResources(
         data.results ?? [],
-        (item) => item.name,
-        (item) => ({ name: item.name }),
+        (item) => canonical.workflowOwners(item.id, item.name),
         socket,
         principal,
         "read",
-        "workflow",
         ctx,
       ),
       payload?.offset,
@@ -634,17 +631,16 @@ export async function handleWorkflowApprovals(
     }
 
     const data = (result ?? {}) as {
-      approvals?: Array<{ workflowName: string }>;
+      approvals?: Array<{ workflowId: string; workflowName: string }>;
     };
     if (data.approvals) {
-      data.approvals = filterByAuthorization(
+      const canonical = canonicalResources(ctx);
+      data.approvals = await filterByResources(
         data.approvals,
-        (item) => item.workflowName,
-        (item) => ({ name: item.workflowName }),
+        (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
         socket,
         principal,
         "read",
-        "workflow",
         ctx,
       );
     }
@@ -737,25 +733,16 @@ function dataReadPolicy(
   ctx: ConnectionContext,
   principal: Principal | null,
 ): ResourceReadPolicy {
-  const fieldsByModel = new Map<string, Promise<Record<string, unknown>>>();
-  return async (ref) => {
-    let fields = fieldsByModel.get(ref.modelId);
-    if (!fields) {
-      fields = resolveDataFields(ctx.repoContext.definitionRepo, ref.modelId);
-      fieldsByModel.set(ref.modelId, fields);
-    }
-    const resolved = await fields;
-    return filterByAuthorization(
+  const canonical = canonicalResources(ctx);
+  return async (ref) =>
+    (await filterByResources(
       [ref],
-      () => resolved.name as string,
-      () => resolved,
+      (item) => canonical.dataOwners(item),
       socket,
       principal,
       "read",
-      "data",
       ctx,
-    ).length === 1;
-  };
+    )).length === 1;
 }
 
 export async function handleWorkflowHistoryGet(
@@ -993,17 +980,16 @@ export async function handleWorkflowHistorySearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ workflowName: string }>;
+      results?: Array<{ workflowId: string; workflowName: string }>;
     };
     if (data.results) {
-      data.results = filterByAuthorization(
+      const canonical = canonicalResources(ctx);
+      data.results = await filterByResources(
         data.results,
-        (item) => item.workflowName,
-        (item) => ({ name: item.workflowName }),
+        (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
         socket,
         principal,
         "read",
-        "workflow",
         ctx,
       );
     }
@@ -1079,19 +1065,18 @@ export async function handleWorkflowRunSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ workflowName: string }>;
+      results?: Array<{ workflowId: string; workflowName: string }>;
     };
     // Page after the authorization filter, never inside libswamp: slicing
     // first would let unreadable runs shorten a page and skew `total`.
+    const canonical = canonicalResources(ctx);
     const { page, total } = paginate(
-      filterByAuthorization(
+      await filterByResources(
         data.results ?? [],
-        (item) => item.workflowName,
-        (item) => ({ name: item.workflowName }),
+        (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
         socket,
         principal,
         "read",
-        "workflow",
         ctx,
       ),
       payload?.offset,
@@ -1744,7 +1729,8 @@ export async function handleWorkflowCreate(
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "workflow",
       name: payload.name,
-      fields: { name: payload.name },
+      // A workflow being created has no tags yet.
+      fields: { name: payload.name, tags: {} },
     }, ctx).allowed
   ) return;
 
@@ -2007,22 +1993,29 @@ export async function handleWorkflowValidate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Without a workflow this validates every workflow and authorizes "*"; how
-  // that form authorizes is swamp-club#2675. A named workflow is resolved
-  // first.
+  // Without a workflow this validates every workflow the caller may read, and
+  // only those (swamp-club#2675). A named workflow is resolved first.
   const workflowIdOrName = payload?.workflowIdOrName;
   let workflow:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let include:
+    | ((workflow: { name: string; tags: Record<string, string> }) => boolean)
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!workflowIdOrName) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "workflow",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
+      !authorizeAnyOrReject(
+        socket,
+        requestId,
+        principal,
+        "read",
+        "workflow",
+        ctx,
+      )
     ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (candidate) => readable(workflowAccessResource(candidate));
   } else {
     const target = await resolveWorkflowRequest(ctx, workflowIdOrName);
     if (
@@ -2055,6 +2048,7 @@ export async function handleWorkflowValidate(
         workflowIdOrName: workflow?.idOrName,
         byId: workflow?.byId,
         expectedName: workflow?.expectedName,
+        include,
       }),
       {
         resolving: () => {},
@@ -2091,22 +2085,29 @@ export async function handleWorkflowEvaluate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Without a workflow this evaluates every workflow and authorizes "*"; how
-  // that form authorizes is swamp-club#2675. A named workflow is resolved
-  // first.
+  // Without a workflow this evaluates every workflow the caller may read, and
+  // only those (swamp-club#2675). A named workflow is resolved first.
   const workflowIdOrName = payload?.workflowIdOrName;
   let workflow:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let include:
+    | ((workflow: { name: string; tags: Record<string, string> }) => boolean)
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!workflowIdOrName) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "workflow",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
+      !authorizeAnyOrReject(
+        socket,
+        requestId,
+        principal,
+        "read",
+        "workflow",
+        ctx,
+      )
     ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (candidate) => readable(workflowAccessResource(candidate));
   } else {
     const target = await resolveWorkflowRequest(ctx, workflowIdOrName);
     if (
@@ -2141,6 +2142,7 @@ export async function handleWorkflowEvaluate(
         byId: workflow?.byId,
         expectedName: workflow?.expectedName,
         inputs: payload?.inputs ?? {},
+        include,
       }),
       {
         evaluating: () => {},

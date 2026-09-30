@@ -104,6 +104,12 @@ export interface ModelValidateInput {
    * unique, so only a resource with this name and the id is accepted.
    */
   expectedName?: string;
+  /**
+   * Without a model, validates only the models this accepts; the others are
+   * neither validated nor reported. Every model's type is still resolved,
+   * so cross-type references validate as they would without it.
+   */
+  include?: (entry: { definition: Definition; type: ModelType }) => boolean;
 }
 
 /** Raw validation result from the domain service. */
@@ -287,10 +293,13 @@ export function isModelValidateAllData(
 /** Validates all models in the repository. */
 async function* validateAll(
   deps: ModelValidateDeps,
+  include: (entry: { definition: Definition; type: ModelType }) => boolean =
+    () => true,
 ): AsyncIterable<ModelValidateEvent> {
   const allDefinitions = await deps.findAllDefinitions();
 
-  if (allDefinitions.length === 0) {
+  const accepted = new Set(allDefinitions.filter(include));
+  if (accepted.size === 0) {
     yield {
       kind: "error",
       error: validationFailed("No models found"),
@@ -299,9 +308,10 @@ async function* validateAll(
   }
 
   const results: ModelValidateData[] = [];
-  for (const { definition, type } of allDefinitions) {
+  for (const entry of allDefinitions) {
+    const { definition, type } = entry;
     const modelDef = await deps.resolveModelType(type);
-    if (!modelDef) {
+    if (!modelDef || !accepted.has(entry)) {
       continue;
     }
 
@@ -420,7 +430,7 @@ export async function* modelValidate(
       yield { kind: "resolving" };
 
       if (!input.modelIdOrName) {
-        yield* validateAll(deps);
+        yield* validateAll(deps, input.include);
       } else {
         yield* validateSingle(
           deps,

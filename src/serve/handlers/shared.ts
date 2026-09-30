@@ -852,6 +852,7 @@ function decideAccess(
   action: Action,
   resource: AccessResource,
   ctx: ConnectionContext,
+  every = false,
 ): AccessOutcome {
   if (ctx.authConfig.mode === "none") {
     return { kind: "allowed", decision: null };
@@ -862,11 +863,13 @@ function decideAccess(
   const collectives = connectionCollectives.get(socket) ?? [];
   const groups = connectionGroups.get(socket) ?? [];
   const service = ctx.policySnapshotLoader.decisionService;
-  const decision = service.decide(
-    { principal, collectives, groups },
-    action,
-    resource,
-  );
+  const decision = every
+    ? service.decideAll(
+      { principal, collectives, groups },
+      action,
+      resource.kind,
+    )
+    : service.decide({ principal, collectives, groups }, action, resource);
 
   if (decision && decision.effect === "allow") {
     return { kind: "allowed", decision };
@@ -894,7 +897,55 @@ export function authorizeOrReject(
   resource: AccessResource,
   ctx: ConnectionContext,
 ): AuthorizationResult {
-  const outcome = decideAccess(socket, principal, action, resource, ctx);
+  return replyToOutcome(
+    socket,
+    requestId,
+    principal,
+    action,
+    resource,
+    ctx,
+    decideAccess(socket, principal, action, resource, ctx),
+  );
+}
+
+/**
+ * Authorizes an operation over every resource of `kind` that cannot be
+ * filtered per resource (garbage collection, prune, summarise): any deny that
+ * applies to the principal for the kind and action refuses it, whatever its
+ * pattern, since the operation reaches every resource (swamp-club#2675).
+ * Replies and audits as {@link authorizeOrReject} does.
+ */
+export function authorizeAllOrReject(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  kind: ResourceKind,
+  ctx: ConnectionContext,
+): AuthorizationResult {
+  const resource: AccessResource = { kind, name: "*", fields: { name: "*" } };
+  return replyToOutcome(
+    socket,
+    requestId,
+    principal,
+    action,
+    resource,
+    ctx,
+    decideAccess(socket, principal, action, resource, ctx, true),
+    true,
+  );
+}
+
+function replyToOutcome(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+  outcome: AccessOutcome,
+  every = false,
+): AuthorizationResult {
   switch (outcome.kind) {
     case "allowed":
       return { allowed: true, decision: outcome.decision };
@@ -939,7 +990,16 @@ export function authorizeOrReject(
     case "refused": {
       const { decision, groups } = outcome;
       const principalStr = resolveDisplayPrincipal(outcome.principal, ctx);
-      if (decision && decision.effect === "deny") {
+      if (decision && decision.effect === "deny" && every) {
+        sendError(
+          socket,
+          requestId,
+          "unauthorized",
+          `Access denied: ${principalStr} has a ${
+            decision.condition ? "conditional " : ""
+          }deny grant (${decision.grantId}) for '${action}' on ${resource.kind} resources, and an operation over every ${resource.kind} resource needs '${action}' on all of them`,
+        );
+      } else if (decision && decision.effect === "deny") {
         sendError(
           socket,
           requestId,
@@ -1091,24 +1151,52 @@ export function resolveDisplayPrincipal(
   return principalToString(principal);
 }
 
-export function filterByAuthorization<T>(
+/**
+ * Keeps the items the principal may `action`: an item is kept only when
+ * every resource `resourcesOf` returns for it is allowed — an item with
+ * several owners (a copied model shares its data) needs them all. A resource
+ * no grant decides is allowed only for an admin. Decisions are made once per distinct
+ * resource and are not audited, as filtering never refuses the request.
+ */
+export async function filterByResources<T>(
   items: T[],
-  nameExtractor: (item: T) => string | undefined,
-  fieldsExtractor: (item: T) => Record<string, unknown>,
+  resourcesOf: (item: T) => Promise<AccessResource[]>,
   socket: WebSocket,
   principal: Principal | null,
   action: Action,
-  kind: ResourceKind,
   ctx: ConnectionContext,
-): T[] {
+): Promise<T[]> {
   if (ctx.authConfig.mode === "none") return items;
-  if (!ctx.policySnapshotLoader || !principal) return [];
+  const allows = resourceDecider(socket, principal, action, ctx);
+  const kept: T[] = [];
+  for (const item of items) {
+    const resources = await resourcesOf(item);
+    if (resources.length > 0 && resources.every(allows)) kept.push(item);
+  }
+  return kept;
+}
+
+/**
+ * A silent check of whether the principal may `action` a resource, by the
+ * rules {@link filterByResources} applies: an explicit allow or deny decides,
+ * and a resource no grant decides is allowed only for an admin. Decisions are
+ * cached per distinct resource and are not audited. Everything is allowed
+ * when authorization is off; nothing when there is no principal or policy.
+ */
+export function resourceDecider(
+  socket: WebSocket,
+  principal: Principal | null,
+  action: Action,
+  ctx: ConnectionContext,
+): (resource: AccessResource) => boolean {
+  if (ctx.authConfig.mode === "none") return () => true;
+  const loader = ctx.policySnapshotLoader;
+  if (!loader || !principal) return () => false;
 
   const collectives = connectionCollectives.get(socket) ?? [];
   const groups = connectionGroups.get(socket) ?? [];
-  const service = ctx.policySnapshotLoader.decisionService;
+  const service = loader.decisionService;
   const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
-
   const adminDecision = service.decide(
     accessPrincipal,
     "admin",
@@ -1116,24 +1204,22 @@ export function filterByAuthorization<T>(
   );
   const isAdmin = adminDecision !== null && adminDecision.effect === "allow";
 
-  return items.filter((item) => {
-    const name = nameExtractor(item);
-    if (name === undefined) return false;
-    const resource: AccessResource = {
-      kind,
-      name,
-      fields: fieldsExtractor(item),
-    };
-    const decision = service.decide(accessPrincipal, action, resource);
-    if (decision && decision.effect === "allow") return true;
-    if (decision && decision.effect === "deny") return false;
-    return isAdmin;
-  });
+  const decided = new Map<string, boolean>();
+  return (resource) => {
+    const key = JSON.stringify([resource.kind, resource.name, resource.fields]);
+    let allowed = decided.get(key);
+    if (allowed === undefined) {
+      const decision = service.decide(accessPrincipal, action, resource);
+      allowed = decision ? decision.effect === "allow" : isAdmin;
+      decided.set(key, allowed);
+    }
+    return allowed;
+  };
 }
 
 /**
  * Slices one page out of an already-authorized result list. Apply after
- * {@link filterByAuthorization} so `total` and page boundaries reflect only
+ * {@link filterByResources} so `total` and page boundaries reflect only
  * what the principal may read. An omitted `limit` returns everything from
  * `offset` on.
  */
@@ -1252,6 +1338,59 @@ export function send(socket: WebSocket, message: ServerMessage): void {
 
 const MAX_ERRORED_REQUESTS = 10_000;
 const erroredRequests = new WeakMap<WebSocket, Set<string>>();
+
+/**
+ * The resolved name a request's response audit event records in place of the
+ * identifier the client sent (swamp-club#2603): a model asked for by UUID is
+ * audited under its name. Recorded only when an audit emitter will consume
+ * it, capped per socket like {@link erroredRequests}, and taken — removed —
+ * by the audit wrapper on every outcome.
+ */
+const auditedResources = new WeakMap<
+  WebSocket,
+  Map<string, { kind: string; name: string }>
+>();
+
+/**
+ * Records the resolved name of a `kind` resource for the request's response
+ * audit event. It is used only when the event audits that kind — a run
+ * attach audited as the run keeps the run id, although it authorized the
+ * run's model.
+ */
+export function recordAuditedResource(
+  socket: WebSocket,
+  requestId: string,
+  kind: string,
+  name: string,
+  ctx: Pick<ConnectionContext, "auditEmitter">,
+): void {
+  if (!ctx.auditEmitter) return;
+  let names = auditedResources.get(socket);
+  if (!names) {
+    names = new Map();
+    auditedResources.set(socket, names);
+  }
+  names.set(requestId, { kind, name });
+  if (names.size > MAX_ERRORED_REQUESTS) {
+    const first = names.keys().next().value!;
+    names.delete(first);
+  }
+}
+
+/**
+ * Returns and forgets the resolved name recorded for a request, if it was
+ * recorded for `kind`.
+ */
+export function takeAuditedResource(
+  socket: WebSocket,
+  requestId: string,
+  kind: string,
+): string | undefined {
+  const names = auditedResources.get(socket);
+  const recorded = names?.get(requestId);
+  names?.delete(requestId);
+  return recorded?.kind === kind ? recorded.name : undefined;
+}
 
 export function sendError(
   socket: WebSocket,

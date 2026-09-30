@@ -366,3 +366,38 @@ Deno.test("modelEvaluate: --all writes sensitive values outside arguments as ref
     true,
   );
 });
+
+Deno.test("modelEvaluate all with include saves and reports only accepted models", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const entry = (name: string) => ({
+    definition: Definition.create({ name, version: 1 }),
+    type: modelType,
+    hadExpressions: true,
+    authoredExpressions: new Set<string>(),
+  });
+  const saved: string[] = [];
+  const deps = makeDeps({
+    evaluateAllDefinitions: () =>
+      Promise.resolve([entry("keep"), entry("skip")]),
+    saveEvaluatedDefinition: (_type, definition) => {
+      saved.push(definition.name);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, {
+      include: ({ definition }) => definition.name === "keep",
+    }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  if (
+    completed?.kind !== "completed" || !isModelEvaluateAllData(completed.data)
+  ) {
+    throw new Error("expected all data");
+  }
+  assertEquals(completed.data.items.map((i) => i.name), ["keep"]);
+  assertEquals(completed.data.total, 1);
+  assertEquals(saved, ["keep"]);
+});

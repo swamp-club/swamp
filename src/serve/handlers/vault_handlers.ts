@@ -83,17 +83,23 @@ import { VaultConfigParseError } from "../../infrastructure/persistence/yaml_vau
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
+  authorizeAnyOrReject,
   authorizeOrReject,
   clientErrorDetails,
   type ConnectionContext,
   LibSwampStreamError,
   rejectEditWithoutContent,
+  resourceDecider,
   sanitizeErrorForClient,
   send,
   sendError,
   wasRequestErrored,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  type AccessResource,
+  kindResource,
+} from "../../domain/access/access_decision_service.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 
@@ -146,6 +152,16 @@ function sendVaultSwampError(
   );
 }
 
+/**
+ * The access resource a vault is authorized as. Which name a vault goes by
+ * is swamp-club#2676; its fields are complete — a vault has no tags or
+ * namespace — so a conditional data deny decides on it rather than failing
+ * closed (swamp-club#2675).
+ */
+export function vaultAccessResource(name: string): AccessResource {
+  return { kind: "data", name, fields: { name, ns: "", tags: {} } };
+}
+
 export async function handleVaultGet(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -155,11 +171,14 @@ export async function handleVaultGet(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "vault",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      vaultAccessResource("vault"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -216,19 +235,25 @@ export async function handleVaultPut(
 
   if (payload.refreshFrom !== undefined || payload.clearRefresh) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "admin", {
-        kind: "data",
-        name: "vault",
-        fields: {},
-      }, ctx).allowed
+      !authorizeOrReject(
+        socket,
+        requestId,
+        principal,
+        "admin",
+        vaultAccessResource("vault"),
+        ctx,
+      ).allowed
     ) return;
   } else {
     if (
-      !authorizeOrReject(socket, requestId, principal, "write", {
-        kind: "data",
-        name: "vault",
-        fields: {},
-      }, ctx).allowed
+      !authorizeOrReject(
+        socket,
+        requestId,
+        principal,
+        "write",
+        vaultAccessResource("vault"),
+        ctx,
+      ).allowed
     ) return;
   }
 
@@ -342,11 +367,14 @@ export async function handleVaultDelete(
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: "vault",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "write",
+      vaultAccessResource("vault"),
+      ctx,
+    ).allowed
   ) return;
 
   let flush: (() => Promise<void>) | undefined;
@@ -482,11 +510,14 @@ export async function handleVaultDescribe(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "vault",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      vaultAccessResource("vault"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -539,11 +570,14 @@ export async function handleVaultInspect(
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "vault",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      vaultAccessResource("vault"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -599,11 +633,14 @@ export async function handleVaultListKeys(
   ) return;
 
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "vault",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      vaultAccessResource("vault"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -651,11 +688,14 @@ export async function handleVaultSearch(
   payload?: VaultSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "vault",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      vaultAccessResource("vault"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -705,11 +745,14 @@ export async function handleVaultAnnotate(
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: "vault",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "write",
+      vaultAccessResource("vault"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -783,11 +826,14 @@ export async function handleVaultCreate(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: payload.name,
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "write",
+      vaultAccessResource(payload.name),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -904,11 +950,14 @@ export async function handleVaultEdit(
   const vaultName = resolved?.name ?? payload.vaultNameOrId;
   if (rejectReservedVault(socket, requestId, vaultName)) return;
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: vaultName,
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "write",
+      vaultAccessResource(vaultName),
+      ctx,
+    ).allowed
   ) return;
   const target: VaultEditConfigInfo | null = resolved ??
     (repairTarget
@@ -955,16 +1004,22 @@ export async function handleVaultEdit(
         // file parses again by now its stored name is checked as well.
         authorizeUpdate: (before, after) =>
           (!repairTarget ||
-            authorizeOrReject(socket, requestId, principal, "write", {
-              kind: "data",
-              name: before.name,
-              fields: {},
-            }, ctx).allowed) &&
-          authorizeOrReject(socket, requestId, principal, "write", {
-            kind: "data",
-            name: after.name,
-            fields: {},
-          }, ctx).allowed,
+            authorizeOrReject(
+              socket,
+              requestId,
+              principal,
+              "write",
+              vaultAccessResource(before.name),
+              ctx,
+            ).allowed) &&
+          authorizeOrReject(
+            socket,
+            requestId,
+            principal,
+            "write",
+            vaultAccessResource(after.name),
+            ctx,
+          ).allowed,
         ...(repairTarget
           ? {
             authorizeRepair: (_target, after) =>
@@ -974,11 +1029,14 @@ export async function handleVaultEdit(
                 fields: {},
               }, ctx).allowed &&
               !rejectReservedVault(socket, requestId, after.name) &&
-              authorizeOrReject(socket, requestId, principal, "write", {
-                kind: "data",
-                name: after.name,
-                fields: {},
-              }, ctx).allowed,
+              authorizeOrReject(
+                socket,
+                requestId,
+                principal,
+                "write",
+                vaultAccessResource(after.name),
+                ctx,
+              ).allowed,
           }
           : {}),
       }),
@@ -1060,13 +1118,28 @@ export async function handleVaultAuditTrail(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: payload?.vaultName ?? "*",
-      fields: {},
-    }, ctx).allowed
-  ) return;
+  // A named vault is authorized as that vault. Without one the trail covers
+  // every vault, so each entry is kept only when its vault is readable, as a
+  // named read of it would be (swamp-club#2675).
+  let include: ((entry: { vaultName: string }) => boolean) | undefined;
+  if (payload?.vaultName) {
+    if (
+      !authorizeOrReject(
+        socket,
+        requestId,
+        principal,
+        "read",
+        vaultAccessResource(payload.vaultName),
+        ctx,
+      ).allowed
+    ) return;
+  } else {
+    if (
+      !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
+    ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (entry) => readable(vaultAccessResource(entry.vaultName));
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1081,6 +1154,7 @@ export async function handleVaultAuditTrail(
         since: payload?.since ? new Date(payload.since) : undefined,
         until: payload?.until ? new Date(payload.until) : undefined,
         limit: payload?.limit,
+        include,
       }),
       {
         resolving: () => {},
@@ -1121,9 +1195,11 @@ export async function handleVaultReadSecret(
 
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: payload.vaultName,
-      fields: { key: payload.secretKey },
+      ...vaultAccessResource(payload.vaultName),
+      fields: {
+        ...vaultAccessResource(payload.vaultName).fields,
+        key: payload.secretKey,
+      },
     }, ctx).allowed
   ) return;
 
@@ -1176,11 +1252,14 @@ export async function handleVaultTypeSearch(
   payload?: VaultTypeSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("data"),
+      ctx,
+    ).allowed
   ) return;
 
   try {

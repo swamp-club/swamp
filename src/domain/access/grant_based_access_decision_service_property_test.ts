@@ -32,6 +32,7 @@ import {
 } from "./grant_based_access_decision_service.ts";
 import type { ResourceKind } from "./resource_selector.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
+import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
 
 const ACTIONS: readonly Action[] = ActionSchema.options;
 const NON_APPROVE_ACTIONS = ACTIONS.filter((a) => a !== "approve");
@@ -287,6 +288,66 @@ Deno.test("GrantBasedAccessDecisionService: a service deny that cannot be evalua
             d.grantId !== SERVICE_TRIGGER_DEFAULT_GRANT_ID
           ),
         );
+      },
+    ),
+  );
+});
+
+Deno.test("property: a tags deny refuses exactly the resources carrying the tag, and fails closed without tags", () => {
+  const evaluator = createConditionEvaluator();
+  const tagValue = fc.constantFrom("prod", "dev", "stage");
+  fc.assert(
+    fc.property(
+      fc.option(fc.dictionary(fc.constantFrom("env", "team"), tagValue), {
+        nil: undefined,
+      }),
+      (tags) => {
+        const principal = {
+          principal: { kind: "user" as const, id: "p" },
+          collectives: [],
+          groups: [],
+        };
+        const snapshot = new PolicySnapshot(
+          [
+            {
+              id: "allow",
+              subject: { kind: "user", name: "p" },
+              effect: "allow",
+              actions: ["read"],
+              resource: { kind: "model", pattern: "*" },
+              state: "active",
+              source: "method",
+              createdBy: { kind: "user", id: "admin" },
+              createdAt: "2026-01-01T00:00:00Z",
+            },
+            {
+              id: "deny",
+              subject: { kind: "user", name: "p" },
+              effect: "deny",
+              actions: ["read"],
+              resource: { kind: "model", pattern: "*" },
+              condition: 'tags.env == "prod"',
+              state: "active",
+              source: "method",
+              createdBy: { kind: "user", id: "admin" },
+              createdAt: "2026-01-01T00:00:00Z",
+            },
+          ],
+          [],
+          evaluator,
+        );
+        const service = new GrantBasedAccessDecisionService(snapshot);
+        const fields: Record<string, unknown> = { name: "m", modelType: "t" };
+        if (tags !== undefined) fields.tags = tags;
+        const decision = service.decide(principal, "read", {
+          kind: "model",
+          name: "m",
+          fields,
+        });
+        const expected = tags === undefined || tags.env === "prod"
+          ? "deny"
+          : "allow";
+        assertEquals(decision?.effect, expected);
       },
     ),
   );

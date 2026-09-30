@@ -55,7 +55,11 @@ export type DataQueryEvent =
 export interface DataQueryDeps {
   query(
     predicate: string,
-    options?: { limit?: number; select?: string },
+    options?: {
+      limit?: number;
+      select?: string;
+      include?: (record: DataRecord) => Promise<boolean>;
+    },
   ): Promise<DataRecord[] | unknown[]>;
 }
 
@@ -66,6 +70,8 @@ export interface DataQueryInput {
   predicate: string;
   select?: string;
   limit?: number;
+  /** Keeps only the matched records this accepts, before any projection. */
+  include?: (record: DataRecord) => Promise<boolean>;
 }
 
 /**
@@ -102,6 +108,7 @@ export async function* dataQuery(
         const rawResults = await deps.query(input.predicate, {
           limit,
           select: input.select,
+          include: input.include,
         });
         const total = rawResults.length;
         const limited = limit !== undefined && total >= limit;

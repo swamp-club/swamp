@@ -140,3 +140,36 @@ Deno.test("vaultAuditTrail: returns empty result for no entries", async () => {
   assertEquals(completed.data.truncated, false);
   assertEquals(completed.data.entries.length, 0);
 });
+
+Deno.test("vaultAuditTrail: include filters entries before the limit, so hidden ones never shorten a page", async () => {
+  const entries = [
+    makeEntry({ vaultName: "prod-vault" }),
+    makeEntry({ vaultName: "dev-vault", secretKey: "A" }),
+    makeEntry({ vaultName: "prod-vault" }),
+    makeEntry({ vaultName: "dev-vault", secretKey: "B" }),
+    makeEntry({ vaultName: "dev-vault", secretKey: "C" }),
+  ];
+  const askedLimits: Array<number | undefined> = [];
+  const deps: VaultAuditTrailDeps = {
+    findByTimeRange: (_since, _until, options) => {
+      askedLimits.push(options?.limit);
+      return Promise.resolve(entries.slice(0, options?.limit));
+    },
+  };
+
+  const events = await collect<VaultAuditTrailEvent>(
+    vaultAuditTrail(createLibSwampContext(), deps, {
+      limit: 2,
+      include: (entry) => entry.vaultName === "dev-vault",
+    }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    VaultAuditTrailEvent,
+    { kind: "completed" }
+  >;
+  // Three accepted entries needed: a batch of 3 finds one, 12 finds all.
+  assertEquals(askedLimits, [3, 12]);
+  assertEquals(completed.data.entries.map((e) => e.secretKey), ["A", "B"]);
+  assertEquals(completed.data.truncated, true);
+});

@@ -32,6 +32,7 @@ import {
   type ReportSearchDeps,
   reportTypeSearch,
   type ReportTypeSearchDeps,
+  workflowsDirFor,
 } from "../../libswamp/mod.ts";
 import type {
   ReportDescribePayload,
@@ -45,12 +46,23 @@ import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { getReportTypes } from "../../domain/reports/report_types.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
+  authorizeAnyOrReject,
   authorizeOrReject,
   type ConnectionContext,
+  filterByResources,
+  resourceDecider,
   sanitizeErrorForClient,
   send,
   sendError,
 } from "./shared.ts";
+import {
+  authorizeResolved,
+  canonicalResources,
+  type RecordedOwner,
+  resolveModelTarget,
+  resolveWorkflowTarget,
+} from "./resource_resolution.ts";
+import { kindResource } from "../../domain/access/access_decision_service.ts";
 
 export async function handleReportGet(
   socket: WebSocket,
@@ -60,13 +72,28 @@ export async function handleReportGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // A report is data, so it is read as its owner's data: a named model or
+  // workflow is authorized first, and the report read — and any ambiguity it
+  // reports — covers only owners the caller may read (swamp-club#2675).
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
   ) return;
+  if (
+    !await authorizeReportScope(
+      socket,
+      ctx,
+      requestId,
+      principal,
+      payload.model,
+      payload.workflow,
+      "report_get_failed",
+    )
+  ) return;
+  const canonical = canonicalResources(ctx);
+  const readable = resourceDecider(socket, principal, "read", ctx);
+  const include = async (
+    owner: { modelType: string; modelId: string; modelName: string },
+  ) => (await canonical.dataOwners(owner)).every(readable);
 
   try {
     const libCtx = createLibSwampContext();
@@ -113,6 +140,7 @@ export async function handleReportGet(
         workflow: payload.workflow,
         version: payload.version,
         variant: payload.variant,
+        include,
       }),
       {
         resolving: () => {},
@@ -154,12 +182,22 @@ export async function handleReportSearch(
   principal: Principal | null,
   payload?: ReportSearchPayload,
 ): Promise<void> {
+  // Reports are data: a named model or workflow is authorized first, so a
+  // search cannot tell a denied name from a missing one, and results are
+  // filtered to owners the caller may read (swamp-club#2675).
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
+  ) return;
+  if (
+    !await authorizeReportScope(
+      socket,
+      ctx,
+      requestId,
+      principal,
+      payload?.model,
+      payload?.workflow,
+      "report_search_failed",
+    )
   ) return;
 
   try {
@@ -216,10 +254,23 @@ export async function handleReportSearch(
       return;
     }
 
+    const data = (result ?? {}) as { reports?: RecordedOwner[] };
+    if (data.reports) {
+      const canonical = canonicalResources(ctx);
+      data.reports = await filterByResources(
+        data.reports,
+        (report) => canonical.dataOwners(report),
+        socket,
+        principal,
+        "read",
+        ctx,
+      );
+    }
+
     send(socket, {
       type: "report.search",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -235,12 +286,16 @@ export async function handleReportDescribe(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Report types only: a check on the kind, touching no model.
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -296,12 +351,16 @@ export async function handleReportTypeSearch(
   principal: Principal | null,
   payload?: ReportTypeSearchPayload,
 ): Promise<void> {
+  // Report types only: a check on the kind, touching no model.
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -343,4 +402,56 @@ export async function handleReportTypeSearch(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_type_search_failed", message);
   }
+}
+
+/**
+ * Authorizes the model (as `data`) or workflow a report read names, before
+ * the read looks it up. Returns whether the request may proceed.
+ */
+async function authorizeReportScope(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  model: string | undefined,
+  workflow: string | undefined,
+  failedCode: string,
+): Promise<boolean> {
+  if (model) {
+    const target = await resolveModelTarget(
+      ctx.repoContext.definitionRepo,
+      model,
+      "data",
+    );
+    return authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      model,
+      "data",
+      ctx,
+      failedCode,
+    );
+  }
+  if (workflow) {
+    const target = await resolveWorkflowTarget(
+      ctx.repoContext.workflowRepo,
+      workflow,
+      workflowsDirFor(ctx.repoDir),
+    );
+    return authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      workflow,
+      "workflow",
+      ctx,
+      failedCode,
+    );
+  }
+  return true;
 }

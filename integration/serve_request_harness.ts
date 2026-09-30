@@ -35,7 +35,7 @@ import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../src/domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_loader.ts";
-import { evaluateGrantCondition } from "../src/infrastructure/cel/grant_condition_environment.ts";
+import { createConditionEvaluator } from "../src/domain/access/policy_snapshot_loader.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
@@ -183,7 +183,7 @@ export function createServeCtx(
       ? {
         policySnapshotLoader: {
           decisionService: new GrantBasedAccessDecisionService(
-            new PolicySnapshot(grants, [], evaluateGrantCondition),
+            new PolicySnapshot(grants, [], createConditionEvaluator()),
           ),
         } as unknown as PolicySnapshotLoader,
       }
@@ -253,7 +253,7 @@ export async function saveData(
   model: Definition,
   dataName: string,
   type = "resource",
-): Promise<void> {
+): Promise<Data> {
   const data = Data.create({
     name: dataName,
     contentType: "application/json",
@@ -271,6 +271,71 @@ export async function saveData(
     data,
     new TextEncoder().encode(JSON.stringify({ value: dataName })),
   );
+  return data;
+}
+
+/**
+ * Saves one version of a workflow-scope data item — as a workflow-scope
+ * report writes one — stored under the workflow itself.
+ */
+export async function saveWorkflowData(
+  repo: ServeRepo,
+  workflow: Workflow,
+  dataName: string,
+): Promise<Data> {
+  const data = Data.create({
+    name: dataName,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "report", reportScope: "workflow", modelName: workflow.name },
+    ownerDefinition: {
+      ownerType: "workflow-step",
+      ownerRef: `workflow:${workflow.id}`,
+    },
+  });
+  await repo.repoContext.unifiedDataRepo.save(
+    ModelType.create("workflow"),
+    workflow.id,
+    data,
+    new TextEncoder().encode(JSON.stringify({ value: dataName })),
+  );
+  return data;
+}
+
+/**
+ * Saves a succeeded run of `workflow` whose single step recorded `stepData`
+ * and whose run recorded `workflowData` as workflow-scope artifacts.
+ */
+export async function saveRunWithData(
+  repo: ServeRepo,
+  workflow: Workflow,
+  stepData: Data[],
+  workflowData: Data[] = [],
+): Promise<WorkflowRun> {
+  const artifact = (data: Data) => ({
+    dataId: data.id,
+    name: data.name,
+    version: data.version,
+    tags: { ...data.tags },
+  });
+  const created = WorkflowRun.create(workflow).toData();
+  const run = WorkflowRun.fromData({
+    ...created,
+    status: "succeeded",
+    jobs: created.jobs.map((job, j) => ({
+      ...job,
+      status: "succeeded",
+      steps: job.steps.map((step, i) => ({
+        ...step,
+        status: "succeeded",
+        dataArtifacts: j === 0 && i === 0 ? stepData.map(artifact) : [],
+      })),
+    })),
+    workflowDataArtifacts: workflowData.map(artifact),
+  });
+  await repo.repoContext.workflowRunRepo.save(workflow.id, run);
+  return run;
 }
 
 /** Saves a workflow with one job whose one step runs `model`'s noop method. */
@@ -304,9 +369,11 @@ export async function saveGatedWorkflow(
   repo: ServeRepo,
   name: string,
   gate: string,
+  tags: Record<string, string> = {},
 ): Promise<Workflow> {
   const workflow = Workflow.create({
     name,
+    tags,
     jobs: [
       Job.create({
         name: "main",
