@@ -185,10 +185,8 @@ function reconcileOneFile(
 
   for (const [key, { grant, modelId, instanceName }] of grantsForFile) {
     if (desiredKeys.has(key)) continue;
-    if (grant.state === "revoked") {
-      result.unchanged++;
-      continue;
-    }
+    // Revoked grants stay stored as history; they are not part of the file.
+    if (grant.state === "revoked") continue;
 
     const revoked: Grant = { ...grant, state: "revoked" };
     writes.push(store.writeGrant(modelId, instanceName, revoked));
@@ -252,6 +250,9 @@ export async function reconcileAllFileGrants(
       grantsForFile,
       store,
     );
+    // A deleted file is reported by the reconcile that revokes its grants,
+    // and not again once they are all revoked.
+    if (result.revoked === 0) continue;
     perFile.set(filename, result);
     allWrites.push(...writes);
     totalCreated += result.created;

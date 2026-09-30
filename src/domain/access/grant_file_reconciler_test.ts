@@ -543,3 +543,111 @@ Deno.test("reconcileAllFileGrants: reactivation applies updated methods from fil
   assertEquals(reactivatedGrant.state, "active");
   assertEquals(reactivatedGrant.methods, ["read", "list"]);
 });
+
+Deno.test("reconcileAllFileGrants: reports a deleted file only in the reconcile that revokes its grants", async () => {
+  const existing = new Map([
+    [
+      "model-1",
+      {
+        grant: makeFileGrant({ source: "file:deleted.yaml" }),
+        modelId: "model-1",
+        instanceName: "inst-1",
+      },
+    ],
+  ]);
+  const store = createMockStore(existing);
+
+  const first = await reconcileAllFileGrants(new Map(), store);
+  assertEquals(first.perFile.get("deleted.yaml")?.revoked, 1);
+
+  const second = await reconcileAllFileGrants(new Map(), store);
+  assertEquals(second.perFile.size, 0);
+  assertEquals(second.totalRevoked, 0);
+  assertEquals(second.totalUnchanged, 0);
+});
+
+Deno.test("reconcileAllFileGrants: does not count revoked grants as unchanged", async () => {
+  const existing = new Map([
+    [
+      "model-1",
+      {
+        grant: makeFileGrant({ source: "file:team.yaml" }),
+        modelId: "model-1",
+        instanceName: "inst-1",
+      },
+    ],
+    [
+      "model-2",
+      {
+        grant: makeFileGrant({
+          source: "file:team.yaml",
+          subject: { kind: "user", name: "former" },
+          state: "revoked",
+        }),
+        modelId: "model-2",
+        instanceName: "inst-2",
+      },
+    ],
+  ]);
+  const store = createMockStore(existing);
+
+  const entry: GrantFileEntry = {
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  };
+
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [entry]]]),
+    store,
+  );
+
+  assertEquals(result.perFile.get("team.yaml")?.unchanged, 1);
+  assertEquals(result.totalUnchanged, 1);
+  assertEquals(store.written.size, 0);
+});
+
+Deno.test("reconcileAllFileGrants: revokes grants stored under a second source for the same file once", async () => {
+  // Grants stored twice before swamp-club#2788: once by bare filename, once
+  // by the grants-dir full path.
+  const fullPath = "/srv/repo/grants/admin.yaml";
+  const existing = new Map([
+    [
+      "model-1",
+      {
+        grant: makeFileGrant({ source: "file:admin.yaml" }),
+        modelId: "model-1",
+        instanceName: "inst-1",
+      },
+    ],
+    [
+      "model-2",
+      {
+        grant: makeFileGrant({ source: `file:${fullPath}` }),
+        modelId: "model-2",
+        instanceName: "inst-2",
+      },
+    ],
+  ]);
+  const store = createMockStore(existing);
+
+  const entry: GrantFileEntry = {
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  };
+  const fileEntries = new Map([["admin.yaml", [entry]]]);
+
+  const first = await reconcileAllFileGrants(fileEntries, store);
+  assertEquals(first.perFile.get("admin.yaml")?.unchanged, 1);
+  assertEquals(first.perFile.get(fullPath)?.revoked, 1);
+  assertEquals(store.written.get("inst-2")?.state, "revoked");
+  assertEquals(store.written.has("inst-1"), false);
+
+  const second = await reconcileAllFileGrants(fileEntries, store);
+  assertEquals([...second.perFile.keys()], ["admin.yaml"]);
+  assertEquals(second.totalRevoked, 0);
+  assertEquals(second.totalUnchanged, 1);
+});
