@@ -61,6 +61,9 @@ Deno.test("isControlPlaneModelType: rejects user and other built-in types", () =
       "grant",
       "",
       "   ",
+      "///",
+      "::",
+      "@",
       "workflow",
     ]
   ) {

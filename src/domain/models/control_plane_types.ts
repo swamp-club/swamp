@@ -41,12 +41,16 @@ export const CONTROL_PLANE_MODEL_TYPES: readonly string[] = [
 
 /**
  * The normalized form of a model type string, as ModelType normalizes it,
- * with a leading `@` dropped; null for a blank string.
+ * with a leading `@` dropped; null for a string that normalizes to nothing.
  */
 export function normalizeControlPlaneType(type: string): string | null {
   const stripped = type.startsWith("@") ? type.slice(1) : type;
-  if (stripped.trim().length === 0) return null;
-  return ModelType.create(stripped).normalized;
+  try {
+    return ModelType.create(stripped).normalized;
+  } catch {
+    // Blank, or only separators ("/", "::", "."): not a model type.
+    return null;
+  }
 }
 
 /**

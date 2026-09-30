@@ -983,6 +983,7 @@ export class ModelResolver {
                     data.tags["specName"],
                     ns.modelName,
                     targetNs,
+                    CONTROL_PLANE_MODEL_TYPES,
                   );
                 }
                 const record = this.dataToRecord(
@@ -1050,6 +1051,8 @@ export class ModelResolver {
             this.dataQueryService.checkSpecNameAmbiguity(
               specName,
               ns.modelName,
+              undefined,
+              CONTROL_PLANE_MODEL_TYPES,
             );
           }
           await this.materializePath(results[0]);

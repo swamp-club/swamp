@@ -994,9 +994,9 @@ function replyToOutcome(
       // A control-plane record is decided as admin whatever was asked, so
       // the refusal names what it needed (swamp-club#2756).
       const needed = isControlPlaneRecordResource(resource) ? "admin" : action;
-      // An operation over every resource is decided per kind, never on a
-      // control-plane record, so it names the action it asked for.
       if (decision && decision.effect === "deny" && every) {
+        // An operation over every resource is decided per kind, never on a
+        // control-plane record, so it names the action it asked for.
         sendError(
           socket,
           requestId,

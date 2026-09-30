@@ -228,7 +228,12 @@ export class DataQueryService {
     if (row) {
       if (populated) {
         if (dataName === row.spec_name) {
-          this.checkSpecNameAmbiguity(row.spec_name, modelName, namespace);
+          this.checkSpecNameAmbiguity(
+            row.spec_name,
+            modelName,
+            namespace,
+            options?.excludeModelTypes,
+          );
         }
         return this.buildRecordFromRow(row, includePath);
       }
@@ -273,16 +278,18 @@ export class DataQueryService {
     specName: string,
     modelName: string,
     namespace?: string,
+    excludeModelTypes: readonly string[] = [],
   ): void {
     if (!specName) return;
     if (!this.catalogStore.isPopulated()) {
       this.backfillSync();
     }
+    // Excluded rows are neither peers nor named in the error.
     const peers = this.catalogStore.findLatestRowsBySpecName(
       modelName,
       specName,
       namespace,
-    );
+    ).filter((r) => !excludeModelTypes.includes(r.type_normalized));
     if (peers.length > 1) {
       const names = peers.map((r) => r.data_name).sort();
       throw new UserError(

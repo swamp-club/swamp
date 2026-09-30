@@ -2592,3 +2592,30 @@ Deno.test("getLatestRecord: an excluded newer row does not hide a same-named rec
   assertEquals(record?.modelType, "test-model");
   catalog.close();
 });
+
+Deno.test("checkSpecNameAmbiguity: excluded rows are neither peers nor named", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({
+    model_name: "shared",
+    data_name: "user-main",
+    spec_name: "main",
+    id: "data-user-001",
+  }));
+  catalog.upsert(makeRow({
+    model_name: "shared",
+    data_name: "grant-main",
+    spec_name: "main",
+    type_normalized: "swamp/grant",
+    model_id: "grant-001",
+    id: "data-grant-001",
+  }));
+
+  // Without the exclusion the two rows are ambiguous, naming the grant.
+  assertThrows(
+    () => service.checkSpecNameAmbiguity("main", "shared"),
+    UserError,
+    "grant-main",
+  );
+  service.checkSpecNameAmbiguity("main", "shared", undefined, EXCLUDED);
+  catalog.close();
+});
