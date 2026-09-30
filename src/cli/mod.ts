@@ -1867,6 +1867,26 @@ export function registerCommands(cli: AnyCommand): void {
   cli.command("help", createHelpCommand(cli));
 }
 
+/**
+ * The values to scrub exactly from this invocation's error message. Never
+ * throws: the working directory may have been deleted during the command, and
+ * a failure here must not replace the error being recorded.
+ */
+function knownSensitiveValues(
+  redactedValues: readonly string[],
+  repoDir: string,
+): string[] {
+  try {
+    return buildKnownSensitiveValues(redactedValues, {
+      cwd: Deno.cwd(),
+      home: Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"),
+      repoDir: resolve(repoDir),
+    });
+  } catch {
+    return [...redactedValues];
+  }
+}
+
 export async function runCli(args: string[]): Promise<void> {
   // Rewrite `model @type method run` → `model method run @type` before
   // Cliffy parses the command tree. Must happen before any arg inspection.
@@ -2479,11 +2499,7 @@ async function runInvocation(
         telemetryInvocation,
         startTime,
         error,
-        buildKnownSensitiveValues(redactedValues, {
-          cwd: Deno.cwd(),
-          home: Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"),
-          repoDir: resolve(repoDir),
-        }),
+        knownSensitiveValues(redactedValues, repoDir),
       );
 
       // distinct_id is required by the sender (see success path). Skip the

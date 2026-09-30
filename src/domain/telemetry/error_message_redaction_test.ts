@@ -286,3 +286,47 @@ Deno.test("redactErrorMessage: known values are matched literally", () => {
     "No match for <REDACTED> and <REDACTED>",
   );
 });
+
+Deno.test("redactErrorMessage: a known word inside a path never splits it", () => {
+  assertEquals(
+    redactErrorMessage("Cannot read /srv/acme-billing/customers/x.yaml", [
+      "acme",
+    ]),
+    "Cannot read <PATH>",
+  );
+  assertEquals(
+    redactErrorMessage(
+      "Cannot read D:\\deploy\\staging\\customer-acme\\cfg.yaml",
+      [
+        "staging",
+      ],
+    ),
+    "Cannot read <PATH>",
+  );
+  assertEquals(
+    redactErrorMessage("Cannot read \\\\fs\\staging\\customer-acme\\cfg.yaml", [
+      "staging",
+    ]),
+    "Cannot read <PATH>",
+  );
+});
+
+Deno.test("redactErrorMessage: a known path matches only up to a path boundary", () => {
+  assertEquals(
+    redactErrorMessage("Cannot read /home/alice/acme/x.yaml", ["/home/al"]),
+    "Cannot read <PATH>",
+  );
+  assertEquals(
+    redactErrorMessage("Missing /opt/acme/final report.yaml.", [
+      "/opt/acme/final report.yaml",
+    ]),
+    "Missing <PATH>.",
+  );
+});
+
+Deno.test("redactErrorMessage: known words match whole words only", () => {
+  assertEquals(
+    redactErrorMessage("debug is not valid; see the debugger", ["debug"]),
+    "<REDACTED> is not valid; see the debugger",
+  );
+});

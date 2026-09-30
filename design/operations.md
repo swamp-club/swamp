@@ -23,8 +23,10 @@ something a primitive depends on, move it to `enablers/` and give it an
   whole paths with `<PATH>` (`src/domain/telemetry/error_message_redaction.ts`).
   Before any pattern runs, the exact values the invocation redacted (and their
   absolute forms), the working, home and repo directories are removed from the
-  message, so a path with a space in it needs no guessing. Those values stay in
-  memory and are never recorded.
+  message, so a path with a space in it needs no guessing; other redacted
+  values are removed as whole words after the path patterns. Those values stay
+  in memory and are never recorded. Runs executed by `swamp serve` have no
+  command line, so their error messages rely on the patterns alone.
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`.

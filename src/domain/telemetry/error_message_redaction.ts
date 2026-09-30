@@ -106,31 +106,55 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * Replaces exact occurrences of values known to be sensitive — what the user
- * typed that telemetry redacts, and machine locations such as the working and
- * home directories. Unlike the patterns below this does not have to guess
- * where a path ends, so `/opt/acme/final report.yaml` is removed whole. A path
- * value also takes any path segments that follow it (a file under the home
- * directory). Longest values go first so a value is never split by one of its
- * own prefixes.
+ * Where a known path value may end: at a separator, at a character that
+ * cannot be part of a path, at sentence punctuation or a `:line` suffix, or
+ * at the end. Without this a known `/home/al` would cut `/home/alice` in two.
  */
-function redactKnownValues(
-  message: string,
-  knownValues: readonly string[],
-): string {
-  const values = [...new Set(knownValues)]
-    .filter((v) => v.length >= 3)
+const KNOWN_PATH_END = `(?=$|[\\\\/\\s"'\`<>|,;()\\[\\]{}]|[.:](?:[\\s\\d]|$))`;
+
+function selectKnownValues(
+  values: readonly string[],
+  pathLike: boolean,
+): string[] {
+  return [...new Set(values)]
+    .filter((v) => v.length >= 3 && isPathLike(v) === pathLike)
     .sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Replaces exact occurrences of known path values — typed paths and machine
+ * locations such as the working and home directories — before any pattern
+ * runs. Unlike the patterns this does not have to guess where a path ends, so
+ * `/opt/acme/final report.yaml` is removed whole. A path value also takes the
+ * path segments that follow it (a file under the home directory). Longest
+ * values go first so a value is never split by one of its own prefixes.
+ */
+function redactKnownPaths(
+  message: string,
+  values: readonly string[],
+): string {
   let result = message;
-  for (const value of values) {
-    const pathLike = isPathLike(value);
-    const pattern = pathLike
-      ? `${escapeRegExp(value)}(?:[\\\\/]${PATH_BODY}*${SPACED_SEGMENT})?`
-      : escapeRegExp(value);
-    result = result.replace(
-      new RegExp(pattern, "g"),
-      pathLike ? "<PATH>" : "<REDACTED>",
-    );
+  for (const value of selectKnownValues(values, true)) {
+    const pattern = `${escapeRegExp(value)}${KNOWN_PATH_END}` +
+      `(?:[\\\\/]${PATH_BODY}*${SPACED_SEGMENT})?`;
+    result = result.replace(new RegExp(pattern, "g"), "<PATH>");
+  }
+  return result;
+}
+
+/**
+ * Replaces known values that are not paths — a secret echoed back in an
+ * error, say — as whole words. Runs after the path patterns, so a value that
+ * appears inside a path can never split it and let the rest through.
+ */
+function redactKnownWords(
+  message: string,
+  values: readonly string[],
+): string {
+  let result = message;
+  for (const value of selectKnownValues(values, false)) {
+    const pattern = `(?<![A-Za-z0-9_])${escapeRegExp(value)}(?![A-Za-z0-9_])`;
+    result = result.replace(new RegExp(pattern, "g"), "<REDACTED>");
   }
   return result;
 }
@@ -147,7 +171,7 @@ export function redactErrorMessage(
   message: string,
   knownValues: readonly string[] = [],
 ): string {
-  let result = redactKnownValues(message, knownValues);
+  let result = redactKnownPaths(message, knownValues);
   result = result.replace(
     FILE_URL_RE,
     (match, quote: string | undefined) => {
@@ -165,6 +189,7 @@ export function redactErrorMessage(
     return `<PATH>${trailing}`;
   });
 
+  result = redactKnownWords(result, knownValues);
   result = result.replace(
     HOME_USER_RE,
     (_match, prefix: string) => `${prefix}<REDACTED>`,
