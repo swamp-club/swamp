@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { GrantsDirectoryPoller } from "./grants_directory_poller.ts";
 import type { FileGrantStore } from "./grant_file_reconciler.ts";
 import type { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
@@ -436,5 +437,378 @@ Deno.test("GrantsDirectoryPoller: unchanged external grants dir produces no reco
 
     assertEquals(mock.loadCalls, 0, "load() should not have been called");
     assertEquals(store.writeCalls, 0, "no grants should have been written");
+  });
+});
+
+const DENY_GRANT_YAML =
+  `grants:\n  - subject: "user:alice"\n    effect: deny\n    actions: [run]\n    resource: "workflow:@acme/secret-*"`;
+
+interface StoredGrant {
+  grant: Grant;
+  modelId: string;
+  instanceName: string;
+}
+
+function storedGrant(
+  modelId: string,
+  source: string,
+  overrides: Partial<Grant> = {},
+): StoredGrant {
+  return {
+    modelId,
+    instanceName: `inst-${modelId}`,
+    grant: {
+      id: crypto.randomUUID(),
+      subject: { kind: "user", name: "adam" },
+      effect: "allow",
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "*" },
+      state: "active",
+      source,
+      createdBy: { kind: "user", id: "system" },
+      createdAt: "2026-01-01T00:00:00Z",
+      ...overrides,
+    },
+  };
+}
+
+const aliceDeny: Partial<Grant> = {
+  subject: { kind: "user", name: "alice" },
+  effect: "deny",
+  resource: { kind: "workflow", pattern: "@acme/secret-*" },
+};
+
+/** A store that keeps its grants, so reconcile sees what it wrote. */
+function createStatefulStore(seed: StoredGrant[]): FileGrantStore & {
+  written: Map<string, Grant>;
+} {
+  const grants = new Map(seed.map((g) => [g.modelId, g]));
+  const written = new Map<string, Grant>();
+  return {
+    written,
+    queryFileGrants() {
+      return Promise.resolve(new Map(grants));
+    },
+    ensureDefinition(_instanceName: string) {
+      return Promise.resolve(crypto.randomUUID());
+    },
+    writeGrant(modelId: string, instanceName: string, grant: Grant) {
+      written.set(modelId, grant);
+      grants.set(modelId, { grant, modelId, instanceName });
+      return Promise.resolve();
+    },
+  };
+}
+
+async function reconcileOnce(
+  options: {
+    grantsDir: string;
+    externalGrantsFile?: string;
+    externalGrantsDir?: string;
+    store: FileGrantStore;
+    commitReconcile?: (reconcile: () => Promise<void>) => Promise<void>;
+  },
+  change: () => Promise<void>,
+  until?: () => boolean,
+): Promise<void> {
+  const mock = createMockLoader();
+  const poller = new GrantsDirectoryPoller({
+    grantsDir: options.grantsDir,
+    externalGrantsFile: options.externalGrantsFile,
+    externalGrantsDir: options.externalGrantsDir,
+    fileGrantStore: options.store,
+    policySnapshotLoader: mock.loader,
+    pollIntervalMs: 20,
+    commitReconcile: options.commitReconcile,
+  });
+  await poller.start();
+  try {
+    await change();
+    await waitFor(until ?? (() => mock.loadCalls >= 1), "a reconcile");
+  } finally {
+    await poller.stop();
+  }
+}
+
+Deno.test("GrantsDirectoryPoller: keeps the grants of a file with invalid YAML while other files reconcile", async () => {
+  // A mis-indented deny file must not revoke its deny (swamp-club#2823).
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(join(grantsDir, "deny.yaml"), DENY_GRANT_YAML);
+    await Deno.writeTextFile(join(grantsDir, "team.yaml"), VALID_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", "file:deny.yaml", aliceDeny),
+      storedGrant("team-1", "file:team.yaml"),
+    ]);
+
+    await reconcileOnce({ grantsDir, store }, async () => {
+      await Deno.writeTextFile(
+        join(grantsDir, "deny.yaml"),
+        `${DENY_GRANT_YAML}\n  - subject: "user:bob"\n   effect: deny`,
+      );
+      await Deno.writeTextFile(
+        join(grantsDir, "team.yaml"),
+        VALID_GRANT_YAML.replace("user:adam", "user:bob"),
+      );
+    }, () => store.written.get("team-1")?.state === "revoked");
+
+    assertEquals(store.written.has("deny-1"), false);
+    assertEquals(store.written.get("team-1")?.state, "revoked");
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: keeps all grants of a file with one schema-invalid entry", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(join(grantsDir, "deny.yaml"), DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", "file:deny.yaml", aliceDeny),
+    ]);
+
+    await reconcileOnce({ grantsDir, store }, async () => {
+      await Deno.writeTextFile(
+        join(grantsDir, "deny.yaml"),
+        `${DENY_GRANT_YAML}\n  - subject: "user:bob"\n    effect: deny\n    actions: [runn]\n    resource: "workflow:*"`,
+      );
+    });
+
+    assertEquals(store.written.size, 0);
+  });
+});
+
+Deno.test({
+  name: "GrantsDirectoryPoller: keeps the grants of a file it cannot read",
+  // chmod has no effect on Windows, and root can read a 000 file.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const denyPath = join(grantsDir, "deny.yaml");
+      await Deno.writeTextFile(denyPath, DENY_GRANT_YAML);
+      const store = createStatefulStore([
+        storedGrant("deny-1", "file:deny.yaml", aliceDeny),
+      ]);
+
+      try {
+        await reconcileOnce({ grantsDir, store }, async () => {
+          await Deno.chmod(denyPath, 0o000);
+        });
+      } finally {
+        await Deno.chmod(denyPath, 0o644);
+      }
+
+      assertEquals(store.written.size, 0);
+    });
+  },
+});
+
+Deno.test("GrantsDirectoryPoller: still revokes the grants of a deleted file", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(join(grantsDir, "deny.yaml"), DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", "file:deny.yaml", aliceDeny),
+    ]);
+
+    await reconcileOnce({ grantsDir, store }, async () => {
+      await Deno.remove(join(grantsDir, "deny.yaml"));
+    });
+
+    assertEquals(store.written.get("deny-1")?.state, "revoked");
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: keeps the grants of a missing --grants-dir, as startup refuses it", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    const externalDir = join(dir, "external");
+    await ensureDir(grantsDir);
+    await ensureDir(externalDir);
+    const externalFile = join(externalDir, "deny.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+
+    await reconcileOnce(
+      { grantsDir, externalGrantsDir: externalDir, store },
+      async () => {
+        await Deno.rename(externalDir, join(dir, "unmounted"));
+      },
+    );
+
+    assertEquals(store.written.size, 0);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: revokes the grants of a --grants-dir that comes back empty after going missing", async () => {
+  // Missing keeps the grants; the remount without the file must still revoke
+  // them, so missing and empty cannot look the same to change detection.
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    const externalDir = join(dir, "external");
+    await ensureDir(grantsDir);
+    await ensureDir(externalDir);
+    const externalFile = join(externalDir, "deny.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+    const mock = createMockLoader();
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      externalGrantsDir: externalDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 20,
+    });
+    await poller.start();
+    try {
+      await Deno.remove(externalDir, { recursive: true });
+      await waitFor(() => mock.loadCalls >= 1, "the unmount reconcile");
+      assertEquals(store.written.size, 0);
+
+      await ensureDir(externalDir);
+      await waitFor(
+        () => store.written.get("deny-1")?.state === "revoked",
+        "the empty remount to revoke the deny",
+      );
+    } finally {
+      await poller.stop();
+    }
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: keeps the grants of a deleted --grants-file, as startup refuses it", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const externalFile = join(dir, "grants-file.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+
+    await reconcileOnce(
+      { grantsDir, externalGrantsFile: externalFile, store },
+      async () => {
+        await Deno.remove(externalFile);
+      },
+    );
+
+    assertEquals(store.written.size, 0);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: keeps the grants of a --grants-file with invalid YAML", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const externalFile = join(dir, "grants-file.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+
+    await reconcileOnce(
+      { grantsDir, externalGrantsFile: externalFile, store },
+      async () => {
+        await Deno.writeTextFile(externalFile, "grants: [\n");
+      },
+    );
+
+    assertEquals(store.written.size, 0);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: revokes the grants of an emptied --grants-file, as before", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const externalFile = join(dir, "grants-file.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+
+    await reconcileOnce(
+      { grantsDir, externalGrantsFile: externalFile, store },
+      async () => {
+        await Deno.writeTextFile(externalFile, "");
+      },
+    );
+
+    assertEquals(store.written.get("deny-1")?.state, "revoked");
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: revokes the grants of an emptied --grants-dir file, as before", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    const externalDir = join(dir, "external");
+    await ensureDir(grantsDir);
+    await ensureDir(externalDir);
+    const externalFile = join(externalDir, "deny.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+
+    await reconcileOnce(
+      { grantsDir, externalGrantsDir: externalDir, store },
+      async () => {
+        await Deno.writeTextFile(externalFile, "  \n");
+      },
+    );
+
+    assertEquals(store.written.get("deny-1")?.state, "revoked");
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: runs store writes and the snapshot reload inside commitReconcile", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const store = createStatefulStore([]);
+    let insideUnit = false;
+    let writesOutsideUnit = 0;
+    let units = 0;
+    const trackingStore: FileGrantStore = {
+      ...store,
+      writeGrant(modelId, instanceName, grant) {
+        if (!insideUnit) writesOutsideUnit++;
+        return store.writeGrant(modelId, instanceName, grant);
+      },
+    };
+
+    await reconcileOnce(
+      {
+        grantsDir,
+        store: trackingStore,
+        commitReconcile: async (reconcile) => {
+          units++;
+          insideUnit = true;
+          try {
+            await reconcile();
+          } finally {
+            insideUnit = false;
+          }
+        },
+      },
+      async () => {
+        await Deno.writeTextFile(
+          join(grantsDir, "team.yaml"),
+          VALID_GRANT_YAML,
+        );
+      },
+    );
+
+    assert(units >= 1);
+    assertEquals(store.written.size, 1);
+    assertEquals(writesOutsideUnit, 0);
   });
 });

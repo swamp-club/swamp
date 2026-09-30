@@ -91,10 +91,14 @@ interface StoredFileGrant {
   instanceName: string;
 }
 
+// Every stored copy of an identity is kept. Two serve instances starting
+// against one datastore can each create a copy of the same file grant, and
+// reconciling only one of them would leave the other active after the entry
+// is removed (swamp-club#2822).
 function groupByFilename(
   allFileGrants: Map<string, StoredFileGrant>,
-): Map<string, Map<string, StoredFileGrant>> {
-  const byFile = new Map<string, Map<string, StoredFileGrant>>();
+): Map<string, Map<string, StoredFileGrant[]>> {
+  const byFile = new Map<string, Map<string, StoredFileGrant[]>>();
   for (const [_id, entry] of allFileGrants) {
     if (!isFileSource(entry.grant.source)) continue;
     const filename = parseFileSourceFilename(entry.grant.source);
@@ -104,15 +108,35 @@ function groupByFilename(
       byFile.set(filename, fileMap);
     }
     const key = grantIdentityKey(entry.grant);
-    fileMap.set(key, entry);
+    const copies = fileMap.get(key);
+    if (copies) {
+      copies.push(entry);
+    } else {
+      fileMap.set(key, [entry]);
+    }
   }
   return byFile;
+}
+
+/**
+ * Picks the copy of a grant that reconcile keeps: the active copy with the
+ * lowest modelId, or the lowest-modelId copy when none is active. The order
+ * is total, so peers that see the same copies keep the same one and never
+ * revoke every copy between them.
+ */
+function selectKeeper<T extends { grant: Grant; modelId: string }>(
+  copies: readonly T[],
+): T {
+  const byModelId = [...copies].sort((a, b) =>
+    a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0
+  );
+  return byModelId.find((c) => c.grant.state === "active") ?? byModelId[0];
 }
 
 function reconcileOneFile(
   filename: string,
   entries: GrantFileEntry[],
-  grantsForFile: Map<string, StoredFileGrant>,
+  grantsForFile: Map<string, StoredFileGrant[]>,
   store: FileGrantStore,
 ): { result: MaterializeResult; writes: Promise<void>[] } {
   const result: MaterializeResult = {
@@ -129,7 +153,19 @@ function reconcileOneFile(
     const key = entryIdentityKey(entry);
     desiredKeys.add(key);
 
-    const existing = grantsForFile.get(key);
+    const copies = grantsForFile.get(key) ?? [];
+    const existing = copies.length > 0 ? selectKeeper(copies) : undefined;
+
+    for (const copy of copies) {
+      if (copy === existing || copy.grant.state !== "active") continue;
+      const revoked: Grant = { ...copy.grant, state: "revoked" };
+      writes.push(store.writeGrant(copy.modelId, copy.instanceName, revoked));
+      result.revoked++;
+      const subjectStr = subjectToString(copy.grant.subject);
+      const resourceStr = resourceSelectorToString(copy.grant.resource);
+      logger
+        .info`Revoked duplicate file grant for ${subjectStr} on ${resourceStr} from ${filename}`;
+    }
 
     if (existing && existing.grant.state === "active") {
       if (!methodsEqual(existing.grant.methods, entry.methods)) {
@@ -183,18 +219,20 @@ function reconcileOneFile(
       .info`Created file grant for ${subjectStr} on ${resourceStr} from ${filename}`;
   }
 
-  for (const [key, { grant, modelId, instanceName }] of grantsForFile) {
+  for (const [key, copies] of grantsForFile) {
     if (desiredKeys.has(key)) continue;
-    // Revoked grants stay stored as history; they are not part of the file.
-    if (grant.state === "revoked") continue;
+    for (const { grant, modelId, instanceName } of copies) {
+      // Revoked grants stay stored as history; they are not part of the file.
+      if (grant.state === "revoked") continue;
 
-    const revoked: Grant = { ...grant, state: "revoked" };
-    writes.push(store.writeGrant(modelId, instanceName, revoked));
-    const subjectStr = subjectToString(grant.subject);
-    const resourceStr = resourceSelectorToString(grant.resource);
-    result.revoked++;
-    logger
-      .info`Revoked file grant for ${subjectStr} on ${resourceStr} from ${filename}`;
+      const revoked: Grant = { ...grant, state: "revoked" };
+      writes.push(store.writeGrant(modelId, instanceName, revoked));
+      const subjectStr = subjectToString(grant.subject);
+      const resourceStr = resourceSelectorToString(grant.resource);
+      result.revoked++;
+      logger
+        .info`Revoked file grant for ${subjectStr} on ${resourceStr} from ${filename}`;
+    }
   }
 
   return { result, writes };
@@ -210,9 +248,19 @@ export interface ReconcileAllResult {
   perFile: Map<string, MaterializeResult>;
 }
 
+export interface ReconcileAllOptions {
+  /**
+   * True for a source whose file could not be read or validated. Its stored
+   * grants are left exactly as they are instead of being reconciled as a
+   * deleted file (swamp-club#2823).
+   */
+  isSourceUnavailable?: (filename: string) => boolean;
+}
+
 export async function reconcileAllFileGrants(
   fileEntries: Map<string, GrantFileEntry[]>,
   store: FileGrantStore,
+  options: ReconcileAllOptions = {},
 ): Promise<ReconcileAllResult> {
   const allFileGrants = await store.queryFileGrants();
   const grantsByFile = groupByFilename(allFileGrants);
@@ -244,6 +292,7 @@ export async function reconcileAllFileGrants(
 
   for (const [filename, grantsForFile] of grantsByFile) {
     if (fileEntries.has(filename)) continue;
+    if (options.isSourceUnavailable?.(filename)) continue;
     const { result, writes } = reconcileOneFile(
       filename,
       [],

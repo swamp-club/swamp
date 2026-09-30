@@ -18,10 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import {
   type ConditionValidator,
   type GrantFileEntry,
+  type GrantFileError,
   parseGrantFile,
   readGrantFiles,
 } from "./grant_file.ts";
@@ -43,6 +44,12 @@ export interface GrantsDirectoryPollerOptions {
   fileGrantStore: FileGrantStore;
   policySnapshotLoader: PolicySnapshotLoader;
   pollIntervalMs?: number;
+  /**
+   * Runs each reconcile (store writes and snapshot reload) as one unit.
+   * Serve passes a wrapper that holds the sync gate and pushes the writes
+   * to the datastore; without one the unit runs as is.
+   */
+  commitReconcile?: (reconcile: () => Promise<void>) => Promise<void>;
 }
 
 export class GrantsDirectoryPoller {
@@ -53,6 +60,9 @@ export class GrantsDirectoryPoller {
   readonly #fileGrantStore: FileGrantStore;
   readonly #policySnapshotLoader: PolicySnapshotLoader;
   readonly #pollIntervalMs: number;
+  readonly #commitReconcile: (
+    reconcile: () => Promise<void>,
+  ) => Promise<void>;
   #timer: ReturnType<typeof setInterval> | null = null;
   #contentHash: string = "";
   #pendingReconcile: Promise<void> = Promise.resolve();
@@ -66,6 +76,8 @@ export class GrantsDirectoryPoller {
     this.#fileGrantStore = options.fileGrantStore;
     this.#policySnapshotLoader = options.policySnapshotLoader;
     this.#pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.#commitReconcile = options.commitReconcile ??
+      ((reconcile) => reconcile());
   }
 
   async start(): Promise<void> {
@@ -103,116 +115,149 @@ export class GrantsDirectoryPoller {
 
       logger.info`Grants directory change detected, reconciling`;
 
+      // Auto-reload does what a restart would do with the same files. Where
+      // startup refuses to start - a file that fails to read or validate, a
+      // missing --grants-file or --grants-dir - the source keeps its stored
+      // grants: reconciling it as empty would revoke them, and a broken deny
+      // file would fail open (swamp-club#2823). Where startup accepts the
+      // input - a deleted or emptied file, no repository grants/ directory -
+      // its grants are revoked, as they always have been.
+      const validEntries = new Map<string, GrantFileEntry[]>();
+      const unavailable = new Set<string>();
+      let externalDirUnavailable = false;
+
       const grantFileResults = await readGrantFiles(
         this.#grantsDir,
         this.#validateCondition,
       );
-
-      const validEntries = new Map<string, GrantFileEntry[]>();
       for (const [filename, result] of grantFileResults) {
         if (result.errors.length > 0) {
-          for (const error of result.errors) {
-            const loc = error.entryIndex !== undefined
-              ? `${error.filename} entry ${error.entryIndex + 1}`
-              : error.filename;
-            logger
-              .warn`Grant file error during auto-reload: ${loc}: ${error.message}`;
-          }
+          this.#logUnavailable(filename, result.errors);
+          unavailable.add(filename);
+          continue;
         }
         validEntries.set(filename, result.entries);
       }
 
       if (this.#externalGrantsFile) {
+        const filePath = this.#externalGrantsFile;
         try {
-          const content = await Deno.readTextFile(this.#externalGrantsFile);
+          const content = await Deno.readTextFile(filePath);
           if (content.trim().length > 0) {
-            const externalResult = parseGrantFile(
-              this.#externalGrantsFile,
+            const result = parseGrantFile(
+              filePath,
               content,
               this.#validateCondition,
             );
-            if (externalResult.errors.length > 0) {
-              for (const error of externalResult.errors) {
-                logger
-                  .warn`External grants file error during auto-reload: ${error.message}`;
-              }
+            if (result.errors.length > 0) {
+              this.#logUnavailable(filePath, result.errors);
+              unavailable.add(filePath);
+            } else {
+              validEntries.set(filePath, result.entries);
             }
-            validEntries.set(this.#externalGrantsFile, externalResult.entries);
           }
         } catch (error) {
-          logger
-            .warn`Failed to read external grants file during auto-reload: ${error}`;
+          this.#logUnavailable(filePath, [{
+            filename: filePath,
+            message: `Failed to read: ${error}`,
+          }]);
+          unavailable.add(filePath);
         }
       }
 
       if (this.#externalGrantsDir) {
+        const externalDir = this.#externalGrantsDir;
+        let yamlFiles: Deno.DirEntry[] | null = null;
         try {
           const dirEntries: Deno.DirEntry[] = [];
-          for await (const entry of Deno.readDir(this.#externalGrantsDir)) {
+          for await (const entry of Deno.readDir(externalDir)) {
             dirEntries.push(entry);
           }
-          const yamlFiles = dirEntries
+          yamlFiles = dirEntries
             .filter((e) =>
               (e.isFile || e.isSymlink) &&
               (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
               !e.name.startsWith(".")
             )
             .sort((a, b) => a.name.localeCompare(b.name));
-
-          for (const file of yamlFiles) {
-            const filePath = join(this.#externalGrantsDir, file.name);
-            try {
-              const content = await Deno.readTextFile(filePath);
-              if (content.trim().length === 0) continue;
-              const result = parseGrantFile(
-                filePath,
-                content,
-                this.#validateCondition,
-              );
-              if (result.errors.length > 0) {
-                for (const error of result.errors) {
-                  const loc = error.entryIndex !== undefined
-                    ? `${error.filename} entry ${error.entryIndex + 1}`
-                    : error.filename;
-                  logger
-                    .warn`External grants dir file error during auto-reload: ${loc}: ${error.message}`;
-                }
-              }
-              validEntries.set(filePath, result.entries);
-            } catch (error) {
-              logger
-                .warn`Failed to read external grants dir file ${filePath} during auto-reload: ${error}`;
-            }
-          }
         } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) {
-            logger
-              .warn`Failed to read external grants directory during auto-reload: ${error}`;
+          // Startup refuses a missing or unreadable --grants-dir; an
+          // unmounted volume must not revoke its grants.
+          logger
+            .error`Failed to read grants directory ${externalDir} during auto-reload, keeping the stored grants of its files unchanged: ${error}`;
+          externalDirUnavailable = true;
+        }
+
+        for (const file of yamlFiles ?? []) {
+          const filePath = join(externalDir, file.name);
+          try {
+            const content = await Deno.readTextFile(filePath);
+            if (content.trim().length === 0) continue;
+            const result = parseGrantFile(
+              filePath,
+              content,
+              this.#validateCondition,
+            );
+            if (result.errors.length > 0) {
+              this.#logUnavailable(filePath, result.errors);
+              unavailable.add(filePath);
+              continue;
+            }
+            validEntries.set(filePath, result.entries);
+          } catch (error) {
+            // Deleted since the directory was listed: revoke, as a delete.
+            if (error instanceof Deno.errors.NotFound) continue;
+            this.#logUnavailable(filePath, [{
+              filename: filePath,
+              message: `Failed to read: ${error}`,
+            }]);
+            unavailable.add(filePath);
           }
         }
       }
 
-      const reconcileResult = await reconcileAllFileGrants(
-        validEntries,
-        this.#fileGrantStore,
-      );
+      const externalDir = this.#externalGrantsDir;
+      const isSourceUnavailable = (filename: string) =>
+        unavailable.has(filename) ||
+        (externalDirUnavailable && externalDir !== undefined &&
+          dirname(filename) === externalDir);
 
-      if (
-        reconcileResult.totalCreated > 0 ||
-        reconcileResult.totalRevoked > 0 ||
-        reconcileResult.totalReactivated > 0
-      ) {
-        logger
-          .info`Grants auto-reload reconciled (${reconcileResult.filesProcessed} file(s)): ${reconcileResult.totalCreated} created, ${reconcileResult.totalRevoked} revoked, ${reconcileResult.totalReactivated} reactivated, ${reconcileResult.totalUnchanged} unchanged`;
-      }
+      await this.#commitReconcile(async () => {
+        const reconcileResult = await reconcileAllFileGrants(
+          validEntries,
+          this.#fileGrantStore,
+          { isSourceUnavailable },
+        );
 
-      await this.#policySnapshotLoader.load();
+        if (
+          reconcileResult.totalCreated > 0 ||
+          reconcileResult.totalRevoked > 0 ||
+          reconcileResult.totalReactivated > 0
+        ) {
+          logger
+            .info`Grants auto-reload reconciled (${reconcileResult.filesProcessed} file(s)): ${reconcileResult.totalCreated} created, ${reconcileResult.totalRevoked} revoked, ${reconcileResult.totalReactivated} reactivated, ${reconcileResult.totalUnchanged} unchanged`;
+        }
+
+        await this.#policySnapshotLoader.load();
+      });
       this.#contentHash = newHash;
     } catch (error) {
       logger.error`Grants directory poll failed: ${error}`;
     } finally {
       this.#reconciling = false;
     }
+  }
+
+  #logUnavailable(source: string, errors: GrantFileError[]): void {
+    for (const error of errors) {
+      const loc = error.entryIndex !== undefined
+        ? `${error.filename} entry ${error.entryIndex + 1}`
+        : error.filename;
+      logger
+        .error`Grant file error during auto-reload: ${loc}: ${error.message}`;
+    }
+    logger
+      .error`Keeping the stored grants from ${source} unchanged until it loads without errors`;
   }
 
   async #computeContentHash(): Promise<string> {
@@ -283,6 +328,10 @@ export class GrantsDirectoryPoller {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
         }
+        // A missing --grants-dir keeps its grants while an empty one revokes
+        // them, so the two must hash differently: a volume that unmounts and
+        // comes back empty has to trigger a reconcile.
+        parts.push("EXTDIR:MISSING");
       }
     }
 

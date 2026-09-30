@@ -47,10 +47,20 @@ export interface MaterializeResult {
   unchanged: number;
 }
 
+export interface StoredConfigGrant {
+  grant: Grant;
+  modelId: string;
+}
+
 export interface AdminGrantStore {
-  queryConfigGrants(): Promise<
-    Map<string, { grant: Grant; modelId: string }>
-  >;
+  /**
+   * Config grants keyed by instance name. An instance name can hold more
+   * than one stored copy: serve instances sharing a datastore each create
+   * their own (swamp-club#2822).
+   */
+  queryConfigGrants(): Promise<Map<string, StoredConfigGrant[]>>;
+  /** The id of the definition stored under `instanceName`, if any. */
+  findDefinitionId(instanceName: string): Promise<string | undefined>;
   ensureDefinition(instanceName: string): Promise<string>;
   writeGrant(
     modelId: string,
@@ -88,10 +98,16 @@ function buildAdminGrant(adminPrincipal: string): Grant {
   };
 }
 
+/**
+ * @param onDefinitionSaved - called with the path of each grant definition
+ *   this store creates, right after it is written, so a caller can re-mark
+ *   it dirty before pushing.
+ */
 export function createAdminGrantStore(
   readRepo: DefinitionRepository,
   writeRepo: DefinitionRepository,
   dataRepo: UnifiedDataRepository,
+  onDefinitionSaved?: (path: string) => void,
 ): AdminGrantStore {
   return {
     async queryConfigGrants() {
@@ -103,10 +119,7 @@ export function createAdminGrantStore(
       ]);
       const grantDataItems = [...canonical, ...orphaned];
 
-      const configGrants = new Map<
-        string,
-        { grant: Grant; modelId: string }
-      >();
+      const configGrants = new Map<string, StoredConfigGrant[]>();
       for (const { data, modelType, modelId } of grantDataItems) {
         const attrs = await readAttributes(
           dataRepo,
@@ -118,13 +131,21 @@ export function createAdminGrantStore(
         const parsed = GrantSchema.safeParse(attrs);
         if (parsed.success && parsed.data.source === "config") {
           const modelName = data.tags["modelName"] ?? "";
-          configGrants.set(modelName, {
-            grant: parsed.data,
-            modelId,
-          });
+          const copy = { grant: parsed.data, modelId };
+          const copies = configGrants.get(modelName);
+          if (copies) {
+            copies.push(copy);
+          } else {
+            configGrants.set(modelName, [copy]);
+          }
         }
       }
       return configGrants;
+    },
+
+    async findDefinitionId(instanceName: string) {
+      const def = await readRepo.findByName(GRANT_MODEL_TYPE, instanceName);
+      return def?.id;
     },
 
     async ensureDefinition(instanceName: string) {
@@ -141,6 +162,7 @@ export function createAdminGrantStore(
           typeVersion: grantModel.version,
         });
         await writeRepo.save(GRANT_MODEL_TYPE, def);
+        onDefinitionSaved?.(writeRepo.getPath(GRANT_MODEL_TYPE, def.id));
       }
       return def.id;
     },
@@ -210,14 +232,22 @@ export async function materializeAdmins(
     const instanceName = instanceNameForAdmin(hash);
     desiredInstanceNames.add(instanceName);
 
-    const existing = configGrants.get(instanceName);
-
-    if (existing && existing.grant.state === "active") {
+    // Every copy of a wanted admin grant is left as it is. Revoking the
+    // extras would need peers to agree on which copy survives, and a peer
+    // whose synced definition differs could revoke the one the other kept,
+    // leaving the admin with no active grant. An active duplicate is
+    // harmless: removing the admin revokes every copy below.
+    const copies = configGrants.get(instanceName) ?? [];
+    if (copies.some((c) => c.grant.state === "active")) {
       result.unchanged++;
       continue;
     }
 
-    if (existing && existing.grant.state === "revoked") {
+    if (copies.length > 0) {
+      const existing = selectCopyToReactivate(
+        copies,
+        await store.findDefinitionId(instanceName),
+      );
       const reactivated: Grant = { ...existing.grant, state: "active" };
       await store.writeGrant(existing.modelId, instanceName, reactivated);
       result.reactivated++;
@@ -232,21 +262,39 @@ export async function materializeAdmins(
     logger.info`Created admin grant for ${admin}`;
   }
 
-  for (const [instanceName, { grant, modelId }] of configGrants) {
+  for (const [instanceName, copies] of configGrants) {
     if (desiredInstanceNames.has(instanceName)) continue;
-    if (grant.state === "revoked") {
-      result.unchanged++;
-      continue;
-    }
+    for (const { grant, modelId } of copies) {
+      if (grant.state === "revoked") {
+        result.unchanged++;
+        continue;
+      }
 
-    const revoked: Grant = { ...grant, state: "revoked" };
-    await store.writeGrant(modelId, instanceName, revoked);
-    const revokedSubject = subjectToString(grant.subject);
-    result.revoked++;
-    logger.info`Revoked admin grant for ${revokedSubject}`;
+      const revoked: Grant = { ...grant, state: "revoked" };
+      await store.writeGrant(modelId, instanceName, revoked);
+      const revokedSubject = subjectToString(grant.subject);
+      result.revoked++;
+      logger.info`Revoked admin grant for ${revokedSubject}`;
+    }
   }
 
   return result;
+}
+
+/**
+ * Picks which revoked copy of a wanted admin grant to reactivate: the copy
+ * whose model id matches the stored definition, so it is not orphaned data,
+ * then the lowest model id.
+ */
+function selectCopyToReactivate(
+  copies: readonly StoredConfigGrant[],
+  definitionId: string | undefined,
+): StoredConfigGrant {
+  const byModelId = [...copies].sort((a, b) =>
+    a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0
+  );
+  return byModelId.find((c) => c.modelId === definitionId) ??
+    byModelId[0];
 }
 
 export interface MigrateGrantDefinitionsResult {

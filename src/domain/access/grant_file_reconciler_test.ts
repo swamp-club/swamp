@@ -73,7 +73,8 @@ function createMockStore(
       grant: Grant,
     ) {
       written.set(instanceName, grant);
-      grants.set(instanceName, { grant, modelId: _modelId, instanceName });
+      // Keyed by modelId, as the real store's queryFileGrants is.
+      grants.set(_modelId, { grant, modelId: _modelId, instanceName });
       return Promise.resolve();
     },
   };
@@ -650,4 +651,159 @@ Deno.test("reconcileAllFileGrants: revokes grants stored under a second source f
   assertEquals([...second.perFile.keys()], ["admin.yaml"]);
   assertEquals(second.totalRevoked, 0);
   assertEquals(second.totalUnchanged, 1);
+});
+
+function duplicateCopies(
+  source: string,
+  modelIds: string[],
+  overrides: Partial<Grant> = {},
+): Map<string, { grant: Grant; modelId: string; instanceName: string }> {
+  return new Map(modelIds.map((modelId) => [
+    modelId,
+    {
+      grant: makeFileGrant({ source, ...overrides }),
+      modelId,
+      instanceName: `inst-${modelId}`,
+    },
+  ]));
+}
+
+const adamEntry: GrantFileEntry = {
+  subject: { kind: "user", name: "adam" },
+  effect: "allow",
+  actions: ["run"],
+  resource: { kind: "workflow", pattern: "*" },
+};
+
+Deno.test("reconcileAllFileGrants: revokes every active copy of a removed entry", async () => {
+  // Two serve instances on one datastore each created a copy
+  // (swamp-club#2822).
+  const store = createMockStore(
+    duplicateCopies("file:team.yaml", ["model-b", "model-a"]),
+  );
+
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", []]]),
+    store,
+  );
+
+  assertEquals(result.perFile.get("team.yaml")?.revoked, 2);
+  assertEquals(store.written.get("inst-model-a")?.state, "revoked");
+  assertEquals(store.written.get("inst-model-b")?.state, "revoked");
+
+  const second = await reconcileAllFileGrants(
+    new Map([["team.yaml", []]]),
+    store,
+  );
+  assertEquals(second.totalRevoked, 0);
+});
+
+Deno.test("reconcileAllFileGrants: revokes every active copy of a deleted file", async () => {
+  const store = createMockStore(
+    duplicateCopies("file:admin.yaml", ["model-a", "model-b"]),
+  );
+
+  const result = await reconcileAllFileGrants(new Map(), store);
+
+  assertEquals(result.perFile.get("admin.yaml")?.revoked, 2);
+  assertEquals(store.written.get("inst-model-a")?.state, "revoked");
+  assertEquals(store.written.get("inst-model-b")?.state, "revoked");
+});
+
+Deno.test("reconcileAllFileGrants: keeps the lowest-modelId copy of a desired entry and revokes the others", async () => {
+  const store = createMockStore(
+    duplicateCopies("file:team.yaml", ["model-c", "model-a", "model-b"]),
+  );
+
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [adamEntry]]]),
+    store,
+  );
+
+  const perFile = result.perFile.get("team.yaml");
+  assertEquals(perFile?.unchanged, 1);
+  assertEquals(perFile?.revoked, 2);
+  assertEquals(store.written.has("inst-model-a"), false);
+  assertEquals(store.written.get("inst-model-b")?.state, "revoked");
+  assertEquals(store.written.get("inst-model-c")?.state, "revoked");
+
+  const second = await reconcileAllFileGrants(
+    new Map([["team.yaml", [adamEntry]]]),
+    store,
+  );
+  assertEquals(second.totalRevoked, 0);
+  assertEquals(second.totalUnchanged, 1);
+});
+
+Deno.test("reconcileAllFileGrants: keeps an active copy over a lower-modelId revoked one", async () => {
+  const existing = duplicateCopies("file:team.yaml", ["model-b"]);
+  existing.set("model-a", {
+    grant: makeFileGrant({ source: "file:team.yaml", state: "revoked" }),
+    modelId: "model-a",
+    instanceName: "inst-model-a",
+  });
+  const store = createMockStore(existing);
+
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [adamEntry]]]),
+    store,
+  );
+
+  assertEquals(result.totalUnchanged, 1);
+  assertEquals(result.totalReactivated, 0);
+  assertEquals(store.written.size, 0);
+});
+
+Deno.test("reconcileAllFileGrants: reactivates only one of several revoked copies", async () => {
+  const store = createMockStore(
+    duplicateCopies("file:team.yaml", ["model-b", "model-a"], {
+      state: "revoked",
+    }),
+  );
+
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [adamEntry]]]),
+    store,
+  );
+
+  assertEquals(result.totalReactivated, 1);
+  assertEquals(store.written.get("inst-model-a")?.state, "active");
+  assertEquals(store.written.has("inst-model-b"), false);
+});
+
+Deno.test("reconcileAllFileGrants: updates methods on the kept copy and revokes the stale duplicate", async () => {
+  const store = createMockStore(
+    duplicateCopies("file:team.yaml", ["model-a", "model-b"]),
+  );
+
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [{ ...adamEntry, methods: ["read"] }]]]),
+    store,
+  );
+
+  assertEquals(result.totalUpdated, 1);
+  assertEquals(result.totalRevoked, 1);
+  assertEquals(store.written.get("inst-model-a")?.methods, ["read"]);
+  assertEquals(store.written.get("inst-model-b")?.state, "revoked");
+});
+
+Deno.test("reconcileAllFileGrants: leaves the grants of an unavailable source unchanged", async () => {
+  // A file that failed to read or validate is not a deleted file
+  // (swamp-club#2823).
+  const existing = duplicateCopies("file:deny.yaml", ["model-a"], {
+    effect: "deny",
+  });
+  for (const [id, copy] of duplicateCopies("file:gone.yaml", ["model-g"])) {
+    existing.set(id, copy);
+  }
+  const store = createMockStore(existing);
+
+  const result = await reconcileAllFileGrants(new Map(), store, {
+    isSourceUnavailable: (filename) => filename === "deny.yaml",
+  });
+
+  assertEquals(result.perFile.has("deny.yaml"), false);
+  assertEquals(store.written.has("inst-model-a"), false);
+  assertEquals(result.perFile.get("gone.yaml")?.revoked, 1);
+  assertEquals(store.written.get("inst-model-g")?.state, "revoked");
 });

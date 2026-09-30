@@ -193,6 +193,34 @@ The `GrantFileReconciler` syncs file grants into model data, creating, updating
 or revoking them as files change. The `file:<filename>` source separates them
 from method-created grants during reconciliation.
 
+Reconcile treats every stored copy of a grant as the same grant. Serve
+instances that start against one datastore can each store a copy of a file
+grant or `--admins` grant. An entry removed from a file, or an admin removed
+from `--admins`, has every copy revoked.
+
+For a file grant still in its file, reconcile keeps the active copy with the
+lowest model id and revokes the others. The order does not depend on local
+state, so no peer ever revokes the lowest active copy it can see, and at least
+one copy stays active while peers sync. Admin grants for admins still in
+`--admins` are left as they are, duplicates included: their definitions share a
+name-derived path, so peers cannot agree on a copy to keep until they sync. A
+wrong pick could revoke the last active copy, and an active duplicate does no
+harm. When every copy is revoked and the admin is added back, the copy backed
+by the stored definition is reactivated.
+
+Startup and `--grant-reload auto` push their grant writes to the datastore, as
+`access reload` does, inside the exclusive sync gate
+(`src/serve/grant_write_tracking.ts`).
+
+Under `--grant-reload auto`, the poller does what a restart would do with the
+same files. Where startup refuses to start, the source keeps its stored grants
+unchanged and the error is logged: a file with a YAML or schema error, an
+unreadable file, and a missing or unreadable `--grants-file` or `--grants-dir`
+(for example an unmounted volume). Other files still reconcile. Where startup
+accepts the input, its grants are revoked as before: a deleted or emptied
+file, an emptied `--grants-file`, and a missing repository `grants/`
+directory.
+
 Implementation: `src/domain/access/grant_file.ts`,
 `src/domain/access/grant_file_reconciler.ts`.
 

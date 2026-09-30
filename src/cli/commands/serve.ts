@@ -315,7 +315,6 @@ import {
 } from "../../domain/access/policy_snapshot_loader.ts";
 import { GrantsDirectoryPoller } from "../../domain/access/grants_directory_poller.ts";
 import {
-  createAdminGrantStore,
   materializeAdmins,
   migrateGrantDefinitions,
 } from "../../domain/access/admin_materializer.ts";
@@ -326,10 +325,11 @@ import {
   resolveExternalGrantsDir,
 } from "../../domain/access/grant_file.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import { reconcileAllFileGrants } from "../../domain/access/grant_file_reconciler.ts";
 import {
-  createFileGrantStore,
-  reconcileAllFileGrants,
-} from "../../domain/access/grant_file_reconciler.ts";
+  createGrantWriteCommit,
+  createGrantWriteTracking,
+} from "../../serve/grant_write_tracking.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
@@ -3388,23 +3388,18 @@ export const serveCommand = new Command()
       false,
       repoContext.markDirty,
     );
-    const adminGrantStore = createAdminGrantStore(
+    // Both stores record what they write, so startup and the grants
+    // auto-reload can push their grant writes as access.reload does.
+    const grantWrites = createGrantWriteTracking(
       repoContext.definitionRepo,
       autoDefRepo,
       repoContext.unifiedDataRepo,
     );
-    const materializeResult = await materializeAdmins(
-      authConfig.mode,
-      authConfig.admins,
-      adminGrantStore,
-    );
-    if (
-      materializeResult.created > 0 || materializeResult.updated > 0 ||
-      materializeResult.revoked > 0 || materializeResult.reactivated > 0
-    ) {
-      logger
-        .info`Admin grants materialized: ${materializeResult.created} created, ${materializeResult.updated} updated, ${materializeResult.revoked} revoked, ${materializeResult.reactivated} reactivated, ${materializeResult.unchanged} unchanged`;
-    }
+    const commitGrantWrites = createGrantWriteCommit(syncGate, grantWrites, {
+      syncService,
+      markDirty: repoContext.markDirty,
+      namespace: serveNamespace,
+    });
 
     const grantsDir = join(resolvedRepoDir, "grants");
     const grantFileResults = await readGrantFiles(
@@ -3577,16 +3572,33 @@ export const serveCommand = new Command()
       }
     }
 
-    const fileGrantStore = createFileGrantStore(
-      repoContext.definitionRepo,
-      autoDefRepo,
-      repoContext.unifiedDataRepo,
+    // One unit under the exclusive sync gate: ConfigPoller is already
+    // pulling, and a pull landing between these writes and their push can
+    // undo them (swamp-club#2247, swamp-club#2405). Unlike the definition
+    // migration push above, a failed push here only warns: the local policy
+    // is already right, and reconcile collapses any duplicate grants a peer
+    // creates because it could not see these (swamp-club#2822).
+    const { materializeResult, fileReconcileResult } = await commitGrantWrites(
+      async () => ({
+        materializeResult: await materializeAdmins(
+          authConfig.mode,
+          authConfig.admins,
+          grantWrites.adminGrantStore,
+        ),
+        fileReconcileResult: await reconcileAllFileGrants(
+          validEntries,
+          grantWrites.fileGrantStore,
+        ),
+      }),
     );
 
-    const fileReconcileResult = await reconcileAllFileGrants(
-      validEntries,
-      fileGrantStore,
-    );
+    if (
+      materializeResult.created > 0 || materializeResult.updated > 0 ||
+      materializeResult.revoked > 0 || materializeResult.reactivated > 0
+    ) {
+      logger
+        .info`Admin grants materialized: ${materializeResult.created} created, ${materializeResult.updated} updated, ${materializeResult.revoked} revoked, ${materializeResult.reactivated} reactivated, ${materializeResult.unchanged} unchanged`;
+    }
 
     if (
       fileReconcileResult.totalCreated > 0 ||
@@ -3621,8 +3633,9 @@ export const serveCommand = new Command()
         externalGrantsFile: externalGrantsFilePath,
         externalGrantsDir: externalGrantsDirPath,
         validateCondition: validateGrantCondition,
-        fileGrantStore,
+        fileGrantStore: grantWrites.fileGrantStore,
         policySnapshotLoader,
+        commitReconcile: commitGrantWrites,
       });
       await grantsDirectoryPoller.start();
     }
