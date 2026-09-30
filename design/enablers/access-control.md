@@ -212,14 +212,14 @@ Startup and `--grant-reload auto` push their grant writes to the datastore, as
 `access reload` does, inside the exclusive sync gate
 (`src/serve/grant_write_tracking.ts`).
 
-Under `--grant-reload auto`, a source that fails to read or validate keeps its
-stored grants unchanged, and the error is logged. This covers a file with a
-YAML or schema error, an unreadable file, an empty `--grants-file` or
-`--grants-dir` file (an editor may truncate before it rewrites), a missing or
-unreadable `--grants-file`, and a missing or unreadable `--grants-dir`. Other files still
-reconcile. Startup and `access reload` refuse the whole load instead. A deleted
-file, or a removed repository `grants/` directory, still revokes its grants,
-as at startup and on reload.
+Under `--grant-reload auto`, a grants file that exists but fails to read or
+validate keeps its stored grants unchanged, and the error is logged. This
+covers a YAML or schema error, an unreadable file, and an unreadable
+`--grants-dir`. Other files still reconcile. Startup and `access reload` refuse
+the same input and change nothing. A deleted or emptied file, a deleted
+`--grants-file`, a missing `--grants-dir` and a removed repository `grants/`
+directory still revoke their grants, as they always have; a missing
+`--grants-file` or `--grants-dir` is logged at error level.
 
 Implementation: `src/domain/access/grant_file.ts`,
 `src/domain/access/grant_file_reconciler.ts`.

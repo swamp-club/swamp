@@ -115,11 +115,12 @@ export class GrantsDirectoryPoller {
 
       logger.info`Grants directory change detected, reconciling`;
 
-      // A source that fails to read or validate, or is empty, keeps its
-      // stored grants: reconciling it as empty or deleted would revoke them,
-      // and a broken deny file would fail open (swamp-club#2823). Startup and
-      // access.reload refuse invalid input. A deleted file in a readable
-      // directory still revokes.
+      // A source that exists but fails to read or validate keeps its stored
+      // grants: reconciling it as empty would revoke them, and a broken deny
+      // file would fail open (swamp-club#2823). Startup and access.reload
+      // refuse the same input. A deleted or emptied source, or a missing
+      // directory, still revokes as before: that is how an operator removes
+      // grants.
       const validEntries = new Map<string, GrantFileEntry[]>();
       const unavailable = new Set<string>();
       let externalDirUnavailable = false;
@@ -141,15 +142,7 @@ export class GrantsDirectoryPoller {
         const filePath = this.#externalGrantsFile;
         try {
           const content = await Deno.readTextFile(filePath);
-          if (content.trim().length === 0) {
-            // An editor that truncates before rewriting leaves the file
-            // empty for a moment; that is not a request to drop its grants.
-            this.#logUnavailable(filePath, [{
-              filename: filePath,
-              message: "File is empty",
-            }]);
-            unavailable.add(filePath);
-          } else {
+          if (content.trim().length > 0) {
             const result = parseGrantFile(
               filePath,
               content,
@@ -163,11 +156,16 @@ export class GrantsDirectoryPoller {
             }
           }
         } catch (error) {
-          this.#logUnavailable(filePath, [{
-            filename: filePath,
-            message: `Failed to read: ${error}`,
-          }]);
-          unavailable.add(filePath);
+          if (error instanceof Deno.errors.NotFound) {
+            logger
+              .error`Grants file ${filePath} not found during auto-reload, revoking its grants`;
+          } else {
+            this.#logUnavailable(filePath, [{
+              filename: filePath,
+              message: `Failed to read: ${error}`,
+            }]);
+            unavailable.add(filePath);
+          }
         }
       }
 
@@ -187,24 +185,22 @@ export class GrantsDirectoryPoller {
             )
             .sort((a, b) => a.name.localeCompare(b.name));
         } catch (error) {
-          // A missing directory is most likely unmounted, not emptied.
-          logger
-            .error`Failed to read grants directory ${externalDir} during auto-reload, keeping the stored grants of its files unchanged: ${error}`;
-          externalDirUnavailable = true;
+          if (error instanceof Deno.errors.NotFound) {
+            // Used to be swallowed silently; an unmounted volume must show.
+            logger
+              .error`Grants directory ${externalDir} not found during auto-reload, revoking the grants of its files`;
+          } else {
+            logger
+              .error`Failed to read grants directory ${externalDir} during auto-reload, keeping the stored grants of its files unchanged: ${error}`;
+            externalDirUnavailable = true;
+          }
         }
 
         for (const file of yamlFiles ?? []) {
           const filePath = join(externalDir, file.name);
           try {
             const content = await Deno.readTextFile(filePath);
-            if (content.trim().length === 0) {
-              this.#logUnavailable(filePath, [{
-                filename: filePath,
-                message: "File is empty",
-              }]);
-              unavailable.add(filePath);
-              continue;
-            }
+            if (content.trim().length === 0) continue;
             const result = parseGrantFile(
               filePath,
               content,
@@ -217,6 +213,8 @@ export class GrantsDirectoryPoller {
             }
             validEntries.set(filePath, result.entries);
           } catch (error) {
+            // Deleted since the directory was listed: revoke, as a delete.
+            if (error instanceof Deno.errors.NotFound) continue;
             this.#logUnavailable(filePath, [{
               filename: filePath,
               message: `Failed to read: ${error}`,

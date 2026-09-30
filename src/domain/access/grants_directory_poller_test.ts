@@ -622,7 +622,7 @@ Deno.test("GrantsDirectoryPoller: still revokes the grants of a deleted file", a
   });
 });
 
-Deno.test("GrantsDirectoryPoller: keeps the grants of a missing --grants-dir", async () => {
+Deno.test("GrantsDirectoryPoller: revokes the grants of a missing --grants-dir, as before", async () => {
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");
     const externalDir = join(dir, "external");
@@ -641,11 +641,11 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a missing --grants-dir", a
       },
     );
 
-    assertEquals(store.written.size, 0);
+    assertEquals(store.written.get("deny-1")?.state, "revoked");
   });
 });
 
-Deno.test("GrantsDirectoryPoller: keeps the grants of a missing --grants-file", async () => {
+Deno.test("GrantsDirectoryPoller: revokes the grants of a deleted --grants-file, as before", async () => {
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");
     await ensureDir(grantsDir);
@@ -662,7 +662,7 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a missing --grants-file", 
       },
     );
 
-    assertEquals(store.written.size, 0);
+    assertEquals(store.written.get("deny-1")?.state, "revoked");
   });
 });
 
@@ -687,8 +687,7 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a --grants-file with inval
   });
 });
 
-Deno.test("GrantsDirectoryPoller: keeps the grants of an emptied --grants-file", async () => {
-  // An editor that truncates before rewriting must not drop a deny.
+Deno.test("GrantsDirectoryPoller: revokes the grants of an emptied --grants-file, as before", async () => {
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");
     await ensureDir(grantsDir);
@@ -705,11 +704,11 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of an emptied --grants-file",
       },
     );
 
-    assertEquals(store.written.size, 0);
+    assertEquals(store.written.get("deny-1")?.state, "revoked");
   });
 });
 
-Deno.test("GrantsDirectoryPoller: keeps the grants of an emptied --grants-dir file", async () => {
+Deno.test("GrantsDirectoryPoller: revokes the grants of an emptied --grants-dir file, as before", async () => {
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");
     const externalDir = join(dir, "external");
@@ -728,7 +727,7 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of an emptied --grants-dir fi
       },
     );
 
-    assertEquals(store.written.size, 0);
+    assertEquals(store.written.get("deny-1")?.state, "revoked");
   });
 });
 
