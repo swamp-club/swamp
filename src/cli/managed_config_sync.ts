@@ -53,8 +53,10 @@ import {
 
 /**
  * A config-tier change was written to the local cache but could not be
- * published to the datastore under managedConfig. The local write is kept;
- * `swamp datastore sync --push` publishes it once the datastore is reachable.
+ * published to the datastore under managedConfig. The local write is kept.
+ * The message names the retry: `swamp datastore sync --push` for most
+ * config writes, `swamp extension install` for an extension lockfile
+ * change, where a plain push would publish a stale copy.
  */
 export class ManagedConfigUnpublishedError extends UserError {
   /**
@@ -379,8 +381,18 @@ export function createManagedLockfileTransaction(
   if (!write.publish || !isExtensionBackedDatastore(marker)) return undefined;
 
   return lazyLockfileTransaction(write.lockfilePath, async () => {
-    const { syncService, datastoreConfig, repoDir: resolvedRepoDir } =
-      await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+    let resolved: Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
+    try {
+      resolved = await requireInitializedRepoUnlocked({
+        repoDir,
+        outputMode: "log",
+      });
+    } catch (error) {
+      // Nothing has changed yet: say so, as a failed lock or fetch does.
+      if (error instanceof UserError) throw error;
+      throw new ManagedLockfileUnavailableError(error);
+    }
+    const { syncService, datastoreConfig, repoDir: resolvedRepoDir } = resolved;
     if (!syncService) {
       throw new ManagedLockfileUnavailableError(
         `the ${datastoreConfig.type} datastore has no sync service`,

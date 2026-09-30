@@ -1897,6 +1897,9 @@ anything itself, then clears the record. Commands that report a result per
 extension (`extension install`'s restore, `extension update`,
 `doctor extensions --repair`) count an extension whose only failure was the
 publish as done, and exit non-zero with the publish error after the report.
+While a recorded change cannot be published, any extension write, including
+the `extension rm` preview, fails with the publish error first, since it
+publishes the recorded change before reading or changing anything.
 `datastore sync --push` and a full
 `datastore sync` clear only a record from an older swamp that holds no change
 (swamp-club#2838).

@@ -137,6 +137,51 @@ export function rescanSkippedFor(
  * non-zero on any failure so the command composes into CI preflight
  * checks.
  */
+
+/** What one `doctor extensions --repair` re-pull did. */
+export interface RepullOutcome {
+  repaired: boolean;
+  /** The pull installed, but its lockfile change did not reach the datastore. */
+  unpublished?: ManagedLockfileUnpublishedError;
+}
+
+/**
+ * Runs one repair re-pull. `prepare` reads the pin (which may fetch the
+ * datastore's lockfile, and may fail) and returns the pull. Only a failed
+ * publish from the pull itself counts as repaired: the extension was
+ * installed and its change recorded, and the caller raises the publish
+ * error after the report (swamp-club#2838). Any other failure, including
+ * one from `prepare`, is logged and counts as not repaired.
+ */
+export async function runRepull(
+  name: string,
+  prepare: () => Promise<() => Promise<unknown>>,
+  logger: {
+    warn(message: string, properties: Record<string, unknown>): void;
+  },
+): Promise<RepullOutcome> {
+  try {
+    const pull = await prepare();
+    try {
+      await pull();
+    } catch (error) {
+      if (error instanceof ManagedLockfileUnpublishedError) {
+        return { repaired: true, unpublished: error };
+      }
+      throw error;
+    }
+    return { repaired: true };
+  } catch (error) {
+    // Keep the reason visible: under managedConfig a re-pull can fail
+    // before it starts because the datastore's lockfile cannot be fetched.
+    logger.warn("Re-pull of {name} failed: {error}", {
+      name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { repaired: false };
+  }
+}
+
 export const doctorExtensionsCommand = withRemoteOptions(
   new Command()
     .description(
@@ -445,7 +490,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
                 const repullExtension = async (
                   name: string,
                 ): Promise<boolean> => {
-                  try {
+                  const outcome = await runRepull(name, async () => {
                     const serverUrl = resolveServerUrl();
                     const identity = await loadIdentity();
                     const pullLockfileRepo = await LockfileRepository.create(
@@ -476,47 +521,30 @@ export const doctorExtensionsCommand = withRemoteOptions(
                     await refreshManagedLockfile(pullLockfileRepo);
                     const pinnedVersion =
                       pullLockfileRepo.getEntry(name)?.version ?? null;
-                    await pullExtension(
-                      { name, version: pinnedVersion },
-                      {
-                        getExtension: deps.getExtension,
-                        downloadArchive: deps.downloadArchive,
-                        getChecksum: deps.getChecksum,
-                        logger: cliCtx.logger,
-                        lockfileRepository: deps.lockfileRepository,
-                        skillsDirs: absoluteSkillsDirs,
-                        repoDir,
-                        force: true,
-                        outputMode: cliCtx.outputMode,
-                        alreadyPulled: new Set(),
-                        depth: 0,
-                        denoRuntime,
-                        repository: pullRepo,
-                      },
-                    );
-                    return true;
-                  } catch (error) {
-                    // Installed, with only the lockfile publish pending:
-                    // the repair succeeded, and the publish error is
-                    // raised once the repair finishes (swamp-club#2838).
-                    if (error instanceof ManagedLockfileUnpublishedError) {
-                      unpublishedRepair ??= error;
-                      return true;
-                    }
-                    // Keep the reason visible: under managedConfig a
-                    // re-pull can fail before it starts because the
-                    // datastore's lockfile cannot be fetched (swamp-club#2838).
-                    cliCtx.logger.warn(
-                      "Re-pull of {name} failed: {error}",
-                      {
-                        name,
-                        error: error instanceof Error
-                          ? error.message
-                          : String(error),
-                      },
-                    );
-                    return false;
+                    return () =>
+                      pullExtension(
+                        { name, version: pinnedVersion },
+                        {
+                          getExtension: deps.getExtension,
+                          downloadArchive: deps.downloadArchive,
+                          getChecksum: deps.getChecksum,
+                          logger: cliCtx.logger,
+                          lockfileRepository: deps.lockfileRepository,
+                          skillsDirs: absoluteSkillsDirs,
+                          repoDir,
+                          force: true,
+                          outputMode: cliCtx.outputMode,
+                          alreadyPulled: new Set(),
+                          depth: 0,
+                          denoRuntime,
+                          repository: pullRepo,
+                        },
+                      );
+                  }, cliCtx.logger);
+                  if (outcome.unpublished) {
+                    unpublishedRepair ??= outcome.unpublished;
                   }
+                  return outcome.repaired;
                 };
                 return repairExtensions({
                   aggregateReport,
