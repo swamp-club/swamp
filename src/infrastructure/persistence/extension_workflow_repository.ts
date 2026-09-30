@@ -30,7 +30,7 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
 const logger = getLogger(["extension-workflow-repo"]);
 
@@ -96,10 +96,13 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
             }
           } catch (error) {
             if (isIoError(error)) {
-              throw new UserError(
-                `Failed to read extension workflow ${entry.path}: ${
-                  error instanceof Error ? error.message : error
-                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              throw markErrorPaths(
+                new UserError(
+                  `Failed to read extension workflow ${entry.path}: ${
+                    error instanceof Error ? error.message : error
+                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+                ),
+                [entry.path, ...errorPaths(error)],
               );
             }
             const errorMsg = error instanceof Error
@@ -169,10 +172,13 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
             }
           } catch (error) {
             if (isIoError(error)) {
-              throw new UserError(
-                `Failed to read extension workflow ${entry.path}: ${
-                  error instanceof Error ? error.message : error
-                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              throw markErrorPaths(
+                new UserError(
+                  `Failed to read extension workflow ${entry.path}: ${
+                    error instanceof Error ? error.message : error
+                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+                ),
+                [entry.path, ...errorPaths(error)],
               );
             }
           }

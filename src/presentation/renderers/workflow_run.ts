@@ -29,13 +29,16 @@ import {
   setSystemPipeWidth,
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
-import { UserError } from "../../domain/errors.ts";
 import { containsExpression } from "../../domain/expressions/expression_parser.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 import { dim, green, red, yellow } from "@std/fmt/colors";
-import { type AssertSeverity, severityAtOrAbove } from "../../libswamp/mod.ts";
+import {
+  type AssertSeverity,
+  severityAtOrAbove,
+  userErrorFromSwampError,
+} from "../../libswamp/mod.ts";
 import {
   type DataArtifact,
   type DataBoxOptions,
@@ -736,7 +739,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       error: (e) => {
         this.clearAllHeartbeats();
-        throw new UserError(e.error.message, e.error.code);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }
@@ -918,7 +921,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         ));
       },
       error: (e) => {
-        throw new UserError(e.error.message, e.error.code);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }

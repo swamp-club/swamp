@@ -19,6 +19,7 @@
 
 import { join, resolve, SEPARATOR } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
+import { markErrorPaths } from "../errors.ts";
 
 /**
  * Client-side scorer for the Swamp Club extension quality rubric.
@@ -694,8 +695,11 @@ export async function findManifestRoot(extractDir: string): Promise<string> {
       // keep looking
     }
   }
-  throw new Error(
-    `No manifest.yaml found in extracted tarball at ${extractDir}`,
+  throw markErrorPaths(
+    new Error(
+      `No manifest.yaml found in extracted tarball at ${extractDir}`,
+    ),
+    [extractDir],
   );
 }
 
@@ -717,7 +721,10 @@ export function collectEntrypoints(
         : `${field}/${normalized}`;
       const entryAbs = resolve(root, prefixed);
       if (entryAbs !== rootAbs && !entryAbs.startsWith(rootAbs + SEPARATOR)) {
-        throw new Error(`Entrypoint escapes extraction root: ${p}`);
+        throw markErrorPaths(
+          new Error(`Entrypoint escapes extraction root: ${p}`),
+          [p],
+        );
       }
       eps.push(entryAbs);
     }

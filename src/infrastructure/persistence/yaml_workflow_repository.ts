@@ -35,7 +35,7 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import {
@@ -223,10 +223,13 @@ export class YamlWorkflowRepository implements WorkflowRepository {
             workflows.push(workflow);
           } catch (error) {
             if (isIoError(error)) {
-              throw new UserError(
-                `Failed to read workflow file ${path}: ${
-                  error instanceof Error ? error.message : error
-                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              throw markErrorPaths(
+                new UserError(
+                  `Failed to read workflow file ${path}: ${
+                    error instanceof Error ? error.message : error
+                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+                ),
+                [path, ...errorPaths(error)],
               );
             }
             const errorMsg = error instanceof Error

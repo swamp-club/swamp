@@ -33,6 +33,7 @@ import type {
   LockInfo,
   LockOptions,
 } from "../../domain/datastore/distributed_lock.ts";
+import { markErrorPaths } from "../../domain/errors.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { isProcessDead } from "../runtime/process.ts";
@@ -106,10 +107,9 @@ export class FileLock implements DistributedLock {
       const elapsed = Date.now() - startTime;
       if (elapsed >= this.maxWaitMs) {
         const existing = await this.readLockFile();
-        throw new LockTimeoutError(
-          this.lockPath,
-          existing,
-          elapsed,
+        throw markErrorPaths(
+          new LockTimeoutError(this.lockPath, existing, elapsed),
+          [this.lockPath],
         );
       }
 

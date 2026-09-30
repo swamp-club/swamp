@@ -23,6 +23,7 @@ import type {
   WorkflowExecutionEvent,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
+import { markErrorPaths } from "../../domain/errors.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EnvVarUsageDetail } from "../../domain/models/validation_service.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
@@ -621,9 +622,11 @@ export function mapWorkflowExecutionEvent(
     case "step_failed": {
       // dataHandles is domain-internal: it feeds the workflow summary. Keep
       // it off the published event so serve and JSON consumers see the same
-      // step_failed shape as before. runId is domain-internal too; see below.
+      // step_failed shape as before. errorPaths feeds only the telemetry
+      // bridge. runId is domain-internal too; see below.
       const {
         dataHandles: _dataHandles,
+        errorPaths: _errorPaths,
         runId: _runId,
         ...published
       } = event;
@@ -909,10 +912,13 @@ export function workflowLoadFailed(
   idOrName: string,
   broken: { file: string; error: string },
 ): SwampError {
+  const message = `Workflow '${idOrName}' exists but failed to load: ` +
+    `${broken.error}\n(file: ${broken.file})`;
   return {
     code: "workflow_load_failed",
-    message: `Workflow '${idOrName}' exists but failed to load: ` +
-      `${broken.error}\n(file: ${broken.file})`,
+    message,
+    // Marks the file so telemetry removes it exactly (swamp-club#2830).
+    cause: markErrorPaths(new Error(message), [broken.file]),
   };
 }
 

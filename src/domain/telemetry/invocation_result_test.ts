@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { markErrorPaths, UserError } from "../errors.ts";
 import { createErrorResult, createSuccessResult } from "./invocation_result.ts";
 
 Deno.test("createSuccessResult: returns success status", () => {
@@ -63,4 +64,72 @@ Deno.test("createErrorResult: captures error constructor name as errorType", () 
   const error = new CustomError("something failed");
   const result = createErrorResult(error);
   assertEquals(result.errorType, "CustomError");
+});
+
+Deno.test("createErrorResult: removes a marked path whose last segment has a space", () => {
+  const path = "/srv/acme/discovered/final report";
+  const error = markErrorPaths(
+    new UserError(`Failed to read definition file ${path}: denied`),
+    [path],
+  );
+  const result = createErrorResult(error, true);
+  assertEquals(
+    result.errorMessage,
+    "Failed to read definition file <PATH>: denied",
+  );
+});
+
+Deno.test("createErrorResult: removes paths marked on the cause chain", () => {
+  const path = "/srv/acme/discovered/final report";
+  const inner = markErrorPaths(new Error(`open ${path}`), [path]);
+  const error = new Error(`Load failed: ${inner.message}`, { cause: inner });
+  const result = createErrorResult(error);
+  assertEquals(result.errorMessage, "Load failed: open <PATH>");
+});
+
+Deno.test("createErrorResult: leaves a marked value that is not a path to the patterns", () => {
+  const error = markErrorPaths(
+    new UserError(`Custom tool "root" escapes the repository root.`),
+    ["root"],
+  );
+  const result = createErrorResult(error, true);
+  assertEquals(
+    result.errorMessage,
+    `Custom tool "root" escapes the repository root.`,
+  );
+});
+
+Deno.test("createErrorResult: removes marked Windows paths whose last segment has a space", () => {
+  const cases = [
+    String.raw`C:\Users\John Smith\Acme Corp\final report.yaml`,
+    "C:/Users/John Smith/Acme Corp/final report",
+    String.raw`\\fileserver\share\Acme Corp\final report`,
+    String.raw`D:\data\final report`,
+  ];
+  for (const path of cases) {
+    const error = markErrorPaths(
+      new UserError(`Failed to read ${path}: denied`),
+      [path],
+    );
+    assertEquals(
+      createErrorResult(error, true).errorMessage,
+      "Failed to read <PATH>: denied",
+      path,
+    );
+  }
+});
+
+Deno.test("createErrorResult: removes a marked Windows path quoted by a runtime error", () => {
+  const path = String.raw`C:\Users\John Smith\final report`;
+  const inner = markErrorPaths(
+    new Error(
+      `The system cannot find the file specified. (os error 2): readfile '${path}'`,
+    ),
+    [path],
+  );
+  const error = new Error(`Load failed: ${inner.message}`, { cause: inner });
+  assertEquals(
+    createErrorResult(error).errorMessage,
+    "Load failed: The system cannot find the file specified. (os error 2): readfile '<PATH>'",
+  );
 });

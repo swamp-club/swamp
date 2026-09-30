@@ -25,8 +25,17 @@ something a primitive depends on, move it to `enablers/` and give it an
   absolute forms), the working, home and repo directories are removed from the
   message, so a path with a space in it needs no guessing; other redacted
   values are removed as whole words after the path patterns. Those values stay
-  in memory and are never recorded. Runs executed by `swamp serve` have no
-  command line, so their error messages rely on the patterns alone.
+  in memory and are never recorded. Errors also carry the paths they name as
+  marked values (`markErrorPaths` / `errorPaths` in `src/domain/errors.ts`),
+  which are removed exactly in the same pass, including those on the `cause`
+  chain. Marks survive the places where an error is turned into a string and
+  back: workflow `step_failed` events (a domain-internal `errorPaths` field,
+  stripped from the published event), libswamp stream errors rebuilt by the
+  CLI (`userErrorFromSwampError`), and remote worker results
+  (`DispatchResult.errorPaths`, bounded). Runs executed by `swamp serve` have
+  no command line, so they depend on these marks. The path patterns remain the
+  fallback for text the marks do not cover, such as errors from the runtime or
+  third-party libraries.
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`.

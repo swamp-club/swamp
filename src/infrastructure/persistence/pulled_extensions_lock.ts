@@ -19,6 +19,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve } from "@std/path";
+import { markErrorPaths } from "../../domain/errors.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { canonicalizePath } from "./canonicalize_path.ts";
 import { FileLock } from "./file_lock.ts";
@@ -300,12 +301,15 @@ function timeoutError(
   cause?: unknown,
 ): LockTimeoutError {
   const heldBy = holder ? ` held by ${holder.holder} (pid ${holder.pid})` : "";
-  return new LockTimeoutError(lockPath, holder, waitedMs, {
-    message: `${who} is changing this repository's pulled extensions: ` +
-      `lock ${lockPath}${heldBy} — timed out after ${waitedMs}ms. ` +
-      `Retry once it finishes.`,
-    cause,
-  });
+  return markErrorPaths(
+    new LockTimeoutError(lockPath, holder, waitedMs, {
+      message: `${who} is changing this repository's pulled extensions: ` +
+        `lock ${lockPath}${heldBy} — timed out after ${waitedMs}ms. ` +
+        `Retry once it finishes.`,
+      cause,
+    }),
+    [lockPath],
+  );
 }
 
 /** The process-wide lock every install and removal goes through. */

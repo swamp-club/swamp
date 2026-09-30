@@ -38,6 +38,7 @@ import type {
 } from "./model.ts";
 import type { WorkflowGateService } from "./workflow_gate_service.ts";
 import { z } from "zod";
+import { markErrorPaths } from "../errors.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
@@ -1001,4 +1002,26 @@ Deno.test("wrapLoggerWithOutput: single braces without props are left as written
   });
   wrapped.info("config {key} unchanged");
   assertEquals(events[0].line, "config {key} unchanged");
+});
+
+Deno.test("InProcessExecutor: an error result carries the paths the error marked (swamp-club#2830)", async () => {
+  const path = "/srv/Acme Corp/final report";
+  const executor: MethodExecutor = {
+    execute: () => {
+      throw markErrorPaths(new Error(`cannot read ${path}`), [path]);
+    },
+  };
+  const inProcessExecutor = new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    createMockContext(),
+    "test",
+  );
+
+  const result = await inProcessExecutor.execute(createMockRequest());
+
+  assertEquals(result.status, "error");
+  assertEquals(result.errorPaths, [path]);
 });

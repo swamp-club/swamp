@@ -43,7 +43,7 @@ import {
   WorkflowExecutionService,
 } from "./execution_service.ts";
 import { computeStepsToReset } from "./resume_reset.ts";
-import { UserError } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -437,6 +437,40 @@ Deno.test("marks workflow as failed when step fails", async () => {
     assertEquals(run.getJob("job1")?.status, "failed");
     assertEquals(run.getJob("job1")?.getStep("step1")?.status, "failed");
     assertNotEquals(run.getJob("job1")?.getStep("step1")?.error, undefined);
+  });
+});
+
+Deno.test("step_failed carries the paths the model-method error marked (swamp-club#2830)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const path = "/srv/acme/final report";
+    const executor: StepExecutor = {
+      execute: () =>
+        Promise.reject(
+          markErrorPaths(new Error(`cannot read ${path}`), [path]),
+        ),
+    };
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const failed: (string[] | undefined)[] = [];
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "step_failed") failed.push(event.errorPaths);
+    }
+
+    assertEquals(failed, [[path]]);
   });
 });
 

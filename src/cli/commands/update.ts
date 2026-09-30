@@ -53,7 +53,7 @@ import {
   type getSwampLogger,
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import {
   GLOBAL_SKILL_DIRS,
@@ -364,11 +364,14 @@ async function runSetupAuto(
 
   if (launchdMode === "daemon" && !isRoot) {
     const schedulerDesc = privilegedSchedulerDescription();
-    throw new UserError(
-      `The swamp binary at ${binaryPath} is owned by root.\n` +
-        `To set up autoupdate, the scheduler must be installed as a ${schedulerDesc}.\n` +
-        `Re-run with sudo:\n\n` +
-        `  sudo swamp update --setup-auto`,
+    throw markErrorPaths(
+      new UserError(
+        `The swamp binary at ${binaryPath} is owned by root.\n` +
+          `To set up autoupdate, the scheduler must be installed as a ${schedulerDesc}.\n` +
+          `Re-run with sudo:\n\n` +
+          `  sudo swamp update --setup-auto`,
+      ),
+      [binaryPath],
     );
   }
 
@@ -388,15 +391,18 @@ async function runSetupAuto(
     await Deno.remove(probeFile);
   } catch (error) {
     if (error instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(
-        `Cannot set up autoupdate: the directory containing ${binaryPath} is not writable.\n` +
-          `The background scheduler cannot replace the binary.\n\n` +
-          `Options:\n` +
-          `  • Change ownership:  sudo chown ${
-            Deno.env.get("USER") ?? "$(whoami)"
-          } ${binaryPath}\n` +
-          `  • Run updates manually:  sudo swamp update\n\n` +
-          `Run \`swamp doctor install\` for a full installation health check.`,
+      throw markErrorPaths(
+        new UserError(
+          `Cannot set up autoupdate: the directory containing ${binaryPath} is not writable.\n` +
+            `The background scheduler cannot replace the binary.\n\n` +
+            `Options:\n` +
+            `  • Change ownership:  sudo chown ${
+              Deno.env.get("USER") ?? "$(whoami)"
+            } ${binaryPath}\n` +
+            `  • Run updates manually:  sudo swamp update\n\n` +
+            `Run \`swamp doctor install\` for a full installation health check.`,
+        ),
+        [binaryPath],
       );
     }
     throw error;

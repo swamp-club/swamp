@@ -32,6 +32,7 @@ import type {
   WorkflowRunInput,
   WorkflowTelemetrySink,
 } from "../libswamp/mod.ts";
+import { errorPaths, markErrorPaths } from "../domain/errors.ts";
 import type { WorkflowTriggerSource } from "../domain/telemetry/mod.ts";
 import { createRunTelemetry, type RunTelemetry } from "./telemetry.ts";
 import { createLibSwampContext, workflowRun } from "../libswamp/mod.ts";
@@ -496,10 +497,14 @@ export async function executeWorkflowWithLocks(
   // successes would credit work that did not happen, so the outcome is read
   // from the stream rather than from control flow.
   let streamError: string | undefined;
+  let streamErrorPaths: string[] = [];
   let finalStatus: string | undefined;
   const run = async () => {
     for await (const event of workflowRun(libCtx, deps, effectiveInput)) {
-      if (event.kind === "error") streamError = event.error.message;
+      if (event.kind === "error") {
+        streamError = event.error.message;
+        streamErrorPaths = errorPaths(event.error.cause);
+      }
       if (event.kind === "completed" || event.kind === "cancelled") {
         finalStatus = event.run.status;
       }
@@ -539,8 +544,11 @@ export async function executeWorkflowWithLocks(
       throw error;
     }
 
-    const failure = finalStatus === "succeeded" ? null : new Error(
-      streamError ?? `workflow run ${finalStatus ?? "did not complete"}`,
+    const failure = finalStatus === "succeeded" ? null : markErrorPaths(
+      new Error(
+        streamError ?? `workflow run ${finalStatus ?? "did not complete"}`,
+      ),
+      streamErrorPaths,
     );
     await finishRunTelemetry(runTelemetry, failure);
   } finally {

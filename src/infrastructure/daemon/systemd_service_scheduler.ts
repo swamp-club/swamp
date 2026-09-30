@@ -23,7 +23,7 @@ import type {
   ServiceScheduler,
   ServiceStatus,
 } from "../../domain/serve/service_scheduler.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { LaunchdMode } from "../update/launchd_scheduler.ts";
 import {
   escapeSystemdPath,
@@ -138,8 +138,11 @@ export class SystemdServiceScheduler implements ServiceScheduler {
           ? `  Check permissions on ${dir} and its parent directories`
           : `  Option 1: Run with sudo for a system-wide service\n` +
             `  Option 2: Use --user to install as a per-user service`;
-        throw new UserError(
-          `Permission denied writing to ${dir}.\n\n${hint}`,
+        throw markErrorPaths(
+          new UserError(
+            `Permission denied writing to ${dir}.\n\n${hint}`,
+          ),
+          [dir],
         );
       }
       throw err;

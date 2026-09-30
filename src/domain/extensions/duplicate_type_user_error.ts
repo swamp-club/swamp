@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { UserError } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 
 /**
  * The kind of bundle entry — mirrors `ExtensionKind` in
@@ -167,6 +167,10 @@ export class DuplicateTypeUserError extends UserError {
     this.conflicting = args.conflicting;
     this.isGhostRow = ghostRow;
     this.rollback = rollback;
+    markErrorPaths(this, [
+      args.existing.canonicalPath,
+      args.conflicting.canonicalPath,
+    ]);
   }
 
   /** True when the install that collided was rolled back. */

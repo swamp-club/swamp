@@ -44,6 +44,7 @@ export {
   notAuthenticated,
   notFound,
   type SwampError,
+  userErrorFromSwampError,
   validationFailed,
 } from "./errors.ts";
 export {

@@ -31,7 +31,7 @@ import {
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
-import { UserError } from "../domain/errors.ts";
+import { markErrorPaths, UserError } from "../domain/errors.ts";
 import {
   type ExtensionManifest,
   isSafeRelativePath,
@@ -137,11 +137,14 @@ export async function resolveExtensionFiles(
 
   const ext = extname(manifestPath).toLowerCase();
   if (ext === ".ts" || ext === ".js") {
-    throw new UserError(
-      `Expected a manifest path but got a TypeScript/JavaScript file: ${manifestPath}\n` +
-        "Pass the manifest directory or manifest.yaml path instead.\n\n" +
-        "Example:\n" +
-        "  swamp extension fmt extensions/models/my-model/manifest.yaml",
+    throw markErrorPaths(
+      new UserError(
+        `Expected a manifest path but got a TypeScript/JavaScript file: ${manifestPath}\n` +
+          "Pass the manifest directory or manifest.yaml path instead.\n\n" +
+          "Example:\n" +
+          "  swamp extension fmt extensions/models/my-model/manifest.yaml",
+      ),
+      [manifestPath],
     );
   }
 
@@ -155,8 +158,11 @@ export async function resolveExtensionFiles(
     manifestContent = await Deno.readTextFile(absoluteManifestPath);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      throw new UserError(
-        `Manifest file not found: ${absoluteManifestPath}`,
+      throw markErrorPaths(
+        new UserError(
+          `Manifest file not found: ${absoluteManifestPath}`,
+        ),
+        [absoluteManifestPath],
       );
     }
     throw error;
@@ -182,9 +188,12 @@ export async function resolveExtensionFiles(
   ];
   for (const { field, path } of allManifestPaths) {
     if (!isSafeRelativePath(path)) {
-      throw new UserError(
-        `Manifest field '${field}' contains unsafe path: ${path}. ` +
-          `Paths must be relative and must not contain '..' components or start with '/'.`,
+      throw markErrorPaths(
+        new UserError(
+          `Manifest field '${field}' contains unsafe path: ${path}. ` +
+            `Paths must be relative and must not contain '..' components or start with '/'.`,
+        ),
+        [path],
       );
     }
   }
@@ -238,13 +247,21 @@ export async function resolveExtensionFiles(
         if (typeof entry !== "string") continue;
         const normalized = entry.replace(/^\.\//, "");
         if (normalized.startsWith(prefix)) {
-          throw new UserError(
-            `Manifest field '${field}' entry '${entry}' starts with '${prefix}', ` +
-              `which would double the archive path to ${prefix}${normalized}. ` +
-              `With paths.base: manifest, use the bare filename (e.g. '${
-                normalized.slice(prefix.length)
-              }') ` +
-              `and place the file next to the manifest, or remove paths.base to resolve from the repository's typed directory.`,
+          throw markErrorPaths(
+            new UserError(
+              `Manifest field '${field}' entry '${entry}' starts with '${prefix}', ` +
+                `which would double the archive path to ${prefix}${normalized}. ` +
+                `With paths.base: manifest, use the bare filename (e.g. '${
+                  normalized.slice(prefix.length)
+                }') ` +
+                `and place the file next to the manifest, or remove paths.base to resolve from the repository's typed directory.`,
+            ),
+            [
+              entry,
+              normalized,
+              `${prefix}${normalized}`,
+              normalized.slice(prefix.length),
+            ],
           );
         }
       }
@@ -263,9 +280,12 @@ export async function resolveExtensionFiles(
     try {
       await Deno.stat(modelPath);
     } catch {
-      throw new UserError(
-        `Model file not found: ${modelRef} (expected at ${modelPath})` +
-          monorepoHint,
+      throw markErrorPaths(
+        new UserError(
+          `Model file not found: ${modelRef} (expected at ${modelPath})` +
+            monorepoHint,
+        ),
+        [modelRef, modelPath],
       );
     }
     modelEntryPoints.push(modelPath);
@@ -303,10 +323,13 @@ export async function resolveExtensionFiles(
       }
 
       if (!realPath) {
-        throw new UserError(
-          `Workflow file not found: ${wfRef} (looked in ${
-            wfCandidateDirs.join(", ")
-          })` + monorepoHint,
+        throw markErrorPaths(
+          new UserError(
+            `Workflow file not found: ${wfRef} (looked in ${
+              wfCandidateDirs.join(", ")
+            })` + monorepoHint,
+          ),
+          [wfRef, ...wfCandidateDirs],
         );
       }
       // Derive a unique archive name from the manifest reference directory
@@ -374,9 +397,12 @@ export async function resolveExtensionFiles(
     try {
       await Deno.stat(vaultPath);
     } catch {
-      throw new UserError(
-        `Vault file not found: ${vaultRef} (expected at ${vaultPath})` +
-          monorepoHint,
+      throw markErrorPaths(
+        new UserError(
+          `Vault file not found: ${vaultRef} (expected at ${vaultPath})` +
+            monorepoHint,
+        ),
+        [vaultRef, vaultPath],
       );
     }
     vaultEntryPoints.push(vaultPath);
@@ -399,9 +425,12 @@ export async function resolveExtensionFiles(
     try {
       await Deno.stat(datastorePath);
     } catch {
-      throw new UserError(
-        `Datastore file not found: ${datastoreRef} (expected at ${datastorePath})` +
-          monorepoHint,
+      throw markErrorPaths(
+        new UserError(
+          `Datastore file not found: ${datastoreRef} (expected at ${datastorePath})` +
+            monorepoHint,
+        ),
+        [datastoreRef, datastorePath],
       );
     }
     datastoreEntryPoints.push(datastorePath);
@@ -424,9 +453,12 @@ export async function resolveExtensionFiles(
     try {
       await Deno.stat(reportPath);
     } catch {
-      throw new UserError(
-        `Report file not found: ${reportRef} (expected at ${reportPath})` +
-          monorepoHint,
+      throw markErrorPaths(
+        new UserError(
+          `Report file not found: ${reportRef} (expected at ${reportPath})` +
+            monorepoHint,
+        ),
+        [reportRef, reportPath],
       );
     }
     reportEntryPoints.push(reportPath);
@@ -449,9 +481,12 @@ export async function resolveExtensionFiles(
     try {
       await Deno.stat(webhookPath);
     } catch {
-      throw new UserError(
-        `Webhook file not found: ${webhookRef} (expected at ${webhookPath})` +
-          monorepoHint,
+      throw markErrorPaths(
+        new UserError(
+          `Webhook file not found: ${webhookRef} (expected at ${webhookPath})` +
+            monorepoHint,
+        ),
+        [webhookRef, webhookPath],
       );
     }
     webhookEntryPoints.push(webhookPath);
@@ -522,10 +557,13 @@ export async function resolveExtensionFiles(
       }
 
       if (!skillPath) {
-        throw new UserError(
-          `Skill directory not found: ${skillName} (looked in ${
-            candidateBases.join(", ")
-          })`,
+        throw markErrorPaths(
+          new UserError(
+            `Skill directory not found: ${skillName} (looked in ${
+              candidateBases.join(", ")
+            })`,
+          ),
+          [skillName, ...candidateBases],
         );
       }
 
@@ -553,8 +591,11 @@ export async function resolveExtensionFiles(
     try {
       await Deno.stat(incPath);
     } catch {
-      throw new UserError(
-        `Include file not found: ${inc} (expected at ${incPath})`,
+      throw markErrorPaths(
+        new UserError(
+          `Include file not found: ${inc} (expected at ${incPath})`,
+        ),
+        [inc, incPath],
       );
     }
     includeFilePaths.push(incPath);
@@ -567,10 +608,13 @@ export async function resolveExtensionFiles(
     const normalized = normalizeAdditionalFileEntry(af);
     const existing = seenNormalized.get(normalized);
     if (existing !== undefined) {
-      throw new UserError(
-        `Duplicate additionalFiles entries: "${existing}" and "${af}" ` +
-          `resolve to the same archive path (case-insensitive, normalized). ` +
-          `Remove one entry from the manifest, or rename the file.`,
+      throw markErrorPaths(
+        new UserError(
+          `Duplicate additionalFiles entries: "${existing}" and "${af}" ` +
+            `resolve to the same archive path (case-insensitive, normalized). ` +
+            `Remove one entry from the manifest, or rename the file.`,
+        ),
+        [existing, af],
       );
     }
     seenNormalized.set(normalized, af);
@@ -580,16 +624,22 @@ export async function resolveExtensionFiles(
     try {
       info = await Deno.lstat(afPath);
     } catch {
-      throw new UserError(
-        `Additional file not found: ${af} (expected at ${afPath})`,
+      throw markErrorPaths(
+        new UserError(
+          `Additional file not found: ${af} (expected at ${afPath})`,
+        ),
+        [af, afPath],
       );
     }
     if (info.isSymlink) {
-      throw new UserError(
-        `Additional file is a symlink: ${af} (at ${afPath}). ` +
-          `Symlinks in additionalFiles are rejected to prevent archive ` +
-          `bloat and path escapes — copy the target file into the ` +
-          `extension tree instead.`,
+      throw markErrorPaths(
+        new UserError(
+          `Additional file is a symlink: ${af} (at ${afPath}). ` +
+            `Symlinks in additionalFiles are rejected to prevent archive ` +
+            `bloat and path escapes — copy the target file into the ` +
+            `extension tree instead.`,
+        ),
+        [af, afPath],
       );
     }
     additionalFilePaths.push(afPath);
@@ -603,18 +653,24 @@ export async function resolveExtensionFiles(
     const normalized = normalizeAdditionalFileEntry(bf);
     const existingBin = seenBinNormalized.get(normalized);
     if (existingBin !== undefined) {
-      throw new UserError(
-        `Duplicate binaries entries: "${existingBin}" and "${bf}" ` +
-          `resolve to the same archive path (case-insensitive, normalized). ` +
-          `Remove one entry from the manifest, or rename the file.`,
+      throw markErrorPaths(
+        new UserError(
+          `Duplicate binaries entries: "${existingBin}" and "${bf}" ` +
+            `resolve to the same archive path (case-insensitive, normalized). ` +
+            `Remove one entry from the manifest, or rename the file.`,
+        ),
+        [existingBin, bf],
       );
     }
     const existingAdditional = seenNormalized.get(normalized);
     if (existingAdditional !== undefined) {
-      throw new UserError(
-        `Path "${bf}" appears in both binaries and additionalFiles ` +
-          `(as "${existingAdditional}"). Use one or the other — both ` +
-          `land in the same files/ directory in the archive.`,
+      throw markErrorPaths(
+        new UserError(
+          `Path "${bf}" appears in both binaries and additionalFiles ` +
+            `(as "${existingAdditional}"). Use one or the other — both ` +
+            `land in the same files/ directory in the archive.`,
+        ),
+        [bf, existingAdditional],
       );
     }
     seenBinNormalized.set(normalized, bf);
@@ -624,16 +680,22 @@ export async function resolveExtensionFiles(
     try {
       info = await Deno.lstat(bfPath);
     } catch {
-      throw new UserError(
-        `Binary file not found: ${bf} (expected at ${bfPath})`,
+      throw markErrorPaths(
+        new UserError(
+          `Binary file not found: ${bf} (expected at ${bfPath})`,
+        ),
+        [bf, bfPath],
       );
     }
     if (info.isSymlink) {
-      throw new UserError(
-        `Binary file is a symlink: ${bf} (at ${bfPath}). ` +
-          `Symlinks in binaries are rejected to prevent archive ` +
-          `bloat and path escapes — copy the target file into the ` +
-          `extension tree instead.`,
+      throw markErrorPaths(
+        new UserError(
+          `Binary file is a symlink: ${bf} (at ${bfPath}). ` +
+            `Symlinks in binaries are rejected to prevent archive ` +
+            `bloat and path escapes — copy the target file into the ` +
+            `extension tree instead.`,
+        ),
+        [bf, bfPath],
       );
     }
     binaryFilePaths.push(bfPath);

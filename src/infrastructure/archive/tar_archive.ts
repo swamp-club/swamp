@@ -28,6 +28,7 @@ import {
 } from "@std/path";
 import { TarStream, type TarStreamInput } from "@std/tar/tar-stream";
 import { UntarStream } from "@std/tar/untar-stream";
+import { markErrorPaths } from "../../domain/errors.ts";
 
 /**
  * `DecompressionStream` is typed to emit `BufferSource`, which TypeScript
@@ -185,8 +186,11 @@ function isDirectoryTypeflag(typeflag: string): boolean {
 function ensureNoTraversal(targetPath: string, extractRoot: string): void {
   const rel = relative(extractRoot, targetPath);
   if (rel.startsWith("..") || rel === "..") {
-    throw new Error(
-      `Archive entry escapes extract root: ${targetPath}`,
+    throw markErrorPaths(
+      new Error(
+        `Archive entry escapes extract root: ${targetPath}`,
+      ),
+      [targetPath],
     );
   }
 }
@@ -267,7 +271,10 @@ export async function extractTarGz(
       if (entry.readable) {
         await entry.readable.cancel();
       }
-      throw new Error(`Archive contains unsafe path: ${entry.path}`);
+      throw markErrorPaths(
+        new Error(`Archive contains unsafe path: ${entry.path}`),
+        [entry.path],
+      );
     }
 
     const targetPath = join(root, normalized);
@@ -303,8 +310,11 @@ export async function extractTarGz(
       // Reject absolute symlink targets — they always escape the root.
       // `isAbsolute` handles POSIX `/`, Windows `\`, and drive-letter `C:\`.
       if (isAbsolute(linkTarget)) {
-        throw new Error(
-          `Archive contains symlink with absolute target: ${entry.path} → ${linkTarget}`,
+        throw markErrorPaths(
+          new Error(
+            `Archive contains symlink with absolute target: ${entry.path} → ${linkTarget}`,
+          ),
+          [entry.path, linkTarget],
         );
       }
 

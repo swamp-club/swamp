@@ -30,9 +30,10 @@ import { Definition } from "../domain/definitions/definition.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
 import type { DataHandle } from "../domain/models/model.ts";
 import { withConsoleGuard } from "../domain/models/console_guard.ts";
-import type {
-  DispatchOutput,
-  DispatchResult,
+import {
+  dispatchErrorPaths,
+  type DispatchOutput,
+  type DispatchResult,
 } from "../domain/remote/protocol.ts";
 import { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import {
@@ -227,6 +228,7 @@ export async function runDispatchRunner(
     result = {
       status: "error",
       error: message,
+      errorPaths: dispatchErrorPaths(error),
       outputs: toOutputs(getHandles()),
       logs,
       durationMs,

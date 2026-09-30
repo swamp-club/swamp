@@ -64,6 +64,7 @@ import {
 } from "./extension_precedence.ts";
 import { evictRemovedBundles } from "./bundle_eviction.ts";
 import { realCanonicalPath } from "../../infrastructure/persistence/canonicalize_path.ts";
+import { markErrorPaths } from "../errors.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
@@ -1202,8 +1203,11 @@ export const modelKindAdapter: KindAdapter = {
         }
         return;
       }
-      throw new Error(
-        `Bundle has no extension export: ${entry.bundle_path}`,
+      throw markErrorPaths(
+        new Error(
+          `Bundle has no extension export: ${entry.bundle_path}`,
+        ),
+        [entry.bundle_path],
       );
     }
 

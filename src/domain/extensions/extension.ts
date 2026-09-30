@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { markErrorPaths } from "../errors.ts";
 import type { ExtensionKind } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import type { BundleLocation } from "./bundle_location.ts";
@@ -137,6 +138,7 @@ export class IntraExtensionDuplicateType extends Error {
     this.kind = args.kind;
     this.type = args.type;
     this.canonicalPaths = args.canonicalPaths;
+    markErrorPaths(this, args.canonicalPaths);
   }
 }
 
@@ -162,6 +164,7 @@ export class SourceExtensionRootMismatch extends Error {
     this.extensionName = args.extensionName;
     this.expected = args.expected;
     this.actual = args.actual;
+    markErrorPaths(this, [args.actual, args.expected]);
   }
 }
 
@@ -477,9 +480,12 @@ function updateSourceState(
 ): Extension {
   const existing = extension.sources.get(location);
   if (!existing) {
-    throw new Error(
-      `Extension ${extension.name}@${extension.version} has no Source at ` +
-        `${location.canonicalPath}; cannot update state to ${state.tag}.`,
+    throw markErrorPaths(
+      new Error(
+        `Extension ${extension.name}@${extension.version} has no Source at ` +
+          `${location.canonicalPath}; cannot update state to ${state.tag}.`,
+      ),
+      [location.canonicalPath],
     );
   }
   const next = new Map(extension.sources);
@@ -497,9 +503,12 @@ function updateSourceStateAndFingerprint(
 ): Extension {
   const existing = extension.sources.get(location);
   if (!existing) {
-    throw new Error(
-      `Extension ${extension.name}@${extension.version} has no Source at ` +
-        `${location.canonicalPath}; cannot update state to ${state.tag}.`,
+    throw markErrorPaths(
+      new Error(
+        `Extension ${extension.name}@${extension.version} has no Source at ` +
+          `${location.canonicalPath}; cannot update state to ${state.tag}.`,
+      ),
+      [location.canonicalPath],
     );
   }
   const next = new Map(extension.sources);

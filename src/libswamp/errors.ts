@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
+
 /** Structured error returned in event streams. */
 export interface SwampError {
   /** Machine-readable error code (e.g., "not_authenticated", "cancelled"). */
@@ -99,4 +101,16 @@ export function validationFailed(
     message,
     details,
   };
+}
+
+/**
+ * Converts a stream's SwampError into the UserError a CLI command throws,
+ * keeping its message and code. Paths marked on the SwampError's cause carry
+ * over, so telemetry can still remove them exactly (swamp-club#2830).
+ */
+export function userErrorFromSwampError(error: SwampError): UserError {
+  return markErrorPaths(
+    new UserError(error.message, error.code),
+    errorPaths(error.cause),
+  );
 }

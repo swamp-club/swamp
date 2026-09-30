@@ -40,7 +40,7 @@ import {
   type RepoMarkerData,
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
-import { UserError } from "../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
@@ -615,16 +615,22 @@ async function throwRepoNotInitialized(
 ): Promise<never> {
   const displayPath = redactHomePath(repoPath.value);
   if (await service.hasOrphanedSwampDir(repoPath)) {
-    throw new UserError(
-      `Found a .swamp/ directory at ${displayPath} but no .swamp.yaml marker — ` +
-        "the repository appears partially initialized or corrupted. " +
-        "If you previously used a remote datastore, re-initializing with " +
-        "'swamp repo init' will not reconnect to it. Restore .swamp.yaml " +
-        "from version control or re-initialize with the correct --datastore flag.",
+    throw markErrorPaths(
+      new UserError(
+        `Found a .swamp/ directory at ${displayPath} but no .swamp.yaml marker — ` +
+          "the repository appears partially initialized or corrupted. " +
+          "If you previously used a remote datastore, re-initializing with " +
+          "'swamp repo init' will not reconnect to it. Restore .swamp.yaml " +
+          "from version control or re-initialize with the correct --datastore flag.",
+      ),
+      [displayPath],
     );
   }
-  throw new UserError(
-    `Not a swamp repository: ${displayPath}. To initialize a new repository, run 'swamp repo init', or specify an existing repository with 'swamp <command> --repo-dir /path/to/repo'.`,
+  throw markErrorPaths(
+    new UserError(
+      `Not a swamp repository: ${displayPath}. To initialize a new repository, run 'swamp repo init', or specify an existing repository with 'swamp <command> --repo-dir /path/to/repo'.`,
+    ),
+    [displayPath],
   );
 }
 
@@ -767,8 +773,11 @@ export async function requireInitializedRepoReadOnly(
     try {
       const stat = await Deno.stat(datastoreConfig.path);
       if (!stat.isDirectory) {
-        throw new UserError(
-          `Datastore path is not a directory: ${datastoreConfig.path}`,
+        throw markErrorPaths(
+          new UserError(
+            `Datastore path is not a directory: ${datastoreConfig.path}`,
+          ),
+          [datastoreConfig.path],
         );
       }
     } catch (error) {
@@ -777,10 +786,13 @@ export async function requireInitializedRepoReadOnly(
       } else if (error instanceof UserError) {
         throw error;
       } else {
-        throw new UserError(
-          `Cannot access datastore at ${datastoreConfig.path}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        throw markErrorPaths(
+          new UserError(
+            `Cannot access datastore at ${datastoreConfig.path}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+          [datastoreConfig.path, ...errorPaths(error)],
         );
       }
     }
@@ -972,8 +984,11 @@ export function requireInitializedRepo(
       try {
         const stat = await Deno.stat(datastoreConfig.path);
         if (!stat.isDirectory) {
-          throw new UserError(
-            `Datastore path is not a directory: ${datastoreConfig.path}`,
+          throw markErrorPaths(
+            new UserError(
+              `Datastore path is not a directory: ${datastoreConfig.path}`,
+            ),
+            [datastoreConfig.path],
           );
         }
       } catch (error) {
@@ -982,10 +997,13 @@ export function requireInitializedRepo(
         } else if (error instanceof UserError) {
           throw error;
         } else {
-          throw new UserError(
-            `Cannot access datastore at ${datastoreConfig.path}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+          throw markErrorPaths(
+            new UserError(
+              `Cannot access datastore at ${datastoreConfig.path}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            ),
+            [datastoreConfig.path, ...errorPaths(error)],
           );
         }
       }
@@ -1180,8 +1198,11 @@ export async function requireInitializedRepoUnlocked(
     try {
       const stat = await Deno.stat(datastoreConfig.path);
       if (!stat.isDirectory) {
-        throw new UserError(
-          `Datastore path is not a directory: ${datastoreConfig.path}`,
+        throw markErrorPaths(
+          new UserError(
+            `Datastore path is not a directory: ${datastoreConfig.path}`,
+          ),
+          [datastoreConfig.path],
         );
       }
     } catch (error) {
@@ -1190,10 +1211,13 @@ export async function requireInitializedRepoUnlocked(
       } else if (error instanceof UserError) {
         throw error;
       } else {
-        throw new UserError(
-          `Cannot access datastore at ${datastoreConfig.path}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        throw markErrorPaths(
+          new UserError(
+            `Cannot access datastore at ${datastoreConfig.path}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+          [datastoreConfig.path, ...errorPaths(error)],
         );
       }
     }

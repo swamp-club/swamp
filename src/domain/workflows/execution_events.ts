@@ -131,6 +131,13 @@ export type WorkflowExecutionEvent =
      * site, and only when there is such data.
      */
     dataHandles?: DataHandle[];
+    /**
+     * Filesystem paths the step's error marked (see `markErrorPaths`), so
+     * telemetry can remove them exactly from `error` (swamp-club#2830). Set
+     * only at the model-method catch site. Domain-internal:
+     * mapWorkflowExecutionEvent strips it from the published event.
+     */
+    errorPaths?: string[];
     forEachTemplate?: string;
     forEachIndex?: number;
   }

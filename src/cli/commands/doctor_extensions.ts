@@ -292,17 +292,22 @@ export const doctorExtensionsCommand = withRemoteOptions(
           "../../infrastructure/persistence/duplicate_type_error.ts"
         );
         if (reconcileError instanceof DuplicateTypeError) {
-          const { UserError } = await import("../../domain/errors.ts");
+          const { markErrorPaths, UserError } = await import(
+            "../../domain/errors.ts"
+          );
           const e = reconcileError;
-          throw new UserError(
-            `Type "${e.typeNormalized}" (kind=${e.kind}) is claimed by two ` +
-              `installed extensions:\n` +
-              `  • ${e.firstSource.extensionName}@${e.firstSource.extensionVersion}` +
-              `  at ${e.firstSource.canonicalPath}\n` +
-              `  • ${e.secondSource.extensionName}@${e.secondSource.extensionVersion}` +
-              `  at ${e.secondSource.canonicalPath}\n` +
-              `Remove one with \`swamp extension rm <name>\` to resolve ` +
-              `the conflict, then run \`swamp doctor extensions\` again.`,
+          throw markErrorPaths(
+            new UserError(
+              `Type "${e.typeNormalized}" (kind=${e.kind}) is claimed by two ` +
+                `installed extensions:\n` +
+                `  • ${e.firstSource.extensionName}@${e.firstSource.extensionVersion}` +
+                `  at ${e.firstSource.canonicalPath}\n` +
+                `  • ${e.secondSource.extensionName}@${e.secondSource.extensionVersion}` +
+                `  at ${e.secondSource.canonicalPath}\n` +
+                `Remove one with \`swamp extension rm <name>\` to resolve ` +
+                `the conflict, then run \`swamp doctor extensions\` again.`,
+            ),
+            [e.firstSource.canonicalPath, e.secondSource.canonicalPath],
           );
         }
       }

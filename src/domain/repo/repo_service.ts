@@ -35,7 +35,7 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
-import { assertNever, UserError } from "../errors.ts";
+import { assertNever, markErrorPaths, UserError } from "../errors.ts";
 import { resolvePrimaryTool } from "./primary_tool.ts";
 import {
   resolveSkillsDir,
@@ -342,11 +342,14 @@ export class RepoService {
       const existingTools = existingMarker?.tools ?? [];
 
       if (!options.force) {
-        throw new UserError(
-          `Repository already initialized at ${repoPath.value} ` +
-            `(tools: ${formatToolsList(existingTools)}). ` +
-            "To change the enrolled tools, run: swamp repo upgrade --tool <tool>. " +
-            "To reinitialize from scratch, run: swamp repo init --force --tool <tool>",
+        throw markErrorPaths(
+          new UserError(
+            `Repository already initialized at ${repoPath.value} ` +
+              `(tools: ${formatToolsList(existingTools)}). ` +
+              "To change the enrolled tools, run: swamp repo upgrade --tool <tool>. " +
+              "To reinitialize from scratch, run: swamp repo init --force --tool <tool>",
+          ),
+          [repoPath.value],
         );
       }
 
@@ -439,16 +442,22 @@ export class RepoService {
 
     if (!existingMarker) {
       if (await this.hasOrphanedSwampDir(repoPath)) {
-        throw new UserError(
-          `Found a .swamp/ directory at ${repoPath.value} but no .swamp.yaml marker — ` +
-            "the repository appears partially initialized or corrupted. " +
-            "If you previously used a remote datastore, re-initializing with " +
-            "'swamp repo init' will not reconnect to it. Restore .swamp.yaml " +
-            "from version control or re-initialize with the correct --datastore flag.",
+        throw markErrorPaths(
+          new UserError(
+            `Found a .swamp/ directory at ${repoPath.value} but no .swamp.yaml marker — ` +
+              "the repository appears partially initialized or corrupted. " +
+              "If you previously used a remote datastore, re-initializing with " +
+              "'swamp repo init' will not reconnect to it. Restore .swamp.yaml " +
+              "from version control or re-initialize with the correct --datastore flag.",
+          ),
+          [repoPath.value],
         );
       }
-      throw new UserError(
-        `Not a swamp repository: ${repoPath.value}. Run 'swamp repo init' first.`,
+      throw markErrorPaths(
+        new UserError(
+          `Not a swamp repository: ${repoPath.value}. Run 'swamp repo init' first.`,
+        ),
+        [repoPath.value],
       );
     }
 

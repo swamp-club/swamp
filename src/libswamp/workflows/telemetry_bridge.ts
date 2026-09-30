@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { markErrorPaths } from "../../domain/errors.ts";
 import type { CommandInvocationData } from "../../domain/telemetry/command_invocation.ts";
 import type { WorkflowContextData } from "../../domain/telemetry/workflow_context.ts";
 import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
@@ -168,7 +169,7 @@ export class WorkflowTelemetryBridge {
             buildChildInvocation(tracked.modelName, tracked.methodName),
             tracked.startedAt,
             new Date(),
-            new Error(event.error),
+            markErrorPaths(new Error(event.error), event.errorPaths ?? []),
             this.sink.parentInvocationId,
             this.buildWorkflowContext(event.jobId, event.stepId, tracked),
           );
@@ -195,7 +196,7 @@ export class WorkflowTelemetryBridge {
           buildChildInvocation(event.modelName, event.methodName),
           sameInstant,
           sameInstant,
-          new Error(event.error),
+          markErrorPaths(new Error(event.error), event.errorPaths ?? []),
           this.sink.parentInvocationId,
           this.buildWorkflowContext(event.jobId, event.stepId, synthesized),
         );

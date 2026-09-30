@@ -31,7 +31,7 @@ import {
   VaultConfigParseError,
   YamlVaultConfigRepository,
 } from "./yaml_vault_config_repository.ts";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, UserError } from "../../domain/errors.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
 
 Deno.test("YamlVaultConfigRepository - normal vault types resolve correctly", async () => {
@@ -417,4 +417,10 @@ Deno.test("YamlVaultConfigRepository: getPath rejects an id that leaves the type
     }
     return Promise.resolve();
   });
+});
+
+Deno.test("VaultConfigParseError: marks the config path (swamp-club#2830)", () => {
+  const path = "/srv/acme/vaults/local_encryption/final report.yaml";
+  const error = new VaultConfigParseError(path, "local_encryption", "v", "bad");
+  assertEquals(errorPaths(error), [path]);
 });

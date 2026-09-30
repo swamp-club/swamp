@@ -1505,6 +1505,33 @@ Deno.test("mapWorkflowExecutionEvent: keeps step_failed dataHandles off the publ
   });
 });
 
+Deno.test("mapWorkflowExecutionEvent: keeps step_failed errorPaths off the published event (swamp-club#2830)", () => {
+  const event: WorkflowExecutionEvent = {
+    kind: "step_failed",
+    jobId: "job1",
+    stepId: "step1",
+    runId: "run-1",
+    error: "cannot read /srv/acme/final report",
+    modelName: "failer",
+    methodName: "run",
+    errorPaths: ["/srv/acme/final report"],
+  };
+
+  const published = mapWorkflowExecutionEvent(
+    event,
+    new InMemoryWorkflowRunRepository(),
+  );
+
+  assertEquals(published, {
+    kind: "step_failed",
+    jobId: "job1",
+    stepId: "step1",
+    error: "cannot read /srv/acme/final report",
+    modelName: "failer",
+    methodName: "run",
+  });
+});
+
 Deno.test("mapWorkflowExecutionEvent: carries a nested run's parentRunId on started and omits it at top level (swamp-club#2470)", () => {
   const started = (parentRunId?: string): WorkflowExecutionEvent => ({
     kind: "started",

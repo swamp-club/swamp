@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { markErrorPaths } from "../errors.ts";
 import {
+  dispatchErrorPaths,
   DispatchParamsSchema,
   DispatchResultSchema,
   EnrollParamsSchema,
@@ -151,4 +153,62 @@ Deno.test("DispatchResultSchema: rejects unknown output types", () => {
     durationMs: 0,
   });
   assertEquals(result.success, false);
+});
+
+Deno.test("DispatchResultSchema: carries marked errorPaths (swamp-club#2830)", () => {
+  const parsed = DispatchResultSchema.parse({
+    status: "error",
+    error: "cannot read /srv/acme/final report",
+    errorPaths: ["/srv/acme/final report"],
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  });
+  assertEquals(parsed.errorPaths, ["/srv/acme/final report"]);
+});
+
+Deno.test("DispatchResultSchema: drops out-of-bounds errorPaths without failing the result", () => {
+  const base = {
+    status: "error",
+    error: "boom",
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  };
+  for (
+    const errorPaths of [
+      Array.from({ length: 33 }, (_, i) => `/p/${i}`),
+      ["/p/" + "x".repeat(4096)],
+      [42],
+      "/not/an/array",
+    ]
+  ) {
+    const parsed = DispatchResultSchema.parse({ ...base, errorPaths });
+    assertEquals(parsed.errorPaths, undefined);
+    assertEquals(parsed.error, "boom");
+  }
+  // A result from a worker without the field still parses.
+  assertEquals(DispatchResultSchema.parse(base).errorPaths, undefined);
+});
+
+Deno.test("dispatchErrorPaths: trims marked paths to what the schema accepts", () => {
+  const long = "/p/" + "x".repeat(4096);
+  const many = Array.from({ length: 40 }, (_, i) => `/p/${i}`);
+  const error = markErrorPaths(new Error("boom"), [long, ...many]);
+  const paths = dispatchErrorPaths(error);
+  assertEquals(paths, many.slice(0, 32));
+  const parsed = DispatchResultSchema.parse({
+    status: "error",
+    error: "boom",
+    errorPaths: paths,
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  });
+  assertEquals(parsed.errorPaths, paths);
+});
+
+Deno.test("dispatchErrorPaths: is undefined when the error marked nothing", () => {
+  assertEquals(dispatchErrorPaths(new Error("boom")), undefined);
+  assertEquals(dispatchErrorPaths("boom"), undefined);
 });

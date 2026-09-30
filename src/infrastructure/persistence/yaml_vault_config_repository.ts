@@ -30,7 +30,7 @@ import {
   type VaultConfigId,
 } from "../../domain/vaults/vault_config.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   createVaultCreated,
   createVaultDeleted,
@@ -54,6 +54,7 @@ export class VaultConfigParseError extends UserError {
         `Repair it with 'swamp vault edit ${vaultId} --type ${vaultType}'.`,
     );
     this.name = "VaultConfigParseError";
+    markErrorPaths(this, [path]);
   }
 }
 

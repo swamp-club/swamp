@@ -49,6 +49,7 @@ import {
 import {
   captureEnvironmentSnapshot,
 } from "../domain/remote/environment_snapshot.ts";
+import { markErrorPaths } from "../domain/errors.ts";
 import {
   type DispatchParams,
   type DispatchResult,
@@ -546,7 +547,10 @@ export class DispatchService {
           leaseId,
           error: result.error ?? "remote execution failed",
         });
-        throw new Error(result.error ?? "Remote execution failed");
+        throw markErrorPaths(
+          new Error(result.error ?? "Remote execution failed"),
+          result.errorPaths ?? [],
+        );
       }
       leaseSettled = true;
       await this.#leaseTransition("complete", { leaseId });

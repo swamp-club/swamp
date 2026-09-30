@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ExtensionKind } from "./extension_catalog_store.ts";
+import { markErrorPaths } from "../../domain/errors.ts";
 
 /**
  * Carries enough information to point a user at both Sources sharing
@@ -76,6 +77,10 @@ export class DuplicateTypeError extends Error {
     this.typeNormalized = args.typeNormalized;
     this.firstSource = args.firstSource;
     this.secondSource = args.secondSource;
+    markErrorPaths(this, [
+      args.firstSource.canonicalPath,
+      args.secondSource.canonicalPath,
+    ]);
   }
 }
 

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse as parseYaml } from "@std/yaml";
-import { UserError } from "../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { homeDirectory } from "../infrastructure/persistence/paths.ts";
 import { deepMerge } from "../domain/inputs/input_merge.ts";
 
@@ -117,14 +117,20 @@ async function resolveFileValue(
     return await Deno.readTextFile(resolvedPath);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      throw new UserError(
-        `Input file not found for key "${key}": ${resolvedPath}` +
-          `. Values starting with @ are read as file paths; use \\@ for a literal @ or :json suffix to bypass`,
+      throw markErrorPaths(
+        new UserError(
+          `Input file not found for key "${key}": ${resolvedPath}` +
+            `. Values starting with @ are read as file paths; use \\@ for a literal @ or :json suffix to bypass`,
+        ),
+        [resolvedPath],
       );
     }
     const message = error instanceof Error ? error.message : String(error);
-    throw new UserError(
-      `Failed to read input file for key "${key}": ${message}`,
+    throw markErrorPaths(
+      new UserError(
+        `Failed to read input file for key "${key}": ${message}`,
+      ),
+      [resolvedPath, ...errorPaths(error)],
     );
   }
 }
@@ -228,10 +234,16 @@ async function parseInputFile(
     return parsed as Record<string, unknown>;
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      throw new UserError(`Input file not found: ${inputFile}`);
+      throw markErrorPaths(
+        new UserError(`Input file not found: ${inputFile}`),
+        [inputFile],
+      );
     }
     const message = error instanceof Error ? error.message : String(error);
-    throw new UserError(`Failed to read input file: ${message}`);
+    throw markErrorPaths(
+      new UserError(`Failed to read input file: ${message}`),
+      [inputFile, ...errorPaths(error)],
+    );
   }
 }
 

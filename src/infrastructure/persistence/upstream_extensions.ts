@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
+
 /** Entry in upstream_extensions.json. */
 export interface UpstreamExtensionEntry {
   version: string;
@@ -71,10 +73,13 @@ export async function readUpstreamExtensions(
   try {
     parsed = JSON.parse(content);
   } catch (error) {
-    throw new SyntaxError(
-      `Cannot parse lockfile ${lockfilePath}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+    throw markErrorPaths(
+      new SyntaxError(
+        `Cannot parse lockfile ${lockfilePath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+      [lockfilePath, ...errorPaths(error)],
     );
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
@@ -83,8 +88,11 @@ export async function readUpstreamExtensions(
       : Array.isArray(parsed)
       ? "an array"
       : typeof parsed;
-    throw new SyntaxError(
-      `Lockfile ${lockfilePath} must contain a JSON object, found ${found}`,
+    throw markErrorPaths(
+      new SyntaxError(
+        `Lockfile ${lockfilePath} must contain a JSON object, found ${found}`,
+      ),
+      [lockfilePath],
     );
   }
   return parsed as UpstreamExtensionsMap;

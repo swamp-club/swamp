@@ -30,6 +30,7 @@ import { DispatchRegistry } from "./dispatch_registry.ts";
 import { BundleRegistry } from "./bundle_registry.ts";
 import { WorkerGateway, type WorkerSnapshot } from "./worker_gateway.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { errorPaths } from "../domain/errors.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import {
@@ -241,6 +242,27 @@ Deno.test("DispatchService: remote method error fails the lease and rethrows", a
     h.transitions.map((t) => t.methodName),
     ["acquire", "fail"],
   );
+});
+
+Deno.test("DispatchService: remote method error keeps the worker's marked paths (swamp-club#2830)", async () => {
+  const h = createHarness();
+  const path = "/srv/acme/final report";
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "error",
+      error: `cannot read ${path}`,
+      errorPaths: [path],
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    })
+  );
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest()),
+    Error,
+    "cannot read",
+  );
+  assertEquals(errorPaths(error), [path]);
 });
 
 Deno.test("DispatchService: no-match placement queues then times out", async () => {

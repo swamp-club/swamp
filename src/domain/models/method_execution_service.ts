@@ -30,7 +30,7 @@ import {
   modelRegistry,
 } from "./model.ts";
 import type { Definition } from "../definitions/definition.ts";
-import { UserError } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
@@ -969,8 +969,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           currentHandles = collectPersistedHandles(executionResult.outputs);
 
           if (executionResult.status === "error") {
-            const err = new Error(
-              executionResult.error ?? "Method execution failed",
+            const err = markErrorPaths(
+              new Error(executionResult.error ?? "Method execution failed"),
+              executionResult.errorPaths ?? [],
             );
             (err as unknown as Record<string, unknown>).dataHandles =
               currentHandles;

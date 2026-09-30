@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { errorPaths } from "../errors.ts";
 import type { Logger } from "@logtape/logtape";
 import type {
   ExecutionRequest,
@@ -333,6 +334,7 @@ export class InProcessExecutor {
         return {
           status: "error",
           error: error instanceof Error ? error.message : String(error),
+          errorPaths: errorPaths(error),
           outputs: [],
           logs,
           durationMs,
@@ -354,6 +356,7 @@ export class InProcessExecutor {
       return {
         status: "error",
         error: error instanceof Error ? error.message : String(error),
+        errorPaths: errorPaths(error),
         outputs,
         logs,
         durationMs,

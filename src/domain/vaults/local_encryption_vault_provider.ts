@@ -34,6 +34,7 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import { checkFileNotBroadlyReadable } from "../../infrastructure/security/file_security_check.ts";
+import { errorPaths, markErrorPaths } from "../errors.ts";
 
 /**
  * Configuration options for local encryption vault.
@@ -454,10 +455,13 @@ export class LocalEncryptionVaultProvider
       await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
     } catch (error) {
       if (!(error instanceof Deno.errors.AlreadyExists)) {
-        throw new Error(
-          `Failed to create refresh directory '${dir}': ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        throw markErrorPaths(
+          new Error(
+            `Failed to create refresh directory '${dir}': ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+          [dir, ...errorPaths(error)],
         );
       }
     }
@@ -470,10 +474,13 @@ export class LocalEncryptionVaultProvider
       await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
     } catch (error) {
       if (!(error instanceof Deno.errors.AlreadyExists)) {
-        throw new Error(
-          `Failed to create annotations directory '${dir}': ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        throw markErrorPaths(
+          new Error(
+            `Failed to create annotations directory '${dir}': ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+          [dir, ...errorPaths(error)],
         );
       }
     }
@@ -531,10 +538,13 @@ export class LocalEncryptionVaultProvider
         return await this.readAndValidateSshKey(this.config.ssh_key_path);
       } catch (error) {
         if (!this.config.auto_generate) {
-          throw new Error(
-            `Failed to read SSH key from '${this.config.ssh_key_path}' for local vault '${this.name}': ${
-              error instanceof Error ? error.message : String(error)
-            }. Set 'ssh_key_path' to a valid SSH private key or enable 'auto_generate'.`,
+          throw markErrorPaths(
+            new Error(
+              `Failed to read SSH key from '${this.config.ssh_key_path}' for local vault '${this.name}': ${
+                error instanceof Error ? error.message : String(error)
+              }. Set 'ssh_key_path' to a valid SSH private key or enable 'auto_generate'.`,
+            ),
+            [this.config.ssh_key_path, ...errorPaths(error)],
           );
         }
         // Fall through to auto-generation if SSH key fails and auto_generate is enabled
@@ -547,10 +557,13 @@ export class LocalEncryptionVaultProvider
       try {
         return await this.readAndValidateSshKey(defaultSshKeyPath);
       } catch (error) {
-        throw new Error(
-          `Failed to read default SSH key from '${defaultSshKeyPath}' for local vault '${this.name}': ${
-            error instanceof Error ? error.message : String(error)
-          }. Set 'ssh_key_path' to a valid SSH private key or enable 'auto_generate'.`,
+        throw markErrorPaths(
+          new Error(
+            `Failed to read default SSH key from '${defaultSshKeyPath}' for local vault '${this.name}': ${
+              error instanceof Error ? error.message : String(error)
+            }. Set 'ssh_key_path' to a valid SSH private key or enable 'auto_generate'.`,
+          ),
+          [defaultSshKeyPath, ...errorPaths(error)],
         );
       }
     }
@@ -618,9 +631,12 @@ export class LocalEncryptionVaultProvider
             await new Promise<void>((r) => setTimeout(r, 5));
           }
           if (!winnerKey) {
-            throw new Error(
-              `Key file '${keyFile}' exists but is empty — ` +
-                `concurrent key generation may have failed`,
+            throw markErrorPaths(
+              new Error(
+                `Key file '${keyFile}' exists but is empty — ` +
+                  `concurrent key generation may have failed`,
+              ),
+              [keyFile],
             );
           }
           return await crypto.subtle.importKey(
@@ -838,10 +854,13 @@ export class LocalEncryptionVaultProvider
       await Deno.mkdir(this.vaultDir, { recursive: true, mode: 0o700 });
     } catch (error) {
       if (!(error instanceof Deno.errors.AlreadyExists)) {
-        throw new Error(
-          `Failed to create vault directory '${this.vaultDir}': ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        throw markErrorPaths(
+          new Error(
+            `Failed to create vault directory '${this.vaultDir}': ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+          [this.vaultDir, ...errorPaths(error)],
         );
       }
     }

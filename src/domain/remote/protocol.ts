@@ -31,6 +31,7 @@
  * ride this protocol — they use the HTTP data plane (`src/serve/data_plane.ts`).
  */
 
+import { errorPaths } from "../errors.ts";
 import { z } from "zod";
 
 /**
@@ -315,9 +316,37 @@ export const DispatchOutputSchema = z.object({
 
 export type DispatchOutput = z.infer<typeof DispatchOutputSchema>;
 
+/** Most marked error paths a dispatch result may carry. */
+export const MAX_ERROR_PATHS = 32;
+/** Longest marked error path a dispatch result may carry. */
+export const MAX_ERROR_PATH_LENGTH = 4096;
+
+/**
+ * The paths an error marked, trimmed to what a dispatch result may carry, or
+ * `undefined` when there are none. The runner sends this so the orchestrator
+ * never has to drop the whole list for being out of bounds.
+ */
+export function dispatchErrorPaths(error: unknown): string[] | undefined {
+  const paths = errorPaths(error)
+    .filter((path) => path.length <= MAX_ERROR_PATH_LENGTH)
+    .slice(0, MAX_ERROR_PATHS);
+  return paths.length > 0 ? paths : undefined;
+}
+
 export const DispatchResultSchema = z.object({
   status: z.enum(["success", "error"]),
   error: z.string().optional(),
+  /**
+   * Filesystem paths the runner's error marked (see `markErrorPaths`), so the
+   * orchestrator's telemetry can remove them exactly from `error`
+   * (swamp-club#2830). Bounded because a worker supplies it. A value outside
+   * the bounds is dropped, never fatal to the result, since these can only
+   * add redaction.
+   */
+  errorPaths: z.array(z.string().max(MAX_ERROR_PATH_LENGTH))
+    .max(MAX_ERROR_PATHS)
+    .optional()
+    .catch(undefined),
   outputs: z.array(DispatchOutputSchema),
   logs: z.array(z.string()),
   durationMs: z.number(),
