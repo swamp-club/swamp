@@ -31,6 +31,7 @@
  * - ModelData.input always has the stable interface expressions depend on
  */
 
+import { RunSensitiveValues } from "../secrets/mod.ts";
 import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -138,7 +139,7 @@ Deno.test("contract: buildContext always includes env namespace", async () => {
     const defRepo = new YamlDefinitionRepository(repoDir);
     const resolver = new ModelResolver(defRepo);
 
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.env);
     assertEquals(typeof ctx.env, "object");
@@ -160,7 +161,7 @@ Deno.test("contract: buildContext indexes models by both name and UUID", async (
     await defRepo.save(type, def);
 
     const resolver = new ModelResolver(defRepo);
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     // Accessible by name
     assertExists(ctx.model["dual-index"]);
@@ -186,7 +187,7 @@ Deno.test("contract: ModelData.input has stable interface for expressions", asyn
     await defRepo.save(type, def);
 
     const resolver = new ModelResolver(defRepo);
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     const modelData = ctx.model["stable-api"];
     assertExists(modelData);
@@ -219,7 +220,11 @@ Deno.test("contract: buildContext self reference has id, name, version, tags, gl
     await defRepo.save(type, def);
 
     const resolver = new ModelResolver(defRepo);
-    const ctx = await resolver.buildContext(def, type);
+    const ctx = await resolver.buildContext(
+      new RunSensitiveValues(),
+      def,
+      type,
+    );
 
     assertExists(ctx.self);
     assertEquals(ctx.self!.id, def.id);
@@ -247,7 +252,7 @@ Deno.test("contract: updateDefinitionInContext updates the model's definition da
     await defRepo.save(type, def);
 
     const resolver = new ModelResolver(defRepo);
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     // Update the definition in context
     const updatedDef = Definition.create({

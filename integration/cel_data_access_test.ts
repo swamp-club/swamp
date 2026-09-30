@@ -27,6 +27,7 @@
  * 4. Verify lazy evaluation
  */
 
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import {
   assertEquals,
   assertExists,
@@ -133,6 +134,7 @@ Deno.test("CEL Data Access: reference model input attributes by name", async () 
     const result = await evalService.evaluateDefinition(
       dependentModel,
       type,
+      new RunSensitiveValues(),
     );
 
     assertEquals(result.hadExpressions, true);
@@ -161,7 +163,7 @@ Deno.test("CEL Data Access: reference model by UUID", async () => {
 
     // Build context to verify UUID access works
     const modelResolver = new ModelResolver(definitionRepo, { repoDir });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Model should be accessible by both name and UUID
     assertExists(context.model["source_by_id"]);
@@ -196,7 +198,7 @@ Deno.test("CEL Data Access: reference hyphenated model name", async () => {
 
     // Build context
     const modelResolver = new ModelResolver(definitionRepo, { repoDir });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Should be accessible by name
     assertExists(context.model["my-hyphenated-model"]);
@@ -263,7 +265,7 @@ Deno.test("CEL Data Access: access latest resource via model.X.resource.specName
       repoDir,
       dataRepo,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Access latest resource via model.X.resource.specName.instanceName
     const modelData = context.model["data_source"];
@@ -332,7 +334,7 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
       dataRepo,
       dataQueryService: dqs,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     assertExists(context.data);
 
@@ -407,7 +409,9 @@ Deno.test("CEL Data Access: access data via data.latest()", async () => {
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
 
@@ -465,7 +469,7 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
       dataRepo,
       dataQueryService: dqs,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     assertExists(context.data);
 
@@ -537,7 +541,11 @@ Deno.test("CEL Data Access: reference resource from dependent model", async () =
       { dataRepo },
     );
 
-    const result = await evalService.evaluateDefinition(subnetModel, type);
+    const result = await evalService.evaluateDefinition(
+      subnetModel,
+      type,
+      new RunSensitiveValues(),
+    );
 
     assertEquals(result.hadExpressions, true);
     assertEquals(result.definition.globalArguments.vpc_id_ref, "vpc-12345");
@@ -623,7 +631,11 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
       { dataRepo },
     );
 
-    const result = await evalService.evaluateDefinition(modelC, type);
+    const result = await evalService.evaluateDefinition(
+      modelC,
+      type,
+      new RunSensitiveValues(),
+    );
 
     assertEquals(result.definition.globalArguments.from_a, 100);
     assertEquals(result.definition.globalArguments.from_b, 200);
@@ -660,7 +672,11 @@ Deno.test("CEL Data Access: access environment variables", async () => {
         );
 
         // evaluateDefinition defers env expressions to runtime (leaves raw)
-        const result = await evalService.evaluateDefinition(model, type);
+        const result = await evalService.evaluateDefinition(
+          model,
+          type,
+          new RunSensitiveValues(),
+        );
 
         assertEquals(
           result.definition.globalArguments.from_env,
@@ -728,7 +744,11 @@ Deno.test("CEL Data Access: conditional expressions", async () => {
       repoDir,
     );
 
-    const result = await evalService.evaluateDefinition(appModel, type);
+    const result = await evalService.evaluateDefinition(
+      appModel,
+      type,
+      new RunSensitiveValues(),
+    );
 
     assertEquals(result.definition.globalArguments.log_level, "warn");
     assertEquals(result.definition.globalArguments.verbose, false);
@@ -767,7 +787,11 @@ Deno.test("CEL Data Access: string concatenation and formatting", async () => {
       repoDir,
     );
 
-    const result = await evalService.evaluateDefinition(derivedModel, type);
+    const result = await evalService.evaluateDefinition(
+      derivedModel,
+      type,
+      new RunSensitiveValues(),
+    );
 
     assertEquals(result.definition.globalArguments.full_name, "app-1.2.3");
     assertEquals(
@@ -788,7 +812,7 @@ Deno.test("CEL Data Access: handle missing model gracefully", async () => {
 
     // Build context with no models
     const modelResolver = new ModelResolver(definitionRepo, { repoDir });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Context should have empty model map
     assertEquals(Object.keys(context.model).length, 0);
@@ -825,7 +849,7 @@ Deno.test("CEL Data Access: handle missing data gracefully", async () => {
       repoDir,
       dataRepo,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Model exists but has no data
     assertExists(context.model["no_data_model"]);
@@ -883,7 +907,7 @@ Deno.test("CEL Data Access: multiple resource items from same model", async () =
       repoDir,
       dataRepo,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // All resource items accessible via model.X.resource.specName.instanceName
     const modelData = context.model["multi_data_model"];
@@ -957,7 +981,11 @@ Deno.test(
         { dataRepo },
       );
 
-      const result = await evalService.evaluateDefinition(s3ReportModel, type);
+      const result = await evalService.evaluateDefinition(
+        s3ReportModel,
+        type,
+        new RunSensitiveValues(),
+      );
 
       assertEquals(result.hadExpressions, true);
       assertEquals(result.definition.globalArguments.bucket_count, 42);
@@ -1096,6 +1124,7 @@ Deno.test("CEL Data Access: cross-type resource with specName tag via Expression
     const result = await evalService.evaluateDefinition(
       reportModel,
       reportType,
+      new RunSensitiveValues(),
     );
 
     assertEquals(result.hadExpressions, true);
@@ -1173,6 +1202,7 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
     const result = await evalService.evaluateDefinition(
       reportModel,
       reportType,
+      new RunSensitiveValues(),
     );
 
     assertEquals(result.hadExpressions, true);
@@ -1230,7 +1260,9 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       // Write NEW data AFTER context was built
       await dataRepo.save(
@@ -1349,6 +1381,7 @@ Deno.test("CEL Data Access: env expression injected through data.latest() is not
           const evaluated = await evalService.evaluateDefinition(
             consumer,
             type,
+            new RunSensitiveValues(),
           );
 
           // The CEL pass really did splice the attacker's text into the tree —
@@ -1451,6 +1484,7 @@ Deno.test("CEL Data Access: authored env expression still resolves alongside sub
           const evaluated = await evalService.evaluateDefinition(
             consumer,
             type,
+            new RunSensitiveValues(),
           );
           const runtimeResult = await evalService
             .resolveRuntimeExpressionsInDefinition(
@@ -1575,13 +1609,17 @@ Deno.test("CEL Data Access: data.latest() on a sensitive field injected through 
       const authored = collectAuthoredExpressions(consumer.toData());
 
       // Pass 1 splices the attacker's text in, touching no vault.
-      const evaluated = await evalService.evaluateDefinition(consumer, type);
+      const evaluated = await evalService.evaluateDefinition(
+        consumer,
+        type,
+        new RunSensitiveValues(),
+      );
       assertEquals(evaluated.definition.globalArguments.run, injected);
       assertEquals(vaultReads, 0);
 
       // Pass 2, gated: the spliced text is left alone and the vault stays cold.
       const ctx = await new ModelResolver(definitionRepo, { repoDir, ...repos })
-        .buildContext();
+        .buildContext(new RunSensitiveValues());
       const gated = await evalService.evaluateData(
         evaluated.definition.globalArguments,
         ctx,
@@ -1664,7 +1702,7 @@ Deno.test("CEL Data Access: data.latest().path matches the deprecated model.*.fi
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await resolver.buildContext();
+      const context = await resolver.buildContext(new RunSensitiveValues());
       assertExists(context.data);
 
       const deprecated = (context.model["r-lab"].file as Record<
@@ -1750,8 +1788,8 @@ Deno.test("CEL Data Access: data.latest().path is empty for ephemeral data", asy
       });
       for (
         const context of [
-          await resolver.buildContext(),
-          resolver.buildLightContext(),
+          await resolver.buildContext(new RunSensitiveValues()),
+          resolver.buildLightContext(new RunSensitiveValues()),
         ]
       ) {
         const record = await context.data!.latest("scratch", "notes");
@@ -1807,7 +1845,7 @@ Deno.test("CEL Data Access: data.latest() with a spec name explains the data nam
       dataRepo,
       dataQueryService: new DataQueryService(catalog, dataRepo),
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
     const celEvaluator = new CelEvaluator();
 
     const error = await assertRejects(() =>

@@ -35,6 +35,11 @@ import {
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  SENSITIVE_FORMAT_VERSION,
+  type WrittenReference,
+  WrittenReferenceSchema,
+} from "../../domain/secrets/mod.ts";
 import type {
   RunSnapshotInfo,
   RunSnapshotRepository,
@@ -45,6 +50,13 @@ export interface EvaluatedWorkflowCache {
   /** Expressions the source workflow contained when the cache was written. */
   authoredExpressions: ReadonlySet<string>;
   deferredExpressions: readonly DeferredExpression[];
+  /** Where the file holds vault references in place of sensitive values. */
+  writtenReferences: readonly WrittenReference[];
+  /**
+   * Set when the file was written with sensitive values kept as references;
+   * absent in caches written before that, which may hold plaintext.
+   */
+  sensitiveFormat?: number;
 }
 
 // Cache metadata is deliberately separate from the source Workflow schema,
@@ -52,6 +64,8 @@ export interface EvaluatedWorkflowCache {
 const CacheMetadataSchema = z.object({
   authoredExpressions: z.array(z.string()).optional(),
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
+  writtenReferences: z.array(WrittenReferenceSchema).optional(),
+  sensitiveFormat: z.number().int().positive().optional(),
 });
 
 function parseCache(content: string): EvaluatedWorkflowCache | null {
@@ -59,18 +73,30 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     | (WorkflowData & {
       authoredExpressions?: unknown;
       deferredExpressions?: unknown;
+      writtenReferences?: unknown;
+      sensitiveFormat?: unknown;
     })
     | null;
   if (!data) return null;
-  const { authoredExpressions, deferredExpressions, ...workflowData } = data;
+  const {
+    authoredExpressions,
+    deferredExpressions,
+    writtenReferences,
+    sensitiveFormat,
+    ...workflowData
+  } = data;
   const metadata = CacheMetadataSchema.parse({
     authoredExpressions,
     deferredExpressions,
+    writtenReferences,
+    sensitiveFormat,
   });
   return {
     workflow: Workflow.fromData(workflowData),
     authoredExpressions: new Set(metadata.authoredExpressions),
     deferredExpressions: metadata.deferredExpressions ?? [],
+    writtenReferences: metadata.writtenReferences ?? [],
+    sensitiveFormat: metadata.sensitiveFormat,
   };
 }
 
@@ -239,6 +265,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     workflow: Workflow,
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
+    writtenReferences: readonly WrittenReference[] = [],
   ): Promise<void> {
     const dir = this.getWorkflowsDir();
     await assertSafePath(dir, this.baseDir);
@@ -254,6 +281,10 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
       authoredExpressions: authoredExpressions === undefined
         ? undefined
         : [...authoredExpressions],
+      writtenReferences: writtenReferences.length
+        ? writtenReferences
+        : undefined,
+      sensitiveFormat: SENSITIVE_FORMAT_VERSION,
     };
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
@@ -334,13 +365,23 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     return this.idToActualPath.get(id) ?? this.getLegacyPath(id);
   }
 
-  async saveForRun(runId: string, workflow: Workflow): Promise<void> {
+  async saveForRun(
+    runId: string,
+    workflow: Workflow,
+    writtenReferences: readonly WrittenReference[] = [],
+  ): Promise<void> {
     const dir = await this.runDir(runId);
     await ensureDir(dir);
 
     const targetPath = join(dir, "evaluated-workflow.yaml");
     await this.notifyDirty(targetPath);
-    const data = workflow.toData();
+    const data = {
+      ...workflow.toData(),
+      writtenReferences: writtenReferences.length
+        ? writtenReferences
+        : undefined,
+      sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+    };
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(targetPath, content);

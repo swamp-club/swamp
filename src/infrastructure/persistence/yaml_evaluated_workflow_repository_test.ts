@@ -325,3 +325,65 @@ Deno.test("YamlEvaluatedWorkflowRepository: snapshot methods reject run IDs that
     await Deno.remove(tempDir, { recursive: true });
   }
 });
+
+const REFERENCE = {
+  path: ["jobs", 0, "steps", 0, "task", "inputs", "tok"],
+  occurrence: 0,
+  vaultName: "prod",
+  key: "api-token",
+  encoding: "raw" as const,
+  dataOrigin: true,
+};
+
+function referencingWorkflow(): Workflow {
+  return Workflow.fromData({
+    id: "b1b2c3d4-e5f6-1a2b-9c3d-4e5f6a7b8c9d",
+    name: "ref-workflow",
+    tags: {},
+    inputs: undefined,
+    version: 1,
+    jobs: [{
+      name: "j",
+      dependsOn: [],
+      weight: 0,
+      steps: [{
+        name: "s",
+        dependsOn: [],
+        weight: 0,
+        task: {
+          type: "model_method",
+          modelIdOrName: "m",
+          methodName: "run",
+          inputs: { tok: "${{ vault.get('prod', 'api-token') }}" },
+        },
+      }],
+    }],
+  });
+}
+
+Deno.test("save: records the sensitive format and written references (swamp-club#2171)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    await repo.save(referencingWorkflow(), new Set(), [], [REFERENCE]);
+    const cached = await repo.findByNameWithProvenance("ref-workflow");
+    assertEquals(cached?.sensitiveFormat, 1);
+    assertEquals(cached?.writtenReferences, [REFERENCE]);
+    assertEquals(cached?.workflow.name, "ref-workflow");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("saveForRun: the per-run copy carries its references and still loads (swamp-club#2171)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    const runId = crypto.randomUUID();
+    await repo.saveForRun(runId, referencingWorkflow(), [REFERENCE]);
+    const loaded = await repo.findByRunId(runId);
+    assertEquals(loaded?.name, "ref-workflow");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});

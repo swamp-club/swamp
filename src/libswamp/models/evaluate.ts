@@ -29,6 +29,12 @@ import {
   findDefinitionByIdOrName,
 } from "../../domain/models/model_lookup.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import {
+  RunSensitiveValues,
+  type WrittenReference,
+} from "../../domain/secrets/mod.ts";
+import { persistEvaluatedDefinition } from "../../domain/expressions/persisted_evaluation.ts";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -101,12 +107,16 @@ export interface ModelEvaluateDeps {
   evaluateDefinition: (
     definition: Definition,
     type: ModelType,
+    sensitiveValues: RunSensitiveValues,
   ) => Promise<EvaluatedDefinition>;
-  evaluateAllDefinitions: () => Promise<EvaluatedDefinition[]>;
+  evaluateAllDefinitions: (
+    sensitiveValues: RunSensitiveValues,
+  ) => Promise<EvaluatedDefinition[]>;
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
     authoredExpressions: ReadonlySet<string>,
+    writtenReferences?: readonly WrittenReference[],
   ) => Promise<void>;
   getEvaluatedPath: (type: ModelType, id: DefinitionId) => string;
 }
@@ -153,28 +163,62 @@ export function createModelEvaluateDeps(
       findDefinitionByIdOrName(definitionRepo, idOrName),
     lookupDefinitionById: (id, expectedName) =>
       findDefinitionByIdGlobal(definitionRepo, id, expectedName),
-    evaluateDefinition: (definition, type) =>
-      evaluationService.evaluateDefinition(definition, type),
-    evaluateAllDefinitions: () => evaluationService.evaluateAllDefinitions(),
-    saveEvaluatedDefinition: (type, definition, authoredExpressions) =>
-      evaluatedDefRepo.save(type, definition, authoredExpressions),
+    evaluateDefinition: (definition, type, sensitiveValues) =>
+      evaluationService.evaluateDefinition(definition, type, sensitiveValues),
+    evaluateAllDefinitions: (sensitiveValues) =>
+      evaluationService.evaluateAllDefinitions(sensitiveValues),
+    saveEvaluatedDefinition: (
+      type,
+      definition,
+      authoredExpressions,
+      writtenReferences,
+    ) =>
+      evaluatedDefRepo.save(
+        type,
+        definition,
+        authoredExpressions,
+        undefined,
+        writtenReferences,
+      ),
     getEvaluatedPath: (type, id) => evaluatedDefRepo.getPath(type, id),
   };
+}
+
+/**
+ * Saves an evaluation with every sensitive value it read written as the
+ * vault reference it came from.
+ */
+async function saveWithoutSecrets(
+  deps: ModelEvaluateDeps,
+  result: EvaluatedDefinition,
+  sensitiveValues: RunSensitiveValues,
+  source: Definition = result.sourceDefinition ?? result.definition,
+): Promise<void> {
+  const persisted = persistEvaluatedDefinition(
+    result.definition,
+    [],
+    source,
+    sensitiveValues,
+    new VaultSecretBag(),
+  );
+  await deps.saveEvaluatedDefinition(
+    result.type,
+    persisted.definition,
+    result.authoredExpressions,
+    persisted.writtenReferences,
+  );
 }
 
 /** Evaluates all model definitions. */
 async function* evaluateAll(
   deps: ModelEvaluateDeps,
 ): AsyncIterable<ModelEvaluateEvent> {
-  const results = await deps.evaluateAllDefinitions();
+  const sensitiveValues = new RunSensitiveValues();
+  const results = await deps.evaluateAllDefinitions(sensitiveValues);
   const items: ModelEvaluateItemData[] = [];
 
   for (const result of results) {
-    await deps.saveEvaluatedDefinition(
-      result.type,
-      result.definition,
-      result.authoredExpressions,
-    );
+    await saveWithoutSecrets(deps, result, sensitiveValues);
     items.push({
       id: result.definition.id,
       name: result.definition.name,
@@ -215,12 +259,13 @@ async function* evaluateSingle(
   }
 
   const { definition, type } = lookupResult;
-  const result = await deps.evaluateDefinition(definition, type);
-  await deps.saveEvaluatedDefinition(
+  const sensitiveValues = new RunSensitiveValues();
+  const result = await deps.evaluateDefinition(
+    definition,
     type,
-    result.definition,
-    result.authoredExpressions,
+    sensitiveValues,
   );
+  await saveWithoutSecrets(deps, result, sensitiveValues, definition);
 
   yield {
     kind: "completed",
@@ -230,7 +275,10 @@ async function* evaluateSingle(
       type: type.normalized,
       hadExpressions: result.hadExpressions,
       outputPath: deps.getEvaluatedPath(type, result.definition.id),
-      globalArguments: result.definition.globalArguments,
+      // Shown with sensitive values masked; the cache holds references.
+      globalArguments: sensitiveValues.masked(
+        result.definition.globalArguments,
+      ) as Record<string, unknown>,
     },
   };
 }

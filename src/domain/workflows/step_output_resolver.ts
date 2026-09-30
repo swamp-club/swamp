@@ -19,7 +19,7 @@
 
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
+import type { SecretSink } from "../secrets/mod.ts";
 import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefs,
@@ -245,15 +245,16 @@ export class StepOutputResolver {
 /**
  * Builds a reader over a data repository. When `getVaultService` is given,
  * the resource's sensitive fields are resolved from their vault references,
- * matching what `data.latest` exposes to CEL; without it they stay
- * as stored, which is what a display path such as workflow history needs.
+ * matching what `data.latest` exposes to CEL, and every resolved value is
+ * recorded in the run's `sensitiveValues`; without it they stay as stored,
+ * which is what a display path such as workflow history needs.
  */
 export function createDataRepositoryAttributeReader(
   dataRepo: UnifiedDataRepository,
   options: {
-    getVaultService?: () => Promise<VaultService>;
-    redactor?: SecretRedactor;
-  } = {},
+    getVaultService: () => Promise<VaultService>;
+    sensitiveValues: SecretSink;
+  } | { getVaultService?: undefined } = {},
 ): ResourceAttributeReader {
   return async (ref) => {
     const content = await dataRepo.getContent(
@@ -278,7 +279,7 @@ export function createDataRepositoryAttributeReader(
             parsed,
             sensitiveFields,
             await options.getVaultService(),
-            options.redactor,
+            options.sensitiveValues,
           );
         } catch {
           // Vault unavailable — leave refs unresolved

@@ -17,7 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  classifyShellPositions,
+  type ShellContext,
+} from "./shell_context_scanner.ts";
+
 type QuoteContext = "unquoted" | "single" | "double";
+
+/** A command with sentinels replaced, and the environment that feeds it. */
+export interface ShellSecretResolution {
+  command: string;
+  env: Record<string, string>;
+  /**
+   * Whether a secret read through data had to stay in the command line
+   * because no environment reference can expand where it sits.
+   */
+  dataInCommandLine: boolean;
+}
 
 /**
  * Returns the quoting context at a given position in a shell command string.
@@ -44,6 +60,26 @@ export function getQuoteContext(str: string, position: number): QuoteContext {
   return "unquoted";
 }
 
+/** Splits text into sentinel tokens and the text between them. */
+function splitOnSentinels(
+  text: string,
+): { text: string; sentinel: boolean }[] {
+  const segments: { text: string; sentinel: boolean }[] = [];
+  let last = 0;
+  for (const match of text.matchAll(VaultSecretBag.SENTINEL_PATTERN)) {
+    const start = match.index ?? 0;
+    if (start > last) {
+      segments.push({ text: text.slice(last, start), sentinel: false });
+    }
+    segments.push({ text: match[0], sentinel: true });
+    last = start + match[0].length;
+  }
+  if (last < text.length) {
+    segments.push({ text: text.slice(last), sentinel: false });
+  }
+  return segments;
+}
+
 /**
  * VaultSecretBag is a value object that maps sentinel tokens to raw secret values.
  *
@@ -54,6 +90,9 @@ export function getQuoteContext(str: string, position: number): QuoteContext {
  */
 export class VaultSecretBag {
   private readonly secrets = new Map<string, string>();
+  /** Sentinel per value for secrets read through data, reused on repeat. */
+  private readonly dataSentinels = new Map<string, string>();
+  private readonly dataOrigin = new Set<string>();
   private counter = 0;
   private readonly prefix: string;
 
@@ -75,6 +114,121 @@ export class VaultSecretBag {
     return sentinel;
   }
 
+  /**
+   * Returns the sentinel for a secret that reached an argument through a
+   * data read (data.latest, step outputs) rather than vault.get(). One
+   * sentinel per distinct value, so repeated occurrences share it.
+   */
+  addDataSecret(value: string): string {
+    const existing = this.dataSentinels.get(value);
+    if (existing) return existing;
+    const sentinel = this.addSecret(value);
+    this.dataSentinels.set(value, sentinel);
+    this.dataOrigin.add(sentinel);
+    return sentinel;
+  }
+
+  /** The value behind a data-origin sentinel of this bag, if it is one. */
+  dataSecretOf(sentinel: string): string | undefined {
+    return this.dataOrigin.has(sentinel)
+      ? this.secrets.get(sentinel)
+      : undefined;
+  }
+
+  /** Whether a sentinel stands for a secret read through data. */
+  isDataOrigin(sentinel: string): boolean {
+    return this.dataOrigin.has(sentinel);
+  }
+
+  /**
+   * Replaces every occurrence of the given secret values in a string with
+   * data-origin sentinels. JSON-escaped forms are matched too and get their
+   * own sentinel, which restores the escaped text, so a secret spliced into
+   * JSON text round-trips to valid JSON. Text inside sentinels already in
+   * the string is never searched.
+   */
+  sentinelizeText(text: string, secrets: readonly string[]): string {
+    let segments: { text: string; sentinel: boolean }[] = splitOnSentinels(
+      text,
+    );
+    for (const secret of secrets) {
+      const escaped = JSON.stringify(secret).slice(1, -1);
+      const forms = escaped === secret ? [secret] : [secret, escaped];
+      for (const form of forms) {
+        segments = segments.flatMap((segment) => {
+          if (segment.sentinel || !segment.text.includes(form)) {
+            return [segment];
+          }
+          const parts = segment.text.split(form);
+          const sentinel = this.addDataSecret(form);
+          const out: { text: string; sentinel: boolean }[] = [];
+          parts.forEach((part, i) => {
+            if (i > 0) out.push({ text: sentinel, sentinel: true });
+            if (part) out.push({ text: part, sentinel: false });
+          });
+          return out;
+        });
+      }
+    }
+    return segments.map((segment) => segment.text).join("");
+  }
+
+  /**
+   * Deep variant of {@link sentinelizeText} over strings in a structure.
+   * `resolveDeep` of the result returns the input exactly.
+   */
+  sentinelizeValues(data: unknown, secrets: readonly string[]): unknown {
+    if (secrets.length === 0) return data;
+    if (typeof data === "string") return this.sentinelizeText(data, secrets);
+    if (Array.isArray(data)) {
+      return data.map((item) => this.sentinelizeValues(item, secrets));
+    }
+    if (data !== null && typeof data === "object") {
+      const result: Record<string, unknown> = Object.create(null);
+      for (const [key, value] of Object.entries(data)) {
+        Object.defineProperty(result, key, {
+          value: this.sentinelizeValues(value, secrets),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+      return result;
+    }
+    return data;
+  }
+
+  /**
+   * Re-issues this bag's data-origin sentinels found in `data` from `target`,
+   * so a value sanitized before a step started (at workflow evaluation) is
+   * delivered through that step's own bag. Other text is left as it is.
+   */
+  rehomeDataSentinels(data: unknown, target: VaultSecretBag): unknown {
+    if (typeof data === "string") {
+      return splitOnSentinels(data).map((segment) =>
+        segment.sentinel && this.dataOrigin.has(segment.text)
+          ? target.addDataSecret(this.secrets.get(segment.text) ?? "")
+          : segment.text
+      ).join("");
+    }
+    if (Array.isArray(data)) {
+      return data.map((item) => this.rehomeDataSentinels(item, target));
+    }
+    if (data !== null && typeof data === "object") {
+      const result: Record<string, unknown> = Object.create(null);
+      for (const [key, value] of Object.entries(data)) {
+        Object.defineProperty(result, key, {
+          value: this.rehomeDataSentinels(value, target),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+      return result;
+    }
+    return data;
+  }
+
   /** Whether this bag contains any secrets. */
   get isEmpty(): boolean {
     return this.secrets.size === 0;
@@ -94,6 +248,9 @@ export class VaultSecretBag {
   findSingleQuotedSentinels(command: string): string[] {
     const found: string[] = [];
     for (const sentinel of this.secrets.keys()) {
+      // Data-origin sentinels are placed per occurrence and never land
+      // unexpanded inside single quotes.
+      if (this.dataOrigin.has(sentinel)) continue;
       const pos = command.indexOf(sentinel);
       if (pos !== -1 && getQuoteContext(command, pos) === "single") {
         found.push(sentinel);
@@ -154,22 +311,111 @@ export class VaultSecretBag {
    */
   resolveForShell(
     command: string,
-  ): { command: string; env: Record<string, string> } {
+  ): ShellSecretResolution {
+    return this.resolveOccurrences(
+      command,
+      classifyShellPositions,
+      (envName, context: ShellContext) => {
+        switch (context) {
+          case "double":
+          case "heredoc":
+            return `\${${envName}}`;
+          case "single":
+            return `'"\${${envName}}"'`;
+          case "ansi-c":
+            return `'"\${${envName}}"$'`;
+          case "heredoc-literal":
+            return undefined;
+          default:
+            return `"\${${envName}}"`;
+        }
+      },
+      (envName, quote) =>
+        quote === "double" ? `\${${envName}}` : `"\${${envName}}"`,
+    );
+  }
+
+  /**
+   * Replaces sentinels in a command with references built by the callers:
+   * a vault.get sentinel's reference form is chosen once from its first
+   * occurrence (unchanged behavior); a data-origin sentinel's per
+   * occurrence from its POSIX shell context. A `dataRef` of undefined means
+   * no reference can expand there, so the raw value is substituted and the
+   * result reports that a data value is in the command line.
+   */
+  private resolveOccurrences<C>(
+    command: string,
+    classify: (command: string, positions: number[]) => C[],
+    dataRef: (envName: string, context: C) => string | undefined,
+    vaultRef: (envName: string, quote: QuoteContext) => string,
+  ): ShellSecretResolution {
     const env: Record<string, string> = {};
-    let result = command;
+    const envNames = new Map<string, string>();
     let envIdx = 0;
     for (const [sentinel, value] of this.secrets) {
-      const pos = result.indexOf(sentinel);
-      if (pos !== -1) {
+      if (command.includes(sentinel)) {
         const envName = `__SWAMP_VAULT_${envIdx++}`;
-        const ref = getQuoteContext(result, pos) === "double"
-          ? `\${${envName}}`
-          : `"\${${envName}}"`;
-        result = result.split(sentinel).join(ref);
+        envNames.set(sentinel, envName);
         env[envName] = value;
       }
     }
-    return { command: result, env };
+    if (envNames.size === 0) return { command, env, dataInCommandLine: false };
+
+    const occurrences = [...command.matchAll(VaultSecretBag.SENTINEL_PATTERN)]
+      .filter((match) => envNames.has(match[0]));
+    const dataOccurrences = occurrences.filter((match) =>
+      this.dataOrigin.has(match[0])
+    );
+    const dataContexts = classify(
+      command,
+      dataOccurrences.map((match) => match.index ?? 0),
+    );
+    const contextAt = new Map<number, C>();
+    dataOccurrences.forEach((match, i) =>
+      contextAt.set(match.index ?? 0, dataContexts[i])
+    );
+    const vaultRefs = new Map<string, string>();
+    for (const match of occurrences) {
+      const sentinel = match[0];
+      if (this.dataOrigin.has(sentinel) || vaultRefs.has(sentinel)) continue;
+      vaultRefs.set(
+        sentinel,
+        vaultRef(
+          envNames.get(sentinel)!,
+          getQuoteContext(command, match.index ?? 0),
+        ),
+      );
+    }
+
+    let dataInCommandLine = false;
+    const referenced = new Set<string>();
+    let result = "";
+    let last = 0;
+    for (const match of occurrences) {
+      const sentinel = match[0];
+      const start = match.index ?? 0;
+      result += command.slice(last, start);
+      if (this.dataOrigin.has(sentinel)) {
+        const ref = dataRef(envNames.get(sentinel)!, contextAt.get(start)!);
+        if (ref === undefined) {
+          dataInCommandLine = true;
+          result += this.secrets.get(sentinel)!;
+        } else {
+          result += ref;
+          referenced.add(sentinel);
+        }
+      } else {
+        result += vaultRefs.get(sentinel)!;
+        referenced.add(sentinel);
+      }
+      last = start + sentinel.length;
+    }
+    result += command.slice(last);
+    // A data value substituted raw everywhere needs no environment entry.
+    for (const [sentinel, envName] of envNames) {
+      if (!referenced.has(sentinel)) delete env[envName];
+    }
+    return { command: result, env, dataInCommandLine };
   }
 
   /**
@@ -199,21 +445,18 @@ export class VaultSecretBag {
    */
   resolveForPowerShell(
     command: string,
-  ): { command: string; env: Record<string, string> } {
-    const env: Record<string, string> = {};
-    let result = command;
-    let envIdx = 0;
-    for (const [sentinel, value] of this.secrets) {
-      const pos = result.indexOf(sentinel);
-      if (pos !== -1) {
-        const envName = `__SWAMP_VAULT_${envIdx++}`;
-        const ref = getQuoteContext(result, pos) === "double"
-          ? `$env:${envName}`
-          : `"$env:${envName}"`;
-        result = result.split(sentinel).join(ref);
-        env[envName] = value;
-      }
-    }
-    return { command: result, env };
+  ): ShellSecretResolution {
+    const psRef = (envName: string, quote: QuoteContext) =>
+      quote === "double" ? `$env:${envName}` : `"$env:${envName}"`;
+    return this.resolveOccurrences(
+      command,
+      (text, positions) =>
+        positions.map((position) => getQuoteContext(text, position)),
+      (envName, context: QuoteContext) =>
+        // PowerShell has no break-out from a single-quoted string that is
+        // safe in every command position, so the value stays in place.
+        context === "single" ? undefined : psRef(envName, context),
+      psRef,
+    );
   }
 }

@@ -43,6 +43,13 @@ import {
 } from "../expressions/dependency_extractor.ts";
 import type { ExpressionLocation } from "../expressions/expression.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
+import { sensitiveValuesOf } from "../expressions/sensitive_context.ts";
+import {
+  isDefinitionArgumentPath,
+  sensitiveSpliceSanitizer,
+} from "../expressions/splice_pair.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import type { Step } from "./step.ts";
 import type {
   CelExpressionEvaluator,
   CelExpressionValidator,
@@ -120,7 +127,80 @@ export function createTaskTargetDeferral(
 export interface WorkflowEvaluationResult {
   workflow: Workflow;
   expressionsEvaluated: number;
+  /**
+   * Per step of `workflow`, its task inputs and global arguments with
+   * sensitive data values replaced by sentinels, where evaluation spliced
+   * any. Held in memory only; see {@link SanitizedTaskOverlay}.
+   */
+  sanitizedTasks?: SanitizedTaskOverlay;
 }
+
+/** A step's task inputs and global arguments as the step should execute them. */
+export interface SanitizedTaskFields {
+  inputs?: unknown;
+  globalArgs?: unknown;
+}
+
+/**
+ * Sanitized task fields for the steps of one evaluated workflow, keyed by
+ * the Step instance (forEach expansion keeps it, so every iteration shares
+ * the entry). Its sentinels come from a workflow-level bag and are re-issued
+ * from each step's own bag when the step reads them.
+ */
+export class SanitizedTaskOverlay {
+  private constructor(
+    /** The workflow-level bag the sanitized data's sentinels come from. */
+    readonly bag: VaultSecretBag,
+    private readonly entries: Map<Step, SanitizedTaskFields>,
+    /** The whole evaluated workflow data with those sentinels in place. */
+    readonly sanitizedData: WorkflowInput,
+  ) {}
+
+  /**
+   * Builds the overlay from sanitized workflow data, keying each step's
+   * fields by the Step instance at the same position of `evaluated`.
+   */
+  static fromSanitizedData(
+    bag: VaultSecretBag,
+    sanitizedData: WorkflowInput,
+    evaluated: Workflow,
+  ): SanitizedTaskOverlay {
+    const sanitized = sanitizedData as {
+      jobs?: {
+        steps?: { task?: { inputs?: unknown; globalArgs?: unknown } }[];
+      }[];
+    };
+    const entries = new Map<Step, SanitizedTaskFields>();
+    for (const [jobIndex, job] of evaluated.jobs.entries()) {
+      for (const [stepIndex, step] of job.steps.entries()) {
+        const task = sanitized.jobs?.[jobIndex]?.steps?.[stepIndex]?.task;
+        if (task) {
+          entries.set(step, {
+            inputs: task.inputs,
+            globalArgs: task.globalArgs,
+          });
+        }
+      }
+    }
+    return new SanitizedTaskOverlay(bag, entries, sanitizedData);
+  }
+
+  /** The step's sanitized fields, with sentinels issued from `stepBag`. */
+  forStep(
+    step: Step,
+    stepBag: VaultSecretBag,
+  ): SanitizedTaskFields | undefined {
+    const entry = this.entries.get(step);
+    if (!entry) return undefined;
+    return {
+      inputs: this.bag.rehomeDataSentinels(entry.inputs, stepBag),
+      globalArgs: this.bag.rehomeDataSentinels(entry.globalArgs, stepBag),
+    };
+  }
+}
+
+const TASK_ARGUMENT_PATH =
+  /^jobs\[\d+\]\.steps\[\d+\]\.task\.(?:inputs|globalArgs)(?:$|[.[])/;
 
 /**
  * Evaluates CEL expressions in a workflow definition, leaving vault
@@ -239,16 +319,56 @@ export class WorkflowExpressionEvaluator {
       evaluatedValues.set(expr.raw, value);
     }
 
+    const skipPath = (path: string) =>
+      isAssertExprPath(path) || deferredTargetPaths.has(path);
     const evaluatedData = replaceExpressions(
       workflowData,
       evaluatedValues,
-      (path) => isAssertExprPath(path) || deferredTargetPaths.has(path),
+      skipPath,
     );
+    const evaluated = WorkflowClass.fromData(evaluatedData as WorkflowInput);
     return {
-      workflow: WorkflowClass.fromData(evaluatedData as WorkflowInput),
+      workflow: evaluated,
       expressionsEvaluated: evaluatedValues.size,
+      sanitizedTasks: sanitizeTasks(
+        workflowData,
+        evaluatedValues,
+        skipPath,
+        context,
+        evaluated,
+      ),
     };
   }
+}
+
+/**
+ * Splices the same evaluated values into the step task inputs and global
+ * arguments again, replacing recorded sensitive values with sentinels, and
+ * keys the result by the evaluated workflow's Step instances. Returns
+ * undefined when the run has recorded no sensitive value.
+ */
+function sanitizeTasks(
+  workflowData: ReturnType<Workflow["toData"]>,
+  values: Map<string, unknown>,
+  skipPath: (path: string) => boolean,
+  context: ExpressionContext,
+  evaluated: Workflow,
+): SanitizedTaskOverlay | undefined {
+  const sensitiveValues = sensitiveValuesOf(context);
+  if (!sensitiveValues || sensitiveValues.isEmpty) return undefined;
+  const bag = new VaultSecretBag();
+  const sanitized = replaceExpressions(
+    workflowData,
+    values,
+    skipPath,
+    sensitiveSpliceSanitizer(
+      sensitiveValues,
+      bag,
+      (path) => TASK_ARGUMENT_PATH.test(path),
+    ),
+  ) as WorkflowInput;
+  if (bag.isEmpty) return undefined;
+  return SanitizedTaskOverlay.fromSanitizedData(bag, sanitized, evaluated);
 }
 
 /**
@@ -286,7 +406,19 @@ export class DefinitionExpressionEvaluator {
     definition: Definition,
     context: ExpressionContext,
     authored: AuthoredExpressions,
-  ): Promise<{ definition: Definition; failedExpressions: FailedExpressions }> {
+    secretBag?: VaultSecretBag,
+    /** The executed copy's base when it already differs; see evaluateDefinitionExpressions. */
+    sanitizedBase: Definition = definition,
+  ): Promise<{
+    definition: Definition;
+    /**
+     * The definition to execute, with sensitive data values in its
+     * arguments replaced by sentinels from `secretBag`. Equal to
+     * `definition` when no bag was given or nothing sensitive was spliced.
+     */
+    sanitizedDefinition: Definition;
+    failedExpressions: FailedExpressions;
+  }> {
     const definitionData = definition.toData();
     const expressions = partitionAuthored(
       extractExpressions(definitionData),
@@ -294,15 +426,36 @@ export class DefinitionExpressionEvaluator {
     ).filter((expr) => !containsRuntimeExpression(expr.celExpression));
 
     if (expressions.length === 0) {
-      return { definition, failedExpressions: new Map() };
+      return {
+        definition,
+        sanitizedDefinition: sanitizedBase,
+        failedExpressions: new Map(),
+      };
     }
 
-    const { data, failedExpressions } = await evaluateDefinitionExpressions(
-      definitionData,
-      expressions,
-      context,
-      this.celEvaluator,
-    );
-    return { definition: Definition.fromData(data), failedExpressions };
+    const sensitiveValues = sensitiveValuesOf(context);
+    const { data, sanitizedData, failedExpressions } =
+      await evaluateDefinitionExpressions(
+        definitionData,
+        expressions,
+        context,
+        this.celEvaluator,
+        secretBag && sensitiveValues
+          ? sensitiveSpliceSanitizer(
+            sensitiveValues,
+            secretBag,
+            isDefinitionArgumentPath,
+          )
+          : undefined,
+        sanitizedBase.toData(),
+      );
+    const evaluated = Definition.fromData(data);
+    return {
+      definition: evaluated,
+      sanitizedDefinition: sanitizedData
+        ? Definition.fromData(sanitizedData)
+        : evaluated,
+      failedExpressions,
+    };
   }
 }

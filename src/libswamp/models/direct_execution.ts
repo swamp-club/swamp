@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  type RunSensitiveValues,
+  toPersistedForm,
+  vaultReferenceText,
+} from "../../domain/secrets/mod.ts";
 import type { z } from "zod";
 import { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -152,6 +157,27 @@ export function routeInputsBySchema(
 }
 
 /**
+ * The definition as the step runs it: the stored one with the caller's
+ * routed global arguments at their real values, where the store holds vault
+ * references for sensitive values.
+ */
+function withRealGlobals(
+  definition: Definition,
+  routedGlobals: Record<string, unknown>,
+): Definition {
+  const stored = definition.globalArguments as Record<string, unknown>;
+  const differs = Object.entries(routedGlobals).some(([key, value]) =>
+    JSON.stringify(stored[key]) !== JSON.stringify(value)
+  );
+  if (!differs) return definition;
+  const inMemory = Definition.fromData(definition.toData());
+  for (const [key, value] of Object.entries(routedGlobals)) {
+    inMemory.setGlobalArgument(key, value);
+  }
+  return inMemory;
+}
+
+/**
  * Lock key for serializing concurrent auto-creation of the same definition name.
  * Flattens '/' from scoped names (e.g. @collective/name) to avoid creating
  * intermediate directories in the lock path.
@@ -226,6 +252,7 @@ async function adoptExistingDefinition(
   modelDef: ModelDefinition,
   routed: RoutedInputs,
   authoredExpressions: AuthoredExpressions,
+  persistedGlobal: Record<string, unknown> = routed.globalArguments,
 ): Promise<DirectExecutionResult> {
   // Verify type matches
   if (existing.type.normalized !== resolvedType.normalized) {
@@ -244,7 +271,10 @@ async function adoptExistingDefinition(
   );
   const storedGlobal = existing.definition
     .globalArguments as Record<string, unknown>;
-  const routedGlobal = routed.globalArguments;
+  // Compared and written in persisted form, so a sensitive value read through
+  // data is stored as its vault reference and an unchanged one causes no
+  // re-save.
+  const routedGlobal = persistedGlobal;
   const globalArgsDiffer = Object.keys(routedGlobal).length > 0 &&
     !Object.entries(routedGlobal).every(([k, v]) =>
       JSON.stringify(storedGlobal?.[k]) === JSON.stringify(v)
@@ -288,7 +318,7 @@ async function adoptExistingDefinition(
 
   return {
     ok: true,
-    definition: existing.definition,
+    definition: withRealGlobals(existing.definition, routed.globalArguments),
     modelType: existing.type,
     modelDef,
     created: false,
@@ -328,6 +358,7 @@ export async function resolveOrCreateDefinition(
   explicitGlobalArgs?: Record<string, unknown>,
   lockDir?: string,
   authoredExpressions: AuthoredExpressions = "unrestricted",
+  sensitiveValues?: RunSensitiveValues,
 ): Promise<DirectExecutionResult> {
   // When explicit globalArgs are provided, skip routing — treat inputs as
   // method args only and use the explicit values as global args.
@@ -381,6 +412,22 @@ export async function resolveOrCreateDefinition(
     };
   }
 
+  // Global arguments as they are written: a sensitive value read through
+  // data becomes the vault reference it came from. Those references are
+  // swamp's own text, so they are vouched for alongside the authored set.
+  const persisted = sensitiveValues
+    ? toPersistedForm(routed.globalArguments, sensitiveValues, {
+      applies: () => true,
+    })
+    : { data: routed.globalArguments, writtenReferences: [] };
+  const persistedGlobal = persisted.data;
+  const vouched: AuthoredExpressions = authoredExpressions === "unrestricted"
+    ? authoredExpressions
+    : new Set([
+      ...authoredExpressions,
+      ...persisted.writtenReferences.map((ref) => vaultReferenceText(ref)),
+    ]);
+
   // Look up existing definition
   const existing = await deps.lookupDefinition(definitionName);
 
@@ -393,7 +440,8 @@ export async function resolveOrCreateDefinition(
       resolvedType,
       modelDef,
       routed,
-      authoredExpressions,
+      vouched,
+      persistedGlobal,
     );
   }
 
@@ -431,7 +479,7 @@ export async function resolveOrCreateDefinition(
   // here too for a clean, typed error). Expression values (vault.get) pass.
   const leakedArgs = findLiteralSensitiveGlobalArgs(
     modelDef.globalArguments,
-    routed.globalArguments,
+    persistedGlobal,
   );
   if (leakedArgs.length > 0) {
     return {
@@ -440,8 +488,8 @@ export async function resolveOrCreateDefinition(
     };
   }
   const unvouched = findUnvouchedGlobalArgExpressions(
-    routed.globalArguments,
-    authoredExpressions,
+    persistedGlobal,
+    vouched,
   );
   if (unvouched.length > 0) {
     return {
@@ -457,12 +505,12 @@ export async function resolveOrCreateDefinition(
       name: definitionName,
       type: resolvedType.normalized,
       typeVersion: modelDef.version,
-      globalArguments: routed.globalArguments,
+      globalArguments: persistedGlobal,
     });
     await deps.saveDefinition(resolvedType, definition);
     return {
       ok: true,
-      definition,
+      definition: withRealGlobals(definition, routed.globalArguments),
       modelType: resolvedType,
       modelDef,
       created: true,

@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunSensitiveValues } from "../secrets/mod.ts";
+import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   assert,
   assertEquals,
@@ -1563,6 +1565,7 @@ Deno.test("DefaultStepExecutor rejects workflow task type", async () => {
 
   const catalogStore = new CatalogStore(join("/tmp", "_catalog.db"));
   const ctx: StepExecutionContext = {
+    sensitiveValues: new RunSensitiveValues(),
     workflowId: createWorkflowId("parent-id"),
     workflowRunId: "run-123",
     workflowName: "parent-workflow",
@@ -3376,6 +3379,7 @@ Deno.test("DefaultStepExecutor wires dataQueryService into MethodContext", async
         task: StepTask.model("capture-instance", "run"),
       });
       const ctx: StepExecutionContext = {
+        sensitiveValues: new RunSensitiveValues(),
         workflowId: createWorkflowId("00000000-0000-0000-0000-000000000000"),
         workflowRunId: "00000000-0000-0000-0000-000000000000",
         workflowName: "regression",
@@ -3452,6 +3456,7 @@ async function runDefinitionStep(
         task: StepTask.model(definition.name, methodName, stepInputs),
       });
       await new DefaultStepExecutor().execute(step, {
+        sensitiveValues: new RunSensitiveValues(),
         workflowId: createWorkflowId(crypto.randomUUID()),
         workflowRunId: crypto.randomUUID(),
         workflowName: "wf",
@@ -4037,6 +4042,7 @@ Deno.test({
           ),
         });
         const ctx: StepExecutionContext = {
+          sensitiveValues: new RunSensitiveValues(),
           workflowId: createWorkflowId(
             "00000000-0000-0000-0000-000000000000",
           ),
@@ -6746,6 +6752,7 @@ Deno.test({
           task: StepTask.model("hydrate-instance", "run"),
         });
         const ctx: StepExecutionContext = {
+          sensitiveValues: new RunSensitiveValues(),
           workflowId: createWorkflowId(
             "00000000-0000-0000-0000-000000000000",
           ),
@@ -10084,6 +10091,7 @@ async function executeStep(
     task: StepTask.model(modelName, "run"),
   });
   await new DefaultStepExecutor().execute(step, {
+    sensitiveValues: new RunSensitiveValues(),
     workflowId: createWorkflowId(crypto.randomUUID()),
     workflowRunId: crypto.randomUUID(),
     workflowName: "wf",
@@ -11378,6 +11386,7 @@ async function runDirectStep(
         ),
       });
       await new DefaultStepExecutor(undefined, resolver).execute(step, {
+        sensitiveValues: new RunSensitiveValues(),
         workflowId: createWorkflowId(crypto.randomUUID()),
         workflowRunId: crypto.randomUUID(),
         workflowName: "wf",
@@ -15158,4 +15167,192 @@ Deno.test("resume(): cancelling mid nested workflow aborts the child's step and 
     ]);
     assertEquals(events.filter((e) => e.kind === "cancelled").length, 1);
   });
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a coerced sensitive global argument reaches the method with its coerced type (swamp-club#2171)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { attachSensitiveValues } = await import(
+      "../expressions/sensitive_context.ts"
+    );
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+    const received: Record<string, unknown>[] = [];
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-2171/coerce-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      const modelDef = {
+        type: modelType,
+        version: "2026.09.30.1",
+        globalArguments: z.object({ port: z.number(), token: z.string() }),
+        resources: {},
+        methods: {
+          run: {
+            description: "records its global arguments",
+            arguments: z.object({}),
+            execute: (
+              _args: Record<string, never>,
+              context: { globalArgs: Record<string, unknown> },
+            ) => {
+              received.push({ ...context.globalArgs });
+              return Promise.resolve({});
+            },
+          },
+        },
+      };
+      modelRegistry.register(modelDef);
+      // Routes and coerces like the real resolver: "8080" becomes 8080.
+      const resolver: DirectTypeResolver = (
+        _typeArg,
+        definitionName,
+        _methodName,
+        _inputs,
+        globalArgs,
+      ) =>
+        Promise.resolve({
+          definition: Definition.create({
+            name: definitionName,
+            type: modelType.normalized,
+            typeVersion: modelDef.version,
+            globalArguments: {
+              port: Number(globalArgs?.port),
+              token: globalArgs?.token,
+            },
+          }),
+          modelType,
+          created: true,
+          routedMethodInputs: {},
+        });
+      const values = new RunSensitiveValues();
+      values.addSecret("8080", { vaultName: "prod", key: "port" });
+      values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "token" });
+      const step = Step.create({
+        name: "step",
+        task: StepTask.directExecution(
+          modelType.normalized,
+          "direct",
+          "run",
+          undefined,
+          { port: "${{ inputs.port }}", token: "${{ inputs.tok }}" },
+        ),
+      });
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        await new DefaultStepExecutor(undefined, resolver).execute(step, {
+          sensitiveValues: values,
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set([
+            "${{ inputs.port }}",
+            "${{ inputs.tok }}",
+          ]),
+          expressionContext: attachSensitiveValues({
+            model: {},
+            env: {},
+            inputs: { port: "8080", tok: "Pl41n-s3cret" },
+          }, values),
+        });
+      } finally {
+        catalogStore.close();
+      }
+    });
+    assertEquals(received, [{ port: 8080, token: "Pl41n-s3cret" }]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a step's bag holds only the sensitive values spliced into it (swamp-club#2171)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { attachSensitiveValues } = await import(
+      "../expressions/sensitive_context.ts"
+    );
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+    const shipped: string[][] = [];
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-2171/bag-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.09.30.1",
+        resources: {},
+        methods: {
+          run: {
+            description: "records what its bag would ship to a worker",
+            arguments: z.object({ value: z.string() }),
+            execute: (
+              _args: { value: string },
+              context: { vaultSecrets?: VaultSecretBag },
+            ) => {
+              shipped.push(context.vaultSecrets?.rawValues ?? []);
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+      await new YamlDefinitionRepository(tempDir).save(
+        modelType,
+        Definition.create({
+          name: "bag-model",
+          type: modelType.normalized,
+          methods: { run: { arguments: { value: "${{ inputs.mine }}" } } },
+        }),
+      );
+      // The run has read two secrets; this step splices only one of them.
+      const values = new RunSensitiveValues();
+      values.addSecret("mine-s3cret", { vaultName: "prod", key: "mine" });
+      values.addSecret("other-s3cret", { vaultName: "prod", key: "other" });
+      const step = Step.create({
+        name: "step",
+        task: StepTask.model("bag-model", "run"),
+      });
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        await new DefaultStepExecutor().execute(step, {
+          sensitiveValues: values,
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set(["${{ inputs.mine }}"]),
+          expressionContext: attachSensitiveValues({
+            model: {},
+            env: {},
+            inputs: { mine: "mine-s3cret", other: "other-s3cret" },
+          }, values),
+        });
+      } finally {
+        catalogStore.close();
+      }
+    });
+    assertEquals(shipped, [["mine-s3cret"]]);
+  },
 });

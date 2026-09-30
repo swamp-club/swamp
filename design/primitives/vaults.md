@@ -656,6 +656,67 @@ without skip resolution (secure default).
 `parseSensitiveFieldsTag()` parses the tag, both in
 `src/domain/models/data_writer.ts`.
 
+### Values Read Through Expressions
+
+A sensitive value that a CEL expression reads through `data.latest()`,
+`steps.<name>.outputs` or `model.<name>.resource` is plaintext inside the
+expression, so guards, `size()`, comparisons and `inputs.x.y` reads see the real
+value. It never reaches a spawned command line or a file swamp writes in
+plaintext.
+
+Each run keeps a `RunSensitiveValues` record, created with the run's redactor
+and passed explicitly to the three places that resolve sensitive fields for
+expressions. It records every resolved value with the vault and key it came from
+and forwards it to the redactor. Callers that only validate or show history pass
+a discarding record.
+
+Where an expression's result is spliced into a step's arguments, it is spliced
+twice: into a raw copy (expression contexts, coercion, routing) and into the
+copy that executes, where recorded values inside the spliced result become
+sentinels from the step's own `VaultSecretBag`. Authored text around a splice is
+never examined. The bag holds only values spliced into that step, so remote
+dispatch ships nothing from other steps.
+
+In a `command/shell` step the sentinel becomes an environment-variable
+reference, placed per occurrence by a shell context scanner:
+
+| Context                                   | Written as                         |
+| ----------------------------------------- | ---------------------------------- |
+| Unquoted                                  | `"${__SWAMP_VAULT_N}"`             |
+| Double quotes, unquoted-delimiter heredoc | `${__SWAMP_VAULT_N}`               |
+| Single quotes                             | `'"${__SWAMP_VAULT_N}"'` break-out |
+| `$'...'`                                  | `'"${__SWAMP_VAULT_N}"$'`          |
+| Quoted-delimiter heredoc                  | the value, with a warning          |
+
+On PowerShell a single-quoted value stays in place, with the same warning (a `sensitive_value_in_command_line` event, rendered in log and JSON modes). An
+unquoted value no longer word-splits or globs, as with `vault.get()`. The
+break-out keeps the value out of swamp's own `sh -c` argv; a program the command
+starts (`sh -c`, `ssh`) still receives it in its own. `vault.get()` sentinels
+keep their existing placement. Values shorter than three characters are not
+recorded, as with the redactor, so they are not protected this way.
+
+Everything written to disk holds the vault reference in place of the value:
+evaluated definition and workflow caches, the per-run evaluated workflow, run
+records and their index, deferred binding snapshots, and auto-created
+definitions. Each file lists every reference it wrote in `writtenReferences`
+(path, occurrence, vault, key, encoding) and carries `sensitiveFormat`. Only
+listed entries are ever restored, so reference-shaped text that arrives as data
+stays inert. `--last-evaluated` restores them into the same two copies a fresh
+run builds, and a resume restores a stored run before merging caller-supplied
+inputs, never the reserved `_token-secrets` vault. A cache written before this
+format is refused under `--last-evaluated` when it read data or step outputs.
+
+Tags, labels, forEach step names and data-name suffixes cannot hold a
+reference, since readers match them by exact string, so a sensitive value in
+them becomes `sensitive-<vault>.<key>` (forEach names: `sensitive-<index>`).
+Report arguments, the completed event's arguments and `swamp model evaluate` /
+`swamp workflow evaluate` output show `***`. An auto-created definition stores
+the reference, so a later run reads the vault directly.
+
+`RunSensitiveValues` and the persisted form live in `src/domain/secrets/`;
+`SplicePair` and the splice sanitizer in `src/domain/expressions/splice_pair.ts`;
+the scanner in `src/domain/vaults/shell_context_scanner.ts`.
+
 ### Implementation
 
 `processSensitiveResourceData()` does the processing

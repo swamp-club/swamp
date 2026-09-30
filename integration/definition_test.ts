@@ -26,6 +26,7 @@
  * 3. Verify evaluated definitions are correct
  */
 
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals } from "@std/assert";
 import { existsSync } from "@std/fs";
 import { parse as parseYaml } from "@std/yaml";
@@ -149,6 +150,7 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing self
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
+      new RunSensitiveValues(),
     );
 
     assertEquals(result.hadExpressions, true);
@@ -200,6 +202,7 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing othe
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
+      new RunSensitiveValues(),
     );
 
     assertEquals(result.hadExpressions, true);
@@ -249,6 +252,7 @@ Deno.test("Definition: evaluate definition with inputs parameter", async () => {
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
+      new RunSensitiveValues(),
       inputValues,
     );
 
@@ -282,6 +286,7 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
+      new RunSensitiveValues(),
     );
 
     // Save the evaluated definition
@@ -325,6 +330,7 @@ Deno.test("Definition: definition without expressions returns hadExpressions=fal
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
+      new RunSensitiveValues(),
     );
 
     assertEquals(result.hadExpressions, false);

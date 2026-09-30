@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunSensitiveValues } from "../secrets/mod.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   setRemoteOnlyMode,
@@ -3546,6 +3547,7 @@ Deno.test("executeWorkflow - placed steps rebuild full handles from durable reco
       context.modelId,
       "remote-def",
       repo,
+      new RunSensitiveValues(),
     );
     assertEquals(record.ownerType, "model-method");
     assertEquals(record.attributes, { value: "remote" });

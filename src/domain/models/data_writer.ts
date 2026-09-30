@@ -40,7 +40,7 @@ import type {
 import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
+import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import {
   extractSensitiveFields,
   getNestedValue,
@@ -807,7 +807,7 @@ const VAULT_REF_REGEX =
 export async function resolveVaultRefsInData(
   data: Record<string, unknown>,
   vaultService: VaultService,
-  redactor?: SecretRedactor,
+  redactor?: SecretSink,
 ): Promise<void> {
   await walkAndResolve(data, vaultService, redactor);
 }
@@ -815,7 +815,7 @@ export async function resolveVaultRefsInData(
 async function walkAndResolve(
   obj: unknown,
   vaultService: VaultService,
-  redactor?: SecretRedactor,
+  redactor?: SecretSink,
 ): Promise<unknown> {
   if (typeof obj === "string") {
     const match = VAULT_REF_REGEX.exec(obj);
@@ -826,7 +826,7 @@ async function walkAndResolve(
         key,
         "data-writer:vault-ref-resolve",
       );
-      redactor?.addSecret(value);
+      redactor?.addSecret(value, { vaultName, key });
       return value;
     }
     return obj;
@@ -861,7 +861,7 @@ export async function resolveSensitiveVaultRefs(
   data: Record<string, unknown>,
   sensitiveFields: string[] | "*",
   vaultService: VaultService,
-  redactor?: SecretRedactor,
+  redactor?: SecretSink,
 ): Promise<void> {
   if (sensitiveFields === SENSITIVE_FIELDS_ALL) {
     await walkAndResolve(data, vaultService, redactor);
@@ -884,7 +884,7 @@ export async function resolveSensitiveVaultRefs(
 async function resolveValueAtPath(
   value: unknown,
   vaultService: VaultService,
-  redactor?: SecretRedactor,
+  redactor?: SecretSink,
 ): Promise<unknown> {
   if (typeof value === "string") {
     const match = VAULT_REF_REGEX.exec(value);
@@ -895,7 +895,7 @@ async function resolveValueAtPath(
         key,
         "data-writer:vault-ref-resolve",
       );
-      redactor?.addSecret(resolved);
+      redactor?.addSecret(resolved, { vaultName, key });
       return resolved;
     }
     return value;

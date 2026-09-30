@@ -373,6 +373,7 @@ export const workflowRunCommand = new Command()
             inputs,
             globalArgs,
             authoredExpressions,
+            sensitiveValues,
           ) => {
             const typeStr = typeArg;
             let resolvedType = ModelType.create(typeStr);
@@ -427,6 +428,7 @@ export const workflowRunCommand = new Command()
               globalArgs,
               repoContext.autoDefinitionsDir,
               authoredExpressions,
+              sensitiveValues,
             );
             if (!result.ok) throw new Error(result.error.message);
             return {

@@ -29,6 +29,7 @@ import {
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { RunSensitiveValues } from "../../domain/secrets/mod.ts";
 import { deferredExpressionReference } from "../../domain/expressions/deferred_expression.ts";
 
 function createTestModelDef(
@@ -1254,4 +1255,61 @@ Deno.test("resolveOrCreateDefinition: with lockDir race loser removes global arg
     assertEquals(saved.length, 1);
     assertEquals(saved[0].globalArguments, { message: "b" });
   });
+});
+
+Deno.test("resolveOrCreateDefinition: stores a data-read secret as its vault reference and runs with the value (swamp-club#2171)", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ token: z.string(), region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const values = new RunSensitiveValues();
+  values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "api-token" });
+  const reference = "${{ vault.get('prod', 'api-token') }}";
+  const store: { definition?: Definition } = {};
+  const deps = {
+    lookupDefinition: () =>
+      Promise.resolve(
+        store.definition
+          ? { definition: store.definition, type: resolvedType }
+          : null,
+      ),
+    getModelDef: () => modelDef,
+    saveDefinition: (_type: ModelType, def: Definition) => {
+      store.definition = Definition.fromData(def.toData());
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type: ModelType, id: string) => `/tmp/${id}.yaml`,
+  };
+  const resolve = () =>
+    resolveOrCreateDefinition(
+      deps,
+      "test/model",
+      "auto-model",
+      "run",
+      { token: "Pl41n-s3cret", region: "eu", id: "abc" },
+      resolvedType,
+      modelDef,
+      undefined,
+      undefined,
+      // The workflow source authored nothing here; the reference is swamp's.
+      new Set(),
+      values,
+    );
+
+  const created = await resolve();
+  assertEquals(created.ok, true);
+  if (!created.ok) return;
+  assertEquals(store.definition?.globalArguments, {
+    token: reference,
+    region: "eu",
+  });
+  assertEquals(created.definition.globalArguments.token, "Pl41n-s3cret");
+
+  const reused = await resolve();
+  assertEquals(reused.ok, true);
+  if (!reused.ok) return;
+  assertEquals(reused.globalArgsUpdated, false);
+  assertEquals(reused.definition.globalArguments.token, "Pl41n-s3cret");
+  assertEquals(store.definition?.globalArguments.token, reference);
 });

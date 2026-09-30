@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import {
@@ -286,6 +287,7 @@ Deno.test("evaluated cache: workflow steps retain saved provenance without autho
       signal: new AbortController().signal,
       catalogStore: repo.catalogStore,
       expressionContext: { model: {}, env: {}, inputs: {} },
+      sensitiveValues: new RunSensitiveValues(),
     };
     const step = Step.create({
       name: "capture",

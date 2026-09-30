@@ -1173,3 +1173,100 @@ Deno.test("modelMethodRun: byId without lookupDefinitionById fails instead of fa
   );
   assertEquals(nameLookups, 0);
 });
+
+Deno.test("modelMethodRun: --last-evaluated refuses a cache written before sensitive values were kept off disk (swamp-club#2171)", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const deps = {
+    ...createTestDeps(definition, createTestModelDef("run")),
+    loadEvaluatedDefinition: () =>
+      Promise.resolve({
+        definition,
+        authoredExpressions: new Set(["${{ data.latest('db', 'creds') }}"]),
+      }),
+  };
+  const events = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      lastEvaluated: true,
+    }),
+  );
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "evaluated_cache_may_hold_secrets");
+    assertStringIncludes(last.error.message, "without --last-evaluated");
+  }
+});
+
+Deno.test("modelMethodRun: --last-evaluated restores cached references into the executed copy as sentinels (swamp-club#2171)", async () => {
+  const secret = "Pl41n-s3cret";
+  const cached = Definition.create({
+    name: "test-model",
+    methods: {
+      run: {
+        arguments: { key: "echo ${{ vault.get('prod', 'api-token') }}" },
+      },
+    },
+  });
+  let executed: Definition | undefined;
+  let executedBag: VaultSecretBag | undefined;
+  let reported: Record<string, unknown> | undefined;
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.resolveRuntimeExpressionsInDefinition = (
+    def: Definition,
+    _redactor: unknown,
+    _context: unknown,
+    _authored: unknown,
+    options: { secretBag: VaultSecretBag },
+  ) => {
+    executed = def;
+    executedBag = options.secretBag;
+    return Promise.resolve({ definition: def, secretBag: options.secretBag });
+  };
+  const deps = {
+    ...createTestDeps(
+      createTestDefinition("test-model", "run"),
+      createTestModelDef("run"),
+    ),
+    createEvaluationService: () => evaluationService,
+    createVaultService: () =>
+      Promise.resolve(
+        { get: () => Promise.resolve(secret) } as unknown as Awaited<
+          ReturnType<ModelMethodRunDeps["createVaultService"]>
+        >,
+      ),
+    loadEvaluatedDefinition: () =>
+      Promise.resolve({
+        definition: cached,
+        authoredExpressions: new Set<string>(),
+        sensitiveFormat: 1,
+        writtenReferences: [{
+          path: ["methods", "run", "arguments", "key"],
+          occurrence: 0,
+          vaultName: "prod",
+          key: "api-token",
+          encoding: "raw" as const,
+          dataOrigin: true,
+        }],
+      }),
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor: new SecretRedactor(),
+        cleanup: () => {},
+      }),
+  };
+  const events = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      lastEvaluated: true,
+    }),
+  );
+  for (const event of events) {
+    if (event.kind === "completed") reported = event.run.methodArguments;
+  }
+  const key = executed?.getMethodArguments("run").key as string;
+  assertEquals(key.includes(secret), false);
+  assertEquals(executedBag?.resolveRaw(key), `echo ${secret}`);
+  assertEquals(reported?.key, "echo ***");
+});

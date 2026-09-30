@@ -941,6 +941,17 @@ Deno.test("JsonWorkflowRunRenderer: superseded_runs and vault warning go to stde
       methodName: "execute",
       event: { type: "vault_single_quote_warning", message: "use quotes" },
     });
+    handlers.method_event({
+      kind: "method_event",
+      jobId: "main",
+      stepId: "deploy",
+      modelName: "deploy-shell",
+      methodName: "execute",
+      event: {
+        type: "sensitive_value_in_command_line",
+        message: "use double quotes",
+      },
+    });
     assertEquals(stdout.length, 0);
     assertEquals(stderr.map((line) => JSON.parse(line)), [
       { event: "superseded_runs", cancelledRunIds: ["run-0"] },
@@ -948,6 +959,11 @@ Deno.test("JsonWorkflowRunRenderer: superseded_runs and vault warning go to stde
         warning: "vault_single_quote",
         modelName: "deploy-shell",
         message: "use quotes",
+      },
+      {
+        warning: "sensitive_value_in_command_line",
+        modelName: "deploy-shell",
+        message: "use double quotes",
       },
     ]);
   } finally {

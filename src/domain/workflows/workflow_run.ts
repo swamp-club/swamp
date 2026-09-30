@@ -18,6 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type DataPath,
+  type RunSensitiveValues,
+  SENSITIVE_FORMAT_VERSION,
+  toPersistedForm,
+  type WrittenReference,
+  WrittenReferenceSchema,
+} from "../secrets/mod.ts";
+import {
   type DeferredExpression,
   DeferredExpressionSchema,
 } from "../expressions/deferred_expression.ts";
@@ -178,6 +186,28 @@ export const JobRunSchema = z.object({
 export type JobRunData = z.infer<typeof JobRunSchema>;
 
 /**
+ * Whether a path in a run record carries a value that can hold a sensitive
+ * value read through an expression, rather than structure: inputs, deferred
+ * expression binding values, a step's approval prompt, error and assert
+ * text, and the failure reason derived from them.
+ */
+function isRunValuePath(path: DataPath): boolean {
+  if (path[0] === "inputs" || path[0] === "failureReason") return true;
+  if (path[0] === "deferredExpressions" && path[2] === "bindings") return true;
+  if (path[0] === "jobs" && path[2] === "steps") {
+    const field = path[4];
+    if (field === "error" || field === "approvalPrompt") return true;
+    if (
+      field === "assertResult" &&
+      (path[5] === "message" || path[5] === "error")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Zod schema for workflow run.
  */
 export const WorkflowRunSchema = z.object({
@@ -228,6 +258,11 @@ export const WorkflowRunSchema = z.object({
   triggerSource: z.string().optional(),
   failedStep: z.string().optional(),
   failureReason: z.string().optional(),
+  // Where the record holds vault references in place of sensitive values
+  // read through expressions, and the format they were written in. Absent in
+  // runs written before sensitive values were kept off disk.
+  writtenReferences: z.array(WrittenReferenceSchema).optional(),
+  sensitiveFormat: z.number().int().positive().optional(),
   stepProgress: z.object({
     completed: z.number().int().nonnegative(),
     total: z.number().int().nonnegative(),
@@ -992,7 +1027,64 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _ownerBeforeResume:
       | { pid?: number; instanceId?: string }
       | undefined = undefined,
+    private _writtenReferences: WrittenReference[] = [],
+    private _sensitiveFormat: number | undefined = undefined,
   ) {}
+
+  /**
+   * The run's record of sensitive values, attached for the lifetime of the
+   * process driving the run. Never persisted; see {@link toPersistedData}.
+   */
+  private _sensitiveValues: RunSensitiveValues | undefined = undefined;
+
+  /** Attaches the run's record of sensitive values resolved for expressions. */
+  attachSensitiveValues(values: RunSensitiveValues): void {
+    this._sensitiveValues = values;
+  }
+
+  /**
+   * The run's inputs with sensitive values masked, for output shown to users
+   * or written with reports.
+   */
+  maskedInputs(): Record<string, unknown> {
+    return (this._sensitiveValues?.masked(this._inputs) ??
+      this._inputs) as Record<string, unknown>;
+  }
+
+  /** Where the stored record holds references, as loaded. */
+  get writtenReferences(): readonly WrittenReference[] {
+    return this._writtenReferences;
+  }
+
+  /** The stored record's sensitive-value format, as loaded. */
+  get sensitiveFormat(): number | undefined {
+    return this._sensitiveFormat;
+  }
+
+  /**
+   * The data to write to disk. With the run's record attached, every
+   * recorded sensitive value at a value position (inputs, deferred binding
+   * values, approval prompts, step errors and assert text, the failure
+   * reason) is written as the vault reference it came from. Without one (a
+   * process that only changes status), the stored data and its references
+   * are written back unchanged.
+   */
+  toPersistedData(): WorkflowRunData {
+    const data = this.toData();
+    if (!this._sensitiveValues) return data;
+    const { writtenReferences: _stale, sensitiveFormat: _format, ...rest } =
+      data;
+    const form = toPersistedForm(rest, this._sensitiveValues, {
+      applies: isRunValuePath,
+    });
+    return {
+      ...form.data,
+      ...(form.writtenReferences.length > 0
+        ? { writtenReferences: form.writtenReferences }
+        : {}),
+      sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+    };
+  }
 
   /**
    * Creates a new WorkflowRun from a workflow, initializing all jobs and steps as pending.
@@ -1060,6 +1152,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.inheritedExpressions ?? [],
       validated.deferredExpressions ?? [],
       validated.ownerBeforeResume,
+      validated.writtenReferences ?? [],
+      validated.sensitiveFormat,
     );
   }
 
@@ -1573,6 +1667,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._triggerSource !== undefined) {
       data.triggerSource = this._triggerSource;
+    }
+    if (this._writtenReferences.length > 0) {
+      data.writtenReferences = structuredClone(this._writtenReferences);
+    }
+    if (this._sensitiveFormat !== undefined) {
+      data.sensitiveFormat = this._sensitiveFormat;
     }
     if (
       this._references !== undefined &&

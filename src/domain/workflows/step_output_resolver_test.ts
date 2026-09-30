@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  createDataRepositoryAttributeReader,
   liveStepOutputs,
   mergeStepOutputs,
   StepOutputResolver,
@@ -31,6 +32,9 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { type StepRun, WorkflowRun } from "./workflow_run.ts";
+import { RunSensitiveValues } from "../secrets/mod.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type { VaultService } from "../vaults/vault_service.ts";
 
 function resourceRecord(
   name: string,
@@ -356,4 +360,46 @@ Deno.test("StepOutputResolver.resolveChildOutputs: returns undefined when no chi
   const resolver = new StepOutputResolver({ readAttributes: readerFrom({}) });
 
   assertEquals(await resolver.resolveChildOutputs(child), undefined);
+});
+
+Deno.test("createDataRepositoryAttributeReader: records the sensitive values it resolves (swamp-club#2171)", async () => {
+  const stored = {
+    token: "${{ vault.get('prod-vault', 'api-token') }}",
+    plain: "${{ vault.get('prod-vault', 'api-token') }}",
+  };
+  const dataRepo = {
+    getContent: () =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(stored))),
+  } as unknown as UnifiedDataRepository;
+  const vaultService = {
+    get: (vaultName: string, key: string) =>
+      Promise.resolve(`${vaultName}/${key}-value`),
+  } as unknown as VaultService;
+  const ref: StepResourceRef = {
+    dataId: "data-1",
+    modelType: "command/shell",
+    modelId: "model-1",
+    modelName: "writer",
+    specName: "creds",
+    contentType: "application/json",
+    name: "creds",
+    version: 1,
+    tags: { "_swamp.sensitiveFields": JSON.stringify(["token"]) },
+  };
+
+  const sensitiveValues = new RunSensitiveValues();
+  const resolved = await createDataRepositoryAttributeReader(dataRepo, {
+    getVaultService: () => Promise.resolve(vaultService),
+    sensitiveValues,
+  })(ref);
+  assertEquals(resolved?.token, "prod-vault/api-token-value");
+  assertEquals(resolved?.plain, stored.plain);
+  assertEquals(sensitiveValues.list(), [{
+    value: "prod-vault/api-token-value",
+    source: { vaultName: "prod-vault", key: "api-token" },
+  }]);
+
+  // Without a vault service (display paths) references stay as stored.
+  const raw = await createDataRepositoryAttributeReader(dataRepo)(ref);
+  assertEquals(raw?.token, stored.token);
 });

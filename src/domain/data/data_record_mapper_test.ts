@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunSensitiveValues } from "../secrets/mod.ts";
 import { assertEquals } from "@std/assert";
 import {
   fromData,
@@ -394,6 +395,7 @@ Deno.test("fromResourceHandle: resolves vault references in attributes when vaul
   const vaultService = new VaultService();
   vaultService.registerVault({ name: "myvault", type: "mock", config: {} });
   await vaultService.put("myvault", "secret-key", "resolved-secret-value");
+  const sensitiveValues = new RunSensitiveValues();
 
   const data = {
     apiKey: "${{ vault.get('myvault', 'secret-key') }}",
@@ -429,11 +431,17 @@ Deno.test("fromResourceHandle: resolves vault references in attributes when vaul
     "model-123",
     "test-model",
     repo,
+    sensitiveValues,
     vaultService,
   );
 
   assertEquals(record.attributes.apiKey, "resolved-secret-value");
   assertEquals(record.attributes.label, "test");
+  // Live step outputs record what they resolve (swamp-club#2171).
+  assertEquals(sensitiveValues.list(), [{
+    value: "resolved-secret-value",
+    source: { vaultName: "myvault", key: "secret-key" },
+  }]);
 });
 
 Deno.test("fromResourceHandle: returns raw vault refs when vaultService is omitted", async () => {
@@ -465,6 +473,7 @@ Deno.test("fromResourceHandle: returns raw vault refs when vaultService is omitt
     "model-123",
     "test-model",
     repo,
+    new RunSensitiveValues(),
   );
 
   assertEquals(record.attributes.apiKey, vaultRef);
@@ -535,6 +544,7 @@ Deno.test("fromResourceHandle: content is parsed attributes for JSON", async () 
     "model-123",
     "test-model",
     repo,
+    new RunSensitiveValues(),
   );
 
   const content = record.content as Record<string, unknown>;
@@ -570,6 +580,7 @@ Deno.test("fromResourceHandle: content is empty string for non-JSON", async () =
     "model-123",
     "test-model",
     repo,
+    new RunSensitiveValues(),
   );
 
   assertEquals(record.content, "");

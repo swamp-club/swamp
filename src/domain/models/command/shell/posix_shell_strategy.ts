@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
+import type {
+  ShellSecretResolution,
+  VaultSecretBag,
+} from "../../../vaults/vault_secret_bag.ts";
 import type { ShellStrategy } from "./shell_strategy.ts";
 
 /**
@@ -36,7 +39,7 @@ export class PosixShellStrategy implements ShellStrategy {
   resolveSecrets(
     command: string,
     secretBag: VaultSecretBag,
-  ): { command: string; env: Record<string, string> } {
+  ): ShellSecretResolution {
     return secretBag.resolveForShell(command);
   }
 }

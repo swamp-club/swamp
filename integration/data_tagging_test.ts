@@ -26,6 +26,7 @@
  * 3. Query data by tag filters
  */
 
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -255,7 +256,9 @@ Deno.test("Data Tagging: findByTag returns matching records", async () => {
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
 
@@ -334,7 +337,9 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
 
@@ -411,7 +416,9 @@ Deno.test("Data Tagging: findByTag returns only latest version with matching tag
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
 
@@ -488,7 +495,9 @@ Deno.test("Data Tagging: different type categories", async () => {
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
 
@@ -567,7 +576,9 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
 
@@ -641,7 +652,7 @@ Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async 
       repoDir,
       dataRepo,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Access tags directly via resource namespace (specName → instanceName → record)
     const modelData = context.model["my-vpc"];
@@ -738,7 +749,9 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       // Access all resource data from model (resource is a map of specName -> instanceName -> DataRecord)
       const modelData = context.model["multi-output-model"];
@@ -796,7 +809,7 @@ Deno.test("Data Tagging: empty findByTag results", async () => {
       repoDir,
       dataRepo,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     assertExists(context.data);
 

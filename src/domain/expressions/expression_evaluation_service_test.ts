@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunSensitiveValues } from "../secrets/mod.ts";
+import { attachSensitiveValues } from "./sensitive_context.ts";
+import { SplicePair } from "./splice_pair.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -310,6 +314,7 @@ Deno.test("evaluateDefinition: ternary in globalArguments resolves when conditio
     const result = await service.evaluateDefinition(
       definition,
       type,
+      new RunSensitiveValues(),
       { transport: "wan", tailnet_host: "100.64.0.1" }, // lan_host deliberately absent
     );
 
@@ -344,6 +349,7 @@ Deno.test("evaluateDefinition: directly-missing input in globalArguments stays u
     const result = await service.evaluateDefinition(
       definition,
       type,
+      new RunSensitiveValues(),
       { instanceName: "test-instance" }, // cidrBlock deliberately absent
     );
 
@@ -382,9 +388,14 @@ Deno.test("evaluateDefinition: records failed expressions with their reason and 
       },
     });
 
-    const result = await service.evaluateDefinition(definition, type, {
-      cfg: {},
-    });
+    const result = await service.evaluateDefinition(
+      definition,
+      type,
+      new RunSensitiveValues(),
+      {
+        cfg: {},
+      },
+    );
 
     const failed = result.failedExpressions!;
     assertEquals([...failed.keys()].sort(), [
@@ -436,9 +447,14 @@ Deno.test("evaluateDefinition: self.globalArguments in a method argument sees th
       },
     });
 
-    const result = await service.evaluateDefinition(definition, type, {
-      host: "a",
-    });
+    const result = await service.evaluateDefinition(
+      definition,
+      type,
+      new RunSensitiveValues(),
+      {
+        host: "a",
+      },
+    );
 
     assertEquals(result.definition.globalArguments.target, "web-a");
     const args = result.definition.getMethodArguments("execute");
@@ -469,7 +485,11 @@ Deno.test("evaluateDefinition: a runtime global argument copied via self.globalA
       },
     });
 
-    const result = await service.evaluateDefinition(definition, type);
+    const result = await service.evaluateDefinition(
+      definition,
+      type,
+      new RunSensitiveValues(),
+    );
     assertEquals(
       result.definition.getMethodArguments("execute").run,
       "${{ env.PATH }}",
@@ -906,6 +926,7 @@ Deno.test("evaluateDefinition: resolves expressions in nested globalArguments ob
     const result = await service.evaluateDefinition(
       definition,
       type,
+      new RunSensitiveValues(),
       { region: "us-east-1", key_name: "my-key" },
     );
 
@@ -953,9 +974,14 @@ Deno.test("evaluateDefinition: inputs-only expressions load no definitions", asy
     });
     await definitionRepo.save(type, definition);
 
-    const result = await service.evaluateDefinition(definition, type, {
-      msg: "hello",
-    });
+    const result = await service.evaluateDefinition(
+      definition,
+      type,
+      new RunSensitiveValues(),
+      {
+        msg: "hello",
+      },
+    );
 
     assertEquals(
       result.definition.getMethodArguments("execute").run,
@@ -983,7 +1009,11 @@ Deno.test("evaluateDefinition: data expressions load no definitions", async () =
     });
     await definitionRepo.save(type, definition);
 
-    await service.evaluateDefinition(definition, type);
+    await service.evaluateDefinition(
+      definition,
+      type,
+      new RunSensitiveValues(),
+    );
 
     assertEquals(definitionRepo.findAllGlobalCalls, 0);
   });
@@ -1013,7 +1043,11 @@ Deno.test("evaluateDefinition: model references load definitions once", async ()
     });
     await definitionRepo.save(type, definition);
 
-    const result = await service.evaluateDefinition(definition, type);
+    const result = await service.evaluateDefinition(
+      definition,
+      type,
+      new RunSensitiveValues(),
+    );
 
     assertEquals(
       result.definition.getMethodArguments("execute").run,
@@ -1047,7 +1081,9 @@ Deno.test("evaluateAllDefinitions: walks the repository once", async () => {
     });
     await definitionRepo.save(type, consumer);
 
-    const results = await service.evaluateAllDefinitions();
+    const results = await service.evaluateAllDefinitions(
+      new RunSensitiveValues(),
+    );
 
     assertEquals(results.length, 2);
     assertEquals(definitionRepo.findAllGlobalCalls, 1);
@@ -1441,6 +1477,7 @@ Deno.test("runtime resolvers: preserve supplied namespaces and refresh env", asy
       const evaluated = await service.evaluateDefinition(
         definition,
         ModelType.create("test/model"),
+        new RunSensitiveValues(),
         undefined,
         { ...context },
       );
@@ -1522,7 +1559,11 @@ Deno.test("buildRuntimeContext: loads the model namespace only when a remaining 
       name: "env-only",
       methods: { exec: { arguments: { run: "${{ env.HOME }}" } } },
     });
-    const light = await service.buildRuntimeContext(envOnly, { a: 1 });
+    const light = await service.buildRuntimeContext(
+      envOnly,
+      new RunSensitiveValues(),
+      { a: 1 },
+    );
     assertEquals(light.model, {});
     assertEquals(light.inputs, { a: 1 });
     assertEquals(typeof light.data, "object");
@@ -1537,7 +1578,10 @@ Deno.test("buildRuntimeContext: loads the model namespace only when a remaining 
         },
       },
     });
-    const full = await service.buildRuntimeContext(mixed);
+    const full = await service.buildRuntimeContext(
+      mixed,
+      new RunSensitiveValues(),
+    );
     assertEquals(full.model.producer?.input.name, "producer");
     assertEquals(full.inputs, undefined);
   });
@@ -1593,5 +1637,96 @@ Deno.test("resolveRuntimeExpressionsInData: resolves vault.get from the managed 
     );
 
     assertEquals(result, { run: "managed-value" });
+  });
+});
+
+// ============================================================================
+// Sensitive values read through expressions (swamp-club#2171)
+// ============================================================================
+
+const SENSITIVE = "Pl41n-s3cret";
+
+/** A context whose data.latest returns a recorded sensitive value, counting reads. */
+function sensitiveDataContext(reads: { count: number }): ExpressionContext {
+  const values = new RunSensitiveValues();
+  values.addSecret(SENSITIVE, { vaultName: "prod", key: "api-token" });
+  return attachSensitiveValues({
+    model: {},
+    env: { HOME: "/home/app" },
+    data: {
+      latest: () => {
+        reads.count++;
+        return Promise.resolve({ attributes: { token: SENSITIVE } });
+      },
+    } as unknown as ExpressionContext["data"],
+  }, values);
+}
+
+Deno.test("evaluateDataPair: reads data once and splices raw and sanitized copies", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    const reads = { count: 0 };
+    const bag = new VaultSecretBag();
+    const expression = "${{ data.latest('db', 'creds').attributes.token }}";
+    const pair = await service.evaluateDataPair(
+      SplicePair.of({ run: `echo ${expression}`, whole: expression }),
+      sensitiveDataContext(reads),
+      "unrestricted",
+      bag,
+    );
+    // One read per expression location, exactly as evaluateData makes: the
+    // sanitized copy is spliced from the same values and adds none.
+    const plainReads = { count: 0 };
+    await service.evaluateData(
+      { run: `echo ${expression}`, whole: expression },
+      sensitiveDataContext(plainReads),
+      "unrestricted",
+    );
+    assertEquals(reads.count, plainReads.count);
+    assertEquals(pair.raw, { run: `echo ${SENSITIVE}`, whole: SENSITIVE });
+    assertEquals(JSON.stringify(pair.sanitized).includes(SENSITIVE), false);
+    assertEquals(bag.resolveDeep(pair.sanitized), pair.raw);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: sanitizes mixed runtime expressions into the caller's bag", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    const bag = new VaultSecretBag();
+    const spliced = bag.addDataSecret(SENSITIVE);
+    const definition = Definition.create({
+      name: "mixed",
+      globalArguments: { tok: spliced },
+      methods: {
+        run: {
+          arguments: {
+            run:
+              '${{ env["HOME"] + ":" + data.latest("db", "creds").attributes.token }}',
+            len:
+              '${{ env["HOME"] + ":" + string(size(self.globalArguments.tok)) }}',
+          },
+        },
+      },
+    });
+    const result = await service.resolveRuntimeExpressionsInDefinition(
+      definition,
+      undefined,
+      sensitiveDataContext({ count: 0 }),
+      "unrestricted",
+      { secretBag: bag, rawGlobalArguments: { tok: SENSITIVE } },
+    );
+    assertEquals(result.secretBag, bag);
+    const args = result.definition.getMethodArguments("run");
+    const run = args.run as string;
+    assertEquals(run.includes(SENSITIVE), false);
+    assertEquals(bag.resolveRaw(run), `${Deno.env.get("HOME")}:${SENSITIVE}`);
+    // self.globalArguments is bound to the real value, not the sentinel.
+    assertEquals(args.len, `${Deno.env.get("HOME")}:${SENSITIVE.length}`);
   });
 });

@@ -126,6 +126,13 @@ async function executeCommand(
           });
         }
         const resolved = shellStrategy.resolveSecrets(unresolvedRun, secretBag);
+        if (resolved.dataInCommandLine) {
+          context.onEvent?.({
+            type: "sensitive_value_in_command_line",
+            message:
+              "Sensitive data value inside a quoted here-document or a single-quoted PowerShell string is passed on the command line — use an unquoted here-document delimiter or double quotes instead",
+          });
+        }
         shellCommand = resolved.command;
         shellEnv = { ...shellEnv, ...resolved.env };
       }

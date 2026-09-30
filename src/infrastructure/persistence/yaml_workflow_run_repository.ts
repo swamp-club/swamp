@@ -578,7 +578,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       previousStatus = existingRun?.status;
     }
 
-    const data = run.toData();
+    // The persisted form: sensitive values the run read through expressions
+    // are written as the vault references they came from.
+    const data = run.toPersistedData();
     // Convert logFile to relative path for storage
     if (data.logFile) {
       data.logFile = toRelativePath(this.repoDir, data.logFile);
@@ -967,7 +969,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         return;
       }
       const existing = result?.entries ?? {};
-      const summary = parseWorkflowRunSummary(run.toData());
+      const summary = parseWorkflowRunSummary(run.toPersistedData());
       existing[run.id] = summaryToIndexEntry(summary);
       await writeRunIndex(indexDir, existing);
     } catch (error) {

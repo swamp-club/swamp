@@ -25,15 +25,41 @@ import type {
 import { extractDependencies } from "./dependency_extractor.ts";
 import { ExpressionError } from "./errors.ts";
 import type { ExpressionLocation } from "./expression.ts";
-import { replaceExpressions } from "./expression_parser.ts";
+import {
+  replaceExpressions,
+  type SpliceSanitizer,
+} from "./expression_parser.ts";
 import type { ExpressionContext } from "./model_resolver.ts";
 import { isSwampExpression, type SwampScope } from "./swamp_namespaces.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 
 /** Result of one CEL pass over a definition's data. */
 export interface DefinitionExpressionPassResult {
+  /** Real values: bound as self.globalArguments, cached, reported. */
   data: DefinitionData;
+  /**
+   * The same splices with sensitive values replaced by sentinels, for the
+   * definition that executes. Present only when a sanitizer was given.
+   */
+  sanitizedData?: DefinitionData;
   failedExpressions: FailedExpressions;
+}
+
+/** Offsets a sanitizer's paths so it sees full definition paths. */
+function underPath(
+  sanitizer: SpliceSanitizer,
+  prefix: string,
+): SpliceSanitizer {
+  const full = (path: string) =>
+    path === ""
+      ? prefix
+      : path.startsWith("[")
+      ? `${prefix}${path}`
+      : `${prefix}.${path}`;
+  return {
+    whole: (value, path) => sanitizer.whole(value, full(path)),
+    embedded: (text, path) => sanitizer.embedded(text, full(path)),
+  };
 }
 
 function isGlobalArgumentPath(path: string): boolean {
@@ -68,6 +94,15 @@ export async function evaluateDefinitionExpressions(
   expressions: readonly ExpressionLocation[],
   context: ExpressionContext,
   celEvaluator: CelExpressionEvaluator & CelExpressionValidator,
+  sanitizer?: SpliceSanitizer,
+  /**
+   * What the sanitized copy is spliced from, when it differs from
+   * `definitionData` because values were already sanitized upstream (a
+   * direct-execution step's routed global arguments). It holds the same
+   * unevaluated expressions, so the values evaluated from `definitionData`
+   * apply to it unchanged.
+   */
+  sanitizedBase: DefinitionData = definitionData,
 ): Promise<DefinitionExpressionPassResult> {
   const failedExpressions = new Map<string, Error>();
   const declaredInputs = new Set(
@@ -144,8 +179,24 @@ export async function evaluateDefinitionExpressions(
   // The same raw text can resolve differently in the two phases
   // (`self.globalArguments.*` does), so each section takes its own values.
   const data = replaceExpressions(definitionData, restValues) as DefinitionData;
+  if (!sanitizer) {
+    return { data: { ...data, globalArguments }, failedExpressions };
+  }
+  const sanitizedGlobals = replaceExpressions(
+    sanitizedBase.globalArguments ?? {},
+    globalValues,
+    undefined,
+    underPath(sanitizer, "globalArguments"),
+  ) as Record<string, unknown>;
+  const sanitizedRest = replaceExpressions(
+    sanitizedBase,
+    restValues,
+    undefined,
+    sanitizer,
+  ) as DefinitionData;
   return {
     data: { ...data, globalArguments },
+    sanitizedData: { ...sanitizedRest, globalArguments: sanitizedGlobals },
     failedExpressions,
   };
 }

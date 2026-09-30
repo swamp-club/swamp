@@ -110,7 +110,7 @@ import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
-import type { Definition } from "../definitions/definition.ts";
+import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import {
@@ -123,7 +123,25 @@ import {
   type DeferredExpression,
   deferredExpressionReference,
 } from "../expressions/deferred_expression.ts";
-import { resolveAvailableExpressions } from "../expressions/available_expression_resolver.ts";
+import {
+  resolveAvailableExpressions,
+  resolveAvailableExpressionsPair,
+} from "../expressions/available_expression_resolver.ts";
+import {
+  sensitiveSpliceSanitizer,
+  SplicePair,
+} from "../expressions/splice_pair.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import {
+  mayHoldPlaintextSensitiveValues,
+  persistEvaluatedDefinition,
+  rehydrateEvaluatedDefinition,
+} from "../expressions/persisted_evaluation.ts";
+import {
+  type PersistedEvaluatedWorkflow,
+  persistEvaluatedWorkflow,
+  rehydrateEvaluatedWorkflow,
+} from "./persisted_workflow.ts";
 import {
   extractCelExpression,
   extractExpressions,
@@ -145,6 +163,8 @@ import {
 import {
   collectWorkflowAuthoredExpressions,
   DefinitionExpressionEvaluator,
+  type SanitizedTaskOverlay,
+  type WorkflowEvaluationResult,
   WorkflowExpressionEvaluator,
 } from "./expression_evaluators.ts";
 import {
@@ -159,7 +179,11 @@ import {
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
-import { SecretRedactor } from "../secrets/mod.ts";
+import {
+  rehydratePersistedForm,
+  RunSensitiveValues,
+  SecretRedactor,
+} from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import {
   createDataRepositoryAttributeReader,
@@ -203,6 +227,86 @@ function inlineUnscopedDeferred<T>(
     vouched.add(record.expression);
   }
   return { data: replaceExpressions(data, values) as T, authored: vouched };
+}
+
+/** Replaces sensitive values in a definition's tag values with placeholders. */
+function withTagPlaceholders(
+  definition: Definition,
+  sensitiveValues: RunSensitiveValues,
+): void {
+  for (const [key, value] of Object.entries(definition.tags)) {
+    const placeholder = sensitiveValues.withPlaceholders(value);
+    if (placeholder !== value) definition.setTag(key, placeholder);
+  }
+}
+
+/** A step task's inputs and global arguments, as they move through a pair. */
+type TaskArgs = {
+  inputs?: Record<string, unknown> | string;
+  globalArgs?: Record<string, unknown> | string;
+};
+
+/** The step's input records as a pair; absent inputs are empty. */
+function stepInputPair(
+  taskArgs: SplicePair<TaskArgs>,
+): SplicePair<Record<string, unknown>> {
+  const record = (value: TaskArgs["inputs"]) =>
+    (value ?? {}) as Record<string, unknown>;
+  return new SplicePair(
+    record(taskArgs.raw.inputs),
+    record(taskArgs.sanitized.inputs),
+  );
+}
+
+/**
+ * The executed copy of a direct-execution step's definition. The resolver
+ * routed and coerced the raw members; the same key routing applies to the
+ * sanitized members. Coercion changes values by content (a `"true"` string
+ * becomes a boolean), so a key whose value coercion changed takes the coerced
+ * raw value with sensitive values sentinelized, rather than the uncoerced
+ * sanitized one.
+ */
+function sanitizedDirectExecution(
+  result: DirectTypeResolveResult,
+  taskArgs: SplicePair<TaskArgs>,
+  bag: VaultSecretBag,
+  sensitiveValues: RunSensitiveValues,
+): { definition: Definition; methodInputs: Record<string, unknown> } {
+  const asRecord = (value: TaskArgs["inputs"]) =>
+    (typeof value === "object" && value !== null ? value : {}) as Record<
+      string,
+      unknown
+    >;
+  const explicit = taskArgs.raw.globalArgs !== undefined;
+  const sanitizedInputs = asRecord(taskArgs.sanitized.inputs);
+  const methodInputs: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(result.routedMethodInputs)) {
+    methodInputs[key] = Object.hasOwn(sanitizedInputs, key)
+      ? sanitizedInputs[key]
+      : value;
+  }
+
+  const definition = Definition.fromData(result.definition.toData());
+  const rawSource = asRecord(
+    explicit ? taskArgs.raw.globalArgs : taskArgs.raw.inputs,
+  );
+  const sanitizedSource = asRecord(
+    explicit ? taskArgs.sanitized.globalArgs : taskArgs.sanitized.inputs,
+  );
+  const globals = result.definition.globalArguments as Record<string, unknown>;
+  const secrets = sensitiveValues.list().map((entry) => entry.value);
+  for (const key of Object.keys(rawSource)) {
+    if (!explicit && Object.hasOwn(result.routedMethodInputs, key)) continue;
+    if (!Object.hasOwn(globals, key)) continue;
+    const coerced = globals[key];
+    const sanitized = JSON.stringify(rawSource[key]) === JSON.stringify(coerced)
+      ? sanitizedSource[key]
+      : bag.sentinelizeValues(coerced, secrets);
+    if (JSON.stringify(sanitized) !== JSON.stringify(coerced)) {
+      definition.setGlobalArgument(key, sanitized);
+    }
+  }
+  return { definition, methodInputs };
 }
 
 /**
@@ -463,6 +567,16 @@ export interface StepExecutionContext {
   runtimeTags?: Record<string, string>;
   /** Secret redactor for stripping vault secrets from persisted data and logs */
   secretRedactor?: SecretRedactor;
+  /**
+   * The run's record of sensitive values resolved for expressions. Required,
+   * so no step can resolve a sensitive value without recording it.
+   */
+  sensitiveValues: RunSensitiveValues;
+  /**
+   * Task inputs and global arguments as each step should execute them, where
+   * workflow evaluation spliced sensitive values into them.
+   */
+  sanitizedTasks?: SanitizedTaskOverlay;
   /** Report filter options for per-step report execution */
   reportFilterOptions?: ReportFilterOptions;
   /** The git commit sha of the swamp repo at execution time */
@@ -717,6 +831,11 @@ export type DirectTypeResolver = (
   globalArgs: Record<string, unknown> | undefined,
   /** Expressions written in the workflow source; see {@link AuthoredExpressions}. */
   authoredExpressions: AuthoredExpressions,
+  /**
+   * The run's record, so sensitive values routed into the stored definition
+   * are written as the vault references they came from.
+   */
+  sensitiveValues?: RunSensitiveValues,
 ) => Promise<DirectTypeResolveResult>;
 
 export interface StepLockResult {
@@ -975,6 +1094,31 @@ export class DefaultStepExecutor implements StepExecutor {
     );
     let resolvedPlacement = resolvePlacement(effectiveFields);
 
+    // This step's bag. Sensitive data values spliced into the step's
+    // arguments become its sentinels: from the workflow-level overlay, the
+    // step-input passes, the definition pass and the runtime pass. One bag
+    // per step, so remote dispatch ships only this step's secrets.
+    const stepSecretBag = new VaultSecretBag();
+    const argumentSanitizer = sensitiveSpliceSanitizer(
+      ctx.sensitiveValues,
+      stepSecretBag,
+    );
+    // The step's task inputs and global arguments twice: raw for CEL
+    // contexts, coercion, routing, caching and reports; sanitized for the
+    // arguments that execute.
+    const overlay = ctx.step
+      ? ctx.sanitizedTasks?.forStep(ctx.step, stepSecretBag)
+      : undefined;
+    let taskArgs = new SplicePair<TaskArgs>(
+      { inputs: task.inputs, globalArgs: task.globalArgs },
+      overlay
+        ? {
+          inputs: overlay.inputs as TaskArgs["inputs"],
+          globalArgs: overlay.globalArgs as TaskArgs["globalArgs"],
+        }
+        : { inputs: task.inputs, globalArgs: task.globalArgs },
+    );
+
     // Resolve every available expression (self.* from the forEach variable,
     // run.*, etc.) anywhere in the task and placement fields before model
     // lookup. The expression context has self populated with the forEach
@@ -991,6 +1135,14 @@ export class DefaultStepExecutor implements StepExecutor {
         evaluate,
         ctx.authoredExpressions,
       ) as typeof task;
+      taskArgs = resolveAvailableExpressionsPair(
+        taskArgs,
+        ctx.expressionContext,
+        evaluate,
+        ctx.authoredExpressions,
+        argumentSanitizer,
+      );
+      task = { ...task, ...taskArgs.raw };
       if (resolvedPlacement) {
         resolvedPlacement = resolveAvailableExpressions(
           resolvedPlacement,
@@ -1059,21 +1211,45 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Resolve whole-field expression strings for inputs/globalArgs that survived
     // resolveAvailableExpressions (e.g., deferred step-output dependencies).
-    task = {
-      ...task,
-      inputs: await resolveRecordExpression(
-        task.inputs,
-        "task.inputs",
-        ctx.expressionContext,
-        ctx.authoredExpressions,
-      ),
-      globalArgs: await resolveRecordExpression(
-        task.globalArgs,
-        "task.globalArgs",
-        ctx.expressionContext,
-        ctx.authoredExpressions,
-      ),
-    };
+    const recordInputs = await resolveRecordExpression(
+      task.inputs,
+      "task.inputs",
+      ctx.expressionContext,
+      ctx.authoredExpressions,
+    );
+    const recordGlobalArgs = await resolveRecordExpression(
+      task.globalArgs,
+      "task.globalArgs",
+      ctx.expressionContext,
+      ctx.authoredExpressions,
+    );
+    // A whole-field record expression was evaluated just now, so its
+    // sanitized counterpart is its result through the sanitizer; otherwise
+    // the sanitized member already holds the record.
+    const sanitizedRecord = (
+      raw: TaskArgs["inputs"],
+      resolved: Record<string, unknown> | undefined,
+      sanitized: TaskArgs["inputs"],
+    ) =>
+      typeof raw === "string"
+        ? argumentSanitizer.whole(resolved, "") as Record<string, unknown>
+        : sanitized;
+    taskArgs = new SplicePair<TaskArgs>(
+      { inputs: recordInputs, globalArgs: recordGlobalArgs },
+      {
+        inputs: sanitizedRecord(
+          task.inputs,
+          recordInputs,
+          taskArgs.sanitized.inputs,
+        ),
+        globalArgs: sanitizedRecord(
+          task.globalArgs,
+          recordGlobalArgs,
+          taskArgs.sanitized.globalArgs,
+        ),
+      },
+    );
+    task = { ...task, inputs: recordInputs, globalArgs: recordGlobalArgs };
 
     let originalDefinition: Definition;
     let modelType: ModelType;
@@ -1092,6 +1268,10 @@ export class DefaultStepExecutor implements StepExecutor {
     let authoredFromDefinition: ReadonlySet<string> = new Set();
 
     let authoredForDirect = ctx.authoredExpressions;
+    // The definition the executed copy starts from when a direct-execution
+    // step routed sanitized values into it; otherwise the loaded definition.
+    let executedBase: Definition | undefined;
+    let sanitizedStepInputs: Record<string, unknown> | undefined;
     // Global arguments the template-syntax scan reads in place of a
     // definition's evaluated ones; see templateScanGlobalArguments.
     let authoredGlobalArguments: Record<string, unknown> | undefined;
@@ -1117,6 +1297,12 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.expressionContext?.deferredExpressions ?? [],
         ctx.authoredExpressions,
       );
+      const inlinedSanitized = inlineUnscopedDeferred(
+        taskArgs.sanitized,
+        ctx.expressionContext?.deferredExpressions ?? [],
+        ctx.authoredExpressions,
+      );
+      taskArgs = new SplicePair<TaskArgs>(inlined.data, inlinedSanitized.data);
       const { modelType: typeArg, modelName, methodName } = task;
       task = { ...task, ...inlined.data };
       authoredForDirect = inlined.authored;
@@ -1128,11 +1314,20 @@ export class DefaultStepExecutor implements StepExecutor {
         (task.inputs ?? {}) as Record<string, unknown>,
         task.globalArgs as Record<string, unknown> | undefined,
         authoredForDirect,
+        ctx.sensitiveValues,
       );
 
       originalDefinition = result.definition;
       modelType = result.modelType;
       authoredFromDefinition = result.authoredExpressions ?? new Set();
+      const executedDirect = sanitizedDirectExecution(
+        result,
+        taskArgs,
+        stepSecretBag,
+        ctx.sensitiveValues,
+      );
+      executedBase = executedDirect.definition;
+      sanitizedStepInputs = executedDirect.methodInputs;
 
       const authoredTask = ctx.authoredStep?.task.data;
       // A step edited since a cached evaluation (--last-evaluated) can have
@@ -1165,6 +1360,13 @@ export class DefaultStepExecutor implements StepExecutor {
         ...task,
         inputs: result.routedMethodInputs,
       };
+      taskArgs = new SplicePair<TaskArgs>(
+        { inputs: result.routedMethodInputs, globalArgs: task.globalArgs },
+        {
+          inputs: sanitizedStepInputs,
+          globalArgs: taskArgs.sanitized.globalArgs,
+        },
+      );
     } else if (task.modelIdOrName) {
       // Standard path: look up existing definition
       const lookupResult = await findDefinitionByIdOrName(
@@ -1256,8 +1458,11 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Evaluate CEL expressions (vault left raw for persistence)
     let evaluatedDefinition = originalDefinition;
+    // The copy that executes: evaluatedDefinition's splices with sensitive
+    // data values in its arguments replaced by sentinels from stepSecretBag.
+    let executedDefinition = executedBase ?? originalDefinition;
     let failedExpressions: FailedExpressions = new Map();
-    let stepInputs: Record<string, unknown> = {};
+    let stepInputs = SplicePair.of<Record<string, unknown>>({});
     // Provenance for every pass from here on. Union the workflow source's
     // authored expressions with the model's own, where the model has an
     // authored source at all. Anything else in task.inputs or the evaluated
@@ -1286,7 +1491,23 @@ export class DefaultStepExecutor implements StepExecutor {
             `Run the workflow without --last-evaluated first.`,
         );
       }
-      evaluatedDefinition = lastEvaluated.definition;
+      if (mayHoldPlaintextSensitiveValues(lastEvaluated)) {
+        throw new UserError(
+          `The evaluated definition cached for "${originalDefinition.name}" was written by an older swamp and may hold sensitive values in plaintext, so it is not replayed. ` +
+            `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
+        );
+      }
+      // Sensitive values are cached as vault references; restore them, real
+      // values into evaluatedDefinition and sentinels into the executed copy.
+      const restored = await rehydrateEvaluatedDefinition(
+        lastEvaluated,
+        (vaultName, key) =>
+          vaultService.get(vaultName, key, "evaluated-cache:replay"),
+        ctx.sensitiveValues,
+        stepSecretBag,
+      );
+      evaluatedDefinition = restored.definition;
+      executedDefinition = restored.executedDefinition;
       if (ctx.expressionContext) {
         // The workflow cache may already have supplied the same records;
         // de-dup by id so the definition cache does not grow per replay.
@@ -1294,7 +1515,7 @@ export class DefaultStepExecutor implements StepExecutor {
           ...new Map(
             [
               ...(ctx.expressionContext.deferredExpressions ?? []),
-              ...lastEvaluated.deferredExpressions,
+              ...restored.deferredExpressions,
             ].map((record) => [record.id, record]),
           ).values(),
         ];
@@ -1307,13 +1528,14 @@ export class DefaultStepExecutor implements StepExecutor {
       // skipped during workflow evaluate.  evaluateData only touches
       // remaining ${{ }} markers; already-resolved values pass through.
       if (task.inputs && ctx.expressionContext) {
-        stepInputs = await expressionEvaluator.evaluateData(
-          task.inputs,
+        stepInputs = await expressionEvaluator.evaluateDataPair(
+          stepInputPair(taskArgs),
           ctx.expressionContext,
           authoredExpressions,
-        ) as Record<string, unknown>;
+          stepSecretBag,
+        );
       } else if (task.inputs) {
-        stepInputs = task.inputs as Record<string, unknown>;
+        stepInputs = stepInputPair(taskArgs);
       }
     } else if (ctx.expressionContext) {
       runLogger.debug("Evaluating expressions");
@@ -1334,38 +1556,45 @@ export class DefaultStepExecutor implements StepExecutor {
 
       // Evaluate step task inputs and merge into context
       if (task.inputs) {
-        stepInputs = await expressionEvaluator.evaluateData(
-          task.inputs,
+        stepInputs = await expressionEvaluator.evaluateDataPair(
+          stepInputPair(taskArgs),
           ctx.expressionContext,
           authoredExpressions,
-        ) as Record<string, unknown>;
+          stepSecretBag,
+        );
       }
 
-      // Merge step inputs with existing context inputs (step inputs take precedence)
+      // Merge step inputs with existing context inputs (step inputs take
+      // precedence). The context always holds real values.
       const originalInputs = ctx.expressionContext.inputs ?? {};
-      ctx.expressionContext.inputs = { ...originalInputs, ...stepInputs };
+      ctx.expressionContext.inputs = { ...originalInputs, ...stepInputs.raw };
 
-      ({ definition: evaluatedDefinition, failedExpressions } =
-        await new DefinitionExpressionEvaluator(
-          new CelEvaluator(),
-        ).evaluate(
-          originalDefinition,
-          ctx.expressionContext,
-          authoredExpressions,
-        ));
+      ({
+        definition: evaluatedDefinition,
+        sanitizedDefinition: executedDefinition,
+        failedExpressions,
+      } = await new DefinitionExpressionEvaluator(
+        new CelEvaluator(),
+      ).evaluate(
+        originalDefinition,
+        ctx.expressionContext,
+        authoredExpressions,
+        stepSecretBag,
+        executedDefinition,
+      ));
     }
 
     // Forward all step inputs as method arguments.
     // This runs after expression evaluation, so task.inputs values
     // take precedence over any values resolved from ${{ inputs.X }} expressions.
-    if (Object.keys(stepInputs).length > 0) {
-      for (const [key, value] of Object.entries(stepInputs)) {
-        evaluatedDefinition.setMethodArgument(
-          task.methodName,
-          key,
-          value,
-        );
-      }
+    if (executedDefinition === evaluatedDefinition) {
+      executedDefinition = Definition.fromData(evaluatedDefinition.toData());
+    }
+    for (const [key, value] of Object.entries(stepInputs.raw)) {
+      evaluatedDefinition.setMethodArgument(task.methodName, key, value);
+    }
+    for (const [key, value] of Object.entries(stepInputs.sanitized)) {
+      executedDefinition.setMethodArgument(task.methodName, key, value);
     }
 
     // A failed expression the method is about to receive would otherwise be
@@ -1377,19 +1606,33 @@ export class DefaultStepExecutor implements StepExecutor {
       failedExpressions,
     );
 
-    // Save evaluated definition (with vault expressions still raw) for --last-evaluated
+    // Save evaluated definition (with vault expressions still raw) for
+    // --last-evaluated. Built from the executed copy, so sensitive values are
+    // written as the vault references they came from, never in plaintext.
+    const persisted = persistEvaluatedDefinition(
+      executedDefinition,
+      ctx.expressionContext?.deferredExpressions ?? [],
+      originalDefinition,
+      ctx.sensitiveValues,
+      stepSecretBag,
+    );
     await evaluatedDefRepo.save(
       modelType,
-      evaluatedDefinition,
+      persisted.definition,
       authoredExpressions,
-      ctx.expressionContext?.deferredExpressions,
+      persisted.deferredExpressions,
+      persisted.writtenReferences,
     );
 
     // Capture pre-vault args for report context (so vault secrets stay as expressions)
-    const reportGlobalArgs = evaluatedDefinition.globalArguments;
-    const reportMethodArgs = evaluatedDefinition.getMethodArguments(
-      task.methodName,
-    );
+    // Reports and the completed event show arguments to the user and are
+    // persisted with report output, so sensitive values are masked there.
+    const reportGlobalArgs = ctx.sensitiveValues.masked(
+      evaluatedDefinition.globalArguments,
+    ) as Record<string, unknown>;
+    const reportMethodArgs = ctx.sensitiveValues.masked(
+      evaluatedDefinition.getMethodArguments(task.methodName),
+    ) as Record<string, unknown>;
 
     // Resolve runtime expressions (vault and env) at runtime (never persisted).
     // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
@@ -1397,13 +1640,21 @@ export class DefaultStepExecutor implements StepExecutor {
     // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
     const runtimeResult = await expressionEvaluator
       .resolveRuntimeExpressionsInDefinition(
-        evaluatedDefinition,
+        executedDefinition,
         ctx.secretRedactor,
         ctx.expressionContext,
         authoredExpressions,
+        {
+          secretBag: stepSecretBag,
+          rawGlobalArguments: evaluatedDefinition.globalArguments,
+        },
       );
     evaluatedDefinition = runtimeResult.definition;
     const secretBag = runtimeResult.secretBag;
+    // Definition tags reach data artifacts and the catalog as they are, so a
+    // sensitive value in one becomes its placeholder (after the runtime pass,
+    // which can also splice one into a tag).
+    withTagPlaceholders(evaluatedDefinition, ctx.sensitiveValues);
 
     // Validate method exists on the model
     const method = modelDef.methods[task.methodName];
@@ -1417,7 +1668,9 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Create ModelOutput for tracking
-    const definitionHash = await evaluatedDefinition.computeHash();
+    // Over the persisted form (before the runtime pass): stable across runs
+    // and free of secrets. Provenance only; nothing compares it.
+    const definitionHash = await persisted.definition.computeHash();
     const output = ModelOutput.create({
       definitionId: originalDefinition.id,
       methodName: task.methodName,
@@ -1624,8 +1877,10 @@ export class DefaultStepExecutor implements StepExecutor {
     // Build workflow-specific tag overrides. Use "source" instead of
     // "type" to preserve the original data type (resource/file) while
     // tracking provenance for cross-workflow resolution.
+    // Tags are identifiers readers filter by exact string; a sensitive value
+    // in one becomes its placeholder before any writer sees it.
     const workflowTagOverrides: Record<string, string> = {
-      ...(ctx.workflowTags ?? {}),
+      ...ctx.sensitiveValues.tagsWithPlaceholders(ctx.workflowTags ?? {}),
       source: "step-output",
       workflow: ctx.workflowName,
       workflowId: ctx.workflowId,
@@ -1648,7 +1903,10 @@ export class DefaultStepExecutor implements StepExecutor {
                 `Vary dimension '${key}' not found in step inputs for spec '${override.specName}'`,
               );
             }
-            return coerceToSuffix(val);
+            // A suffix becomes part of a data name: never the secret.
+            return coerceToSuffix(
+              ctx.sensitiveValues.withPlaceholdersDeep(val),
+            );
           });
           resolvedVarySuffix = varyValues.join("-");
         }
@@ -1656,7 +1914,9 @@ export class DefaultStepExecutor implements StepExecutor {
           specName: override.specName,
           lifetime: override.lifetime,
           garbageCollection: override.garbageCollection,
-          tags: override.tags,
+          tags: override.tags
+            ? ctx.sensitiveValues.tagsWithPlaceholders(override.tags)
+            : override.tags,
           resolvedVarySuffix,
         };
       })
@@ -1873,8 +2133,8 @@ export class DefaultStepExecutor implements StepExecutor {
             evaluatedDefinition.id,
             evaluatedDefinition.name,
             unifiedDataRepo,
+            ctx.sensitiveValues,
             vaultService,
-            ctx.secretRedactor,
           );
         } else if (handle.kind === "file") {
           const fileRecord = await fromFileHandle(
@@ -1902,7 +2162,9 @@ export class DefaultStepExecutor implements StepExecutor {
     // Per-step reports. Vary suffix derived from forEach variable.
     if (ctx.reportFilterOptions) {
       const reportVarySuffix = ctx.forEachVariable?.value !== undefined
-        ? coerceToSuffix(ctx.forEachVariable.value)
+        ? coerceToSuffix(
+          ctx.sensitiveValues.withPlaceholdersDeep(ctx.forEachVariable.value),
+        )
         : undefined;
 
       const reportArtifacts = await this.reportRunner.runFor({
@@ -2033,7 +2295,9 @@ export class DefaultStepExecutor implements StepExecutor {
     // for a successful step.
     if (ctx.reportFilterOptions) {
       const reportVarySuffix = ctx.forEachVariable?.value !== undefined
-        ? coerceToSuffix(ctx.forEachVariable.value)
+        ? coerceToSuffix(
+          ctx.sensitiveValues.withPlaceholdersDeep(ctx.forEachVariable.value),
+        )
         : undefined;
 
       const reportArtifacts = await this.reportRunner.runFor({
@@ -2106,6 +2370,8 @@ interface StepOptions {
   workflowTags?: Record<string, string>;
   runtimeTags?: Record<string, string>;
   secretRedactor?: SecretRedactor;
+  sensitiveValues: RunSensitiveValues;
+  sanitizedTasks?: SanitizedTaskOverlay;
   signal?: AbortSignal;
   reportFilterOptions?: ReportFilterOptions;
   /** The git commit sha of the swamp repo at execution time */
@@ -2289,6 +2555,12 @@ export class WorkflowExecutionService {
       /** The run whose nested workflow step starts this run. */
       parentRunId?: string;
       /**
+       * The parent run's redactor and sensitive-value record, passed to a
+       * nested run so values the parent resolved stay recorded and masked.
+       */
+      secretRedactor?: SecretRedactor;
+      sensitiveValues?: RunSensitiveValues;
+      /**
        * Expressions a parent workflow authored and passed through `inputs`
        * unresolved (env, vault). Unioned with this workflow's own source.
        */
@@ -2353,7 +2625,11 @@ export class WorkflowExecutionService {
       let workflowLogPath: string;
       let evaluatedWorkflowFingerprint: string | undefined;
       let definitionFingerprint: string | undefined;
-      const secretRedactor = new SecretRedactor();
+      let sanitizedTasks: SanitizedTaskOverlay | undefined;
+      let persistedWorkflow: PersistedEvaluatedWorkflow | undefined;
+      const secretRedactor = options?.secretRedactor ?? new SecretRedactor();
+      const sensitiveValues = options?.sensitiveValues ??
+        new RunSensitiveValues(secretRedactor);
 
       try {
         // Look up workflow
@@ -2397,11 +2673,31 @@ export class WorkflowExecutionService {
                 `  swamp workflow evaluate ${workflow.name}`,
             );
           }
+          if (mayHoldPlaintextSensitiveValues(lastEvaluated)) {
+            throw new UserError(
+              `The evaluated workflow cached for "${workflow.name}" was written by an older swamp and may hold sensitive values in plaintext, so it is not replayed. ` +
+                `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
+            );
+          }
+          // Sensitive values are cached as vault references: restore real
+          // values into the workflow and sentinels into the step overlay.
+          const vaultService = lastEvaluated.writtenReferences.length > 0
+            ? await VaultService.fromRepository(this.repoDir, {
+              vaultsDir: this.vaultsDir,
+            })
+            : undefined;
+          const restored = await rehydrateEvaluatedWorkflow(
+            lastEvaluated,
+            (vaultName, key) =>
+              vaultService!.get(vaultName, key, "evaluated-cache:replay"),
+            sensitiveValues,
+          );
           // Use the fully evaluated workflow (forEach expanded, expressions resolved)
-          workflow = lastEvaluated.workflow;
+          workflow = restored.workflow;
+          sanitizedTasks = restored.sanitizedTasks;
           deferredExpressions = [
             ...deferredExpressions,
-            ...lastEvaluated.deferredExpressions,
+            ...restored.deferredExpressions,
           ];
           authoredExpressions = new Set([
             ...authoredExpressions,
@@ -2410,6 +2706,7 @@ export class WorkflowExecutionService {
 
           expressionContext = await this.buildRunContext(
             workflow,
+            sensitiveValues,
             true,
             deferredExpressions,
           );
@@ -2428,6 +2725,7 @@ export class WorkflowExecutionService {
           );
           expressionContext = await this.buildRunContext(
             workflow,
+            sensitiveValues,
             false,
             deferredExpressions,
           );
@@ -2438,18 +2736,31 @@ export class WorkflowExecutionService {
             expressionContext.inputs = options.inputs;
           }
 
-          workflow = await this.evaluateWorkflow(
+          const evaluation = await this.evaluateWorkflow(
             workflow,
             expressionContext,
             authoredExpressions,
           );
-          await this.evaluatedWorkflowRepo.save(
+          workflow = evaluation.workflow;
+          sanitizedTasks = evaluation.sanitizedTasks;
+          // Written with sensitive values as the vault references they came
+          // from; the fingerprint is taken over the same form, so it holds
+          // nothing that could be used to guess a secret.
+          persistedWorkflow = persistEvaluatedWorkflow(
             workflow,
-            authoredExpressions,
+            found,
+            sanitizedTasks,
             deferredExpressions,
+            sensitiveValues,
+          );
+          await this.evaluatedWorkflowRepo.save(
+            persistedWorkflow.workflow,
+            authoredExpressions,
+            persistedWorkflow.deferredExpressions,
+            persistedWorkflow.writtenReferences,
           );
           evaluatedWorkflowFingerprint = await computeWorkflowFingerprint(
-            workflow,
+            persistedWorkflow.workflow,
           );
         }
 
@@ -2457,7 +2768,7 @@ export class WorkflowExecutionService {
 
         // Create workflow run with merged tags (runtime tags take precedence)
         const mergedTags: Record<string, string> = {
-          ...(workflow.tags ?? {}),
+          ...sensitiveValues.tagsWithPlaceholders(workflow.tags ?? {}),
           ...(options?.runtimeTags ?? {}),
         };
         run = WorkflowRun.create(
@@ -2466,6 +2777,7 @@ export class WorkflowExecutionService {
           options?.initiatedBy,
           options?.triggerSource,
         );
+        run.attachSensitiveValues(sensitiveValues);
         if (options?.inputs) {
           run.captureInputs(options.inputs);
         }
@@ -2512,7 +2824,11 @@ export class WorkflowExecutionService {
 
         // Capture the evaluated workflow fingerprint for recovery
         if (evaluatedWorkflowFingerprint) {
-          await this.evaluatedWorkflowRepo.saveForRun(run.id, workflow);
+          await this.evaluatedWorkflowRepo.saveForRun(
+            run.id,
+            persistedWorkflow?.workflow ?? workflow,
+            persistedWorkflow?.writtenReferences,
+          );
           run.captureRunPlan(
             evaluatedWorkflowFingerprint,
             run.id,
@@ -2591,6 +2907,8 @@ export class WorkflowExecutionService {
         runtimeTags: options?.runtimeTags,
         initiatedBy: options?.initiatedBy,
         secretRedactor,
+        sensitiveValues,
+        sanitizedTasks,
         signal: options?.signal,
         nestedRuns,
         // Default so per-step reports run even when the caller doesn't
@@ -2939,13 +3257,22 @@ export class WorkflowExecutionService {
       throw new UserError(`Workflow not found: ${workflowIdOrName}`);
     }
 
-    const existingRun = await this.runRepo.findById(
+    const loadedRun = await this.runRepo.findById(
       workflow.id,
       createWorkflowRunId(runId),
     );
-    if (!existingRun) {
+    if (!loadedRun) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
+    // Created before anything is resolved, so every sensitive value this
+    // resume reads, from the stored run or afterwards, is recorded and
+    // redacted from its logs.
+    const secretRedactor = new SecretRedactor();
+    const sensitiveValues = new RunSensitiveValues(secretRedactor);
+    // The stored run holds vault references where it held sensitive values;
+    // only the entries swamp listed are restored, from stored state alone and
+    // before any caller-supplied resume input is merged in.
+    const existingRun = await this.rehydrateRun(loadedRun, sensitiveValues);
 
     const fromStep = options?.fromStep;
 
@@ -2995,8 +3322,9 @@ export class WorkflowExecutionService {
 
     // Taken before any mutation. If anything throws after the save below and
     // before execution starts, the run is restored to exactly this state
-    // rather than left running with nothing driving it.
-    const snapshot = existingRun.toData();
+    // rather than left running with nothing driving it. Taken from the run as
+    // stored, so a restore writes references back, never restored values.
+    const snapshot = loadedRun.toData();
 
     // Work the run's abort left unfinished runs now, as it would have had the
     // abort left it pending. Reopened per record before a failed run's reset
@@ -3044,7 +3372,7 @@ export class WorkflowExecutionService {
 
     const {
       expressionContext,
-      secretRedactor,
+      sanitizedTasks,
       authoredExpressions,
       resolvedWorkflow,
       workflowLogPath,
@@ -3052,6 +3380,7 @@ export class WorkflowExecutionService {
     } = await this.restoreRunOnFailure(restore, async () => {
       const expressionContext = await this.buildRunContext(
         workflow,
+        sensitiveValues,
         false,
         existingRun.deferredExpressions,
       );
@@ -3075,12 +3404,10 @@ export class WorkflowExecutionService {
         initiatedBy: existingRun.initiatedBy,
         inputs: existingRun.inputs,
       };
-      // Declared here so vault values resolved into prior step outputs below
-      // are redacted from this resume's logs.
-      const secretRedactor = new SecretRedactor();
-
       expressionContext.steps = {};
-      const stepOutputResolver = this.createStepOutputResolver(secretRedactor);
+      const stepOutputResolver = this.createStepOutputResolver(
+        sensitiveValues,
+      );
       for (const job of existingRun.jobs) {
         for (const step of job.steps) {
           if (
@@ -3114,6 +3441,7 @@ export class WorkflowExecutionService {
         authoredExpressions,
       );
       const resolvedWorkflow = evaluated.workflow;
+      const sanitizedTasks = evaluated.sanitizedTasks;
 
       // Re-register the log file sink so resume output is captured.
       // Append to preserve records from earlier attempts.
@@ -3132,7 +3460,7 @@ export class WorkflowExecutionService {
       );
       return {
         expressionContext,
-        secretRedactor,
+        sanitizedTasks,
         authoredExpressions,
         resolvedWorkflow,
         workflowLogPath,
@@ -3165,6 +3493,8 @@ export class WorkflowExecutionService {
         runtimeTags: options?.runtimeTags,
         initiatedBy: existingRun.initiatedBy,
         secretRedactor,
+        sensitiveValues,
+        sanitizedTasks,
         signal: options?.signal,
         nestedRuns,
         resumeDerived: existingRun.resumeInputs.map((key) => `inputs.${key}`),
@@ -3863,7 +4193,7 @@ export class WorkflowExecutionService {
       ) {
         expressionContext.steps[stepName] = {
           status: stepRun.status,
-          outputs: (await this.createStepOutputResolver(options.secretRedactor)
+          outputs: (await this.createStepOutputResolver(options.sensitiveValues)
             .resolve(stepRun)).outputs,
         };
       }
@@ -4279,6 +4609,8 @@ export class WorkflowExecutionService {
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
+          sensitiveValues: options.sensitiveValues,
+          sanitizedTasks: options.sanitizedTasks,
           authoredExpressions: options.authoredExpressions,
           authoredStep: options.authoredWorkflow?.getJob(job.name)?.getStep(
             forEachTemplate ?? stepName,
@@ -4685,6 +5017,8 @@ export class WorkflowExecutionService {
       ancestorWorkflowIds: childAncestors,
       parentRunId: run.id,
       signal: options.signal,
+      secretRedactor: options.secretRedactor,
+      sensitiveValues: options.sensitiveValues,
     });
     let childEnded = false;
     try {
@@ -4772,7 +5106,7 @@ export class WorkflowExecutionService {
     // The child's outputs go to the live context only. The run record keeps
     // the child's ids so they can be resolved again later, never the values.
     const childOutputs = await this.createStepOutputResolver(
-      options.secretRedactor,
+      options.sensitiveValues,
     ).resolveChildOutputs(childRun);
     // After an abort the job may already have failed this step as abandoned;
     // a child that finished anyway must not flip it back to succeeded.
@@ -4824,6 +5158,8 @@ export class WorkflowExecutionService {
           datastoreResolver: this.datastoreResolver,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
+          sensitiveValues: options.sensitiveValues,
+          sanitizedTasks: options.sanitizedTasks,
           authoredExpressions: options.authoredExpressions,
         });
         const methodResult = result as {
@@ -4863,13 +5199,46 @@ export class WorkflowExecutionService {
   }
 
   /**
+   * Restores the values behind a stored run's written references and
+   * attaches the run's record, so the run carries real values in memory and
+   * is written back with references. A run with no references (or one
+   * written before sensitive values were kept off disk) is used as stored.
+   */
+  private async rehydrateRun(
+    run: WorkflowRun,
+    sensitiveValues: RunSensitiveValues,
+  ): Promise<WorkflowRun> {
+    if (run.writtenReferences.length === 0) {
+      run.attachSensitiveValues(sensitiveValues);
+      return run;
+    }
+    const vaultService = await VaultService.fromRepository(this.repoDir, {
+      vaultsDir: this.vaultsDir,
+    });
+    const {
+      writtenReferences,
+      sensitiveFormat: _format,
+      ...stored
+    } = run.toData();
+    const { raw } = await rehydratePersistedForm(
+      stored,
+      writtenReferences ?? [],
+      (vaultName, key) => vaultService.get(vaultName, key, "workflow-resume"),
+      sensitiveValues,
+    );
+    const rehydrated = WorkflowRun.fromData(raw);
+    rehydrated.attachSensitiveValues(sensitiveValues);
+    return rehydrated;
+  }
+
+  /**
    * Builds the resolver that reads step outputs back from the datastore for
    * steps whose full output is no longer in memory (resume, replay, child
    * runs). Sensitive fields are vault-resolved so these values match what a
    * live run exposes.
    */
   private createStepOutputResolver(
-    redactor: SecretRedactor | undefined,
+    sensitiveValues: RunSensitiveValues,
   ): StepOutputResolver {
     let vaultService: Promise<VaultService> | undefined;
     return new StepOutputResolver({
@@ -4878,7 +5247,7 @@ export class WorkflowExecutionService {
           vaultService ??= VaultService.fromRepository(this.repoDir, {
             vaultsDir: this.vaultsDir,
           }),
-        redactor,
+        sensitiveValues,
       }),
       findChildRun: (workflowId, runId) =>
         this.runRepo.findById(
@@ -5084,11 +5453,12 @@ export class WorkflowExecutionService {
    */
   private async buildRunContext(
     workflow: Workflow,
+    sensitiveValues: RunSensitiveValues,
     lastEvaluated = false,
     deferredExpressions: readonly DeferredExpression[] = [],
   ): Promise<ExpressionContext> {
     if (requiresModelNamespace([workflow.toData(), deferredExpressions])) {
-      return await this.modelResolver.buildContext();
+      return await this.modelResolver.buildContext(sensitiveValues);
     }
 
     if (lastEvaluated) {
@@ -5101,7 +5471,7 @@ export class WorkflowExecutionService {
             !reference || reference.includes("${{") ||
             task.modelType?.includes("${{")
           ) {
-            return await this.modelResolver.buildContext();
+            return await this.modelResolver.buildContext(sensitiveValues);
           }
           // Match the definition the executor will load, using the source
           // only to identify stored targets, never to inspect cached expressions.
@@ -5112,14 +5482,16 @@ export class WorkflowExecutionService {
               type = ModelType.create(task.modelType);
             } catch {
               // Invalid targets still fail at step execution.
-              return await this.modelResolver.buildContext();
+              return await this.modelResolver.buildContext(sensitiveValues);
             }
           } else {
             const found = await findDefinitionByIdOrName(
               this.definitionRepo,
               reference,
             );
-            if (!found) return await this.modelResolver.buildContext();
+            if (!found) {
+              return await this.modelResolver.buildContext(sensitiveValues);
+            }
             type = found.type;
             name = found.definition.name;
           }
@@ -5134,22 +5506,22 @@ export class WorkflowExecutionService {
               cached.deferredExpressions,
             ])
           ) {
-            return await this.modelResolver.buildContext();
+            return await this.modelResolver.buildContext(sensitiveValues);
           }
         }
       }
-      return this.modelResolver.buildLightContext();
+      return this.modelResolver.buildLightContext(sensitiveValues);
     }
 
     // A dynamic reference names an unknown definition until the step runs, so
     // keep the full context rather than guess.
     const references = extractStepDefinitionReferences(workflow);
     if (references === null) {
-      return await this.modelResolver.buildContext();
+      return await this.modelResolver.buildContext(sensitiveValues);
     }
 
     if (references.length === 0) {
-      return this.modelResolver.buildLightContext();
+      return this.modelResolver.buildLightContext(sensitiveValues);
     }
 
     const definitions = await this.definitionRepo.findAllGlobal();
@@ -5164,12 +5536,13 @@ export class WorkflowExecutionService {
 
     return needsModelNamespace
       ? await this.modelResolver.buildContext(
+        sensitiveValues,
         undefined,
         undefined,
         undefined,
         definitions,
       )
-      : this.modelResolver.buildLightContext();
+      : this.modelResolver.buildLightContext(sensitiveValues);
   }
 
   /**
@@ -5533,7 +5906,7 @@ export class WorkflowExecutionService {
       workflow,
       workflowRunId: run.id,
       workflowStatus: run.status === "succeeded" ? "succeeded" : "failed",
-      inputs: run.inputs,
+      inputs: run.maskedInputs(),
       stepExecutions,
       reportFilterOptions: filterOptions,
       repoDir: this.repoDir,
@@ -5567,7 +5940,7 @@ export class WorkflowExecutionService {
     workflow: Workflow,
     context: ExpressionContext,
     authored: AuthoredExpressions,
-  ): Promise<Workflow> {
+  ): Promise<WorkflowEvaluationResult> {
     const evalSpan = getTracer().startSpan("swamp.workflow.evaluate", {
       attributes: { "workflow.name": workflow.name },
     });
@@ -5581,7 +5954,7 @@ export class WorkflowExecutionService {
         result.expressionsEvaluated,
       );
       evalSpan.setStatus({ code: SpanStatusCode.OK });
-      return result.workflow;
+      return result;
     } catch (error) {
       evalSpan.setStatus({
         code: SpanStatusCode.ERROR,

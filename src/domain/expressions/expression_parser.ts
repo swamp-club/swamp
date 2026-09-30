@@ -178,19 +178,32 @@ function extractExpressionsRecursive(
 }
 
 /**
+ * Rewrites an evaluated result as it is spliced at `path`: `whole` receives a
+ * whole-field result, `embedded` the text a result renders to inside a larger
+ * string. Only spliced results pass through it, never the authored text
+ * around them.
+ */
+export interface SpliceSanitizer {
+  whole(value: unknown, path: string): unknown;
+  embedded(text: string, path: string): string;
+}
+
+/**
  * Replaces expressions in a data structure with evaluated values.
  *
  * @param data - The data structure to process
  * @param values - Map of expression raw strings to their evaluated values
  * @param skipPath - Fields to preserve even if the same template occurs elsewhere
+ * @param sanitizer - Optional rewrite applied to each spliced result
  * @returns A new data structure with expressions replaced
  */
 export function replaceExpressions(
   data: unknown,
   values: Map<string, unknown>,
   skipPath?: (path: string) => boolean,
+  sanitizer?: SpliceSanitizer,
 ): unknown {
-  return replaceExpressionsRecursive(data, values, "", skipPath);
+  return replaceExpressionsRecursive(data, values, "", skipPath, sanitizer);
 }
 
 function replaceExpressionsRecursive(
@@ -198,6 +211,7 @@ function replaceExpressionsRecursive(
   values: Map<string, unknown>,
   path: string,
   skipPath?: (path: string) => boolean,
+  sanitizer?: SpliceSanitizer,
 ): unknown {
   if (skipPath?.(path)) return data;
   if (typeof data === "string") {
@@ -208,7 +222,8 @@ function replaceExpressionsRecursive(
     if (single) {
       // Return the evaluated value directly (preserves type)
       const evaluated = values.get(single.raw);
-      return evaluated !== undefined ? evaluated : data;
+      if (evaluated === undefined) return data;
+      return sanitizer ? sanitizer.whole(evaluated, path) : evaluated;
     }
 
     // Replace inline expressions within a larger string, by position, so a
@@ -219,19 +234,33 @@ function replaceExpressionsRecursive(
       const value = values.get(span.raw);
       // JSON stringify arrays/objects to preserve structure
       if (value === null || value === undefined) return "";
-      if (typeof value === "object") return JSON.stringify(value, null, 2);
-      return String(value);
+      const rendered = typeof value === "object"
+        ? JSON.stringify(value, null, 2)
+        : String(value);
+      return sanitizer ? sanitizer.embedded(rendered, path) : rendered;
     });
   } else if (Array.isArray(data)) {
     return data.map((item, index) =>
-      replaceExpressionsRecursive(item, values, `${path}[${index}]`, skipPath)
+      replaceExpressionsRecursive(
+        item,
+        values,
+        `${path}[${index}]`,
+        skipPath,
+        sanitizer,
+      )
     );
   } else if (data !== null && typeof data === "object") {
     const result: Record<string, unknown> = Object.create(null);
     for (const [key, value] of Object.entries(data)) {
       const propPath = path ? `${path}.${key}` : key;
       Object.defineProperty(result, key, {
-        value: replaceExpressionsRecursive(value, values, propPath, skipPath),
+        value: replaceExpressionsRecursive(
+          value,
+          values,
+          propPath,
+          skipPath,
+          sanitizer,
+        ),
         writable: true,
         enumerable: true,
         configurable: true,

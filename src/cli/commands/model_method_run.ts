@@ -136,6 +136,9 @@ The "code" field is a stable, machine-readable identifier. Callers should match 
     unknown_model_type       The @type prefix does not match any installed type
     unknown_method           The model does not define the requested method
     no_evaluated_definition  No evaluated definition exists (use --last-evaluated)
+    evaluated_cache_may_hold_secrets
+                             Cached evaluation from an older swamp may hold secrets;
+                             re-run without --last-evaluated
     missing_deps             Required extension dependencies are not installed
     method_execution_failed  The method's execution driver returned an error
     not_authenticated        Not signed in (run 'swamp auth login')
@@ -343,11 +346,18 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               type,
               name,
             ),
-          saveEvaluatedDefinition: (type, definition, authoredExpressions) =>
+          saveEvaluatedDefinition: (
+            type,
+            definition,
+            authoredExpressions,
+            writtenReferences,
+          ) =>
             repoContext.evaluatedDefinitionRepo.save(
               type,
               definition,
               authoredExpressions,
+              undefined,
+              writtenReferences,
             ),
           createExecutionService: () => new DefaultMethodExecutionService(),
           createVaultService: () =>

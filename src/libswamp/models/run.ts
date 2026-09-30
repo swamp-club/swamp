@@ -37,7 +37,7 @@ import {
 } from "../../domain/reports/report_context.ts";
 import { buildOutputSpecs } from "../../domain/models/output_spec_builder.ts";
 import type { ReportResultView } from "./model_method_run_view.ts";
-import { Definition } from "../../domain/definitions/definition.ts";
+import type { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
@@ -56,7 +56,17 @@ import {
   assertMethodArgumentsEvaluated,
   type FailedExpressions,
 } from "../../domain/expressions/unresolved_expression_guard.ts";
-import type { SecretRedactor } from "../../domain/secrets/mod.ts";
+import {
+  RunSensitiveValues,
+  type SecretRedactor,
+  type WrittenReference,
+} from "../../domain/secrets/mod.ts";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
+import {
+  mayHoldPlaintextSensitiveValues,
+  persistEvaluatedDefinition,
+  rehydrateEvaluatedDefinition,
+} from "../../domain/expressions/persisted_evaluation.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import {
@@ -213,12 +223,15 @@ export interface ModelMethodRunDeps {
       definition: Definition;
       authoredExpressions: ReadonlySet<string>;
       deferredExpressions?: readonly DeferredExpression[];
+      writtenReferences?: readonly WrittenReference[];
+      sensitiveFormat?: number;
     } | null
   >;
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
     authoredExpressions: ReadonlySet<string>,
+    writtenReferences?: readonly WrittenReference[],
   ) => Promise<void>;
   createExecutionService: () => MethodExecutionService;
   createVaultService: () => Promise<VaultService>;
@@ -544,6 +557,9 @@ export async function* modelMethodRun(
           definition.id,
         );
         const { logFilePath, redactor } = runLog;
+        // Every sensitive value this run resolves for an expression is
+        // recorded here and forwarded to the run's redactor.
+        const sensitiveValues = new RunSensitiveValues(redactor);
         if (runLog.runId) {
           runLogger = getRunLogger(
             definition.name,
@@ -564,6 +580,12 @@ export async function* modelMethodRun(
 
           const evaluationService = deps.createEvaluationService();
           let evaluatedDefinition = definition;
+          // The copy that executes: the same splices as evaluatedDefinition,
+          // with sensitive data values in its arguments replaced by
+          // sentinels from this step's bag. evaluatedDefinition keeps real
+          // values for caching, reports and self.globalArguments.
+          let executedDefinition = definition;
+          const stepSecretBag = new VaultSecretBag();
 
           // Provenance for the runtime pass, collected from the SOURCE
           // definition — never from the evaluated one, which already has data
@@ -580,6 +602,7 @@ export async function* modelMethodRun(
           let deferredExpressions: readonly DeferredExpression[] = [];
           let failedExpressions: FailedExpressions = new Map();
           let pendingSave: Definition | undefined;
+          let pendingReferences: readonly WrittenReference[] = [];
           if (input.lastEvaluated) {
             const lastEval = await deps.loadEvaluatedDefinition(
               modelType,
@@ -594,8 +617,35 @@ export async function* modelMethodRun(
               };
               return;
             }
-            evaluatedDefinition = lastEval.definition;
-            deferredExpressions = lastEval.deferredExpressions ?? [];
+            if (mayHoldPlaintextSensitiveValues(lastEval)) {
+              exprSpan.end();
+              setupSpan.end();
+              yield {
+                kind: "error",
+                error: evaluatedCacheMayHoldSecrets(definition.name),
+              };
+              return;
+            }
+            // Sensitive values are cached as vault references; restore them,
+            // real values into evaluatedDefinition and sentinels into the
+            // executed copy, exactly as a fresh evaluation would.
+            const vaultService = (lastEval.writtenReferences ?? []).length > 0
+              ? await deps.createVaultService()
+              : undefined;
+            const restored = await rehydrateEvaluatedDefinition(
+              {
+                definition: lastEval.definition,
+                deferredExpressions: lastEval.deferredExpressions ?? [],
+                writtenReferences: lastEval.writtenReferences ?? [],
+              },
+              (vaultName, key) =>
+                vaultService!.get(vaultName, key, "evaluated-cache:replay"),
+              sensitiveValues,
+              stepSecretBag,
+            );
+            evaluatedDefinition = restored.definition;
+            executedDefinition = restored.executedDefinition;
+            deferredExpressions = restored.deferredExpressions;
             for (const expression of lastEval.authoredExpressions) {
               authoredExpressions.add(expression);
             }
@@ -604,9 +654,14 @@ export async function* modelMethodRun(
               const evalResult = await evaluationService.evaluateDefinition(
                 definition,
                 modelType,
+                sensitiveValues,
                 inputs,
+                undefined,
+                stepSecretBag,
               );
               evaluatedDefinition = evalResult.definition;
+              executedDefinition = evalResult.sanitizedDefinition ??
+                evalResult.definition;
               failedExpressions = evalResult.failedExpressions ??
                 failedExpressions;
             }
@@ -614,7 +669,17 @@ export async function* modelMethodRun(
             // fails it never replaces the last good evaluation that
             // --last-evaluated reuses. Snapshotted now because the --input
             // overrides below mutate the definition and are not persisted.
-            pendingSave = Definition.fromData(evaluatedDefinition.toData());
+            // Built from the executed copy, so sensitive values are written
+            // as the vault references they came from, never in plaintext.
+            const persisted = persistEvaluatedDefinition(
+              executedDefinition,
+              [],
+              definition,
+              sensitiveValues,
+              stepSecretBag,
+            );
+            pendingSave = persisted.definition;
+            pendingReferences = persisted.writtenReferences;
           }
 
           // Merge override inputs into method arguments.
@@ -659,6 +724,13 @@ export async function* modelMethodRun(
                 key,
                 value,
               );
+              if (executedDefinition !== evaluatedDefinition) {
+                executedDefinition.setMethodArgument(
+                  input.methodName,
+                  key,
+                  value,
+                );
+              }
             }
           }
 
@@ -689,16 +761,21 @@ export async function* modelMethodRun(
               modelType,
               pendingSave,
               authoredExpressions,
+              pendingReferences,
             );
           }
 
           exprSpan.end();
 
           // Capture pre-vault args for report context (so vault secrets stay as expressions)
-          const reportGlobalArgs = evaluatedDefinition.globalArguments;
-          const reportMethodArgs = evaluatedDefinition.getMethodArguments(
-            input.methodName,
-          );
+          // Reports and the completed event show arguments to the user and are
+          // persisted with report output, so sensitive values are masked there.
+          const reportGlobalArgs = sensitiveValues.masked(
+            evaluatedDefinition.globalArguments,
+          ) as Record<string, unknown>;
+          const reportMethodArgs = sensitiveValues.masked(
+            evaluatedDefinition.getMethodArguments(input.methodName),
+          ) as Record<string, unknown>;
 
           // Resolve runtime expressions (vault and env).
           // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
@@ -711,18 +788,31 @@ export async function* modelMethodRun(
           // of every definition) is loaded only when a deferred expression
           // still reads model.* or file.*.
           const runtimeContext = await evaluationService.buildRuntimeContext(
-            evaluatedDefinition,
+            executedDefinition,
+            sensitiveValues,
             inputs,
             deferredExpressions,
           );
           const runtimeResult = await evaluationService
             .resolveRuntimeExpressionsInDefinition(
-              evaluatedDefinition,
+              executedDefinition,
               redactor,
               runtimeContext,
               authoredExpressions,
+              {
+                secretBag: stepSecretBag,
+                rawGlobalArguments: evaluatedDefinition.globalArguments,
+              },
             );
           evaluatedDefinition = runtimeResult.definition;
+          // Definition tags reach data artifacts and the catalog as they
+          // are, so a sensitive value in one becomes its placeholder.
+          for (const [key, value] of Object.entries(evaluatedDefinition.tags)) {
+            const placeholder = sensitiveValues.withPlaceholders(value);
+            if (placeholder !== value) {
+              evaluatedDefinition.setTag(key, placeholder);
+            }
+          }
           const secretBag = runtimeResult.secretBag;
 
           // Register sensitive argument values with the redactor so they are
@@ -1374,6 +1464,18 @@ export function noEvaluatedDefinition(
   return {
     code: "no_evaluated_definition",
     message: `No previously evaluated definition found for "${name}".`,
+  };
+}
+
+/**
+ * Creates a SwampError for a cached evaluation written before sensitive
+ * values were kept off disk, which --last-evaluated must not replay.
+ */
+export function evaluatedCacheMayHoldSecrets(name: string): SwampError {
+  return {
+    code: "evaluated_cache_may_hold_secrets",
+    message:
+      `The evaluated definition cached for "${name}" was written by an older swamp and may hold sensitive values in plaintext, so it is not replayed. Run the method without --last-evaluated to evaluate it again; that rewrites the cache.`,
   };
 }
 

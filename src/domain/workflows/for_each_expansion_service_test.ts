@@ -23,6 +23,8 @@ import {
   resolveForEachStepName,
 } from "./for_each_expansion_service.ts";
 import { Job } from "./job.ts";
+import { RunSensitiveValues } from "../secrets/mod.ts";
+import { attachSensitiveValues } from "../expressions/sensitive_context.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
@@ -296,4 +298,29 @@ Deno.test("ForEachExpansionService.expand: empty array yields zero expansions bu
   // Map entry exists (caller distinguishes "no expansion" from "step not seen")
   // but the array is empty.
   assertEquals(expanded?.length, 0);
+});
+
+Deno.test("ForEachExpansionService: a sensitive item never becomes part of a step name (swamp-club#2171)", async () => {
+  const values = new RunSensitiveValues();
+  values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "api-token" });
+  const context = attachSensitiveValues(
+    { model: {}, env: {}, inputs: { items: ["Pl41n-s3cret", "public"] } },
+    values,
+  );
+  const job = Job.create({
+    name: "j",
+    steps: [Step.create({
+      name: "deploy",
+      forEach: { item: "tok", in: "${{ inputs.items }}" },
+      task: StepTask.model("m", "run"),
+    })],
+  });
+  const expanded = await new ForEachExpansionService(new CelEvaluator())
+    .expand(job, context, "unrestricted");
+  assertEquals(
+    expanded.get("deploy")!.map((s) => s.expandedName),
+    ["deploy-sensitive-0", "deploy-public"],
+  );
+  // The iteration variable keeps the real value for the step to use.
+  assertEquals(expanded.get("deploy")![0].forEachVar.value, "Pl41n-s3cret");
 });

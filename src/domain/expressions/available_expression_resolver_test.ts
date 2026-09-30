@@ -20,8 +20,12 @@
 import { assertEquals } from "@std/assert";
 import {
   resolveAvailableExpressions,
+  resolveAvailableExpressionsPair,
   type SyncCelEvaluator,
 } from "./available_expression_resolver.ts";
+import { RunSensitiveValues } from "../secrets/mod.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { sensitiveSpliceSanitizer, SplicePair } from "./splice_pair.ts";
 
 /**
  * Deterministic stub evaluator: resolves a dotted CEL path against the context
@@ -204,4 +208,31 @@ Deno.test("resolveAvailableExpressions: refuses substituted expressions before c
     data,
   );
   assertEquals(calls, 0);
+});
+
+Deno.test("resolveAvailableExpressionsPair: evaluates once and sanitizes only the second copy (swamp-club#2171)", () => {
+  const { evaluate, calls } = makeEvaluator();
+  const values = new RunSensitiveValues();
+  values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "api-token" });
+  const bag = new VaultSecretBag();
+  const pair = resolveAvailableExpressionsPair(
+    SplicePair.of({
+      run: "echo ${{ self.item }} s3",
+      keep: "${{ steps.a.outputs.x }}",
+    }),
+    { self: { item: "Pl41n-s3cret" } },
+    evaluate,
+    "unrestricted",
+    sensitiveSpliceSanitizer(values, bag),
+  );
+  // Each expression is evaluated once for both copies; one that cannot be
+  // resolved yet is left as written in both.
+  assertEquals(calls, ["self.item", "steps.a.outputs.x"]);
+  assertEquals(pair.raw, {
+    run: "echo Pl41n-s3cret s3",
+    keep: "${{ steps.a.outputs.x }}",
+  });
+  assertEquals(pair.sanitized.run.includes("Pl41n-s3cret"), false);
+  assertEquals(pair.sanitized.keep, "${{ steps.a.outputs.x }}");
+  assertEquals(bag.resolveDeep(pair.sanitized), pair.raw);
 });

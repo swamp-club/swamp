@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStrictEquals } from "@std/assert";
+import fc from "fast-check";
 import { getQuoteContext } from "./vault_secret_bag.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 
@@ -405,4 +406,130 @@ Deno.test("VaultSecretBag", async (t) => {
       assertEquals(found, [sentinel]);
     },
   );
+});
+
+Deno.test("VaultSecretBag.sentinelizeText: replaces data secrets with one reused sentinel", () => {
+  const bag = new VaultSecretBag();
+  const text = bag.sentinelizeText("a=s3cret b=s3cret", ["s3cret"]);
+  const sentinels = text.match(VaultSecretBag.SENTINEL_PATTERN) ?? [];
+  assertEquals(sentinels.length, 2);
+  assertEquals(sentinels[0], sentinels[1]);
+  assertEquals(bag.isDataOrigin(sentinels[0] ?? ""), true);
+  assertEquals(bag.resolveRaw(text), "a=s3cret b=s3cret");
+});
+
+Deno.test("VaultSecretBag.sentinelizeText: JSON-escaped forms restore the escaped text", () => {
+  const bag = new VaultSecretBag();
+  const secret = 'pa"ss\nword';
+  const json = JSON.stringify({ p: secret }, null, 2);
+  const text = bag.sentinelizeText(json, [secret]);
+  assertEquals(text.includes("pa\\"), false);
+  // Restoring yields valid JSON carrying the original secret.
+  assertEquals(JSON.parse(bag.resolveRaw(text)).p, secret);
+});
+
+Deno.test("VaultSecretBag.sentinelizeText: never searches inside existing sentinels", () => {
+  const bag = new VaultSecretBag();
+  const vaultSentinel = bag.addSecret("from-vault");
+  const text = bag.sentinelizeText(`${vaultSentinel} VSE`, ["VSE"]);
+  assertEquals(text.startsWith(vaultSentinel), true);
+  assertEquals(bag.resolveRaw(text), "from-vault VSE");
+});
+
+Deno.test("VaultSecretBag.sentinelizeText: longer secrets are replaced before shorter overlaps", () => {
+  const bag = new VaultSecretBag();
+  const text = bag.sentinelizeText("abcdef abc", ["abcdef", "abc"]);
+  assertEquals(bag.resolveRaw(text), "abcdef abc");
+  assertEquals((text.match(VaultSecretBag.SENTINEL_PATTERN) ?? []).length, 2);
+});
+
+Deno.test("VaultSecretBag.sentinelizeValues: resolveDeep round-trips any structure", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.string({ minLength: 3, maxLength: 12 }), {
+        minLength: 1,
+        maxLength: 3,
+      }),
+      fc.jsonValue(),
+      (secrets, data) => {
+        const bag = new VaultSecretBag();
+        const sorted = [...secrets].sort((a, b) => b.length - a.length);
+        const embedded = { data, text: `x${secrets.join("|")}y` };
+        const sentinelized = bag.sentinelizeValues(embedded, sorted);
+        assertEquals(
+          JSON.stringify(bag.resolveDeep(sentinelized)),
+          JSON.stringify(embedded),
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("VaultSecretBag.resolveForShell: places data-origin references per occurrence", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addDataSecret("s3cret");
+  const resolved = bag.resolveForShell(
+    `echo ${s} "${s}" '${s}' $'a${s}'\ncat <<EOF\n${s}\nEOF`,
+  );
+  assertEquals(
+    resolved.command,
+    `echo "\${__SWAMP_VAULT_0}" "\${__SWAMP_VAULT_0}" ''"\${__SWAMP_VAULT_0}"'' ` +
+      `$'a'"\${__SWAMP_VAULT_0}"$''\ncat <<EOF\n\${__SWAMP_VAULT_0}\nEOF`,
+  );
+  assertEquals(resolved.env, { __SWAMP_VAULT_0: "s3cret" });
+  assertEquals(resolved.dataInCommandLine, false);
+});
+
+Deno.test("VaultSecretBag.resolveForShell: a quoted heredoc keeps the data value and says so", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addDataSecret("s3cret");
+  const resolved = bag.resolveForShell(`cat <<'EOF'\n${s}\nEOF`);
+  assertEquals(resolved.command, "cat <<'EOF'\ns3cret\nEOF");
+  assertEquals(resolved.env, {});
+  assertEquals(resolved.dataInCommandLine, true);
+});
+
+Deno.test("VaultSecretBag.resolveForShell: vault.get sentinels keep first-occurrence placement", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("from-vault");
+  const resolved = bag.resolveForShell(`echo '${s}' ${s}`);
+  // Unchanged behavior: the first occurrence decides, and single quotes are
+  // reported by findSingleQuotedSentinels.
+  assertEquals(
+    resolved.command,
+    `echo '"\${__SWAMP_VAULT_0}"' "\${__SWAMP_VAULT_0}"`,
+  );
+  assertEquals(bag.findSingleQuotedSentinels(`echo '${s}'`), [s]);
+});
+
+Deno.test("VaultSecretBag.resolveForPowerShell: single-quoted data values stay in place", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addDataSecret("s3cret");
+  const resolved = bag.resolveForPowerShell(`Write-Output '${s}' "${s}"`);
+  assertEquals(
+    resolved.command,
+    `Write-Output 's3cret' "$env:__SWAMP_VAULT_0"`,
+  );
+  assertEquals(resolved.dataInCommandLine, true);
+});
+
+Deno.test("VaultSecretBag.resolveForShell: drops the env entry of a value kept in the command line, even beside a longer env name", () => {
+  const bag = new VaultSecretBag();
+  const sentinels = Array.from(
+    { length: 11 },
+    (_, i) => bag.addDataSecret(`secret-value-${i}`),
+  );
+  // Sentinel 1 sits in a quoted heredoc (kept in place); sentinel 10's
+  // reference name contains "__SWAMP_VAULT_1" as a prefix.
+  const command = sentinels
+    .filter((_, i) => i !== 1)
+    .map((s) => `echo "${s}"`)
+    .join("; ") + `\ncat <<'EOF'\n${sentinels[1]}\nEOF`;
+  const resolved = bag.resolveForShell(command);
+  assertEquals(resolved.dataInCommandLine, true);
+  assertEquals(
+    Object.values(resolved.env).includes("secret-value-1"),
+    false,
+  );
+  assertEquals(Object.keys(resolved.env).length, 10);
 });

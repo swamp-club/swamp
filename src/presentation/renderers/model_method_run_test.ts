@@ -465,12 +465,26 @@ Deno.test("JsonModelMethodRunRenderer: vault single-quote warning goes to stderr
       methodName: "run",
       event: { type: "vault_single_quote_warning", message: "use quotes" },
     });
+    renderer.handlers().method_event({
+      kind: "method_event",
+      modelName: "test-model",
+      methodName: "run",
+      event: {
+        type: "sensitive_value_in_command_line",
+        message: "use double quotes",
+      },
+    });
     assertEquals(stdout.length, 0);
     assertEquals(stderr.map((line) => JSON.parse(line)), [
       {
         warning: "vault_single_quote",
         modelName: "test-model",
         message: "use quotes",
+      },
+      {
+        warning: "sensitive_value_in_command_line",
+        modelName: "test-model",
+        message: "use double quotes",
       },
     ]);
   } finally {
