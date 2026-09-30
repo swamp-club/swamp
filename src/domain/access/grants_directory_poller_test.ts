@@ -622,7 +622,7 @@ Deno.test("GrantsDirectoryPoller: still revokes the grants of a deleted file", a
   });
 });
 
-Deno.test("GrantsDirectoryPoller: revokes the grants of a missing --grants-dir, as before", async () => {
+Deno.test("GrantsDirectoryPoller: keeps the grants of a missing --grants-dir, as startup refuses it", async () => {
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");
     const externalDir = join(dir, "external");
@@ -641,11 +641,11 @@ Deno.test("GrantsDirectoryPoller: revokes the grants of a missing --grants-dir, 
       },
     );
 
-    assertEquals(store.written.get("deny-1")?.state, "revoked");
+    assertEquals(store.written.size, 0);
   });
 });
 
-Deno.test("GrantsDirectoryPoller: revokes the grants of a deleted --grants-file, as before", async () => {
+Deno.test("GrantsDirectoryPoller: keeps the grants of a deleted --grants-file, as startup refuses it", async () => {
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");
     await ensureDir(grantsDir);
@@ -662,7 +662,7 @@ Deno.test("GrantsDirectoryPoller: revokes the grants of a deleted --grants-file,
       },
     );
 
-    assertEquals(store.written.get("deny-1")?.state, "revoked");
+    assertEquals(store.written.size, 0);
   });
 });
 

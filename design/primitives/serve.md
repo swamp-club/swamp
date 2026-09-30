@@ -74,7 +74,7 @@ it the default file is optional.
 | `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth` |
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
-| `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | `auto` starts a `GrantsDirectoryPoller` (30 s); an existing file that fails to read or validate keeps its stored grants |
+| `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants |
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
 | `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely |
 | `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
