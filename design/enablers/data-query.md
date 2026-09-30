@@ -277,10 +277,12 @@ written record regardless of step.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
 CEL, `context.queryData()` in extension methods, and `swamp data query` return
 schema-marked sensitive fields as the stored `vault.get(...)` reference. The
-reads that resolve those fields are `data.latest()`, `steps.<name>.outputs` and
-`model.<name>.resource` in CEL, which record each value in the run's
-`RunSensitiveValues`, and `readResource()` and `readModelData()` in extension
-methods. See "Read-Side Resolution" in `design/primitives/vaults.md`.
+reads that resolve those fields are `data.latest()` with an exact model name,
+`steps.<name>.outputs` and `model.<name>.resource` in CEL, which record each
+value in the run's `RunSensitiveValues`, and `readResource()` and
+`readModelData()` in extension methods. `data.latest()` with a wildcard model
+name goes through the query service and returns the stored reference. See
+"Read-Side Resolution" in `design/primitives/vaults.md`.
 
 ## Predicate Syntax
 
