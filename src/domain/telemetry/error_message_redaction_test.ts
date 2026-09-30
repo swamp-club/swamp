@@ -156,9 +156,29 @@ Deno.test("redactErrorMessage: keeps names, type names and relative paths", () =
   assertEquals(redactErrorMessage(message), message);
 });
 
-Deno.test("redactErrorMessage: keeps URLs", () => {
-  const message = "Fetch failed: https://example.com/a/b and file:///x";
+Deno.test("redactErrorMessage: keeps network URLs", () => {
+  const message = "Fetch failed: https://example.com/a/b and http://h:8080/c";
   assertEquals(redactErrorMessage(message), message);
+});
+
+Deno.test("redactErrorMessage: redacts file URLs, quoted or not", () => {
+  assertEquals(
+    redactErrorMessage(
+      'Module not found "file:///home/alice/acme corp/models/x.ts".',
+    ),
+    'Module not found "<PATH>".',
+  );
+  assertEquals(
+    redactErrorMessage("error loading file:///Users/jane/acme/x.ts:12:3"),
+    "error loading <PATH>:12:3",
+  );
+});
+
+Deno.test("redactErrorMessage: redacts a path glued to a colon", () => {
+  assertEquals(
+    redactErrorMessage("failed at path:/srv/acme-billing"),
+    "failed at path:<PATH>",
+  );
 });
 
 Deno.test("redactErrorMessage: a long run of :N segments redacts without backtracking", () => {

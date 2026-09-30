@@ -37,7 +37,8 @@
  * Matched forms: POSIX absolute (`/opt/x`), home-relative (`~/x`), Windows
  * drive with either slash (`C:\x`, `C:/x`) and UNC (`\\host\share`). A POSIX
  * path must not follow a word character, `:`, `/`, `.`, `@` or `-`, so type
- * names, relative paths and URLs (`https://host/path`) are left alone.
+ * names, relative paths and URLs (`https://host/path`) are left alone; a `/`
+ * directly after a single `:` (`path:/srv/x`) still starts a path.
  */
 const PATH_CHARS = "[^\\s\"'`<>|,;()\\[\\]{}]";
 const PATH_RE = new RegExp(
@@ -46,9 +47,17 @@ const PATH_RE = new RegExp(
     `\\b[A-Za-z]:[\\\\/]${PATH_CHARS}*`, // Windows drive
     `(?<![\\w:/.@~-])~[\\\\/]${PATH_CHARS}*`, // home-relative
     `(?<![\\w:/.@~-])/${PATH_CHARS}+`, // POSIX absolute
+    `(?<=:)/(?!/)${PATH_CHARS}+`, // POSIX absolute glued to a colon (path:/x)
   ].join("|"),
   "g",
 );
+
+/**
+ * A `file:` URL is a path: `file:///home/alice/acme/x.ts` names the user and
+ * the project. Deno module-loading errors carry these. Other URL schemes are
+ * kept. A quoted one is redacted up to its closing quote.
+ */
+const FILE_URL_RE = /(["'`])file:\/\/[^"'`\n]*\1|\bfile:\/\/[^\s"'`<>]*/g;
 
 /** A quoted string that starts with a path root: redacted whole, spaces included. */
 const QUOTED_PATH_RE = /(["'`])((?:[A-Za-z]:[\\/]|\\\\|~[\\/]|\/)[^"'`\n]*)\1/g;
@@ -65,6 +74,14 @@ const INTERNAL_HOST_RE =
 
 export function redactErrorMessage(message: string): string {
   let result = message.replace(
+    FILE_URL_RE,
+    (match, quote: string | undefined) => {
+      if (quote) return `${quote}<PATH>${quote}`;
+      const trailing = match.match(TRAILING_RE)?.[0] ?? "";
+      return `<PATH>${trailing}`;
+    },
+  );
+  result = result.replace(
     QUOTED_PATH_RE,
     (_match, quote: string) => `${quote}<PATH>${quote}`,
   );
