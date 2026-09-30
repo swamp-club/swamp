@@ -1556,6 +1556,7 @@ Deno.test(
         const roots = extensionInstallRoots(repoDir, extName);
         let renames = 0;
         const tx = await ExtensionInstallTransaction.begin({
+          repoDir,
           pulledRoot: resolvePulledExtensionsRoot(repoDir),
           extensionName: extName,
           lockfilePath: lockfileRepository.lockfilePath,
@@ -1617,6 +1618,7 @@ Deno.test(
         );
         const roots = extensionInstallRoots(repoDir, extName);
         const tx = await ExtensionInstallTransaction.begin({
+          repoDir,
           pulledRoot: resolvePulledExtensionsRoot(repoDir),
           extensionName: extName,
           lockfilePath: lockfileRepository.lockfilePath,

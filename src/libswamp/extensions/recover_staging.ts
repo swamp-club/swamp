@@ -23,6 +23,7 @@ import { UserError } from "../../domain/errors.ts";
 import {
   blockingLeftJournals,
   type InstallFsOps,
+  type LeftJournal,
   recoverInstallStaging,
   type StagingRecoveryReport,
 } from "../../infrastructure/persistence/extension_install_transaction.ts";
@@ -94,6 +95,7 @@ export async function recoverPulledExtensionStagingLocked(
   ];
   return await recoverInstallStaging({
     bounds: {
+      repoDir,
       pulledRoot: resolvePulledExtensionsRoot(repoDir),
       allowedLockfilePaths,
       expectedLivePaths: (name) => {
@@ -119,7 +121,8 @@ export async function recoverPulledExtensionStagingLocked(
  * Refuses to change extension `name` while crash recovery left a journal
  * behind for it, or for an extension nested in or above it: their roots
  * overlap, and a later recovery of that journal could act on files this
- * change wrote.
+ * change wrote. The advice follows where the interrupted extension's
+ * copies are, so it never says to delete the only copy of one.
  */
 export function assertNoBlockingJournal(
   recovery: StagingRecoveryReport,
@@ -131,17 +134,50 @@ export function assertNoBlockingJournal(
   if (blocking.length === 0) return;
   const [first] = blocking;
   const shown = (path: string) => relative(resolve(repoDir), path);
-  const liveRoot = join(
-    resolvePulledExtensionsRoot(resolve(repoDir)),
-    first.extensionName ?? name,
-  );
   throw new UserError(
     `Cannot ${action} ${name}: an earlier install of ` +
       `${first.extensionName} was interrupted and could not be put right ` +
-      `(${first.reason}). Fix the cause and retry. Or, once you have ` +
-      `checked that ${shown(liveRoot)} holds the version you want, delete ` +
-      `${shown(dirname(first.journalPath))} and retry.`,
+      `(${first.reason}). Fix the cause and retry, or put it right by ` +
+      `hand: ` +
+      recoveryAdvice(first, repoDir, name, shown),
   );
+}
+
+/** What the user can do by hand about `left`, given where its copies are. */
+function recoveryAdvice(
+  left: LeftJournal,
+  repoDir: string,
+  name: string,
+  shown: (path: string) => string,
+): string {
+  const extension = left.extensionName ?? name;
+  const staging = shown(dirname(left.journalPath));
+  const copies = left.extensionRoot;
+  if (!copies) {
+    const live = join(resolvePulledExtensionsRoot(resolve(repoDir)), extension);
+    return `check ${shown(join(dirname(left.journalPath), "old"))} before ` +
+      `deleting ${staging}: it may hold the only copy of ${extension}'s ` +
+      `previous version, which belongs at ${shown(live)}.`;
+  }
+  const live = shown(copies.live);
+  const old = shown(copies.old);
+  const hasOld = copies.oldState !== "absent";
+  const hasLive = copies.liveState !== "absent";
+  if (hasOld && !hasLive) {
+    return `the previous version of ${extension} is in ${old} and ${live} ` +
+      `is missing: move ${old} to ${live}, then delete ${staging} and retry.`;
+  }
+  if (hasOld) {
+    return `the previous version of ${extension} is in ${old}, and ${live} ` +
+      `may hold a partly installed one. Keep the version you want at ` +
+      `${live}, then delete ${staging} and retry.`;
+  }
+  if (hasLive) {
+    return `once you have checked that ${live} holds the version you ` +
+      `want, delete ${staging} and retry.`;
+  }
+  return `no copy of ${extension} is left at ${live} or in ${old}: ` +
+    `delete ${staging}, then pull ${extension} again.`;
 }
 
 async function readMarker(repoDir: string): Promise<RepoMarkerData | null> {

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import type { Logger } from "@logtape/logtape";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import { ensureDir, walk } from "@std/fs";
 import { dirname, join, relative } from "@std/path";
@@ -53,6 +54,7 @@ import {
   SimulatedInstallCrash,
 } from "../../infrastructure/persistence/test_helpers/install_crash.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import { STAGING_DIR_NAME } from "../../domain/extensions/install_journal.ts";
 
 Deno.test("parseExtensionRef: parses name without version", () => {
   const ref = parseExtensionRef("@myorg/my-ext");
@@ -672,7 +674,7 @@ function skillInstallContext(
   repoDir: string,
   lockfile: LockfileRepository,
   archives: Record<string, Uint8Array>,
-  opts: { force?: boolean; skillsDirs?: string[] } = {},
+  opts: { force?: boolean; skillsDirs?: string[]; logger?: Logger } = {},
 ): InstallContext {
   return {
     getExtension: (name) =>
@@ -689,6 +691,7 @@ function skillInstallContext(
     alreadyPulled: new Set(),
     depth: 0,
     force: opts.force ?? false,
+    logger: opts.logger,
   };
 }
 
@@ -1748,7 +1751,7 @@ async function installArchive(
   lockfile: LockfileRepository,
   archives: Record<string, Uint8Array>,
   name: string,
-  opts: { force?: boolean; skillsDirs?: string[] } = {},
+  opts: { force?: boolean; skillsDirs?: string[]; logger?: Logger } = {},
 ): Promise<InstallResult | undefined> {
   return await installExtension(
     { name, version: null },
@@ -1846,22 +1849,163 @@ Deno.test(
   },
 );
 
+/** A logger that records each warning as its rendered text. */
+function warningRecorder(): { logger: Logger; warnings: string[] } {
+  const warnings: string[] = [];
+  const logger = {
+    debug: () => {},
+    info: () => {},
+    warn: (strings: TemplateStringsArray, ...values: unknown[]) =>
+      warnings.push(
+        strings.reduce((out, s, i) => out + String(values[i - 1]) + s),
+      ),
+    error: () => {},
+    trace: () => {},
+    fatal: () => {},
+  } as unknown as Logger;
+  return { logger, warnings };
+}
+
 Deno.test(
-  "installExtension: --force drops a file the user added to the extension root",
+  "installExtension: an upgrade keeps a file the user added and drops the prior version's",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const v1 = await buildSkillArchive(swapSpec(name, V1_FILES));
+      const v2 = await buildSkillArchive(swapSpec(name, V2_FILES));
+      await installArchive(repoDir, lockfile, { [name]: v1 }, name);
+      const extRoot = extRootOf(repoDir, name);
+      const extra = join(extRoot, "models", "mine.ts");
+      const extraInNewDir = join(extRoot, "notes", "todo.md");
+      await Deno.writeTextFile(extra, "user file");
+      await Deno.mkdir(dirname(extraInNewDir));
+      await Deno.writeTextFile(extraInNewDir, "user notes");
+      const mtime = new Date("2020-01-02T03:04:05Z");
+      await Deno.utime(extra, mtime, mtime);
+      const { logger, warnings } = warningRecorder();
+
+      await installArchive(repoDir, lockfile, { [name]: v2 }, name, {
+        force: true,
+        logger,
+      });
+      assertEquals(await Deno.readTextFile(extra), "user file");
+      assertEquals((await Deno.stat(extra)).mtime, mtime);
+      assertEquals(await Deno.readTextFile(extraInNewDir), "user notes");
+      assertEquals(await exists(join(extRoot, "models", "old_only.ts")), false);
+      assertEquals(
+        await Deno.readTextFile(join(extRoot, "models", "a.ts")),
+        V2_FILES["models/a.ts"],
+      );
+      assertEquals(warnings, []);
+      // The entry lists what the extension shipped, not the user's files,
+      // and its anchor covers the tree on disk.
+      const entry = lockfile.getEntry(name)!;
+      assertEquals(entry.files?.includes(relative(repoDir, extra)), false);
+      assertEquals(
+        entry.filesChecksum,
+        await readInstalledExtensionDigest(extRoot),
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a same-version reinstall keeps a file the user added",
   async () => {
     await withSkillRepo(async (repoDir, lockfile) => {
       const name = uniqueExtName();
       const v1 = await buildSkillArchive(swapSpec(name, V1_FILES));
       await installArchive(repoDir, lockfile, { [name]: v1 }, name);
-      const tree = await installedTree(repoDir);
       const extra = join(extRootOf(repoDir, name), "models", "mine.ts");
       await Deno.writeTextFile(extra, "user file");
+      const tree = await installedTree(repoDir);
 
       await installArchive(repoDir, lockfile, { [name]: v1 }, name, {
         force: true,
       });
-      assertEquals(await exists(extra), false);
       assertEquals(await installedTree(repoDir), tree);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: the archive's file wins over a user file at the same path",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const v1 = await buildSkillArchive(swapSpec(name, V1_FILES));
+      const v2 = await buildSkillArchive(swapSpec(name, V2_FILES));
+      await installArchive(repoDir, lockfile, { [name]: v1 }, name);
+      const extRoot = extRootOf(repoDir, name);
+      // new_only.ts is not in v1, so this is the user's file until v2
+      // ships one there.
+      const clash = join(extRoot, "models", "new_only.ts");
+      await Deno.writeTextFile(clash, "user file");
+      // A user dir where v2 ships a file: nothing under it can be kept.
+      const under = join(extRoot, "files", "data.txt");
+      await Deno.remove(under);
+      await Deno.mkdir(under);
+      await Deno.writeTextFile(join(under, "inner.txt"), "user file");
+      const { logger, warnings } = warningRecorder();
+
+      await installArchive(repoDir, lockfile, { [name]: v2 }, name, {
+        force: true,
+        logger,
+      });
+      assertEquals(
+        await Deno.readTextFile(clash),
+        V2_FILES["models/new_only.ts"],
+      );
+      assertEquals(await Deno.readTextFile(under), V2_FILES["files/data.txt"]);
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(
+        warnings[0],
+        relative(repoDir, join(under, "inner.txt")),
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a restored lockfile drops unlisted files and names them",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const v1 = await buildSkillArchive(swapSpec(name, V1_FILES));
+      const v2 = await buildSkillArchive(swapSpec(name, V2_FILES));
+      let freshTree: Record<string, string> = {};
+      await withSkillRepo(async (freshRepo, freshLockfile) => {
+        await installArchive(freshRepo, freshLockfile, { [name]: v1 }, name);
+        freshTree = await installedTree(freshRepo);
+      });
+
+      await installArchive(repoDir, lockfile, { [name]: v1 }, name);
+      const v1Entry = lockfile.getEntry(name)!;
+      await installArchive(repoDir, lockfile, { [name]: v2 }, name, {
+        force: true,
+      });
+      const extRoot = extRootOf(repoDir, name);
+      const extra = join(extRoot, "models", "mine.ts");
+      await Deno.writeTextFile(extra, "user file");
+      // The v1 entry comes back from git under an older version than
+      // the installed manifest's, so its file list is not the tree's.
+      await lockfile.writeEntry(name, "2025.12.31.1", v1Entry.files ?? [], {
+        checksum: v1Entry.checksum,
+        filesChecksum: v1Entry.filesChecksum,
+      });
+      const { logger, warnings } = warningRecorder();
+
+      await installArchive(repoDir, lockfile, { [name]: v1 }, name, {
+        force: true,
+        logger,
+      });
+      assertEquals(await installedTree(repoDir), freshTree);
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(warnings[0], relative(repoDir, extra));
+      assertStringIncludes(
+        warnings[0],
+        relative(repoDir, join(extRoot, "models", "new_only.ts")),
+      );
     });
   },
 );
@@ -2022,6 +2166,81 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "installExtension: a symlinked extension root is replaced, its target untouched",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const v1 = await buildSkillArchive(swapSpec(name, V1_FILES));
+      const target = join(repoDir, "dev-checkout");
+      await ensureDir(join(target, "models"));
+      await Deno.writeTextFile(join(target, "models", "a.ts"), "dev copy");
+      await Deno.writeTextFile(join(target, "models", "dev.ts"), "dev only");
+      const targetBefore = await readTree(target);
+      const extRoot = extRootOf(repoDir, name);
+      await ensureDir(dirname(extRoot));
+      await Deno.symlink(target, extRoot, { type: "dir" });
+      const { logger, warnings } = warningRecorder();
+
+      const result = await installArchive(
+        repoDir,
+        lockfile,
+        { [name]: v1 },
+        name,
+        { force: true, logger },
+      );
+      const stat = await Deno.lstat(extRoot);
+      assertEquals(stat.isSymlink, false);
+      assertEquals(stat.isDirectory, true);
+      assertEquals(
+        await Deno.readTextFile(join(extRoot, "models", "a.ts")),
+        V1_FILES["models/a.ts"],
+      );
+      assertEquals(await exists(join(extRoot, "models", "dev.ts")), false);
+      assertEquals(await readTree(target), targetBefore);
+      assertEquals(result?.pruned, []);
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(warnings[0], relative(repoDir, extRoot));
+      assertStringIncludes(warnings[0], target);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a failed install over a symlinked root puts the link back",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const v1 = await buildSkillArchive(swapSpec(name, V1_FILES));
+      const target = join(repoDir, "dev-checkout");
+      await ensureDir(join(target, "models"));
+      await Deno.writeTextFile(join(target, "models", "a.ts"), "dev copy");
+      const extRoot = extRootOf(repoDir, name);
+      await ensureDir(dirname(extRoot));
+      await Deno.symlink(target, extRoot, { type: "dir" });
+      const targetBefore = await readTree(target);
+
+      // Skills are written after the swap, so this fails past it.
+      const blocker = join(repoDir, "not-a-dir");
+      await Deno.writeTextFile(blocker, "");
+      await assertRejects(() =>
+        installArchive(repoDir, lockfile, { [name]: v1 }, name, {
+          force: true,
+          skillsDirs: [join(blocker, "skills")],
+        })
+      );
+      assertEquals((await Deno.lstat(extRoot)).isSymlink, true);
+      assertEquals(await Deno.readLink(extRoot), target);
+      assertEquals(await readTree(target), targetBefore);
+      assertEquals(lockfile.getEntry(name), null);
+      assertEquals(
+        await exists(join(dirname(dirname(extRoot)), STAGING_DIR_NAME)),
+        false,
+      );
+    });
+  },
+);
+
 /** Leaves a journal for `name` that recovery cannot act on. */
 async function leaveUnrecoverableJournal(
   repoDir: string,
@@ -2030,6 +2249,7 @@ async function leaveUnrecoverableJournal(
 ): Promise<string> {
   const roots = extensionInstallRoots(repoDir, name);
   const tx = await ExtensionInstallTransaction.begin({
+    repoDir,
     pulledRoot: join(repoDir, ".swamp", "pulled-extensions"),
     extensionName: name,
     lockfilePath: lockfile.lockfilePath,

@@ -183,6 +183,7 @@ async function crashedUpgrade(
   });
   const newChecksum = opts.newChecksum ?? "sum-crashed";
   const tx = await ExtensionInstallTransaction.begin({
+    repoDir: f.repoDir,
     pulledRoot: resolvePulledExtensionsRoot(f.repoDir),
     extensionName: f.parent,
     lockfilePath: f.lockfile.lockfilePath,

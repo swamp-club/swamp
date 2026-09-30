@@ -1586,11 +1586,12 @@ datastore expressions, bundle eviction, the managed-config migration copy and
 
 **Journal.** Before any staging dir exists (only the dir that holds it),
 the install writes `<pulledRoot>/.swamp-staging/<stagingId>/journal.json` with an atomic
-write. It records the owner id, the stagingId, the extension name, the phase
+write. It records the owner id, the stagingId, the absolute repo dir, the
+extension name, the phase
 (`staged` or `swapped`), the lockfile path the install writes, the new archive
 checksum, the old and new manifest digests, every root (live, old and new
-paths, whether the live root existed, whether the new version has files for
-it), and the nested entry roots carried over.
+paths, whether the live root existed and whether it was a symlink, whether the
+new version has files for it), and the nested entry roots carried over.
 
 **Swap.** Phase 1 moves each existing live root to `old/<i>`. Phase 2 moves
 each new root into place, bundles first, then the extension root (staged
@@ -1647,27 +1648,66 @@ reuse pids):
   manifest. Recovery only renames; a superseded root goes to `discard/<i>` and
   is deleted with the staging, so the only copy of a root is never deleted.
 - An original that is gone, a symlink or file where a directory belongs
-  (including any staging dir or a dir above a live root), or a failed
+  (including any staging dir or a dir above a live root, but not an extension
+  root recorded as a symlink, see below), or a failed
   recovery leaves the journal in place with a warning. While such a journal
   names an extension, installing or removing it, or an extension nested in or
   above it, is refused with a message naming the journal: changing its roots
-  first would let a later recovery act on files it did not write.
-- Journal paths are derived from the absolute repository path, so an install
-  and a later recovery agree whether the repo was given as a relative or an
-  absolute path. They do not agree across a symlinked spelling of the repo
-  (macOS `/tmp` and `/private/tmp`, a bind mount): the journal then fails
-  validation and is left in place.
+  first would let a later recovery act on files it did not write. The
+  refusal's advice follows what recovery found at the extension root and at
+  `old/0`: move the previous version back when only it is left, keep the
+  wanted one when both exist, check the live root when nothing is staged,
+  pull again when neither exists. It never says to delete staging that may
+  hold the only copy.
+- Journal paths are absolute, derived from the absolute repository path. A
+  journal written under another repo dir (the repo was moved or copied, a CI
+  workspace was restored at another path, a container mounts it elsewhere, or
+  a symlinked spelling such as macOS `/tmp` and `/private/tmp`) is rebased
+  first: each path under the recorded repo dir moves under the current one,
+  and a path outside it (a lockfile kept outside the repo) is kept. The exact
+  validation then runs on the rebased journal, so the rebase only accepts a
+  journal that could have been written with the current paths, and a copied
+  checkout recovers its own files, never the original's.
 - Staging with no journal is swept only once it is older than an hour.
 
 Recovery never writes the lockfile. A same-version reinstall has equal old and
 new checksums, so after a process crash (not a failure the install settles
 itself) between `swapped` and the lockfile write, recovery rolls forward. The tree is then the reinstalled one with the old entry, identical
-apart from any extra files `--force` dropped.
+apart from any files it could not carry forward (see below).
 
-**Extra files.** The swap replaces a root whole, so a file the user added
-under `.swamp/pulled-extensions/<name>/` is gone after a reinstall. The merge
-copy kept it. This can only happen with `--force`: without it, the local-edits
-guard refuses, since an extra file changes the root's digest.
+**Extra files.** The swap replaces a root whole, so the install copies
+the files a user added under `.swamp/pulled-extensions/<name>/` into the
+new root, keeping their times, as the merge copy kept them. `extension
+update`, `extension install` and `repo upgrade` install with force, so
+this is what keeps those files, not the local-edits guard. A file is the
+user's when the new archive does not ship it and the prior lockfile
+entry's `files[]` does not list it. A file the entry lists is one the
+prior version shipped and the new one dropped, so it goes with the old
+root, and an upgrade never leaves a mix of two versions' files. Where the
+archive ships a file at the same path, the archive's copy wins (a
+`ConflictError` without `--force`, as before). The user's files stay out
+of `files[]`; `filesChecksum` is the digest of the tree on disk, theirs
+included, as before.
+
+The entry's list only describes the tree when the installed
+`manifest.yaml` is the entry's version. When it is not (a lockfile
+restored from git after an upgrade), or the entry has no `files[]`, or
+there is no entry, unlisted files cannot be told apart from ones an older
+version shipped. The install then keeps only what the archive ships and
+logs a warning naming each file it removed. A symlink, or a path under
+one where the new archive ships a file, cannot be copied and is named in
+a warning the same way. No file under the root is removed without either
+being listed in the prior entry or named in a warning.
+
+**Symlinked extension root.** An extension root that is a symlink is replaced,
+not written through. Phase 1 moves the link itself to `old/<i>`, the new
+version goes in as a real directory, and commit deletes the link with the
+staging; the link's target is never read or written by the swap. Files in the
+target are not carried forward. Once the lockfile entry is written, a warning
+names the link and its target and says to re-create the link to keep using it.
+A failure or a crash puts the link back where it was: the journal records
+`liveIsLink`, and recovery treats the link as the original in the `old` and
+live slots. A bundle root that is a symlink is still refused.
 
 **Nested entries.** A scoped name can nest another (`@a/b` contains the root of
 `@a/b/c`). An install of `@a/b` copies each nested entry's root into its new

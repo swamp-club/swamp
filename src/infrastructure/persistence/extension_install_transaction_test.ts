@@ -75,6 +75,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
 
 function boundsOf(f: Fixture): InstallJournalBounds {
   return {
+    repoDir: f.repoDir,
     pulledRoot: f.pulledRoot,
     allowedLockfilePaths: [f.lockfilePath],
     expectedLivePaths: () => ({
@@ -94,7 +95,10 @@ async function writeFiles(
   }
 }
 
-/** Every file and dir under `dir` (staging excluded) → content or "<dir>". */
+/**
+ * Every file, dir and symlink under `dir` (staging excluded) → content,
+ * "<dir>" or "<link target>".
+ */
 async function readTree(dir: string): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   const walk = async (current: string) => {
@@ -105,7 +109,9 @@ async function readTree(dir: string): Promise<Record<string, string>> {
       ) continue;
       const path = join(current, entry.name);
       const rel = relative(dir, path).replaceAll("\\", "/");
-      if (entry.isDirectory) {
+      if (entry.isSymlink) {
+        out[rel] = `<link ${await Deno.readLink(path)}>`;
+      } else if (entry.isDirectory) {
         out[rel] = "<dir>";
         await walk(path);
       } else {
@@ -148,6 +154,7 @@ async function beginV2(
   opts: { bundleHasNew?: boolean } = {},
 ): Promise<ExtensionInstallTransaction> {
   const tx = await ExtensionInstallTransaction.begin({
+    repoDir: f.repoDir,
     pulledRoot: f.pulledRoot,
     extensionName: NAME,
     lockfilePath: f.lockfilePath,
@@ -402,12 +409,67 @@ Deno.test("ExtensionInstallTransaction.swap: refuses when the journal on disk ha
   });
 });
 
-Deno.test("ExtensionInstallTransaction.begin: refuses a live root that is a symlink", async () => {
+/** Replaces the v1 extension root with a symlink to a dev copy of it. */
+async function linkExtRoot(f: Fixture): Promise<string> {
+  const target = join(f.repoDir, "elsewhere");
+  await writeFiles(target, {
+    "models/a.ts": "dev a",
+    "manifest.yaml": MANIFEST_V1,
+  });
+  await Deno.remove(f.extRoot, { recursive: true }).catch(() => {});
+  await Deno.mkdir(dirname(f.extRoot), { recursive: true });
+  await Deno.symlink(target, f.extRoot, { type: "dir" });
+  return target;
+}
+
+Deno.test("ExtensionInstallTransaction: a symlinked extension root is replaced, not written through", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    const target = await linkExtRoot(f);
+    const targetBefore = await readTree(target);
+    const tx = await beginV2(f);
+    assertEquals(tx.journal.roots[0].liveIsLink, true);
+    await tx.swap();
+    await tx.commit();
+    assertEquals((await Deno.lstat(f.extRoot)).isDirectory, true);
+    assertEquals(await readTree(f.extRoot), {
+      "models": "<dir>",
+      "models/a.ts": "v2 a",
+      "models/new_only.ts": "v2 only",
+      "manifest.yaml": MANIFEST_V2,
+    });
+    assertEquals(await readTree(target), targetBefore);
+    assertEquals(await exists(join(f.pulledRoot, STAGING_DIR_NAME)), false);
+  });
+});
+
+Deno.test("recoverInstallStaging: puts a symlinked extension root back after a crash at every rename", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    await linkExtRoot(f);
+    const before = await readTree(f.repoDir);
+    for (let rename = 1; rename <= 4; rename++) {
+      await crashAt(f, rename);
+      const report = await recoverInstallStaging({
+        bounds: boundsOf(f),
+        bundleKindDirs: [f.bundleKindDir],
+        readLockfileChecksum: () => Promise.resolve("sum-v1"),
+      });
+      assertEquals(report.rolledBack, [NAME], `crash at rename ${rename}`);
+      assertEquals(
+        await readTree(f.repoDir),
+        before,
+        `crash at rename ${rename}`,
+      );
+    }
+  });
+});
+
+Deno.test("ExtensionInstallTransaction.begin: refuses a bundle root that is a symlink", async () => {
   await withFixture(async (f) => {
     const target = join(f.repoDir, "elsewhere");
     await Deno.mkdir(target);
-    await Deno.mkdir(dirname(f.extRoot), { recursive: true });
-    await Deno.symlink(target, f.extRoot, { type: "dir" });
+    await Deno.symlink(target, f.bundleRoot, { type: "dir" });
     await assertRejects(() => beginV2(f), Error, "is not a directory");
     assertEquals(await exists(join(f.pulledRoot, STAGING_DIR_NAME)), false);
   });
@@ -627,6 +689,63 @@ Deno.test("recoverInstallStaging: leaves a journal whose lockfile is not this re
     assertEquals(blockingLeftJournals(report, NAME).length, 1);
     assertEquals(blockingLeftJournals(report, `${NAME}/child`).length, 1);
     assertEquals(blockingLeftJournals(report, "@acme/other").length, 0);
+  });
+});
+
+Deno.test("recoverInstallStaging: a left journal says where the extension root's copies are", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    // Phase 1 moved the extension root aside, then the process died.
+    const stagingId = await crashAt(f, 2);
+    const report = await recoverInstallStaging({
+      bounds: {
+        ...boundsOf(f),
+        allowedLockfilePaths: [join(f.repoDir, "other.json")],
+      },
+      bundleKindDirs: [f.bundleKindDir],
+      readLockfileChecksum: () => Promise.resolve(null),
+    });
+    assertEquals(report.left.length, 1);
+    assertEquals(report.left[0].extensionRoot, {
+      live: f.extRoot,
+      liveState: "absent",
+      old: join(f.pulledRoot, STAGING_DIR_NAME, stagingId, "old", "0"),
+      oldState: "dir",
+    });
+  });
+});
+
+Deno.test("recoverInstallStaging: rolls back an install interrupted before the repo moved", async () => {
+  await withFixture(async (f) => {
+    await seedV1(f);
+    const before = await readTree(f.repoDir);
+    await crashAt(f, 2);
+    assertEquals(await exists(f.extRoot), false);
+
+    const parent = await Deno.makeTempDir({ prefix: "swamp_install_moved_" });
+    try {
+      const moved = join(parent, "moved");
+      await Deno.rename(f.repoDir, moved);
+      const m: Fixture = {
+        repoDir: moved,
+        pulledRoot: join(moved, relative(f.repoDir, f.pulledRoot)),
+        bundleKindDir: join(moved, relative(f.repoDir, f.bundleKindDir)),
+        extRoot: join(moved, relative(f.repoDir, f.extRoot)),
+        bundleRoot: join(moved, relative(f.repoDir, f.bundleRoot)),
+        lockfilePath: join(moved, relative(f.repoDir, f.lockfilePath)),
+      };
+      const report = await recoverInstallStaging({
+        bounds: boundsOf(m),
+        bundleKindDirs: [m.bundleKindDir],
+        readLockfileChecksum: () => Promise.resolve("sum-v1"),
+      });
+      assertEquals(report.left, []);
+      assertEquals(report.rolledBack, [NAME]);
+      assertEquals(await readTree(moved), before);
+      assertEquals(await exists(join(m.pulledRoot, STAGING_DIR_NAME)), false);
+    } finally {
+      await Deno.remove(parent, { recursive: true }).catch(() => {});
+    }
   });
 });
 

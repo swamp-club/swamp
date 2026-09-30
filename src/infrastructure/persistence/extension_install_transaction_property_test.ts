@@ -171,6 +171,7 @@ Deno.test("ExtensionInstallTransaction: settle and recovery leave exactly the ol
           },
         });
         const tx = await ExtensionInstallTransaction.begin({
+          repoDir,
           pulledRoot,
           extensionName: NAME,
           lockfilePath,
@@ -224,6 +225,7 @@ Deno.test("ExtensionInstallTransaction: settle and recovery leave exactly the ol
         );
         await recoverInstallStaging({
           bounds: {
+            repoDir,
             pulledRoot,
             allowedLockfilePaths: [lockfilePath],
             expectedLivePaths: () => ({

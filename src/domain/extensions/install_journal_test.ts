@@ -19,11 +19,12 @@
 
 import { assertEquals } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
-import { join } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import {
   bundleStagingDirName,
   type InstallJournal,
   type InstallJournalBounds,
+  isExtensionName,
   isStagingEntryName,
   isStagingId,
   nestedEntryRelDirs,
@@ -32,18 +33,20 @@ import {
   type ObservedRoot,
   parseInstallJournal,
   planRecovery,
+  type RecoveryRename,
   rootStagingPaths,
   STAGED_MANIFEST_FILE,
   STAGING_DIR_NAME,
 } from "./install_journal.ts";
 
-const PULLED = join("/repo", ".swamp", "pulled-extensions");
-const BUNDLES = join("/repo", ".swamp", "bundles");
+const REPO = resolve("/repo");
+const PULLED = join(REPO, ".swamp", "pulled-extensions");
+const BUNDLES = join(REPO, ".swamp", "bundles");
 const NAME = "@acme/thing";
 const EXT_ROOT = join(PULLED, "@acme", "thing");
 const BUNDLE_ROOT = join(BUNDLES, "abcd1234");
 const LOCKFILE = join(
-  "/repo",
+  REPO,
   "extensions",
   "models",
   "upstream_extensions.json",
@@ -52,6 +55,7 @@ const STAGING_ID = "0b0e1f0c-1111-4222-8333-944445555666";
 const OWNER_ID = "5d7c3e1a-aaaa-4bbb-8ccc-9dddeeeeffff";
 
 const bounds: InstallJournalBounds = {
+  repoDir: REPO,
   pulledRoot: PULLED,
   allowedLockfilePaths: [LOCKFILE],
   expectedLivePaths: (name) => ({
@@ -109,6 +113,7 @@ function makeJournal(
     schemaVersion: 1,
     ownerId: OWNER_ID,
     stagingId: STAGING_ID,
+    repoDir: REPO,
     extensionName: NAME,
     phase: overrides.phase ?? "staged",
     lockfilePath: LOCKFILE,
@@ -256,6 +261,98 @@ Deno.test("parseInstallJournal: rejects staging paths off the layout", () => {
   assertRejected(manifest, "manifest paths");
 });
 
+/** `journal` as an install in a repo at `from` wrote it. */
+function writtenUnder(journal: InstallJournal, from: string): InstallJournal {
+  const move = (path: string) => join(from, relative(REPO, path));
+  return {
+    ...journal,
+    repoDir: from,
+    lockfilePath: move(journal.lockfilePath),
+    roots: journal.roots.map((root) => ({
+      ...root,
+      live: move(root.live),
+      stagingDir: move(root.stagingDir),
+      old: move(root.old),
+      new: move(root.new),
+    })),
+    manifest: {
+      staged: move(journal.manifest.staged),
+      live: move(journal.manifest.live),
+    },
+  };
+}
+
+const MOVED_FROM = resolve("/old", "place");
+
+Deno.test("parseInstallJournal: rebases a journal written before the repo moved", () => {
+  for (const phase of ["staged", "swapped"] as const) {
+    const current = makeJournal({ phase });
+    const result = parseInstallJournal(
+      writtenUnder(current, MOVED_FROM),
+      bounds,
+      STAGING_ID,
+    );
+    assertEquals(result, { ok: true, journal: current });
+  }
+});
+
+Deno.test("parseInstallJournal: keeps a lockfile path outside the recorded repo dir", () => {
+  const outside = resolve("/etc", "upstream_extensions.json");
+  const journal = {
+    ...writtenUnder(makeJournal(), MOVED_FROM),
+    lockfilePath: outside,
+  };
+  assertRejected(journal, "not a lockfile of this repository");
+
+  const result = parseInstallJournal(
+    journal,
+    { ...bounds, allowedLockfilePaths: [LOCKFILE, outside] },
+    STAGING_ID,
+  );
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.journal.lockfilePath, outside);
+});
+
+Deno.test("parseInstallJournal: rejects a repo dir that is not absolute", () => {
+  assertRejected(
+    { ...makeJournal(), repoDir: "repo" },
+    "is not an absolute path",
+  );
+});
+
+Deno.test("parseInstallJournal: the rebase accepts only paths on the current layout", () => {
+  // The filesystem root as the recorded repo dir moves every path one
+  // level too deep.
+  assertRejected(
+    { ...makeJournal(), repoDir: resolve("/") },
+    "not a lockfile of this repository",
+  );
+
+  // A root outside the recorded repo dir is not rebased.
+  const outside = writtenUnder(makeJournal(), MOVED_FROM);
+  outside.roots[0] = {
+    ...outside.roots[0],
+    live: resolve("/elsewhere", "@acme", "thing"),
+  };
+  assertRejected(outside, "extension root");
+
+  // A staging path off the layout stays off it after the rebase.
+  const offLayout = writtenUnder(makeJournal(), MOVED_FROM);
+  offLayout.roots[0] = {
+    ...offLayout.roots[0],
+    old: join(MOVED_FROM, "elsewhere"),
+  };
+  assertRejected(offLayout, "do not match its layout");
+});
+
+Deno.test("isExtensionName: accepts scoped names and nothing that could leave the pulled root", () => {
+  assertEquals(isExtensionName("@acme/thing"), true);
+  assertEquals(isExtensionName("@acme/thing/child"), true);
+  for (const name of ["acme/thing", "@acme", "@acme/../thing", "../x", ""]) {
+    assertEquals(isExtensionName(name), false, name);
+  }
+});
+
 Deno.test("parseInstallJournal: rejects repeated roots and a missing extension root", () => {
   const repeated = makeJournal();
   repeated.roots[1] = { ...repeated.roots[1], index: 0 };
@@ -267,6 +364,20 @@ Deno.test("parseInstallJournal: rejects repeated roots and a missing extension r
 
   const empty = makeJournal({ bundle: { liveExisted: false, hasNew: false } });
   assertRejected(empty, "nothing to swap");
+});
+
+Deno.test("parseInstallJournal: accepts a symlinked extension root only", () => {
+  const ext = makeJournal();
+  ext.roots[0] = { ...ext.roots[0], liveIsLink: true };
+  assertEquals(parseInstallJournal(ext, bounds, STAGING_ID).ok, true);
+
+  const bundle = makeJournal();
+  bundle.roots[1] = { ...bundle.roots[1], liveIsLink: true };
+  assertRejected(bundle, "cannot have been a symlink");
+
+  const absent = makeJournal({ extLiveExisted: false });
+  absent.roots[0] = { ...absent.roots[0], liveIsLink: true };
+  assertRejected(absent, "cannot have been a symlink");
 });
 
 Deno.test("parseInstallJournal: rejects a nested root that is not an entry path", () => {
@@ -409,7 +520,7 @@ const BACK_ROWS: BackRow[] = [
     name: "a symlink at the live path",
     liveExisted: true,
     hasNew: true,
-    state: rootState("absent", "dir", "other"),
+    state: rootState("absent", "dir", "symlink"),
     expected: "leave",
   },
   {
@@ -516,6 +627,87 @@ Deno.test("planRecovery: leaves a journal with an unobserved root", () => {
     null,
   );
   assertEquals(plan.direction, "leave");
+});
+
+// ---- planRecovery: a symlinked extension root ----
+
+interface LinkRow {
+  name: string;
+  state: ObservedRoot;
+  expected: "none" | "old-to-live" | "swap-back" | "leave";
+}
+
+const LINK_ROWS: LinkRow[] = [
+  {
+    name: "the link never moved",
+    state: rootState("absent", "dir", "symlink"),
+    expected: "none",
+  },
+  {
+    name: "the link moved aside, nothing live",
+    state: rootState("symlink", "dir", "absent"),
+    expected: "old-to-live",
+  },
+  {
+    name: "the link moved aside, the new dir live",
+    state: rootState("symlink", "absent", "dir"),
+    expected: "swap-back",
+  },
+  {
+    name: "a directory where the link was, nothing moved aside",
+    state: rootState("absent", "dir", "dir"),
+    expected: "leave",
+  },
+  {
+    name: "a directory where the moved-aside link belongs",
+    state: rootState("dir", "absent", "dir"),
+    expected: "leave",
+  },
+];
+
+for (const row of LINK_ROWS) {
+  Deno.test(`planRecovery: a symlinked extension root, ${row.name}`, () => {
+    const journal = makeJournal({ bundle: null });
+    journal.roots[0] = { ...journal.roots[0], liveIsLink: true };
+    const ext = journal.roots[0];
+    const plan = planRecovery(journal, observe({ 0: row.state }), null);
+    const restore: RecoveryRename = {
+      from: ext.old,
+      to: ext.live,
+      kind: "symlink",
+    };
+    switch (row.expected) {
+      case "leave":
+        assertEquals(plan.direction, "leave");
+        return;
+      case "none":
+        assertEquals(plan, { direction: "back", renames: [] });
+        return;
+      case "old-to-live":
+        assertEquals(plan, { direction: "back", renames: [restore] });
+        return;
+      case "swap-back":
+        assertEquals(plan, {
+          direction: "back",
+          renames: [
+            { from: ext.live, to: join(ext.stagingDir, "discard", "0") },
+            restore,
+          ],
+        });
+        return;
+    }
+  });
+}
+
+Deno.test("planRecovery: rolls forward past a moved-aside link", () => {
+  const journal = makeJournal({ phase: "swapped", bundle: null });
+  journal.roots[0] = { ...journal.roots[0], liveIsLink: true };
+  const plan = planRecovery(
+    journal,
+    observe({ 0: rootState("symlink", "absent", "dir") }),
+    "new-sum",
+  );
+  assertEquals(plan, { direction: "forward" });
 });
 
 // ---- planRecovery: rolling forward ----

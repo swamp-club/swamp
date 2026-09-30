@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { dirname, join } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import {
   BUNDLE_STAGING_PREFIX,
@@ -27,6 +27,7 @@ import {
   type InstallJournalBounds,
   installJournalPath,
   type InstallRootRole,
+  isExtensionName,
   isStagingId,
   type NestedRoot,
   type ObservedInstall,
@@ -88,7 +89,7 @@ export const defaultInstallFsOps: InstallFsOps = {
   async lstat(path) {
     try {
       const stat = await Deno.lstat(path);
-      if (stat.isSymlink) return "other";
+      if (stat.isSymlink) return "symlink";
       if (stat.isDirectory) return "dir";
       if (stat.isFile) return "file";
       return "other";
@@ -159,6 +160,8 @@ export interface InstallRootSpec {
 
 /** Arguments to {@link ExtensionInstallTransaction.begin}. */
 export interface BeginInstallArgs {
+  /** The repo dir the install runs in; recorded in the journal. */
+  repoDir: string;
   pulledRoot: string;
   extensionName: string;
   /** The lockfile this install writes its entry to. */
@@ -212,12 +215,15 @@ export class ExtensionInstallTransaction {
     const roots: InstallJournal["roots"] = [];
     for (const spec of args.roots) {
       const live = await ops.lstat(spec.live);
-      if (live !== "absent" && live !== "dir") {
+      // A symlinked extension root is replaced, not written through:
+      // phase 1 moves the link aside like a directory.
+      const liveIsLink = spec.role === "extension" && live === "symlink";
+      if (live !== "absent" && live !== "dir" && !liveIsLink) {
         throw new Error(
           `Cannot install ${args.extensionName}: ${spec.live} is not a directory`,
         );
       }
-      const liveExisted = live === "dir";
+      const liveExisted = live === "dir" || liveIsLink;
       if (spec.role === "bundle" && !liveExisted && !spec.hasNew) continue;
       const paths = rootStagingPaths({
         pulledRoot: args.pulledRoot,
@@ -234,6 +240,7 @@ export class ExtensionInstallTransaction {
         old: paths.old,
         new: paths.new,
         liveExisted,
+        ...(liveIsLink ? { liveIsLink } : {}),
         hasNew: spec.role === "extension" ? true : spec.hasNew,
       });
     }
@@ -247,6 +254,7 @@ export class ExtensionInstallTransaction {
       schemaVersion: 1,
       ownerId,
       stagingId,
+      repoDir: resolve(args.repoDir),
       extensionName: args.extensionName,
       phase: "staged",
       lockfilePath: args.lockfilePath,
@@ -320,7 +328,9 @@ export class ExtensionInstallTransaction {
     try {
       await this.#assertOwner();
       for (const root of this.#journal.roots) {
-        if (root.liveExisted) await move(root.live, root.old, "dir");
+        if (root.liveExisted) {
+          await move(root.live, root.old, root.liveIsLink ? "symlink" : "dir");
+        }
       }
       await this.#assertOwner();
       const incoming = [
@@ -622,7 +632,7 @@ async function settleJournal(
   if (plan.direction === "back") {
     for (const rename of plan.renames) {
       await ops.mkdir(dirname(rename.to));
-      await checkedRename(ops, rename.from, rename.to, "dir");
+      await checkedRename(ops, rename.from, rename.to, rename.kind ?? "dir");
     }
   }
   await deleteStaging(journal, ops);
@@ -639,6 +649,22 @@ export interface LeftJournal {
    */
   extensionName: string | null;
   reason: string;
+  /**
+   * What recovery found at the extension root's live path and at the
+   * slot phase 1 moves its original to, so a refusal can say where the
+   * previous version is. Absent when the extension is not known or the
+   * paths could not be checked.
+   */
+  extensionRoot?: ExtensionRootCopies;
+}
+
+/** Where an interrupted install's extension root copies are. */
+export interface ExtensionRootCopies {
+  live: string;
+  liveState: ObservedPath;
+  /** Where phase 1 moves the original: `old/0` in the journal's staging. */
+  old: string;
+  oldState: ObservedPath;
 }
 
 /** What one {@link recoverInstallStaging} pass did. */
@@ -703,13 +729,24 @@ export async function recoverInstallStaging(
       logger.warn`Could not remove stale install staging ${path}: ${error}`;
     }
   };
-  const leave = (
-    journalPath: string,
+  const leave = async (
+    stagingId: string,
     extensionName: string | null,
     reason: string,
+    journal?: InstallJournal,
   ) => {
+    const journalPath = installJournalPath(args.bounds.pulledRoot, stagingId);
     logger.warn`Left the install journal ${journalPath} in place: ${reason}`;
-    report.left.push({ journalPath, extensionName, reason });
+    const left: LeftJournal = { journalPath, extensionName, reason };
+    const extensionRoot = await observeExtensionRootCopies(
+      args.bounds,
+      ops,
+      stagingId,
+      extensionName,
+      journal,
+    );
+    if (extensionRoot) left.extensionRoot = extensionRoot;
+    report.left.push(left);
   };
   const readNames = async (dir: string): Promise<string[]> => {
     try {
@@ -744,7 +781,7 @@ export async function recoverInstallStaging(
           if (journalKind !== "file") throw new Error("not a regular file");
           raw = JSON.parse(await ops.readText(journalPath));
         } catch (error) {
-          leave(journalPath, null, `the journal cannot be read (${error})`);
+          await leave(name, null, `the journal cannot be read (${error})`);
           continue;
         }
         const rawName = (raw as { extensionName?: unknown } | null)
@@ -752,7 +789,7 @@ export async function recoverInstallStaging(
         const namedAs = typeof rawName === "string" ? rawName : null;
         const parsed = parseInstallJournal(raw, args.bounds, name);
         if (!parsed.ok) {
-          leave(journalPath, namedAs, `invalid journal: ${parsed.reason}`);
+          await leave(name, namedAs, `invalid journal: ${parsed.reason}`);
           continue;
         }
         const journal = parsed.journal;
@@ -767,7 +804,7 @@ export async function recoverInstallStaging(
           ops,
         );
         if (plan.direction === "leave") {
-          leave(journalPath, journal.extensionName, plan.reason);
+          await leave(name, journal.extensionName, plan.reason, journal);
         } else if (plan.direction === "forward") {
           logger
             .info`Finished the interrupted install of ${journal.extensionName}`;
@@ -788,7 +825,7 @@ export async function recoverInstallStaging(
         } catch {
           // Journal already gone or unreadable: nothing to attribute.
         }
-        leave(journalPath, namedAs, `recovery failed (${error})`);
+        await leave(name, namedAs, `recovery failed (${error})`);
       }
     }
     try {
@@ -808,6 +845,43 @@ export async function recoverInstallStaging(
     }
   }
   return report;
+}
+
+/**
+ * Looks at extension `name`'s live root and at the slot phase 1 moves its
+ * original to. The slot comes from `journal` when it was validated, and
+ * is otherwise derived from the layout (every install puts the extension
+ * root in slot 0), never from an unchecked journal. Null when the name is
+ * not a valid extension name or a path cannot be checked.
+ */
+async function observeExtensionRootCopies(
+  bounds: InstallJournalBounds,
+  ops: InstallFsOps,
+  stagingId: string,
+  name: string | null,
+  journal: InstallJournal | undefined,
+): Promise<ExtensionRootCopies | null> {
+  if (name === null || !isExtensionName(name)) return null;
+  const root = journal ? extensionRootOf(journal) : undefined;
+  const live = root?.live ?? bounds.expectedLivePaths(name).extensionRoot;
+  const old = root?.old ?? rootStagingPaths({
+    pulledRoot: bounds.pulledRoot,
+    stagingId,
+    role: "extension",
+    live,
+    index: 0,
+  }).old;
+  try {
+    return {
+      live,
+      liveState: await ops.lstat(live),
+      old,
+      oldState: await ops.lstat(old),
+    };
+  } catch (error) {
+    logger.debug`Could not check the copies of ${name} for recovery: ${error}`;
+    return null;
+  }
 }
 
 /**

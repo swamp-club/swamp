@@ -41,10 +41,19 @@
  * Pure: no filesystem access. The journal is repo-controlled data (a
  * `.swamp` dir can be committed), so {@link parseInstallJournal} checks
  * every path against the layout derived from the extension name before
- * recovery acts on it.
+ * recovery acts on it. The journal records the repo dir it was written
+ * under, and a journal read from a repo that has since moved is rebased
+ * onto the current repo dir before those checks.
  */
 
-import { dirname, join, resolve } from "@std/path";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
 import { z } from "zod";
 
 /** Name of the per-install staging parent inside the pulled root. */
@@ -86,6 +95,14 @@ export function isStagingId(name: string): boolean {
 // name is a plain relative path with no dots.
 const EXTENSION_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
+/**
+ * True when `name` is a scoped extension name: a plain relative path with
+ * no dots, safe to join onto the pulled root.
+ */
+export function isExtensionName(name: string): boolean {
+  return EXTENSION_NAME_PATTERN.test(name);
+}
+
 /** Which kind of root: the extension root or a bundle namespace dir. */
 export type InstallRootRole = "extension" | "bundle";
 
@@ -100,6 +117,12 @@ const InstallRootSchema = z.object({
   old: z.string().min(1),
   new: z.string().min(1),
   liveExisted: z.boolean(),
+  /**
+   * The extension root was a symlink. Phase 1 moves the link itself
+   * aside, so the install replaces it with a directory and never writes
+   * through it; a roll-back puts the link back.
+   */
+  liveIsLink: z.boolean().optional(),
   hasNew: z.boolean(),
 }).strict();
 
@@ -112,6 +135,11 @@ const InstallJournalSchema = z.object({
   schemaVersion: z.literal(1),
   ownerId: z.string().regex(UUID_PATTERN),
   stagingId: z.string().regex(UUID_PATTERN),
+  /**
+   * The absolute repo dir the install ran in. Every other path is under
+   * it unless the lockfile lives outside the repo.
+   */
+  repoDir: z.string().min(1),
   extensionName: z.string().regex(EXTENSION_NAME_PATTERN),
   phase: z.enum(["staged", "swapped"]),
   lockfilePath: z.string().min(1),
@@ -189,6 +217,8 @@ export interface ExpectedLivePaths {
 
 /** What {@link parseInstallJournal} checks a journal against. */
 export interface InstallJournalBounds {
+  /** The absolute repo dir recovery runs in. */
+  repoDir: string;
   pulledRoot: string;
   /** Lockfile paths an install in this checkout can write. */
   allowedLockfilePaths: ReadonlyArray<string>;
@@ -210,6 +240,14 @@ export type ParseInstallJournalResult =
  * extension name and the staging id, so a hand-edited or planted journal
  * cannot point a rename anywhere else.
  *
+ * A journal written under another repo dir (the repo was moved, copied,
+ * restored at another path or reached by another spelling) is first
+ * rebased onto `bounds.repoDir`: each path under the recorded repo dir is
+ * moved under the current one, and any other path is kept. The checks
+ * then run on the rebased journal unchanged, so the rebase can only
+ * accept a journal that could have been written with the current paths.
+ * The returned journal is the rebased one.
+ *
  * @param journalDirName Name of the dir the journal was read from; must
  *   equal the journal's stagingId.
  */
@@ -228,14 +266,22 @@ export function parseInstallJournal(
       }`,
     };
   }
-  const journal = parsed.data;
-  if (journal.stagingId !== journalDirName) {
+  if (parsed.data.stagingId !== journalDirName) {
     return {
       ok: false,
       reason:
-        `stagingId ${journal.stagingId} does not match its dir ${journalDirName}`,
+        `stagingId ${parsed.data.stagingId} does not match its dir ${journalDirName}`,
     };
   }
+  if (!isAbsolute(parsed.data.repoDir)) {
+    return {
+      ok: false,
+      reason: `repo dir ${parsed.data.repoDir} is not an absolute path`,
+    };
+  }
+  const journal = resolve(parsed.data.repoDir) === resolve(bounds.repoDir)
+    ? parsed.data
+    : rebaseJournal(parsed.data, resolve(bounds.repoDir));
 
   const allowed = bounds.allowedLockfilePaths.map((p) => resolve(p));
   if (!allowed.includes(resolve(journal.lockfilePath))) {
@@ -281,6 +327,12 @@ export function parseInstallJournal(
     }
     if (!root.liveExisted && !root.hasNew) {
       return { ok: false, reason: `root ${root.live} has nothing to swap` };
+    }
+    if (root.liveIsLink && (root.role !== "extension" || !root.liveExisted)) {
+      return {
+        ok: false,
+        reason: `root ${root.live} cannot have been a symlink`,
+      };
     }
 
     const paths = rootStagingPaths({
@@ -334,8 +386,38 @@ export function parseInstallJournal(
   return { ok: true, journal };
 }
 
+/**
+ * `journal` with every path under its recorded repo dir moved under `to`.
+ * A path outside it (a lockfile kept outside the repo) is kept as is.
+ */
+function rebaseJournal(journal: InstallJournal, to: string): InstallJournal {
+  const from = resolve(journal.repoDir);
+  const rebase = (path: string): string => {
+    const rel = relative(from, path);
+    const outside = rel === ".." || rel.startsWith(`..${SEPARATOR}`) ||
+      isAbsolute(rel);
+    return outside ? path : join(to, rel);
+  };
+  return {
+    ...journal,
+    repoDir: to,
+    lockfilePath: rebase(journal.lockfilePath),
+    roots: journal.roots.map((root) => ({
+      ...root,
+      live: rebase(root.live),
+      stagingDir: rebase(root.stagingDir),
+      old: rebase(root.old),
+      new: rebase(root.new),
+    })),
+    manifest: {
+      staged: rebase(journal.manifest.staged),
+      live: rebase(journal.manifest.live),
+    },
+  };
+}
+
 /** What recovery observed at one path, via lstat (never following links). */
-export type ObservedPath = "absent" | "dir" | "file" | "other";
+export type ObservedPath = "absent" | "dir" | "file" | "symlink" | "other";
 
 /** What recovery observed for one root. */
 export interface ObservedRoot {
@@ -366,6 +448,8 @@ export interface ObservedInstall {
 export interface RecoveryRename {
   from: string;
   to: string;
+  /** Set when the path moved is a symlink rather than a directory. */
+  kind?: "symlink";
 }
 
 /**
@@ -406,6 +490,10 @@ export type RecoveryPlan =
  * | no          | 0 | 1 | live → discard                                |
  * | no          | 0 | 0 | none                                          |
  *
+ * An extension root that was a symlink (`liveIsLink`) is judged the
+ * same way, with the link standing where the directory would: `old/<i>`
+ * or live holds the link, and the link is what goes back.
+ *
  * A live root found next to its moved-aside original is superseded
  * whatever it holds: the new version, or a bundle cache dir a loader
  * outside the lock recreated. Rolling forward, nothing may be left in
@@ -438,16 +526,25 @@ export function planRecovery(
     if (!seen) {
       return { direction: "leave", reason: `root ${root.live} not observed` };
     }
+    // The original's kind: a link may stand in the old and live slots.
+    const original: ObservedPath = root.liveIsLink ? "symlink" : "dir";
     for (const [slot, state] of Object.entries(seen)) {
-      if (state !== "absent" && state !== "dir") {
+      const linkSlot = slot === "old" || slot === "live";
+      if (
+        state !== "absent" && state !== "dir" &&
+        !(linkSlot && state === original)
+      ) {
         return {
           direction: "leave",
           reason: `${slot} of root ${root.live} is not a plain directory`,
         };
       }
     }
-    const o = seen.old === "dir";
+    const o = seen.old === original;
     const l = seen.live === "dir";
+    // The original still live: a moved-aside link never comes back as a
+    // directory, so only the link itself counts.
+    const originalLive = seen.live === original;
 
     if (forward) {
       // Nothing moves forward. A bundle root is a cache that loaders
@@ -465,15 +562,18 @@ export function planRecovery(
 
     const discardFree = seen.discard === "absent";
     const discard = rootDiscardPath(root);
+    const restore: RecoveryRename = root.liveIsLink
+      ? { from: root.old, to: root.live, kind: "symlink" }
+      : { from: root.old, to: root.live };
     if (root.liveExisted) {
-      if (!o && l) continue;
-      if (o && !l) {
-        renames.push({ from: root.old, to: root.live });
+      if (!o && originalLive) continue;
+      if (o && seen.live === "absent") {
+        renames.push(restore);
         continue;
       }
       if (o && l && discardFree) {
         renames.push({ from: root.live, to: discard });
-        renames.push({ from: root.old, to: root.live });
+        renames.push(restore);
         continue;
       }
     } else if (!o) {

@@ -63,6 +63,7 @@ import {
   MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES,
 } from "../../domain/extensions/extension_archive_limits.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import {
   canonicalClaimPath,
   claimsPath,
@@ -1278,9 +1279,11 @@ const EXTENSION_ROOT_ENTRIES = new Set([
  * The new version is built in staging, the live roots are moved aside
  * and the new ones moved in (see {@link ExtensionInstallTransaction}); a
  * journal written first lets a crash at any point be put right. The
- * swap replaces the roots whole, so a file the archive does not ship is
- * gone afterwards. Entries nested under this one (`@a/b/c` inside
- * `@a/b`) are copied into the new root unchanged.
+ * swap replaces the roots whole: a file the prior version shipped and
+ * this one does not is gone afterwards, while a file the user added
+ * under the extension root is copied into the new root (see
+ * {@link carryForwardUserFiles}). Entries nested under this one
+ * (`@a/b/c` inside `@a/b`) are copied into the new root unchanged.
  *
  * Any failure after staging starts is settled before it propagates: the
  * swap is rolled back unless its lockfile entry already landed. The
@@ -1444,7 +1447,11 @@ export async function applyInstall(
       (await listFiles(join(extractDir, bundleKind))).length > 0,
     );
   }
+  // A symlinked extension root is replaced by the swap, not written
+  // through; its target is left as it is.
+  const replacedLinkTarget = await readLinkOrNull(absoluteExtRoot);
   const tx = await ExtensionInstallTransaction.begin({
+    repoDir: resolve(repoDir),
     pulledRoot: resolvePulledExtensionsRoot(resolve(repoDir)),
     extensionName: ref.name,
     lockfilePath: ctx.lockfileRepository.lockfilePath,
@@ -1529,6 +1536,16 @@ export async function applyInstall(
       );
     }
 
+    // Files the user added under the root are not in the archive, so
+    // the swap would drop them. Copy them into the new root, as the
+    // merge copy kept them.
+    const extraFiles = await carryForwardUserFiles({
+      liveRoot: absoluteExtRoot,
+      stagedRoot: stagedExtRoot,
+      repoDir,
+      priorEntry: oldEntry,
+      excludeRelDirs: nestedRelDirs,
+    });
     // manifest.yaml is staged on its own and moved in last, into the
     // new per-extension root, as a read-only copy. Makes each installed
     // extension self-describing on disk so downstream consumers (e.g.
@@ -1671,7 +1688,9 @@ export async function applyInstall(
       live: canonicalClaimPath(relative(repoDir, r.live)),
       liveAbs: r.live,
       old: r.old,
-      liveExisted: r.liveExisted,
+      // A moved-aside link still points at its untouched target, so
+      // nothing under it was removed.
+      liveExisted: r.liveExisted && !r.liveIsLink,
     }));
     const swappedRootOf = (f: string) => {
       const c = canonicalClaimPath(f);
@@ -1708,6 +1727,31 @@ export async function applyInstall(
       },
     );
     lockfileWritten = true;
+
+    // Reported once the install can no longer roll back.
+    const extRootRel = relative(repoDir, absoluteExtRoot);
+    if (logger && replacedLinkTarget !== null) {
+      logger
+        .warn`Replaced the symlink ${extRootRel} (to ${replacedLinkTarget}) with an installed copy of ${ref.name}@${version}; the link's target was not changed. Re-create the link to keep using it.`;
+    }
+    if (logger && extraFiles.unattributed.length > 0) {
+      logger
+        .warn`Removed ${extraFiles.unattributed.length} file(s) under ${extRootRel} that ${ref.name}@${version} does not ship. The lockfile entry does not describe the installed version, so they could not be told apart from files an earlier version shipped: ${
+        extraFiles.unattributed.join(", ")
+      }`;
+    }
+    if (logger && extraFiles.unkept.length > 0) {
+      logger
+        .warn`Removed ${extraFiles.unkept.length} path(s) under ${extRootRel} that could not be carried into ${ref.name}@${version}, being a symlink or under a file it ships: ${
+        extraFiles.unkept.join(", ")
+      }`;
+    }
+    if (logger && extraFiles.carried.length > 0) {
+      logger
+        .debug`Kept ${extraFiles.carried.length} file(s) added under ${extRootRel}: ${
+        extraFiles.carried.join(", ")
+      }`;
+    }
 
     // Skill orphans are pruned once the entry naming the new files has
     // landed, so a failed write rolls back to an entry whose skill files
@@ -1890,6 +1934,97 @@ async function copyTreePreservingTimes(
     }
   }
   await copyTimes(srcDir, destDir);
+}
+
+/**
+ * Copies the files a user added under a live extension root into its
+ * staged replacement, keeping their times. A file is the user's when
+ * the new archive does not ship it (nothing is staged at its path) and
+ * the prior lockfile entry does not list it; a file the entry lists is
+ * one the prior version shipped and the new one dropped, and goes with
+ * the old root.
+ *
+ * The entry's list only describes the tree when the installed
+ * manifest.yaml is the entry's version. When it is not (a lockfile
+ * restored from git after an upgrade), or the entry has no list, or
+ * there is no entry, the files cannot be told apart from ones an older
+ * version shipped. Nothing is copied then, and each such file is
+ * returned in `unattributed` for the caller to name. A symlink, or a
+ * path under one where the new archive ships a file, cannot be copied
+ * and is returned in `unkept`.
+ *
+ * `excludeRelDirs` are nested entries' roots (forward-slash, relative
+ * to `liveRoot`), which the install copies itself. Paths returned are
+ * repo-relative.
+ */
+async function carryForwardUserFiles(opts: {
+  liveRoot: string;
+  stagedRoot: string;
+  repoDir: string;
+  priorEntry: UpstreamExtensionEntry | null;
+  excludeRelDirs: ReadonlyArray<string>;
+}): Promise<{ carried: string[]; unattributed: string[]; unkept: string[] }> {
+  const { liveRoot, stagedRoot, repoDir, priorEntry, excludeRelDirs } = opts;
+  const carried: string[] = [];
+  const unattributed: string[] = [];
+  const unkept: string[] = [];
+  const result = { carried, unattributed, unkept };
+  if (!await isPlainDir(liveRoot)) return result;
+
+  const priorFiles = priorEntry?.files ?? [];
+  const installed = readManifestIdentityAt(join(liveRoot, "manifest.yaml"));
+  const attributable = priorFiles.length > 0 &&
+    installed?.version === priorEntry?.version;
+  const shippedBefore = new Set(priorFiles.map(canonicalClaimPath));
+  const excluded = new Set(excludeRelDirs);
+
+  // `blocked` is set once the staged tree has a non-directory where
+  // this directory would go: nothing under it can be copied.
+  const walk = async (relDir: string, blocked: boolean): Promise<void> => {
+    for await (const entry of Deno.readDir(join(liveRoot, relDir))) {
+      const rel = relDir === "" ? entry.name : `${relDir}/${entry.name}`;
+      if (rel === "manifest.yaml" || excluded.has(rel)) continue;
+      const livePath = join(liveRoot, rel);
+      const stagedPath = join(stagedRoot, rel);
+      if (entry.isDirectory) {
+        const staged = blocked ? null : await lstatOrNull(stagedPath);
+        await walk(rel, blocked || (staged !== null && !staged.isDirectory));
+        continue;
+      }
+      const repoRel = relative(repoDir, livePath);
+      if (!blocked && await lstatOrNull(stagedPath) !== null) continue;
+      if (shippedBefore.has(canonicalClaimPath(repoRel))) continue;
+      if (blocked || !entry.isFile) {
+        unkept.push(repoRel);
+        continue;
+      }
+      if (!attributable) {
+        unattributed.push(repoRel);
+        continue;
+      }
+      await Deno.mkdir(dirname(stagedPath), { recursive: true });
+      await Deno.copyFile(livePath, stagedPath);
+      await copyTimes(livePath, stagedPath);
+      carried.push(repoRel);
+    }
+  };
+  await walk("", false);
+  return result;
+}
+
+/** The target of the symlink at `path`, or null when it is not one. */
+async function readLinkOrNull(path: string): Promise<string | null> {
+  const stat = await lstatOrNull(path);
+  return stat?.isSymlink ? await Deno.readLink(path) : null;
+}
+
+async function lstatOrNull(path: string): Promise<Deno.FileInfo | null> {
+  try {
+    return await Deno.lstat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
 }
 
 async function copyTimes(src: string, dest: string): Promise<void> {
