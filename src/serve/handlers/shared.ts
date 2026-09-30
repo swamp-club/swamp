@@ -318,7 +318,14 @@ export function isAccessModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
 ): boolean {
-  if (typeArg && isControlPlaneModelType(typeArg)) return true;
+  if (typeArg) {
+    // ModelType.create throws for a blank or separator-only type, failing the
+    // request rather than letting it past this gate.
+    const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
+    if (isControlPlaneModelType(ModelType.create(stripped).normalized)) {
+      return true;
+    }
+  }
   if (resolvedType && isControlPlaneModelType(resolvedType)) return true;
   return false;
 }

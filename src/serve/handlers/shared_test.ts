@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertInstanceOf } from "@std/assert";
+import { assertEquals, assertInstanceOf, assertThrows } from "@std/assert";
 import { gunzipSync } from "node:zlib";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
@@ -38,6 +38,7 @@ import {
   emitRunCancelAudit,
   emitSystemAuditEvent,
   filterByResources,
+  isAccessModelType,
   isAuthorized,
   LibSwampStreamError,
   listTokenSessions,
@@ -1409,4 +1410,34 @@ Deno.test("filterByResources: a tags deny drops the tagged item and keeps an unt
     ctx,
   );
   assertEquals(result.map((i) => i.name), ["b"]);
+});
+
+Deno.test("isAccessModelType: every control-plane type, bare or @-prefixed, is admin-only", () => {
+  for (
+    const type of [
+      "swamp/grant",
+      "@swamp/group",
+      "swamp::server-token",
+      "swamp/enrollment-token",
+      "swamp/worker",
+      "swamp/step-lease",
+      "@swamp/pending-dispatch",
+      "SWAMP.fleet-probe",
+    ]
+  ) {
+    assertEquals(isAccessModelType(type, undefined), true, type);
+    // Resolved types come normalized, with or without the @.
+    assertEquals(
+      isAccessModelType(undefined, type.toLowerCase().replace(/::|\./g, "/")),
+      true,
+      type,
+    );
+  }
+  assertEquals(isAccessModelType("command/shell", "command/shell"), false);
+});
+
+Deno.test("isAccessModelType: a blank or separator-only typeArg fails the request", () => {
+  for (const typeArg of ["::", "/", " "]) {
+    assertThrows(() => isAccessModelType(typeArg, undefined));
+  }
 });

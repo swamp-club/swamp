@@ -40,10 +40,20 @@ export const CONTROL_PLANE_MODEL_TYPES: readonly string[] = [
 ];
 
 /**
+ * Every `type_normalized` value a control-plane record can be stored under:
+ * each type bare and with its `@` prefix. ModelType keeps a leading `@`, and
+ * the access commands write grants and groups as `@swamp/grant` and
+ * `@swamp/group`, so an exclusion that compares stored types as strings must
+ * name both forms (swamp-club#2756).
+ */
+export const CONTROL_PLANE_STORED_TYPES: readonly string[] =
+  CONTROL_PLANE_MODEL_TYPES.flatMap((type) => [type, `@${type}`]);
+
+/**
  * The normalized form of a model type string, as ModelType normalizes it,
  * with a leading `@` dropped; null for a string that normalizes to nothing.
  */
-export function normalizeControlPlaneType(type: string): string | null {
+export function normalizeModelTypeName(type: string): string | null {
   const stripped = type.startsWith("@") ? type.slice(1) : type;
   try {
     return ModelType.create(stripped).normalized;
@@ -59,6 +69,6 @@ export function normalizeControlPlaneType(type: string): string | null {
  * match.
  */
 export function isControlPlaneModelType(type: string): boolean {
-  const normalized = normalizeControlPlaneType(type);
+  const normalized = normalizeModelTypeName(type);
   return normalized !== null && CONTROL_PLANE_MODEL_TYPES.includes(normalized);
 }

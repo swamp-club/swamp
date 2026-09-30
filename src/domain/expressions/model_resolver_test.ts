@@ -2613,3 +2613,55 @@ Deno.test("buildContext: expressions never read control-plane records", async ()
     catalog.close();
   });
 });
+
+Deno.test("buildContext: control-plane records stored under an @-prefixed type are not readable either", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    // The access commands write grants as @swamp/grant; ModelType keeps the @.
+    const grantType = ModelType.create("@swamp/grant");
+    const grant = Definition.create({ name: "grant-at", globalArguments: {} });
+    await dataRepo.save(
+      grantType,
+      grant.id,
+      Data.create({
+        name: "grant-main",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", modelName: "grant-at", specName: "grant" },
+        ownerDefinition: owner,
+      }),
+      new TextEncoder().encode(JSON.stringify({ subject: "user:adam" })),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    // Without the exclusion the record is there under the @ type.
+    assertEquals(
+      (await dqs.query('modelType == "@swamp/grant"') as unknown[]).length,
+      1,
+    );
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertExists(ctx.data);
+    assertEquals(await ctx.data.query('modelType == "@swamp/grant"'), []);
+    assertEquals(
+      await ctx.data.query('modelType == "@swamp/grant"', "attributes"),
+      [],
+    );
+    assertEquals(await ctx.data.latest("grant-at", "grant-main"), null);
+    assertEquals(ctx.data.specInstanceNames!("grant-at", "grant"), []);
+    catalog.close();
+  });
+});

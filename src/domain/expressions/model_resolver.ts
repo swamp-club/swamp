@@ -21,7 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import type { ModelOutput } from "../models/model_output.ts";
 import { ModelType } from "../models/model_type.ts";
 import {
-  CONTROL_PLANE_MODEL_TYPES,
+  CONTROL_PLANE_STORED_TYPES,
   isControlPlaneModelType,
 } from "../models/control_plane_types.ts";
 import type { Definition, InputsSchema } from "../definitions/definition.ts";
@@ -941,7 +941,7 @@ export class ModelResolver {
         const results = await this.dataQueryService.query(predicate, {
           limit: ns.isWildcard ? undefined : 1,
           loadAttributes: true,
-          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+          excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
         }) as DataRecord[];
         if (ns.isWildcard) {
@@ -983,7 +983,7 @@ export class ModelResolver {
                     data.tags["specName"],
                     ns.modelName,
                     targetNs,
-                    CONTROL_PLANE_MODEL_TYPES,
+                    CONTROL_PLANE_STORED_TYPES,
                   );
                 }
                 const record = this.dataToRecord(
@@ -1017,7 +1017,7 @@ export class ModelResolver {
               targetNs,
               {
                 includeContentPath: true,
-                excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+                excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
               },
             );
             // The coordinates path above resolves sensitive vault references
@@ -1041,7 +1041,7 @@ export class ModelResolver {
           ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
-          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+          excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
         }) as DataRecord[];
         checkWildcardAmbiguity(results, rawModelName);
@@ -1052,7 +1052,7 @@ export class ModelResolver {
               specName,
               ns.modelName,
               undefined,
-              CONTROL_PLANE_MODEL_TYPES,
+              CONTROL_PLANE_STORED_TYPES,
             );
           }
           await this.materializePath(results[0]);
@@ -1068,14 +1068,14 @@ export class ModelResolver {
           ns.namespacePredicate;
         if (ns.isWildcard) {
           const records = this.dataQueryService.querySync(predicate, {
-            excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+            excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           }) as DataRecord[];
           checkWildcardAmbiguity(records, rawModelName);
           return records.map((r) => r.version).sort((a, b) => a - b);
         }
         const results = this.dataQueryService.querySync(predicate, {
           select: "version",
-          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+          excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
         }) as number[];
         return results.slice().sort((a, b) => a - b);
       },
@@ -1090,7 +1090,7 @@ export class ModelResolver {
           nsPredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
-          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+          excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
         }) as DataRecord[];
         return dropMissingPaths(deduplicateByName(results));
@@ -1106,7 +1106,7 @@ export class ModelResolver {
           ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
-          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+          excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
         }) as DataRecord[];
         if (ns.isWildcard) {
@@ -1131,7 +1131,7 @@ export class ModelResolver {
           parsed.modelName,
           specName,
           targetNs,
-          CONTROL_PLANE_MODEL_TYPES,
+          CONTROL_PLANE_STORED_TYPES,
         );
       },
       query: async (
@@ -1141,7 +1141,7 @@ export class ModelResolver {
         if (!this.dataQueryService) return [];
         const results = await this.dataQueryService.query(predicate, {
           select,
-          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+          excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
         });
         // Projections are opaque values, so a projected path is not

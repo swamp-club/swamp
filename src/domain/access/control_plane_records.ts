@@ -19,7 +19,7 @@
 
 import {
   CONTROL_PLANE_MODEL_TYPES,
-  normalizeControlPlaneType,
+  normalizeModelTypeName,
 } from "../models/control_plane_types.ts";
 import type { AccessResource } from "./access_decision_service.ts";
 
@@ -33,7 +33,7 @@ import type { AccessResource } from "./access_decision_service.ts";
  * it (swamp-club#2756).
  */
 export function controlPlaneRecordResource(type: string): AccessResource {
-  const name = normalizeControlPlaneType(type);
+  const name = normalizeModelTypeName(type);
   if (name === null) throw new Error("Model type cannot be empty");
   return { kind: "access", name, fields: { name } };
 }

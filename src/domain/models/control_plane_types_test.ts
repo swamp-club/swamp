@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   CONTROL_PLANE_MODEL_TYPES,
+  CONTROL_PLANE_STORED_TYPES,
   isControlPlaneModelType,
 } from "./control_plane_types.ts";
 import { modelRegistry } from "./models.ts";
@@ -74,5 +75,16 @@ Deno.test("isControlPlaneModelType: rejects user and other built-in types", () =
 Deno.test("isControlPlaneModelType: every control-plane type is marked internal in the registry", () => {
   for (const type of CONTROL_PLANE_MODEL_TYPES) {
     assertEquals(modelRegistry.isInternal(type), true, type);
+  }
+});
+
+Deno.test("CONTROL_PLANE_STORED_TYPES: names each type bare and @-prefixed", () => {
+  assertEquals(
+    CONTROL_PLANE_STORED_TYPES.length,
+    CONTROL_PLANE_MODEL_TYPES.length * 2,
+  );
+  for (const type of CONTROL_PLANE_MODEL_TYPES) {
+    assertEquals(CONTROL_PLANE_STORED_TYPES.includes(type), true, type);
+    assertEquals(CONTROL_PLANE_STORED_TYPES.includes(`@${type}`), true, type);
   }
 });

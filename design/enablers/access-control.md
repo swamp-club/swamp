@@ -556,7 +556,8 @@ holding its secret, and a group record lists its members (swamp-club#2756).
   `access:group`, which `access.grant.list` and `access.group.list` still
   authorize as `read`.
 - **Not addressable from expressions.** The CEL data namespace passes the
-  control-plane types to `DataQueryService` as `excludeModelTypes`, which
+  control-plane types, bare and `@`-prefixed as they can be stored
+  (`CONTROL_PLANE_STORED_TYPES`), to `DataQueryService` as `excludeModelTypes`, which
   drops them in SQL before the predicate, the limit or a `select` projection
   runs, so no predicate reaches them. `model.<name>` and its orphan-data
   fallback skip them. `workers.connected()` keeps its own read of worker
