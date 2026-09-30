@@ -1421,9 +1421,18 @@ shared lockfile, replays any change an earlier transaction failed to publish,
 runs the section, then records the change as a `LockfileDelta` and publishes the
 lockfile. Nested sections, such as dependency installs, join the outer
 transaction. A dependency that the fetched lockfile lists but that is missing
-from this checkout is installed at its pinned version
-(`InstallResult.restoredFromLockfile`), and a collision rollback keeps its entry.
-See [Datastores](../enablers/datastores.md) for the fetch and publish.
+from this checkout is installed at its pinned version, as a pending
+dependency of the parent, so a rollback restores the pinned entry it replaced.
+The files-present check applies only to a lockfile a transaction governs; an
+entry whose paths lie outside the repo (a pre-`.swamp` layout) still counts as
+installed. See [Datastores](../enablers/datastores.md) for the fetch and
+publish.
+
+A swamp from before swamp-club#2838 locks a managed lockfile through
+`upstream_extensions.json.lock`, not the sibling `.lock`, so an older and a
+newer swamp writing the same lockfile (a shared filesystem datastore, or
+worktrees sharing a cache) do not exclude each other. Upgrade every writer
+together.
 
 The auto-resolve lock stays separate. It covers inspecting, downloading,
 installing and loading, so a process that loses the race loads what the winner

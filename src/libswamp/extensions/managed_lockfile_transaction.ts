@@ -22,7 +22,9 @@ import { resolve } from "@std/path";
 import {
   applyLockfileDelta,
   diffLockfileEntries,
+  emptyLockfileDelta,
   isEmptyLockfileDelta,
+  mergeLockfileDeltas,
 } from "../../domain/extensions/lockfile_delta.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -36,6 +38,7 @@ import {
 } from "../../infrastructure/persistence/pending_lockfile_publish.ts";
 import {
   readUpstreamExtensions,
+  type UpstreamExtensionEntry,
   type UpstreamExtensionsMap,
 } from "../../infrastructure/persistence/upstream_extensions.ts";
 
@@ -59,8 +62,14 @@ export interface ManagedLockfileLock {
 /** Where a lockfile change that failed to publish is recorded. */
 export interface PendingLockfileDeltaStore {
   read(): Promise<PendingLockfilePublish>;
-  /** Records the outstanding change, replacing any earlier record. */
-  write(delta: LockfileEntryDelta): Promise<void>;
+  /**
+   * Records the outstanding change, replacing any earlier record.
+   * `incomplete` marks a record written before a change runs.
+   */
+  write(
+    delta: LockfileEntryDelta,
+    options?: { incomplete?: boolean },
+  ): Promise<void>;
   clear(): Promise<void>;
 }
 
@@ -87,8 +96,9 @@ export interface ManagedLockfileTransactionOptions {
   /**
    * `throw` (the default) rethrows a failed publish once the change is
    * recorded as pending. `defer` reports it to `onWarning` and completes
-   * normally; the next transaction publishes it. Serve defers, as its
-   * handlers have already answered the client.
+   * normally; the next transaction publishes it. Serve defers: the change
+   * has applied on the instance, and failing the request would report it
+   * as not made.
    */
   publishFailure?: "throw" | "defer";
   onWarning?: (message: string, error?: unknown) => void;
@@ -104,11 +114,15 @@ export interface ManagedLockfileTransactionOptions {
  *
  * 1. fetches the datastore's lockfile into the cache,
  * 2. replays any change an earlier transaction failed to publish,
- * 3. runs the caller's change,
- * 4. records the whole outstanding change (the diff against the fetched
- *    lockfile) as pending, publishes, and clears the record.
+ * 3. records that a change is under way (an `incomplete` record), so a
+ *    process killed during the change leaves its local entries for the
+ *    next transaction to keep,
+ * 4. runs the caller's change,
+ * 5. records the whole outstanding change (any earlier record merged with
+ *    the diff against the fetched lockfile), publishes, and clears the
+ *    record.
  *
- * Step 4 also runs when the change throws, since an install can fail after
+ * Step 5 also runs when the change throws, since an install can fail after
  * its lockfile entry landed; the original error is rethrown. Lock order:
  * this lock, then the pulled-extensions lock, then the lockfile's own
  * advisory lock. An install downloads before `run`, outside every lock;
@@ -151,24 +165,34 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
 
   async #runLocked<T>(fn: () => Promise<T>): Promise<T> {
     const pending = await this.#pending.read();
-    const localBefore = pending.kind === "unknown"
-      ? await this.#readEntries()
-      : undefined;
+    const prior = pending.kind === "delta"
+      ? pending.delta
+      : emptyLockfileDelta<UpstreamExtensionEntry>();
+    // An older swamp's record, or a change that was interrupted, may have
+    // left local entries no delta names.
+    const keepLocal = pending.kind === "unknown" ||
+      (pending.kind === "delta" && pending.incomplete === true);
+    const localBefore = keepLocal ? await this.#readEntries() : undefined;
     await this.#sync.hydrate();
     const fetched = await this.#readEntries();
-    if (pending.kind === "delta") {
-      await this.#writeEntries(applyLockfileDelta(fetched, pending.delta));
-    } else if (localBefore) {
-      // An older swamp recorded that a change was unpublished but not
-      // what it was. Keep every local entry: nothing added is lost, though
-      // an entry another checkout removed may come back.
-      this.#onWarning(
-        "An earlier extension lockfile change was not published and its " +
-          "content was not recorded; merging the local entries into the " +
-          "datastore's lockfile.",
-      );
-      await this.#writeEntries({ ...fetched, ...localBefore });
+    if (pending.kind !== "none") {
+      let replayed = fetched;
+      if (localBefore) {
+        // Keep every local entry: nothing added is lost, though an entry
+        // another checkout removed may come back.
+        this.#onWarning(
+          "An earlier extension lockfile change was not published and was " +
+            "not fully recorded; merging the local entries into the " +
+            "datastore's lockfile.",
+        );
+        replayed = { ...replayed, ...localBefore };
+      }
+      await this.#writeEntries(applyLockfileDelta(replayed, prior));
     }
+    // Written ahead of the change: if the process dies before the record
+    // below replaces it, the next transaction keeps this checkout's local
+    // entries instead of letting the fetch drop them.
+    await this.#pending.write(prior, { incomplete: true });
 
     const lease = { active: true };
     let result: { ok: true; value: T } | { ok: false; error: unknown };
@@ -182,11 +206,11 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
 
     const hadPending = pending.kind !== "none";
     if (result.ok) {
-      await this.#settle(fetched, hadPending, false);
+      await this.#settle(fetched, prior, hadPending, false);
       return result.value;
     }
     try {
-      await this.#settle(fetched, hadPending, true);
+      await this.#settle(fetched, prior, hadPending, true);
     } catch (error) {
       this.#onWarning("Failed to publish the extension lockfile", error);
     }
@@ -194,30 +218,41 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
   }
 
   /**
-   * Records and publishes everything the local lockfile changed relative
-   * to the fetched one.
+   * Records and publishes the outstanding change: the earlier record merged
+   * with everything the local lockfile changed relative to the fetched one.
    *
-   * With a pending record from an earlier transaction, the lockfile is
-   * published even when that diff is empty: a fetch that found nothing to
-   * download (no lockfile in the datastore yet, or a sync service that
-   * keeps a locally changed file) leaves the pending change in the fetched
-   * copy, so the diff cannot show it (swamp-club#2752).
+   * The earlier record is merged in, never replaced, and with one the
+   * lockfile is published even when the diff is empty. A fetch that found
+   * nothing to download (no lockfile in the datastore yet, or a sync
+   * service that keeps a locally changed file) leaves the earlier change in
+   * the fetched copy, so the diff alone cannot show it (swamp-club#2752).
    */
   async #settle(
     fetched: UpstreamExtensionsMap,
+    prior: LockfileEntryDelta,
     hadPending: boolean,
     changeFailed: boolean,
   ): Promise<void> {
-    const delta = diffLockfileEntries(fetched, await this.#readEntries());
-    if (isEmptyLockfileDelta(delta) && !hadPending) return;
-    // Written ahead of the publish, so a crash or a failed publish leaves
-    // the change for the next transaction to replay. An empty diff keeps
-    // the earlier record, which still describes the unpublished change.
-    if (!isEmptyLockfileDelta(delta)) await this.#pending.write(delta);
+    const record = mergeLockfileDeltas(
+      prior,
+      diffLockfileEntries(fetched, await this.#readEntries()),
+    );
+    if (isEmptyLockfileDelta(record) && !hadPending) {
+      await this.#pending.clear();
+      return;
+    }
+    const tolerate = changeFailed || this.#publishFailure === "defer";
+    try {
+      await this.#pending.write(record);
+    } catch (error) {
+      // The incomplete record written before the change still stands.
+      if (!tolerate) throw error;
+      this.#onWarning("Failed to record the extension lockfile change", error);
+    }
     try {
       await this.#sync.publish();
     } catch (error) {
-      if (changeFailed || this.#publishFailure === "throw") throw error;
+      if (!tolerate) throw error;
       this.#onWarning(
         "The extension lockfile change was not published to the datastore; " +
           "the next extension change retries it",
@@ -334,7 +369,17 @@ export function createRepoPendingLockfileStore(
 ): PendingLockfileDeltaStore {
   return {
     read: () => readLockfilePublishPending(repoDir),
-    write: (delta) => markLockfilePublishPending(repoDir, delta),
+    write: (delta, options) =>
+      markLockfilePublishPending(repoDir, delta, options),
     clear: () => clearLockfilePublishPending(repoDir),
   };
+}
+
+/**
+ * Whether a managed lockfile transaction governs the lockfile at
+ * `lockfilePath` in the current call. Its entries may then have come from
+ * another checkout through the fetch.
+ */
+export function isManagedLockfile(lockfilePath: string): boolean {
+  return transactionFor(lockfilePath) !== undefined;
 }

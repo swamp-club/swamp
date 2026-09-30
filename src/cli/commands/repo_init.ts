@@ -219,7 +219,9 @@ export const repoUpgradeCommand = new Command()
     const lockfilePath = extensionInstallDeps?.lockfilePath ?? null;
     // The install pass may migrate lockfile entries; they are made against
     // the datastore's lockfile and published as they land, like the other
-    // extension writers (swamp-club#2838).
+    // extension writers (swamp-club#2838). The marker is read before the
+    // upgrade runs: the upgrade does not change managedConfig or the
+    // datastore type, which are all the transaction reads from it.
     const lockfileTransaction = lockfilePath
       ? createManagedLockfileTransaction(
         repoDir,

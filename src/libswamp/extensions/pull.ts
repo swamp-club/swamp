@@ -68,7 +68,10 @@ import {
 } from "../../domain/extensions/extension_archive_limits.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
-import { assertContainedPath } from "../../infrastructure/persistence/safe_path.ts";
+import {
+  assertContainedPath,
+  PathTraversalError,
+} from "../../infrastructure/persistence/safe_path.ts";
 import {
   canonicalClaimPath,
   claimsPath,
@@ -79,7 +82,10 @@ import { verifyChecksum } from "../../domain/update/integrity.ts";
 import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
 import type { Logger } from "@logtape/logtape";
 import type { LibSwampContext } from "../context.ts";
-import { inManagedLockfileTransaction } from "./managed_lockfile_transaction.ts";
+import {
+  inManagedLockfileTransaction,
+  isManagedLockfile,
+} from "./managed_lockfile_transaction.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
@@ -2129,10 +2135,13 @@ export async function applyInstall(
         // their writes are visible too. A managed lockfile fetched from
         // the datastore can also list a dependency another checkout
         // installed, whose files are not on this one (swamp-club#2838);
-        // that dependency is installed at the version it pins.
+        // that dependency is installed at the version it pins. Other
+        // lockfiles only list what this checkout installed, so an entry
+        // still means installed there.
         const lockedEntry = ctx.lockfileRepository.getEntry(depRef.name);
         const isInstalled = lockedEntry !== null &&
-          await lockedFilesPresent(lockedEntry.files ?? [], ctx.repoDir);
+          (!isManagedLockfile(ctx.lockfileRepository.lockfilePath) ||
+            await lockedFilesPresent(lockedEntry.files ?? [], ctx.repoDir));
 
         if (!isInstalled && lockedEntry !== null) {
           // Owned by this install like any other dependency: rolling it
@@ -2261,16 +2270,22 @@ export async function applyInstall(
 }
 
 /**
- * Whether every file a lockfile entry tracks exists on this checkout.
- * Paths are validated first: a lockfile fetched from the datastore is not
- * trusted to stay inside the repo.
+ * Whether every file a lockfile entry tracks exists on this checkout. A
+ * path outside the repo is never read: such an entry predates the
+ * repo-relative layout (a pre-.swamp SWAMP_MODELS_DIR outside the repo),
+ * and is treated as present, as any entry was before swamp-club#2838.
  */
 async function lockedFilesPresent(
   files: readonly string[],
   repoDir: string,
 ): Promise<boolean> {
   for (const file of files) {
-    assertContainedPath(file, repoDir);
+    try {
+      assertContainedPath(file, repoDir);
+    } catch (error) {
+      if (error instanceof PathTraversalError) return true;
+      throw error;
+    }
     if (!await pathExistsNoFollow(join(repoDir, file))) return false;
   }
   return true;

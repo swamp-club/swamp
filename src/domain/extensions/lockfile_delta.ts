@@ -89,3 +89,24 @@ function canonicalJson(value: unknown): string {
     );
   });
 }
+
+/**
+ * One delta with the effect of applying `older` and then `newer`: newer
+ * upserts and removals win for the names they touch.
+ */
+export function mergeLockfileDeltas<E>(
+  older: LockfileDelta<E>,
+  newer: LockfileDelta<E>,
+): LockfileDelta<E> {
+  const newerRemovals = new Set(newer.removals);
+  const upserts: Record<string, E> = {};
+  for (const [name, entry] of Object.entries(older.upserts)) {
+    if (!newerRemovals.has(name)) upserts[name] = entry;
+  }
+  Object.assign(upserts, newer.upserts);
+  const removals = new Set(
+    older.removals.filter((name) => !Object.hasOwn(newer.upserts, name)),
+  );
+  for (const name of newer.removals) removals.add(name);
+  return { upserts, removals: [...removals].sort() };
+}

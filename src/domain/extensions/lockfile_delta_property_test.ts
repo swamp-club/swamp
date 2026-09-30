@@ -23,6 +23,7 @@ import {
   applyLockfileDelta,
   diffLockfileEntries,
   isEmptyLockfileDelta,
+  mergeLockfileDeltas,
 } from "./lockfile_delta.ts";
 
 interface Entry {
@@ -81,6 +82,26 @@ Deno.test("applyLockfileDelta: replaying a local change onto a peer's lockfile k
         for (const name of delta.removals) {
           assertEquals(Object.hasOwn(merged, name), false);
         }
+      },
+    ),
+  );
+});
+
+Deno.test("mergeLockfileDeltas: applying the merge equals applying the older delta then the newer one", () => {
+  fc.assert(
+    fc.property(
+      entriesArb,
+      entriesArb,
+      entriesArb,
+      entriesArb,
+      entriesArb,
+      (base, a, b, c, target) => {
+        const older = diffLockfileEntries(a, b);
+        const newer = diffLockfileEntries(c, target);
+        assertEquals(
+          applyLockfileDelta(base, mergeLockfileDeltas(older, newer)),
+          applyLockfileDelta(applyLockfileDelta(base, older), newer),
+        );
       },
     ),
   );

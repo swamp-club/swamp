@@ -102,3 +102,16 @@ Deno.test("clearLockfilePublishPending: clears the record and tolerates a missin
     assertEquals(await readLockfilePublishPending(dir), { kind: "none" });
   });
 });
+
+Deno.test("markLockfilePublishPending: an incomplete record round-trips its flag", async () => {
+  await withRepoDir(async (dir) => {
+    await markLockfilePublishPending(dir, { upserts: {}, removals: [] }, {
+      incomplete: true,
+    });
+    assertEquals(await readLockfilePublishPending(dir), {
+      kind: "delta",
+      delta: { upserts: {}, removals: [] },
+      incomplete: true,
+    });
+  });
+});

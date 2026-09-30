@@ -256,8 +256,8 @@ function extensionLockfileTransaction(
       markDirty: (path) => markDirty(path),
     }),
     pending: createRepoPendingLockfileStore(ctx.repoDir),
-    // The handler has already answered its client; a failed publish stays
-    // pending and the next extension change retries it.
+    // The change has applied on this instance, so the request succeeds; a
+    // failed publish stays pending and the next extension change retries it.
     publishFailure: "defer",
     onWarning: (message, error) =>
       error === undefined ? logger.warn(message) : logger.warn(

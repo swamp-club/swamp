@@ -319,3 +319,30 @@ Deno.test("managed lockfile: no lock file is left in the synced config tier or t
     assertEquals(await lockFilesUnder(join(w.remoteDir, "config")), []);
   });
 });
+
+Deno.test("managed lockfile: a dependency whose entry points outside the repo counts as installed, not a path error", async () => {
+  await withWorld(async (w) => {
+    w.archives.set("@test/app", await buildArchive("@test/app", ["@test/old"]));
+    // A pre-.swamp entry from SWAMP_MODELS_DIR outside the repo.
+    const legacy = {
+      "@test/old": {
+        version: VERSION,
+        pulledAt: "2026-01-01T00:00:00.000Z",
+        files: ["../outside/models/old.ts"],
+      },
+    };
+    await Deno.writeTextFile(
+      join(w.remoteDir, "config", LOCKFILE),
+      JSON.stringify(legacy),
+    );
+    const a = await w.checkout("a");
+
+    await a.install("@test/app");
+
+    assertEquals(await w.remoteEntries(), ["@test/app", "@test/old"]);
+    assertEquals(
+      (await readUpstreamExtensions(a.lockfilePath))["@test/old"],
+      legacy["@test/old"],
+    );
+  });
+});

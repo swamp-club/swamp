@@ -1984,10 +1984,13 @@ extension-backed datastores:
    fetch the shared lockfile with a `config`-scoped `pullChanged`, and replay
    any change an earlier transaction failed to publish.
 3. Under the pulled-extensions lock, apply the change to the lockfile.
-4. Record the whole outstanding change (the diff against the fetched
-   lockfile) in `.swamp/managed-config-lockfile-unpublished`, publish exactly
-   the lockfile, clear the record, and release the global lock. This also
-   runs when the change throws after writing the lockfile.
+4. Record the whole outstanding change (any earlier record merged with the
+   diff against the fetched lockfile) in
+   `.swamp/managed-config-lockfile-unpublished`, publish exactly the
+   lockfile, clear the record, and release the global lock. This also runs
+   when the change throws after writing the lockfile. Before the change
+   runs, the record is marked `incomplete`, so a process killed mid-change
+   leaves its local entries for the next transaction to keep.
 
 `extension rm`'s preview, `extension update`'s target selection and
 `extension install`'s restore fetch under the lock first, so they read what
