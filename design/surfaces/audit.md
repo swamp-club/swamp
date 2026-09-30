@@ -45,7 +45,10 @@ actions to swamp workflow runs.
   creates a `.swamp/` directory, so a hook firing in a git worktree or other
   non-repo directory cannot leave a half-initialized repository behind.
 
-- **`swamp audit`**: shows the merged timeline.
+- **`swamp audit`**: shows the merged timeline. With `--server` it sends
+  `audit.timeline` to `swamp serve`, which needs `admin` on `access:audit`. Its
+  command lines can name models, workflows and vaults, so a model `read` grant
+  is not enough.
 
 - **`swamp doctor audit`**: a preflight check that the audit integration works.
   See [`audit-doctor.md`](./audit-doctor.md).

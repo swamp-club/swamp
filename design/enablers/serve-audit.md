@@ -93,11 +93,15 @@ warning; production should use a dedicated store.
 
 ## Query API
 
+Every `audit.*` request needs `admin` on `access:audit`, except
+`audit.unsubscribe`, which only ends the caller's own stream.
+
 - `audit.query`: paginated query filtered by time range, principal, category,
-  action, resource and outcome. Needs `read` permission on the `audit` resource
-  kind.
+  action, resource and outcome.
 - `audit.verify`: checks chain integrity for a time range and reports broken
   chains or missing events.
+- `audit.timeline`: the agent command audit behind `swamp audit --server` (see
+  `design/surfaces/audit.md`).
 
 ## CLI commands
 
