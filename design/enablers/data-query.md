@@ -273,10 +273,14 @@ step, so they may return several records for one data name written by
 different workflow steps. `data.latest()` returns the single most recently
 written record regardless of step.
 
-**Vault resolution:** JSON attributes containing `vault.get(...)` references
-are resolved automatically in async data access paths (extension methods,
-`data.query()` in CEL). A failed resolution leaves the reference unresolved
-instead of failing the record.
+**Vault resolution:** the query service never resolves vault references.
+`data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
+CEL, `context.queryData()` in extension methods, and `swamp data query` return
+schema-marked sensitive fields as the stored `vault.get(...)` reference. The
+reads that resolve those fields are `data.latest()`, `steps.<name>.outputs` and
+`model.<name>.resource` in CEL, which record each value in the run's
+`RunSensitiveValues`, and `readResource()` and `readModelData()` in extension
+methods. See "Read-Side Resolution" in `design/primitives/vaults.md`.
 
 ## Predicate Syntax
 

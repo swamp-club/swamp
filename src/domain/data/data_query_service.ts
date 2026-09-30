@@ -39,13 +39,6 @@ import {
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
-import type { VaultService } from "../vaults/vault_service.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
-import {
-  parseSensitiveFieldsFromRowTags,
-  parseSensitiveFieldsTag,
-  resolveSensitiveVaultRefs,
-} from "../models/data_writer.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
@@ -157,8 +150,6 @@ export interface DataQueryServiceOptions {
 
 export class DataQueryService {
   private readonly queryEnv: Environment;
-  private vaultService?: VaultService;
-  private redactor?: SecretRedactor;
   private foreignContentFetcher?: ForeignContentFetcher;
   private readonly foreignContentCache = new Map<string, Uint8Array | null>();
   private backfillPromise: Promise<void> | null = null;
@@ -174,15 +165,6 @@ export class DataQueryService {
       unlistedVariablesAreDyn: true,
       homogeneousAggregateLiterals: false,
     });
-  }
-
-  /** Configures vault resolution for query results. */
-  setVaultService(
-    vaultService: VaultService,
-    redactor?: SecretRedactor,
-  ): void {
-    this.vaultService = vaultService;
-    this.redactor = redactor;
   }
 
   /**
@@ -344,36 +326,20 @@ export class DataQueryService {
       .map((r) => r.data_name);
   }
 
-  private async buildRecordFromRow(
+  private buildRecordFromRow(
     modelName: string,
     dataName: string,
     namespace: string | undefined,
     includeContentPath: boolean,
     row?: CatalogRow | null,
-  ): Promise<DataRecord | null> {
+  ): DataRecord | null {
     const r = row ?? this.catalogStore.findLatestRow(
       modelName,
       dataName,
       namespace,
     );
     if (!r) return null;
-    const record = fromRow(r, this.dataRepo, true, true, includeContentPath);
-    if (this.vaultService && Object.keys(record.attributes).length > 0) {
-      const sensitiveFields = parseSensitiveFieldsFromRowTags(r.tags);
-      if (sensitiveFields) {
-        try {
-          await resolveSensitiveVaultRefs(
-            record.attributes,
-            sensitiveFields,
-            this.vaultService,
-            this.redactor,
-          );
-        } catch {
-          // Leave unresolved
-        }
-      }
-    }
-    return record;
+    return fromRow(r, this.dataRepo, true, true, includeContentPath);
   }
 
   private async scopedBackfill(
@@ -412,8 +378,9 @@ export class DataQueryService {
   /**
    * Queries data artifacts matching a CEL predicate.
    * Triggers backfill if the catalog is not yet populated.
-   * Vault references in JSON attributes are resolved when a VaultService
-   * is configured. Individual resolution failures leave refs unresolved.
+   * Attributes are returned as stored: vault references in sensitive fields
+   * are never resolved here. Callers that need the secret resolve it
+   * themselves, recording it in the run's RunSensitiveValues.
    */
   async query(
     predicate: string,
@@ -499,32 +466,6 @@ export class DataQueryService {
       }
     }
 
-    // Resolve vault references in result attributes (sensitive fields only)
-    if (this.vaultService && Array.isArray(results)) {
-      for (const item of results) {
-        if (
-          typeof item === "object" && item !== null && "attributes" in item
-        ) {
-          const record = item as DataRecord;
-          if (Object.keys(record.attributes).length > 0) {
-            const sensitiveFields = parseSensitiveFieldsTag(record.tags);
-            if (sensitiveFields) {
-              try {
-                await resolveSensitiveVaultRefs(
-                  record.attributes,
-                  sensitiveFields,
-                  this.vaultService,
-                  this.redactor,
-                );
-              } catch {
-                // Leave unresolved — vault unavailable or key missing
-              }
-            }
-          }
-        }
-      }
-    }
-
     return results;
   }
 
@@ -532,7 +473,7 @@ export class DataQueryService {
    * Queries data artifacts matching a CEL predicate (sync version).
    * Used by CEL expression evaluation which must be synchronous.
    * Triggers sync backfill if the catalog is not yet populated.
-   * NOTE: Vault resolution does NOT happen in the sync path.
+   * Like query(), returns attributes as stored.
    */
   querySync(
     predicate: string,

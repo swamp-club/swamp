@@ -26,8 +26,6 @@ import {
 } from "./data_query_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
-import type { VaultService } from "../vaults/vault_service.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
 
 function deduplicateRecords(
   ephemeral: DataRecord[],
@@ -59,14 +57,6 @@ export class CompositeDataQueryService extends DataQueryService {
   ) {
     super(persistentCatalog, persistentRepo);
     this.ephemeralQueryService = ephemeralQueryService;
-  }
-
-  override setVaultService(
-    vaultService: VaultService,
-    redactor?: SecretRedactor,
-  ): void {
-    super.setVaultService(vaultService, redactor);
-    this.ephemeralQueryService.setVaultService(vaultService, redactor);
   }
 
   override setForeignContentFetcher(fetcher: ForeignContentFetcher): void {
