@@ -61,6 +61,7 @@ function buildTree() {
     .globalOption("--json", "json")
     .globalOption("--log-level <level:string>", "level")
     .globalOption("-v, --verbose", "verbose")
+    .globalOption("-q, --quiet", "quiet")
     .globalOption("--no-color", "color")
     .command("model", model)
     .command("init", new Command().arguments("[path:string]").action(noop))
@@ -269,4 +270,29 @@ Deno.test("resolveTelemetryInvocation: an empty invocation resolves to no comman
   assertEquals(result.command, "");
   assertEquals(result.commandPath, []);
   assertEquals(result.globalOptions, ["--json"]);
+});
+
+Deno.test("resolveTelemetryInvocation: a required option value starting with - is not recorded as a key", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "model",
+    "method",
+    "run",
+    "acme-prod",
+    "deploy",
+    "--input",
+    "-hunter2",
+  ]);
+  assertEquals(result.optionKeys, ["--input"]);
+  assertEquals(result.args, ["run", "acme-prod", "deploy"]);
+});
+
+Deno.test("resolveTelemetryInvocation: combined short flags do not consume the next token", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "-vq",
+    "model",
+    "get",
+    "acme-prod",
+  ]);
+  assertEquals(result.commandPath, ["model", "get"]);
+  assertEquals(result.args, ["acme-prod"]);
 });

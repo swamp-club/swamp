@@ -18,9 +18,9 @@ something a primitive depends on, move it to `enablers/` and give it an
   command is resolved against the real command tree
   (`src/cli/telemetry_invocation.ts`): every command word is kept in
   `commandPath`, names, ids, queries and types are sent, and filesystem paths,
-  input values, option values, access groups and principals, and the `data query` predicate are redacted.
-  Error messages keep names but replace whole paths with `<PATH>`
-  (`src/domain/telemetry/error_message_redaction.ts`).
+  input values, option values, access groups and principals, and the
+  `data query` predicate are redacted. Error messages keep names but replace
+  whole paths with `<PATH>` (`src/domain/telemetry/error_message_redaction.ts`).
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`.

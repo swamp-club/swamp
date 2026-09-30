@@ -45,8 +45,12 @@ const PATH_RE = new RegExp(
   "g",
 );
 
-/** Sentence punctuation or a `:line[:col]` suffix, kept outside the redaction. */
-const TRAILING_RE = /(?:[.:]|:\d+(?::\d+)?)+$/;
+/**
+ * A `:line[:col]` suffix and one trailing `.` or `:`, kept outside the
+ * redaction. Deliberately unambiguous — no repeated alternation — so a long
+ * run of `:N` segments cannot backtrack exponentially (swamp-club#2817).
+ */
+const TRAILING_RE = /(?::\d+(?::\d+)?)?[.:]?$/;
 
 const INTERNAL_HOST_RE =
   /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b/g;

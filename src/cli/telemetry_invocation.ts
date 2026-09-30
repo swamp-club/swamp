@@ -93,7 +93,10 @@ export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
  * `key` is a config setting name under `swamp config` — system-defined — but a
  * secret's name under `swamp vault`, which is an input value.
  */
-function isSentArgument(argName: string, commandPath: string[]): boolean {
+export function isSentArgument(
+  argName: string,
+  commandPath: string[],
+): boolean {
   if (argName === "key") return commandPath[0] === "config";
   return SENT_ARGUMENTS.has(argName);
 }
@@ -221,18 +224,35 @@ function optionConsumesNext(
   key: string,
   next: string | undefined,
 ): boolean {
-  if (next === undefined || next.startsWith("-")) return false;
+  if (next === undefined) return false;
 
   const option = findOption(command, key);
-  if (option === undefined) return true;
+  if (option === undefined) {
+    // Combined short flags (`-vq`) take no value when every letter is a
+    // known flag that takes none.
+    if (isCombinedShortFlags(command, key)) return false;
+    return !next.startsWith("-");
+  }
 
   const valueArgs = option.args ?? [];
   if (valueArgs.length === 0) return false;
   if (valueArgs.every((a) => a.optional)) {
-    // An optional value is taken only if the token is not a command word.
-    return command.getCommand(next, true) === undefined;
+    // An optional value is taken only if the token is not an option or a
+    // command word.
+    return !next.startsWith("-") &&
+      command.getCommand(next, true) === undefined;
   }
+  // A required value is always the next token, even one starting with `-`
+  // (`--input -hunter2`) — otherwise the value is recorded as an option key.
   return true;
+}
+
+function isCombinedShortFlags(command: AnyCommand, key: string): boolean {
+  if (!/^-[a-zA-Z]{2,}$/.test(key)) return false;
+  return [...key.slice(1)].every((letter) => {
+    const option = command.getOption(letter, true);
+    return option !== undefined && (option.args ?? []).length === 0;
+  });
 }
 
 function findOption(command: AnyCommand, key: string) {

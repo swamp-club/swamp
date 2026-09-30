@@ -37,6 +37,7 @@ import { Command } from "@cliffy/command";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { registerCommands } from "../src/cli/mod.ts";
 import {
+  isSentArgument,
   REDACTED_ARGUMENTS,
   resolveTelemetryInvocation,
   SENT_ARGUMENTS,
@@ -83,11 +84,6 @@ function collectCases(
 }
 
 const CASES = collectCases(buildRoot(), [], []);
-
-function isSent(argName: string, path: string[]): boolean {
-  if (argName === "key") return path[0] === "config";
-  return SENT_ARGUMENTS.has(argName);
-}
 
 Deno.test("telemetry redaction: the tree has commands to check", () => {
   assert(CASES.length > 100, `only ${CASES.length} commands found`);
@@ -147,7 +143,8 @@ Deno.test("telemetry redaction: only sent arguments survive, and no option value
     for (const argument of declared) {
       const values = argument.variadic ? [canary(), canary()] : [canary()];
       for (const value of values) {
-        (isSent(argument.name, path) ? expectSent : expectRedacted).push(value);
+        (isSentArgument(argument.name, path) ? expectSent : expectRedacted)
+          .push(value);
         args.push(value);
       }
     }

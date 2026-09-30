@@ -160,3 +160,10 @@ Deno.test("redactErrorMessage: keeps URLs", () => {
   const message = "Fetch failed: https://example.com/a/b and file:///x";
   assertEquals(redactErrorMessage(message), message);
 });
+
+Deno.test("redactErrorMessage: a long run of :N segments redacts without backtracking", () => {
+  // A backtracking suffix grammar made this exponential in the run length;
+  // at this size an ambiguous pattern would never finish.
+  const message = "Failed: /a" + ":1".repeat(5000) + "x";
+  assertEquals(redactErrorMessage(message), "Failed: <PATH>");
+});
