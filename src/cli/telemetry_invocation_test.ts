@@ -22,6 +22,7 @@ import { Command } from "@cliffy/command";
 import {
   REDACTED,
   resolveTelemetryInvocation,
+  UNKNOWN_OPTION,
 } from "./telemetry_invocation.ts";
 
 const noop = () => {};
@@ -79,6 +80,16 @@ function buildTree() {
         new Command()
           .arguments("<vault_name:string> <key:string> [value:string]")
           .action(noop),
+      ),
+    )
+    .command(
+      "access",
+      new Command().command(
+        "group",
+        new Command().command(
+          "create",
+          new Command().arguments("<name:string>").action(noop),
+        ),
       ),
     )
     .command(
@@ -294,5 +305,49 @@ Deno.test("resolveTelemetryInvocation: combined short flags do not consume the n
     "acme-prod",
   ]);
   assertEquals(result.commandPath, ["model", "get"]);
+  assertEquals(result.args, ["acme-prod"]);
+});
+
+Deno.test("resolveTelemetryInvocation: too few positionals redacts them all", () => {
+  // `vault put KEY=VALUE` without the vault name would otherwise put the
+  // secret in the vault_name slot, which is sent.
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "vault",
+    "put",
+    "API_KEY=sk-live-123",
+  ]);
+  assertEquals(result.args, [REDACTED]);
+});
+
+Deno.test("resolveTelemetryInvocation: access group names are redacted even as a plain name", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "access",
+    "group",
+    "create",
+    "release-managers",
+  ]);
+  assertEquals(result.commandPath, ["access", "group", "create"]);
+  assertEquals(result.args, ["create", REDACTED]);
+});
+
+Deno.test("resolveTelemetryInvocation: a value typed as an option is not recorded as a key", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "model",
+    "get",
+    "acme-prod",
+    "-abc123",
+  ]);
+  assertEquals(result.optionKeys, [UNKNOWN_OPTION]);
+});
+
+Deno.test("resolveTelemetryInvocation: an unknown flag before the command does not swallow it", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "--typo",
+    "model",
+    "get",
+    "acme-prod",
+  ]);
+  assertEquals(result.commandPath, ["model", "get"]);
+  assertEquals(result.optionKeys, ["--typo"]);
   assertEquals(result.args, ["acme-prod"]);
 });

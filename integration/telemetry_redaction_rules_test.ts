@@ -164,3 +164,24 @@ Deno.test("telemetry redaction: only sent arguments survive, and no option value
     }
   }
 });
+
+Deno.test("telemetry redaction: leaving out a required argument sends nothing", () => {
+  const root = buildRoot();
+  for (const { path, command } of CASES) {
+    const required = command.getArguments().filter((a) => !a.optional);
+    if (required.length < 2) continue;
+    // Drop the first required argument, so every value lands one slot early.
+    const values = required.slice(1).map((_, i) =>
+      `rdx-short-${i}-${crypto.randomUUID().slice(0, 8)}`
+    );
+    const payload = JSON.stringify(
+      resolveTelemetryInvocation(root, [...path, ...values]),
+    );
+    for (const value of values) {
+      assert(
+        !payload.includes(value),
+        `${path.join(" ")}: ${value} leaked in ${payload}`,
+      );
+    }
+  }
+});

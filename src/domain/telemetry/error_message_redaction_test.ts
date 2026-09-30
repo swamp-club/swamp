@@ -167,3 +167,20 @@ Deno.test("redactErrorMessage: a long run of :N segments redacts without backtra
   const message = "Failed: /a" + ":1".repeat(5000) + "x";
   assertEquals(redactErrorMessage(message), "Failed: <PATH>");
 });
+
+Deno.test("redactErrorMessage: redacts a quoted path containing spaces whole", () => {
+  assertEquals(
+    redactErrorMessage(
+      "Cannot read 'C:\\Users\\John Smith\\Acme Corp\\a.yaml' or \"/Users/jane/Application Support/acme\"",
+    ),
+    "Cannot read '<PATH>' or \"<PATH>\"",
+  );
+});
+
+Deno.test("redactErrorMessage: an unquoted path ends at the first space", () => {
+  // Documented limitation: without quotes there is no reliable end to a path.
+  assertEquals(
+    redactErrorMessage("Cannot read /Users/jane/Application Support/x"),
+    "Cannot read <PATH> Support/x",
+  );
+});

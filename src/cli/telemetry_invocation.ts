@@ -89,14 +89,24 @@ export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
   "value",
 ]);
 
+/** Recorded in place of an option key that is neither declared nor option-shaped. */
+export const UNKNOWN_OPTION = "<UNKNOWN_OPTION>";
+
 /**
- * `key` is a config setting name under `swamp config` — system-defined — but a
- * secret's name under `swamp vault`, which is an input value.
+ * Whether a positional declared as `argName` is sent under `commandPath`.
+ *
+ * Two names depend on the command:
+ * - `key` is a config setting name under `swamp config` — system-defined — but
+ *   a secret's name under `swamp vault`, which is an input value.
+ * - Every positional under `swamp access group` names a group or a member, and
+ *   both are redacted — `access group create <name>` declares the group as a
+ *   plain `name`.
  */
 export function isSentArgument(
   argName: string,
   commandPath: string[],
 ): boolean {
+  if (commandPath[0] === "access" && commandPath[1] === "group") return false;
   if (argName === "key") return commandPath[0] === "config";
   return SENT_ARGUMENTS.has(argName);
 }
@@ -117,7 +127,10 @@ export function isSentArgument(
  *
  * Anything that cannot be matched — an unknown option's value, an unknown
  * command, a positional beyond the declared arguments — is redacted, because
- * this also records invocations that failed to parse.
+ * this also records invocations that failed to parse. When fewer positionals
+ * are given than the command requires, the index mapping cannot be trusted
+ * (`vault put KEY=VALUE` would put the secret in the vault-name slot), so
+ * every positional is redacted.
  *
  * `command`, `subcommand` and `args` keep the shape swamp-club already
  * consumes: `args` is the command words after the subcommand followed by the
@@ -156,7 +169,7 @@ export function resolveTelemetryInvocation(
     if (arg.startsWith("-") && arg.length > 1) {
       const eq = arg.indexOf("=");
       const key = eq === -1 ? arg : arg.slice(0, eq);
-      recordOption(key);
+      recordOption(optionKeyToRecord(current, key));
       if (eq === -1 && optionConsumesNext(current, key, args[i + 1])) {
         i++; // The value is never recorded.
       }
@@ -186,7 +199,10 @@ export function resolveTelemetryInvocation(
   }
 
   const declared = unknownCommand ? [] : current.getArguments();
+  const required = declared.filter((a) => !a.optional).length;
+  const underfilled = positionals.length < required;
   const recordedPositionals = positionals.map((value, index) => {
+    if (underfilled) return REDACTED;
     if (value === REDACTED) return REDACTED;
     const argument = declared[index] ??
       (declared.at(-1)?.variadic ? declared.at(-1) : undefined);
@@ -229,9 +245,10 @@ function optionConsumesNext(
   const option = findOption(command, key);
   if (option === undefined) {
     // Combined short flags (`-vq`) take no value when every letter is a
-    // known flag that takes none.
+    // known flag that takes none, and a command word is never a value.
     if (isCombinedShortFlags(command, key)) return false;
-    return !next.startsWith("-");
+    return !next.startsWith("-") &&
+      command.getCommand(next, true) === undefined;
   }
 
   const valueArgs = option.args ?? [];
@@ -245,6 +262,23 @@ function optionConsumesNext(
   // A required value is always the next token, even one starting with `-`
   // (`--input -hunter2`) — otherwise the value is recorded as an option key.
   return true;
+}
+
+/**
+ * The option key to record. A declared option, or one shaped like an option
+ * name (a mistyped `--inptu`), is recorded as typed. Anything else — a value
+ * such as `-abc123` typed where no option expects one — is not a key and is
+ * recorded as {@link UNKNOWN_OPTION}.
+ */
+function optionKeyToRecord(command: AnyCommand, key: string): string {
+  if (
+    findOption(command, key) !== undefined ||
+    isCombinedShortFlags(command, key) ||
+    /^--[a-zA-Z][a-zA-Z0-9-]*$/.test(key)
+  ) {
+    return key;
+  }
+  return UNKNOWN_OPTION;
 }
 
 function isCombinedShortFlags(command: AnyCommand, key: string): boolean {
