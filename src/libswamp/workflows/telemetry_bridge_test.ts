@@ -387,3 +387,138 @@ Deno.test("bridge records the executor dimension from step_completed (swamp-club
   assertEquals(sink.calls[0].workflowContext.executor, "gpu-box-1");
   assertEquals(sink.calls[1].workflowContext.executor, "loopback");
 });
+
+const NESTED_STARTED_EVENT: WorkflowRunEvent = {
+  kind: "started",
+  runId: "child-run",
+  parentRunId: "run-1",
+  workflowName: "provision",
+  jobs: [],
+};
+
+const GRANDCHILD_STARTED_EVENT: WorkflowRunEvent = {
+  kind: "started",
+  runId: "grandchild-run",
+  parentRunId: "child-run",
+  workflowName: "network",
+  jobs: [],
+};
+
+Deno.test("bridge attributes a parent step after nested workflows to the top-level run (swamp-club#2735)", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  // A workflow step runs a nested workflow, which runs its own nested
+  // workflow; both forward their started events into this stream.
+  await bridge.observe(NESTED_STARTED_EVENT);
+  await bridge.observe(GRANDCHILD_STARTED_EVENT);
+  await bridge.observe({
+    kind: "step_completed",
+    jobId: "deploy",
+    stepId: "nested",
+  });
+  await bridge.observe({
+    kind: "method_executing",
+    jobId: "deploy",
+    stepId: "after",
+    modelName: "m",
+    methodName: "run",
+  });
+  await bridge.observe({
+    kind: "step_completed",
+    jobId: "deploy",
+    stepId: "after",
+  });
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 1);
+  assertEquals(sink.calls[0].workflowContext, {
+    workflowName: "deploy",
+    runId: "run-1",
+    jobName: "deploy",
+    stepName: "after",
+  });
+});
+
+Deno.test("bridge records nested workflow steps under the top-level run with their own job and step names", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe(NESTED_STARTED_EVENT);
+  await bridge.observe({
+    kind: "method_executing",
+    jobId: "vm",
+    stepId: "create",
+    modelName: "m1",
+    methodName: "create",
+  });
+  await bridge.observe({
+    kind: "step_completed",
+    jobId: "vm",
+    stepId: "create",
+  });
+  await bridge.observe(GRANDCHILD_STARTED_EVENT);
+  await bridge.observe({
+    kind: "method_executing",
+    jobId: "net",
+    stepId: "attach",
+    modelName: "m2",
+    methodName: "attach",
+  });
+  await bridge.observe({
+    kind: "step_completed",
+    jobId: "net",
+    stepId: "attach",
+  });
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 2);
+  assertEquals(sink.calls[0].workflowContext, {
+    workflowName: "deploy",
+    runId: "run-1",
+    jobName: "vm",
+    stepName: "create",
+  });
+  assertEquals(sink.calls[1].workflowContext, {
+    workflowName: "deploy",
+    runId: "run-1",
+    jobName: "net",
+    stepName: "attach",
+  });
+});
+
+Deno.test("bridge attributes synthesized and finalize-drained entries after a nested workflow to the top-level run", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe(NESTED_STARTED_EVENT);
+  // Pre-method-executing failure — synthesized entry.
+  await bridge.observe({
+    kind: "step_failed",
+    jobId: "vm",
+    stepId: "lookup",
+    error: "model not found: missing",
+    modelName: "missing",
+    methodName: "create",
+  });
+  // Never completes — drained by finalize().
+  await bridge.observe({
+    kind: "method_executing",
+    jobId: "vm",
+    stepId: "long",
+    modelName: "slow",
+    methodName: "process",
+  });
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 2);
+  for (const call of sink.calls) {
+    assertEquals(call.workflowContext.workflowName, "deploy");
+    assertEquals(call.workflowContext.runId, "run-1");
+  }
+  assertEquals(sink.calls[0].workflowContext.stepName, "lookup");
+  assertEquals(sink.calls[1].workflowContext.stepName, "long");
+});
