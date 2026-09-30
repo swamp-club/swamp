@@ -36,6 +36,7 @@ import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
+import { createConditionEvaluator } from "../domain/access/policy_snapshot_loader.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
 import type { Grant } from "../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
@@ -1363,6 +1364,13 @@ assertDenormDenied("swamp worker", "worker-space");
 assertDenormDenied("@swamp/worker", "worker-at-prefix");
 // worker: canonical
 assertDenormDenied("swamp/worker", "worker-canonical");
+// The worker-fleet control-plane types are admin-only too (swamp-club#2756).
+assertDenormDenied("swamp/step-lease", "step-lease-canonical");
+assertDenormDenied("SWAMP.Step-Lease", "step-lease-dot-uppercase");
+assertDenormDenied("swamp/pending-dispatch", "pending-dispatch-canonical");
+assertDenormDenied("@swamp::pending-dispatch", "pending-dispatch-at-colon");
+assertDenormDenied("swamp/fleet-probe", "fleet-probe-canonical");
+assertDenormDenied("swamp fleet-probe", "fleet-probe-space");
 
 Deno.test("isAccessModelType: normal model typeArg still uses model:* run, not admin", async () => {
   const mock = createMockSocket();
@@ -2524,6 +2532,55 @@ Deno.test("authorizeOrReject: data.get on a user model still allowed for read on
     unauthorizedErrorsOf(frames).length,
     0,
     `a data reader should not be denied user data: ${JSON.stringify(frames)}`,
+  );
+});
+
+Deno.test("authorizeOrReject: a direct-type run on a control-plane definition is judged on its own name", async () => {
+  // A name-conditioned deny must still match an existing control-plane
+  // definition: its fields are its own, not its access resource's
+  // (swamp-club#2756).
+  const grants = [
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      effect: "deny",
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+      condition: 'name == "grant-locked"',
+    }),
+  ];
+  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  // Conditions need a real evaluator.
+  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
+  const conditioned: ConnectionContext = {
+    ...ctx,
+    policySnapshotLoader: {
+      ...ctx.policySnapshotLoader!,
+      snapshot,
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader,
+  };
+
+  const sent = await sendAndCollect(
+    conditioned,
+    "model.method.run",
+    "cp-fields-1",
+    {
+      modelIdOrName: "grant-locked",
+      methodName: "revoke",
+      typeArg: "swamp/grant",
+      definitionName: "grant-locked",
+    },
+  );
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "explicitly denied",
   );
 });
 

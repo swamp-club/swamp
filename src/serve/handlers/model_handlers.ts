@@ -197,8 +197,14 @@ async function resolveMethodRunTarget(
   const methodName = payload.methodName;
   if (payload.typeArg && payload.definitionName) {
     // A definition not created yet has no tags; its type is the one named.
+    // An existing one's fields are its own, even for a control-plane type
+    // whose access resource names the type instead (swamp-club#2756).
     const fields: Record<string, unknown> = definition
-      ? { ...modelAccessResource(definition).fields }
+      ? {
+        name: definition.definition.name,
+        modelType: definition.type.normalized,
+        tags: definition.definition.tags ?? {},
+      }
       : {
         name: payload.modelIdOrName,
         modelType: normalizedTypeOrRaw(payload.typeArg),

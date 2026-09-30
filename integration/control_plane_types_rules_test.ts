@@ -37,6 +37,7 @@ import {
   toPosixPath,
 } from "./arch_fitness_helpers.ts";
 import { CONTROL_PLANE_MODEL_TYPES } from "../src/domain/models/control_plane_types.ts";
+import { modelRegistry } from "../src/domain/models/models.ts";
 
 /** Built-in swamp/* types that hold user data. None today. */
 const USER_DATA_SWAMP_TYPES: readonly string[] = [];
@@ -73,4 +74,17 @@ Deno.test("control-plane types: each listed type is defined by a built-in model"
     CONTROL_PLANE_MODEL_TYPES.filter((type) => !defined.has(type)),
     [],
   );
+});
+
+Deno.test("control-plane types: every registered built-in swamp/* type is in CONTROL_PLANE_MODEL_TYPES", () => {
+  // The source scan above only sees literal type strings; the registry sees
+  // every built-in type however it is defined.
+  const missing = modelRegistry.types()
+    .map((type) => type.normalized)
+    .filter((type) => type.startsWith("swamp/"))
+    .filter((type) =>
+      !CONTROL_PLANE_MODEL_TYPES.includes(type) &&
+      !USER_DATA_SWAMP_TYPES.includes(type)
+    );
+  assertEquals(missing, []);
 });

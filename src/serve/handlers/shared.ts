@@ -37,11 +37,6 @@ import type { ServerMessage } from "../protocol.ts";
 import type { WorkerGateway } from "../worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
-import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
-import { GROUP_MODEL_TYPE } from "../../domain/models/access/group_model.ts";
-import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
-import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../../domain/models/worker/enrollment_token_model.ts";
-import { WORKER_MODEL_TYPE } from "../../domain/models/worker/worker_model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
   parsePrincipal,
@@ -50,6 +45,7 @@ import {
 } from "../../domain/access/principal.ts";
 import type { Action } from "../../domain/access/action.ts";
 import { isControlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
+import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
 import type {
   AccessDecision,
   AccessPrincipal,
@@ -314,28 +310,16 @@ export interface ConnectionContext {
 // SECURITY: Authorization must operate on canonical (normalized) model types,
 // never raw client input. ModelType.normalize() applies lowercasing, separator
 // canonicalization (:: . whitespace → /), and deduplication. Any raw typeArg
-// that normalizes to an admin-only built-in model type must require admin
-// authority. This covers access-control types (grant, group, server-token)
-// and control-plane types (enrollment-token, worker).
+// that normalizes to a control-plane model type — access control (grant,
+// group, server-token) or the worker fleet (enrollment-token, worker,
+// step-lease, pending-dispatch, fleet-probe) — must require admin authority
+// (swamp-club#2756).
 export function isAccessModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
 ): boolean {
-  const adminOnlyTypes = [
-    GRANT_MODEL_TYPE.normalized,
-    GROUP_MODEL_TYPE.normalized,
-    SERVER_TOKEN_MODEL_TYPE.normalized,
-    ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
-    WORKER_MODEL_TYPE.normalized,
-  ];
-  if (typeArg) {
-    const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
-    const normalized = ModelType.create(stripped).normalized;
-    if (adminOnlyTypes.includes(normalized)) return true;
-  }
-  if (resolvedType) {
-    if (adminOnlyTypes.includes(resolvedType)) return true;
-  }
+  if (typeArg && isControlPlaneModelType(typeArg)) return true;
+  if (resolvedType && isControlPlaneModelType(resolvedType)) return true;
   return false;
 }
 
