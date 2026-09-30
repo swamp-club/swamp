@@ -1017,7 +1017,9 @@ export function validateServeDaemonArgs(
   if (options.keyFile) {
     unitArgs.push("--key-file", options.keyFile as string);
   }
-  unitArgs.push(...collectServeExtraArgs(options));
+  for (const arg of collectServeExtraArgs(options)) {
+    unitArgs.push(arg);
+  }
 
   const configPath = options.config as string | undefined;
   const configFile = loadServeConfig(
