@@ -1628,6 +1628,55 @@ Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: leaves a kept path inside
   });
 });
 
+Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: never deletes through a symlinked dir that holds a kept path", async () => {
+  await withSetupTempDir(async (dir) => {
+    const target = join(dir, "shared-config");
+    await writeTestFile(join(target, "models", "m.yaml"), "m");
+    await writeTestFile(
+      join(target, "pulled-extensions", "ext", "mod.ts"),
+      "x",
+    );
+    const source = join(dir, "source");
+    await Deno.mkdir(source, { recursive: true });
+    await Deno.symlink(target, join(source, "config"), { type: "dir" });
+    const deps = createDatastoreSetupDeps(source, noTier);
+
+    await deps.cleanupSourceDirs(source, ["config"], [
+      join("config", "pulled-extensions"),
+    ]);
+
+    assertEquals(
+      (await Deno.lstat(join(source, "config"))).isSymlink,
+      true,
+    );
+    assertEquals(await pathExists(join(target, "models", "m.yaml")), true);
+    assertEquals(
+      await pathExists(
+        join(source, "config", "pulled-extensions", "ext", "mod.ts"),
+      ),
+      true,
+    );
+  });
+});
+
+Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: removes only the link for a symlinked dir with nothing kept", async () => {
+  await withSetupTempDir(async (dir) => {
+    const target = join(dir, "shared-data");
+    await writeTestFile(join(target, "a.json"), "{}");
+    const source = join(dir, "source");
+    await Deno.mkdir(source, { recursive: true });
+    await Deno.symlink(target, join(source, "data"), { type: "dir" });
+    const deps = createDatastoreSetupDeps(source, noTier);
+
+    await deps.cleanupSourceDirs(source, ["data"], [
+      join("config", "pulled-extensions"),
+    ]);
+
+    assertEquals(await pathExists(join(source, "data")), false);
+    assertEquals(await pathExists(join(target, "a.json")), true);
+  });
+});
+
 /**
  * Registers an extension datastore whose remote is a temp directory: push
  * copies the cache over it and pull copies it over the cache, both

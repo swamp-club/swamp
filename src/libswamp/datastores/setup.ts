@@ -829,7 +829,10 @@ export function createDatastoreSetupDeps(
 
 /**
  * Removes `path` recursively, except any `kept` path inside it, which stays
- * with its ancestors. Removal failures are non-fatal: the source may
+ * with its ancestors. A symlink is never descended into: with nothing kept
+ * inside, only the link is removed; with a kept path inside, the link is
+ * left in place so cleanup never deletes the files of its target and the
+ * kept path stays reachable. Removal failures are non-fatal: the source may
  * already be gone.
  */
 async function removeExcept(
@@ -843,6 +846,7 @@ async function removeExcept(
       await Deno.remove(path, { recursive: true });
       return;
     }
+    if ((await Deno.lstat(path)).isSymlink) return;
     for await (const entry of Deno.readDir(path)) {
       await removeExcept(join(path, entry.name), keptInside);
     }

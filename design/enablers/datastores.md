@@ -1752,7 +1752,9 @@ startup uses):
 
 - **Tier** (a filesystem datastore at `.swamp`): `config` migrates with the
   datastore. `config/pulled-extensions` stays: it is neither copied nor removed,
-  because pulled extension sources stay in the repo (swamp-club#2612).
+  because pulled extension sources stay in the repo (swamp-club#2612). If
+  `.swamp/config` is a symlink, cleanup leaves the link alone rather than
+  deleting the files of its target.
 - **Instance-local** (the tier is elsewhere, or the current datastore cannot be
   resolved): `.swamp/config` holds only this instance's pulled extension
   sources and the transitional auto-resolve lockfile. Setup leaves it out of
