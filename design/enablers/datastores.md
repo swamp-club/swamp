@@ -256,7 +256,8 @@ The deadline raises `SyncTimeoutError` even if the extension ignores the
 `AbortSignal` passed to `pushChanged(options)` / `pullChanged(options)`. A
 timeout exits the CLI non-zero, so the user sees the data did not reach the
 remote. Other push errors are still downgraded to warnings, as before, so a
-brief S3 failure does not kill a run.
+brief S3 failure does not kill a run. Managed-config writes are the exception:
+any failed push exits non-zero (see "Where mutations write").
 
 **Setup timeout behavior.** In `datastore setup extension`, a push or pull
 timeout is recoverable. The datastore type is still written to `.swamp.yaml`,
@@ -1094,11 +1095,11 @@ only for a tree the mutation itself owns and has just written, such as a data
 item's folder.
 
 The CLI extension commands follow the same rule. `extension pull`, `update`,
-`rm` and `install` mark the config-tier lockfile by path and push through
-`pushManagedConfigPathsDeferred`, instead of the bulk mark that
-`pushManagedConfigChanges` sends. Search install, `repo upgrade` and
-`doctor extensions --repair` publish the lockfile the same way, but only when
-its content hash changed during the command. `pushManagedConfigPaths` drops any
+`rm` and `install`, search install, `repo upgrade` and
+`doctor extensions --repair` mark the config-tier lockfile by path and push
+through `pushManagedLockfileIfChangedDeferred`, instead of the bulk mark that
+`pushManagedConfigChanges` sends, and only when the lockfile's content hash
+changed during the command. `pushManagedConfigPaths` drops any
 path outside the namespace's cache tree rather than forwarding it, and bounds
 the push by the datastore's sync timeout. An extension that keeps its dirty set
 in memory still walks the whole cache on a fresh process (rule 4), so "exact
@@ -1834,11 +1835,29 @@ lockfile:
 | Mutation type | Config-tier path | CLI push | Serve push |
 |---------------|-----------------|----------|------------|
 | Model definition create/edit | `config/models/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
+| Model definition delete | `config/models/` | Per-model lock flush, through `flushAfterManagedConfigMutation` | Via per-model lock flush |
 | Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
-| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | `pushManagedConfigPathsDeferred` with the lockfile path, no bulk mark; skipped when the datastore-extension exemption records into the in-repo lockfile | `ctx.syncService.pushChanged` after `markExtensionChanges` marks the lockfile |
+| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | `pushManagedLockfileIfChangedDeferred`, only when the lockfile's content changed, no bulk mark; skipped when the datastore-extension exemption records into the in-repo lockfile | `ctx.syncService.pushChanged` after `markExtensionChanges` marks the lockfile |
 | Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | `pushManagedLockfileIfChangedDeferred`, only when the lockfile's content changed | — |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
+
+A CLI config write whose push fails, or times out, exits non-zero with
+`ManagedConfigUnpublishedError` (code `managed_config_unpublished`). A deferred
+helper that cannot resolve the datastore after the write fails the same way,
+as does a lockfile that cannot be read after the command. The local write is
+kept, never rolled back, and the error names `swamp datastore sync --push` as
+the retry. `model delete` fails this way only when its lock flush fails after
+the delete completed; a flush failure while an earlier error propagates is
+logged, so it cannot replace that error (swamp-club#2752).
+
+The lockfile publish is gated on a content change, so on its own a re-run
+after a failed publish would find the lockfile unchanged and exit 0 with the
+change still unpublished. A failed lockfile publish therefore leaves a local
+record, `.swamp/managed-config-lockfile-unpublished` in the repo
+(`pending_lockfile_publish.ts`), and while it stands every gated command
+publishes the lockfile whether or not it changed it. A successful lockfile
+publish, `datastore sync --push` or a full `datastore sync` clears it.
 
 Auto-definitions are a normal datastore subdirectory
 (`DEFAULT_DATASTORE_SUBDIRS` includes `auto-definitions`). They sync through the

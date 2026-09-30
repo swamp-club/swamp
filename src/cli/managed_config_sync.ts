@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { getLogger } from "@logtape/logtape";
 import { isAbsolute, join, relative } from "@std/path";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import {
@@ -25,9 +24,15 @@ import {
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import { UserError } from "../domain/errors.ts";
 import { computeFileContentHashIfExists } from "../domain/extensions/extension_package_cache.ts";
 import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
+import {
+  clearLockfilePublishPending,
+  isLockfilePublishPending,
+  markLockfilePublishPending,
+} from "../infrastructure/persistence/pending_lockfile_publish.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
   buildMarkDirtyHook,
@@ -35,12 +40,37 @@ import {
   requireInitializedRepoUnlocked,
 } from "./repo_context.ts";
 
-const logger = getLogger(["swamp", "cli", "managed-config-sync"]);
+/**
+ * A config-tier change was written to the local cache but could not be
+ * published to the datastore under managedConfig. The local write is kept;
+ * `swamp datastore sync --push` publishes it once the datastore is reachable.
+ */
+export class ManagedConfigUnpublishedError extends UserError {
+  constructor(cause: unknown) {
+    const reason = (cause instanceof Error ? cause.message : String(cause))
+      .replace(/\.+$/, "");
+    super(
+      "The change is saved locally but was not published to the datastore: " +
+        `${reason}. ` +
+        "Run 'swamp datastore sync --push' to publish it.",
+      "managed_config_unpublished",
+    );
+    this.name = "ManagedConfigUnpublishedError";
+    this.cause = cause;
+  }
+}
+
+function toUnpublishedError(error: unknown): ManagedConfigUnpublishedError {
+  return error instanceof ManagedConfigUnpublishedError
+    ? error
+    : new ManagedConfigUnpublishedError(error);
+}
 
 /**
  * Push config-tier changes to the remote datastore when managedConfig is
  * active. Used by CLI commands that already hold a syncService and
- * datastoreConfig from requireInitializedRepoUnlocked.
+ * datastoreConfig from requireInitializedRepoUnlocked. A failed push throws
+ * {@link ManagedConfigUnpublishedError}; the local write is kept.
  */
 export async function pushManagedConfigChanges(
   syncService: DatastoreSyncService | undefined,
@@ -57,9 +87,7 @@ export async function pushManagedConfigChanges(
     await syncService.markDirty();
     await syncService.pushChanged({ namespace });
   } catch (error) {
-    logger.warn`Failed to push managed config changes to remote datastore: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
+    throw toUnpublishedError(error);
   }
 }
 
@@ -68,9 +96,9 @@ export async function pushManagedConfigChanges(
  * pre-resolved syncService). Resolves the datastore on demand after the
  * mutation. Safe to call when managedConfig is true because the datastore
  * extension must already be installed (config migrate requires a working
- * datastore). Wrapped in try/catch so a failure to resolve the datastore
- * (e.g. the datastore extension was just updated) warns but does not
- * block the command.
+ * datastore). A failure to resolve the datastore (e.g. the datastore
+ * extension was just updated) leaves the change unpublished like a failed
+ * push, so it throws {@link ManagedConfigUnpublishedError} too.
  */
 export async function pushManagedConfigChangesDeferred(
   repoDir: string,
@@ -86,9 +114,7 @@ export async function pushManagedConfigChangesDeferred(
       });
     await pushManagedConfigChanges(syncService, datastoreConfig, marker);
   } catch (error) {
-    logger.warn`Failed to push managed config changes (deferred): ${
-      error instanceof Error ? error.message : String(error)
-    }`;
+    throw toUnpublishedError(error);
   }
 }
 
@@ -103,7 +129,8 @@ export async function pushManagedConfigChangesDeferred(
  *
  * Paths outside the namespace's cache tree are dropped, never forwarded: the
  * mark hook would map an in-repo `.swamp/config` path to an un-namespaced key.
- * The push is bounded by the datastore's sync timeout. Failures warn.
+ * The push is bounded by the datastore's sync timeout. A failed or timed-out
+ * push throws {@link ManagedConfigUnpublishedError}.
  */
 export async function pushManagedConfigPaths(
   syncService: DatastoreSyncService | undefined,
@@ -139,16 +166,15 @@ export async function pushManagedConfigPaths(
       (signal) => syncService.pushChanged({ namespace, signal }),
     );
   } catch (error) {
-    logger.warn`Failed to push managed config changes to remote datastore: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
+    throw toUnpublishedError(error);
   }
 }
 
 /**
  * {@link pushManagedConfigPaths} for commands that use requireRepoMarker (no
  * pre-resolved syncService): resolves the datastore after the mutation, as
- * {@link pushManagedConfigChangesDeferred} does.
+ * {@link pushManagedConfigChangesDeferred} does, and throws
+ * {@link ManagedConfigUnpublishedError} when either step fails.
  */
 export async function pushManagedConfigPathsDeferred(
   repoDir: string,
@@ -172,9 +198,31 @@ export async function pushManagedConfigPathsDeferred(
       absPaths,
     );
   } catch (error) {
-    logger.warn`Failed to push managed config changes (deferred): ${
-      error instanceof Error ? error.message : String(error)
-    }`;
+    throw toUnpublishedError(error);
+  }
+}
+
+/**
+ * Flushes per-model locks after a command that may have changed the config
+ * tier; the flush is what pushes the change. When the mutation completed
+ * under managedConfig, a failed flush throws
+ * {@link ManagedConfigUnpublishedError}. Otherwise (the mutation never ran,
+ * or an earlier error is already propagating) the failure only goes to
+ * `onCleanupError`, so it cannot replace that error.
+ */
+export async function flushAfterManagedConfigMutation(
+  flush: () => Promise<void>,
+  mutated: boolean,
+  marker: RepoMarkerData | null,
+  onCleanupError: (error: unknown) => void,
+): Promise<void> {
+  try {
+    await flush();
+  } catch (error) {
+    if (mutated && marker?.datastore?.managedConfig === true) {
+      throw toUnpublishedError(error);
+    }
+    onCleanupError(error);
   }
 }
 
@@ -192,8 +240,16 @@ export async function snapshotLockfileHash(
 /**
  * Pushes the tier lockfile when its content differs from `hashBefore`
  * (from {@link snapshotLockfileHash}). For commands that only sometimes
- * write the lockfile — search install, repo upgrade, doctor repair — so an
- * untouched lockfile is never published.
+ * write the lockfile — the extension commands, repo upgrade, doctor repair —
+ * so an untouched lockfile is never published and a no-op command never
+ * fails on an unreachable datastore. A lockfile that cannot be read after
+ * the command may hold an unpublished change, so it throws
+ * {@link ManagedConfigUnpublishedError}.
+ *
+ * A failed publish is recorded locally, and while that record stands the
+ * lockfile is published even when this command left it unchanged, so
+ * re-running a command after a failed publish retries it instead of exiting
+ * 0 with the change still unpublished. A successful publish clears it.
  */
 export async function pushManagedLockfileIfChangedDeferred(
   repoDir: string,
@@ -203,17 +259,22 @@ export async function pushManagedLockfileIfChangedDeferred(
   push: typeof pushManagedConfigPathsDeferred = pushManagedConfigPathsDeferred,
 ): Promise<void> {
   if (marker?.datastore?.managedConfig !== true) return;
-  let hashAfter: string | null;
   try {
-    hashAfter = await computeFileContentHashIfExists(lockfilePath);
+    const hashAfter = await computeFileContentHashIfExists(lockfilePath);
+    if (
+      hashAfter === hashBefore && !await isLockfilePublishPending(repoDir)
+    ) {
+      return;
+    }
+    await push(repoDir, marker, [lockfilePath]);
   } catch (error) {
-    logger.warn`Failed to read the extension lockfile to publish it: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-    return;
+    // Best effort: failing to record the retry must not replace the error
+    // that tells the user the change is unpublished.
+    await markLockfilePublishPending(repoDir).catch(() => {});
+    throw toUnpublishedError(error);
   }
-  if (hashAfter === hashBefore) return;
-  await push(repoDir, marker, [lockfilePath]);
+  // Best effort: a stale record only costs one redundant publish later.
+  await clearLockfilePublishPending(repoDir).catch(() => {});
 }
 
 export interface PullManagedConfigAtBootDeps {

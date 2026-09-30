@@ -24,7 +24,10 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { pushManagedConfigPathsDeferred } from "../managed_config_sync.ts";
+import {
+  pushManagedLockfileIfChangedDeferred,
+  snapshotLockfileHash,
+} from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -106,6 +109,7 @@ export const extensionInstallCommand = withRemoteOptions(
   // unresolved managed config base reports managed_config_unresolved
   // rather than a raw "Unknown datastore type" (swamp-club#2483).
   const deps = await createExtensionInstallDeps(repoDir, cliCtx.logger);
+  const lockfileHashBefore = await snapshotLockfileHash(deps.lockfilePath);
   await requireInitializedRepoReadOnly({
     repoDir,
     outputMode: cliCtx.outputMode,
@@ -121,7 +125,12 @@ export const extensionInstallCommand = withRemoteOptions(
 
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
-  await pushManagedConfigPathsDeferred(repoDir, marker, [deps.lockfilePath]);
+  await pushManagedLockfileIfChangedDeferred(
+    repoDir,
+    marker,
+    deps.lockfilePath,
+    lockfileHashBefore,
+  );
 
   cliCtx.logger.debug("Extension install command completed");
 });

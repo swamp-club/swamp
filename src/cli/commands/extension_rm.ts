@@ -28,7 +28,10 @@ import {
   requireRepoMarker,
   resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
-import { pushManagedConfigPathsDeferred } from "../managed_config_sync.ts";
+import {
+  pushManagedLockfileIfChangedDeferred,
+  snapshotLockfileHash,
+} from "../managed_config_sync.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import {
@@ -118,6 +121,7 @@ export const extensionRemoveCommand = withRemoteOptions(
     repoDir,
     marker,
   );
+  const lockfileHashBefore = await snapshotLockfileHash(lockfilePath);
 
   const tool = resolvePrimaryTool(marker);
   const skillsDirRelative = relative(
@@ -171,5 +175,10 @@ export const extensionRemoveCommand = withRemoteOptions(
     deps.repository.close();
   }
 
-  await pushManagedConfigPathsDeferred(repoDir, marker, [lockfilePath]);
+  await pushManagedLockfileIfChangedDeferred(
+    repoDir,
+    marker,
+    lockfilePath,
+    lockfileHashBefore,
+  );
 });
