@@ -2378,58 +2378,80 @@ Deno.test("DataQueryService: returns sensitive vault references unresolved", asy
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
   catalog.markPopulated();
+  try {
+    const ref = "${{ vault.get('my-vault', 'api-key') }}";
+    const tags = {
+      type: "resource",
+      specName: "result",
+      modelName: "ingest",
+      "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
+    };
+    const dataDir = join(
+      dir,
+      ".swamp",
+      "data",
+      "test-model",
+      "model-001",
+      "my-data",
+      "1",
+    );
+    ensureDirSync(dataDir);
+    Deno.writeTextFileSync(
+      join(dataDir, "raw"),
+      JSON.stringify({ apiKey: ref }),
+    );
+    Deno.writeTextFileSync(
+      join(dataDir, "metadata.yaml"),
+      stringifyYaml({
+        name: "my-data",
+        id: "00000000-0000-1000-8000-000000000001",
+        version: 1,
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags,
+        ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    Deno.writeTextFileSync(
+      join(
+        dir,
+        ".swamp",
+        "data",
+        "test-model",
+        "model-001",
+        "my-data",
+        "latest",
+      ),
+      "1",
+    );
+    catalog.upsert(makeRow({ tags: JSON.stringify(tags) }));
 
-  const ref = "${{ vault.get('my-vault', 'api-key') }}";
-  const tags = {
-    type: "resource",
-    specName: "result",
-    modelName: "ingest",
-    "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
-  };
-  const dataDir = join(
-    dir,
-    ".swamp",
-    "data",
-    "test-model",
-    "model-001",
-    "my-data",
-    "1",
-  );
-  ensureDirSync(dataDir);
-  Deno.writeTextFileSync(join(dataDir, "raw"), JSON.stringify({ apiKey: ref }));
-  Deno.writeTextFileSync(
-    join(dataDir, "metadata.yaml"),
-    stringifyYaml({
-      name: "my-data",
-      id: "00000000-0000-1000-8000-000000000001",
-      version: 1,
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      streaming: false,
-      tags,
-      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
-      createdAt: "2026-01-01T00:00:00.000Z",
-    }),
-  );
-  Deno.writeTextFileSync(
-    join(dir, ".swamp", "data", "test-model", "model-001", "my-data", "latest"),
-    "1",
-  );
-  catalog.upsert(makeRow({ tags: JSON.stringify(tags) }));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
 
-  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
-  const service = new DataQueryService(catalog, dataRepo);
+    // Resolution belongs to callers that record the value in the run's
+    // RunSensitiveValues; the query service hands back what was stored.
+    const results = await service.query('modelName == "ingest"', {
+      loadAttributes: true,
+    }) as DataRecord[];
+    assertEquals(results.length, 1);
+    assertEquals(results[0].attributes["apiKey"], ref);
 
-  // Resolution belongs to callers that record the value in the run's
-  // RunSensitiveValues; the query service hands back what was stored.
-  const results = await service.query('modelName == "ingest"', {
-    loadAttributes: true,
-  }) as DataRecord[];
-  assertEquals(results.length, 1);
-  assertEquals(results[0].attributes["apiKey"], ref);
-
-  const latest = await service.getLatestRecord("ingest", "my-data");
-  assertEquals(latest?.attributes["apiKey"], ref);
-  catalog.close();
+    const latest = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(latest?.attributes["apiKey"], ref);
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });
