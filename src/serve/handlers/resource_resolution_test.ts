@@ -22,6 +22,7 @@ import { dirname, join } from "@std/path";
 import {
   authorizeReferenceAccess,
   CanonicalResources,
+  recordedRunModel,
   type ReferenceAccess,
   resolveModelTarget,
   resolveModelTargetById,
@@ -1088,4 +1089,228 @@ Deno.test("CanonicalResources: one definition scan serves every id in a request"
 
   assertEquals(scans, 1);
   assertEquals(perIdScans, 0);
+});
+
+// ── Control-plane records are owned by the access kind (swamp-club#2756) ──
+
+const GRANT_TYPE = ModelType.create("swamp/grant");
+const GRANT_RECORD: AccessResource = {
+  kind: "access",
+  name: "swamp/grant",
+  fields: { name: "grant-abc", modelType: "swamp/grant", tags: {} },
+};
+
+async function saveAutoDefinition(
+  dir: string,
+  type: ModelType,
+  definition: Definition,
+): Promise<void> {
+  // Serve writes control-plane definitions to .swamp/auto-definitions.
+  const autoRepo = new YamlDefinitionRepository(
+    dir,
+    undefined,
+    join(dir, ".swamp", "auto-definitions"),
+    false,
+  );
+  await autoRepo.save(type, definition);
+}
+
+Deno.test("resolveModelTarget: a control-plane definition resolves to its access record resource, as data or model", async () => {
+  await withTempDir(async (dir) => {
+    const grant = Definition.create({ name: "grant-abc", globalArguments: {} });
+    await saveAutoDefinition(dir, GRANT_TYPE, grant);
+    const repo = new YamlDefinitionRepository(dir);
+
+    for (const kind of ["data", "model"] as const) {
+      for (const ref of ["grant-abc", grant.id]) {
+        const resolution = await resolveModelTarget(repo, ref, kind);
+        assertEquals(resolution.status, "found");
+        if (resolution.status !== "found") return;
+        assertEquals(resolution.resource, GRANT_RECORD, `${kind} ${ref}`);
+        assertEquals(resolution.name, "grant-abc");
+      }
+    }
+  });
+});
+
+Deno.test("CanonicalResources.dataOwners: control-plane data is owned by its access record resource", async () => {
+  await withTempDir(async (dir) => {
+    const grant = Definition.create({ name: "grant-abc", globalArguments: {} });
+    await saveAutoDefinition(dir, GRANT_TYPE, grant);
+    const user = Definition.create({ name: "mine", globalArguments: {} });
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(SHELL, user);
+    const canonical = new CanonicalResources(repo, workflowRepo([]));
+
+    assertEquals(
+      await canonical.dataOwners({
+        modelType: "swamp/grant",
+        modelId: grant.id,
+        modelName: "grant-abc",
+      }),
+      [GRANT_RECORD],
+    );
+    assertEquals(
+      (await canonical.dataOwners({
+        modelType: "command/shell",
+        modelId: user.id,
+        modelName: "mine",
+      }))[0].kind,
+      "data",
+    );
+  });
+});
+
+Deno.test("CanonicalResources: an orphaned control-plane record is judged on its recorded type", async () => {
+  await withTempDir(async (dir) => {
+    const canonical = new CanonicalResources(
+      new YamlDefinitionRepository(dir),
+      workflowRepo([]),
+    );
+    const orphan = {
+      modelType: "swamp/server-token",
+      modelId: crypto.randomUUID(),
+      modelName: "tok",
+    };
+    const expected: AccessResource = {
+      kind: "access",
+      name: "swamp/server-token",
+      fields: { name: "tok", modelType: "swamp/server-token", tags: {} },
+    };
+    assertEquals(await canonical.dataOwners(orphan), [expected]);
+    assertEquals(
+      await canonical.model(orphan.modelId, "tok", "swamp/server-token"),
+      [expected],
+    );
+  });
+});
+
+Deno.test("resolveOutputAccess: an output of a deleted control-plane model stays admin-only", async () => {
+  await withTempDir(async (dir) => {
+    const access = await resolveOutputAccess(
+      new YamlDefinitionRepository(dir),
+      () =>
+        Promise.resolve({
+          reference: {
+            kind: "output" as const,
+            match: {
+              output: OUTPUT,
+              type: ModelType.create("swamp/enrollment-token"),
+            },
+          },
+        }),
+      "abc",
+      ["model", "data"],
+    );
+    assertEquals(access.status === "resolved" && access.resources, [{
+      kind: "access",
+      name: "swamp/enrollment-token",
+      fields: {
+        name: OUTPUT.definitionId,
+        modelType: "swamp/enrollment-token",
+        tags: {},
+      },
+    }]);
+  });
+});
+
+Deno.test("CanonicalResources: a user definition reusing a control-plane record's id does not own it alone", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    // A user model that happens to declare the id a deleted grant had.
+    const user = Definition.create({ name: "mine", globalArguments: {} });
+    await repo.save(SHELL, user);
+    const canonical = new CanonicalResources(repo, workflowRepo([]));
+
+    const owners = await canonical.dataOwners({
+      modelType: "swamp/grant",
+      modelId: user.id,
+      modelName: "grant-gone",
+    });
+    assertEquals(owners.map((o) => `${o.kind}:${o.name}`), [
+      "data:mine",
+      "access:swamp/grant",
+    ]);
+    assertEquals(owners[1].fields, {
+      name: "grant-gone",
+      modelType: "swamp/grant",
+      tags: {},
+    });
+    // A live control-plane owner is not doubled.
+    const grant = Definition.create({ name: "grant-abc", globalArguments: {} });
+    await saveAutoDefinition(dir, GRANT_TYPE, grant);
+    assertEquals(
+      await new CanonicalResources(
+        new YamlDefinitionRepository(dir),
+        workflowRepo([]),
+      ).dataOwners({
+        modelType: "swamp/grant",
+        modelId: grant.id,
+        modelName: "grant-abc",
+      }),
+      [GRANT_RECORD],
+    );
+  });
+});
+
+Deno.test("resolveOutputAccess: an output recorded under a control-plane type needs admin even when a user definition shares its id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const user = Definition.create({ name: "mine", globalArguments: {} });
+    await repo.save(SHELL, user);
+    const access = await resolveOutputAccess(
+      repo,
+      () =>
+        Promise.resolve({
+          reference: {
+            kind: "output" as const,
+            match: {
+              output: { ...OUTPUT, definitionId: user.id },
+              type: ModelType.create("swamp/fleet-probe"),
+            },
+          },
+        }),
+      "abc",
+      ["model"],
+    );
+    assertEquals(
+      access.status === "resolved" &&
+        access.resources.map((r) => `${r.kind}:${r.name}`),
+      ["model:mine", "access:swamp/fleet-probe"],
+    );
+  });
+});
+
+Deno.test("recordedRunModel: records the definition's name and a control-plane type from either source", () => {
+  const user = {
+    definition: Definition.create({ name: "user-db", globalArguments: {} }),
+    type: SHELL,
+  };
+  const grant = {
+    definition: Definition.create({ name: "grant-abc", globalArguments: {} }),
+    type: GRANT_TYPE,
+  };
+  // A direct-type run of a control-plane type against a user model's name.
+  assertEquals(recordedRunModel(user, "raw", "swamp.Server-Token"), {
+    name: "user-db",
+    type: "swamp/server-token",
+  });
+  // A user typeArg against a control-plane model.
+  assertEquals(recordedRunModel(grant, "raw", "command/shell"), {
+    name: "grant-abc",
+    type: "swamp/grant",
+  });
+  assertEquals(recordedRunModel(user, "raw", undefined), {
+    name: "user-db",
+    type: "command/shell",
+  });
+  // No definition yet: the requested name and the executed type.
+  assertEquals(recordedRunModel(null, "new-grant", "@swamp/grant"), {
+    name: "new-grant",
+    type: "swamp/grant",
+  });
+  assertEquals(recordedRunModel(null, "x", undefined), {
+    name: "x",
+    type: undefined,
+  });
 });

@@ -29,6 +29,11 @@
  * by id only — so the resource acted on is the resource authorized.
  */
 
+import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
+import {
+  isControlPlaneModelType,
+  normalizeModelTypeName,
+} from "../../domain/models/control_plane_types.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import {
@@ -122,11 +127,21 @@ function modelTypeFields(
   return fields;
 }
 
-/** The access resource for a model definition, authorized as `kind`. */
+/**
+ * The access resource for a model definition, authorized as `kind`. A
+ * control-plane model (a grant, group, token or worker record) is owned by
+ * the access kind instead, whichever kind was asked for (swamp-club#2756).
+ */
 export function modelAccessResource(
   result: DefinitionLookupResult,
   kind: ModelResourceKind = "model",
 ): AccessResource {
+  if (isControlPlaneModelType(result.type.normalized)) {
+    return controlPlaneRecordResource(result.type.normalized, {
+      name: result.definition.name,
+      tags: result.definition.tags,
+    });
+  }
   const name = result.definition.name;
   return {
     kind,
@@ -235,6 +250,30 @@ export async function resolveRecordedModel(
   return exact.status === "missing"
     ? await resolveModelTargetById(definitionRepo, id, kind)
     : exact;
+}
+
+/**
+ * The model a method run is recorded under for its cancel and attach: the
+ * definition's own name (or `fallbackName` when there is none yet), and the
+ * normalized type the run executes (`typeArg`) or its model has. A
+ * control-plane type wins whichever it comes from, so a control-plane run
+ * stays admin-only once its model is gone (swamp-club#2756).
+ */
+export function recordedRunModel(
+  definition: DefinitionLookupResult | null,
+  fallbackName: string,
+  typeArg: string | undefined,
+): { name: string; type?: string } {
+  const types: string[] = [];
+  if (typeArg) {
+    const normalized = normalizeModelTypeName(typeArg);
+    if (normalized !== null) types.push(normalized);
+  }
+  if (definition) types.push(definition.type.normalized);
+  return {
+    name: definition?.definition.name ?? fallbackName,
+    type: types.find(isControlPlaneModelType) ?? types[0],
+  };
 }
 
 async function resolveWorkflow(
@@ -457,15 +496,49 @@ async function outputOwners(
 ): Promise<AccessResource[]> {
   const owners = await findDefinitionsByIdGlobal(definitionRepo, definitionId);
   if (owners.length > 0) {
-    return owners.flatMap((owner) =>
-      kinds.map((kind) => modelAccessResource(owner, kind))
+    return withRecordedType(
+      owners.flatMap((owner) =>
+        kinds.map((kind) => modelAccessResource(owner, kind))
+      ),
+      type.normalized,
+      definitionId,
     );
+  }
+  // An owner no longer found is judged on its recorded type, so the output
+  // of a deleted control-plane model stays admin-only (swamp-club#2756).
+  if (isControlPlaneModelType(type.normalized)) {
+    return [
+      controlPlaneRecordResource(type.normalized, { name: definitionId }),
+    ];
   }
   return kinds.map((kind) => ({
     kind,
     name: definitionId,
     fields: modelTypeFields(definitionId, type.normalized, undefined, kind),
   }));
+}
+
+/**
+ * The owners of something recorded under a control-plane type always include
+ * that type's access record, whatever definitions now share its id: a user
+ * definition reusing a deleted grant's id must not turn the grant's data into
+ * that user model's (swamp-club#2756). Callers require every owner, so the
+ * record stays admin-only.
+ */
+function withRecordedType(
+  resources: AccessResource[],
+  recordedType: string,
+  recordedName: string,
+): AccessResource[] {
+  if (!isControlPlaneModelType(recordedType)) return distinct(resources);
+  const record = controlPlaneRecordResource(recordedType, {
+    name: recordedName,
+  });
+  // A live control-plane owner already carries its own access record.
+  if (resources.some((r) => r.kind === "access" && r.name === record.name)) {
+    return distinct(resources);
+  }
+  return distinct([...resources, record]);
 }
 
 /** Drops resources that repeat an earlier one exactly. */
@@ -673,7 +746,14 @@ export class CanonicalResources {
     const named = owners.filter((o) => o.definition.name === name);
     const chosen = named.length > 0 ? named : owners;
     if (chosen.length > 0) {
-      return distinct(chosen.map((o) => modelAccessResource(o, "model")));
+      return withRecordedType(
+        chosen.map((o) => modelAccessResource(o, "model")),
+        modelType,
+        name,
+      );
+    }
+    if (isControlPlaneModelType(modelType)) {
+      return [controlPlaneRecordResource(modelType, { name })];
     }
     return [{
       kind: "model",
@@ -695,7 +775,16 @@ export class CanonicalResources {
   ): Promise<AccessResource[]> {
     const owners = await this.#definitionsById(modelId);
     if (owners.length > 0) {
-      return distinct(owners.map((o) => modelAccessResource(o, kind)));
+      return withRecordedType(
+        owners.map((o) => modelAccessResource(o, kind)),
+        modelType,
+        recordedName,
+      );
+    }
+    // An owner no longer found is judged on its recorded type too, so an
+    // orphaned token record is never read as plain data.
+    if (isControlPlaneModelType(modelType)) {
+      return [controlPlaneRecordResource(modelType, { name: recordedName })];
     }
     return [{
       kind,

@@ -120,12 +120,22 @@ export interface DataQueryOptions {
    * a projected result never carries a record the caller may not read.
    */
   include?: (record: DataRecord) => Promise<boolean>;
+  /**
+   * Stored model types whose records are never matched, whatever the
+   * predicate says. They are compared as stored strings, so pass every form
+   * a type can be stored under (bare and `@`-prefixed). The CEL data.*
+   * namespace passes CONTROL_PLANE_STORED_TYPES so expressions can never read
+   * control-plane records (swamp-club#2756).
+   */
+  excludeModelTypes?: readonly string[];
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
 export interface LatestRecordOptions {
   /** See {@link DataQueryOptions.includeContentPath}. */
   includeContentPath?: boolean;
+  /** See {@link DataQueryOptions.excludeModelTypes}. */
+  excludeModelTypes?: readonly string[];
 }
 
 /**
@@ -198,44 +208,41 @@ export class DataQueryService {
   ): Promise<DataRecord | null> {
     const includePath = options?.includeContentPath ?? false;
     const populated = this.catalogStore.isPopulated();
+    // Every lookup below goes through this one query, so excluded types are
+    // dropped in SQL on every path and never shadow another type's row.
+    const latestRow = () =>
+      this.catalogStore.findLatestRow(
+        modelName,
+        dataName,
+        namespace,
+        options?.excludeModelTypes,
+      );
 
     // If a full backfill is already in-flight, await it — it will populate
     // everything including our target.
     if (!populated && this.backfillPromise) {
       await this.backfillPromise;
-      return this.buildRecordFromRow(
-        modelName,
-        dataName,
-        namespace,
-        includePath,
-      );
+      return this.buildRecordFromRow(latestRow(), includePath);
     }
 
     // Tier 1: try the indexed SQL lookup.
-    const row = this.catalogStore.findLatestRow(modelName, dataName, namespace);
+    const row = latestRow();
     if (row) {
       if (populated) {
         if (dataName === row.spec_name) {
-          this.checkSpecNameAmbiguity(row.spec_name, modelName, namespace);
+          this.checkSpecNameAmbiguity(
+            row.spec_name,
+            modelName,
+            namespace,
+            options?.excludeModelTypes,
+          );
         }
-        return this.buildRecordFromRow(
-          modelName,
-          dataName,
-          namespace,
-          includePath,
-          row,
-        );
+        return this.buildRecordFromRow(row, includePath);
       }
       // Catalog not populated — verify the data still exists to guard
       // against stale rows left behind after invalidate().
       if (await this.rowHasContent(row)) {
-        return this.buildRecordFromRow(
-          modelName,
-          dataName,
-          namespace,
-          includePath,
-          row,
-        );
+        return this.buildRecordFromRow(row, includePath);
       }
       // Stale row — fall through to scoped backfill
     }
@@ -244,22 +251,12 @@ export class DataQueryService {
 
     // Tier 2: scoped backfill for just this (modelName, dataName) pair.
     await this.scopedBackfill(modelName, dataName);
-    const freshRow = this.catalogStore.findLatestRow(
-      modelName,
-      dataName,
-      namespace,
-    );
+    const freshRow = latestRow();
     if (!freshRow) return null;
     // Verify the row points to real data (it may be the same stale row
     // that triggered the scoped backfill).
     if (!(await this.rowHasContent(freshRow))) return null;
-    return this.buildRecordFromRow(
-      modelName,
-      dataName,
-      namespace,
-      includePath,
-      freshRow,
-    );
+    return this.buildRecordFromRow(freshRow, includePath);
   }
 
   /**
@@ -283,16 +280,18 @@ export class DataQueryService {
     specName: string,
     modelName: string,
     namespace?: string,
+    excludeModelTypes: readonly string[] = [],
   ): void {
     if (!specName) return;
     if (!this.catalogStore.isPopulated()) {
       this.backfillSync();
     }
+    // Excluded rows are neither peers nor named in the error.
     const peers = this.catalogStore.findLatestRowsBySpecName(
       modelName,
       specName,
       namespace,
-    );
+    ).filter((r) => !excludeModelTypes.includes(r.type_normalized));
     if (peers.length > 1) {
       const names = peers.map((r) => r.data_name).sort();
       throw new UserError(
@@ -313,6 +312,7 @@ export class DataQueryService {
     modelName: string,
     specName: string,
     namespace?: string,
+    excludeModelTypes: readonly string[] = [],
   ): string[] {
     if (!specName) return [];
     if (!this.catalogStore.isPopulated()) {
@@ -320,6 +320,7 @@ export class DataQueryService {
     }
     return this.catalogStore
       .findLatestRowsBySpecName(modelName, specName, namespace)
+      .filter((r) => !excludeModelTypes.includes(r.type_normalized))
       .sort((a, b) =>
         a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0
       )
@@ -327,19 +328,11 @@ export class DataQueryService {
   }
 
   private buildRecordFromRow(
-    modelName: string,
-    dataName: string,
-    namespace: string | undefined,
+    row: CatalogRow | null,
     includeContentPath: boolean,
-    row?: CatalogRow | null,
   ): DataRecord | null {
-    const r = row ?? this.catalogStore.findLatestRow(
-      modelName,
-      dataName,
-      namespace,
-    );
-    if (!r) return null;
-    return fromRow(r, this.dataRepo, true, true, includeContentPath);
+    if (!row) return null;
+    return fromRow(row, this.dataRepo, true, true, includeContentPath);
   }
 
   private async scopedBackfill(
@@ -564,6 +557,17 @@ export class DataQueryService {
     if (!opensHistory) {
       whereClauses.push("is_latest = ?");
       whereParams.push(1);
+    }
+
+    // Excluded types are dropped in SQL, before the predicate, the limit or
+    // a projection sees them, so no predicate can reach them and no
+    // projected value can carry one out.
+    const excludedTypes = options?.excludeModelTypes ?? [];
+    if (excludedTypes.length > 0) {
+      whereClauses.push(
+        `type_normalized NOT IN (${excludedTypes.map(() => "?").join(", ")})`,
+      );
+      for (const type of excludedTypes) whereParams.push(type);
     }
 
     const modelNameLiteral = extractModelNameEquality(userAst);

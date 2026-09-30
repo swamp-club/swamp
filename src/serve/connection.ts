@@ -26,6 +26,12 @@ import { z } from "zod";
 import type { ServerRequest } from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
+import type { AccessResource } from "../domain/access/access_decision_service.ts";
+import {
+  controlPlaneRecordResource,
+  isControlPlaneRecordResource,
+} from "../domain/access/control_plane_records.ts";
+import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
@@ -3804,6 +3810,7 @@ async function handleCancelRun(
     run.resourceName,
     run.resourceId,
     run.methodName,
+    run.resourceType,
   );
   // A refusal is silent, like a cancel of an unknown id, so the reply never
   // confirms the run exists or names its resource (swamp-club#2649). The
@@ -3811,7 +3818,7 @@ async function handleCancelRun(
   // does: a failed lookup is checked against the recorded name, and only an
   // allowed caller is told the lookup failed.
   const resource = resolution.status === "failed"
-    ? unresolvedAccessResource(resourceKind, run.resourceName)
+    ? goneRunResource(resourceKind, run.resourceName, run.resourceType)
     : resolution.resource;
   if (isAuthorized(socket, requestId, principal, "run", resource, ctx)) {
     if (resolution.status === "failed") {
@@ -3856,12 +3863,14 @@ async function resolveRunResource(
   resourceName: string,
   resourceId: string | undefined,
   methodName?: string,
+  resourceType?: string,
 ): Promise<ResourceResolution> {
   const resolution = await resolveRunTarget(
     ctx,
     resourceKind,
     resourceName,
     resourceId,
+    resourceType,
   );
   // A method run is judged with its method, as the run itself was, so a
   // methods-scoped grant applies to its cancel and attach (swamp-club#2675).
@@ -3880,6 +3889,7 @@ async function resolveRunTarget(
   resourceKind: "model" | "workflow",
   resourceName: string,
   resourceId: string | undefined,
+  resourceType: string | undefined,
 ): Promise<ResourceResolution> {
   const { definitionRepo, workflowRepo } = ctx.repoContext;
   let resolution: ResourceResolution;
@@ -3892,12 +3902,47 @@ async function resolveRunTarget(
       ? await resolveRecordedWorkflow(workflowRepo, resourceId, resourceName)
       : await resolveWorkflowTarget(workflowRepo, resourceName);
   }
-  return resolution.status === "missing"
-    ? {
+  if (resolution.status === "missing") {
+    return {
       status: "missing",
-      resource: unresolvedAccessResource(resourceKind, resourceName),
-    }
-    : resolution;
+      resource: goneRunResource(resourceKind, resourceName, resourceType),
+    };
+  }
+  // A run recorded under a control-plane type stays admin-only whatever
+  // definition its id resolves to now, as data and outputs do
+  // (swamp-club#2756).
+  if (
+    resourceKind === "model" && resolution.status !== "failed" &&
+    resourceType && isControlPlaneModelType(resourceType) &&
+    !isControlPlaneRecordResource(resolution.resource)
+  ) {
+    return {
+      ...resolution,
+      resource: controlPlaneRecordResource(resourceType, {
+        name: resolution.name,
+      }),
+    };
+  }
+  return resolution;
+}
+
+/**
+ * The resource a run whose model or workflow is gone is judged on: its
+ * recorded name, or — for a control-plane model — the access resource its
+ * recorded type names, so the run stays admin-only (swamp-club#2756).
+ */
+function goneRunResource(
+  resourceKind: "model" | "workflow",
+  resourceName: string,
+  resourceType: string | undefined,
+): AccessResource {
+  if (
+    resourceKind === "model" && resourceType &&
+    isControlPlaneModelType(resourceType)
+  ) {
+    return controlPlaneRecordResource(resourceType, { name: resourceName });
+  }
+  return unresolvedAccessResource(resourceKind, resourceName);
 }
 
 async function handleRunAttach(
@@ -3925,6 +3970,7 @@ async function handleRunAttach(
           result.record.resourceName,
           result.record.resourceId,
           result.record.methodName,
+          result.record.resourceType,
         );
         if (
           !authorizeResolved(
@@ -3985,6 +4031,7 @@ async function handleRunAttach(
     run.resourceName,
     run.resourceId,
     run.methodName,
+    run.resourceType,
   );
   if (
     !authorizeResolved(

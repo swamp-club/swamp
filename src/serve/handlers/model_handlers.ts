@@ -21,6 +21,8 @@
  * Model-domain request handlers (model.* verbs).
  */
 
+import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
+import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -138,6 +140,7 @@ import {
   authorizeResolved,
   canonicalResources,
   modelAccessResource,
+  recordedRunModel,
   resolveModelTarget,
   resolveOutputAccess,
   type ResourceResolution,
@@ -197,8 +200,14 @@ async function resolveMethodRunTarget(
   const methodName = payload.methodName;
   if (payload.typeArg && payload.definitionName) {
     // A definition not created yet has no tags; its type is the one named.
+    // An existing one's fields are its own, even for a control-plane type
+    // whose access resource names the type instead (swamp-club#2756).
     const fields: Record<string, unknown> = definition
-      ? { ...modelAccessResource(definition).fields }
+      ? {
+        name: definition.definition.name,
+        modelType: definition.type.normalized,
+        tags: definition.definition.tags ?? {},
+      }
       : {
         name: payload.modelIdOrName,
         modelType: normalizedTypeOrRaw(payload.typeArg),
@@ -478,6 +487,11 @@ export async function handleModelMethodRun(
     !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
   ) return;
   const preResult = target.definition;
+  const recorded = recordedRunModel(
+    target.definition,
+    target.resource.name,
+    payload.typeArg,
+  );
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
@@ -496,9 +510,10 @@ export async function handleModelMethodRun(
     registry.register({
       runId,
       kind: "method-run",
-      resourceName: target.resource.name,
+      resourceName: recorded.name,
       resourceId: target.resourceId,
       methodName: payload.methodName,
+      resourceType: recorded.type,
       buffer,
       controller: runController,
       startedAt,
@@ -692,9 +707,10 @@ export async function handleModelMethodRun(
 
   if (ctx.controlPlaneStore && ctx.instanceId) {
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
-      resourceName: target.resource.name,
+      resourceName: recorded.name,
       resourceId: target.resourceId,
       methodName: payload.methodName,
+      resourceType: recorded.type,
       runKind: "method-run",
       startedAt: startedAt.toISOString(),
     });
@@ -2084,7 +2100,18 @@ export async function handleModelEdit(
   }
 }
 
+/**
+ * The resource an edit is authorized on, before and after. A control-plane
+ * model (grant, group, token, worker) is its access record, so editing one —
+ * or editing a model into one — needs admin (swamp-club#2756).
+ */
 function modelEditResource(target: ModelEditTarget): AccessResource {
+  if (isControlPlaneModelType(target.modelType)) {
+    return controlPlaneRecordResource(target.modelType, {
+      name: target.name,
+      tags: target.tags,
+    });
+  }
   return {
     kind: "model",
     name: target.name,

@@ -56,17 +56,7 @@ export { modelRegistry } from "./model.ts";
 // Built-in infrastructure types are hidden from user-facing discovery
 // commands (swamp type search, shell completions, model create suggestions).
 import { modelRegistry } from "./model.ts";
-for (
-  const type of [
-    "swamp/enrollment-token",
-    "swamp/worker",
-    "swamp/step-lease",
-    "swamp/pending-dispatch",
-    "swamp/fleet-probe",
-    "swamp/server-token",
-    "swamp/grant",
-    "swamp/group",
-  ]
-) {
+import { CONTROL_PLANE_MODEL_TYPES } from "./control_plane_types.ts";
+for (const type of CONTROL_PLANE_MODEL_TYPES) {
   modelRegistry.markInternal(type);
 }

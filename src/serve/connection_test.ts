@@ -36,6 +36,7 @@ import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
+import { createConditionEvaluator } from "../domain/access/policy_snapshot_loader.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
 import type { Grant } from "../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
@@ -48,6 +49,8 @@ import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { Job } from "../domain/workflows/job.ts";
 import { Step } from "../domain/workflows/step.ts";
 import { StepTask } from "../domain/workflows/step_task.ts";
+import { Definition } from "../domain/definitions/definition.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 
 await initializeLogging({});
 
@@ -1361,6 +1364,13 @@ assertDenormDenied("swamp worker", "worker-space");
 assertDenormDenied("@swamp/worker", "worker-at-prefix");
 // worker: canonical
 assertDenormDenied("swamp/worker", "worker-canonical");
+// The worker-fleet control-plane types are admin-only too (swamp-club#2756).
+assertDenormDenied("swamp/step-lease", "step-lease-canonical");
+assertDenormDenied("SWAMP.Step-Lease", "step-lease-dot-uppercase");
+assertDenormDenied("swamp/pending-dispatch", "pending-dispatch-canonical");
+assertDenormDenied("@swamp::pending-dispatch", "pending-dispatch-at-colon");
+assertDenormDenied("swamp/fleet-probe", "fleet-probe-canonical");
+assertDenormDenied("swamp fleet-probe", "fleet-probe-space");
 
 Deno.test("isAccessModelType: normal model typeArg still uses model:* run, not admin", async () => {
   const mock = createMockSocket();
@@ -2355,6 +2365,296 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", as
   );
 });
 
+// ── Authorization: control-plane records need admin (swamp-club#2756) ──────
+
+/**
+ * A ctx whose definition repo resolves each name in `definitions` to a
+ * definition of the given model type, so a data request authorizes the
+ * resolved model's canonical resource.
+ */
+/** `ctx` with a policy that evaluates grant conditions. */
+function withConditions(
+  ctx: ConnectionContext,
+  grants: Grant[],
+): ConnectionContext {
+  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
+  return {
+    ...ctx,
+    policySnapshotLoader: {
+      ...ctx.policySnapshotLoader!,
+      snapshot,
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader,
+  };
+}
+
+function makeCtxWithDefinitions(
+  grants: Grant[],
+  definitions: Record<string, string>,
+): ConnectionContext {
+  const byName = new Map(
+    Object.entries(definitions).map(([name, type]) => [name, {
+      definition: Definition.create({ name, globalArguments: {} }),
+      type: ModelType.create(type),
+    }]),
+  );
+  const ctx = makeCtx(modeTokenConfig, grants);
+  return {
+    ...ctx,
+    repoContext: {
+      ...stubRepoContext,
+      definitionRepo: {
+        ...stubRepoContext.definitionRepo,
+        findByNameGlobal: (name: string) =>
+          Promise.resolve(byName.get(name) ?? null),
+      },
+    } as unknown as ConnectionContext["repoContext"],
+  };
+}
+
+async function sendAndCollect(
+  ctx: ConnectionContext,
+  type: string,
+  id: string,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>[]> {
+  const mock = createMockSocket();
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type, id, payload })),
+    testPrincipal,
+  );
+  await waitFor(() => mock.sent.length >= 1, `${type} response sent`);
+  return mock.sent.map((s) => JSON.parse(s));
+}
+
+function unauthorizedErrorsOf(
+  frames: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return frames.filter((m) =>
+    m.type === "error" &&
+    (m.error as Record<string, unknown>).code === "unauthorized"
+  );
+}
+
+const dataAndModelReader = [
+  makeGrant({
+    id: "grant-data-read",
+    subject: { kind: "user", name: "adam" },
+    actions: ["read"],
+    resource: { kind: "data", pattern: "*" },
+  }),
+  makeGrant({
+    id: "grant-model-read",
+    subject: { kind: "user", name: "adam" },
+    actions: ["read"],
+    resource: { kind: "model", pattern: "*" },
+  }),
+];
+
+Deno.test("authorizeOrReject: data.get on a grant record refused for read on data:* and model:*", async () => {
+  const ctx = makeCtxWithDefinitions(dataAndModelReader, {
+    "grant-reader": "swamp/grant",
+  });
+  const frames = await sendAndCollect(ctx, "data.get", "auth-cp-1", {
+    modelIdOrName: "grant-reader",
+    dataName: "grant-main",
+  });
+  assertEquals(frames.length, 1);
+  assertEquals(frames[0].type, "error");
+  const error = frames[0].error as Record<string, unknown>;
+  assertEquals(error.code, "unauthorized");
+  const message = String(error.message);
+  assertStringIncludes(message, "'admin'");
+  assertStringIncludes(message, "access:swamp/grant");
+});
+
+Deno.test("authorizeOrReject: data.get on a grant record served for admin on access:*", async () => {
+  const ctx = makeCtxWithDefinitions([
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+  ], { "grant-reader": "swamp/grant" });
+  const frames = await sendAndCollect(ctx, "data.get", "auth-cp-2", {
+    modelIdOrName: "grant-reader",
+    dataName: "grant-main",
+  });
+  assertEquals(
+    unauthorizedErrorsOf(frames).length,
+    0,
+    `access admin should not be denied a grant record: ${
+      JSON.stringify(frames)
+    }`,
+  );
+});
+
+Deno.test("authorizeOrReject: read on access:* does not read a grant record", async () => {
+  const ctx = makeCtxWithDefinitions([
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["read"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+  ], { "grant-reader": "swamp/grant" });
+  const frames = await sendAndCollect(ctx, "data.get", "auth-cp-3", {
+    modelIdOrName: "grant-reader",
+    dataName: "grant-main",
+  });
+  assertEquals(unauthorizedErrorsOf(frames).length, 1);
+});
+
+for (
+  const [type, payload] of [
+    ["data.delete", { modelIdOrName: "ci-token", dataName: "token-main" }],
+    ["data.rename", {
+      modelIdOrName: "ci-token",
+      oldName: "token-main",
+      newName: "token-renamed",
+    }],
+  ] as const
+) {
+  Deno.test(`authorizeOrReject: ${type} on a server-token record refused for write on data:*`, async () => {
+    const ctx = makeCtxWithDefinitions([
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        actions: ["read", "write", "run"],
+        resource: { kind: "data", pattern: "*" },
+      }),
+    ], { "ci-token": "swamp/server-token" });
+    const frames = await sendAndCollect(ctx, type, `auth-cp-${type}`, payload);
+    const refused = unauthorizedErrorsOf(frames);
+    assertEquals(refused.length, 1, JSON.stringify(frames));
+    const message = String(
+      (refused[0].error as Record<string, unknown>).message,
+    );
+    assertStringIncludes(message, "'admin'");
+    assertStringIncludes(message, "access:swamp/server-token");
+  });
+}
+
+Deno.test("authorizeOrReject: data.get on a user model still allowed for read on data:*", async () => {
+  const ctx = makeCtxWithDefinitions(dataAndModelReader, {
+    "user-db": "command/shell",
+  });
+  const frames = await sendAndCollect(ctx, "data.get", "auth-cp-5", {
+    modelIdOrName: "user-db",
+    dataName: "result",
+  });
+  assertEquals(
+    unauthorizedErrorsOf(frames).length,
+    0,
+    `a data reader should not be denied user data: ${JSON.stringify(frames)}`,
+  );
+});
+
+Deno.test("authorizeOrReject: a direct-type run on a control-plane definition is judged on its own name", async () => {
+  // A name-conditioned deny must still match an existing control-plane
+  // definition: its fields are its own, not its access resource's
+  // (swamp-club#2756).
+  const grants = [
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      effect: "deny",
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+      condition: 'name == "grant-locked"',
+    }),
+  ];
+  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  const conditioned = withConditions(ctx, grants);
+
+  const sent = await sendAndCollect(
+    conditioned,
+    "model.method.run",
+    "cp-fields-1",
+    {
+      modelIdOrName: "grant-locked",
+      methodName: "revoke",
+      typeArg: "swamp/grant",
+      definitionName: "grant-locked",
+    },
+  );
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "explicitly denied",
+  );
+});
+
+Deno.test("authorizeOrReject: a method run on a control-plane model by name is judged on its own name", async () => {
+  // The standard path (no typeArg) must keep the record's own fields too, so
+  // a deny naming one grant still refuses it (swamp-club#2756).
+  const grants = [
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      effect: "deny",
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+      condition: 'name == "grant-locked"',
+    }),
+  ];
+  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  const conditioned = withConditions(ctx, grants);
+
+  const sent = await sendAndCollect(
+    conditioned,
+    "model.method.run",
+    "cp-fields-standard",
+    { modelIdOrName: "grant-locked", methodName: "revoke" },
+  );
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "explicitly denied",
+  );
+});
+
+Deno.test("authorizeOrReject: a data read of a control-plane record honours a deny naming it", async () => {
+  const grants = [
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      effect: "deny",
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "swamp/*" },
+      condition: 'name == "grant-locked"',
+    }),
+  ];
+  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  const conditioned = withConditions(ctx, grants);
+
+  const sent = await sendAndCollect(conditioned, "data.get", "cp-deny-data", {
+    modelIdOrName: "grant-locked",
+    dataName: "grant-main",
+  });
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "explicitly denied",
+  );
+});
+
 // ── Authorization: typeArg execution-target mismatch (SWAMP-003) ────────────
 // Regression tests: authorization must check the execution target (typeArg),
 // not just the claimed model (modelIdOrName).
@@ -2822,6 +3122,76 @@ Deno.test("handleRunAttach: miss + active-runs record + stale heartbeat returns 
   assertEquals(
     (response.payload as Record<string, unknown>).reason,
     "instance_dead",
+  );
+});
+
+Deno.test("handleRunAttach: a run of a gone control-plane model stays admin-only", async () => {
+  // The definition is gone, so the run is judged on its recorded type: model
+  // run grants do not reach it (swamp-club#2756).
+  const cpStore = createMockControlPlaneStore();
+  cpStore.data.set(
+    "active-runs/instance-remote/run-grant",
+    encoder.encode(JSON.stringify({
+      instanceId: "instance-remote",
+      resourceName: "grant-gone",
+      resourceType: "swamp/grant",
+      methodName: "create",
+      runKind: "method-run",
+      startedAt: "2026-08-01T12:00:00Z",
+    })),
+  );
+  const ctx = makeCtx(modeTokenConfig, [
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["run"],
+      resource: { kind: "model", pattern: "*" },
+    }),
+  ]);
+  (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
+
+  const sent = await sendAndCollect(ctx, "run.attach", "attach-cp", {
+    runId: "run-grant",
+  });
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "access:swamp/grant",
+  );
+});
+
+Deno.test("handleRunAttach: a control-plane run stays admin-only when a user model now holds its name", async () => {
+  // The run's definition was replaced by a user model: the recorded type
+  // still decides (swamp-club#2756).
+  const cpStore = createMockControlPlaneStore();
+  cpStore.data.set(
+    "active-runs/instance-remote/run-reused",
+    encoder.encode(JSON.stringify({
+      instanceId: "instance-remote",
+      resourceName: "grant-reused",
+      resourceType: "swamp/grant",
+      methodName: "create",
+      runKind: "method-run",
+      startedAt: "2026-08-01T12:00:00Z",
+    })),
+  );
+  const ctx = makeCtxWithDefinitions([
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["run"],
+      resource: { kind: "model", pattern: "*" },
+    }),
+  ], { "grant-reused": "command/shell" });
+  (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
+
+  const sent = await sendAndCollect(ctx, "run.attach", "attach-reused", {
+    runId: "run-reused",
+  });
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "access:swamp/grant",
   );
 });
 
