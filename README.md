@@ -439,9 +439,9 @@ export OTEL_EXPORTER_OTLP_METRICS_HEADERS="Authorization=Bearer TOKEN,X-Axiom-Me
 Swamp collects anonymous usage telemetry to help us understand which commands
 are used, how long they take, and what errors occur. Command words and the names
 you pass — model, workflow, vault and type names, ids and search queries — are
-sent as typed. Filesystem paths, option and input values, secrets and
-`data query` predicates are redacted before transmission, and paths in error
-messages are replaced with `<PATH>`.
+sent as typed. Filesystem paths, option and input values, secrets, access groups
+and principals, and `data query` predicates are redacted before transmission,
+and paths in error messages are replaced with `<PATH>`.
 
 Telemetry is **user-global** — events are spooled to a single directory
 regardless of which repository (if any) you are working in:

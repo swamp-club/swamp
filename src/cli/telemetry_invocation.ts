@@ -46,7 +46,6 @@ export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
   "definition_name",
   "enabled",
   "extension",
-  "group",
   "grant_id",
   "method_name",
   "model_id_or_name",
@@ -57,7 +56,6 @@ export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
   "old_name",
   "output_id",
   "output_id_or_model_name",
-  "principal",
   "query",
   "report_name",
   "run_id_or_workflow",
@@ -74,15 +72,18 @@ export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
 
 /**
  * Declared argument names whose values are always redacted: paths, URLs,
- * input values, the `data query` predicate, and free-form pass-through
- * arguments.
+ * input values, the `data query` predicate, access groups and principals, and
+ * free-form pass-through arguments.
  */
 export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
   "args",
   "extra",
+  // Access groups and their members: a principal can be an email address.
+  "group",
   "manifest-path",
   "path",
   "predicate",
+  "principal",
   "unexpected",
   "url",
   "value",
