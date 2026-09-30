@@ -2584,6 +2584,86 @@ Deno.test("authorizeOrReject: a direct-type run on a control-plane definition is
   );
 });
 
+Deno.test("authorizeOrReject: a method run on a control-plane model by name is judged on its own name", async () => {
+  // The standard path (no typeArg) must keep the record's own fields too, so
+  // a deny naming one grant still refuses it (swamp-club#2756).
+  const grants = [
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      effect: "deny",
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+      condition: 'name == "grant-locked"',
+    }),
+  ];
+  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
+  const conditioned: ConnectionContext = {
+    ...ctx,
+    policySnapshotLoader: {
+      ...ctx.policySnapshotLoader!,
+      snapshot,
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader,
+  };
+
+  const sent = await sendAndCollect(
+    conditioned,
+    "model.method.run",
+    "cp-fields-standard",
+    { modelIdOrName: "grant-locked", methodName: "revoke" },
+  );
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "explicitly denied",
+  );
+});
+
+Deno.test("authorizeOrReject: a data read of a control-plane record honours a deny naming it", async () => {
+  const grants = [
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      effect: "deny",
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "swamp/*" },
+      condition: 'name == "grant-locked"',
+    }),
+  ];
+  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
+  const conditioned: ConnectionContext = {
+    ...ctx,
+    policySnapshotLoader: {
+      ...ctx.policySnapshotLoader!,
+      snapshot,
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader,
+  };
+
+  const sent = await sendAndCollect(conditioned, "data.get", "cp-deny-data", {
+    modelIdOrName: "grant-locked",
+    dataName: "grant-main",
+  });
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "explicitly denied",
+  );
+});
+
 // ── Authorization: typeArg execution-target mismatch (SWAMP-003) ────────────
 // Regression tests: authorization must check the execution target (typeArg),
 // not just the claimed model (modelIdOrName).

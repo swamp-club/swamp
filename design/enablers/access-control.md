@@ -539,6 +539,9 @@ holding its secret, and a group record lists its members (swamp-club#2756).
 - **Owned by the access kind.** Serve authorizes any model or data resource of
   a control-plane type as the access resource named by its normalized type,
   `access:swamp/grant` for example, not as `model:<name>` or `data:<name>`.
+  The resource name is the type, so selectors match it; its fields are the
+  record's own (`name`, `modelType`, `tags` of its model), so a condition
+  naming one grant or token still decides on that record.
   `modelAccessResource` and `CanonicalResources` make that mapping, so it
   holds on every path that goes through them: `data.get`, `data.list`,
   `data.versions`, `data.delete`, `data.rename`, `data.search`, `data.query`,

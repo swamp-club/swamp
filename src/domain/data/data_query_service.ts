@@ -121,9 +121,11 @@ export interface DataQueryOptions {
    */
   include?: (record: DataRecord) => Promise<boolean>;
   /**
-   * Normalized model types whose records are never matched, whatever the
-   * predicate says. The CEL data.* namespace passes the control-plane types
-   * so expressions can never read them (swamp-club#2756).
+   * Stored model types whose records are never matched, whatever the
+   * predicate says. They are compared as stored strings, so pass every form
+   * a type can be stored under (bare and `@`-prefixed). The CEL data.*
+   * namespace passes CONTROL_PLANE_STORED_TYPES so expressions can never read
+   * control-plane records (swamp-club#2756).
    */
   excludeModelTypes?: readonly string[];
 }

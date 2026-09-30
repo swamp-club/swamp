@@ -30,12 +30,21 @@ import type { AccessResource } from "./access_decision_service.ts";
  * never collides with the access resources access requests use
  * (`access:grant`, `access:group`, `access:*`, `access:<request type>`),
  * and a trailing-`*` selector such as `access:*` or `access:swamp/*` covers
- * it (swamp-club#2756).
+ * it. The fields are the record's own — its model's name, type and tags — so
+ * a condition naming one grant or token still decides on that record
+ * (swamp-club#2756).
  */
-export function controlPlaneRecordResource(type: string): AccessResource {
+export function controlPlaneRecordResource(
+  type: string,
+  record: { name: string; tags?: Record<string, string> },
+): AccessResource {
   const name = normalizeModelTypeName(type);
   if (name === null) throw new Error("Model type cannot be empty");
-  return { kind: "access", name, fields: { name } };
+  return {
+    kind: "access",
+    name,
+    fields: { name: record.name, modelType: name, tags: record.tags ?? {} },
+  };
 }
 
 /**

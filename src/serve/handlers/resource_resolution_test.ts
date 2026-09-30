@@ -1096,7 +1096,7 @@ const GRANT_TYPE = ModelType.create("swamp/grant");
 const GRANT_RECORD: AccessResource = {
   kind: "access",
   name: "swamp/grant",
-  fields: { name: "swamp/grant" },
+  fields: { name: "grant-abc", modelType: "swamp/grant", tags: {} },
 };
 
 async function saveAutoDefinition(
@@ -1174,7 +1174,7 @@ Deno.test("CanonicalResources: an orphaned control-plane record is judged on its
     const expected: AccessResource = {
       kind: "access",
       name: "swamp/server-token",
-      fields: { name: "swamp/server-token" },
+      fields: { name: "tok", modelType: "swamp/server-token", tags: {} },
     };
     assertEquals(await canonical.dataOwners(orphan), [expected]);
     assertEquals(
@@ -1204,7 +1204,11 @@ Deno.test("resolveOutputAccess: an output of a deleted control-plane model stays
     assertEquals(access.status === "resolved" && access.resources, [{
       kind: "access",
       name: "swamp/enrollment-token",
-      fields: { name: "swamp/enrollment-token" },
+      fields: {
+        name: OUTPUT.definitionId,
+        modelType: "swamp/enrollment-token",
+        tags: {},
+      },
     }]);
   });
 });

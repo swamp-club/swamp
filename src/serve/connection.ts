@@ -3921,7 +3921,7 @@ function goneRunResource(
     resourceKind === "model" && resourceType &&
     isControlPlaneModelType(resourceType)
   ) {
-    return controlPlaneRecordResource(resourceType);
+    return controlPlaneRecordResource(resourceType, { name: resourceName });
   }
   return unresolvedAccessResource(resourceKind, resourceName);
 }

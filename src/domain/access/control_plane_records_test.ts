@@ -23,21 +23,38 @@ import {
   isControlPlaneRecordResource,
 } from "./control_plane_records.ts";
 
-Deno.test("controlPlaneRecordResource: names the access resource by the normalized type", () => {
-  assertEquals(controlPlaneRecordResource("swamp/grant"), {
-    kind: "access",
-    name: "swamp/grant",
-    fields: { name: "swamp/grant" },
-  });
+Deno.test("controlPlaneRecordResource: names the resource by the type and keeps the record's own fields", () => {
   assertEquals(
-    controlPlaneRecordResource("@SWAMP::Server-Token").name,
-    "swamp/server-token",
+    controlPlaneRecordResource("swamp/grant", {
+      name: "grant-abc",
+      tags: { team: "ops" },
+    }),
+    {
+      kind: "access",
+      name: "swamp/grant",
+      fields: {
+        name: "grant-abc",
+        modelType: "swamp/grant",
+        tags: { team: "ops" },
+      },
+    },
   );
+  const token = controlPlaneRecordResource("@SWAMP::Server-Token", {
+    name: "tok",
+  });
+  assertEquals(token.name, "swamp/server-token");
+  assertEquals(token.fields, {
+    name: "tok",
+    modelType: "swamp/server-token",
+    tags: {},
+  });
 });
 
 Deno.test("isControlPlaneRecordResource: only access resources named by a control-plane type", () => {
   assertEquals(
-    isControlPlaneRecordResource(controlPlaneRecordResource("swamp/worker")),
+    isControlPlaneRecordResource(
+      controlPlaneRecordResource("swamp/worker", { name: "w1" }),
+    ),
     true,
   );
   // The names access requests use are not control-plane records.

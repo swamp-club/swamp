@@ -134,7 +134,10 @@ export function modelAccessResource(
   kind: ModelResourceKind = "model",
 ): AccessResource {
   if (isControlPlaneModelType(result.type.normalized)) {
-    return controlPlaneRecordResource(result.type.normalized);
+    return controlPlaneRecordResource(result.type.normalized, {
+      name: result.definition.name,
+      tags: result.definition.tags,
+    });
   }
   const name = result.definition.name;
   return {
@@ -473,7 +476,9 @@ async function outputOwners(
   // An owner no longer found is judged on its recorded type, so the output
   // of a deleted control-plane model stays admin-only (swamp-club#2756).
   if (isControlPlaneModelType(type.normalized)) {
-    return [controlPlaneRecordResource(type.normalized)];
+    return [
+      controlPlaneRecordResource(type.normalized, { name: definitionId }),
+    ];
   }
   return kinds.map((kind) => ({
     kind,
@@ -690,7 +695,7 @@ export class CanonicalResources {
       return distinct(chosen.map((o) => modelAccessResource(o, "model")));
     }
     if (isControlPlaneModelType(modelType)) {
-      return [controlPlaneRecordResource(modelType)];
+      return [controlPlaneRecordResource(modelType, { name })];
     }
     return [{
       kind: "model",
@@ -717,7 +722,7 @@ export class CanonicalResources {
     // An owner no longer found is judged on its recorded type too, so an
     // orphaned token record is never read as plain data.
     if (isControlPlaneModelType(modelType)) {
-      return [controlPlaneRecordResource(modelType)];
+      return [controlPlaneRecordResource(modelType, { name: recordedName })];
     }
     return [{
       kind,
