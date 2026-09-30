@@ -27,7 +27,10 @@ import type { ServerRequest } from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
-import { controlPlaneRecordResource } from "../domain/access/control_plane_records.ts";
+import {
+  controlPlaneRecordResource,
+  isControlPlaneRecordResource,
+} from "../domain/access/control_plane_records.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
 import { withSyncGate } from "./sync_gate.ts";
@@ -3899,12 +3902,28 @@ async function resolveRunTarget(
       ? await resolveRecordedWorkflow(workflowRepo, resourceId, resourceName)
       : await resolveWorkflowTarget(workflowRepo, resourceName);
   }
-  return resolution.status === "missing"
-    ? {
+  if (resolution.status === "missing") {
+    return {
       status: "missing",
       resource: goneRunResource(resourceKind, resourceName, resourceType),
-    }
-    : resolution;
+    };
+  }
+  // A run recorded under a control-plane type stays admin-only whatever
+  // definition its id resolves to now, as data and outputs do
+  // (swamp-club#2756).
+  if (
+    resourceKind === "model" && resolution.status !== "failed" &&
+    resourceType && isControlPlaneModelType(resourceType) &&
+    !isControlPlaneRecordResource(resolution.resource)
+  ) {
+    return {
+      ...resolution,
+      resource: controlPlaneRecordResource(resourceType, {
+        name: resolution.name,
+      }),
+    };
+  }
+  return resolution;
 }
 
 /**
