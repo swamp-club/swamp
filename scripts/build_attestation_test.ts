@@ -590,6 +590,46 @@ Deno.test("checkWorkflowProvenance: a committed field the run lacks is refused",
   );
 });
 
+/** Bookkeeping swamp writes at the root of every run's evaluated workflow. */
+function runMetadata() {
+  return {
+    sensitiveFormat: 1,
+    writtenReferences: [{
+      path: ["jobs", 0, "steps", 0, "task", "inputs", "run"],
+      occurrence: 0,
+      vaultName: "ci",
+      key: "token",
+      encoding: "raw",
+      dataOrigin: false,
+    }],
+  };
+}
+
+Deno.test("checkWorkflowProvenance: run metadata at the root is not part of the definition", () => {
+  const evaluated = { ...evaluatedDefinition(), ...runMetadata() };
+
+  assertEquals(checkWorkflowProvenance(committedDefinition(), evaluated), []);
+});
+
+Deno.test("checkWorkflowProvenance: run metadata keys below the root are refused", () => {
+  const evaluated = evaluatedDefinition();
+  const step: Record<string, unknown> = evaluated.jobs[0].steps[0];
+  Object.assign(step, runMetadata());
+
+  assertEquals(checkWorkflowProvenance(committedDefinition(), evaluated), [
+    "jobs[0].steps[0].sensitiveFormat is in the evaluated workflow but not the committed definition",
+    "jobs[0].steps[0].writtenReferences is in the evaluated workflow but not the committed definition",
+  ]);
+});
+
+Deno.test("checkWorkflowProvenance: an unknown root key is still refused", () => {
+  const evaluated = { ...evaluatedDefinition(), ...runMetadata(), extra: 1 };
+
+  assertEquals(checkWorkflowProvenance(committedDefinition(), evaluated), [
+    "extra is in the evaluated workflow but not the committed definition",
+  ]);
+});
+
 Deno.test("evaluatedWorkflowPath: found beside the run record", () => {
   const swampDir = join("repo", ".swamp");
   const record = run("verify-reviews", "run-1", [], {

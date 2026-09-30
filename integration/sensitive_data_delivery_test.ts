@@ -152,6 +152,13 @@ function checkValue(word: string, label: string): string {
     `case "$v" in ${SECRET.slice(0, 5)}*) echo ${label}_OK;; esac`;
 }
 
+/**
+ * Prints the step shell's own command line. The trailing `&& true` keeps `ps`
+ * from being the last command of the `-c` string, which bash would exec in
+ * place of the shell, so `$$` still names the shell on every `/bin/sh`.
+ */
+const SHOW_ARGV = "ps -o args= -p $$ && true";
+
 async function runWorkflow(
   repoDir: string,
   workflow: Workflow,
@@ -308,7 +315,7 @@ Deno.test(
             `echo STEP=consume; ` +
               `${checkValue(`"\${{ ${TOKEN} }}"`, "DOUBLE")}; ` +
               `${checkValue(`'\${{ ${TOKEN} }}'`, "SINGLE")}; ` +
-              `ps -o args= -p $$`,
+              SHOW_ARGV,
           ),
         ]),
       );
@@ -340,7 +347,7 @@ Deno.test(
             "from-outputs",
             `echo STEP=from-outputs; ` +
               `${checkValue(`"\${{ steps.write.outputs.token }}"`, "OUT")}; ` +
-              `ps -o args= -p $$`,
+              SHOW_ARGV,
           ),
         ]),
       );
@@ -413,7 +420,7 @@ Deno.test(
       const workflow = reader(
         "replayed",
         `echo STEP=replayed; ` +
-          `${checkValue(`'\${{ ${TOKEN} }}'`, "REPLAY")}; ps -o args= -p $$`,
+          `${checkValue(`'\${{ ${TOKEN} }}'`, "REPLAY")}; ${SHOW_ARGV}`,
       );
       const fresh = await runWorkflow(repoDir, workflow);
       assertEquals(fresh.status, "succeeded", fresh.errors.join("\n"));
@@ -471,7 +478,7 @@ Deno.test(
           steps: [shellStep(
             "child",
             `echo STEP=child; ${checkValue('"${{ inputs.tok }}"', "CHILD")}; ` +
-              `ps -o args= -p $$`,
+              SHOW_ARGV,
           )].map((step) => Step.create({ name: step.name, task: step.task })),
         })],
       }));
@@ -514,7 +521,7 @@ Deno.test(
                 checkValue(`"\${{ env["HOME"] + "/" + ${TOKEN} }}"`, "MIXED")
                   .replace(`-eq ${SECRET.length}`, `-gt ${SECRET.length}`)
                   .replace(`${SECRET.slice(0, 5)}*`, "*/Pl41n*")
-              }; ps -o args= -p $$`,
+              }; ${SHOW_ARGV}`,
           ),
         ]),
       );
@@ -626,7 +633,7 @@ Deno.test(
               arguments: {
                 run: `echo STEP=after-gate; ` +
                   `${checkValue(`'\${{ ${TOKEN} }}'`, "RESUMED")}; ` +
-                  `ps -o args= -p $$`,
+                  SHOW_ARGV,
               },
             },
           },
