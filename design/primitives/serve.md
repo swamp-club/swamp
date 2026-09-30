@@ -216,7 +216,8 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
 **Operator gate.** In `token` and `oauth` mode the serve process must itself be
 logged in to swamp-club with the `serve:*` scope (`requireAuthenticated` /
 `requireScope` in `src/cli/commands/serve.ts`). `swamp serve daemon enable`
-applies the same gate. OAuth mode also reads `SWAMP_API_KEY` to register the
+applies the same gate, keyed on the auth mode the daemon will resolve
+(including one set in `serve.yaml`). OAuth mode also reads `SWAMP_API_KEY` to register the
 instance with the provider and resolve admin usernames.
 
 **Tokens.** A token is split on the first `.`; the name resolves a
@@ -657,7 +658,16 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `RestartSec=10`, `ExecReload` sends SIGHUP). The unit runs
   `swamp serve --repo-dir … --port … --host …` plus any extra flags given at
   enable time (`src/infrastructure/daemon/*_service_scheduler.ts`,
-  `service_scheduler_factory.ts`). Linux without `systemctl` is refused with a
+  `service_scheduler_factory.ts`). Before writing the unit, enable resolves
+  the options as the daemon will see them (the flags written into the unit,
+  `serve.yaml` with a relative `--config` resolved against the repository,
+  and the unit's environment only, never the enabling shell's) and runs
+  serve's argument checks on them (`validateServeDaemonArgs`,
+  `resolveServeStartupSettings`). Arguments serve would reject at startup are
+  refused with the same error instead of producing a unit that restarts every
+  10s. Checks that need I/O or runtime state (grants files, certificate
+  contents, webhook secrets, datastore-dependent limits) still run only when
+  the daemon starts. Linux without `systemctl` is refused with a
   pointer to file a feature request. Worker daemons have parallel schedulers.
 
   **User vs system scope:** system services (`multi-user.target`) start at

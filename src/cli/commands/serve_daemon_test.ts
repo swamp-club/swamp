@@ -17,9 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertNotEquals } from "@std/assert";
-import { isAbsolute, resolve } from "@std/path";
-import { buildServeDaemonEnv, collectServeExtraArgs } from "./serve.ts";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertThrows,
+} from "@std/assert";
+import { isAbsolute, join, resolve } from "@std/path";
+import {
+  buildServeDaemonEnv,
+  collectServeExtraArgs,
+  validateServeDaemonArgs,
+} from "./serve.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   getSwampConfigDir,
   getSwampDataDir,
@@ -134,6 +144,19 @@ Deno.test("collectServeExtraArgs: includes the token GC settings, including 0", 
     "0",
     "--token-gc-grace-period",
     "2h",
+  ]);
+});
+
+Deno.test("collectServeExtraArgs: forwards 0 for the max-runs limits", () => {
+  const args = collectServeExtraArgs({
+    maxConcurrentRuns: 0,
+    maxRunsPerPrincipal: 0,
+  });
+  assertEquals(args, [
+    "--max-concurrent-runs",
+    "0",
+    "--max-runs-per-principal",
+    "0",
   ]);
 });
 
@@ -293,4 +316,181 @@ Deno.test("buildServeDaemonEnv: pinning SWAMP_HOME alone moves the config dir (s
   });
 
   assertNotEquals(inUnit.configDir, resolve(enabling.configDir));
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-serve-daemon-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+/** `daemon enable` options with Cliffy's defaults applied. */
+function enableOptions(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    port: 9090,
+    host: "127.0.0.1",
+    schedule: true,
+    grantReload: "manual",
+    authMode: "none",
+    ...overrides,
+  };
+}
+
+const NO_UNIT_ENV: Readonly<Record<string, string>> = {};
+
+Deno.test("validateServeDaemonArgs: rejects token mode without --admins", async () => {
+  await withTempDir((repoDir) => {
+    assertThrows(
+      () =>
+        validateServeDaemonArgs(
+          enableOptions({ authMode: "token" }),
+          repoDir,
+          NO_UNIT_ENV,
+        ),
+      UserError,
+      '--admins is required when --auth-mode is "token"',
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: rejects a malformed --admins value", async () => {
+  await withTempDir((repoDir) => {
+    assertThrows(
+      () =>
+        validateServeDaemonArgs(
+          enableOptions({ authMode: "token", admins: "hammz" }),
+          repoDir,
+          NO_UNIT_ENV,
+        ),
+      UserError,
+      'Invalid --admins value "hammz"',
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: rejects --cert-file without --key-file", async () => {
+  await withTempDir((repoDir) => {
+    assertThrows(
+      () =>
+        validateServeDaemonArgs(
+          enableOptions({ certFile: "cert.pem" }),
+          repoDir,
+          NO_UNIT_ENV,
+        ),
+      UserError,
+      "Both --cert-file and --key-file must be provided together for TLS",
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: rejects an unparseable duration", async () => {
+  await withTempDir((repoDir) => {
+    assertThrows(
+      () =>
+        validateServeDaemonArgs(
+          enableOptions({ heartbeatInterval: "soon" }),
+          repoDir,
+          NO_UNIT_ENV,
+        ),
+      UserError,
+      'Invalid duration format: "soon"',
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: rejects --max-concurrent-runs 0", async () => {
+  await withTempDir((repoDir) => {
+    assertThrows(
+      () =>
+        validateServeDaemonArgs(
+          enableOptions({ maxConcurrentRuns: 0 }),
+          repoDir,
+          NO_UNIT_ENV,
+        ),
+      UserError,
+      "--max-concurrent-runs must be a positive integer, got 0",
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: rejects token mode from serve.yaml without admins", async () => {
+  await withTempDir(async (repoDir) => {
+    await Deno.mkdir(join(repoDir, ".swamp"));
+    await Deno.writeTextFile(
+      join(repoDir, ".swamp", "serve.yaml"),
+      "auth:\n  mode: token\n",
+    );
+    assertThrows(
+      () => validateServeDaemonArgs(enableOptions(), repoDir, NO_UNIT_ENV),
+      UserError,
+      '--admins is required when --auth-mode is "token"',
+    );
+  });
+});
+
+Deno.test("validateServeDaemonArgs: resolves a relative --config against the repo dir", async () => {
+  await withTempDir(async (repoDir) => {
+    await Deno.mkdir(join(repoDir, "deploy"));
+    await Deno.writeTextFile(
+      join(repoDir, "deploy", "serve.yaml"),
+      "auth:\n  mode: token\n  admins:\n    - user:alice\n",
+    );
+    const settings = validateServeDaemonArgs(
+      enableOptions({ config: join("deploy", "serve.yaml") }),
+      repoDir,
+      NO_UNIT_ENV,
+    );
+    assertEquals(settings.authConfig.mode, "token");
+    assertEquals(settings.authConfig.admins, ["user:alice"]);
+  });
+});
+
+Deno.test("validateServeDaemonArgs: reads env vars from the unit env, not the shell", async () => {
+  await withTempDir((repoDir) => {
+    const settings = withMockedEnv(
+      { SWAMP_HEARTBEAT_INTERVAL: "soon" },
+      () => validateServeDaemonArgs(enableOptions(), repoDir, NO_UNIT_ENV),
+    );
+    assertEquals(settings.heartbeatIntervalMs, undefined);
+    assertThrows(
+      () =>
+        validateServeDaemonArgs(enableOptions(), repoDir, {
+          SWAMP_HEARTBEAT_INTERVAL: "soon",
+        }),
+      UserError,
+      'Invalid duration format: "soon"',
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: accepts a valid token-mode argument set", async () => {
+  await withTempDir((repoDir) => {
+    const settings = validateServeDaemonArgs(
+      enableOptions({
+        authMode: "token",
+        admins: "user:alice",
+        maxConcurrentRuns: 4,
+      }),
+      repoDir,
+      NO_UNIT_ENV,
+    );
+    assertEquals(settings.authConfig.mode, "token");
+    assertEquals(settings.maxConcurrentRuns, 4);
+    return Promise.resolve();
+  });
 });
