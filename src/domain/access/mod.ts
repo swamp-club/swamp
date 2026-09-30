@@ -72,9 +72,12 @@ export {
 } from "./grant_file_reconciler.ts";
 
 export {
+  GRANTS_FILE_SOURCE_NAME,
+  grantsDirSourceName,
   type GrantSource,
   GrantSourceSchema,
   isFileSource,
+  isGrantsDirSourceName,
   parseFileSourceFilename,
   parseGrantSource,
 } from "./grant_source.ts";

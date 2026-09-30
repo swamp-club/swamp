@@ -25,7 +25,11 @@ import {
   GrantSchema,
 } from "../models/access/grant_model.ts";
 import { entryIdentityKey, type GrantFileEntry } from "./grant_file.ts";
-import { isFileSource, parseFileSourceFilename } from "./grant_source.ts";
+import {
+  isFileSource,
+  isGrantsDirSourceName,
+  parseFileSourceFilename,
+} from "./grant_source.ts";
 import { subjectToString } from "./subject.ts";
 import { resourceSelectorToString } from "./resource_selector.ts";
 import type { MaterializeResult } from "./admin_materializer.ts";
@@ -238,6 +242,13 @@ function reconcileOneFile(
   return { result, writes };
 }
 
+// Only grants stored before swamp-club#2848 carry a path separator: a
+// repository grants/ file is a bare name, and --grants-dir and --grants-file
+// files are stored as grants-dir/<name> and grants-file.
+function isAbsolutePathSource(filename: string): boolean {
+  return !isGrantsDirSourceName(filename) && /[\\/]/.test(filename);
+}
+
 export interface ReconcileAllResult {
   totalCreated: number;
   totalUpdated: number;
@@ -290,6 +301,10 @@ export async function reconcileAllFileGrants(
     totalUnchanged += result.unchanged;
   }
 
+  // A stored source no file maps to any more is reconciled as a deleted file.
+  // This is also how grants stored under the absolute path of a --grants-dir
+  // or --grants-file file are replaced: they are revoked in the same pass
+  // that creates them under their mount-independent source (swamp-club#2848).
   for (const [filename, grantsForFile] of grantsByFile) {
     if (fileEntries.has(filename)) continue;
     if (options.isSourceUnavailable?.(filename)) continue;
@@ -302,6 +317,10 @@ export async function reconcileAllFileGrants(
     // A deleted file is reported by the reconcile that revokes its grants,
     // and not again once they are all revoked.
     if (result.revoked === 0) continue;
+    if (isAbsolutePathSource(filename)) {
+      logger
+        .info`Revoked ${result.revoked} grant(s) stored under the legacy absolute path ${filename}; grants from --grants-dir and --grants-file are now stored as grants-dir/<name> and grants-file (swamp-club#2848)`;
+    }
     perFile.set(filename, result);
     allWrites.push(...writes);
     totalCreated += result.created;

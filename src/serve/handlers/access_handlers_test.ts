@@ -55,6 +55,7 @@ import { buildMarkDirtyHook } from "../../cli/repo_context.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { createFileGrantStore } from "../../domain/access/grant_file_reconciler.ts";
 
 interface CapturedExplainCall {
   principal: AccessPrincipal;
@@ -660,4 +661,83 @@ Deno.test("handleAccessTokenRotate: a failed rotate closes no sessions", async (
   assertEquals(JSON.parse(caller.sent[0]).type, "error");
   assertEquals(session.closes, []);
   cleanupSessions(name);
+});
+
+// ── external grant files keep one source across mount paths ─────────────
+
+Deno.test("handleAccessReload: --grants-dir and --grants-file grants keep their source when mounted at another path (swamp-club#2848)", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await ensureDir(join(repoDir, "grants"));
+    const denyYaml = `grants:
+  - subject: "user:mallory"
+    effect: deny
+    actions: [run]
+    resource: "workflow:*"
+`;
+    const allowYaml = `grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+    // The same files, mounted at two paths as two instances would see them.
+    for (const mount of ["a", "b"]) {
+      await ensureDir(join(dir, mount, "grants-dir"));
+      await Deno.writeTextFile(
+        join(dir, mount, "grants-dir", "deny.yaml"),
+        denyYaml,
+      );
+      await Deno.writeTextFile(join(dir, mount, "external.yaml"), allowYaml);
+    }
+
+    const repoContext = createRepositoryContext({ repoDir });
+    try {
+      const reloadFrom = async (mount: string) => {
+        const socket = createMockSocket();
+        const ctx: ConnectionContext = {
+          ...createReloadCtx(),
+          repoDir,
+          repoContext,
+          grantsDir: join(dir, mount, "grants-dir"),
+          grantsFile: join(dir, mount, "external.yaml"),
+        };
+        await handleAccessReload(socket, ctx, `req-${mount}`, null);
+        return JSON.parse(socket.sent[0]).payload as {
+          success: boolean;
+          fileResults?: Array<
+            { filename: string; created: number; revoked: number }
+          >;
+        };
+      };
+
+      const first = await reloadFrom("a");
+      assertEquals(first.success, true);
+      assertEquals(
+        first.fileResults?.map((f) => [f.filename, f.created, f.revoked]),
+        [["grants-file", 1, 0], ["grants-dir/deny.yaml", 1, 0]],
+      );
+
+      const second = await reloadFrom("b");
+      assertEquals(second.success, true);
+      assertEquals(
+        second.fileResults?.map((f) => [f.filename, f.created, f.revoked]),
+        [["grants-file", 0, 0], ["grants-dir/deny.yaml", 0, 0]],
+      );
+
+      const stored = await createFileGrantStore(
+        repoContext.definitionRepo,
+        repoContext.definitionRepo,
+        repoContext.unifiedDataRepo,
+      ).queryFileGrants();
+      assertEquals(
+        [...stored.values()]
+          .map(({ grant }) => `${grant.source} ${grant.state}`)
+          .sort(),
+        ["file:grants-dir/deny.yaml active", "file:grants-file active"],
+      );
+    } finally {
+      repoContext.catalogStore.close();
+    }
+  });
 });

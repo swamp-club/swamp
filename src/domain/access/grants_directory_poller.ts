@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { dirname, join } from "@std/path";
+import { join } from "@std/path";
 import {
   type ConditionValidator,
   type GrantFileEntry,
@@ -30,6 +30,11 @@ import {
   type FileGrantStore,
   reconcileAllFileGrants,
 } from "./grant_file_reconciler.ts";
+import {
+  GRANTS_FILE_SOURCE_NAME,
+  grantsDirSourceName,
+  isGrantsDirSourceName,
+} from "./grant_source.ts";
 import type { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
 
 const logger = getLogger(["swamp", "domain", "access", "grants-poller"]);
@@ -151,9 +156,9 @@ export class GrantsDirectoryPoller {
             );
             if (result.errors.length > 0) {
               this.#logUnavailable(filePath, result.errors);
-              unavailable.add(filePath);
+              unavailable.add(GRANTS_FILE_SOURCE_NAME);
             } else {
-              validEntries.set(filePath, result.entries);
+              validEntries.set(GRANTS_FILE_SOURCE_NAME, result.entries);
             }
           }
         } catch (error) {
@@ -161,7 +166,7 @@ export class GrantsDirectoryPoller {
             filename: filePath,
             message: `Failed to read: ${error}`,
           }]);
-          unavailable.add(filePath);
+          unavailable.add(GRANTS_FILE_SOURCE_NAME);
         }
       }
 
@@ -190,6 +195,7 @@ export class GrantsDirectoryPoller {
 
         for (const file of yamlFiles ?? []) {
           const filePath = join(externalDir, file.name);
+          const sourceName = grantsDirSourceName(file.name);
           try {
             const content = await Deno.readTextFile(filePath);
             if (content.trim().length === 0) continue;
@@ -200,10 +206,10 @@ export class GrantsDirectoryPoller {
             );
             if (result.errors.length > 0) {
               this.#logUnavailable(filePath, result.errors);
-              unavailable.add(filePath);
+              unavailable.add(sourceName);
               continue;
             }
-            validEntries.set(filePath, result.entries);
+            validEntries.set(sourceName, result.entries);
           } catch (error) {
             // Deleted since the directory was listed: revoke, as a delete.
             if (error instanceof Deno.errors.NotFound) continue;
@@ -211,16 +217,14 @@ export class GrantsDirectoryPoller {
               filename: filePath,
               message: `Failed to read: ${error}`,
             }]);
-            unavailable.add(filePath);
+            unavailable.add(sourceName);
           }
         }
       }
 
-      const externalDir = this.#externalGrantsDir;
       const isSourceUnavailable = (filename: string) =>
         unavailable.has(filename) ||
-        (externalDirUnavailable && externalDir !== undefined &&
-          dirname(filename) === externalDir);
+        (externalDirUnavailable && isGrantsDirSourceName(filename));
 
       await this.#commitReconcile(async () => {
         const reconcileResult = await reconcileAllFileGrants(

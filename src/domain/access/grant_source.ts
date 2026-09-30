@@ -61,3 +61,24 @@ export function parseFileSourceFilename(source: string): string {
   }
   return source.slice("file:".length);
 }
+
+// Files from --grants-dir and --grants-file are named independently of where
+// they are mounted. Serve instances sharing a datastore can mount the same
+// files at different paths; an absolute path in the source would make each
+// instance revoke the other's grants as files it no longer has
+// (swamp-club#2848). Neither form can equal a repository grants/ file name,
+// which has no slash and ends in .yaml or .yml.
+const GRANTS_DIR_SOURCE_PREFIX = "grants-dir/";
+
+/** The source filename of a file in the --grants-dir directory. */
+export function grantsDirSourceName(basename: string): string {
+  return `${GRANTS_DIR_SOURCE_PREFIX}${basename}`;
+}
+
+/** The source filename of the --grants-file file. */
+export const GRANTS_FILE_SOURCE_NAME = "grants-file";
+
+/** True for the source filename of a file in the --grants-dir directory. */
+export function isGrantsDirSourceName(filename: string): boolean {
+  return filename.startsWith(GRANTS_DIR_SOURCE_PREFIX);
+}

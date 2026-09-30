@@ -327,6 +327,10 @@ import {
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { reconcileAllFileGrants } from "../../domain/access/grant_file_reconciler.ts";
 import {
+  GRANTS_FILE_SOURCE_NAME,
+  grantsDirSourceName,
+} from "../../domain/access/grant_source.ts";
+import {
   createGrantWriteCommit,
   createGrantWriteTracking,
 } from "../../serve/grant_write_tracking.ts";
@@ -1426,11 +1430,11 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--grants-file <path:string>",
-    "Path to an external grants YAML file loaded at startup",
+    "Path to an external grants YAML file loaded at startup; its grants are stored with source file:grants-file",
   )
   .option(
     "--grants-dir <path:string>",
-    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory",
+    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory; their grants are stored with source file:grants-dir/<filename>",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -2043,11 +2047,11 @@ export const serveCommand = new Command()
   )
   .option(
     "--grants-file <path:string>",
-    "Path to an external grants YAML file loaded at startup (env: SWAMP_GRANTS_FILE)",
+    "Path to an external grants YAML file loaded at startup; its grants are stored with source file:grants-file (env: SWAMP_GRANTS_FILE)",
   )
   .option(
     "--grants-dir <path:string>",
-    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory (env: SWAMP_GRANTS_DIR)",
+    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory; their grants are stored with source file:grants-dir/<filename> (env: SWAMP_GRANTS_DIR)",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -3475,7 +3479,7 @@ export const serveCommand = new Command()
             }`,
           );
         }
-        validEntries.set(externalGrantsFilePath, externalResult.entries);
+        validEntries.set(GRANTS_FILE_SOURCE_NAME, externalResult.entries);
         logger
           .info`Loaded ${externalResult.entries.length} grant(s) from external file ${externalGrantsFilePath}`;
       } else {
@@ -3559,7 +3563,7 @@ export const serveCommand = new Command()
             }`,
           );
         }
-        validEntries.set(filePath, result.entries);
+        validEntries.set(grantsDirSourceName(file.name), result.entries);
         totalLoaded += result.entries.length;
       }
 

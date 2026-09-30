@@ -631,7 +631,7 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a missing --grants-dir, as
     const externalFile = join(externalDir, "deny.yaml");
     await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
     const store = createStatefulStore([
-      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+      storedGrant("deny-1", "file:grants-dir/deny.yaml", aliceDeny),
     ]);
 
     await reconcileOnce(
@@ -656,7 +656,7 @@ Deno.test("GrantsDirectoryPoller: revokes the grants of a --grants-dir that come
     const externalFile = join(externalDir, "deny.yaml");
     await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
     const store = createStatefulStore([
-      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+      storedGrant("deny-1", "file:grants-dir/deny.yaml", aliceDeny),
     ]);
     const mock = createMockLoader();
     const poller = new GrantsDirectoryPoller({
@@ -690,7 +690,7 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a deleted --grants-file, a
     const externalFile = join(dir, "grants-file.yaml");
     await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
     const store = createStatefulStore([
-      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+      storedGrant("deny-1", "file:grants-file", aliceDeny),
     ]);
 
     await reconcileOnce(
@@ -711,7 +711,7 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a --grants-file with inval
     const externalFile = join(dir, "grants-file.yaml");
     await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
     const store = createStatefulStore([
-      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+      storedGrant("deny-1", "file:grants-file", aliceDeny),
     ]);
 
     await reconcileOnce(
@@ -732,7 +732,7 @@ Deno.test("GrantsDirectoryPoller: revokes the grants of an emptied --grants-file
     const externalFile = join(dir, "grants-file.yaml");
     await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
     const store = createStatefulStore([
-      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+      storedGrant("deny-1", "file:grants-file", aliceDeny),
     ]);
 
     await reconcileOnce(
@@ -755,7 +755,7 @@ Deno.test("GrantsDirectoryPoller: revokes the grants of an emptied --grants-dir 
     const externalFile = join(externalDir, "deny.yaml");
     await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
     const store = createStatefulStore([
-      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+      storedGrant("deny-1", "file:grants-dir/deny.yaml", aliceDeny),
     ]);
 
     await reconcileOnce(

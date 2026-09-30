@@ -142,7 +142,7 @@ stored as `swamp/grant` model instances with state `active` or `revoked`.
 | ------------------ | ----------------------------------------------- |
 | `method`           | Created via `swamp access grant create`         |
 | `config`           | Loaded from server configuration at startup     |
-| `file:<filename>`  | Reconciled from a grants file: the bare filename for the repository `grants/` directory, the full path for `--grants-file` and `--grants-dir` files |
+| `file:<filename>`  | Reconciled from a grants file: the bare filename for the repository `grants/` directory, `grants-dir/<filename>` for `--grants-dir` files, `grants-file` for the `--grants-file` file |
 | `extension:<name>` | Bundled with an extension                       |
 
 ### Grant files
@@ -192,6 +192,28 @@ up to 100 entries.
 The `GrantFileReconciler` syncs file grants into model data, creating, updating
 or revoking them as files change. The `file:<filename>` source separates them
 from method-created grants during reconciliation.
+
+The source of a `--grants-dir` or `--grants-file` grant does not depend on
+where the file is mounted. Serve instances that share a datastore can mount
+the same files at different paths; with the path in the source, each instance
+reconciled the other's grants as grants of a file it no longer had and revoked
+them, deny grants included, until the other instance recreated them. Neither
+form can equal a repository `grants/` file name, which has no slash and ends in
+`.yaml` or `.yml`. A `--grants-file` that is also in the `--grants-dir` is
+stored under both sources, with the same grants.
+
+Grants stored before this change carry the absolute path of their file. No
+instance loads that source any more, so the first reconcile after an upgrade
+revokes them and creates the same grants under the new source, in one sync
+unit. The datastore push is not atomic across files, so a peer that pulls
+mid-push can briefly see the revoke before the create. Until every instance on
+a datastore is upgraded, older instances still store and revoke by absolute
+path.
+
+Instances that share a datastore must load the same grant files. An instance
+without a `--grants-dir`, or with different files in it, revokes the other
+instance's `grants-dir/` grants, as it does for repository `grants/` files it
+does not have.
 
 Reconcile treats every stored copy of a grant as the same grant. Serve
 instances that start against one datastore can each store a copy of a file
