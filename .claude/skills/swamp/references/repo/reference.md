@@ -287,7 +287,7 @@ export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
 export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 ```
 
-For custom datastore or driver implementations, see the `swamp-extension` skill.
+For custom datastore implementations, see the `swamp-extension` skill.
 
 ### Config Value Interpolation
 
@@ -388,7 +388,7 @@ sources:
      same directory, the repo-root layout wins — the direct-content files at the
      root are ignored to prevent double-loading.
 - `only` — optional filter limiting which extension types to load from this
-  source: `models`, `vaults`, `drivers`, `datastores`, `reports`, `workflows`.
+  source: `models`, `vaults`, `datastores`, `reports`, `workflows`.
 
 ### Managing Sources
 

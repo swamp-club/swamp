@@ -1,7 +1,7 @@
 # Publishing Extensions
 
-Publish extension models, workflows, vaults, drivers, and datastores to the
-swamp registry so others can install and use them.
+Publish extension models, workflows, vaults, and datastores to the swamp
+registry so others can install and use them.
 
 ## Repository Prerequisite
 
@@ -69,8 +69,8 @@ dependencies:
 | `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                                  |
 | `dependencies`    | No       | Other extensions this one depends on                                                                                                                          |
 
-*At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
-`reports`, or `skills` must be present with entries.
+*At least one of `models`, `workflows`, `vaults`, `datastores`, `reports`, or
+`skills` must be present with entries.
 
 ### Private publication
 
@@ -146,8 +146,7 @@ paths — hardcoding breaks smoke tests run against a source-loaded extension.
 ### Path resolution — `paths.base`
 
 This is the canonical reference for path resolution semantics across all
-extension-type skills (model, vault, driver, datastore, report). Other skills
-link here.
+extension-type skills (model, vault, datastore, report). Other skills link here.
 
 > **The default is the existing path resolution. Omit `paths.base` and nothing
 > about your manifest changes — historical behavior end to end.** The
@@ -157,8 +156,8 @@ link here.
 > fallback, no "best guess" — opt in to opt in.
 
 `paths.base` selects which directory typed-key entries (`models`, `vaults`,
-`drivers`, `datastores`, `reports`, `include`) and `additionalFiles` resolve
-against during push. Two modes:
+`datastores`, `reports`, `include`) and `additionalFiles` resolve against during
+push. Two modes:
 
 | Mode                 | Typed keys resolve relative to                        | `additionalFiles` resolves relative to |
 | -------------------- | ----------------------------------------------------- | -------------------------------------- |
@@ -457,8 +456,8 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 6. **Safety analysis** — scans all files (including `include` files) for
    disallowed patterns and limits
 7. **Quality checks** — runs `deno fmt --check` and `deno lint` on model, vault,
-   driver, datastore, and report files (using the project's `deno.json` config
-   if present, otherwise default rules). Include files are excluded.
+   datastore, and report files (using the project's `deno.json` config if
+   present, otherwise default rules). Include files are excluded.
 8. **Bare specifier check** — scans source files for bare import specifiers
    (e.g. `from "zod"` instead of `from "npm:zod@4"`). The server-side scorer
    cannot resolve bare specifiers, so a warning is added to the review warnings
@@ -582,21 +581,21 @@ swamp extension version --manifest manifest.yaml --json
 
 ## Common Errors and Fixes
 
-| Error                             | Fix                                                                               |
-| --------------------------------- | --------------------------------------------------------------------------------- |
-| "Not a swamp repository"          | Run `swamp repo init --json` in the extension directory                           |
-| "Not authenticated"               | Run `swamp auth login` first                                                      |
-| "collective does not match"       | Manifest `name` must use `@your-username/...`                                     |
-| "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                     |
-| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `drivers`, `datastores`, or `skills` array |
-| "Model file not found"            | Check path is relative to `extensions/models/`                                    |
-| "Workflow file not found"         | Check path is relative to `workflows/`                                            |
-| "eval() or new Function()"        | Remove dynamic code execution from your models                                    |
-| "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                     |
-| "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                         |
-| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                         |
-| "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason    |
-| "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                    |
+| Error                             | Fix                                                                            |
+| --------------------------------- | ------------------------------------------------------------------------------ |
+| "Not a swamp repository"          | Run `swamp repo init --json` in the extension directory                        |
+| "Not authenticated"               | Run `swamp auth login` first                                                   |
+| "collective does not match"       | Manifest `name` must use `@your-username/...`                                  |
+| "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                  |
+| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `datastores`, or `skills` array         |
+| "Model file not found"            | Check path is relative to `extensions/models/`                                 |
+| "Workflow file not found"         | Check path is relative to `workflows/`                                         |
+| "eval() or new Function()"        | Remove dynamic code execution from your models                                 |
+| "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                  |
+| "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                      |
+| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                      |
+| "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason |
+| "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                 |
 
 ## Related Skills
 
