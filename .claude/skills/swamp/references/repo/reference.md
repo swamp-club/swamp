@@ -8,7 +8,6 @@ my-swamp-repo/
 ├── extensions/              # Custom extensions
 │   ├── models/              # TypeScript model definitions
 │   ├── vaults/              # TypeScript vault implementations
-│   ├── drivers/             # TypeScript driver implementations
 │   └── datastores/          # TypeScript datastore implementations
 ├── .swamp/                  # Runtime data (datastore)
 │   ├── data/                # Versioned model data
@@ -441,7 +440,6 @@ pointing at your local development copy — your local version loads instead.
 | Manage model data               | `swamp-data`            |
 | Create custom TypeScript models | `swamp-extension`       |
 | Create custom datastores        | `swamp-extension`       |
-| Create custom drivers           | `swamp-extension`       |
 | Understand swamp internals      | `swamp-troubleshooting` |
 
 ## References

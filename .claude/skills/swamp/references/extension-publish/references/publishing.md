@@ -60,7 +60,6 @@ dependencies:
 | `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                                  |
 | `workflows`       | No*      | Workflow file paths. Resolved via `paths.base`. Under `manifest`, resolves from manifest dir first, then repo-root fallbacks.                                 |
 | `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                                  |
-| `drivers`         | No*      | Driver file paths. Resolved via `paths.base`.                                                                                                                 |
 | `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                              |
 | `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                                 |
 | `skills`          | No*      | Skill directory names. Honours `paths.base: manifest` (manifest-relative first, then project-local, then global). Multi-tool repos search all enrolled tools. |
@@ -305,7 +304,6 @@ for import style examples and helper script details.
 
 - `models` paths resolve relative to `extensions/models/`
 - `vaults` paths resolve relative to `extensions/vaults/`
-- `drivers` paths resolve relative to `extensions/drivers/`
 - `datastores` paths resolve relative to `extensions/datastores/`
 - Only list entry-point files — local imports are auto-resolved and included
 - Each entry-point is bundled into a standalone JS file for the registry
@@ -465,7 +463,7 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    (e.g. `from "zod"` instead of `from "npm:zod@4"`). The server-side scorer
    cannot resolve bare specifiers, so a warning is added to the review warnings
    prompting the user to confirm before push.
-9. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
+9. **Bundle TypeScript** — compiles each entry point (models, vaults,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
 10. **Version-drift check** — advisory check comparing current model versions
@@ -607,7 +605,6 @@ swamp extension version --manifest manifest.yaml --json
 | Create custom models               | `swamp-extension`         |
 | Create custom vaults               | `swamp-extension`         |
 | Create custom datastores           | `swamp-extension`         |
-| Create custom execution drivers    | `swamp-extension`         |
 | Repository setup and management    | `swamp-repo`              |
 | Create reports                     | `swamp-report`            |
 | Quality scorecard & best practices | `swamp-extension`         |

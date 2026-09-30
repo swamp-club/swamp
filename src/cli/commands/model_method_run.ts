@@ -140,7 +140,7 @@ The "code" field is a stable, machine-readable identifier. Callers should match 
                              Cached evaluation from an older swamp may hold secrets;
                              re-run without --last-evaluated
     missing_deps             Required extension dependencies are not installed
-    method_execution_failed  The method's execution driver returned an error
+    method_execution_failed  The method returned an error
     not_authenticated        Not signed in (run 'swamp auth login')
     cancelled                Operation was cancelled (e.g. Ctrl+C)
 

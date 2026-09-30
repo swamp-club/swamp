@@ -362,8 +362,8 @@ OTEL_TRACES_EXPORTER=console swamp workflow run my-workflow
 ```
 
 Traces capture the full execution hierarchy — CLI command, workflow, job, step,
-model method, and driver execution — with automatic context propagation to
-in-process extensions and Docker containers via `TRACEPARENT`.
+and model method — with automatic context propagation to in-process extensions
+and remote workers (including containerized ones) via `TRACEPARENT`.
 
 ### Logs
 
