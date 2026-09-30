@@ -36,10 +36,12 @@ import {
   dataDelete,
   dataGc,
   dataGet,
+  type DataGetDeps,
   dataList,
   dataPrune,
   dataQuery,
   type DataQueryDeps,
+  type DataRecord,
   dataRename,
   dataSearch,
   type DataSearchDeps,
@@ -47,11 +49,15 @@ import {
   DEFAULT_OUTPUT_RETENTION_DAYS,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   parseDuration,
+  resolveWorkflowData,
   runGc,
   type RunGcGarbageCollectionPolicy,
   type RunGcInput,
   runGcRetentionFromPolicy,
   summarise,
+  validationFailed,
+  type WorkflowDataPin,
+  workflowsDirFor,
 } from "../../libswamp/mod.ts";
 import type {
   DataDeletePayload,
@@ -70,6 +76,7 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
+  authorizeAllOrReject,
   authorizeAnyOrReject,
   authorizeOrReject,
   clientErrorDetails,
@@ -79,6 +86,7 @@ import {
   LibSwampStreamError,
   MAX_QUERY_RESULTS,
   pushChangedToRemote,
+  resourceDecider,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -88,6 +96,7 @@ import {
   canonicalResources,
   type RecordedOwner,
   resolveModelTarget,
+  resolveWorkflowTarget,
   targetArgument,
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
@@ -112,24 +121,6 @@ export function resolveRunGcInput(
   };
 }
 
-export async function resolveDataFields(
-  definitionRepo: DefinitionRepository,
-  modelIdOrName: string,
-): Promise<Record<string, unknown>> {
-  const target = await resolveModelTarget(
-    definitionRepo,
-    modelIdOrName,
-    "data",
-  );
-  if (target.status === "found") return { ...target.resource.fields };
-  // A model that does not exist has no tags or namespace. A lookup that
-  // failed says nothing about them, so only the name is known and a deny
-  // conditioned on the rest fails closed (swamp-club#2675).
-  return target.status === "missing"
-    ? { ...unresolvedAccessResource("data", modelIdOrName).fields }
-    : { name: modelIdOrName };
-}
-
 export async function handleDataGet(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -138,30 +129,24 @@ export async function handleDataGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Scoped to a workflow, modelIdOrName names a data item rather than a
-  // model, and without either the request reads "*"; how those forms
-  // authorize is swamp-club#2675. A model-scoped read resolves its model
-  // first and authorizes the model's canonical name (swamp-club#2674).
+  // A model-scoped read resolves its model first and authorizes the model's
+  // canonical name (swamp-club#2674). A workflow-scoped read authorizes the
+  // workflow, then every owner of the item it will return, and reads exactly
+  // that item (swamp-club#2603).
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
-  if (payload.workflowName || !payload.modelIdOrName) {
-    // An empty name reads as absent, exactly as libswamp reads it.
-    const resourceName = payload.modelIdOrName || "*";
-    const dataFields = resourceName !== "*"
-      ? await resolveDataFields(ctx.repoContext.definitionRepo, resourceName)
-      : {};
+  if (!payload.workflowName && !payload.modelIdOrName) {
+    // Neither: libswamp reports the missing argument. An empty name reads as
+    // absent, exactly as libswamp reads it.
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "data",
-        name: resourceName,
-        fields: dataFields,
-      }, ctx).allowed
+      !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
     ) return;
-  } else {
+  } else if (!payload.workflowName) {
+    const modelIdOrName = payload.modelIdOrName!;
     const target = await resolveModelTarget(
       ctx.repoContext.definitionRepo,
-      payload.modelIdOrName,
+      modelIdOrName,
       "data",
     );
     if (
@@ -171,13 +156,13 @@ export async function handleDataGet(
         principal,
         "read",
         target,
-        payload.modelIdOrName,
+        modelIdOrName,
         "data",
         ctx,
         "data_get_failed",
       )
     ) return;
-    model = targetArgument(target, payload.modelIdOrName);
+    model = targetArgument(target, modelIdOrName);
   }
 
   try {
@@ -189,6 +174,20 @@ export async function handleDataGet(
       ctx.repoContext.workflowRepo,
       ctx.repoContext.definitionRepo,
     );
+
+    let expectedOwner: WorkflowDataPin | undefined;
+    if (payload.workflowName) {
+      const pinned = await authorizeWorkflowData(
+        socket,
+        ctx,
+        requestId,
+        payload,
+        deps,
+        principal,
+      );
+      if (!pinned) return;
+      expectedOwner = pinned;
+    }
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -202,6 +201,7 @@ export async function handleDataGet(
         version: payload.version,
         includeContent: payload.includeContent ?? true,
         repoDir: ctx.repoDir,
+        expectedOwner,
       }),
       {
         resolving: () => {},
@@ -241,6 +241,82 @@ export async function handleDataGet(
   }
 }
 
+/**
+ * Authorizes a workflow-scoped data read and returns the item to pin it to,
+ * or null when the request was replied to. The workflow is resolved and its
+ * `read` authorized before any run is looked up, so a run-not-found, a
+ * pending run or a run id reaches only a caller who may read that workflow's
+ * history; then `data` read is authorized on every owner of the item the
+ * read will return (swamp-club#2603).
+ */
+async function authorizeWorkflowData(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: DataGetPayload,
+  deps: DataGetDeps,
+  principal: Principal | null,
+): Promise<WorkflowDataPin | null> {
+  const workflowName = payload.workflowName!;
+  const target = await resolveWorkflowTarget(
+    ctx.repoContext.workflowRepo,
+    workflowName,
+    workflowsDirFor(ctx.repoDir),
+  );
+  if (
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "read",
+      target,
+      workflowName,
+      "workflow",
+      ctx,
+      "data_get_failed",
+    )
+  ) return null;
+  const workflow = targetArgument(target, workflowName);
+
+  const dataName = payload.modelIdOrName || payload.dataName;
+  if (!dataName) {
+    throw new LibSwampStreamError(
+      validationFailed(
+        "A data name is required when using --workflow. Usage: swamp data get --workflow <name> <data_name>",
+      ),
+    );
+  }
+  const located = await resolveWorkflowData(deps, {
+    workflowId: workflow.idOrName,
+    workflowName: workflow.expectedName,
+    runId: payload.runId,
+    dataName,
+    version: payload.version,
+  });
+  if (located.kind === "error") throw new LibSwampStreamError(located.error);
+  const { workflow: found, run, item } = located.location;
+
+  const owners = await canonicalResources(ctx).dataOwners({
+    modelType: item.modelType.normalized,
+    modelId: item.modelId,
+    modelName: item.modelName,
+  });
+  for (const owner of owners) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", owner, ctx)
+        .allowed
+    ) return null;
+  }
+  return {
+    workflowId: found.id,
+    workflowName: found.name,
+    runId: run.id,
+    modelType: item.modelType.normalized,
+    modelId: item.modelId,
+    version: item.data.version,
+  };
+}
+
 export async function handleDataQuery(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -249,26 +325,25 @@ export async function handleDataQuery(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (payload.select) {
-    if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "data",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
-    ) return;
-  } else {
-    if (
-      !authorizeAnyOrReject(
-        socket,
-        requestId,
-        principal,
-        "read",
-        "data",
-        ctx,
-      )
-    ) return;
-  }
+  // Results are filtered to what the caller may read: projected rows before
+  // they are projected, since a projection no longer says whose data it is
+  // (swamp-club#2675).
+  if (
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "data",
+      ctx,
+    )
+  ) return;
+  const canonical = canonicalResources(ctx);
+  const readable = resourceDecider(socket, principal, "read", ctx);
+  const include = payload.select
+    ? async (record: DataRecord) =>
+      (await canonical.dataOwners(record)).every(readable)
+    : undefined;
 
   try {
     const libCtx = createLibSwampContext();
@@ -288,6 +363,7 @@ export async function handleDataQuery(
         predicate: payload.predicate,
         select: payload.select,
         limit,
+        include,
       }),
       {
         resolving: () => {},
@@ -312,7 +388,6 @@ export async function handleDataQuery(
       total?: number;
     };
     if (!payload.select && data.results) {
-      const canonical = canonicalResources(ctx);
       data.results = await filterByResources(
         data.results,
         (item) => canonical.dataOwners(item),
@@ -369,6 +444,29 @@ export async function handleDataList(
       )
     ) return;
     model = targetArgument(target, resourceName);
+  } else if (payload.workflowName) {
+    // A workflow-scoped list reveals the run and its steps, so it needs read
+    // on the workflow, resolved the way the list resolves it (by name, then
+    // id), before any run is looked up; items are then filtered on their
+    // owners (swamp-club#2603).
+    const target = await resolveWorkflowTarget(
+      ctx.repoContext.workflowRepo,
+      payload.workflowName,
+      workflowsDirFor(ctx.repoDir),
+    );
+    if (
+      !authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        payload.workflowName,
+        "workflow",
+        ctx,
+        "data_list_failed",
+      )
+    ) return;
   } else {
     if (
       !authorizeAnyOrReject(
@@ -830,13 +928,14 @@ export async function handleSummarise(
   principal: Principal | null,
   payload?: SummarisePayload,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
-  ) return;
+  // Summarises models, workflows and their data across the repository, so it
+  // needs read on every resource of each kind (swamp-club#2675).
+  for (const kind of ["model", "workflow", "data"] as const) {
+    if (
+      !authorizeAllOrReject(socket, requestId, principal, "read", kind, ctx)
+        .allowed
+    ) return;
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -893,12 +992,10 @@ export async function handleDataGc(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Reaches every data resource, so any deny for it refuses (swamp-club#2675).
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAllOrReject(socket, requestId, principal, "write", "data", ctx)
+      .allowed
   ) return;
 
   try {
@@ -949,12 +1046,10 @@ export async function handleDataPrune(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Reaches every data resource, so any deny for it refuses (swamp-club#2675).
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAllOrReject(socket, requestId, principal, "write", "data", ctx)
+      .allowed
   ) return;
 
   try {
@@ -1006,12 +1101,10 @@ export async function handleRunGc(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  // Reaches every data resource, so any deny for it refuses (swamp-club#2675).
   if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAllOrReject(socket, requestId, principal, "write", "data", ctx)
+      .allowed
   ) return;
 
   try {

@@ -118,6 +118,13 @@ export interface WorkflowEvaluateInput {
    * unique, so only a workflow with this name and the id is accepted.
    */
   expectedName?: string;
+  /**
+   * Without a workflow, evaluates and reports only the workflows this
+   * accepts. Each workflow evaluates on its own, so the others are skipped.
+   */
+  include?: (
+    workflow: { name: string; tags: Record<string, string> },
+  ) => boolean;
 }
 
 /** Type guard to check if data is WorkflowEvaluateAllData. */
@@ -482,8 +489,13 @@ async function* evaluateAll(
   ctx: LibSwampContext,
   deps: WorkflowEvaluateDeps,
   inputs: Record<string, unknown>,
+  include: (
+    workflow: { name: string; tags: Record<string, string> },
+  ) => boolean = () => true,
 ): AsyncIterable<WorkflowEvaluateEvent> {
-  const allWorkflows = await deps.findAllWorkflows();
+  const allWorkflows = (await deps.findAllWorkflows()).filter((workflow) =>
+    include({ name: workflow.name, tags: workflow.tags ?? {} })
+  );
   const items: WorkflowEvaluateItemData[] = [];
 
   for (const workflow of allWorkflows) {
@@ -542,7 +554,7 @@ export async function* workflowEvaluate(
   yield { kind: "evaluating" };
 
   if (!input.workflowIdOrName) {
-    yield* evaluateAll(ctx, deps, input.inputs);
+    yield* evaluateAll(ctx, deps, input.inputs, input.include);
   } else {
     yield* evaluateSingle(
       ctx,

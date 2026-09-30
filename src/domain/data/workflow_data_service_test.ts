@@ -521,6 +521,10 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun resolves workflow-scope art
   assertEquals(result.length, 1);
   assertEquals(result[0].data.name, "report-swamp-workflow-summary");
   assertEquals(result[0].modelType.normalized, "workflow");
+  // Named by the workflow, not its id, matching the tags.modelName search
+  // authorizes on (swamp-club#2603).
+  assertEquals(result[0].modelName, "test-workflow");
+  assertEquals(result[0].modelId, TEST_WORKFLOW_ID);
   // Workflow-scope items have no owning job or step.
   assertEquals(result[0].jobName, undefined);
   assertEquals(result[0].stepName, undefined);

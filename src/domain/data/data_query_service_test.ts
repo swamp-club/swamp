@@ -2326,3 +2326,28 @@ Deno.test("DataQueryService.latestDataNamesForSpec: returns no names for an unkn
   assertEquals(service.latestDataNamesForSpec("other-model", "result"), []);
   catalog.close();
 });
+
+Deno.test("DataQueryService: include drops records before select projects them", async () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ content_type: "application/json" }));
+  catalog.upsert(makeRow({
+    content_type: "application/json",
+    model_id: "model-002",
+    model_name: "secret",
+    data_name: "secret-data",
+    id: "00000000-0000-1000-8000-000000000099",
+  }));
+
+  const seen: string[] = [];
+  const results = await service.query("true", {
+    select: "name",
+    include: (record) => {
+      seen.push(record.modelName);
+      return Promise.resolve(record.modelName !== "secret");
+    },
+  }) as string[];
+
+  assertEquals(results, ["my-data"]);
+  assertEquals(seen.sort(), ["ingest", "secret"]);
+  catalog.close();
+});

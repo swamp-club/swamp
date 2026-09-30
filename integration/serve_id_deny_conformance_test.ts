@@ -860,11 +860,12 @@ Deno.test("serve id-deny conformance: a run's cancel fails, rather than proceedi
   });
 });
 
-Deno.test("serve id-deny conformance: an empty name is authorized as the every-resource form it runs as", async () => {
+Deno.test("serve id-deny conformance: an empty name runs the every-resource form, over only what the caller may read", async () => {
   await withFixtures(async (f) => {
     // libswamp treats an empty name as absent — validate or evaluate
-    // everything — so it must be authorized as that form, never as a
-    // resource named "".
+    // everything — so it is never authorized as a resource named "". It
+    // runs over every resource the caller may read, and only those
+    // (swamp-club#2675): dev-* grants see dev-db and dev-flow, never prod.
     const ctx = createServeCtx(f.repo, [
       grant({
         actions: ACTIONS,
@@ -876,22 +877,41 @@ Deno.test("serve id-deny conformance: an empty name is authorized as the every-r
       }),
     ]);
     for (
-      const [type, field, kind] of [
-        ["model.validate", "modelIdOrName", "model"],
-        ["model.evaluate", "modelIdOrName", "model"],
-        ["workflow.validate", "workflowIdOrName", "workflow"],
-        ["workflow.evaluate", "workflowIdOrName", "workflow"],
+      const [type, field, visible] of [
+        ["model.validate", "modelIdOrName", "dev-db"],
+        ["model.evaluate", "modelIdOrName", "dev-db"],
+        ["workflow.validate", "workflowIdOrName", "dev-flow"],
+        ["workflow.evaluate", "workflowIdOrName", "dev-flow"],
       ] as const
     ) {
       for (const payload of [{ [field]: "" }, {}]) {
         const frames = await sendRequest(ctx, request(type, payload));
-        const error = errorFrame(frames);
-        assertEquals(error?.error?.code, "unauthorized", type);
-        assert(
-          error!.error!.message.endsWith(`${kind}:*`),
-          `${type} ${JSON.stringify(payload)}: ${error!.error!.message}`,
-        );
+        const label = `${type} ${JSON.stringify(payload)}`;
+        assertEquals(errorFrame(frames), undefined, label);
+        const reply = JSON.stringify(frames.find((fr) => fr.type === type));
+        assert(reply.includes(visible), `${label}: ${reply}`);
+        assert(!reply.includes("prod-"), `${label}: ${reply}`);
       }
+    }
+  });
+});
+
+Deno.test("serve id-deny conformance: validate and evaluate everything are refused without any read grant", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, [
+      grant({ actions: ACTIONS, resource: { kind: "data", pattern: "*" } }),
+    ]);
+    for (
+      const [type, kind] of [
+        ["model.validate", "model"],
+        ["model.evaluate", "model"],
+        ["workflow.validate", "workflow"],
+        ["workflow.evaluate", "workflow"],
+      ] as const
+    ) {
+      const error = errorFrame(await sendRequest(ctx, request(type, {})));
+      assertEquals(error?.error?.code, "unauthorized", type);
+      assert(error!.error!.message.includes(kind), error!.error!.message);
     }
   });
 });
@@ -902,15 +922,16 @@ Deno.test("serve id-deny conformance: an empty data model name takes the every-m
       grant({ actions: ACTIONS, resource: { kind: "data", pattern: "dev-*" } }),
     ]);
 
-    // data.get: authorized as "*", never as a model named "".
+    // data.get: never authorized as a model named "". With a read grant for
+    // the kind it reaches libswamp, which reports the missing name.
     const got = errorFrame(
       await sendRequest(
         ctx,
         request("data.get", { modelIdOrName: "", dataName: "state" }),
       ),
     );
-    assertEquals(got?.error?.code, "unauthorized");
-    assert(got!.error!.message.endsWith("data:*"), got!.error!.message);
+    assertEquals(got?.error?.code, "data_get_failed");
+    assertStringIncludes(got!.error!.message, "model name or --workflow");
 
     // data.list: takes the any-grant path whose results are filtered per
     // item, not a named check on "".

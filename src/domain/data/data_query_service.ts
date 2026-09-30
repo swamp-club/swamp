@@ -122,6 +122,11 @@ export interface DataQueryOptions {
    * not.
    */
   includeContentPath?: boolean;
+  /**
+   * Keeps only the matched records this accepts, before any projection, so
+   * a projected result never carries a record the caller may not read.
+   */
+  include?: (record: DataRecord) => Promise<boolean>;
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
@@ -415,7 +420,17 @@ export class DataQueryService {
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
     await this.ensurePopulated();
-    const results = this.executeQuery(predicate, options);
+    let results: DataRecord[] | unknown[];
+    if (options?.include) {
+      const matched = this.executeMatch(predicate, options);
+      const accepted: DataRecord[] = [];
+      for (const record of matched.records) {
+        if (await options.include(record)) accepted.push(record);
+      }
+      results = this.project(accepted, matched.selectParsed);
+    } else {
+      results = this.executeQuery(predicate, options);
+    }
 
     // Hydrate foreign namespace records whose content isn't available locally.
     if (this.foreignContentFetcher && Array.isArray(results)) {
@@ -513,6 +528,21 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
+    const matched = this.executeMatch(predicate, options);
+    return this.project(matched.records, matched.selectParsed);
+  }
+
+  /**
+   * Matches and hydrates records for a predicate, and parses the select
+   * expression — loading whatever it needs — without applying it.
+   */
+  private executeMatch(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): {
+    records: DataRecord[];
+    selectParsed?: (ctx: Record<string, unknown>) => unknown;
+  } {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
     const limit = options?.limit ?? Infinity;
@@ -691,6 +721,18 @@ export class DataQueryService {
       results.length = writeIndex;
     }
 
+    return { records: results, selectParsed };
+  }
+
+  /**
+   * Applies a select projection to matched records.
+   * Per-record errors (e.g. missing attribute keys) produce null instead of
+   * failing the entire query, so partial results are still useful.
+   */
+  private project(
+    results: DataRecord[],
+    selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined,
+  ): DataRecord[] | unknown[] {
     // Apply projection if select expression provided.
     // Per-record errors (e.g. missing attribute keys) produce null instead of
     // failing the entire query, so partial results are still useful.

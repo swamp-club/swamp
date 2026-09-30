@@ -83,11 +83,13 @@ import { VaultConfigParseError } from "../../infrastructure/persistence/yaml_vau
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
+  authorizeAnyOrReject,
   authorizeOrReject,
   clientErrorDetails,
   type ConnectionContext,
   LibSwampStreamError,
   rejectEditWithoutContent,
+  resourceDecider,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -1116,16 +1118,28 @@ export async function handleVaultAuditTrail(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "read",
-      vaultAccessResource(payload?.vaultName ?? "*"),
-      ctx,
-    ).allowed
-  ) return;
+  // A named vault is authorized as that vault. Without one the trail covers
+  // every vault, so each entry is kept only when its vault is readable, as a
+  // named read of it would be (swamp-club#2675).
+  let include: ((entry: { vaultName: string }) => boolean) | undefined;
+  if (payload?.vaultName) {
+    if (
+      !authorizeOrReject(
+        socket,
+        requestId,
+        principal,
+        "read",
+        vaultAccessResource(payload.vaultName),
+        ctx,
+      ).allowed
+    ) return;
+  } else {
+    if (
+      !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
+    ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (entry) => readable(vaultAccessResource(entry.vaultName));
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1140,6 +1154,7 @@ export async function handleVaultAuditTrail(
         since: payload?.since ? new Date(payload.since) : undefined,
         until: payload?.until ? new Date(payload.until) : undefined,
         limit: payload?.limit,
+        include,
       }),
       {
         resolving: () => {},

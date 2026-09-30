@@ -1001,3 +1001,35 @@ Deno.test("workflowEvaluate: byId does not fall back to a name lookup", async ()
   }
   assertEquals(saved, []);
 });
+
+Deno.test("workflowEvaluate all with include evaluates only accepted workflows", async () => {
+  const keep = makeWorkflow({ name: "keep" });
+  const skip = makeWorkflow({
+    name: "skip",
+    id: "00000000-0000-4000-8000-000000000002",
+  });
+  const saved: string[] = [];
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([keep, skip]),
+    saveEvaluatedWorkflow: (workflow) => {
+      saved.push(workflow.name);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      inputs: {},
+      include: (workflow) => workflow.name === "keep",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowEvaluateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as WorkflowEvaluateAllData;
+  assertEquals(data.items.map((i) => i.name), ["keep"]);
+  assertEquals(data.total, 1);
+  assertEquals(saved, ["keep"]);
+});

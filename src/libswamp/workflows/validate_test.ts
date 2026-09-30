@@ -349,3 +349,43 @@ Deno.test("workflowValidate all: empty repository yields passed=true with no wor
   assertEquals(completed.data.totalFailed, 0);
   assertEquals(completed.data.totalWarnings, 0);
 });
+
+Deno.test("workflowValidate all with include reports only accepted workflows and broken files", async () => {
+  const keep = Workflow.create({ name: "keep", tags: { env: "dev" } });
+  const skip = Workflow.create({ name: "skip", tags: { env: "prod" } });
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([keep, skip]),
+    listBrokenWorkflows: () =>
+      Promise.resolve([
+        { file: "/w/a.yaml", name: "broken-keep", id: null, error: "bad" },
+        { file: "/w/b.yaml", name: "broken-skip", id: null, error: "bad" },
+      ]),
+  });
+
+  const seen: Array<{ name: string; tags: Record<string, string> }> = [];
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      include: (workflow) => {
+        seen.push(workflow);
+        return workflow.name.endsWith("keep");
+      },
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  if (!isWorkflowValidateAllData(completed.data)) {
+    throw new Error("expected all data");
+  }
+  assertEquals(
+    completed.data.workflows.map((w) => w.workflowName),
+    ["broken-keep", "keep"],
+  );
+  assertEquals(
+    seen.find((w) => w.name === "skip")?.tags,
+    { env: "prod" },
+  );
+  assertEquals(seen.find((w) => w.name === "broken-skip")?.tags, {});
+});

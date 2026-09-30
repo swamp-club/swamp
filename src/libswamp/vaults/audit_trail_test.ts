@@ -140,3 +140,35 @@ Deno.test("vaultAuditTrail: returns empty result for no entries", async () => {
   assertEquals(completed.data.truncated, false);
   assertEquals(completed.data.entries.length, 0);
 });
+
+Deno.test("vaultAuditTrail: include filters entries before the limit, so hidden ones never shorten a page", async () => {
+  const entries = [
+    makeEntry({ vaultName: "prod-vault" }),
+    makeEntry({ vaultName: "dev-vault", secretKey: "A" }),
+    makeEntry({ vaultName: "prod-vault" }),
+    makeEntry({ vaultName: "dev-vault", secretKey: "B" }),
+    makeEntry({ vaultName: "dev-vault", secretKey: "C" }),
+  ];
+  let askedLimit: number | undefined = -1;
+  const deps: VaultAuditTrailDeps = {
+    findByTimeRange: (_since, _until, options) => {
+      askedLimit = options?.limit;
+      return Promise.resolve(entries);
+    },
+  };
+
+  const events = await collect<VaultAuditTrailEvent>(
+    vaultAuditTrail(createLibSwampContext(), deps, {
+      limit: 2,
+      include: (entry) => entry.vaultName === "dev-vault",
+    }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    VaultAuditTrailEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(askedLimit, undefined);
+  assertEquals(completed.data.entries.map((e) => e.secretKey), ["A", "B"]);
+  assertEquals(completed.data.truncated, true);
+});

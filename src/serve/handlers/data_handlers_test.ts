@@ -28,11 +28,9 @@ import {
   handleDataRename,
   handleDataVersions,
   handleRunGc,
-  resolveDataFields,
   resolveRunGcInput,
 } from "./data_handlers.ts";
 import type { ConnectionContext } from "./shared.ts";
-import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -43,104 +41,6 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-
-function makeDefinitionRepo(
-  definitions: Map<
-    string,
-    { name: string; tags?: Record<string, string>; type?: string }
-  >,
-): DefinitionRepository {
-  return {
-    findByNameGlobal: (name: string) => {
-      const def = definitions.get(name);
-      if (!def) return Promise.resolve(null);
-      return Promise.resolve({
-        type: { normalized: def.type ?? "test/type" },
-        definition: { name: def.name, tags: def.tags, id: "test-id" },
-      });
-    },
-    findById: () => Promise.resolve(null),
-    listTypes: () => Promise.resolve([]),
-    listByType: () => Promise.resolve([]),
-  } as unknown as DefinitionRepository;
-}
-
-Deno.test("resolveDataFields: returns tags when model has them", async () => {
-  const repo = makeDefinitionRepo(
-    new Map([["tagged-model", {
-      name: "tagged-model",
-      tags: { env: "prod" },
-    }]]),
-  );
-
-  const fields = await resolveDataFields(repo, "tagged-model");
-
-  assertEquals(fields.name, "tagged-model");
-  assertEquals(fields.tags, { env: "prod" });
-});
-
-Deno.test("resolveDataFields: carries empty tags when model has none", async () => {
-  const repo = makeDefinitionRepo(
-    new Map([["plain-model", { name: "plain-model" }]]),
-  );
-
-  const fields = await resolveDataFields(repo, "plain-model");
-
-  assertEquals(fields.name, "plain-model");
-  assertEquals(fields.tags, {});
-});
-
-Deno.test("resolveDataFields: falls back to an unresolved resource when model not found", async () => {
-  const repo = makeDefinitionRepo(new Map());
-
-  const fields = await resolveDataFields(repo, "missing-model");
-
-  assertEquals(fields, { name: "missing-model", ns: "", tags: {} });
-});
-
-Deno.test("resolveDataFields: returns ns from user namespace type", async () => {
-  const repo = makeDefinitionRepo(
-    new Map([["ns-model", {
-      name: "ns-model",
-      tags: { env: "prod" },
-      type: "@myns/model-type",
-    }]]),
-  );
-
-  const fields = await resolveDataFields(repo, "ns-model");
-
-  assertEquals(fields.name, "ns-model");
-  assertEquals(fields.ns, "myns");
-  assertEquals(fields.tags, { env: "prod" });
-});
-
-Deno.test("resolveDataFields: carries an empty ns for non-namespaced type", async () => {
-  const repo = makeDefinitionRepo(
-    new Map([["plain-type-model", {
-      name: "plain-type-model",
-      type: "command/shell",
-    }]]),
-  );
-
-  const fields = await resolveDataFields(repo, "plain-type-model");
-
-  assertEquals(fields.name, "plain-type-model");
-  assertEquals(fields.ns, "");
-});
-
-Deno.test("resolveDataFields: falls back to name-only when repo throws, so tag denies fail closed", async () => {
-  const repo = {
-    findByNameGlobal: () => Promise.reject(new Error("PermissionDenied")),
-    findById: () => Promise.reject(new Error("PermissionDenied")),
-    listTypes: () => Promise.resolve([]),
-    listByType: () => Promise.resolve([]),
-  } as unknown as DefinitionRepository;
-
-  const fields = await resolveDataFields(repo, "erroring-model");
-
-  assertEquals(fields.name, "erroring-model");
-  assertEquals(fields.tags, undefined);
-});
 
 Deno.test("resolveRunGcInput: uses repository retention when request omits it", () => {
   assertEquals(

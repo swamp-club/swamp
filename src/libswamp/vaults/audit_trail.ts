@@ -46,6 +46,11 @@ export interface VaultAuditTrailInput {
   since?: Date;
   until?: Date;
   limit?: number;
+  /**
+   * Keeps only the entries this accepts. The limit and `truncated` apply to
+   * the accepted entries, so hidden entries never shorten a page.
+   */
+  include?: (entry: VaultAuditEntry) => boolean;
 }
 
 export interface VaultAuditTrailDeps {
@@ -114,13 +119,16 @@ export async function* vaultAuditTrail(
       ctx.logger
         .debug`Querying vault audit trail: vault=${input.vaultName}, key=${input.secretKey}, action=${input.action}, since=${since.toISOString()}, until=${until.toISOString()}, limit=${limit}`;
 
-      const fetchLimit = limit + 1;
-      const entries = await deps.findByTimeRange(since, until, {
+      // With a filter the store cannot apply, the whole bounded range is read
+      // and the limit applied after filtering.
+      const fetchLimit = input.include ? undefined : limit + 1;
+      const fetched = await deps.findByTimeRange(since, until, {
         vaultName: input.vaultName,
         secretKey: input.secretKey,
         action: input.action,
         limit: fetchLimit,
       });
+      const entries = input.include ? fetched.filter(input.include) : fetched;
 
       const truncated = entries.length > limit;
       const returnedEntries = truncated ? entries.slice(0, limit) : entries;

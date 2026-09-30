@@ -45,10 +45,15 @@ export interface WorkflowDataItem {
 
 const logger = getLogger(["data", "workflow"]);
 
-/** A model that owns data, identified by model type and model id. */
+/**
+ * A model that owns data, identified by model type and model id. `name` is
+ * set for an owner that is not a model definition — a workflow, for
+ * workflow-scope data — so the item is named after it rather than its id.
+ */
 interface DataOwner {
   modelType: ModelType;
   modelId: string;
+  name?: string;
 }
 
 /**
@@ -127,9 +132,13 @@ export class WorkflowDataService {
     // Workflow-scope artifacts (e.g. workflow-scope report output) are
     // tracked on the run aggregate rather than under any single step, and
     // are stored under the workflow itself.
+    // Named by its workflow, so the item has one identity wherever it is
+    // read: search and list authorize it as the workflow too
+    // (swamp-club#2603).
     const workflowOwner: DataOwner = {
       modelType: ModelType.create("workflow"),
       modelId: run.workflowId,
+      name: run.workflowName,
     };
     for (const artifact of run.workflowDataArtifacts) {
       const resolved = await this.resolveArtifact(artifact, run.id, [
@@ -194,10 +203,8 @@ export class WorkflowDataService {
     if (!found) return null;
 
     const { data, owner } = found;
-    const modelName = await this.resolveModelName(
-      owner.modelType,
-      owner.modelId,
-    );
+    const modelName = owner.name ??
+      await this.resolveModelName(owner.modelType, owner.modelId);
 
     const contentPath = this.dataRepo.getContentPath(
       owner.modelType,

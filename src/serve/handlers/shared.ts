@@ -852,6 +852,7 @@ function decideAccess(
   action: Action,
   resource: AccessResource,
   ctx: ConnectionContext,
+  every = false,
 ): AccessOutcome {
   if (ctx.authConfig.mode === "none") {
     return { kind: "allowed", decision: null };
@@ -862,11 +863,13 @@ function decideAccess(
   const collectives = connectionCollectives.get(socket) ?? [];
   const groups = connectionGroups.get(socket) ?? [];
   const service = ctx.policySnapshotLoader.decisionService;
-  const decision = service.decide(
-    { principal, collectives, groups },
-    action,
-    resource,
-  );
+  const decision = every
+    ? service.decideAll(
+      { principal, collectives, groups },
+      action,
+      resource.kind,
+    )
+    : service.decide({ principal, collectives, groups }, action, resource);
 
   if (decision && decision.effect === "allow") {
     return { kind: "allowed", decision };
@@ -894,7 +897,55 @@ export function authorizeOrReject(
   resource: AccessResource,
   ctx: ConnectionContext,
 ): AuthorizationResult {
-  const outcome = decideAccess(socket, principal, action, resource, ctx);
+  return replyToOutcome(
+    socket,
+    requestId,
+    principal,
+    action,
+    resource,
+    ctx,
+    decideAccess(socket, principal, action, resource, ctx),
+  );
+}
+
+/**
+ * Authorizes an operation over every resource of `kind` that cannot be
+ * filtered per resource (garbage collection, prune, summarise): any deny that
+ * applies to the principal for the kind and action refuses it, whatever its
+ * pattern, since the operation reaches every resource (swamp-club#2675).
+ * Replies and audits as {@link authorizeOrReject} does.
+ */
+export function authorizeAllOrReject(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  kind: ResourceKind,
+  ctx: ConnectionContext,
+): AuthorizationResult {
+  const resource: AccessResource = { kind, name: "*", fields: { name: "*" } };
+  return replyToOutcome(
+    socket,
+    requestId,
+    principal,
+    action,
+    resource,
+    ctx,
+    decideAccess(socket, principal, action, resource, ctx, true),
+    true,
+  );
+}
+
+function replyToOutcome(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+  outcome: AccessOutcome,
+  every = false,
+): AuthorizationResult {
   switch (outcome.kind) {
     case "allowed":
       return { allowed: true, decision: outcome.decision };
@@ -939,7 +990,14 @@ export function authorizeOrReject(
     case "refused": {
       const { decision, groups } = outcome;
       const principalStr = resolveDisplayPrincipal(outcome.principal, ctx);
-      if (decision && decision.effect === "deny") {
+      if (decision && decision.effect === "deny" && every) {
+        sendError(
+          socket,
+          requestId,
+          "unauthorized",
+          `Access denied: ${principalStr} has a deny grant (${decision.grantId}) for '${action}' on ${resource.kind} resources, and an operation over every ${resource.kind} resource needs '${action}' on all of them`,
+        );
+      } else if (decision && decision.effect === "deny") {
         sendError(
           socket,
           requestId,
@@ -1107,11 +1165,35 @@ export async function filterByResources<T>(
   ctx: ConnectionContext,
 ): Promise<T[]> {
   if (ctx.authConfig.mode === "none") return items;
-  if (!ctx.policySnapshotLoader || !principal) return [];
+  const allows = resourceDecider(socket, principal, action, ctx);
+  const kept: T[] = [];
+  for (const item of items) {
+    const resources = await resourcesOf(item);
+    if (resources.length > 0 && resources.every(allows)) kept.push(item);
+  }
+  return kept;
+}
+
+/**
+ * A silent check of whether the principal may `action` a resource, by the
+ * rules {@link filterByResources} applies: an explicit allow or deny decides,
+ * and a resource no grant decides is allowed only for an admin. Decisions are
+ * cached per distinct resource and are not audited. Everything is allowed
+ * when authorization is off; nothing when there is no principal or policy.
+ */
+export function resourceDecider(
+  socket: WebSocket,
+  principal: Principal | null,
+  action: Action,
+  ctx: ConnectionContext,
+): (resource: AccessResource) => boolean {
+  if (ctx.authConfig.mode === "none") return () => true;
+  const loader = ctx.policySnapshotLoader;
+  if (!loader || !principal) return () => false;
 
   const collectives = connectionCollectives.get(socket) ?? [];
   const groups = connectionGroups.get(socket) ?? [];
-  const service = ctx.policySnapshotLoader.decisionService;
+  const service = loader.decisionService;
   const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
   const adminDecision = service.decide(
     accessPrincipal,
@@ -1121,7 +1203,7 @@ export async function filterByResources<T>(
   const isAdmin = adminDecision !== null && adminDecision.effect === "allow";
 
   const decided = new Map<string, boolean>();
-  const allows = (resource: AccessResource): boolean => {
+  return (resource) => {
     const key = JSON.stringify([resource.kind, resource.name, resource.fields]);
     let allowed = decided.get(key);
     if (allowed === undefined) {
@@ -1131,13 +1213,6 @@ export async function filterByResources<T>(
     }
     return allowed;
   };
-
-  const kept: T[] = [];
-  for (const item of items) {
-    const resources = await resourcesOf(item);
-    if (resources.length > 0 && resources.every(allows)) kept.push(item);
-  }
-  return kept;
 }
 
 /**

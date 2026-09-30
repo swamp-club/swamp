@@ -125,6 +125,7 @@ import {
   LibSwampStreamError,
   lockTimeoutErrorForClient,
   rejectEditWithoutContent,
+  resourceDecider,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -1744,21 +1745,22 @@ export async function handleModelValidate(
   principal: Principal | null,
   payload?: ModelValidatePayload,
 ): Promise<void> {
-  // Without a model this validates every model and authorizes "*"; how that
-  // form authorizes is swamp-club#2675. A named model is resolved first.
+  // Without a model this validates every model the caller may read, and only
+  // those (swamp-club#2675). A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let include:
+    | ((entry: DefinitionLookupResult) => boolean)
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!modelIdOrName) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "model",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
+      !authorizeAnyOrReject(socket, requestId, principal, "read", "model", ctx)
     ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (entry) => readable(modelAccessResource(entry, "model"));
   } else {
     const target = await resolveModelTarget(
       ctx.repoContext.definitionRepo,
@@ -1800,6 +1802,7 @@ export async function handleModelValidate(
         modelIdOrName: model?.idOrName,
         byId: model?.byId,
         expectedName: model?.expectedName,
+        include,
       }),
       {
         resolving: () => {},
@@ -1836,8 +1839,9 @@ export async function handleModelEvaluate(
   principal: Principal | null,
   payload?: ModelEvaluatePayload,
 ): Promise<void> {
-  // Without a model this validates every model and authorizes "*"; how that
-  // form authorizes is swamp-club#2675. A named model is resolved first.
+  // Without a model this evaluates every model — evaluation orders them all
+  // in one dependency graph — and returns only those the caller may read
+  // (swamp-club#2675). A named model is resolved first.
   const modelIdOrName = payload?.modelIdOrName;
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
@@ -1845,11 +1849,7 @@ export async function handleModelEvaluate(
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!modelIdOrName) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "model",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
+      !authorizeAnyOrReject(socket, requestId, principal, "read", "model", ctx)
     ) return;
   } else {
     const target = await resolveModelTarget(
@@ -1905,10 +1905,31 @@ export async function handleModelEvaluate(
       return;
     }
 
+    const data = (result ?? {}) as {
+      items?: Array<
+        { id: string; name: string; type: string; hadExpressions: boolean }
+      >;
+      total?: number;
+      evaluated?: number;
+    };
+    if (!model && data.items) {
+      const canonical = canonicalResources(ctx);
+      data.items = await filterByResources(
+        data.items,
+        (item) => canonical.model(item.id, item.name, item.type),
+        socket,
+        principal,
+        "read",
+        ctx,
+      );
+      data.total = data.items.length;
+      data.evaluated = data.items.filter((item) => item.hadExpressions).length;
+    }
+
     send(socket, {
       type: "model.evaluate",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);

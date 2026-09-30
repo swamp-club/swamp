@@ -93,6 +93,18 @@ export interface WorkflowValidateInput {
    * unique, so only a workflow with this name and the id is accepted.
    */
   expectedName?: string;
+  /**
+   * Without a workflow, validates and reports only the workflows this
+   * accepts. A file that fails to parse is offered by the name it declares
+   * (or its path, as it is reported) with no tags, since its tags cannot be read.
+   */
+  include?: (workflow: WorkflowIdentity) => boolean;
+}
+
+/** What {@link WorkflowValidateInput.include} decides a workflow on. */
+export interface WorkflowIdentity {
+  name: string;
+  tags: Record<string, string>;
 }
 
 /** Dependencies for the workflow validate operation. */
@@ -275,15 +287,19 @@ export function isWorkflowValidateAllData(
 /** Validates all workflows. */
 async function* validateAll(
   deps: WorkflowValidateDeps,
+  include: (workflow: WorkflowIdentity) => boolean = () => true,
 ): AsyncIterable<WorkflowValidateEvent> {
-  const allWorkflows = await deps.findAllWorkflows();
+  const allWorkflows = (await deps.findAllWorkflows()).filter((workflow) =>
+    include({ name: workflow.name, tags: workflow.tags ?? {} })
+  );
 
   // Files the repository skipped because they fail schema parsing must
   // count as failures — otherwise a broken file makes validate-all report
   // all-green while the workflow silently no longer loads.
-  const brokenWorkflows = deps.listBrokenWorkflows
-    ? await deps.listBrokenWorkflows()
-    : [];
+  const brokenWorkflows =
+    (deps.listBrokenWorkflows ? await deps.listBrokenWorkflows() : []).filter((
+      broken,
+    ) => include({ name: broken.name ?? broken.file, tags: {} }));
 
   if (allWorkflows.length === 0 && brokenWorkflows.length === 0) {
     yield {
@@ -403,7 +419,7 @@ export async function* workflowValidate(
       yield { kind: "resolving" };
 
       if (!input.workflowIdOrName) {
-        yield* validateAll(deps);
+        yield* validateAll(deps, input.include);
       } else {
         yield* validateSingle(
           deps,

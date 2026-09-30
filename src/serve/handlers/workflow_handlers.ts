@@ -143,6 +143,7 @@ import {
   paginate,
   pushChangedToRemote,
   rejectEditWithoutContent,
+  resourceDecider,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -178,6 +179,7 @@ import {
   type ResourceResolution,
   targetArgument,
   unresolvedAccessResource,
+  workflowAccessResource,
 } from "./resource_resolution.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
@@ -1991,22 +1993,29 @@ export async function handleWorkflowValidate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Without a workflow this validates every workflow and authorizes "*"; how
-  // that form authorizes is swamp-club#2675. A named workflow is resolved
-  // first.
+  // Without a workflow this validates every workflow the caller may read, and
+  // only those (swamp-club#2675). A named workflow is resolved first.
   const workflowIdOrName = payload?.workflowIdOrName;
   let workflow:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let include:
+    | ((workflow: { name: string; tags: Record<string, string> }) => boolean)
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!workflowIdOrName) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "workflow",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
+      !authorizeAnyOrReject(
+        socket,
+        requestId,
+        principal,
+        "read",
+        "workflow",
+        ctx,
+      )
     ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (candidate) => readable(workflowAccessResource(candidate));
   } else {
     const target = await resolveWorkflowRequest(ctx, workflowIdOrName);
     if (
@@ -2039,6 +2048,7 @@ export async function handleWorkflowValidate(
         workflowIdOrName: workflow?.idOrName,
         byId: workflow?.byId,
         expectedName: workflow?.expectedName,
+        include,
       }),
       {
         resolving: () => {},
@@ -2075,22 +2085,29 @@ export async function handleWorkflowEvaluate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Without a workflow this evaluates every workflow and authorizes "*"; how
-  // that form authorizes is swamp-club#2675. A named workflow is resolved
-  // first.
+  // Without a workflow this evaluates every workflow the caller may read, and
+  // only those (swamp-club#2675). A named workflow is resolved first.
   const workflowIdOrName = payload?.workflowIdOrName;
   let workflow:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let include:
+    | ((workflow: { name: string; tags: Record<string, string> }) => boolean)
+    | undefined;
   // An empty string reads as absent, exactly as libswamp reads it.
   if (!workflowIdOrName) {
     if (
-      !authorizeOrReject(socket, requestId, principal, "read", {
-        kind: "workflow",
-        name: "*",
-        fields: {},
-      }, ctx).allowed
+      !authorizeAnyOrReject(
+        socket,
+        requestId,
+        principal,
+        "read",
+        "workflow",
+        ctx,
+      )
     ) return;
+    const readable = resourceDecider(socket, principal, "read", ctx);
+    include = (candidate) => readable(workflowAccessResource(candidate));
   } else {
     const target = await resolveWorkflowRequest(ctx, workflowIdOrName);
     if (
@@ -2125,6 +2142,7 @@ export async function handleWorkflowEvaluate(
         byId: workflow?.byId,
         expectedName: workflow?.expectedName,
         inputs: payload?.inputs ?? {},
+        include,
       }),
       {
         evaluating: () => {},
