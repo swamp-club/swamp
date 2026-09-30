@@ -43,7 +43,11 @@ import {
   type TemplateSyntaxScan,
 } from "./template_syntax_scan.ts";
 import { CalVer } from "./calver.ts";
-import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
+import {
+  coerceMethodArgs,
+  getObjectShape,
+  parseGlobalArgumentsLeniently,
+} from "./zod_type_coercion.ts";
 import {
   extractEnvReferences,
   extractPathReferences,
@@ -233,7 +237,7 @@ export class ValidationResult {
 /**
  * Formats a Zod error into a human-readable string.
  */
-function formatZodError(error: z.ZodError): string {
+function formatZodError(error: { issues: readonly z.ZodIssue[] }): string {
   if (error.issues.length === 1) {
     const issue = error.issues[0];
     const path = issue.path.length > 0 ? ` at "${issue.path.join(".")}"` : "";
@@ -726,14 +730,11 @@ export class DefaultModelValidationService implements ModelValidationService {
     // instances where not all globalArgs are needed (e.g. get/sync/delete
     // don't need creation-time fields). swamp model create has its own
     // strict validation in create.ts.
-    const lenient = "partial" in globalArgsSchema &&
-        typeof globalArgsSchema.partial === "function"
-      ? (globalArgsSchema.partial() as z.ZodTypeAny)
-      : globalArgsSchema;
-    return this.validateWithSchema(
-      "Global arguments",
-      lenient,
-      coerced,
+    const result = parseGlobalArgumentsLeniently(globalArgsSchema, coerced);
+    return Promise.resolve(
+      result.success
+        ? ValidationResult.pass("Global arguments")
+        : ValidationResult.fail("Global arguments", formatZodError(result)),
     );
   }
 

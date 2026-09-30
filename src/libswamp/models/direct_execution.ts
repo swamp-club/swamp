@@ -30,6 +30,7 @@ import {
   coerceMethodArgs,
   getObjectShape,
   isRecordSchema,
+  parseGlobalArgumentsLeniently,
 } from "../../domain/models/zod_type_coercion.ts";
 import type { ExpressionLocation } from "../../domain/expressions/expression.ts";
 import {
@@ -450,18 +451,17 @@ export async function resolveOrCreateDefinition(
   // don't need creation-time fields, and the cloud API enforces required-ness
   // at call time for methods that do (create/update).
   if (modelDef.globalArguments) {
-    const schema = modelDef.globalArguments;
-    const lenient = "partial" in schema && typeof schema.partial === "function"
-      ? (schema.partial() as z.ZodTypeAny)
-      : schema;
     // Validate only the static fields. Fields holding a `${{ ... }}` expression
     // (e.g. a `vault.get(...)` reference) are resolved and validated at runtime;
     // checking them now would reject a sentinel string against a constrained
     // field, blocking the vault remediation for a sensitive argument.
     const staticArgs = stripExpressionFields(routed.globalArguments);
-    const result = lenient.safeParse(staticArgs);
+    const result = parseGlobalArgumentsLeniently(
+      modelDef.globalArguments,
+      staticArgs,
+    );
     if (!result.success) {
-      const issues = result.error.issues.map((i: z.ZodIssue) => {
+      const issues = result.issues.map((i: z.ZodIssue) => {
         const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
         return `  ${path}${i.message}`;
       }).join("\n");
