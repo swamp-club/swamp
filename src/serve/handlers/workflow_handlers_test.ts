@@ -921,7 +921,8 @@ function makeCancelCtx(
     repoContext: {
       workflowRepo: makeWorkflowRepo(new Map([["deploy", workflow]])),
       workflowRunRepo: {
-        findGlobalByStatus: () => Promise.resolve(suspended),
+        findGlobalById: (runId: string) =>
+          Promise.resolve(suspended.find((s) => s.run.id === runId) ?? null),
       },
     },
   } as unknown as ConnectionContext;
@@ -1057,5 +1058,48 @@ Deno.test("handleWorkflowCancel: does not abort a run of another workflow than t
     });
   } finally {
     registry.deregister(runId);
+  }
+});
+
+Deno.test("handleWorkflowCancel: a run id that is not a UUID gets the not-found reply without a repository read", async () => {
+  const registry = new ActiveRunRegistry();
+  const ctx = makeCancelCtx(registry);
+  const unreachable = () => {
+    throw new Error("a malformed run id must not reach a repository");
+  };
+  (ctx.repoContext as unknown as Record<string, unknown>).workflowRepo = {
+    findByName: unreachable,
+    findById: unreachable,
+    findAll: unreachable,
+  };
+  (ctx.repoContext as unknown as Record<string, unknown>).workflowRunRepo = {
+    findById: unreachable,
+    findGlobalById: unreachable,
+    findGlobalByStatus: unreachable,
+  };
+
+  for (const runId of ["-", "../x", "not-a-uuid"]) {
+    for (const workflowIdOrName of [undefined, "deploy"]) {
+      const frames: CancelFrame[] = [];
+      const socket = {
+        readyState: WebSocket.OPEN,
+        send: (data: string) => frames.push(JSON.parse(data)),
+      } as unknown as WebSocket;
+
+      await handleWorkflowCancel(
+        socket,
+        ctx,
+        "req-cancel",
+        { runId, workflowIdOrName },
+        new AbortController(),
+        null,
+      );
+
+      assertEquals(frames.length, 1);
+      assertEquals(frames[0].error, {
+        code: "workflow_cancel_failed",
+        message: `No cancellable run with id ${runId}`,
+      });
+    }
   }
 });

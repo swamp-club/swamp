@@ -1425,7 +1425,11 @@ dispatch: it waits for an aborted run, which needs the sync gate for its final
 push, so it takes the gate only for the persisted cancel and its push
 (`cancelSuspendedRunAndPush`). It finds the persisted run and authorizes the
 caller before taking the gate, so a refused or unknown run id never holds it
-(swamp-club#2648). It authorizes the `run` action on the
+(swamp-club#2648). The lookup is cheap whatever the caller sends: a run id that
+is not a UUID is not found without a repository read, and any other is loaded
+from its own run file alone. `workflowIdOrName` is compared with the
+found run's workflow rather than resolved first, so an unknown name reads no
+workflow files (swamp-club#2729). It authorizes the `run` action on the
 workflow the run belongs to, as the server knows it, never the payload's name.
 So does the bare `cancel` when its id names a run in the registry rather than
 one of the connection's own requests. By design, any principal with `run` on a

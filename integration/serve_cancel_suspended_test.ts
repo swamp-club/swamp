@@ -392,6 +392,56 @@ Deno.test({
 
 Deno.test({
   ...testOpts,
+  name:
+    "serve cancel: malformed, unknown and misnamed runs are not found without the gate, and a named run is cancelled",
+  fn: () =>
+    withHarness(async (h) => {
+      const { acquisitions } = withGate(h);
+      const reservations = countReservations(h);
+      const notFound = (id: string) => ({
+        code: "workflow_cancel_failed",
+        message: `No cancellable run with id ${id}`,
+      });
+
+      for (const runId of ["-", "../x"]) {
+        for (const workflowIdOrName of [undefined, h.workflow.name]) {
+          const replies = await cancelOverWs(h, OPERATOR, {
+            runId,
+            workflowIdOrName,
+          });
+          assertEquals(replies.map((r) => r.error), [notFound(runId)]);
+        }
+      }
+
+      const unknownId = crypto.randomUUID();
+      const unknown = await cancelOverWs(h, OPERATOR, {
+        runId: unknownId,
+        workflowIdOrName: `no-such-workflow-${crypto.randomUUID()}`,
+      });
+      assertEquals(unknown.map((r) => r.error), [notFound(unknownId)]);
+
+      // The operator may cancel the run, but not under another workflow.
+      const misnamed = await cancelOverWs(h, OPERATOR, {
+        workflowIdOrName: h.other.name,
+      });
+      assertEquals(misnamed.map((r) => r.error), [notFound(h.runId)]);
+
+      assertEquals(acquisitions(), 0);
+      assertEquals(reservations(), 0);
+      assertEquals(h.audit.filter((e) => e.outcome === "denied"), []);
+      assertEquals((await loadRun(h))?.status, "suspended");
+
+      const named = await cancelOverWs(h, OPERATOR, {
+        workflowIdOrName: h.workflow.name,
+      });
+      assertEquals(named[0].type, "workflow.cancel", JSON.stringify(named));
+      assertEquals(named[0].payload?.data.status, "cancelled");
+      assertEquals((await loadRun(h))?.status, "cancelled");
+    }),
+});
+
+Deno.test({
+  ...testOpts,
   name: "serve cancel: the HTTP fallback cancels a suspended run by id alone",
   fn: () =>
     withHarness(async (h) => {
@@ -725,9 +775,9 @@ Deno.test({
       // lookup misses the run.
       const runRepo = h.ctx.repoContext.workflowRunRepo;
       const racing = Object.create(runRepo);
-      racing.findGlobalByStatus = () => {
+      racing.findGlobalById = () => {
         h.registry.register(registeredResume(h));
-        return Promise.resolve([]);
+        return Promise.resolve(null);
       };
       const ctx = {
         ...h.ctx,

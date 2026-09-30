@@ -56,6 +56,7 @@ import {
   type WorkflowRunSummary,
 } from "../../domain/workflows/workflow_run_summary.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 import {
   createWorkflowRunCompleted,
   createWorkflowRunFailed,
@@ -91,45 +92,29 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     workflowId: WorkflowId,
     runId: WorkflowRunId,
   ): Promise<WorkflowRun | null> {
-    const dir = this.getRunsDir(workflowId);
+    // Every run id is a UUID (WorkflowRunSchema), so anything else cannot
+    // name a run. Checking before the path is built keeps a caller-supplied
+    // id such as `../x` from reaching outside the runs directory.
+    if (!isUuid(runId)) return null;
 
-    // No per-file try/catch around readTextFile here — unlike the
-    // analogous YamlOutputRepository.findById, the entry.name filter
-    // restricts readTextFile to the target file only (filenames are
-    // `workflow-run-${runId}.yaml`; runIds are 36-char UUIDs that
-    // never substring-match each other, and atomicWriteTextFile's
-    // `.{freshUuid}.tmp` files don't contain the runId). The only
-    // NotFound readTextFile can raise is for the target's own
-    // concurrent deletion, for which returning null is correct. If
-    // this filter is ever relaxed, add the per-file try/catch +
-    // continue pattern used in YamlOutputRepository.findById.
+    // save() always writes getPath(workflowId, runId), so the run is read
+    // from that one file: no directory listing, and no other run is parsed.
+    let content: string;
     try {
-      for await (const entry of Deno.readDir(dir)) {
-        if (
-          entry.isFile && entry.name.includes(runId) &&
-          entry.name.endsWith(".yaml")
-        ) {
-          const path = join(dir, entry.name);
-          const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as WorkflowRunData | null;
-          if (!data) continue;
-          if (data.id === runId) {
-            // Convert logFile back to absolute path
-            if (data.logFile) {
-              data.logFile = toAbsolutePath(this.repoDir, data.logFile);
-            }
-            return WorkflowRun.fromData(data);
-          }
-        }
-      }
+      content = await Deno.readTextFile(this.getPath(workflowId, runId));
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         return null;
       }
       throw error;
     }
-
-    return null;
+    const data = parseYaml(content) as WorkflowRunData | null;
+    if (!data || data.id !== runId) return null;
+    // Convert logFile back to absolute path
+    if (data.logFile) {
+      data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+    }
+    return WorkflowRun.fromData(data);
   }
 
   async findAllByWorkflowId(workflowId: WorkflowId): Promise<WorkflowRun[]> {
@@ -307,6 +292,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async findGlobalById(
     runId: WorkflowRunId,
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | null> {
+    // As in findById: a non-UUID id names no run and must not become a path.
+    if (!isUuid(runId)) return null;
     try {
       for await (const entry of Deno.readDir(this.baseDir)) {
         if (!entry.isDirectory) continue;
