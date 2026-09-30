@@ -37,6 +37,7 @@ import { Command } from "@cliffy/command";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { registerCommands } from "../src/cli/mod.ts";
 import {
+  COMMAND_WORD_ARGUMENTS,
   isSentArgument,
   REDACTED_ARGUMENTS,
   resolveTelemetryInvocation,
@@ -96,7 +97,8 @@ Deno.test("telemetry redaction: every declared argument name is classified", () 
       if (
         argument.name !== "key" &&
         !SENT_ARGUMENTS.has(argument.name) &&
-        !REDACTED_ARGUMENTS.has(argument.name)
+        !REDACTED_ARGUMENTS.has(argument.name) &&
+        !COMMAND_WORD_ARGUMENTS.has(argument.name)
       ) {
         unclassified.add(argument.name);
       }
@@ -137,7 +139,9 @@ Deno.test("telemetry redaction: only sent arguments survive, and no option value
     }
     const mistyped = canary();
     expectRedacted.push(mistyped);
-    args.push("--rdx-mistyped-option", mistyped);
+    // `=` form: a mistyped option that swallows a separate token makes every
+    // positional untrusted, which the unit tests cover.
+    args.push(`--rdx-mistyped-option=${mistyped}`);
 
     const declared = command.getArguments();
     for (const argument of declared) {
@@ -183,5 +187,16 @@ Deno.test("telemetry redaction: leaving out a required argument sends nothing", 
         `${path.join(" ")}: ${value} leaked in ${payload}`,
       );
     }
+  }
+});
+
+Deno.test("telemetry redaction: help sends the command words it names and nothing after", () => {
+  const root = buildRoot();
+  for (const { path } of CASES) {
+    if (path[0] === "help") continue;
+    const secret = `rdx-help-${crypto.randomUUID().slice(0, 8)}`;
+    const result = resolveTelemetryInvocation(root, ["help", ...path, secret]);
+    assertEquals(result.commandPath, ["help"]);
+    assertEquals(result.args, [...path, "<REDACTED>"], path.join(" "));
   }
 });

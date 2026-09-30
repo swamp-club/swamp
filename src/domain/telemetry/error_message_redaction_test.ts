@@ -197,10 +197,53 @@ Deno.test("redactErrorMessage: redacts a quoted path containing spaces whole", (
   );
 });
 
-Deno.test("redactErrorMessage: an unquoted path ends at the first space", () => {
-  // Documented limitation: without quotes there is no reliable end to a path.
+Deno.test("redactErrorMessage: redacts unquoted paths containing spaces", () => {
   assertEquals(
-    redactErrorMessage("Cannot read /Users/jane/Application Support/x"),
-    "Cannot read <PATH> Support/x",
+    redactErrorMessage(
+      "Not a swamp repository: /Users/jane/Application Support/acme corp/x. Run init.",
+    ),
+    "Not a swamp repository: <PATH>. Run init.",
+  );
+  assertEquals(
+    redactErrorMessage("Cannot read C:\\Users\\John Smith\\Acme Corp\\a.yaml"),
+    "Cannot read <PATH>",
+  );
+});
+
+Deno.test("redactErrorMessage: prose after a path is kept", () => {
+  assertEquals(
+    redactErrorMessage("Cannot copy /srv/a to /srv/b because it exists"),
+    "Cannot copy <PATH> to <PATH> because it exists",
+  );
+});
+
+Deno.test("redactErrorMessage: a final spaced word with no separator is kept", () => {
+  // No reliable end: "Smith" could as well be the next word of the sentence.
+  assertEquals(
+    redactErrorMessage("Cannot read C:\\Users\\John Smith"),
+    "Cannot read <PATH> Smith",
+  );
+});
+
+Deno.test("redactErrorMessage: many spaced segments redact without backtracking", () => {
+  const message = "Failed: /a" + " b/c".repeat(5000) + " end";
+  assertEquals(redactErrorMessage(message), "Failed: <PATH> end");
+});
+
+Deno.test("redactErrorMessage: an apostrophe or comma inside a path does not end it", () => {
+  assertEquals(
+    redactErrorMessage(
+      "Cannot read /Users/o'brien/acme/x and /srv/acme,corp/y, sorry",
+    ),
+    "Cannot read <PATH> and <PATH>, sorry",
+  );
+});
+
+Deno.test("redactErrorMessage: home usernames are hidden in relative paths and URLs", () => {
+  assertEquals(
+    redactErrorMessage(
+      "import ../../Users/alice/acme/x.ts failed; ssh://h/home/bob/x",
+    ),
+    "import ../../Users/<REDACTED>/acme/x.ts failed; ssh://h/home/<REDACTED>/x",
   );
 });

@@ -38,9 +38,6 @@ export const REDACTED = "<REDACTED>";
  * here or in {@link REDACTED_ARGUMENTS}.
  */
 export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
-  // Command words taken by `help` and the hidden shell-completion command.
-  "action",
-  "command",
   "collective",
   "data_name",
   "definition_name",
@@ -76,6 +73,8 @@ export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
  * free-form pass-through arguments.
  */
 export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
+  // The hidden shell-completion command's action, called by completion scripts.
+  "action",
   "args",
   "extra",
   // Access groups and their members: a principal can be an email address.
@@ -87,6 +86,16 @@ export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
   "unexpected",
   "url",
   "value",
+]);
+
+/**
+ * Arguments that name commands (`help [command...]`). A value is sent only
+ * while it resolves as a command word walking the tree from the root — people
+ * paste whole command lines after `help`, secrets and predicates included —
+ * and everything from the first non-command word on is redacted.
+ */
+export const COMMAND_WORD_ARGUMENTS: ReadonlySet<string> = new Set([
+  "command",
 ]);
 
 /** Recorded in place of an option key that is neither declared nor option-shaped. */
@@ -150,6 +159,9 @@ export function resolveTelemetryInvocation(
   // Once a positional is seen, later words are arguments, not subcommands.
   let atLeaf = false;
   let unknownCommand = false;
+  // An unknown option that swallowed a token may have taken a positional,
+  // shifting every later one into the wrong slot.
+  let positionsUntrusted = false;
 
   const recordOption = (key: string): void => {
     const bucket = GLOBAL_OPTIONS.has(key) ? globalOptions : optionKeys;
@@ -171,6 +183,7 @@ export function resolveTelemetryInvocation(
       const key = eq === -1 ? arg : arg.slice(0, eq);
       recordOption(optionKeyToRecord(current, key));
       if (eq === -1 && optionConsumesNext(current, key, args[i + 1])) {
+        if (findOption(current, key) === undefined) positionsUntrusted = true;
         i++; // The value is never recorded.
       }
       i++;
@@ -201,13 +214,28 @@ export function resolveTelemetryInvocation(
   const declared = unknownCommand ? [] : current.getArguments();
   const required = declared.filter((a) => !a.optional).length;
   const underfilled = positionals.length < required;
+  // With `missing` declared arguments not given, positional i may really
+  // belong to any of declared[i..i+missing] — `vault put DB_PASSWORD hunter2`
+  // is `<vault_name> <key>` or `<key> <value>`. Send it only if every
+  // candidate slot is sent.
+  const missing = Math.max(0, declared.length - positionals.length);
+  const commandWords = commandWordFlags(root, positionals);
   const recordedPositionals = positionals.map((value, index) => {
-    if (underfilled) return REDACTED;
+    if (underfilled || positionsUntrusted) return REDACTED;
     if (value === REDACTED) return REDACTED;
-    const argument = declared[index] ??
-      (declared.at(-1)?.variadic ? declared.at(-1) : undefined);
-    if (argument === undefined) return REDACTED;
-    return isSentArgument(argument.name, commandPath) ? value : REDACTED;
+    const last = declared.length - 1;
+    if (index > last && !declared.at(-1)?.variadic) return REDACTED;
+    // Beyond the last slot, a variadic argument repeats.
+    const first = Math.min(index, last);
+    for (let slot = first; slot <= Math.min(first + missing, last); slot++) {
+      const name = declared[slot].name;
+      if (COMMAND_WORD_ARGUMENTS.has(name)) {
+        if (!commandWords[index]) return REDACTED;
+      } else if (!isSentArgument(name, commandPath)) {
+        return REDACTED;
+      }
+    }
+    return value;
   });
 
   const result: CommandInvocationData = {
@@ -221,6 +249,18 @@ export function resolveTelemetryInvocation(
     result.subcommand = typedPath[1];
   }
   return result;
+}
+
+/**
+ * For each positional, whether it and every positional before it resolve as
+ * command words walking the tree from the root.
+ */
+function commandWordFlags(root: AnyCommand, positionals: string[]): boolean[] {
+  let cursor: AnyCommand | undefined = root;
+  return positionals.map((value) => {
+    cursor = cursor?.getCommand(value, true);
+    return cursor !== undefined;
+  });
 }
 
 function hasNoArguments(command: AnyCommand): boolean {
@@ -265,16 +305,14 @@ function optionConsumesNext(
 }
 
 /**
- * The option key to record. A declared option, or one shaped like an option
- * name (a mistyped `--inptu`), is recorded as typed. Anything else — a value
- * such as `-abc123` typed where no option expects one — is not a key and is
- * recorded as {@link UNKNOWN_OPTION}.
+ * The option key to record. A declared option is recorded as typed. Anything
+ * else is recorded as {@link UNKNOWN_OPTION}: a mistyped `--inptu` and a value
+ * such as `--sk-live-abc123` typed where no option expects one look the same.
  */
 function optionKeyToRecord(command: AnyCommand, key: string): string {
   if (
     findOption(command, key) !== undefined ||
-    isCombinedShortFlags(command, key) ||
-    /^--[a-zA-Z][a-zA-Z0-9-]*$/.test(key)
+    isCombinedShortFlags(command, key)
   ) {
     return key;
   }

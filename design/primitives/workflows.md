@@ -1697,8 +1697,9 @@ Children use the same `cli_invocation` event shape as a direct
 `swamp model method run <name> <method>` invocation: `command="model"`,
 `subcommand="method"`, `args=["run", <modelName>, <methodName>]` and
 `commandPath=["model", "method", "run"]`. Analytics that group by command or
-method therefore count direct and workflow-internal invocations the same way. Per-executor and per-model-type queries read
-`workflowContext` directly, without joining through the parent.
+method therefore count direct and workflow-internal invocations the same way.
+Per-executor and per-model-type queries read `workflowContext` directly, without
+joining through the parent.
 
 ### Failure Semantics
 

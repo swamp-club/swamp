@@ -100,6 +100,10 @@ function buildTree() {
       ),
     )
     .command(
+      "help",
+      new Command().arguments("[command...:string]").action(noop),
+    )
+    .command(
       "source",
       new Command().command(
         "add",
@@ -206,7 +210,7 @@ Deno.test("resolveTelemetryInvocation: redacts every value of a variadic path ar
   assertEquals(result.args, [REDACTED, REDACTED]);
 });
 
-Deno.test("resolveTelemetryInvocation: an unknown option's value is dropped, not sent as a name", () => {
+Deno.test("resolveTelemetryInvocation: an unknown option's value is dropped and later positionals are untrusted", () => {
   const result = resolveTelemetryInvocation(buildTree(), [
     "model",
     "get",
@@ -214,8 +218,8 @@ Deno.test("resolveTelemetryInvocation: an unknown option's value is dropped, not
     "token=s3cr3t",
     "acme-prod",
   ]);
-  assertEquals(result.args, ["acme-prod"]);
-  assertEquals(result.optionKeys, ["--inptu"]);
+  assertEquals(result.args, [REDACTED]);
+  assertEquals(result.optionKeys, [UNKNOWN_OPTION]);
 });
 
 Deno.test("resolveTelemetryInvocation: key=value options never leak the value", () => {
@@ -228,7 +232,7 @@ Deno.test("resolveTelemetryInvocation: key=value options never leak the value", 
   ]);
   assertEquals(result.commandPath, ["model", "get"]);
   assertEquals(result.args, ["acme-prod"]);
-  assertEquals(result.optionKeys, ["--log-level", "--input"]);
+  assertEquals(result.optionKeys, ["--log-level", UNKNOWN_OPTION]);
 });
 
 Deno.test("resolveTelemetryInvocation: global, short and negatable flags do not consume the command", () => {
@@ -348,6 +352,59 @@ Deno.test("resolveTelemetryInvocation: an unknown flag before the command does n
     "acme-prod",
   ]);
   assertEquals(result.commandPath, ["model", "get"]);
-  assertEquals(result.optionKeys, ["--typo"]);
+  assertEquals(result.optionKeys, [UNKNOWN_OPTION]);
   assertEquals(result.args, ["acme-prod"]);
+});
+
+Deno.test("resolveTelemetryInvocation: help sends only the command words it names", () => {
+  const vault = resolveTelemetryInvocation(buildTree(), [
+    "help",
+    "vault",
+    "put",
+    "prod",
+    "DB_PASSWORD",
+    "hunter2",
+  ]);
+  assertEquals(vault.args, ["vault", "put", REDACTED, REDACTED, REDACTED]);
+
+  const query = resolveTelemetryInvocation(buildTree(), [
+    "help",
+    "data",
+    "query",
+    "attributes.ip == '10.0.0.1'",
+  ]);
+  assertEquals(query.args, ["data", "query", REDACTED]);
+});
+
+Deno.test("resolveTelemetryInvocation: an unknown option makes every positional untrusted", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "vault",
+    "put",
+    "--typo",
+    "prod",
+    "STRIPE_LIVE_KEY",
+    "sk-live",
+  ]);
+  assertEquals(result.args, [REDACTED, REDACTED]);
+});
+
+Deno.test("resolveTelemetryInvocation: an ambiguous shift never sends a vault key", () => {
+  // `<vault_name> <key> [value]` with two given: DB_PASSWORD may be the key.
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "vault",
+    "put",
+    "DB_PASSWORD",
+    "hunter2",
+  ]);
+  assertEquals(result.args, [REDACTED, REDACTED]);
+});
+
+Deno.test("resolveTelemetryInvocation: a value shaped like a long option is not recorded", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "vault",
+    "put",
+    "prod",
+    "--sk-live-abc123",
+  ]);
+  assertEquals(result.optionKeys, [UNKNOWN_OPTION]);
 });

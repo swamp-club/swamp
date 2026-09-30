@@ -30,9 +30,12 @@
  * `command/shell`, `@swamp/aws/ec2`) are not sensitive and are kept.
  *
  * A quoted path is replaced up to its closing quote, spaces included
- * (`'C:\Users\John Smith\x'`). An unquoted path ends at the first whitespace,
- * so the remainder of an unquoted path containing a space is not redacted —
- * there is no reliable end to it.
+ * (`'C:\Users\John Smith\x'`). An unquoted path continues across a single
+ * space while the next word contains a path separator, so
+ * `/Users/jane/Application Support/acme/x` and
+ * `C:\Users\John Smith\Acme Corp\x.yaml` are replaced whole. A final word
+ * with no separator after it (`C:\Users\John Smith`) has no reliable end and
+ * is kept.
  *
  * Matched forms: POSIX absolute (`/opt/x`), home-relative (`~/x`), Windows
  * drive with either slash (`C:\x`, `C:/x`) and UNC (`\\host\share`). A POSIX
@@ -41,16 +44,37 @@
  * directly after a single `:` (`path:/srv/x`) still starts a path.
  */
 const PATH_CHARS = "[^\\s\"'`<>|,;()\\[\\]{}]";
+/**
+ * One character of a path. `'` and `,` continue it only when another path
+ * character follows (`/Users/o'brien/x`, `/srv/acme,corp/x`), so sentence
+ * punctuation after a path is left alone. The two alternatives are disjoint.
+ */
+const PATH_BODY = `(?:${PATH_CHARS}|[',](?=${PATH_CHARS}))`;
+/**
+ * A space followed by a word that contains a path separator: the next
+ * segment of a path with a space in it. The word's first separator is fixed
+ * by excluding separators before it, so the pattern is unambiguous and cannot
+ * backtrack.
+ */
+const SPACED_SEGMENT =
+  `(?: [^\\s\"'\`<>|,;()\\[\\]{}\\\\/]*[\\\\/]${PATH_BODY}*)*`;
 const PATH_RE = new RegExp(
   [
-    `\\\\\\\\${PATH_CHARS}+`, // UNC
-    `\\b[A-Za-z]:[\\\\/]${PATH_CHARS}*`, // Windows drive
-    `(?<![\\w:/.@~-])~[\\\\/]${PATH_CHARS}*`, // home-relative
-    `(?<![\\w:/.@~-])/${PATH_CHARS}+`, // POSIX absolute
-    `(?<=:)/(?!/)${PATH_CHARS}+`, // POSIX absolute glued to a colon (path:/x)
-  ].join("|"),
+    `\\\\\\\\${PATH_BODY}+`, // UNC
+    `\\b[A-Za-z]:[\\\\/]${PATH_BODY}*`, // Windows drive
+    `(?<![\\w:/.@~-])~[\\\\/]${PATH_BODY}*`, // home-relative
+    `(?<![\\w:/.@~-])/${PATH_BODY}+`, // POSIX absolute
+    `(?<=:)/(?!/)${PATH_BODY}+`, // POSIX absolute glued to a colon (path:/x)
+  ].map((root) => `${root}${SPACED_SEGMENT}`).join("|"),
   "g",
 );
+
+/**
+ * Where the whole-path rule does not fire — a relative path through a home
+ * directory (`../../Users/alice/x`) or a non-`file:` URL (`ssh://h/home/bob`)
+ * — the home username is still replaced.
+ */
+const HOME_USER_RE = /(\/Users\/|\/home\/|[A-Za-z]:[\\/]Users[\\/])[^\s/\\]+/g;
 
 /**
  * A `file:` URL is a path: `file:///home/alice/acme/x.ts` names the user and
@@ -90,6 +114,10 @@ export function redactErrorMessage(message: string): string {
     return `<PATH>${trailing}`;
   });
 
+  result = result.replace(
+    HOME_USER_RE,
+    (_match, prefix: string) => `${prefix}<REDACTED>`,
+  );
   result = result.replace(INTERNAL_HOST_RE, "<REDACTED-HOST>");
 
   return result;
