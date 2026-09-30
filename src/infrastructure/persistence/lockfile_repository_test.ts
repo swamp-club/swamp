@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { LockfileRepository } from "./lockfile_repository.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { UserError } from "../../domain/errors.ts";
+import type { UpstreamExtensionEntry } from "./upstream_extensions.ts";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -380,5 +381,53 @@ Deno.test("LockfileRepository.refresh: a missing lockfile yields an empty cache"
 
     await repo.refresh();
     assertEquals(repo.getAllEntries(), {});
+  });
+});
+
+Deno.test("LockfileRepository.restoreEntries: puts entries back verbatim and deletes null ones in one write (swamp-club#2724)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    // Unsorted files, an empty include and a key this version does not
+    // know: writeEntry would rebuild all three.
+    const prior: UpstreamExtensionEntry & { futureField: string } = {
+      version: "2026.01.01.1",
+      pulledAt: "2026-01-01T00:00:00.000Z",
+      files: ["b.ts", "a.ts"],
+      include: [],
+      channel: "beta",
+      futureField: "kept",
+    };
+    const repo = await LockfileRepository.create(path);
+    await repo.writeEntry("@scope/upgraded", "2026.02.01.1", ["c.ts"]);
+    await repo.writeEntry("@scope/dep", "1.0.0", ["d.ts"]);
+    await repo.writeEntry("@scope/other", "3.0.0", ["o.ts"]);
+    const other = repo.getEntry("@scope/other");
+
+    await repo.restoreEntries({
+      "@scope/upgraded": prior,
+      "@scope/dep": null,
+    });
+
+    const onDisk = JSON.parse(await Deno.readTextFile(path));
+    assertEquals(onDisk["@scope/upgraded"], prior);
+    assertEquals("@scope/dep" in onDisk, false);
+    assertEquals(onDisk["@scope/other"], other);
+    assertEquals(repo.getEntry("@scope/upgraded"), prior);
+    assertEquals(repo.getEntry("@scope/dep"), null);
+  });
+});
+
+Deno.test("LockfileRepository.restoreEntries: re-reads disk under the lock and releases it", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const stale = await LockfileRepository.create(path);
+    const sibling = await LockfileRepository.create(path);
+    await sibling.writeEntry("@scope/sibling", "1.0.0", ["s.ts"]);
+
+    await stale.restoreEntries({ "@scope/gone": null });
+
+    const fresh = await LockfileRepository.create(path);
+    assertEquals(fresh.getEntry("@scope/sibling")?.version, "1.0.0");
+    await assertRejects(() => Deno.lstat(`${path}.lock`), Deno.errors.NotFound);
   });
 });

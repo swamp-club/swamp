@@ -34,6 +34,7 @@ import {
   parseInstallJournal,
   planRecovery,
   type RecoveryRename,
+  rootDiscardPath,
   rootStagingPaths,
   STAGED_MANIFEST_FILE,
   STAGING_DIR_NAME,
@@ -361,9 +362,72 @@ Deno.test("parseInstallJournal: rejects repeated roots and a missing extension r
   const noExt = makeJournal();
   noExt.roots = noExt.roots.slice(1);
   assertRejected(noExt, "exactly one extension root");
+});
 
+Deno.test("parseInstallJournal: accepts a bundle root with nothing before or from the archive (swamp-club#2724)", () => {
+  // Journaled so a roll-back also removes bundles the catalog save's
+  // loaders write into it after the swap.
   const empty = makeJournal({ bundle: { liveExisted: false, hasNew: false } });
-  assertRejected(empty, "nothing to swap");
+  assertEquals(parseInstallJournal(empty, bounds, STAGING_ID).ok, true);
+
+  // The extension root always has a new version.
+  const noNewExt = makeJournal();
+  noNewExt.roots[0] = { ...noNewExt.roots[0], hasNew: false };
+  assertRejected(noNewExt, "extension root has no new version");
+});
+
+Deno.test("planRecovery: a bundle root with nothing before or from the archive is discarded on roll-back, kept rolling forward (swamp-club#2724)", () => {
+  const journal = makeJournal({
+    phase: "swapped",
+    bundle: { liveExisted: false, hasNew: false },
+  });
+  const bundle = journal.roots[1];
+
+  // A loader wrote bundles into it after the swap: roll-back discards them.
+  const loaderWrote = planRecovery(
+    journal,
+    observe({
+      0: rootState("dir", "absent", "dir"),
+      1: rootState("absent", "absent", "dir"),
+    }),
+    "old-sum",
+  );
+  assertEquals(loaderWrote.direction, "back");
+  if (loaderWrote.direction === "back") {
+    assertEquals(
+      loaderWrote.renames.filter((r) => r.from === bundle.live),
+      [{ from: bundle.live, to: rootDiscardPath(bundle) }],
+    );
+  }
+
+  // Nothing was written: no rename for the bundle root.
+  const untouched = planRecovery(
+    journal,
+    observe({
+      0: rootState("dir", "absent", "dir"),
+      1: rootState("absent", "absent", "absent"),
+    }),
+    "old-sum",
+  );
+  assertEquals(untouched.direction, "back");
+  if (untouched.direction === "back") {
+    assertEquals(untouched.renames.some((r) => r.from === bundle.live), false);
+  }
+
+  // Rolling forward, the cache dir's presence does not matter.
+  for (const live of ["dir", "absent"] as const) {
+    assertEquals(
+      planRecovery(
+        journal,
+        observe({
+          0: rootState("dir", "absent", "dir"),
+          1: rootState("absent", "absent", live),
+        }),
+        "new-sum",
+      ),
+      { direction: "forward" },
+    );
+  }
 });
 
 Deno.test("parseInstallJournal: accepts a symlinked extension root only", () => {

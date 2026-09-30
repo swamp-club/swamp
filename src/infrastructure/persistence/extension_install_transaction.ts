@@ -36,6 +36,7 @@ import {
   parseInstallJournal,
   planRecovery,
   type RecoveryPlan,
+  type RecoveryRename,
   rootDiscardPath,
   rootStagingPaths,
   STAGED_MANIFEST_FILE,
@@ -179,8 +180,9 @@ export interface BeginInstallArgs {
 /**
  * One install's stage-and-swap. {@link begin} writes the journal, then
  * creates the staging dirs the caller fills; {@link swap} moves the live
- * roots aside and the new ones in; {@link commit} deletes the old roots.
- * On any failure after begin, the caller runs {@link settle}.
+ * roots aside and the new ones in; {@link commit} deletes the old roots,
+ * or {@link rollback} puts them back. On any failure after begin, the
+ * caller runs {@link settle}.
  *
  * Between the first phase-1 rename and the `swapped` journal write, a
  * root is briefly absent to readers that do not take the pulled-extensions
@@ -202,8 +204,9 @@ export class ExtensionInstallTransaction {
    * fill (and every parent a rename needs). Nothing is created before
    * the journal except the dir that holds it.
    *
-   * A bundle root is kept only when the new version has files for it or
-   * a live one exists. Throws when a live root is not a plain directory.
+   * Every bundle root is journaled, including one that neither exists
+   * nor gets files from the new version. Throws when a live root is not
+   * a plain directory.
    */
   static async begin(
     args: BeginInstallArgs,
@@ -224,7 +227,9 @@ export class ExtensionInstallTransaction {
         );
       }
       const liveExisted = live === "dir" || liveIsLink;
-      if (spec.role === "bundle" && !liveExisted && !spec.hasNew) continue;
+      // Every bundle root is journaled, even one that did not exist and
+      // gets nothing from the archive: the catalog save's loaders write
+      // bundles into it after the swap, and a roll-back must remove them.
       const paths = rootStagingPaths({
         pulledRoot: args.pulledRoot,
         stagingId,
@@ -399,6 +404,103 @@ export class ExtensionInstallTransaction {
     } finally {
       activeOwners.delete(this.#journal.ownerId);
     }
+  }
+
+  /**
+   * Puts the previous version back after a completed {@link swap}: every
+   * root returns to where it was, by the renames crash recovery makes
+   * when the lockfile entry is not this install's, and then the staging
+   * is deleted, journal first. The caller restores the lockfile entry
+   * before calling this, so a crash part-way leaves a journal that
+   * recovery rolls back.
+   *
+   * A bundle cache dir that a loader outside the lock recreates between
+   * moving the new copy aside and moving the old one back is moved to
+   * its own path in staging, and the rename is retried once.
+   *
+   * Returns true when the previous version is back. Never throws: a disk
+   * state it cannot account for, or a rename that fails, leaves the
+   * journal for crash recovery and returns false. A call after
+   * {@link commit}, {@link settle} or an earlier rollback does nothing
+   * and returns false.
+   */
+  async rollback(): Promise<boolean> {
+    if (this.#done) return false;
+    this.#done = true;
+    try {
+      const plan = planRecovery(
+        this.#journal,
+        await observeInstall(this.#journal, this.#ops),
+        null,
+      );
+      if (plan.direction === "leave") {
+        logger
+          .warn`Left the install journal ${this.#journalPath()} in place: ${plan.reason}`;
+        return false;
+      }
+      await applyRecoveryRenames(this.#journal, plan, this.#ops, {
+        onTargetOccupied: (rename, error) =>
+          this.#supersedeRecreatedBundle(rename, error),
+      });
+      return true;
+    } catch (error) {
+      if (!this.#isCrash(error)) {
+        logger
+          .warn`Could not roll back the install of ${this.#journal.extensionName} (journal ${this.#journalPath()}): ${error}`;
+      }
+      return false;
+    } finally {
+      activeOwners.delete(this.#journal.ownerId);
+    }
+  }
+
+  /**
+   * Stops without moving anything: the journal stays for the crash
+   * recovery the next install or removal runs, and the owner id is
+   * released so that recovery may act on it. For a caller that cannot
+   * tell whether the install should roll forward or back; recovery
+   * decides from the lockfile entry on disk.
+   */
+  release(): void {
+    if (this.#done) return;
+    this.#done = true;
+    activeOwners.delete(this.#journal.ownerId);
+    logger
+      .warn`Left the install journal ${this.#journalPath()} in place for the next extension install or removal to settle`;
+  }
+
+  /**
+   * Rollback's hook for a refused rename: when it was the old copy of a
+   * bundle root moving back and a loader has recreated the live dir,
+   * moves that dir to a free path under the root's staging dir, which
+   * the staging delete removes. Returns whether the rename may be
+   * retried.
+   */
+  async #supersedeRecreatedBundle(
+    rename: RecoveryRename,
+    error: unknown,
+  ): Promise<boolean> {
+    if (this.#isCrash(error)) return false;
+    const root = this.#journal.roots.find((r) =>
+      r.role === "bundle" && r.live === rename.to && r.old === rename.from
+    );
+    if (!root) return false;
+    if (await this.#ops.lstat(root.old) !== "dir") return false;
+    if (await this.#ops.lstat(root.live) !== "dir") return false;
+    let aside = "";
+    for (let n = 0;; n++) {
+      aside = join(
+        root.stagingDir,
+        "superseded",
+        `${root.index}-rollback-${n}`,
+      );
+      if (await this.#ops.lstat(aside) === "absent") break;
+    }
+    await this.#ops.mkdir(dirname(aside));
+    await checkedRename(this.#ops, root.live, aside, "dir");
+    logger
+      .debug`Moved ${root.live}, recreated during the roll-back, aside to ${aside}`;
+    return true;
   }
 
   /**
@@ -629,14 +731,45 @@ async function settleJournal(
     lockfileEntryChecksum,
   );
   if (plan.direction === "leave") return plan;
+  await applyRecoveryRenames(journal, plan, ops);
+  return plan;
+}
+
+/** Hooks {@link applyRecoveryRenames} offers a caller. */
+interface RecoveryRenameHooks {
+  /**
+   * Called when a rename throws. Returns true to retry it once, having
+   * made the target free; false rethrows the error unchanged.
+   */
+  onTargetOccupied?(rename: RecoveryRename, error: unknown): Promise<boolean>;
+}
+
+/**
+ * Carries out a recovery plan that moves or keeps roots: a roll-back's
+ * renames in order, each into a created parent, then the staging delete.
+ * Every error is rethrown unchanged unless a hook asks for one retry.
+ * Shared by crash recovery, {@link ExtensionInstallTransaction.settle}
+ * and {@link ExtensionInstallTransaction.rollback}.
+ */
+async function applyRecoveryRenames(
+  journal: InstallJournal,
+  plan: Exclude<RecoveryPlan, { direction: "leave" }>,
+  ops: InstallFsOps,
+  hooks: RecoveryRenameHooks = {},
+): Promise<void> {
   if (plan.direction === "back") {
     for (const rename of plan.renames) {
       await ops.mkdir(dirname(rename.to));
-      await checkedRename(ops, rename.from, rename.to, rename.kind ?? "dir");
+      const kind = rename.kind ?? "dir";
+      try {
+        await checkedRename(ops, rename.from, rename.to, kind);
+      } catch (error) {
+        if (!(await hooks.onTargetOccupied?.(rename, error))) throw error;
+        await checkedRename(ops, rename.from, rename.to, kind);
+      }
     }
   }
   await deleteStaging(journal, ops);
-  return plan;
 }
 
 /** A journal recovery left in place. */

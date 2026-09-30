@@ -46,6 +46,20 @@ export interface UpdatedStatus {
   channel?: string;
 }
 
+/**
+ * The new version is installed, but its types collide with another
+ * extension's and the rollback could not restore the previous version
+ * (the lockfile could not be written), so the update was kept.
+ */
+export interface KeptWithCollisionStatus {
+  status: "kept_with_collision";
+  name: string;
+  previousVersion: string;
+  newVersion: string;
+  error: string;
+  channel?: string;
+}
+
 /** Extension was not found in the registry. */
 export interface NotFoundStatus {
   status: "not_found";
@@ -81,6 +95,7 @@ export type ExtensionUpdateStatus =
   | UpdatedStatus
   | NotFoundStatus
   | FailedStatus
+  | KeptWithCollisionStatus
   | DeprecatedStatus;
 
 /** Summary counts for the update operation. */
@@ -89,6 +104,8 @@ export interface UpdateSummary {
   upToDate: number;
   updated: number;
   failed: number;
+  /** Updates kept on the new version despite a type collision. */
+  keptWithCollision: number;
 }
 
 /** Aggregated result of checking/updating extensions. */
@@ -173,6 +190,7 @@ export function buildUpdateResult(
   let upToDate = 0;
   let updated = 0;
   let failed = 0;
+  let keptWithCollision = 0;
 
   for (const s of statuses) {
     switch (s.status) {
@@ -189,6 +207,9 @@ export function buildUpdateResult(
       case "failed":
         failed++;
         break;
+      case "kept_with_collision":
+        keptWithCollision++;
+        break;
       case "deprecated":
         break;
     }
@@ -201,6 +222,7 @@ export function buildUpdateResult(
       upToDate,
       updated,
       failed,
+      keptWithCollision,
     },
   };
 }

@@ -205,6 +205,38 @@ export class LockfileRepository {
     }
   }
 
+  /**
+   * Puts entries back exactly as they were read: each named entry object
+   * is written verbatim, or its key deleted when the value is null. All
+   * of them land in one atomic write under the advisory lock, so either
+   * every entry is restored or none is. Unlike {@link writeEntry}, the
+   * entry is not rebuilt: file order, empty fields and keys this version
+   * does not know are kept. Used to undo an install's lockfile writes.
+   */
+  async restoreEntries(
+    entries: Readonly<Record<string, UpstreamExtensionEntry | null>>,
+  ): Promise<void> {
+    await Deno.mkdir(dirname(this.lockfilePath), { recursive: true });
+    const lockFile = await this.acquireLock();
+    try {
+      const current = await readUpstreamExtensions(this.lockfilePath);
+      for (const [name, entry] of Object.entries(entries)) {
+        if (entry === null) {
+          delete current[name];
+        } else {
+          current[name] = structuredClone(entry);
+        }
+      }
+      await atomicWriteTextFile(
+        this.lockfilePath,
+        JSON.stringify(current, null, 2) + "\n",
+      );
+      this.cache = current;
+    } finally {
+      await this.releaseLock(lockFile);
+    }
+  }
+
   private async acquireLock(): Promise<Deno.FsFile> {
     const lockPath = `${this.lockfilePath}.lock`;
     for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {

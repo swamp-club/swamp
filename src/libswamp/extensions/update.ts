@@ -26,6 +26,7 @@ import {
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
@@ -296,13 +297,30 @@ export async function* extensionUpdate(
             const message = error instanceof Error
               ? error.message
               : String(error);
-            finalStatuses.push({
-              status: "failed",
-              name: s.name,
-              installedVersion: s.installedVersion,
-              error: `Update failed: ${message}`,
-              channel: s.channel,
-            });
+            // A collision whose rollback could not restore the lockfile
+            // keeps the new version installed: say so, not "failed".
+            const kept = error instanceof DuplicateTypeUserError &&
+                error.rollback.status === "kept"
+              ? error.rollback.kept.find((k) => k.name === s.name)
+              : undefined;
+            finalStatuses.push(
+              kept
+                ? {
+                  status: "kept_with_collision",
+                  name: s.name,
+                  previousVersion: s.installedVersion,
+                  newVersion: kept.version,
+                  error: message,
+                  channel: s.channel,
+                }
+                : {
+                  status: "failed",
+                  name: s.name,
+                  installedVersion: s.installedVersion,
+                  error: `Update failed: ${message}`,
+                  channel: s.channel,
+                },
+            );
           }
         } else {
           finalStatuses.push(s);

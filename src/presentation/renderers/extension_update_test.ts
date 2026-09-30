@@ -51,7 +51,13 @@ async function captureConsole(
 function emptyResult(): ExtensionUpdateResult {
   return {
     extensions: [],
-    summary: { total: 0, upToDate: 0, updated: 0, failed: 0 },
+    summary: {
+      total: 0,
+      upToDate: 0,
+      updated: 0,
+      failed: 0,
+      keptWithCollision: 0,
+    },
   };
 }
 
@@ -101,5 +107,40 @@ Deno.test("extension_update log renderer: warns when the check read the fallback
   assertStringIncludes(
     out,
     "this check reads the in-repo lockfile, not the datastore's",
+  );
+});
+
+Deno.test("extension_update log renderer: an update kept despite a type collision says so, not failed (swamp-club#2724)", async () => {
+  const out = await captureConsole(async () => {
+    const handlers = createExtensionUpdateRenderer("log").handlers();
+    await handlers.completed({
+      kind: "completed",
+      data: {
+        extensions: [{
+          status: "kept_with_collision",
+          name: "@ns/a",
+          previousVersion: "2026.01.01.1",
+          newVersion: "2026.03.01.1",
+          error: "the install was kept",
+        }],
+        summary: {
+          total: 1,
+          upToDate: 0,
+          updated: 0,
+          failed: 0,
+          keptWithCollision: 1,
+        },
+      },
+      mode: "update",
+    });
+  });
+
+  assertStringIncludes(
+    out,
+    "@ns/a: kept v2026.03.01.1 (was v2026.01.01.1) despite a type collision",
+  );
+  assertStringIncludes(
+    out,
+    "1 extension(s): 0 updated, 0 up to date, 0 failed, 1 kept with a type collision",
   );
 });

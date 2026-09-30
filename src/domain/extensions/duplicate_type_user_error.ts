@@ -44,12 +44,43 @@ export interface DuplicateTypeOccupant {
   readonly canonicalPath: string;
 }
 
+/** One extension of an install that collided, and its version before. */
+export interface InstallChange {
+  readonly name: string;
+  /** The version the install put in. */
+  readonly version: string;
+  /** The version installed before, or null when there was none. */
+  readonly priorVersion: string | null;
+}
+
 /**
- * User-facing wrapper thrown by the W2 lifecycle services after FS
- * rollback completes. Extends {@link UserError} so the top-level error
- * renderer formats a clean single-line message in log mode (no stack
- * trace), and carries the structured fields so JSON mode emits them
- * alongside the message.
+ * How the rollback of an install that collided ended.
+ *
+ * - `rolled-back`: every extension in the install (listed in `reverted`)
+ *   is back on its prior version, or gone where there was none.
+ * - `kept`: the lockfile could not be restored and was left untouched,
+ *   so every extension stays on its new version, consistently.
+ * - `unsettled`: the rollback could not finish (the lockfile could not
+ *   be read back, it held neither the restored entries nor the new
+ *   ones, or a root could not be moved back). The install journals stay
+ *   for the next extension install or removal, which settles each from
+ *   its lockfile entry, or names a journal whose disk state it cannot
+ *   account for.
+ */
+export type InstallRollbackOutcome =
+  | {
+    readonly status: "rolled-back";
+    readonly reverted?: ReadonlyArray<InstallChange>;
+  }
+  | { readonly status: "kept"; readonly kept: ReadonlyArray<InstallChange> }
+  | { readonly status: "unsettled"; readonly lockfilePath: string };
+
+/**
+ * User-facing wrapper thrown by the W2 lifecycle services after the
+ * install that collided is rolled back (see `rollback`). Extends
+ * {@link UserError} so the top-level error renderer formats a clean
+ * single-line message in log mode (no stack trace), and carries the
+ * structured fields so JSON mode emits them alongside the message.
  *
  * **JSON shape pinned by plan v4 step 11:**
  *
@@ -60,6 +91,8 @@ export interface DuplicateTypeOccupant {
  *     "kind": "model",
  *     "type": "@scope/foo",
  *     "isGhostRow": false,
+ *     "rolledBack": true,
+ *     "rollback": { "status": "rolled-back" },
  *     "existing": {
  *       "extensionName": "@scopeA/aa",
  *       "extensionVersion": "1.0.0",
@@ -84,6 +117,8 @@ export class DuplicateTypeUserError extends UserError {
   readonly existing: DuplicateTypeOccupant;
   readonly conflicting: DuplicateTypeOccupant;
   readonly isGhostRow: boolean;
+  /** How the rollback of the install ended; `rolled-back` by default. */
+  readonly rollback: InstallRollbackOutcome;
 
   constructor(args: {
     kind: DuplicateTypeKind;
@@ -91,20 +126,39 @@ export class DuplicateTypeUserError extends UserError {
     existing: DuplicateTypeOccupant;
     conflicting: DuplicateTypeOccupant;
     isGhostRow?: boolean;
+    rollback?: InstallRollbackOutcome;
   }) {
     const ghostRow = args.isGhostRow ?? false;
+    const rollback = args.rollback ?? { status: "rolled-back" };
     const recovery = ghostRow
       ? "Ghost catalog entry detected (source deleted outside swamp). " +
         "Run `swamp doctor extensions` to reclassify and retry."
       : `Run \`swamp extension rm ${args.existing.extensionName}\` first if ` +
         `you intended to replace it.`;
-    super(
+    const claimed =
       `Type "${args.typeNormalized}" (kind=${args.kind}) is already claimed by ` +
-        `${args.existing.extensionName}@${args.existing.extensionVersion} ` +
-        `at ${args.existing.canonicalPath}. Cannot install ` +
-        `${args.conflicting.extensionName}@${args.conflicting.extensionVersion} ` +
-        `at ${args.conflicting.canonicalPath} — filesystem changes rolled back. ` +
-        recovery,
+      `${args.existing.extensionName}@${args.existing.extensionVersion} ` +
+      `at ${args.existing.canonicalPath}.`;
+    const conflicting =
+      `${args.conflicting.extensionName}@${args.conflicting.extensionVersion} ` +
+      `at ${args.conflicting.canonicalPath}`;
+    super(
+      rollback.status === "kept"
+        ? `${claimed} ${conflicting} claims it too, and was installed ` +
+          `anyway: the lockfile could not be restored, so the install was ` +
+          `kept. ${
+            keptAdvice(rollback.kept, args.existing.extensionName, ghostRow)
+          }`
+        : rollback.status === "unsettled"
+        ? `${claimed} Cannot install ${conflicting}. The rollback could not ` +
+          `finish: the next \`swamp extension\` install or removal will ` +
+          `finish it, or name the install journal to resolve by hand. ` +
+          recovery
+        : `${claimed} Cannot install ${conflicting} — ` +
+          `${
+            rolledBackNote(rollback.reverted, args.conflicting.extensionName)
+          } ` +
+          recovery,
     );
     this.name = "DuplicateTypeUserError";
     this.kind = args.kind;
@@ -112,5 +166,53 @@ export class DuplicateTypeUserError extends UserError {
     this.existing = args.existing;
     this.conflicting = args.conflicting;
     this.isGhostRow = ghostRow;
+    this.rollback = rollback;
   }
+
+  /** True when the install that collided was rolled back. */
+  get rolledBack(): boolean {
+    return this.rollback.status === "rolled-back";
+  }
+}
+
+/**
+ * What to run to get out of a kept install: go back to each extension's
+ * prior version, or remove one it installed fresh; or remove the
+ * extension that already held the type.
+ */
+function keptAdvice(
+  kept: ReadonlyArray<InstallChange>,
+  existingName: string,
+  ghostRow: boolean,
+): string {
+  // A ghost row's source is gone: reclassifying it, not removing that
+  // extension, is what frees the type.
+  const other = ghostRow
+    ? "run `swamp doctor extensions` to reclassify the ghost catalog " +
+      "entry that holds the type"
+    : `run \`swamp extension rm ${existingName}\` to keep the new version ` +
+      `instead`;
+  if (kept.length === 0) {
+    return `To resolve it, ${other}.`;
+  }
+  const steps = kept.map((k) =>
+    k.priorVersion === null
+      ? `\`swamp extension rm ${k.name}\``
+      : `\`swamp extension pull ${k.name}@${k.priorVersion}\``
+  );
+  return `To undo it, run ${steps.join(" and ")}; or ${other}.`;
+}
+
+/**
+ * What a rollback left installed of the extension that collided: its
+ * previous version when it had one.
+ */
+function rolledBackNote(
+  reverted: ReadonlyArray<InstallChange> | undefined,
+  name: string,
+): string {
+  const prior = reverted?.find((r) => r.name === name)?.priorVersion;
+  return prior
+    ? `rolled back; ${name}@${prior} remains installed.`
+    : "filesystem changes rolled back.";
 }

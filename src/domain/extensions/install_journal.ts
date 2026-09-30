@@ -325,9 +325,10 @@ export function parseInstallJournal(
           `bundle root ${root.live} is not a bundle dir of ${journal.extensionName}`,
       };
     }
-    if (!root.liveExisted && !root.hasNew) {
-      return { ok: false, reason: `root ${root.live} has nothing to swap` };
-    }
+    // A bundle root may have had nothing before and get nothing from the
+    // archive: it is journaled so a roll-back also removes the bundles
+    // the catalog save's loaders write into it after the swap. The
+    // extension root always has a new version (checked above).
     if (root.liveIsLink && (root.role !== "extension" || !root.liveExisted)) {
       return {
         ok: false,

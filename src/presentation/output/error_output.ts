@@ -70,6 +70,8 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
       kind: err.kind,
       type: err.typeNormalized,
       isGhostRow: err.isGhostRow,
+      rolledBack: err.rolledBack,
+      rollback: err.rollback,
       existing: {
         extensionName: err.existing.extensionName,
         extensionVersion: err.existing.extensionVersion,

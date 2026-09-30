@@ -184,8 +184,8 @@ export const extensionUpdateCommand = withRemoteOptions(
   // W2 (commit 3): construct shared denoRuntime + repository so each
   // upgrade routes through InstallExtensionService and phase 8 fires
   // (catalog populated synchronously, I-Repo-1 fires on collision,
-  // FS rollback). The catalog stays open for the duration of the
-  // bulk update — closed in the finally block.
+  // rollback to the previous version). The catalog stays open for the
+  // duration of the bulk update — closed in the finally block.
   const denoRuntime = new EmbeddedDenoRuntime();
   const catalog = new ExtensionCatalogStore(
     swampPath(repoDir, "_extension_catalog.db"),
