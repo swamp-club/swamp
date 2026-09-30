@@ -770,23 +770,6 @@ export function parseSensitiveFieldsTag(
 }
 
 /**
- * Parses the `_swamp.sensitiveFields` tag from a CatalogRow's JSON tags string.
- */
-export function parseSensitiveFieldsFromRowTags(
-  tagsJson: string,
-): string[] | "*" | null {
-  try {
-    const tags: unknown = JSON.parse(tagsJson);
-    if (tags !== null && typeof tags === "object" && !Array.isArray(tags)) {
-      return parseSensitiveFieldsTag(tags as Record<string, string>);
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Regex matching vault expression strings produced by `processSensitiveResourceData()`.
  * Captures the vault name (group 1) and key (group 2).
  */

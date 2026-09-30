@@ -25,7 +25,6 @@ import {
   createResourceReader,
   createResourceWriter,
   modelRequiresVault,
-  parseSensitiveFieldsFromRowTags,
   parseSensitiveFieldsTag,
   processSensitiveResourceData,
   resolveSensitiveVaultRefs,
@@ -2191,19 +2190,6 @@ Deno.test("parseSensitiveFieldsTag: returns null when tag absent", () => {
 Deno.test("parseSensitiveFieldsTag: returns null for invalid JSON", () => {
   const tags = { [SENSITIVE_FIELDS_TAG]: "not-json" };
   assertEquals(parseSensitiveFieldsTag(tags), null);
-});
-
-Deno.test("parseSensitiveFieldsFromRowTags: parses from CatalogRow tags JSON", () => {
-  const tagsJson = JSON.stringify({
-    specName: "item",
-    [SENSITIVE_FIELDS_TAG]: '["secret"]',
-  });
-  assertEquals(parseSensitiveFieldsFromRowTags(tagsJson), ["secret"]);
-});
-
-Deno.test("parseSensitiveFieldsFromRowTags: returns null for missing tag", () => {
-  const tagsJson = JSON.stringify({ specName: "item" });
-  assertEquals(parseSensitiveFieldsFromRowTags(tagsJson), null);
 });
 
 // --- createResourceReader: non-sensitive fields NOT resolved ---
