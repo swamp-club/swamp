@@ -677,6 +677,17 @@ export function checkCommitBinding(
 const EXPRESSION = /\$\{\{[\s\S]*?\}\}/;
 
 /**
+ * Keys swamp adds at the root of a run's evaluated workflow for its own
+ * bookkeeping — the sensitive-value format version and where the file holds
+ * vault references (see `YamlEvaluatedWorkflowRepository.saveForRun`). They
+ * describe how the snapshot was written, not what the run executed.
+ */
+const RUN_METADATA_KEYS: ReadonlySet<string> = new Set([
+  "sensitiveFormat",
+  "writtenReferences",
+]);
+
+/**
  * Where a run's evaluated workflow is kept, beside the run record itself.
  *
  * The record lives at `<swamp>/workflow-runs/<workflow-id>/workflow-run-<id>.yaml`
@@ -711,7 +722,9 @@ export function evaluatedWorkflowPath(run: RunRecord): string | null {
  * committed string matches whatever it evaluated to, and everything else must
  * match exactly. Evaluation also fills defaults the file leaves out, so a field
  * present only in the evaluated workflow is accepted when it is empty, zero or
- * false, and refused otherwise.
+ * false, and refused otherwise. The metadata swamp records beside the
+ * definition at the root of the snapshot is not part of what the run executed,
+ * so it is set aside unless the committed definition sets it too.
  *
  * Returns one line per difference, each naming where in the document it is.
  */
@@ -765,6 +778,7 @@ export function checkWorkflowProvenance(
     }
     for (const key of Object.keys(e)) {
       if (key in c || isEmptyDefault(e[key])) continue;
+      if (at === "" && RUN_METADATA_KEYS.has(key)) continue;
       errors.push(
         `${at ? `${at}.${key}` : key} is in the evaluated workflow but not the committed definition`,
       );
