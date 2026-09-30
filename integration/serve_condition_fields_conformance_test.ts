@@ -37,6 +37,7 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import type { Workflow } from "../src/domain/workflows/workflow.ts";
+import { Data } from "../src/domain/data/data.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -443,5 +444,73 @@ Deno.test("serve condition-fields conformance: a methods-scoped deny applies to 
       ),
       "model.get",
     );
+  });
+});
+
+/** Saves a markdown report named `reportName` owned by `model`. */
+async function saveReport(
+  repo: ServeRepo,
+  model: Definition,
+  reportName: string,
+): Promise<void> {
+  const data = Data.create({
+    name: `report-${reportName}`,
+    contentType: "text/markdown",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "report", reportName, modelName: model.name },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: `${repo.modelType.normalized}:${model.id}`,
+    },
+  });
+  await repo.repoContext.unifiedDataRepo.save(
+    repo.modelType,
+    model.id,
+    data,
+    new TextEncoder().encode(`# ${model.name}`),
+  );
+}
+
+Deno.test("serve condition-fields conformance: reports are read as their owner's data", async () => {
+  await withFixtures(async (f) => {
+    await saveReport(f.repo, f.prodModel, "health");
+    await saveReport(f.repo, f.devModel, "health");
+
+    // Unfiltered, the report exists on both models and is ambiguous.
+    const open = errorFrame(
+      await sendRequest(
+        openCtx(f),
+        request("report.get", {
+          reportName: "health",
+        }),
+      ),
+    );
+    assert(open?.error?.message?.includes("prod-db"), JSON.stringify(open));
+
+    // Under the tags deny only dev-db's is readable: no ambiguity, and the
+    // prod owner is never named.
+    const got = reply(
+      await sendRequest(f.ctx, request("report.get", { reportName: "health" })),
+      "report.get",
+    );
+    assert(got.includes("dev-db") && !got.includes("prod-"), got);
+
+    const searched = reply(
+      await sendRequest(f.ctx, request("report.search", {})),
+      "report.search",
+    );
+    assert(
+      searched.includes("dev-db") && !searched.includes("prod-"),
+      searched,
+    );
+
+    const named = errorFrame(
+      await sendRequest(
+        f.ctx,
+        request("report.get", { reportName: "health", model: "prod-db" }),
+      ),
+    );
+    assertEquals(named?.error?.code, "unauthorized");
   });
 });

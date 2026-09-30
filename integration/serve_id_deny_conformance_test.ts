@@ -761,6 +761,7 @@ function registerRun(
     kind: "method-run" | "workflow-run";
     resourceName: string;
     resourceId?: string;
+    methodName?: string;
   },
 ): { runId: string; controller: AbortController } {
   const runId = crypto.randomUUID();
@@ -1613,6 +1614,44 @@ Deno.test("serve id-deny conformance: a read by UUID is audited under the name i
     assertEquals(
       responses.map((event) => [event.action, event.resourceName]),
       [["data.get", "dev-db"], ["model.get", "dev-db"]],
+    );
+  });
+});
+
+Deno.test("serve id-deny conformance: cancelling a method run is judged with its method, as the run was", async () => {
+  await withFixtures(async (f) => {
+    const ctx = createServeCtx(f.repo, [
+      ...(["model", "data", "workflow"] as const).map((kind) =>
+        grant({ actions: ACTIONS, resource: { kind, pattern: "*" } })
+      ),
+      grant({
+        effect: "deny",
+        actions: ["run"],
+        resource: { kind: "model", pattern: "*" },
+        condition: 'methodName == "noop"',
+      }),
+    ], { detached: true });
+    const run = (methodName: string) =>
+      registerRun(ctx, {
+        kind: "method-run",
+        resourceName: f.devModel.name,
+        resourceId: f.devModel.id,
+        methodName,
+      });
+
+    const denied = run("noop");
+    await sendRequest(ctx, { type: "cancel", id: denied.runId }, undefined, {
+      awaitRuns: false,
+    });
+    assertEquals(denied.controller.signal.aborted, false);
+
+    const allowed = run("sync");
+    await sendRequest(ctx, { type: "cancel", id: allowed.runId }, undefined, {
+      awaitRuns: false,
+    });
+    await waitFor(
+      () => allowed.controller.signal.aborted,
+      "the sync run to be cancelled",
     );
   });
 });
