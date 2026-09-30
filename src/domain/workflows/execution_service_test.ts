@@ -15099,6 +15099,76 @@ Deno.test("run(): a nested workflow's started event names the run whose step cal
   });
 });
 
+Deno.test("run(): step events name the run that owns the step, including forwarded nested ones (swamp-club#2802)", async () => {
+  await withTempDir(async (tempDir) => {
+    // The child's job and step names repeat the parent's, as they may.
+    const child = Workflow.create({
+      name: "owning-run-child",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "a",
+              task: StepTask.model("test-model", "run"),
+            }),
+            Step.create({
+              name: "boom",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const parent = Workflow.create({
+      name: "owning-run-parent",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "a",
+              task: StepTask.model("test-model", "run"),
+            }),
+            Step.create({
+              name: "b",
+              task: StepTask.workflow(child.name),
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("boom");
+    const { service } = await setupNestedCancel(
+      tempDir,
+      [parent, child],
+      executor,
+    );
+
+    const { run, events } = await finishedRun(service.run(parent.name));
+
+    const childRunId = events.flatMap((e) =>
+      e.kind === "started" && e.parentRunId === run.id ? [e.runId] : []
+    )[0];
+    assert(childRunId !== undefined, "the child run did not start");
+    const owners = events.flatMap((e) =>
+      e.kind === "step_completed" || e.kind === "step_failed"
+        ? [`${e.kind} ${e.jobId}/${e.stepId} ${e.runId}`]
+        : []
+    ).sort();
+    assertEquals(
+      owners,
+      [
+        `step_completed main/a ${childRunId}`,
+        `step_completed main/a ${run.id}`,
+        `step_failed main/b ${run.id}`,
+        `step_failed main/boom ${childRunId}`,
+      ].sort(),
+    );
+  });
+});
+
 Deno.test("run(): a cancelled nested workflow fails an allowFailure step and the parent run is cancelled (swamp-club#2470)", async () => {
   await withTempDir(async (tempDir) => {
     const { parent, child } = nestedCancelWorkflows([

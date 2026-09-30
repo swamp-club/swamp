@@ -71,6 +71,13 @@ export type WorkflowExecutionEvent =
     kind: "step_completed";
     jobId: string;
     stepId: string;
+    /**
+     * The run that owns this step. Differs from the top-level run for events
+     * a nested workflow step forwards, whose job and step names can repeat the
+     * parent's. Domain-internal: mapWorkflowExecutionEvent strips it from the
+     * published event.
+     */
+    runId: string;
     dataHandles?: DataHandle[];
     /** "loopback" or the worker name that executed the step's method. */
     executor?: string;
@@ -99,6 +106,13 @@ export type WorkflowExecutionEvent =
     kind: "step_failed";
     jobId: string;
     stepId: string;
+    /**
+     * The run that owns this step. Differs from the top-level run for events
+     * a nested workflow step forwards, whose job and step names can repeat the
+     * parent's. Domain-internal: mapWorkflowExecutionEvent strips it from the
+     * published event.
+     */
+    runId: string;
     error: string;
     allowedFailure?: boolean;
     /**
@@ -124,6 +138,13 @@ export type WorkflowExecutionEvent =
     kind: "model_resolved";
     jobId: string;
     stepId: string;
+    /**
+     * The run that owns this step. Differs from the top-level run for events
+     * a nested workflow step forwards, whose job and step names can repeat the
+     * parent's. Domain-internal: mapWorkflowExecutionEvent strips it from the
+     * published event.
+     */
+    runId: string;
     modelName: string;
     modelType: string;
     modelId: string;
@@ -141,6 +162,13 @@ export type WorkflowExecutionEvent =
     kind: "method_executing";
     jobId: string;
     stepId: string;
+    /**
+     * The run that owns this step. Differs from the top-level run for events
+     * a nested workflow step forwards, whose job and step names can repeat the
+     * parent's. Domain-internal: mapWorkflowExecutionEvent strips it from the
+     * published event.
+     */
+    runId: string;
     modelName: string;
     methodName: string;
   }

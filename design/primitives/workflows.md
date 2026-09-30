@@ -1731,7 +1731,12 @@ joining through the parent.
   entry of their own. The nested workflow's model-method steps produce child
   entries linked to the same parent CLI invocation. At any nesting depth, those
   entries carry the top-level run's `workflowName` and `runId`, with the nested
-  workflow's own `jobName` and `stepName`.
+  workflow's own `jobName` and `stepName`. The bridge pairs a step's
+  `method_executing` with its terminal event by the run that owns the step as
+  well as its job and step names. So a nested step whose names repeat those of
+  a step running concurrently in the parent, or in a sibling nested run, still
+  records its own entry. That owning-run id is on the domain step events only;
+  it is not part of the published workflow run event stream.
 - **Failures before workflow validation** (e.g. workflow not found, input
   schema validation) produce no child entry, because no method was resolved.
 - **Cancellation** during a method invocation (AbortSignal, timeout) records

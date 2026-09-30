@@ -19,7 +19,8 @@
 
 import type { CommandInvocationData } from "../../domain/telemetry/command_invocation.ts";
 import type { WorkflowContextData } from "../../domain/telemetry/workflow_context.ts";
-import type { WorkflowRunEvent, WorkflowTelemetrySink } from "./run.ts";
+import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
+import type { WorkflowTelemetrySink } from "./run.ts";
 
 /**
  * Build the CommandInvocationData for a workflow-internal method
@@ -47,9 +48,11 @@ export function buildChildInvocation(
 /**
  * Internal tracking record for a method invocation that has started but
  * not yet completed. Held by WorkflowTelemetryBridge while events are
- * still arriving for the (jobId, stepId) pair.
+ * still arriving for the (runId, jobId, stepId) triple.
  */
 interface InFlightMethodInvocation {
+  jobId: string;
+  stepId: string;
   startedAt: Date;
   modelName: string;
   methodName: string;
@@ -57,10 +60,18 @@ interface InFlightMethodInvocation {
 }
 
 /**
- * Bridges WorkflowRunEvents to per-method-invocation telemetry. Tracks
- * in-flight invocations between `method_executing` and the matching
- * `step_completed`/`step_failed` events; on stream termination,
- * finalizes any unfinished invocations as errors via {@link finalize}.
+ * Bridges domain WorkflowExecutionEvents to per-method-invocation
+ * telemetry. Tracks in-flight invocations between `method_executing` and
+ * the matching `step_completed`/`step_failed` events; on stream
+ * termination, finalizes any unfinished invocations as errors via
+ * {@link finalize}.
+ *
+ * A step is identified by the run that owns it as well as its job and step
+ * names: a nested workflow step forwards its child's events into the same
+ * stream, and the child's job and step names can repeat those of a step
+ * running concurrently in the parent or in a sibling nested run. The owning
+ * run's id is on the domain event only, which is why the bridge observes
+ * domain events rather than the published WorkflowRunEvent.
  *
  * Ownership model: one bridge instance per workflow stream consumption.
  * Re-using a bridge across runs would leak state. The libswamp
@@ -68,7 +79,7 @@ interface InFlightMethodInvocation {
  * try/finally and discards it on exit.
  */
 export class WorkflowTelemetryBridge {
-  /** Key shape: `${jobId}:${stepId}` */
+  /** Keyed by {@link stepKey}. */
   private readonly inFlight = new Map<string, InFlightMethodInvocation>();
   /**
    * Captured from the top-level run's `started` event so workflowContext can
@@ -77,7 +88,10 @@ export class WorkflowTelemetryBridge {
    */
   private workflowName = "";
   private runId = "";
-  /** Captured from `model_resolved` so workflowContext can carry modelType. */
+  /**
+   * Captured from `model_resolved` so workflowContext can carry modelType.
+   * Keyed by {@link stepKey}.
+   */
   private readonly modelTypeByStep = new Map<string, string>();
   /** Set true after finalize() runs, so observe() becomes a no-op. */
   private finalized = false;
@@ -93,7 +107,7 @@ export class WorkflowTelemetryBridge {
    * caller's stream loop awaits the write before yielding the next event
    * (matters for ordering guarantees in tests).
    */
-  async observe(event: WorkflowRunEvent): Promise<void> {
+  async observe(event: WorkflowExecutionEvent): Promise<void> {
     if (this.finalized) return;
 
     switch (event.kind) {
@@ -106,13 +120,15 @@ export class WorkflowTelemetryBridge {
         return;
       }
       case "model_resolved": {
-        const key = stepKey(event.jobId, event.stepId);
+        const key = stepKey(event.runId, event.jobId, event.stepId);
         this.modelTypeByStep.set(key, event.modelType);
         return;
       }
       case "method_executing": {
-        const key = stepKey(event.jobId, event.stepId);
+        const key = stepKey(event.runId, event.jobId, event.stepId);
         this.inFlight.set(key, {
+          jobId: event.jobId,
+          stepId: event.stepId,
           startedAt: new Date(),
           modelName: event.modelName,
           methodName: event.methodName,
@@ -121,7 +137,7 @@ export class WorkflowTelemetryBridge {
         return;
       }
       case "step_completed": {
-        const key = stepKey(event.jobId, event.stepId);
+        const key = stepKey(event.runId, event.jobId, event.stepId);
         const tracked = this.inFlight.get(key);
         if (!tracked) return; // workflow_task step or non-method step
         this.inFlight.delete(key);
@@ -141,7 +157,7 @@ export class WorkflowTelemetryBridge {
         return;
       }
       case "step_failed": {
-        const key = stepKey(event.jobId, event.stepId);
+        const key = stepKey(event.runId, event.jobId, event.stepId);
         const tracked = this.inFlight.get(key);
 
         if (tracked) {
@@ -167,6 +183,8 @@ export class WorkflowTelemetryBridge {
         // nesting-depth, cycle) and we skip emission.
         if (!event.modelName || !event.methodName) return;
         const synthesized: InFlightMethodInvocation = {
+          jobId: event.jobId,
+          stepId: event.stepId,
           startedAt: new Date(0), // placeholder, overwritten below
           modelName: event.modelName,
           methodName: event.methodName,
@@ -200,11 +218,11 @@ export class WorkflowTelemetryBridge {
 
     const now = new Date();
     const baseReason = reason ?? "workflow run terminated before completion";
-    const drained = Array.from(this.inFlight.entries());
+    const drained = Array.from(this.inFlight.values());
     this.inFlight.clear();
 
-    for (const [key, tracked] of drained) {
-      const [jobId, stepId] = key.split(":");
+    for (const tracked of drained) {
+      const { jobId, stepId } = tracked;
       const elapsed = now.getTime() - tracked.startedAt.getTime();
       const elapsedStr = elapsed >= 1000
         ? `${(elapsed / 1000).toFixed(1)}s`
@@ -246,6 +264,11 @@ export class WorkflowTelemetryBridge {
   }
 }
 
-function stepKey(jobId: string, stepId: string): string {
-  return `${jobId}:${stepId}`;
+/**
+ * Identity of a step within the event stream: the run that owns it plus its
+ * job and step names. JSON-encoded because job and step names may contain
+ * any character, so a delimiter-joined key could collide.
+ */
+function stepKey(runId: string, jobId: string, stepId: string): string {
+  return JSON.stringify([runId, jobId, stepId]);
 }
