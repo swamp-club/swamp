@@ -22,6 +22,7 @@ import { join, resolve } from "@std/path";
 import {
   parseDatastoreEnvVar,
   RENAMED_DATASTORE_TYPES,
+  resolveConfigTierPath,
   resolveDatastoreConfig,
 } from "./resolve_datastore.ts";
 import {
@@ -1012,5 +1013,58 @@ Deno.test("parseDatastoreEnvVar: autoResolve false never consults the auto-resol
       "Unknown datastore type",
     );
     assertEquals(lookups, []);
+  });
+});
+
+const tierMarker = (
+  datastore: RepoMarkerData["datastore"],
+): RepoMarkerData => ({
+  swampVersion: "0.0.0",
+  initializedAt: "2026-01-01T00:00:00.000Z",
+  datastore,
+});
+
+Deno.test("resolveConfigTierPath: a filesystem datastore's tier is under its path", async () => {
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const tier = await resolveConfigTierPath(
+      "/repo",
+      tierMarker({
+        type: "filesystem",
+        path: "/repo/.swamp",
+        managedConfig: true,
+      }),
+    );
+    assertPathEquals(tier ?? "", "/repo/.swamp/config");
+  });
+});
+
+Deno.test("resolveConfigTierPath: the SWAMP_DATASTORE override decides the tier", async () => {
+  await withMockedEnv(
+    { SWAMP_DATASTORE: "filesystem:/elsewhere" },
+    async () => {
+      const tier = await resolveConfigTierPath(
+        "/repo",
+        tierMarker({
+          type: "filesystem",
+          path: "/repo/.swamp",
+          managedConfig: true,
+        }),
+      );
+      assertPathEquals(tier ?? "", "/elsewhere/config");
+    },
+  );
+});
+
+Deno.test("resolveConfigTierPath: undefined when the datastore type cannot be resolved", async () => {
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const tier = await resolveConfigTierPath(
+      "/repo",
+      tierMarker({
+        type: `@test/missing-${crypto.randomUUID()}`,
+        config: {},
+        managedConfig: true,
+      }),
+    );
+    assertEquals(tier, undefined);
   });
 });

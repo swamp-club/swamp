@@ -19,6 +19,7 @@
 
 export {
   ALWAYS_LOCAL_SUBDIRS,
+  classifyInRepoConfig,
   type CustomDatastoreConfig,
   type DatastoreConfig,
   type DatastoreConfigData,
@@ -26,9 +27,14 @@ export {
   DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
+  inRepoConfigMigrationSkips,
+  type InRepoConfigRole,
   isAlwaysLocal,
   isCustomDatastoreConfig,
+  mergeSetupDatastoreBlock,
+  PULLED_EXTENSIONS_SUBDIR,
   resolveSyncTimeoutMs,
+  SETUP_PRESERVED_DATASTORE_KEYS,
   SYNC_TIMEOUT_ENV_VAR,
 } from "./datastore_config.ts";
 

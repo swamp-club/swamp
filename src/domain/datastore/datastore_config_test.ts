@@ -19,8 +19,10 @@
 
 import { assertEquals, assertFalse } from "@std/assert";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
+import { join } from "@std/path";
 import {
   ALWAYS_LOCAL_SUBDIRS,
+  classifyInRepoConfig,
   type CustomDatastoreConfig,
   type DatastoreConfigData,
   DEFAULT_DATASTORE_SUBDIRS,
@@ -28,8 +30,11 @@ import {
   DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
+  inRepoConfigMigrationSkips,
   isAlwaysLocal,
   LOCK_TIMEOUT_ENV_VAR,
+  mergeSetupDatastoreBlock,
+  PULLED_EXTENSIONS_SUBDIR,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
   SYNC_TIMEOUT_ENV_VAR,
@@ -291,4 +296,129 @@ Deno.test("DatastoreConfigData: managedConfig defaults to undefined", () => {
 Deno.test("DatastoreConfigData: managedConfig can be set to true", () => {
   const data: DatastoreConfigData = { type: "filesystem", managedConfig: true };
   assertEquals(data.managedConfig, true);
+});
+
+Deno.test("mergeSetupDatastoreBlock: keeps managedConfig and exclude from the existing block", () => {
+  const merged = mergeSetupDatastoreBlock(
+    {
+      type: "@swamp/s3-datastore",
+      config: { bucket: "team" },
+      managedConfig: true,
+      exclude: ["*.tmp"],
+    },
+    { type: "@swamp/s3-datastore", config: { bucket: "team" } },
+  );
+  assertEquals(merged, {
+    type: "@swamp/s3-datastore",
+    config: { bucket: "team" },
+    managedConfig: true,
+    exclude: ["*.tmp"],
+  });
+});
+
+Deno.test("mergeSetupDatastoreBlock: drops the old backend's keys on a switch", () => {
+  const merged = mergeSetupDatastoreBlock(
+    {
+      type: "@swamp/s3-datastore",
+      config: { bucket: "team" },
+      namespace: "old-ns",
+      hydrationStrategy: "lazy",
+      directories: ["data"],
+      managedConfig: true,
+    },
+    { type: "filesystem", path: "/data/swamp" },
+  );
+  assertEquals(merged, {
+    type: "filesystem",
+    path: "/data/swamp",
+    managedConfig: true,
+  });
+});
+
+Deno.test("mergeSetupDatastoreBlock: a key the new block sets wins", () => {
+  const merged = mergeSetupDatastoreBlock(
+    { type: "filesystem", path: "/a", exclude: ["old"] },
+    { type: "filesystem", path: "/b", exclude: ["new"] },
+  );
+  assertEquals(merged.exclude, ["new"]);
+  assertEquals(merged.path, "/b");
+});
+
+Deno.test("mergeSetupDatastoreBlock: an absent existing block returns the new block", () => {
+  const next: DatastoreConfigData = { type: "filesystem", path: "/b" };
+  assertEquals(mergeSetupDatastoreBlock(undefined, next), next);
+});
+
+Deno.test("mergeSetupDatastoreBlock: does not mutate either block", () => {
+  const existing: DatastoreConfigData = {
+    type: "filesystem",
+    path: "/a",
+    managedConfig: true,
+  };
+  const next: DatastoreConfigData = { type: "filesystem", path: "/b" };
+  mergeSetupDatastoreBlock(existing, next);
+  assertEquals(existing, {
+    type: "filesystem",
+    path: "/a",
+    managedConfig: true,
+  });
+  assertEquals(next, { type: "filesystem", path: "/b" });
+});
+
+const repoConfig = join("/repo", ".swamp", "config");
+
+Deno.test("classifyInRepoConfig: unmanaged when managedConfig is off", () => {
+  assertEquals(
+    classifyInRepoConfig(false, repoConfig, repoConfig),
+    "unmanaged",
+  );
+  assertEquals(classifyInRepoConfig(false, undefined, repoConfig), "unmanaged");
+});
+
+Deno.test("classifyInRepoConfig: tier when the resolved tier is the in-repo config dir", () => {
+  assertEquals(
+    classifyInRepoConfig(
+      true,
+      join("/repo", ".swamp", ".", "config"),
+      repoConfig,
+    ),
+    "tier",
+  );
+});
+
+Deno.test("classifyInRepoConfig: instance_local when the tier is in an extension cache", () => {
+  assertEquals(
+    classifyInRepoConfig(
+      true,
+      join("/home", "u", ".swamp", "repos", "id", "ns", "config"),
+      repoConfig,
+    ),
+    "instance_local",
+  );
+});
+
+Deno.test("classifyInRepoConfig: instance_local for a namespaced filesystem datastore at .swamp", () => {
+  assertEquals(
+    classifyInRepoConfig(
+      true,
+      join("/repo", ".swamp", "ns", "config"),
+      repoConfig,
+    ),
+    "instance_local",
+  );
+});
+
+Deno.test("classifyInRepoConfig: instance_local when the current datastore cannot be resolved", () => {
+  assertEquals(
+    classifyInRepoConfig(true, undefined, repoConfig),
+    "instance_local",
+  );
+});
+
+Deno.test("inRepoConfigMigrationSkips: maps each role to the paths setup leaves behind", () => {
+  assertEquals(inRepoConfigMigrationSkips("unmanaged"), []);
+  assertEquals(inRepoConfigMigrationSkips("tier"), [
+    join("config", PULLED_EXTENSIONS_SUBDIR),
+  ]);
+  assertEquals(inRepoConfigMigrationSkips("instance_local"), ["config"]);
 });

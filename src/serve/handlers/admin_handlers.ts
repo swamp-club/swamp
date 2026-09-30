@@ -114,6 +114,7 @@ import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/fi
 
 import {
   datastoreBasePath,
+  resolveConfigTierPath,
   resolveDatastoreConfig,
 } from "../../cli/resolve_datastore.ts";
 import {
@@ -1156,7 +1157,7 @@ export async function handleDatastoreSetupExtension(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const deps = createDatastoreSetupDeps(repoDir);
+    const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath);
 
     const MAX_TIMEOUT_SECONDS = 21600;
     const syncTimeoutMsOverride = payload.timeout != null

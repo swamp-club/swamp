@@ -44,7 +44,10 @@ import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { resolveDatastoreType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
-import { RENAMED_DATASTORE_TYPES } from "../resolve_datastore.ts";
+import {
+  RENAMED_DATASTORE_TYPES,
+  resolveConfigTierPath,
+} from "../resolve_datastore.ts";
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -179,7 +182,7 @@ const datastoreSetupFilesystemCommand = new Command()
       : resolve(repoDir, expandedPath);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDatastoreSetupDeps(repoDir);
+    const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath);
     const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
     await consumeStream(
@@ -337,7 +340,7 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
   );
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = createDatastoreSetupDeps(repoDir);
+  const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath);
   const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
   const hydrationStrategy = options.hydrationStrategy as
@@ -619,7 +622,10 @@ export const datastoreSetupCommand = new Command()
         : resolve(resolvedRepoDir, expandedPath);
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDatastoreSetupDeps(resolvedRepoDir);
+      const deps = createDatastoreSetupDeps(
+        resolvedRepoDir,
+        resolveConfigTierPath,
+      );
       const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
       await consumeStream(
@@ -655,7 +661,10 @@ export const datastoreSetupCommand = new Command()
         await resolveDatastoreForRepo(repoDir);
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDatastoreSetupDeps(resolvedRepoDir);
+      const deps = createDatastoreSetupDeps(
+        resolvedRepoDir,
+        resolveConfigTierPath,
+      );
       const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
       await consumeStream(

@@ -20,7 +20,10 @@
 import { assertEquals, assertFalse } from "@std/assert";
 import { join } from "@std/path";
 import type { FilesystemDatastoreConfig } from "./datastore_config.ts";
-import { migrateDatastore } from "./datastore_migration_service.ts";
+import {
+  migrateDatastore,
+  verifyMigration,
+} from "./datastore_migration_service.ts";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -178,5 +181,95 @@ Deno.test("migrateDatastore: secrets survives full migration-then-cleanup cycle"
       true,
       "secrets dir must survive cleanup because it was never migrated",
     );
+  });
+});
+
+async function writeFile(path: string, content: string): Promise<void> {
+  await Deno.mkdir(join(path, ".."), { recursive: true });
+  await Deno.writeTextFile(path, content);
+}
+
+Deno.test("migrateDatastore: a skipped subdir is not copied or reported as migrated", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(
+      join(sourceDir, "config", "upstream_extensions.json"),
+      "{}",
+    );
+    await writeFile(join(sourceDir, "data", "a.json"), "{}");
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+      directories: ["config", "data"],
+    };
+
+    const result = await migrateDatastore(sourceDir, destDir, config, [
+      "config",
+    ]);
+
+    assertEquals(result.directoriesMigrated, ["data"]);
+    assertEquals(result.filesCopied, 1);
+    assertFalse(await exists(join(destDir, "config")));
+    assertEquals(await exists(join(destDir, "data", "a.json")), true);
+  });
+});
+
+Deno.test("migrateDatastore: a skipped nested path is left out of its subdir's copy", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(join(sourceDir, "config", "models", "m.yaml"), "m");
+    await writeFile(
+      join(sourceDir, "config", "pulled-extensions", "ext", "mod.ts"),
+      "x",
+    );
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+      directories: ["config"],
+    };
+    const skip = [join("config", "pulled-extensions")];
+
+    const result = await migrateDatastore(sourceDir, destDir, config, skip);
+
+    assertEquals(result.directoriesMigrated, ["config"]);
+    assertEquals(result.filesCopied, 1);
+    assertEquals(
+      await exists(join(destDir, "config", "models", "m.yaml")),
+      true,
+    );
+    assertFalse(await exists(join(destDir, "config", "pulled-extensions")));
+
+    const verification = await verifyMigration(
+      sourceDir,
+      destDir,
+      config,
+      skip,
+    );
+    assertEquals(verification, { valid: true, sourceCount: 1, destCount: 1 });
+  });
+});
+
+Deno.test("verifyMigration: without the skip list the skipped files make counts differ", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(join(sourceDir, "config", "models", "m.yaml"), "m");
+    await writeFile(
+      join(sourceDir, "config", "pulled-extensions", "ext", "mod.ts"),
+      "x",
+    );
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+      directories: ["config"],
+    };
+    await migrateDatastore(sourceDir, destDir, config, [
+      join("config", "pulled-extensions"),
+    ]);
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification.valid, false);
   });
 });

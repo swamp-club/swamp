@@ -41,6 +41,7 @@ import {
   isCustomDatastoreConfig,
 } from "../domain/datastore/datastore_config.ts";
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
+import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { expandEnvVars } from "../infrastructure/persistence/env_path.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { UserError } from "../domain/errors.ts";
@@ -506,6 +507,31 @@ export async function resolveDatastoreConfig(
   // 4. Default: filesystem at {repoDir}/.swamp/
   const defaultPath = repoDir ? join(repoDir, ".swamp") : ".swamp";
   return { type: "filesystem", path: defaultPath };
+}
+
+/**
+ * The config tier path of the datastore the repo uses now, resolved the
+ * way startup resolves the managed config base, or undefined when that
+ * datastore cannot be resolved. Resolution is installed-only, so asking
+ * never installs an extension. Datastore setup uses it to tell whether the
+ * repo's `.swamp/config` is the config tier (swamp-club#2837).
+ */
+export async function resolveConfigTierPath(
+  repoDir: string,
+  marker: RepoMarkerData,
+): Promise<string | undefined> {
+  try {
+    const config = await resolveDatastoreConfig(marker, undefined, repoDir, {
+      autoResolve: false,
+    });
+    return new DefaultDatastorePathResolver(repoDir, config).resolvePath(
+      "config",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.debug`Could not resolve the current config tier: ${message}`;
+    return undefined;
+  }
 }
 
 /**
