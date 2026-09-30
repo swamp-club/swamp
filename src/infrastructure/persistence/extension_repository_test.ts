@@ -456,6 +456,70 @@ Deno.test("ExtensionRepository: I-Repo-1 fires on save(ext) directly when reusin
   });
 });
 
+// ===== swamp-club#2762: the pre-existing occupant is firstSource =====
+for (
+  const [existingName, incomingName] of [
+    ["@scope/zz", "@scope/aa"],
+    ["@scope/aa", "@scope/zz"],
+  ]
+) {
+  Deno.test(`ExtensionRepository.save: DuplicateTypeError names pre-existing ${existingName} as firstSource and incoming ${incomingName} as secondSource`, () => {
+    withRepository((repo, _cat, repoRoot) => {
+      repo.save(pulledExtension({
+        repoRoot,
+        name: existingName,
+        version: "1.0.0",
+        sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+      }));
+      const incoming = pulledExtension({
+        repoRoot,
+        name: incomingName,
+        version: "1.0.0",
+        sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
+      });
+
+      const thrown = assertThrows(
+        () => repo.save(incoming),
+        DuplicateTypeError,
+      );
+      assertEquals(thrown.firstSource.extensionName, existingName);
+      assertEquals(thrown.secondSource.extensionName, incomingName);
+    });
+  });
+}
+
+Deno.test("ExtensionRepository.saveAll: an upgrade colliding with a pre-existing extension names the pre-existing one as firstSource", () => {
+  withRepository((repo, _cat, repoRoot) => {
+    repo.save(pulledExtension({
+      repoRoot,
+      name: "@scope/zz",
+      version: "1.0.0",
+      sources: [{ relPath: "models/shared.ts", type: "@dup/shared" }],
+    }));
+    const v1 = pulledExtension({
+      repoRoot,
+      name: "@scope/aa",
+      version: "1.0.0",
+      sources: [{ relPath: "models/own.ts", type: "@scope/aa/own" }],
+    });
+    repo.save(v1);
+    const v2 = pulledExtension({
+      repoRoot,
+      name: "@scope/aa",
+      version: "2.0.0",
+      sources: [{ relPath: "models/shared.ts", type: "@dup/shared" }],
+    });
+
+    const thrown = assertThrows(
+      () => repo.saveAll([tombstoneAll(v1), v2]),
+      DuplicateTypeError,
+    );
+    assertEquals(thrown.firstSource.extensionName, "@scope/zz");
+    assertEquals(thrown.secondSource.extensionName, "@scope/aa");
+    assertEquals(thrown.secondSource.extensionVersion, "2.0.0");
+  });
+});
+
 // ===== swamp-club#2702: reconcile saves settle pulled-vs-pulled conflicts =====
 Deno.test("ExtensionRepository.saveAll: settlePulledTypeConflicts keeps the first-saved pulled provider and clears the other", () => {
   withRepository((repo, cat, repoRoot) => {

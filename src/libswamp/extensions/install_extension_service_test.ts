@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { stubInstallExtension } from "./install_test_helpers.ts";
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertFalse,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join, relative } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { InstallExtensionService } from "./install_extension_service.ts";
@@ -559,6 +564,135 @@ Deno.test(
         );
         assertEquals(repository.loadByName(extA).length, 0);
         assertEquals(repository.loadByName(extB).length, 1);
+      },
+    );
+  },
+);
+
+/** Stages one model file for `extName` and installs it through phase 8. */
+async function installStagedModel(args: {
+  repoDir: string;
+  repository: ExtensionRepository;
+  lockfileRepository: LockfileRepository;
+  extName: string;
+  version: string;
+  fileName: string;
+  typeId: string;
+}): Promise<void> {
+  await stageModel(
+    args.repoDir,
+    args.extName,
+    args.fileName,
+    MINIMAL_MODEL_CODE(args.typeId),
+  );
+  const files = [
+    `.swamp/pulled-extensions/${args.extName}/models/${args.fileName}`,
+  ];
+  const service = new InstallExtensionService({
+    denoRuntime: testDenoRuntime,
+    repository: args.repository,
+    installExtensionFn: stubInstallExtension(() =>
+      Promise.resolve(
+        makeStubInstallResult(args.extName, args.version, files),
+      )
+    ),
+  });
+  await service.execute(
+    { name: args.extName, version: args.version } as ExtensionRef,
+    makeInstallContext(args.repoDir, args.lockfileRepository),
+  );
+}
+
+Deno.test(
+  "InstallExtensionService.execute: a collision names the installed extension as existing when the incoming one sorts first (swamp-club#2762)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const typeId = `@test/order-${id}`;
+        const existing = `@test/zz-existing-${id}`;
+        const incoming = `@test/aa-incoming-${id}`;
+
+        await installStagedModel({
+          repoDir,
+          repository,
+          lockfileRepository,
+          extName: existing,
+          version: "1.0.0",
+          fileName: "model.ts",
+          typeId,
+        });
+
+        const thrown = await assertRejects(
+          () =>
+            installStagedModel({
+              repoDir,
+              repository,
+              lockfileRepository,
+              extName: incoming,
+              version: "1.0.0",
+              fileName: "model.ts",
+              typeId,
+            }),
+          DuplicateTypeUserError,
+        );
+        assertEquals(thrown.existing.extensionName, existing);
+        assertEquals(thrown.conflicting.extensionName, incoming);
+        assertEquals(thrown.isGhostRow, false);
+        assertFalse(thrown.message.includes("Ghost catalog entry"));
+        assertStringIncludes(thrown.message, `swamp extension rm ${existing}`);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "InstallExtensionService.execute: an upgrade that collides names the other extension as existing when the upgrade sorts first (swamp-club#2762)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const sharedType = `@test/shared-${id}`;
+        const other = `@test/zz-b-${id}`;
+        const upgraded = `@test/aa-a-${id}`;
+
+        await installStagedModel({
+          repoDir,
+          repository,
+          lockfileRepository,
+          extName: other,
+          version: "2026.01.01.1",
+          fileName: "b_model.ts",
+          typeId: sharedType,
+        });
+        await installStagedModel({
+          repoDir,
+          repository,
+          lockfileRepository,
+          extName: upgraded,
+          version: "2026.01.01.1",
+          fileName: "a_v1_model.ts",
+          typeId: `@test/own-${id}`,
+        });
+
+        const thrown = await assertRejects(
+          () =>
+            installStagedModel({
+              repoDir,
+              repository,
+              lockfileRepository,
+              extName: upgraded,
+              version: "2026.01.02.1",
+              fileName: "a_v2_model.ts",
+              typeId: sharedType,
+            }),
+          DuplicateTypeUserError,
+        );
+        assertEquals(thrown.existing.extensionName, other);
+        assertEquals(thrown.conflicting.extensionName, upgraded);
+        assertEquals(thrown.conflicting.extensionVersion, "2026.01.02.1");
+        assertEquals(thrown.isGhostRow, false);
+        assertFalse(thrown.message.includes("Ghost catalog entry"));
       },
     );
   },
