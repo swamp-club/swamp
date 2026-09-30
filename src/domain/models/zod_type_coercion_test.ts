@@ -513,3 +513,35 @@ Deno.test("parseGlobalArgumentsLeniently: runs a refinement declared with when o
     assertEquals(result.issues.map((i) => i.message), ["token required"]);
   }
 });
+
+Deno.test("parseGlobalArgumentsLeniently: refines the raw input, so transformed fields pass (swamp-club#2783)", () => {
+  const schema = z.object({
+    port: z.string().transform(Number),
+    tags: z.string().transform((v) => v.split(",")),
+  }).refine((v) => v.port > 0, "port must be positive");
+  assertEquals(
+    parseGlobalArgumentsLeniently(schema, { port: "8080", tags: "a,b" }),
+    { success: true, data: { port: 8080, tags: ["a", "b"] } },
+  );
+  const result = parseGlobalArgumentsLeniently(schema, {
+    port: "0",
+    tags: "a",
+  });
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(result.issues.map((i) => i.message), [
+      "port must be positive",
+    ]);
+  }
+});
+
+Deno.test("parseGlobalArgumentsLeniently: leaves an async object-level refinement unchecked (swamp-club#2783)", () => {
+  const schema = z.object({ n: z.number() }).refine(
+    () => Promise.resolve(false),
+    "never satisfied",
+  );
+  assertEquals(parseGlobalArgumentsLeniently(schema, { n: 1 }), {
+    success: true,
+    data: { n: 1 },
+  });
+});
