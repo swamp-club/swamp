@@ -19,6 +19,7 @@
 
 import { assertEquals, assertInstanceOf, assertThrows } from "@std/assert";
 import { gunzipSync } from "node:zlib";
+import { ModelType } from "../../domain/models/model_type.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
@@ -1428,7 +1429,7 @@ Deno.test("isAccessModelType: every control-plane type, bare or @-prefixed, is a
     assertEquals(isAccessModelType(type, undefined), true, type);
     // Resolved types come normalized, with or without the @.
     assertEquals(
-      isAccessModelType(undefined, type.toLowerCase().replace(/::|\./g, "/")),
+      isAccessModelType(undefined, ModelType.create(type).normalized),
       true,
       type,
     );

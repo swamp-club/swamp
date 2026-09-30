@@ -2372,6 +2372,22 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", as
  * definition of the given model type, so a data request authorizes the
  * resolved model's canonical resource.
  */
+/** `ctx` with a policy that evaluates grant conditions. */
+function withConditions(
+  ctx: ConnectionContext,
+  grants: Grant[],
+): ConnectionContext {
+  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
+  return {
+    ...ctx,
+    policySnapshotLoader: {
+      ...ctx.policySnapshotLoader!,
+      snapshot,
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader,
+  };
+}
+
 function makeCtxWithDefinitions(
   grants: Grant[],
   definitions: Record<string, string>,
@@ -2554,16 +2570,7 @@ Deno.test("authorizeOrReject: a direct-type run on a control-plane definition is
     }),
   ];
   const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
-  // Conditions need a real evaluator.
-  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
-  const conditioned: ConnectionContext = {
-    ...ctx,
-    policySnapshotLoader: {
-      ...ctx.policySnapshotLoader!,
-      snapshot,
-      decisionService: new GrantBasedAccessDecisionService(snapshot),
-    } as unknown as PolicySnapshotLoader,
-  };
+  const conditioned = withConditions(ctx, grants);
 
   const sent = await sendAndCollect(
     conditioned,
@@ -2602,15 +2609,7 @@ Deno.test("authorizeOrReject: a method run on a control-plane model by name is j
     }),
   ];
   const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
-  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
-  const conditioned: ConnectionContext = {
-    ...ctx,
-    policySnapshotLoader: {
-      ...ctx.policySnapshotLoader!,
-      snapshot,
-      decisionService: new GrantBasedAccessDecisionService(snapshot),
-    } as unknown as PolicySnapshotLoader,
-  };
+  const conditioned = withConditions(ctx, grants);
 
   const sent = await sendAndCollect(
     conditioned,
@@ -2642,15 +2641,7 @@ Deno.test("authorizeOrReject: a data read of a control-plane record honours a de
     }),
   ];
   const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
-  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
-  const conditioned: ConnectionContext = {
-    ...ctx,
-    policySnapshotLoader: {
-      ...ctx.policySnapshotLoader!,
-      snapshot,
-      decisionService: new GrantBasedAccessDecisionService(snapshot),
-    } as unknown as PolicySnapshotLoader,
-  };
+  const conditioned = withConditions(ctx, grants);
 
   const sent = await sendAndCollect(conditioned, "data.get", "cp-deny-data", {
     modelIdOrName: "grant-locked",

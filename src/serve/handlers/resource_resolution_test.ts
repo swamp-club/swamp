@@ -1212,3 +1212,70 @@ Deno.test("resolveOutputAccess: an output of a deleted control-plane model stays
     }]);
   });
 });
+
+Deno.test("CanonicalResources: a user definition reusing a control-plane record's id does not own it alone", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    // A user model that happens to declare the id a deleted grant had.
+    const user = Definition.create({ name: "mine", globalArguments: {} });
+    await repo.save(SHELL, user);
+    const canonical = new CanonicalResources(repo, workflowRepo([]));
+
+    const owners = await canonical.dataOwners({
+      modelType: "swamp/grant",
+      modelId: user.id,
+      modelName: "grant-gone",
+    });
+    assertEquals(owners.map((o) => `${o.kind}:${o.name}`), [
+      "data:mine",
+      "access:swamp/grant",
+    ]);
+    assertEquals(owners[1].fields, {
+      name: "grant-gone",
+      modelType: "swamp/grant",
+      tags: {},
+    });
+    // A live control-plane owner is not doubled.
+    const grant = Definition.create({ name: "grant-abc", globalArguments: {} });
+    await saveAutoDefinition(dir, GRANT_TYPE, grant);
+    assertEquals(
+      await new CanonicalResources(
+        new YamlDefinitionRepository(dir),
+        workflowRepo([]),
+      ).dataOwners({
+        modelType: "swamp/grant",
+        modelId: grant.id,
+        modelName: "grant-abc",
+      }),
+      [GRANT_RECORD],
+    );
+  });
+});
+
+Deno.test("resolveOutputAccess: an output recorded under a control-plane type needs admin even when a user definition shares its id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const user = Definition.create({ name: "mine", globalArguments: {} });
+    await repo.save(SHELL, user);
+    const access = await resolveOutputAccess(
+      repo,
+      () =>
+        Promise.resolve({
+          reference: {
+            kind: "output" as const,
+            match: {
+              output: { ...OUTPUT, definitionId: user.id },
+              type: ModelType.create("swamp/fleet-probe"),
+            },
+          },
+        }),
+      "abc",
+      ["model"],
+    );
+    assertEquals(
+      access.status === "resolved" &&
+        access.resources.map((r) => `${r.kind}:${r.name}`),
+      ["model:mine", "access:swamp/fleet-probe"],
+    );
+  });
+});

@@ -555,8 +555,15 @@ holding its secret, and a group record lists its members (swamp-club#2756).
   (`isControlPlaneRecordResource`). So `read`, `write` or `run` on `data:*` or
   `model:*` never reaches these records: single-resource requests are refused,
   naming `admin` on `access:swamp/<type>`, and collections leave the records
-  out. `admin` on `access:*` reaches them, and so does a narrower grant such as
-  `admin` on `access:swamp/*` or `access:swamp/grant`. The full type is the
+  out. `admin` on `access:*` reaches them. A narrower grant such as `admin`
+  on `access:swamp/*` or `access:swamp/grant` reaches them on single-record
+  reads and writes, but not everywhere: `model.method.run` and `model.create`
+  on a control-plane type check `admin` on `access:*` itself, and the
+  collection requests (`data.search`, `data.query`) first need some `read`
+  grant on `data`, so such a caller also needs one to see records in a
+  collection. Where a record is recorded under a control-plane type, its
+  access record is always among its owners, even when a user definition now
+  shares its id. The full type is the
   resource name so it can never collide with `access:grant` and
   `access:group`, which `access.grant.list` and `access.group.list` still
   authorize as `read`.

@@ -469,8 +469,12 @@ async function outputOwners(
 ): Promise<AccessResource[]> {
   const owners = await findDefinitionsByIdGlobal(definitionRepo, definitionId);
   if (owners.length > 0) {
-    return owners.flatMap((owner) =>
-      kinds.map((kind) => modelAccessResource(owner, kind))
+    return withRecordedType(
+      owners.flatMap((owner) =>
+        kinds.map((kind) => modelAccessResource(owner, kind))
+      ),
+      type.normalized,
+      definitionId,
     );
   }
   // An owner no longer found is judged on its recorded type, so the output
@@ -485,6 +489,29 @@ async function outputOwners(
     name: definitionId,
     fields: modelTypeFields(definitionId, type.normalized, undefined, kind),
   }));
+}
+
+/**
+ * The owners of something recorded under a control-plane type always include
+ * that type's access record, whatever definitions now share its id: a user
+ * definition reusing a deleted grant's id must not turn the grant's data into
+ * that user model's (swamp-club#2756). Callers require every owner, so the
+ * record stays admin-only.
+ */
+function withRecordedType(
+  resources: AccessResource[],
+  recordedType: string,
+  recordedName: string,
+): AccessResource[] {
+  if (!isControlPlaneModelType(recordedType)) return distinct(resources);
+  const record = controlPlaneRecordResource(recordedType, {
+    name: recordedName,
+  });
+  // A live control-plane owner already carries its own access record.
+  if (resources.some((r) => r.kind === "access" && r.name === record.name)) {
+    return distinct(resources);
+  }
+  return distinct([...resources, record]);
 }
 
 /** Drops resources that repeat an earlier one exactly. */
@@ -692,7 +719,11 @@ export class CanonicalResources {
     const named = owners.filter((o) => o.definition.name === name);
     const chosen = named.length > 0 ? named : owners;
     if (chosen.length > 0) {
-      return distinct(chosen.map((o) => modelAccessResource(o, "model")));
+      return withRecordedType(
+        chosen.map((o) => modelAccessResource(o, "model")),
+        modelType,
+        name,
+      );
     }
     if (isControlPlaneModelType(modelType)) {
       return [controlPlaneRecordResource(modelType, { name })];
@@ -717,7 +748,11 @@ export class CanonicalResources {
   ): Promise<AccessResource[]> {
     const owners = await this.#definitionsById(modelId);
     if (owners.length > 0) {
-      return distinct(owners.map((o) => modelAccessResource(o, kind)));
+      return withRecordedType(
+        owners.map((o) => modelAccessResource(o, kind)),
+        modelType,
+        recordedName,
+      );
     }
     // An owner no longer found is judged on its recorded type too, so an
     // orphaned token record is never read as plain data.
