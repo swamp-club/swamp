@@ -212,21 +212,26 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
     // An older swamp recorded that a change was unpublished but not what
     // it was: keep every local entry. Nothing added is lost, though an
     // entry another checkout removed or changed may be reverted.
-    const localBefore = pending.kind === "unknown"
-      ? await this.#readEntries()
-      : undefined;
+    if (pending.kind === "unknown") {
+      this.#onWarning(
+        "An earlier extension lockfile change was not published and its " +
+          "content was not recorded; merging the local entries into the " +
+          "datastore's lockfile.",
+      );
+      prior = { upserts: await this.#readEntries(), removals: [] };
+    }
+    // A change worked out from the local lockfile is saved before the
+    // fetch, which may overwrite that lockfile and then fail.
+    if (
+      pending.kind === "unknown" ||
+      (pending.kind === "delta" && "base" in pending)
+    ) {
+      await this.#pending.write(prior);
+    }
     await this.#sync.hydrate();
     const fetched = await this.#readEntries();
     let current = fetched;
     if (pending.kind !== "none") {
-      if (localBefore) {
-        this.#onWarning(
-          "An earlier extension lockfile change was not published and its " +
-            "content was not recorded; merging the local entries into the " +
-            "datastore's lockfile.",
-        );
-        current = { ...current, ...localBefore };
-      }
       current = applyLockfileDelta(current, prior);
       await this.#writeEntries(current);
     }
@@ -289,8 +294,8 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
     try {
       await this.#pending.write(record);
     } catch (error) {
-      // The incomplete record written before the change still stands.
-      if (!tolerate) throw error;
+      // The incomplete record written before the change still stands, so
+      // the change is not lost; the publish below may still succeed.
       this.#onWarning("Failed to record the extension lockfile change", error);
     }
     try {

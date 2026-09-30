@@ -490,8 +490,8 @@ Deno.test("handleExtensionRm: fetches the lockfile under the global lock, then m
       dir,
       true,
     );
-    registerRecordingLockProvider(events);
     try {
+      registerRecordingLockProvider(events);
       const configDir = datastoreResolver.resolvePath("config");
       await ensureDir(configDir);
       await Deno.writeTextFile(

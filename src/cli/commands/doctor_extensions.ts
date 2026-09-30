@@ -57,6 +57,7 @@ import {
   ManagedLockfileUnpublishedError,
   ReconcileFromDiskService,
   type ReconcileTransition,
+  refreshManagedLockfile,
   repairExtensions,
   resolveServerUrl,
   toDoctorWarnings,
@@ -468,7 +469,11 @@ export const doctorExtensionsCommand = withRemoteOptions(
                     // the registry currently calls latest — pulling latest
                     // here rewrites the entry and destroys the pin
                     // (swamp-club#2150). Extensions with no entry have
-                    // nothing to pin to, so they still resolve latest.
+                    // nothing to pin to, so they still resolve latest. The
+                    // pin is read from the datastore's lockfile, not a stale
+                    // cache, or the repair would publish an old version over
+                    // another checkout's upgrade (swamp-club#2838).
+                    await refreshManagedLockfile(pullLockfileRepo);
                     const pinnedVersion =
                       pullLockfileRepo.getEntry(name)?.version ?? null;
                     await pullExtension(

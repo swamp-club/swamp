@@ -1043,6 +1043,7 @@ export {
   type ManagedLockfileTransactionOptions,
   ManagedLockfileUnpublishedError,
   type PendingLockfileDeltaStore,
+  refreshManagedLockfile,
   withManagedLockfileTransaction,
 } from "./extensions/managed_lockfile_transaction.ts";
 

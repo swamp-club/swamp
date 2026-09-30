@@ -2010,6 +2010,13 @@ gate, and a failed publish is logged and left pending. A command already
 holding the global lock (the sync coordinator) does not take it again.
 Filesystem datastores and repos without managedConfig skip all of this.
 
+`extension install`'s restore and `extension update` choose their targets
+from one fetch, then install each target in its own transaction after its
+download. Another checkout that changes one of those entries in between
+(updates or removes it) can have that change reverted when this checkout
+reaches the entry. The window is the length of the loop; closing it needs a
+re-check of each entry under the lock, tracked as a follow-up.
+
 The fetch is a scoped pull under the lock, and a scoped pull's slow path
 re-downloads any `config/` file that differs from the datastore's index. A
 config write another process on the same checkout made and has not pushed

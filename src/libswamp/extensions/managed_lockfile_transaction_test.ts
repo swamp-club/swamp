@@ -580,3 +580,64 @@ Deno.test("ManagedLockfileTransaction.run: a failed publish surfaces as ManagedL
     );
   });
 });
+
+Deno.test("ManagedLockfileTransaction.run: a recovered change survives a fetch that overwrites the lockfile and then fails", async () => {
+  await withHarness(async (h) => {
+    // Interrupted while installing @me/new.
+    await new LockfileRepository(h.lockfilePath).replaceAll({
+      "@me/new": entry("1"),
+    });
+    const interrupted: PendingLockfilePublish = {
+      kind: "delta",
+      delta: { upserts: {}, removals: [] },
+      incomplete: true,
+      base: {},
+    };
+    h.pending.value = interrupted;
+    h.remote.entries = { "@peer/p": entry("1") };
+
+    // A fetch that downloads the lockfile, then fails on a later file.
+    const failingFetch = new ManagedLockfileTransaction({
+      lockfilePath: h.lockfilePath,
+      lock: {
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+      },
+      sync: {
+        hydrate: async () => {
+          await new LockfileRepository(h.lockfilePath).replaceAll(
+            structuredClone(h.remote.entries),
+          );
+          throw new Error("timed out on a later file");
+        },
+        publish: () => Promise.resolve(),
+      },
+      pending: {
+        read: () => Promise.resolve(h.pending.value),
+        write: (delta, options) => {
+          h.pending.value = options?.incomplete
+            ? {
+              kind: "delta",
+              delta,
+              incomplete: true,
+              base: options.incomplete.base,
+            }
+            : { kind: "delta", delta };
+          return Promise.resolve();
+        },
+        clear: () => {
+          h.pending.value = { kind: "none" };
+          return Promise.resolve();
+        },
+      },
+    });
+    await assertRejects(
+      () => failingFetch.refresh(),
+      Error,
+      "timed out on a later file",
+    );
+
+    await h.transaction().refresh();
+    assertEquals(Object.keys(h.remote.entries).sort(), ["@me/new", "@peer/p"]);
+  });
+});

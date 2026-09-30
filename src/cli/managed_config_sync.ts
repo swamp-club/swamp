@@ -362,10 +362,14 @@ export function buildManagedLockfileTransaction(
  * the #445 exemption that records into the in-repo lockfile
  * (`write.publish` false).
  *
- * The datastore is resolved on the first change, so a command that changes
- * nothing never contacts it. When this process already holds the datastore
- * global lock (a command that runs under the sync coordinator), the
- * transaction does not take it again.
+ * The datastore is resolved on first use: the first change, or the first
+ * refresh (`extension install`, `update` and the `rm` preview refresh
+ * before reading the lockfile, so they contact the datastore even when
+ * they end up changing nothing). When this process already holds the
+ * datastore global lock (a command that runs under the sync coordinator),
+ * the transaction does not take it again; that check runs once, when the
+ * transaction is built, so a transaction must not outlive the command
+ * that built it.
  */
 export function createManagedLockfileTransaction(
   repoDir: string,
