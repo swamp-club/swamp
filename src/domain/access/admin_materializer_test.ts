@@ -28,6 +28,7 @@ import {
   instanceNameForAdmin,
   materializeAdmins,
   migrateGrantDefinitions,
+  type StoredConfigGrant,
 } from "./admin_materializer.ts";
 
 await initializeLogging({});
@@ -49,31 +50,53 @@ function makeGrant(overrides: Partial<Grant> = {}): Grant {
 
 function createMockStore(
   existingGrants: Map<string, { grant: Grant; modelId: string }> = new Map(),
+  options: {
+    duplicates?: Map<string, StoredConfigGrant[]>;
+    definitionIds?: Map<string, string>;
+  } = {},
 ): AdminGrantStore & {
   written: Map<string, Grant>;
+  writtenByModelId: Map<string, Grant>;
   definitions: Set<string>;
 } {
   const written = new Map<string, Grant>();
+  const writtenByModelId = new Map<string, Grant>();
   const definitions = new Set<string>();
-  const grants = new Map(existingGrants);
+  const grants = new Map<string, StoredConfigGrant[]>();
+  for (const [instanceName, copy] of existingGrants) {
+    grants.set(instanceName, [copy]);
+  }
+  for (const [instanceName, copies] of options.duplicates ?? []) {
+    grants.set(instanceName, [...copies]);
+  }
 
   return {
     written,
+    writtenByModelId,
     definitions,
     queryConfigGrants() {
-      return Promise.resolve(new Map(grants));
+      return Promise.resolve(
+        new Map([...grants].map(([name, copies]) => [name, [...copies]])),
+      );
+    },
+    findDefinitionId(instanceName: string) {
+      return Promise.resolve(options.definitionIds?.get(instanceName));
     },
     ensureDefinition(instanceName: string) {
       definitions.add(instanceName);
       return Promise.resolve(`model-id-for-${instanceName}`);
     },
     writeGrant(
-      _modelId: string,
+      modelId: string,
       instanceName: string,
       grant: Grant,
     ) {
       written.set(instanceName, grant);
-      grants.set(instanceName, { grant, modelId: _modelId });
+      writtenByModelId.set(modelId, grant);
+      const copies = (grants.get(instanceName) ?? []).filter((c) =>
+        c.modelId !== modelId
+      );
+      grants.set(instanceName, [...copies, { grant, modelId }]);
       return Promise.resolve();
     },
   };
@@ -382,4 +405,81 @@ Deno.test("migrateGrantDefinitions: ignores non-YAML files", async () => {
     assertEquals(result.moved, 1);
     assertEquals(result.skipped, 0);
   });
+});
+
+async function adminInstanceName(principal: string): Promise<string> {
+  return instanceNameForAdmin(await hashPrincipal(principal));
+}
+
+Deno.test("materializeAdmins: revokes every active copy of a removed admin", async () => {
+  // Two serve instances on one datastore each created a copy
+  // (swamp-club#2822).
+  const instanceName = await adminInstanceName("user:adam");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[instanceName, [
+      { grant: makeGrant(), modelId: "model-b" },
+      { grant: makeGrant(), modelId: "model-a" },
+    ]]]),
+  });
+
+  const result = await materializeAdmins("token", ["user:bob"], store);
+
+  assertEquals(result.revoked, 2);
+  assertEquals(store.writtenByModelId.get("model-a")?.state, "revoked");
+  assertEquals(store.writtenByModelId.get("model-b")?.state, "revoked");
+
+  const second = await materializeAdmins("token", ["user:bob"], store);
+  assertEquals(second.revoked, 0);
+});
+
+Deno.test("materializeAdmins: keeps the definition-backed copy and revokes the other", async () => {
+  const instanceName = await adminInstanceName("user:adam");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[instanceName, [
+      { grant: makeGrant(), modelId: "model-a" },
+      { grant: makeGrant(), modelId: "model-b" },
+    ]]]),
+    definitionIds: new Map([[instanceName, "model-b"]]),
+  });
+
+  const result = await materializeAdmins("token", ["user:adam"], store);
+
+  assertEquals(result.unchanged, 1);
+  assertEquals(result.revoked, 1);
+  assertEquals(store.writtenByModelId.get("model-a")?.state, "revoked");
+  assertEquals(store.writtenByModelId.has("model-b"), false);
+});
+
+Deno.test("materializeAdmins: keeps the lowest-modelId copy when no copy has a definition", async () => {
+  const instanceName = await adminInstanceName("user:adam");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[instanceName, [
+      { grant: makeGrant(), modelId: "model-b" },
+      { grant: makeGrant(), modelId: "model-a" },
+    ]]]),
+  });
+
+  const result = await materializeAdmins("token", ["user:adam"], store);
+
+  assertEquals(result.unchanged, 1);
+  assertEquals(result.revoked, 1);
+  assertEquals(store.writtenByModelId.has("model-a"), false);
+  assertEquals(store.writtenByModelId.get("model-b")?.state, "revoked");
+});
+
+Deno.test("materializeAdmins: reactivates only the definition-backed copy of several revoked copies", async () => {
+  const instanceName = await adminInstanceName("user:adam");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[instanceName, [
+      { grant: makeGrant({ state: "revoked" }), modelId: "model-a" },
+      { grant: makeGrant({ state: "revoked" }), modelId: "model-b" },
+    ]]]),
+    definitionIds: new Map([[instanceName, "model-b"]]),
+  });
+
+  const result = await materializeAdmins("token", ["user:adam"], store);
+
+  assertEquals(result.reactivated, 1);
+  assertEquals(store.writtenByModelId.get("model-b")?.state, "active");
+  assertEquals(store.writtenByModelId.has("model-a"), false);
 });
