@@ -1693,12 +1693,13 @@ workflowContext:
   executor: loopback
 ```
 
-Children use the same `cli_invocation` event shape and redactions as a direct
+Children use the same `cli_invocation` event shape as a direct
 `swamp model method run <name> <method>` invocation: `command="model"`,
-`subcommand="method"`, `args=["run", "<REDACTED>", <methodName>]`. Analytics
-that group by command or method therefore count direct and workflow-internal
-invocations the same way. Per-executor and per-model-type queries read
-`workflowContext` directly, without joining through the parent.
+`subcommand="method"`, `args=["run", <modelName>, <methodName>]` and
+`commandPath=["model", "method", "run"]`. Analytics that group by command or
+method therefore count direct and workflow-internal invocations the same way.
+Per-executor and per-model-type queries read `workflowContext` directly, without
+joining through the parent.
 
 ### Failure Semantics
 
@@ -1750,8 +1751,8 @@ process-level entry is not written until it exits, possibly weeks later, so
 children attached to it would have a dangling `parentInvocationId` for its whole
 uptime. Instead, each serve-executed run forks its own service
 (`TelemetryService.forkForRun`) and records a per-run parent shaped like the
-`swamp workflow run` invocation it stands in for. The workflow name is redacted
-the same way the CLI redacts it.
+`swamp workflow run` invocation it stands in for, with the workflow name in
+`args` as the CLI sends it.
 
 **Entries carry a `triggerSource`** of `schedule`, `webhook`, or `api`.
 Interactive runs leave it unset, so their events are unchanged. The field is

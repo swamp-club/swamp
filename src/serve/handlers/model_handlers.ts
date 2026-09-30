@@ -310,7 +310,13 @@ export async function handleModelMethodRun(
     let flushLocks: (() => Promise<void>) | null = null;
     let mutating = true;
     const initiatedBy = principal ? principalToString(principal) : "ghost";
-    const telemetry = createCommandTelemetry(initiatedBy);
+    const telemetry = createCommandTelemetry(
+      {
+        modelName: payload.modelIdOrName,
+        methodName: payload.methodName,
+      },
+      initiatedBy,
+    );
     try {
       const target = await resolveMethodRunTarget(ctx, payload);
       if (
@@ -514,7 +520,13 @@ export async function handleModelMethodRun(
     return;
   }
 
-  const detachedTelemetry = createCommandTelemetry(initiatedBy);
+  const detachedTelemetry = createCommandTelemetry(
+    {
+      modelName: payload.modelIdOrName,
+      methodName: payload.methodName,
+    },
+    initiatedBy,
+  );
 
   const detachedMutating = preResult
     ? await isMethodMutating(preResult.type.normalized, payload.methodName)

@@ -237,15 +237,18 @@ export class TelemetryService {
    * @param invocation - The command invocation data
    * @param startedAt - When the command started
    * @param error - The error that occurred
+   * @param knownValues - Values known to be sensitive for this invocation,
+   *   removed exactly from the error message. Never persisted.
    */
   async recordError(
     invocation: CommandInvocationData,
     startedAt: Date,
     error: Error,
+    knownValues: readonly string[] = [],
   ): Promise<void> {
     const isUserError = error instanceof UserError;
     const result: InvocationResultData = {
-      ...createErrorResult(error, isUserError),
+      ...createErrorResult(error, isUserError, knownValues),
     };
 
     const entry = TelemetryEntry.create({

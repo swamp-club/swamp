@@ -60,6 +60,8 @@ class CapturingRepository implements TelemetryRepository {
   }
 }
 
+const TARGET = { modelName: "enricher", methodName: "enrich" };
+
 /** Installs an active service for the duration of `fn`. */
 async function withActiveService(
   fn: (repo: CapturingRepository) => Promise<void>,
@@ -78,12 +80,12 @@ Deno.test("createRunTelemetry: returns undefined when telemetry is disabled", ()
   // failure all leave no active service. Serve must then stay exactly as
   // silent as it was before any of this was wired.
   clearActiveTelemetryService();
-  assertEquals(createRunTelemetry("schedule"), undefined);
+  assertEquals(createRunTelemetry("schedule", "nightly"), undefined);
 });
 
 Deno.test("createRunTelemetry: records a success parent entry on finish(null)", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createRunTelemetry("schedule");
+    const telemetry = createRunTelemetry("schedule", "nightly");
     assertExists(telemetry);
 
     await telemetry.finish(null);
@@ -99,7 +101,7 @@ Deno.test("createRunTelemetry: records a success parent entry on finish(null)", 
 
 Deno.test("createRunTelemetry: records an error parent entry on finish(error)", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createRunTelemetry("webhook");
+    const telemetry = createRunTelemetry("webhook", "nightly");
     assertExists(telemetry);
 
     await telemetry.finish(new Error("step failed"));
@@ -113,14 +115,14 @@ Deno.test("createRunTelemetry: records an error parent entry on finish(error)", 
 
 Deno.test("createRunTelemetry: children carry the run's parent invocation id", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createRunTelemetry("api");
+    const telemetry = createRunTelemetry("api", "nightly");
     assertExists(telemetry);
 
     await telemetry.sink.recordChildInvocation(
       {
         command: "model",
         subcommand: "method",
-        args: ["run", "<REDACTED>", "enrich"],
+        args: ["run", "enricher", "enrich"],
         optionKeys: [],
         globalOptions: [],
       },
@@ -149,8 +151,8 @@ Deno.test("createRunTelemetry: children carry the run's parent invocation id", a
 
 Deno.test("createRunTelemetry: each run gets a distinct parent identity", async () => {
   await withActiveService(() => {
-    const first = createRunTelemetry("schedule");
-    const second = createRunTelemetry("schedule");
+    const first = createRunTelemetry("schedule", "nightly");
+    const second = createRunTelemetry("schedule", "nightly");
     assertExists(first);
     assertExists(second);
 
@@ -162,20 +164,21 @@ Deno.test("createRunTelemetry: each run gets a distinct parent identity", async 
   });
 });
 
-Deno.test("createRunTelemetry: the parent entry redacts the workflow name", async () => {
+Deno.test("createRunTelemetry: the parent entry sends the workflow name", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createRunTelemetry("schedule");
+    const telemetry = createRunTelemetry("schedule", "nightly");
     assertExists(telemetry);
 
     await telemetry.finish(null);
 
-    assertEquals(repo.saved[0].invocation.args, ["<REDACTED>"]);
+    assertEquals(repo.saved[0].invocation.args, ["nightly"]);
+    assertEquals(repo.saved[0].invocation.commandPath, ["workflow", "run"]);
   });
 });
 
 Deno.test("createRunTelemetry: stamps initiatedBy on parent and child entries", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createRunTelemetry("api", {
+    const telemetry = createRunTelemetry("api", "nightly", {
       initiatedBy: "user:abc-123",
     });
     assertExists(telemetry);
@@ -184,7 +187,7 @@ Deno.test("createRunTelemetry: stamps initiatedBy on parent and child entries", 
       {
         command: "model",
         subcommand: "method",
-        args: ["run", "<REDACTED>", "enrich"],
+        args: ["run", "enricher", "enrich"],
         optionKeys: [],
         globalOptions: [],
       },
@@ -210,7 +213,7 @@ Deno.test("createRunTelemetry: stamps initiatedBy on parent and child entries", 
 
 Deno.test("createRunTelemetry: omits initiatedBy when not provided", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createRunTelemetry("schedule");
+    const telemetry = createRunTelemetry("schedule", "nightly");
     assertExists(telemetry);
 
     await telemetry.finish(null);
@@ -221,12 +224,12 @@ Deno.test("createRunTelemetry: omits initiatedBy when not provided", async () =>
 
 Deno.test("createCommandTelemetry: returns undefined when telemetry is disabled", () => {
   clearActiveTelemetryService();
-  assertEquals(createCommandTelemetry("user:test"), undefined);
+  assertEquals(createCommandTelemetry(TARGET, "user:test"), undefined);
 });
 
 Deno.test("createCommandTelemetry: records a success entry with initiatedBy", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createCommandTelemetry("user:abc-123");
+    const telemetry = createCommandTelemetry(TARGET, "user:abc-123");
     assertExists(telemetry);
 
     await telemetry.finish(null);
@@ -235,6 +238,8 @@ Deno.test("createCommandTelemetry: records a success entry with initiatedBy", as
     const entry = repo.saved[0];
     assertEquals(entry.invocation.command, "model");
     assertEquals(entry.invocation.subcommand, "method run");
+    assertEquals(entry.invocation.args, ["enricher", "enrich"]);
+    assertEquals(entry.invocation.commandPath, ["model", "method", "run"]);
     assertEquals(entry.result.status, "success");
     assertEquals(entry.initiatedBy, "user:abc-123");
     assertEquals(entry.triggerSource, "api");
@@ -243,7 +248,7 @@ Deno.test("createCommandTelemetry: records a success entry with initiatedBy", as
 
 Deno.test("createCommandTelemetry: records an error entry with initiatedBy", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createCommandTelemetry("user:abc-123");
+    const telemetry = createCommandTelemetry(TARGET, "user:abc-123");
     assertExists(telemetry);
 
     await telemetry.finish(new Error("method failed"));

@@ -14,7 +14,19 @@ something a primitive depends on, move it to `enablers/` and give it an
   over HTTP. The CLI flushes once at teardown; `swamp serve` runs its own flush
   loop (`src/serve/telemetry_flush.ts`). Entries carry an `insert_id` for dedup
   and are quarantined after a bounded number of retries.
-  `src/domain/telemetry/`, `src/infrastructure/telemetry/`.
+  `src/domain/telemetry/`, `src/infrastructure/telemetry/`. The recorded
+  command is resolved against the real command tree
+  (`src/cli/telemetry_invocation.ts`): every command word is kept in
+  `commandPath`, names, ids, queries and types are sent, and filesystem paths,
+  input values, option values, access groups and principals, and the
+  `data query` predicate are redacted. Error messages keep names but replace
+  whole paths with `<PATH>` (`src/domain/telemetry/error_message_redaction.ts`).
+  Before any pattern runs, the exact values the invocation redacted (and their
+  absolute forms), the working, home and repo directories are removed from the
+  message, so a path with a space in it needs no guessing; other redacted
+  values are removed as whole words after the path patterns. Those values stay
+  in memory and are never recorded. Runs executed by `swamp serve` have no
+  command line, so their error messages rely on the patterns alone.
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`.

@@ -52,20 +52,17 @@ export interface RunTelemetry {
  * The parent entry for a serve-executed run, shaped like the interactive
  * `swamp workflow run` invocation it stands in for.
  *
- * The workflow name is redacted, matching the default sensitivity the CLI
- * applies to positional arguments — serve-side entries are generated with no
- * human present, so redaction cannot be reviewed at authoring time and the
- * conservative default is the right one. The name still reaches telemetry via
- * the child entries' `workflowContext`, exactly as it does for interactive
- * runs.
+ * The workflow name is sent as-is: names are not sensitive (swamp-club#2817),
+ * and the interactive CLI sends it the same way.
  */
-function buildRunInvocation(): CommandInvocationData {
+function buildRunInvocation(workflowName: string): CommandInvocationData {
   return {
     command: "workflow",
     subcommand: "run",
-    args: ["<REDACTED>"],
+    args: [workflowName],
     optionKeys: [],
     globalOptions: [],
+    commandPath: ["workflow", "run"],
   };
 }
 
@@ -76,13 +73,22 @@ export interface CommandTelemetry {
   finish(error: Error | null): Promise<void>;
 }
 
-function buildMethodRunInvocation(): CommandInvocationData {
+/**
+ * The entry for a serve-executed model method run. Model and method names are
+ * sent as-is (swamp-club#2817). `subcommand` keeps its historical
+ * `"method run"` value so server-side keys do not move.
+ */
+function buildMethodRunInvocation(
+  modelName: string,
+  methodName: string,
+): CommandInvocationData {
   return {
     command: "model",
     subcommand: "method run",
-    args: ["<REDACTED>", "<REDACTED>"],
+    args: [modelName, methodName],
     optionKeys: [],
     globalOptions: [],
+    commandPath: ["model", "method", "run"],
   };
 }
 
@@ -90,10 +96,12 @@ function buildMethodRunInvocation(): CommandInvocationData {
  * Creates telemetry for one serve-executed model method run, or `undefined`
  * when telemetry is disabled.
  *
+ * @param target - The model and method being run
  * @param initiatedBy - The principal who triggered this run
  * @param startedAt - When the run began; defaults to now
  */
 export function createCommandTelemetry(
+  target: { modelName: string; methodName: string },
   initiatedBy?: string,
   startedAt: Date = new Date(),
 ): CommandTelemetry | undefined {
@@ -106,12 +114,15 @@ export function createCommandTelemetry(
     finish: async (error: Error | null): Promise<void> => {
       if (error) {
         await runService.recordError(
-          buildMethodRunInvocation(),
+          buildMethodRunInvocation(target.modelName, target.methodName),
           startedAt,
           error,
         );
       } else {
-        await runService.recordSuccess(buildMethodRunInvocation(), startedAt);
+        await runService.recordSuccess(
+          buildMethodRunInvocation(target.modelName, target.methodName),
+          startedAt,
+        );
       }
     },
   };
@@ -130,10 +141,12 @@ export function createCommandTelemetry(
  * that is not written until serve exits — possibly weeks later.
  *
  * @param triggerSource - What caused this run (schedule, webhook, or api)
+ * @param workflowName - The workflow being run
  * @param options - Optional initiatedBy and startedAt overrides
  */
 export function createRunTelemetry(
   triggerSource: WorkflowTriggerSource,
+  workflowName: string,
   options?: { initiatedBy?: string; startedAt?: Date },
 ): RunTelemetry | undefined {
   const service = getActiveTelemetryService();
@@ -149,9 +162,16 @@ export function createRunTelemetry(
     },
     finish: async (error: Error | null): Promise<void> => {
       if (error) {
-        await runService.recordError(buildRunInvocation(), startedAt, error);
+        await runService.recordError(
+          buildRunInvocation(workflowName),
+          startedAt,
+          error,
+        );
       } else {
-        await runService.recordSuccess(buildRunInvocation(), startedAt);
+        await runService.recordSuccess(
+          buildRunInvocation(workflowName),
+          startedAt,
+        );
       }
     },
   };

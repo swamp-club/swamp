@@ -327,7 +327,11 @@ Deno.test({
         assertEquals(child.invocation.command, "model");
         assertEquals(child.invocation.subcommand, "method");
         assertEquals(child.invocation.args[0], "run");
-        assertEquals(child.invocation.args[1], "<REDACTED>");
+        // Model names are not sensitive and are sent (swamp-club#2817).
+        assert(
+          ["echo-ok", "echo-fail"].includes(child.invocation.args[1]),
+          `unexpected model name ${child.invocation.args[1]}`,
+        );
         assertEquals(child.invocation.args[2], "execute");
         assert(
           child.workflowContext !== undefined,
