@@ -36,6 +36,7 @@ import {
   type DirectTypeResolver,
   type StepExecutionContext,
   type StepExecutor,
+  type StepLockHook,
   stepNameFromCompositeKey,
   templateScanGlobalArguments,
   trackerStatusForRun,
@@ -15355,4 +15356,203 @@ Deno.test({
     });
     assertEquals(shipped, [["mine-s3cret"]]);
   },
+});
+
+// swamp-club#2825: a model_method step takes its per-model lock before it
+// writes anything, so a lock timeout leaves no output or run-tracker row
+// stuck at running.
+
+/** What a lock hook can observe of the step's writes when it is called. */
+interface StepWriteProbe {
+  tracker: RecordingRunTracker;
+  outputCount(): Promise<number>;
+  evaluatedCount(): Promise<number>;
+}
+
+/**
+ * Runs one model_method step under the lock hook built by makeHook and
+ * reports what the step left behind.
+ */
+async function runStepUnderLockHook(
+  makeHook: (probe: StepWriteProbe) => StepLockHook,
+  methodName: string,
+): Promise<{
+  error: unknown;
+  outputs: import("../models/model_output.ts").ModelOutput[];
+  evaluatedCount: number;
+  tracker: RecordingRunTracker;
+}> {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { YamlOutputRepository } = await import(
+    "../../infrastructure/persistence/yaml_output_repository.ts"
+  );
+  const { YamlEvaluatedDefinitionRepository } = await import(
+    "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts"
+  );
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+
+  let result:
+    | Awaited<ReturnType<typeof runStepUnderLockHook>>
+    | undefined;
+  await withTempDir(async (tempDir) => {
+    const modelType = ModelType.create(
+      `@test-2825/locked-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {
+        execute: {
+          description: "does nothing",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+
+    const outputRepo = new YamlOutputRepository(tempDir);
+    const evaluatedRepo = new YamlEvaluatedDefinitionRepository(tempDir);
+    const probe: StepWriteProbe = {
+      tracker: new RecordingRunTracker(),
+      outputCount: async () => (await outputRepo.findAll(modelType)).length,
+      evaluatedCount: async () =>
+        (await evaluatedRepo.findAll(modelType)).length,
+    };
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const definition = Definition.create({
+        name: "locked",
+        type: modelType.normalized,
+      });
+      await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+
+      const step = Step.create({
+        name: "step",
+        task: StepTask.model(definition.name, methodName),
+      });
+      let error: unknown;
+      try {
+        await new DefaultStepExecutor(
+          undefined,
+          undefined,
+          undefined,
+          makeHook(probe),
+        ).execute(step, {
+          sensitiveValues: new RunSensitiveValues(),
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set(),
+          runTracker: probe.tracker,
+        });
+      } catch (e) {
+        error = e;
+      }
+
+      result = {
+        error,
+        outputs: await outputRepo.findAll(modelType),
+        evaluatedCount: await probe.evaluatedCount(),
+        tracker: probe.tracker,
+      };
+    } finally {
+      catalogStore.close();
+    }
+  });
+  assertExists(result);
+  return result;
+}
+
+/** A lock hook whose flush counts its calls. */
+function countingLockHook(
+  onAcquire: () => Promise<void>,
+): { hook: StepLockHook; flushes: () => number } {
+  let flushes = 0;
+  return {
+    hook: async () => {
+      await onAcquire();
+      return {
+        flush: () => {
+          flushes++;
+          return Promise.resolve();
+        },
+      };
+    },
+    flushes: () => flushes,
+  };
+}
+
+Deno.test("DefaultStepExecutor: a step lock timeout leaves no output or tracker row running", async () => {
+  const { LockTimeoutError } = await import(
+    "../datastore/distributed_lock.ts"
+  );
+  const { error, outputs, evaluatedCount, tracker } =
+    await runStepUnderLockHook(
+      () => () =>
+        Promise.reject(new LockTimeoutError("model.lock", null, 2000)),
+      "execute",
+    );
+
+  assert(error instanceof LockTimeoutError, `unexpected error: ${error}`);
+  assertEquals(outputs.length, 0);
+  assertEquals(evaluatedCount, 0);
+  assertEquals(tracker.registrations.length, 0);
+  assertEquals(tracker.completions, []);
+});
+
+Deno.test("DefaultStepExecutor: takes the step lock before the step writes anything", async () => {
+  const atLock: { outputs?: number; evaluated?: number; registered?: number } =
+    {};
+  let lock: ReturnType<typeof countingLockHook> | undefined;
+  const { error, outputs, tracker } = await runStepUnderLockHook(
+    (probe) => {
+      lock = countingLockHook(async () => {
+        atLock.outputs = await probe.outputCount();
+        atLock.evaluated = await probe.evaluatedCount();
+        atLock.registered = probe.tracker.registrations.length;
+      });
+      return lock.hook;
+    },
+    "execute",
+  );
+
+  assertEquals(error, undefined);
+  assertEquals(atLock, { outputs: 0, evaluated: 0, registered: 0 });
+  assertEquals(lock?.flushes(), 1);
+  assertEquals(outputs.length, 1);
+  assertEquals(outputs[0].status, "succeeded");
+  assertEquals(tracker.completions, [{
+    runId: outputs[0].id,
+    status: "completed",
+  }]);
+});
+
+Deno.test("DefaultStepExecutor: releases the step lock when the step fails before the method runs", async () => {
+  let lock: ReturnType<typeof countingLockHook> | undefined;
+  const { error, outputs, tracker } = await runStepUnderLockHook(
+    () => {
+      lock = countingLockHook(() => Promise.resolve());
+      return lock.hook;
+    },
+    "missing",
+  );
+
+  assert(error instanceof Error, `unexpected error: ${error}`);
+  assertStringIncludes(error.message, "Unknown method 'missing'");
+  assertEquals(lock?.flushes(), 1);
+  assertEquals(outputs.length, 0);
+  assertEquals(tracker.registrations.length, 0);
 });

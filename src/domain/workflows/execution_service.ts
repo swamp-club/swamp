@@ -1606,123 +1606,12 @@ export class DefaultStepExecutor implements StepExecutor {
       failedExpressions,
     );
 
-    // Save evaluated definition (with vault expressions still raw) for
-    // --last-evaluated. Built from the executed copy, so sensitive values are
-    // written as the vault references they came from, never in plaintext.
-    const persisted = persistEvaluatedDefinition(
-      executedDefinition,
-      ctx.expressionContext?.deferredExpressions ?? [],
-      originalDefinition,
-      ctx.sensitiveValues,
-      stepSecretBag,
-    );
-    await evaluatedDefRepo.save(
-      modelType,
-      persisted.definition,
-      authoredExpressions,
-      persisted.deferredExpressions,
-      persisted.writtenReferences,
-    );
-
-    // Capture pre-vault args for report context (so vault secrets stay as expressions)
-    // Reports and the completed event show arguments to the user and are
-    // persisted with report output, so sensitive values are masked there.
-    const reportGlobalArgs = ctx.sensitiveValues.masked(
-      evaluatedDefinition.globalArguments,
-    ) as Record<string, unknown>;
-    const reportMethodArgs = ctx.sensitiveValues.masked(
-      evaluatedDefinition.getMethodArguments(task.methodName),
-    ) as Record<string, unknown>;
-
-    // Resolve runtime expressions (vault and env) at runtime (never persisted).
-    // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
-    // The expression context is passed so that dynamic vault.get() arguments
-    // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
-    const runtimeResult = await expressionEvaluator
-      .resolveRuntimeExpressionsInDefinition(
-        executedDefinition,
-        ctx.secretRedactor,
-        ctx.expressionContext,
-        authoredExpressions,
-        {
-          secretBag: stepSecretBag,
-          rawGlobalArguments: evaluatedDefinition.globalArguments,
-        },
-      );
-    evaluatedDefinition = runtimeResult.definition;
-    const secretBag = runtimeResult.secretBag;
-    // Definition tags reach data artifacts and the catalog as they are, so a
-    // sensitive value in one becomes its placeholder (after the runtime pass,
-    // which can also splice one into a tag).
-    withTagPlaceholders(evaluatedDefinition, ctx.sensitiveValues);
-
-    // Validate method exists on the model
-    const method = modelDef.methods[task.methodName];
-    if (!method) {
-      const availableMethods = Object.keys(modelDef.methods).join(", ");
-      throw new Error(
-        `Unknown method '${task.methodName}' for type '${modelType.normalized}'. Available methods: ${
-          availableMethods || "none"
-        }`,
-      );
-    }
-
-    // Create ModelOutput for tracking
-    // Over the persisted form (before the runtime pass): stable across runs
-    // and free of secrets. Provenance only; nothing compares it.
-    const definitionHash = await persisted.definition.computeHash();
-    const output = ModelOutput.create({
-      definitionId: originalDefinition.id,
-      methodName: task.methodName,
-      provenance: {
-        definitionHash,
-        modelVersion: modelDef.version,
-        triggeredBy: "workflow",
-        workflowId: ctx.workflowId,
-        workflowRunId: ctx.workflowRunId,
-        stepName: ctx.stepName,
-        bundleFingerprint: modelDef.sourceFingerprint,
-      },
-    });
-
-    // Mark as running and save
-    output.markRunning(Deno.pid);
-    // Reference the workflow run's log file for history access
-    if (ctx.workflowRun?.logFile) {
-      output.setLogFile(ctx.workflowRun.logFile);
-    }
-    await outputRepo.save(modelType, task.methodName, output);
-
-    // Register with the run tracker (if available).
-    const { runTracker } = allDeps;
-    let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
-    if (runTracker) {
-      const activeRun = ActiveRun.createModelMethodRun({
-        id: output.id,
-        modelType: modelType.normalized,
-        methodName: task.methodName,
-        pid: Deno.pid,
-        hostname: hostname(),
-        initiatedBy: ctx.initiatedBy,
-      });
-      runTracker.register(activeRun);
-    }
-
-    // Declared outside try so the catch block can record artifacts written
-    // before a throw (e.g. model writes data then throws on verdict=FAIL).
-    // Each phase owns its mutations of this list; the orchestrator only
-    // creates and threads it.
-    const savedArtifacts: Array<{
-      dataId: string;
-      name: string;
-      version: number;
-      tags: Record<string, string>;
-    }> = [];
-
-    // Acquire per-step lock before method execution. The lock covers
-    // both the method execution (which writes result + log data) AND
-    // report generation (which writes report data), ensuring a single
-    // flush pushes everything to the remote datastore.
+    // Acquire the per-step lock before the step writes anything. The lock
+    // covers the evaluated definition, the running output and run-tracker
+    // row, the method execution (result + log data) AND report generation
+    // (report data), so a single flush pushes everything to the remote
+    // datastore. Taking it first also means a lock timeout fails the step
+    // before any record is left at running.
     let flushLock: (() => Promise<void>) | null = null;
     if (this.stepLockHook) {
       const lockResult = await this.stepLockHook(
@@ -1732,6 +1621,118 @@ export class DefaultStepExecutor implements StepExecutor {
       flushLock = lockResult.flush;
     }
     try {
+      // Save evaluated definition (with vault expressions still raw) for
+      // --last-evaluated. Built from the executed copy, so sensitive values are
+      // written as the vault references they came from, never in plaintext.
+      const persisted = persistEvaluatedDefinition(
+        executedDefinition,
+        ctx.expressionContext?.deferredExpressions ?? [],
+        originalDefinition,
+        ctx.sensitiveValues,
+        stepSecretBag,
+      );
+      await evaluatedDefRepo.save(
+        modelType,
+        persisted.definition,
+        authoredExpressions,
+        persisted.deferredExpressions,
+        persisted.writtenReferences,
+      );
+
+      // Capture pre-vault args for report context (so vault secrets stay as expressions)
+      // Reports and the completed event show arguments to the user and are
+      // persisted with report output, so sensitive values are masked there.
+      const reportGlobalArgs = ctx.sensitiveValues.masked(
+        evaluatedDefinition.globalArguments,
+      ) as Record<string, unknown>;
+      const reportMethodArgs = ctx.sensitiveValues.masked(
+        evaluatedDefinition.getMethodArguments(task.methodName),
+      ) as Record<string, unknown>;
+
+      // Resolve runtime expressions (vault and env) at runtime (never persisted).
+      // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
+      // The expression context is passed so that dynamic vault.get() arguments
+      // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
+      const runtimeResult = await expressionEvaluator
+        .resolveRuntimeExpressionsInDefinition(
+          executedDefinition,
+          ctx.secretRedactor,
+          ctx.expressionContext,
+          authoredExpressions,
+          {
+            secretBag: stepSecretBag,
+            rawGlobalArguments: evaluatedDefinition.globalArguments,
+          },
+        );
+      evaluatedDefinition = runtimeResult.definition;
+      const secretBag = runtimeResult.secretBag;
+      // Definition tags reach data artifacts and the catalog as they are, so a
+      // sensitive value in one becomes its placeholder (after the runtime pass,
+      // which can also splice one into a tag).
+      withTagPlaceholders(evaluatedDefinition, ctx.sensitiveValues);
+
+      // Validate method exists on the model
+      const method = modelDef.methods[task.methodName];
+      if (!method) {
+        const availableMethods = Object.keys(modelDef.methods).join(", ");
+        throw new Error(
+          `Unknown method '${task.methodName}' for type '${modelType.normalized}'. Available methods: ${
+            availableMethods || "none"
+          }`,
+        );
+      }
+
+      // Create ModelOutput for tracking
+      // Over the persisted form (before the runtime pass): stable across runs
+      // and free of secrets. Provenance only; nothing compares it.
+      const definitionHash = await persisted.definition.computeHash();
+      const output = ModelOutput.create({
+        definitionId: originalDefinition.id,
+        methodName: task.methodName,
+        provenance: {
+          definitionHash,
+          modelVersion: modelDef.version,
+          triggeredBy: "workflow",
+          workflowId: ctx.workflowId,
+          workflowRunId: ctx.workflowRunId,
+          stepName: ctx.stepName,
+          bundleFingerprint: modelDef.sourceFingerprint,
+        },
+      });
+
+      // Mark as running and save
+      output.markRunning(Deno.pid);
+      // Reference the workflow run's log file for history access
+      if (ctx.workflowRun?.logFile) {
+        output.setLogFile(ctx.workflowRun.logFile);
+      }
+      await outputRepo.save(modelType, task.methodName, output);
+
+      // Register with the run tracker (if available).
+      const { runTracker } = allDeps;
+      let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
+      if (runTracker) {
+        const activeRun = ActiveRun.createModelMethodRun({
+          id: output.id,
+          modelType: modelType.normalized,
+          methodName: task.methodName,
+          pid: Deno.pid,
+          hostname: hostname(),
+          initiatedBy: ctx.initiatedBy,
+        });
+        runTracker.register(activeRun);
+      }
+
+      // Declared outside try so the catch block can record artifacts written
+      // before a throw (e.g. model writes data then throws on verdict=FAIL).
+      // Each phase owns its mutations of this list; the orchestrator only
+      // creates and threads it.
+      const savedArtifacts: Array<{
+        dataId: string;
+        name: string;
+        version: number;
+        tags: Record<string, string>;
+      }> = [];
       // Start heartbeat inside try so it's always cleaned up on error.
       if (runTracker) {
         heartbeatInterval = setInterval(() => {
