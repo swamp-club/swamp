@@ -2522,3 +2522,94 @@ Deno.test("resolveVaultExpressions: a call inside another call's argument is not
     Error,
   );
 });
+
+// ============================================================================
+// Control-plane records are never readable from expressions (swamp-club#2756)
+// ============================================================================
+
+Deno.test("buildContext: expressions never read control-plane records", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    // Serve writes control-plane definitions to .swamp/auto-definitions.
+    const autoRepo = new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      join(repoDir, ".swamp", "auto-definitions"),
+      false,
+    );
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const grantType = ModelType.create("swamp/grant");
+    const userType = ModelType.create("test/model");
+
+    const grant = Definition.create({ name: "grant-abc", globalArguments: {} });
+    await autoRepo.save(grantType, grant);
+    // A user model named like the grant, with no data of its own, so
+    // model.<name> falls back to data recorded under that model name.
+    const sameName = Definition.create({
+      name: "grant-abc",
+      globalArguments: {},
+    });
+    await defRepo.save(userType, sameName);
+    const mine = Definition.create({ name: "mine", globalArguments: {} });
+    await defRepo.save(userType, mine);
+
+    const record = (name: string, modelName: string, specName: string) =>
+      Data.create({
+        name,
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", modelName, specName },
+        ownerDefinition: owner,
+      });
+    await dataRepo.save(
+      grantType,
+      grant.id,
+      record("grant-main", "grant-abc", "grant"),
+      new TextEncoder().encode(JSON.stringify({ subject: "user:adam" })),
+    );
+    await dataRepo.save(
+      userType,
+      mine.id,
+      record("info", "mine", "info"),
+      new TextEncoder().encode(JSON.stringify({ value: 1 })),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertExists(ctx.data);
+
+    assertEquals(await ctx.data.latest("grant-abc", "grant-main"), null);
+    assertEquals(await ctx.data.latest("*:grant-abc", "grant-main"), null);
+    assertEquals(await ctx.data.version("grant-abc", "grant-main", 1), null);
+    assertEquals(ctx.data.listVersions("grant-abc", "grant-main"), []);
+    assertEquals(ctx.data.listVersions("*:grant-abc", "grant-main"), []);
+    assertEquals(await ctx.data.findBySpec("grant-abc", "grant"), []);
+    assertEquals(await ctx.data.findByTag("specName", "grant"), []);
+    assertEquals(ctx.data.specInstanceNames!("grant-abc", "grant"), []);
+    assertEquals(await ctx.data.query('modelType == "swamp/grant"'), []);
+    assertEquals(
+      await ctx.data.query("true", "attributes"),
+      [{ value: 1 }],
+    );
+    assertEquals(ctx.model[grant.id], undefined);
+    assertEquals(ctx.model["grant-abc"].resource, undefined);
+
+    const own = await ctx.data.latest("mine", "info");
+    assertExists(own);
+    assertEquals(own.attributes.value, 1);
+    catalog.close();
+  });
+});

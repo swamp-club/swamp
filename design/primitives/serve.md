@@ -213,6 +213,12 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   "Username resolution" in
   [remote execution](../enablers/remote-execution.md).
 
+Grant, group, token, worker and lease records are stored as model data but
+owned by the `access` kind: every request that reaches one needs `admin` on
+`access:swamp/<type>`, and a `data:*` or `model:*` grant never does. See
+"Control-plane records" in
+[access control](../enablers/access-control.md#control-plane-records).
+
 **Operator gate.** In `token` and `oauth` mode the serve process must itself be
 logged in to swamp-club with the `serve:*` scope (`requireAuthenticated` /
 `requireScope` in `src/cli/commands/serve.ts`). `swamp serve daemon enable`

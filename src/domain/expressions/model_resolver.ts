@@ -20,6 +20,10 @@
 import { getLogger } from "@logtape/logtape";
 import type { ModelOutput } from "../models/model_output.ts";
 import { ModelType } from "../models/model_type.ts";
+import {
+  CONTROL_PLANE_MODEL_TYPES,
+  isControlPlaneModelType,
+} from "../models/control_plane_types.ts";
 import type { Definition, InputsSchema } from "../definitions/definition.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -621,7 +625,13 @@ export class ModelResolver {
     const idToType = new Map<string, ModelType>();
     const idToName = new Map<string, string>();
 
-    for (const { definition, type: defType } of allDefinitions) {
+    // Control-plane models (grants, groups, tokens, workers) are never
+    // addressable from an expression: not as model.<name>, not through their
+    // data (swamp-club#2756).
+    const visibleDefinitions = allDefinitions.filter(({ type }) =>
+      !isControlPlaneModelType(type.normalized)
+    );
+    for (const { definition, type: defType } of visibleDefinitions) {
       idToType.set(definition.id, defType);
       idToName.set(definition.id, definition.name);
 
@@ -655,7 +665,7 @@ export class ModelResolver {
     // to avoid the O(N) findAllGlobal() filesystem walk.
     const coordsMap: ModelCoordinatesMap = new Map();
     if (this.dataRepo) {
-      for (const { definition: def, type: defType } of allDefinitions) {
+      for (const { definition: def, type: defType } of visibleDefinitions) {
         const coords: ModelCoordinates = {
           modelType: defType,
           modelId: def.id,
@@ -712,7 +722,10 @@ export class ModelResolver {
             for (
               const { data, modelType: mt, modelId: mid } of orphanData
             ) {
-              if (data.isRenamed || data.tags["modelName"] !== defName) {
+              if (
+                data.isRenamed || data.tags["modelName"] !== defName ||
+                isControlPlaneModelType(mt.normalized)
+              ) {
                 continue;
               }
               populateFromItems(
@@ -928,6 +941,7 @@ export class ModelResolver {
         const results = await this.dataQueryService.query(predicate, {
           limit: ns.isWildcard ? undefined : 1,
           loadAttributes: true,
+          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
           includeContentPath: true,
         }) as DataRecord[];
         if (ns.isWildcard) {
@@ -948,6 +962,7 @@ export class ModelResolver {
           const coords = coordsMap.get(ns.modelName);
           if (coords && coords.length > 0) {
             for (const { modelType, modelId } of coords) {
+              if (isControlPlaneModelType(modelType.normalized)) continue;
               const data = await this.dataRepo.findByName(
                 modelType,
                 modelId,
@@ -999,7 +1014,10 @@ export class ModelResolver {
               ns.modelName,
               dataName,
               targetNs,
-              { includeContentPath: true },
+              {
+                includeContentPath: true,
+                excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+              },
             );
             // The coordinates path above resolves sensitive vault references
             // through this resolver's own vault service; do the same here so
@@ -1022,6 +1040,7 @@ export class ModelResolver {
           ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
+          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
           includeContentPath: true,
         }) as DataRecord[];
         checkWildcardAmbiguity(results, rawModelName);
@@ -1045,14 +1064,15 @@ export class ModelResolver {
           `&& name == "${escapeCelString(dataName)}" && version >= 0` +
           ns.namespacePredicate;
         if (ns.isWildcard) {
-          const records = this.dataQueryService.querySync(
-            predicate,
-          ) as DataRecord[];
+          const records = this.dataQueryService.querySync(predicate, {
+            excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
+          }) as DataRecord[];
           checkWildcardAmbiguity(records, rawModelName);
           return records.map((r) => r.version).sort((a, b) => a - b);
         }
         const results = this.dataQueryService.querySync(predicate, {
           select: "version",
+          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
         }) as number[];
         return results.slice().sort((a, b) => a - b);
       },
@@ -1067,6 +1087,7 @@ export class ModelResolver {
           nsPredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
+          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
           includeContentPath: true,
         }) as DataRecord[];
         return dropMissingPaths(deduplicateByName(results));
@@ -1082,6 +1103,7 @@ export class ModelResolver {
           ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
+          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
           includeContentPath: true,
         }) as DataRecord[];
         if (ns.isWildcard) {
@@ -1106,6 +1128,7 @@ export class ModelResolver {
           parsed.modelName,
           specName,
           targetNs,
+          CONTROL_PLANE_MODEL_TYPES,
         );
       },
       query: async (
@@ -1115,6 +1138,7 @@ export class ModelResolver {
         if (!this.dataQueryService) return [];
         const results = await this.dataQueryService.query(predicate, {
           select,
+          excludeModelTypes: CONTROL_PLANE_MODEL_TYPES,
           includeContentPath: true,
         });
         // Projections are opaque values, so a projected path is not

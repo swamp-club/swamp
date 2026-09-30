@@ -2455,3 +2455,90 @@ Deno.test("DataQueryService: returns sensitive vault references unresolved", asy
     }
   }
 });
+
+// ── excludeModelTypes (swamp-club#2756) ─────────────────────────────────
+
+function seedControlPlane(catalog: CatalogStore): void {
+  catalog.upsert(makeRow({
+    type_normalized: "swamp/grant",
+    model_id: "grant-001",
+    model_name: "grant-abc",
+    data_name: "grant-main",
+    spec_name: "grant",
+    id: "data-grant-001",
+  }));
+  catalog.upsert(makeRow({
+    type_normalized: "swamp/server-token",
+    model_id: "token-001",
+    model_name: "tok",
+    data_name: "token-main",
+    spec_name: "token",
+    id: "data-token-001",
+    namespace: "other-repo",
+  }));
+  catalog.upsert(makeRow({ id: "data-user-001" }));
+}
+
+const EXCLUDED = ["swamp/grant", "swamp/server-token"];
+
+Deno.test("DataQueryService: excludeModelTypes drops the types whatever the predicate says", () => {
+  const { catalog, service } = setupTest();
+  seedControlPlane(catalog);
+
+  const all = service.querySync("true", {
+    excludeModelTypes: EXCLUDED,
+  }) as DataRecord[];
+  assertEquals(all.map((r) => r.modelName), ["ingest"]);
+
+  const targeted = service.querySync(
+    'modelType == "swamp/grant" || modelName == "tok"',
+    { excludeModelTypes: EXCLUDED },
+  ) as DataRecord[];
+  assertEquals(targeted, []);
+
+  // Without the option the same records match.
+  assertEquals(
+    (service.querySync('modelType == "swamp/grant"') as DataRecord[]).length,
+    1,
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: excludeModelTypes applies before the limit and a projection", async () => {
+  const { catalog, service } = setupTest();
+  seedControlPlane(catalog);
+
+  const limited = await service.query("true", {
+    limit: 1,
+    excludeModelTypes: EXCLUDED,
+  }) as DataRecord[];
+  assertEquals(limited.map((r) => r.modelName), ["ingest"]);
+
+  const projected = await service.query("true", {
+    select: "modelName",
+    excludeModelTypes: EXCLUDED,
+  });
+  assertEquals(projected, ["ingest"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: excludeModelTypes hides an excluded latest record and spec instance", async () => {
+  const { catalog, service } = setupTest();
+  seedControlPlane(catalog);
+
+  assertEquals(
+    await service.getLatestRecord("grant-abc", "grant-main", undefined, {
+      excludeModelTypes: EXCLUDED,
+    }),
+    null,
+  );
+  assertEquals(
+    service.latestDataNamesForSpec("grant-abc", "grant", undefined, EXCLUDED),
+    [],
+  );
+  assertEquals(
+    service.latestDataNamesForSpec("grant-abc", "grant"),
+    ["grant-main"],
+  );
+  catalog.close();
+});

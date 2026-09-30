@@ -205,7 +205,7 @@ A resource selector has the form `<kind>:<pattern>`:
 | `workflow` | `workflow.run`, `workflow.status`    |
 | `model`    | `model.method.run`, `model.create`   |
 | `data`     | `data.get`, `data.query`             |
-| `access`   | Grant and group management           |
+| `access`   | Grant and group management, and the records the control plane stores as model data (see [Control-plane records](#control-plane-records)) |
 
 Patterns support a trailing `*` wildcard:
 
@@ -329,7 +329,7 @@ type that names a resource, and
 | `read`    | Query data, view definitions, list resources           |
 | `write`   | Create or update models, definitions, data             |
 | `approve` | Approve or reject a workflow manual-approval gate      |
-| `admin`   | Manage grants, groups, tokens, restricted models       |
+| `admin`   | Manage grants, groups, tokens, restricted models, and any operation on a control-plane record |
 
 **`run` implies `approve`**: a grant with `actions: [run]` also passes `approve`
 checks, so existing `run` grants can still approve. To allow approval without
@@ -525,6 +525,60 @@ and `authorizeAllOrReject` in `src/serve/handlers/shared.ts`;
 `integration/serve_condition_fields_conformance_test.ts`, which classifies every
 request type, and the `*` rule in
 `integration/serve_canonical_authorization_rules_test.ts`.
+
+## Control-plane records
+
+The control plane stores its own records as model data beside user models:
+`swamp/grant`, `swamp/group` and `swamp/server-token` for access control, and
+`swamp/enrollment-token`, `swamp/worker`, `swamp/step-lease`,
+`swamp/pending-dispatch` and `swamp/fleet-probe` for the worker fleet
+(`CONTROL_PLANE_MODEL_TYPES`). They are never user data. A grant record is the
+policy itself, a token record names its principal, expiry and the vault key
+holding its secret, and a group record lists its members (swamp-club#2756).
+
+- **Owned by the access kind.** Serve authorizes any model or data resource of
+  a control-plane type as the access resource named by its normalized type,
+  `access:swamp/grant` for example, not as `model:<name>` or `data:<name>`.
+  `modelAccessResource` and `CanonicalResources` make that mapping, so it
+  holds on every path that goes through them: `data.get`, `data.list`,
+  `data.versions`, `data.delete`, `data.rename`, `data.search`, `data.query`,
+  reports, workflow-history step data, `model.get`, `model.output.*` and
+  `model.method.history.*`. An owner no longer found is judged on its recorded
+  type.
+- **Decided as admin.** The decision service decides every action on a
+  control-plane record as `admin`, whatever the request asked for
+  (`isControlPlaneRecordResource`). So `read`, `write` or `run` on `data:*` or
+  `model:*` never reaches these records: single-resource requests are refused,
+  naming `admin` on `access:swamp/<type>`, and collections leave the records
+  out. `admin` on `access:*` reaches them, and so does a narrower grant such as
+  `admin` on `access:swamp/*` or `access:swamp/grant`. The full type is the
+  resource name so it can never collide with `access:grant` and
+  `access:group`, which `access.grant.list` and `access.group.list` still
+  authorize as `read`.
+- **Not addressable from expressions.** The CEL data namespace passes the
+  control-plane types to `DataQueryService` as `excludeModelTypes`, which
+  drops them in SQL before the predicate, the limit or a `select` projection
+  runs, so no predicate reaches them. `model.<name>` and its orphan-data
+  fallback skip them. `workers.connected()` keeps its own read of worker
+  state. This holds wherever expressions are evaluated, locally too.
+- **Existence is not hidden.** A caller asking `data.get` for a control-plane
+  model's name is refused, where a name that matches nothing reports not
+  found, so the caller learns that the name exists. Name and tag denies behave
+  the same way, and control-plane names cannot be listed without admin.
+
+Operations over every resource (`data.gc`, `data.prune`, `run.gc`,
+`summarise`) are decided per kind and are unchanged. Prune treats
+control-plane records as always live, gc only trims old versions, and
+`summarise` shows metadata, which needs no more than read.
+
+Implementation: `src/domain/models/control_plane_types.ts`,
+`src/domain/access/control_plane_records.ts`,
+`src/domain/access/grant_based_access_decision_service.ts`,
+`src/serve/handlers/resource_resolution.ts`,
+`src/domain/data/data_query_service.ts` (`excludeModelTypes`),
+`src/domain/expressions/model_resolver.ts`. Guard:
+`integration/control_plane_types_rules_test.ts` fails when a built-in
+`swamp/*` model type is missing from the list.
 
 ## Workflow execution context
 

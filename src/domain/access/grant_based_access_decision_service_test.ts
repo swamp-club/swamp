@@ -1627,3 +1627,147 @@ Deno.test("decideAll: a deny conditioned on the resource name or tags refuses", 
     );
   }
 });
+
+// ── Control-plane records need admin (swamp-club#2756) ──────────────────
+
+const GRANT_RECORD: AccessResource = {
+  kind: "access",
+  name: "swamp/grant",
+  fields: { name: "swamp/grant" },
+};
+
+Deno.test("decide: any action on a control-plane record is decided as admin", () => {
+  const reader = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({
+          actions: ["read", "write", "run"],
+          resource: { kind: "access", pattern: "*" },
+        }),
+        makeGrant({
+          actions: ["read", "write", "run"],
+          resource: { kind: "data", pattern: "*" },
+        }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  for (const action of ["read", "write", "run"] as const) {
+    assertEquals(
+      reader.decide(makePrincipal("adam"), action, GRANT_RECORD),
+      null,
+      action,
+    );
+  }
+});
+
+Deno.test("decide: admin on access:* or on the control-plane prefix allows every action on a record", () => {
+  for (const pattern of ["*", "swamp/*", "swamp/grant"]) {
+    const admin = new GrantBasedAccessDecisionService(
+      new PolicySnapshot(
+        [
+          makeGrant({
+            actions: ["admin"],
+            resource: { kind: "access", pattern },
+          }),
+        ],
+        [],
+        celEvaluator,
+      ),
+    );
+    for (const action of ["read", "write", "run", "admin"] as const) {
+      assertEquals(
+        admin.decide(makePrincipal("adam"), action, GRANT_RECORD)?.effect,
+        "allow",
+        `${pattern} ${action}`,
+      );
+    }
+  }
+});
+
+Deno.test("decide: a deny of admin on a control-plane record refuses a read of it", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({
+          actions: ["admin"],
+          resource: { kind: "access", pattern: "*" },
+        }),
+        makeGrant({
+          effect: "deny",
+          actions: ["admin"],
+          resource: { kind: "access", pattern: "swamp/server-token" },
+        }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  const token: AccessResource = {
+    kind: "access",
+    name: "swamp/server-token",
+    fields: { name: "swamp/server-token" },
+  };
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", token)?.effect,
+    "deny",
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", GRANT_RECORD)?.effect,
+    "allow",
+  );
+});
+
+Deno.test("decide: read on access:grant still decides access requests, not records", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({
+          actions: ["read"],
+          resource: { kind: "access", pattern: "grant" },
+        }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", {
+      kind: "access",
+      name: "grant",
+      fields: { name: "grant" },
+    })?.effect,
+    "allow",
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", GRANT_RECORD),
+    null,
+  );
+});
+
+Deno.test("explain: reports the admin decision for a read of a control-plane record", () => {
+  const adminGrant = makeGrant({
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        adminGrant,
+        makeGrant({
+          actions: ["read"],
+          resource: { kind: "access", pattern: "*" },
+        }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  const decisions = service.explain(
+    makePrincipal("adam"),
+    "read",
+    GRANT_RECORD,
+  );
+  assertEquals(decisions.map((d) => d.grantId), [adminGrant.id]);
+});

@@ -48,6 +48,8 @@ import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { Job } from "../domain/workflows/job.ts";
 import { Step } from "../domain/workflows/step.ts";
 import { StepTask } from "../domain/workflows/step_task.ts";
+import { Definition } from "../domain/definitions/definition.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 
 await initializeLogging({});
 
@@ -2352,6 +2354,176 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", as
     unauthorizedErrors.length,
     0,
     "admin superuser should not be denied data.get",
+  );
+});
+
+// ── Authorization: control-plane records need admin (swamp-club#2756) ──────
+
+/**
+ * A ctx whose definition repo resolves each name in `definitions` to a
+ * definition of the given model type, so a data request authorizes the
+ * resolved model's canonical resource.
+ */
+function makeCtxWithDefinitions(
+  grants: Grant[],
+  definitions: Record<string, string>,
+): ConnectionContext {
+  const byName = new Map(
+    Object.entries(definitions).map(([name, type]) => [name, {
+      definition: Definition.create({ name, globalArguments: {} }),
+      type: ModelType.create(type),
+    }]),
+  );
+  const ctx = makeCtx(modeTokenConfig, grants);
+  return {
+    ...ctx,
+    repoContext: {
+      ...stubRepoContext,
+      definitionRepo: {
+        ...stubRepoContext.definitionRepo,
+        findByNameGlobal: (name: string) =>
+          Promise.resolve(byName.get(name) ?? null),
+      },
+    } as unknown as ConnectionContext["repoContext"],
+  };
+}
+
+async function sendAndCollect(
+  ctx: ConnectionContext,
+  type: string,
+  id: string,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>[]> {
+  const mock = createMockSocket();
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type, id, payload })),
+    testPrincipal,
+  );
+  await waitFor(() => mock.sent.length >= 1, `${type} response sent`);
+  return mock.sent.map((s) => JSON.parse(s));
+}
+
+function unauthorizedErrorsOf(
+  frames: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return frames.filter((m) =>
+    m.type === "error" &&
+    (m.error as Record<string, unknown>).code === "unauthorized"
+  );
+}
+
+const dataAndModelReader = [
+  makeGrant({
+    id: "grant-data-read",
+    subject: { kind: "user", name: "adam" },
+    actions: ["read"],
+    resource: { kind: "data", pattern: "*" },
+  }),
+  makeGrant({
+    id: "grant-model-read",
+    subject: { kind: "user", name: "adam" },
+    actions: ["read"],
+    resource: { kind: "model", pattern: "*" },
+  }),
+];
+
+Deno.test("authorizeOrReject: data.get on a grant record refused for read on data:* and model:*", async () => {
+  const ctx = makeCtxWithDefinitions(dataAndModelReader, {
+    "grant-reader": "swamp/grant",
+  });
+  const frames = await sendAndCollect(ctx, "data.get", "auth-cp-1", {
+    modelIdOrName: "grant-reader",
+    dataName: "grant-main",
+  });
+  assertEquals(frames.length, 1);
+  assertEquals(frames[0].type, "error");
+  const error = frames[0].error as Record<string, unknown>;
+  assertEquals(error.code, "unauthorized");
+  const message = String(error.message);
+  assertStringIncludes(message, "'admin'");
+  assertStringIncludes(message, "access:swamp/grant");
+});
+
+Deno.test("authorizeOrReject: data.get on a grant record served for admin on access:*", async () => {
+  const ctx = makeCtxWithDefinitions([
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+  ], { "grant-reader": "swamp/grant" });
+  const frames = await sendAndCollect(ctx, "data.get", "auth-cp-2", {
+    modelIdOrName: "grant-reader",
+    dataName: "grant-main",
+  });
+  assertEquals(
+    unauthorizedErrorsOf(frames).length,
+    0,
+    `access admin should not be denied a grant record: ${
+      JSON.stringify(frames)
+    }`,
+  );
+});
+
+Deno.test("authorizeOrReject: read on access:* does not read a grant record", async () => {
+  const ctx = makeCtxWithDefinitions([
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["read"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+  ], { "grant-reader": "swamp/grant" });
+  const frames = await sendAndCollect(ctx, "data.get", "auth-cp-3", {
+    modelIdOrName: "grant-reader",
+    dataName: "grant-main",
+  });
+  assertEquals(unauthorizedErrorsOf(frames).length, 1);
+});
+
+for (
+  const [type, payload] of [
+    ["data.delete", { modelIdOrName: "ci-token", dataName: "token-main" }],
+    ["data.rename", {
+      modelIdOrName: "ci-token",
+      oldName: "token-main",
+      newName: "token-renamed",
+    }],
+  ] as const
+) {
+  Deno.test(`authorizeOrReject: ${type} on a server-token record refused for write on data:*`, async () => {
+    const ctx = makeCtxWithDefinitions([
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        actions: ["read", "write", "run"],
+        resource: { kind: "data", pattern: "*" },
+      }),
+    ], { "ci-token": "swamp/server-token" });
+    const frames = await sendAndCollect(ctx, type, `auth-cp-${type}`, payload);
+    const refused = unauthorizedErrorsOf(frames);
+    assertEquals(refused.length, 1, JSON.stringify(frames));
+    const message = String(
+      (refused[0].error as Record<string, unknown>).message,
+    );
+    assertStringIncludes(message, "'admin'");
+    assertStringIncludes(message, "access:swamp/server-token");
+  });
+}
+
+Deno.test("authorizeOrReject: data.get on a user model still allowed for read on data:*", async () => {
+  const ctx = makeCtxWithDefinitions(dataAndModelReader, {
+    "user-db": "command/shell",
+  });
+  const frames = await sendAndCollect(ctx, "data.get", "auth-cp-5", {
+    modelIdOrName: "user-db",
+    dataName: "result",
+  });
+  assertEquals(
+    unauthorizedErrorsOf(frames).length,
+    0,
+    `a data reader should not be denied user data: ${JSON.stringify(frames)}`,
   );
 });
 

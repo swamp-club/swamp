@@ -58,6 +58,14 @@ The `model` namespace is keyed by both definition name and definition id
 (`src/domain/expressions/expression_evaluation_service.ts`; `ModelData` in
 `src/domain/expressions/model_resolver.ts`).
 
+Control-plane models (`CONTROL_PLANE_MODEL_TYPES`: grants, groups, server and
+enrollment tokens, workers, leases, dispatches, fleet probes) are left out of
+`model` and are never returned by any `data.*` function: the data namespace
+passes them to `DataQueryService` as `excludeModelTypes`, which drops them
+before the predicate, the limit or a `select` projection runs. Only
+`workers.connected()` reads worker state (swamp-club#2756; see "Control-plane
+records" in [access control](access-control.md#control-plane-records)).
+
 ## Examples
 
 The expression's result is inserted into the data structure. Given this

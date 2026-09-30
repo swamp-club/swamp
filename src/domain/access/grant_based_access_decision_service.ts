@@ -28,6 +28,7 @@ import type {
 import type { Action } from "./action.ts";
 import type { ConditionOutcome, PolicySnapshot } from "./policy_snapshot.ts";
 import { principalToString } from "./principal.ts";
+import { isControlPlaneRecordResource } from "./control_plane_records.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 import type { Subject } from "./subject.ts";
 import {
@@ -259,6 +260,9 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     action: Action,
     resource: AccessResource,
   ): AccessDecision | null {
+    // Any action on a control-plane record is managing access, so it is
+    // decided as admin (swamp-club#2756).
+    if (isControlPlaneRecordResource(resource)) action = "admin";
     const snapshot = this.#snapshot;
     const principalKey = principalToString(principal.principal);
     const localGroups = snapshot.groupsForPrincipal(principalKey);
@@ -342,6 +346,9 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     action: Action,
     resource: AccessResource,
   ): AccessDecision[] {
+    // Any action on a control-plane record is managing access, so it is
+    // explained as admin (swamp-club#2756).
+    if (isControlPlaneRecordResource(resource)) action = "admin";
     const snapshot = this.#snapshot;
     const principalKey = principalToString(principal.principal);
     const localGroups = snapshot.groupsForPrincipal(principalKey);

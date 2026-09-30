@@ -29,6 +29,8 @@
  * by id only — so the resource acted on is the resource authorized.
  */
 
+import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
+import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import {
@@ -122,11 +124,18 @@ function modelTypeFields(
   return fields;
 }
 
-/** The access resource for a model definition, authorized as `kind`. */
+/**
+ * The access resource for a model definition, authorized as `kind`. A
+ * control-plane model (a grant, group, token or worker record) is owned by
+ * the access kind instead, whichever kind was asked for (swamp-club#2756).
+ */
 export function modelAccessResource(
   result: DefinitionLookupResult,
   kind: ModelResourceKind = "model",
 ): AccessResource {
+  if (isControlPlaneModelType(result.type.normalized)) {
+    return controlPlaneRecordResource(result.type.normalized);
+  }
   const name = result.definition.name;
   return {
     kind,
@@ -675,6 +684,9 @@ export class CanonicalResources {
     if (chosen.length > 0) {
       return distinct(chosen.map((o) => modelAccessResource(o, "model")));
     }
+    if (isControlPlaneModelType(modelType)) {
+      return [controlPlaneRecordResource(modelType)];
+    }
     return [{
       kind: "model",
       name,
@@ -696,6 +708,11 @@ export class CanonicalResources {
     const owners = await this.#definitionsById(modelId);
     if (owners.length > 0) {
       return distinct(owners.map((o) => modelAccessResource(o, kind)));
+    }
+    // An owner no longer found is judged on its recorded type too, so an
+    // orphaned token record is never read as plain data.
+    if (isControlPlaneModelType(modelType)) {
+      return [controlPlaneRecordResource(modelType)];
     }
     return [{
       kind,

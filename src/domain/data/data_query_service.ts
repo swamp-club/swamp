@@ -120,12 +120,20 @@ export interface DataQueryOptions {
    * a projected result never carries a record the caller may not read.
    */
   include?: (record: DataRecord) => Promise<boolean>;
+  /**
+   * Normalized model types whose records are never matched, whatever the
+   * predicate says. The CEL data.* namespace passes the control-plane types
+   * so expressions can never read them (swamp-club#2756).
+   */
+  excludeModelTypes?: readonly string[];
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
 export interface LatestRecordOptions {
   /** See {@link DataQueryOptions.includeContentPath}. */
   includeContentPath?: boolean;
+  /** See {@link DataQueryOptions.excludeModelTypes}. */
+  excludeModelTypes?: readonly string[];
 }
 
 /**
@@ -212,7 +220,11 @@ export class DataQueryService {
     }
 
     // Tier 1: try the indexed SQL lookup.
+    const excluded = (r: CatalogRow | null) =>
+      r !== null &&
+      (options?.excludeModelTypes ?? []).includes(r.type_normalized);
     const row = this.catalogStore.findLatestRow(modelName, dataName, namespace);
+    if (excluded(row)) return null;
     if (row) {
       if (populated) {
         if (dataName === row.spec_name) {
@@ -249,7 +261,7 @@ export class DataQueryService {
       dataName,
       namespace,
     );
-    if (!freshRow) return null;
+    if (!freshRow || excluded(freshRow)) return null;
     // Verify the row points to real data (it may be the same stale row
     // that triggered the scoped backfill).
     if (!(await this.rowHasContent(freshRow))) return null;
@@ -313,6 +325,7 @@ export class DataQueryService {
     modelName: string,
     specName: string,
     namespace?: string,
+    excludeModelTypes: readonly string[] = [],
   ): string[] {
     if (!specName) return [];
     if (!this.catalogStore.isPopulated()) {
@@ -320,6 +333,7 @@ export class DataQueryService {
     }
     return this.catalogStore
       .findLatestRowsBySpecName(modelName, specName, namespace)
+      .filter((r) => !excludeModelTypes.includes(r.type_normalized))
       .sort((a, b) =>
         a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0
       )
@@ -564,6 +578,17 @@ export class DataQueryService {
     if (!opensHistory) {
       whereClauses.push("is_latest = ?");
       whereParams.push(1);
+    }
+
+    // Excluded types are dropped in SQL, before the predicate, the limit or
+    // a projection sees them, so no predicate can reach them and no
+    // projected value can carry one out.
+    const excludedTypes = options?.excludeModelTypes ?? [];
+    if (excludedTypes.length > 0) {
+      whereClauses.push(
+        `type_normalized NOT IN (${excludedTypes.map(() => "?").join(", ")})`,
+      );
+      for (const type of excludedTypes) whereParams.push(type);
     }
 
     const modelNameLiteral = extractModelNameEquality(userAst);

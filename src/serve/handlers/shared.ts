@@ -21,6 +21,7 @@
  * Shared utilities for serve WebSocket request handlers: the connection context, response senders, error sanitization, and the authorization gate every handler routes through.
  */
 
+import { isControlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import { gzipSync } from "node:zlib";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import {
@@ -990,6 +991,9 @@ function replyToOutcome(
     case "refused": {
       const { decision, groups } = outcome;
       const principalStr = resolveDisplayPrincipal(outcome.principal, ctx);
+      // A control-plane record is decided as admin whatever was asked, so
+      // the refusal names what it needed (swamp-club#2756).
+      const needed = isControlPlaneRecordResource(resource) ? "admin" : action;
       if (decision && decision.effect === "deny" && every) {
         sendError(
           socket,
@@ -1004,14 +1008,14 @@ function replyToOutcome(
           socket,
           requestId,
           "unauthorized",
-          `Access denied: ${principalStr} is explicitly denied '${action}' on ${resource.kind}:${resource.name}`,
+          `Access denied: ${principalStr} is explicitly denied '${needed}' on ${resource.kind}:${resource.name}`,
         );
       } else {
         sendError(
           socket,
           requestId,
           "unauthorized",
-          `Access denied: ${principalStr} does not have '${action}' on ${resource.kind}:${resource.name}`,
+          `Access denied: ${principalStr} does not have '${needed}' on ${resource.kind}:${resource.name}`,
         );
       }
       emitDenial(
