@@ -580,8 +580,8 @@ Deno.test("GrantsDirectoryPoller: keeps all grants of a file with one schema-inv
 
 Deno.test({
   name: "GrantsDirectoryPoller: keeps the grants of a file it cannot read",
-  // chmod has no effect on Windows.
-  ignore: Deno.build.os === "windows",
+  // chmod has no effect on Windows, and root can read a 000 file.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
   fn: async () => {
     await withTempDir(async (dir) => {
       const grantsDir = join(dir, "grants");
@@ -680,6 +680,51 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a --grants-file with inval
       { grantsDir, externalGrantsFile: externalFile, store },
       async () => {
         await Deno.writeTextFile(externalFile, "grants: [\n");
+      },
+    );
+
+    assertEquals(store.written.size, 0);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: keeps the grants of an emptied --grants-file", async () => {
+  // An editor that truncates before rewriting must not drop a deny.
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const externalFile = join(dir, "grants-file.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+
+    await reconcileOnce(
+      { grantsDir, externalGrantsFile: externalFile, store },
+      async () => {
+        await Deno.writeTextFile(externalFile, "");
+      },
+    );
+
+    assertEquals(store.written.size, 0);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: keeps the grants of an emptied --grants-dir file", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    const externalDir = join(dir, "external");
+    await ensureDir(grantsDir);
+    await ensureDir(externalDir);
+    const externalFile = join(externalDir, "deny.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+
+    await reconcileOnce(
+      { grantsDir, externalGrantsDir: externalDir, store },
+      async () => {
+        await Deno.writeTextFile(externalFile, "  \n");
       },
     );
 

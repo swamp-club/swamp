@@ -115,10 +115,11 @@ export class GrantsDirectoryPoller {
 
       logger.info`Grants directory change detected, reconciling`;
 
-      // A source that fails to read or validate keeps its stored grants:
-      // reconciling it as empty or deleted would revoke them, and a broken
-      // deny file would fail open (swamp-club#2823). Startup and
-      // access.reload refuse the same input. A deleted file still revokes.
+      // A source that fails to read or validate, or is empty, keeps its
+      // stored grants: reconciling it as empty or deleted would revoke them,
+      // and a broken deny file would fail open (swamp-club#2823). Startup and
+      // access.reload refuse invalid input. A deleted file in a readable
+      // directory still revokes.
       const validEntries = new Map<string, GrantFileEntry[]>();
       const unavailable = new Set<string>();
       let externalDirUnavailable = false;
@@ -140,7 +141,15 @@ export class GrantsDirectoryPoller {
         const filePath = this.#externalGrantsFile;
         try {
           const content = await Deno.readTextFile(filePath);
-          if (content.trim().length > 0) {
+          if (content.trim().length === 0) {
+            // An editor that truncates before rewriting leaves the file
+            // empty for a moment; that is not a request to drop its grants.
+            this.#logUnavailable(filePath, [{
+              filename: filePath,
+              message: "File is empty",
+            }]);
+            unavailable.add(filePath);
+          } else {
             const result = parseGrantFile(
               filePath,
               content,
@@ -188,7 +197,14 @@ export class GrantsDirectoryPoller {
           const filePath = join(externalDir, file.name);
           try {
             const content = await Deno.readTextFile(filePath);
-            if (content.trim().length === 0) continue;
+            if (content.trim().length === 0) {
+              this.#logUnavailable(filePath, [{
+                filename: filePath,
+                message: "File is empty",
+              }]);
+              unavailable.add(filePath);
+              continue;
+            }
             const result = parseGrantFile(
               filePath,
               content,

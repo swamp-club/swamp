@@ -146,8 +146,9 @@ export function createGrantWriteCommit(
 ): <T>(unit: () => Promise<T>) => Promise<T> {
   return (unit) =>
     withSyncGate(gate, async () => {
-      // Paths left by a unit that threw are still pushed here: their writes
-      // are on disk and belong in the datastore.
+      // Paths are not cleared before the unit runs. If an earlier unit threw
+      // after writing, its recorded paths are still pending, and this unit's
+      // push carries them with its own.
       const result = await unit();
       await publishGrantWrites(tracking.takeWrittenPaths(), deps);
       return result;

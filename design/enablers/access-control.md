@@ -214,8 +214,9 @@ Startup and `--grant-reload auto` push their grant writes to the datastore, as
 
 Under `--grant-reload auto`, a source that fails to read or validate keeps its
 stored grants unchanged, and the error is logged. This covers a file with a
-YAML or schema error, an unreadable file, a missing or unreadable
-`--grants-file`, and a missing or unreadable `--grants-dir`. Other files still
+YAML or schema error, an unreadable file, an empty `--grants-file` or
+`--grants-dir` file (an editor may truncate before it rewrites), a missing or
+unreadable `--grants-file`, and a missing or unreadable `--grants-dir`. Other files still
 reconcile. Startup and `access reload` refuse the whole load instead. A deleted
 file, or a removed repository `grants/` directory, still revokes its grants,
 as at startup and on reload.
