@@ -89,6 +89,10 @@ async function spooledErrorMessages(spoolDir: string): Promise<string[]> {
   return messages;
 }
 
+/**
+ * The vault error's second line repeats the vault id, unmarked. Telemetry
+ * records only the first line, which is what these assertions examine.
+ */
 function assertFullyRedacted(message: string): void {
   assert(message.includes("<PATH>"), `no <PATH> in: ${message}`);
   assertEquals(message.includes("report"), false, message);

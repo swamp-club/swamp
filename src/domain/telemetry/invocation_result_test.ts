@@ -86,3 +86,15 @@ Deno.test("createErrorResult: removes paths marked on the cause chain", () => {
   const result = createErrorResult(error);
   assertEquals(result.errorMessage, "Load failed: open <PATH>");
 });
+
+Deno.test("createErrorResult: leaves a marked value that is not a path to the patterns", () => {
+  const error = markErrorPaths(
+    new UserError(`Custom tool "root" escapes the repository root.`),
+    ["root"],
+  );
+  const result = createErrorResult(error, true);
+  assertEquals(
+    result.errorMessage,
+    `Custom tool "root" escapes the repository root.`,
+  );
+});

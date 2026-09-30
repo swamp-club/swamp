@@ -60,6 +60,15 @@ export function createSuccessResult(): InvocationResult {
 }
 
 /**
+ * A marked value that looks like a path. Anything else would be removed as a
+ * whole word wherever it appears (a relative name such as `root`), which
+ * costs diagnostics and protects nothing, so it is left to the patterns.
+ */
+function isPathLike(value: string): boolean {
+  return /[\\/]/.test(value) || value.startsWith("~");
+}
+
+/**
  * Creates an error InvocationResult from an Error.
  *
  * Paths the error marked with `markErrorPaths` (on it or its cause chain) are
@@ -78,7 +87,7 @@ export function createErrorResult(
     errorType: error.constructor.name,
     errorMessage: redactErrorMessage(firstLine, [
       ...knownValues,
-      ...errorPaths(error),
+      ...errorPaths(error).filter(isPathLike),
     ]),
     exitCode: 1,
   };

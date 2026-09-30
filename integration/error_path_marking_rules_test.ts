@@ -27,7 +27,10 @@
 // interpolates a path-named value (`*Path`, `*Dir`, `*File`, `*Root`, `path`,
 // `dir`, `file`, `root`, `location`) and is not wrapped in `markErrorPaths(`.
 // It is a heuristic: it guards against new unmarked sites, it does not prove
-// every path is marked.
+// every path is marked. It does not see messages built by string
+// concatenation (`"... at " + path`), messages built before the constructor
+// call, or custom error subclasses, and a path in a variable with some other
+// name passes.
 
 import { join } from "@std/path";
 import {
@@ -37,6 +40,9 @@ import {
 } from "./arch_fitness_helpers.ts";
 
 const SRC_DIR = join(import.meta.dirname!, "..", "src");
+
+/** How far before `new` to look for the `markErrorPaths(` wrapper. */
+const LOOKBACK = 64;
 
 const CONSTRUCTOR_RE = /\bnew (?:UserError|Error|SyntaxError)\(/g;
 const INTERPOLATION_RE = /\$\{([^}]*)\}/g;
@@ -80,7 +86,8 @@ async function unmarkedPathErrors(): Promise<string[]> {
       const start = match.index!;
       const args = argumentsAt(source, start + match[0].length - 1);
       if (!namesPath(args)) continue;
-      if (source.slice(0, start).trimEnd().endsWith("markErrorPaths(")) {
+      const before = source.slice(Math.max(0, start - LOOKBACK), start);
+      if (before.trimEnd().endsWith("markErrorPaths(")) {
         continue;
       }
       const message = args.replace(/\s+/g, " ").trim().slice(0, 100);

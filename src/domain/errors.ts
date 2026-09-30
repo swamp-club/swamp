@@ -65,8 +65,9 @@ export function markErrorPaths<E extends Error>(
   const holder = error as unknown as Record<symbol, string[] | undefined>;
   const existing = holder[ERROR_PATHS];
   if (existing) {
-    existing.push(...added);
+    for (const path of added) existing.push(path);
   } else {
+    // The property is fixed once defined; later calls append to its array.
     Object.defineProperty(error, ERROR_PATHS, {
       value: added,
       enumerable: false,
