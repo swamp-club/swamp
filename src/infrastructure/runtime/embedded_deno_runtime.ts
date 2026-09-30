@@ -26,6 +26,7 @@ import {
   defaultCommandResolver,
 } from "../process/resolve_command.ts";
 import { getSwampDataDir } from "../persistence/paths.ts";
+import { removeAbandonedTempFiles } from "../persistence/abandoned_temp_files.ts";
 
 const logger = getLogger(["swamp", "runtime", "deno"]);
 
@@ -114,8 +115,9 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
     // Ensure target directory exists
     await Deno.mkdir(swampDir, { recursive: true });
 
-    // Clean up stale temp files from a previous crashed extraction
-    await this.cleanupStaleTempFiles(swampDir);
+    // Clean up temp files abandoned by a previous crashed extraction. Fresh
+    // ones are kept — they may belong to a concurrent process mid-extraction.
+    await removeAbandonedTempFiles(swampDir, ".deno.tmp.");
 
     // Read embedded binary
     const embeddedBinary = await this.readEmbeddedBinary();
@@ -191,22 +193,6 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
       return { ok: result.success, stderr };
     } catch (e) {
       return { ok: false, stderr: String(e).slice(0, 500) };
-    }
-  }
-
-  private async cleanupStaleTempFiles(dir: string): Promise<void> {
-    try {
-      for await (const entry of Deno.readDir(dir)) {
-        if (entry.name.startsWith(".deno.tmp.")) {
-          try {
-            await Deno.remove(join(dir, entry.name));
-          } catch {
-            // Best-effort cleanup
-          }
-        }
-      }
-    } catch {
-      // readDir may fail if directory is new — not fatal
     }
   }
 
