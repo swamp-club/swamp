@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { z } from "zod";
 import { ensureDir } from "@std/fs";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { configure, type LogRecord } from "@logtape/logtape";
@@ -46,7 +47,11 @@ import {
 } from "../infrastructure/persistence/paths.ts";
 import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
-import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
+import {
+  detachExtensionSources,
+  modelKindAdapter,
+} from "../domain/extensions/model_kind_adapter.ts";
+import { installZodGlobal } from "../domain/models/bundle.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
@@ -1454,4 +1459,218 @@ Deno.test("seedPulledTypeSnapshot: a later call adds rows catalogued after the f
       }
     },
   );
+});
+
+// -- Removed add-ons detach from types they do not own (swamp-club#2745) ----
+
+const addOnCode = (type: string, method: string, description: string) => `
+export const extension = {
+  type: "${type}",
+  methods: [{
+    ${method}: {
+      description: "${description}",
+      arguments: globalThis.__swamp_zod.z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+/**
+ * Pulled add-ons attached to `baseType`, as a pulled extension adding a
+ * method to a built-in or local type leaves them. `addOns` lists each
+ * extension's name, the method it adds and that method's description.
+ */
+async function withAttachedAddOns(
+  baseType: string,
+  addOns: ReadonlyArray<{ ext: string; method: string; description: string }>,
+  fn: (args: {
+    repoDir: string;
+    lockfilePath: string;
+    catalog: ExtensionCatalogStore;
+    sourceOf: (ext: string) => string;
+    pulledDir: (ext: string) => string;
+  }) => Promise<void>,
+): Promise<void> {
+  installZodGlobal();
+  await withPulledRepo(addOns.map((a) => a.ext), async (repo) => {
+    const sources = new Map<string, string>();
+    const pulledDir = (ext: string) =>
+      canonicalizePath(
+        join(swampPath(repo.repoDir, "pulled-extensions"), ext) + "/",
+      );
+    for (const { ext, method, description } of addOns) {
+      const sourcePath = canonicalizePath(
+        await repo.stage(
+          ext,
+          "addon",
+          addOnCode(baseType, method, description),
+        ),
+      );
+      sources.set(ext, sourcePath);
+      const modelsDir = join(
+        swampPath(repo.repoDir, "pulled-extensions"),
+        ext,
+        "models",
+      );
+      repo.catalog.upsert({
+        type_normalized: baseType,
+        kind: "extension",
+        bundle_path: join(
+          swampPath(repo.repoDir, "bundles"),
+          bundleNamespace(modelsDir, repo.repoDir),
+          "addon.js",
+        ),
+        source_path: sourcePath,
+        version: "",
+        description: "",
+        extends_type: baseType,
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+    }
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      modelKindAdapter,
+      repo.repoDir,
+      undefined,
+      new ExtensionRepository({
+        catalog: repo.catalog,
+        lockfileRepository: await LockfileRepository.create(
+          repo.lockfilePath,
+        ),
+        repoRoot: repo.repoDir,
+      }),
+    );
+    try {
+      await loader.attachPendingExtensionsForType(baseType);
+      // Serve's first reload records the add-ons in its type snapshot.
+      await reload(repo.repoDir, repo.lockfilePath);
+      await fn({
+        ...repo,
+        sourceOf: (ext) => sources.get(ext)!,
+        pulledDir,
+      });
+    } finally {
+      detachExtensionSources(
+        baseType,
+        (p) => addOns.some(({ ext }) => p.startsWith(pulledDir(ext))),
+      );
+    }
+  });
+}
+
+const methodOn = (type: string, method: string) =>
+  Object.hasOwn(modelRegistry.get(type)?.methods ?? {}, method)
+    ? modelRegistry.get(type)!.methods[method].description
+    : undefined;
+
+Deno.test("reloadPulledExtensions: a peer detaches a removed add-on's method from a built-in type (swamp-club#2745)", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const ext = `@test/addon-${id}`;
+  const method = `added_${id.replaceAll("-", "_")}`;
+  await withAttachedAddOns(
+    "command/shell",
+    [{ ext, method, description: "added" }],
+    async ({ repoDir, lockfilePath, catalog, pulledDir }) => {
+      assertEquals(methodOn("command/shell", method), "added");
+      const baseMethods = Object.keys(
+        modelRegistry.get("command/shell")!.methods,
+      )
+        .filter((m) => m !== method);
+
+      await removeLockfileEntries(lockfilePath);
+      await reload(repoDir, lockfilePath);
+
+      assertEquals(methodOn("command/shell", method), undefined);
+      assertEquals(
+        Object.keys(modelRegistry.get("command/shell")!.methods),
+        baseMethods,
+        "the built-in type and its own methods stay",
+      );
+      assertEquals(catalog.findBySourcePathPrefix(pulledDir(ext)), []);
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: the instance that ran rm detaches a removed add-on's method from a built-in type (swamp-club#2745)", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const ext = `@test/addon-${id}`;
+  const method = `added_${id.replaceAll("-", "_")}`;
+  await withAttachedAddOns(
+    "command/shell",
+    [{ ext, method, description: "added" }],
+    async ({ repoDir, lockfilePath, catalog, sourceOf, pulledDir }) => {
+      // `extension rm` on this checkout: rows, lockfile entry and files go.
+      catalog.removeBySourcePrefix(pulledDir(ext));
+      await Deno.remove(sourceOf(ext));
+      await removeLockfileEntries(lockfilePath);
+
+      await reload(repoDir, lockfilePath);
+
+      assertEquals(methodOn("command/shell", method), undefined);
+      assertEquals(modelRegistry.has("command/shell"), true);
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: a surviving add-on keeps its method and reclaims one the removed add-on had won (swamp-club#2745)", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  // Between pulled sources the smaller path wins, so `a-` beats `z-`.
+  const removed = `@test/a-addon-${id}`;
+  const kept = `@test/z-addon-${id}`;
+  const shared = `shared_${id.replaceAll("-", "_")}`;
+  await withAttachedAddOns(
+    "command/shell",
+    [
+      { ext: removed, method: shared, description: "from removed" },
+      { ext: kept, method: shared, description: "from kept" },
+    ],
+    async ({ repoDir, lockfilePath }) => {
+      assertEquals(methodOn("command/shell", shared), "from removed");
+
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({ [kept]: { version: "1.0.0", files: [] } }),
+      );
+      await reload(repoDir, lockfilePath);
+
+      assertEquals(methodOn("command/shell", shared), "from kept");
+    },
+  );
+});
+
+Deno.test("reloadPulledExtensions: detaches a removed add-on's method from a local model type (swamp-club#2745)", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const localType = `@local/addon-base-${id}`;
+  const ext = `@test/addon-${id}`;
+  const method = `added_${id.replaceAll("-", "_")}`;
+  modelRegistry.register({
+    type: ModelType.create(localType),
+    version: "2026.09.26.1",
+    methods: {
+      own: {
+        description: "own",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  });
+  try {
+    await withAttachedAddOns(
+      localType,
+      [{ ext, method, description: "added" }],
+      async ({ repoDir, lockfilePath }) => {
+        assertEquals(methodOn(localType, method), "added");
+
+        await removeLockfileEntries(lockfilePath);
+        await reload(repoDir, lockfilePath);
+
+        assertEquals(methodOn(localType, method), undefined);
+        assertEquals(methodOn(localType, "own"), "own");
+      },
+    );
+  } finally {
+    modelRegistry.invalidateType(localType);
+  }
 });

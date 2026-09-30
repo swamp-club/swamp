@@ -997,6 +997,73 @@ Deno.test("ModelRegistry.applyExtensionMembers: adds and overrides in one merge"
   assertEquals("extra" in before.methods, false);
 });
 
+// --- ModelRegistry.removeExtensionMembers() tests (swamp-club#2745) ---
+
+Deno.test("ModelRegistry.removeExtensionMembers: removes only the exact definitions passed in", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/remove-members"));
+  const extra = stubMethod("extra");
+  const kept = stubMethod("kept");
+  registry.applyExtensionMembers(
+    "swamp/remove-members",
+    { methods: { extra, kept } },
+    {},
+  );
+  const baseWrite = registry.get("swamp/remove-members")!.methods.write;
+  const before = registry.get("swamp/remove-members")!;
+
+  const removed = registry.removeExtensionMembers("swamp/remove-members", {
+    methods: {
+      extra,
+      // A different object under a base member's name is not removed.
+      write: stubMethod("impostor"),
+    },
+  });
+
+  const after = registry.get("swamp/remove-members")!;
+  assertEquals(Object.keys(removed.methods ?? {}), ["extra"]);
+  assertEquals("extra" in after.methods, false);
+  assertEquals(after.methods.kept, kept);
+  assertEquals(after.methods.write, baseWrite);
+  // Immutable: the previous definition object is untouched.
+  assertEquals(before.methods.extra, extra);
+});
+
+Deno.test("ModelRegistry.removeExtensionMembers: removes checks and resources and keeps absent sections absent", () => {
+  const registry = new ModelRegistry();
+  registry.register({
+    type: ModelType.create("swamp/remove-sections"),
+    version: "2026.02.09.1",
+    methods: { noop: stubMethod("noop") },
+  });
+  const check = {
+    description: "policy",
+    execute: () => Promise.resolve({ pass: true }),
+  };
+  registry.applyExtensionMembers("swamp/remove-sections", {
+    checks: { policy: check },
+  }, {});
+
+  registry.removeExtensionMembers("swamp/remove-sections", {
+    checks: { policy: check },
+  });
+
+  const after = registry.get("swamp/remove-sections")!;
+  assertEquals(after.checks, {});
+  assertEquals("resources" in after, false);
+});
+
+Deno.test("ModelRegistry.removeExtensionMembers: is a no-op on an unregistered type", () => {
+  const registry = new ModelRegistry();
+  assertEquals(
+    registry.removeExtensionMembers("swamp/remove-missing", {
+      methods: { extra: stubMethod("extra") },
+    }),
+    {},
+  );
+  assertEquals(registry.get("swamp/remove-missing"), undefined);
+});
+
 Deno.test("ModelRegistry.applyExtensionMembers: overrides checks and resources", () => {
   const registry = new ModelRegistry();
   registry.register(createTestModel("swamp/apply-checks"));

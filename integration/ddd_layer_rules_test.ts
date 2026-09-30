@@ -104,6 +104,7 @@ const PINNED_DOMAIN_INFRA_EDGES: readonly string[] = [
   "src/domain/extensions/extension_loader.ts -> src/infrastructure/persistence/paths.ts",
   "src/domain/extensions/extension_loader.ts -> src/infrastructure/persistence/safe_path.ts",
   "src/domain/extensions/kind_adapter.ts -> src/infrastructure/persistence/extension_catalog_store.ts",
+  "src/domain/extensions/model_kind_adapter.ts -> src/infrastructure/persistence/canonicalize_path.ts",
   "src/domain/extensions/model_kind_adapter.ts -> src/infrastructure/persistence/extension_catalog_store.ts",
   "src/domain/extensions/model_kind_adapter.ts -> src/infrastructure/persistence/paths.ts",
   "src/domain/extensions/report_kind_adapter.ts -> src/infrastructure/persistence/extension_catalog_store.ts",

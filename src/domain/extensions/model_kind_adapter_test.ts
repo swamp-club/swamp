@@ -21,12 +21,17 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   clearAttachedExtensions,
+  detachExtensionSources,
   getExtensionMemberCollisions,
   modelKindAdapter,
   removeAttachedExtensionsForType,
 } from "./model_kind_adapter.ts";
 import { basename, join } from "@std/path";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import {
+  canonicalizePath,
+  realCanonicalPath,
+} from "../../infrastructure/persistence/canonicalize_path.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { ExtensionContributor } from "./extension_precedence.ts";
 import { modelRegistry } from "../models/model.ts";
@@ -764,6 +769,161 @@ Deno.test("attachPendingExtensionsForType: an extension that fails to import is 
     clearAttachedExtensions();
     modelRegistry.invalidateType(type);
     await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+// ── detachExtensionSources: removed extensions leave a type (#2745) ──
+
+Deno.test("detachExtensionSources: removes only the removed source's members", () => {
+  withPrecedenceType((type) => {
+    attach(type, LOCAL_AA, "aa", {
+      checks: [{
+        aa_check: {
+          description: "aa check",
+          execute: () => Promise.resolve({ pass: true }),
+        },
+      }],
+    });
+    modelKindAdapter.processSecondaryExport!(
+      PULLED,
+      {
+        type,
+        methods: [{
+          probe: {
+            description: "probe from pulled",
+            arguments: testArgs,
+            execute: () => Promise.resolve({ dataHandles: [] }),
+          },
+          pulled_only: {
+            description: "pulled only",
+            arguments: testArgs,
+            execute: () => Promise.resolve({ dataHandles: [] }),
+          },
+        }],
+      },
+      newResult(),
+      contributorAt(PULLED),
+    );
+    assertEquals(
+      Object.hasOwn(modelRegistry.get(type)!.methods, "pulled_only"),
+      true,
+    );
+
+    assertEquals(detachExtensionSources(type, (p) => p === PULLED), true);
+
+    const after = modelRegistry.get(type)!;
+    assertEquals(Object.hasOwn(after.methods, "pulled_only"), false);
+    assertEquals(probeDescription(type), `probe from ${"aa"}`);
+    assertEquals(after.methods.get.description, "Base get");
+    assertEquals(after.checks!.aa_check.description, "aa check");
+    assertEquals(
+      getExtensionMemberCollisions().filter((c) => c.type === type),
+      [],
+      "the removed loser leaves the collision listing",
+    );
+  });
+});
+
+Deno.test("detachExtensionSources: never removes a base member of the same name", () => {
+  withPrecedenceType((type) => {
+    modelRegistry.invalidateType(type);
+    registerTestModel(type, { get: true, probe: true });
+    attach(type, LOCAL_AA, "aa");
+
+    assertEquals(detachExtensionSources(type, (p) => p === LOCAL_AA), true);
+
+    assertEquals(probeDescription(type), "Base probe");
+    assertEquals(
+      getExtensionMemberCollisions().filter((c) => c.type === type),
+      [],
+    );
+  });
+});
+
+Deno.test("detachExtensionSources: is a no-op for a type with nothing attached", () => {
+  const type = `@test/detach-none-${crypto.randomUUID().slice(0, 8)}`;
+  assertEquals(detachExtensionSources(type, () => true), false);
+});
+
+Deno.test("detachExtensionSources: a member displaced by the removed source attaches again, under a symlinked repo root", async () => {
+  const type = `@test/detach-loser-${crypto.randomUUID().slice(0, 8)}`;
+  const realDir = await Deno.makeTempDir({ prefix: "swamp_2745_detach_" });
+  const linkDir = `${realDir}-link`;
+  await Deno.symlink(realDir, linkDir, { type: "dir" });
+  const catalog = new ExtensionCatalogStore(join(realDir, "catalog.db"));
+  resetExtensionLoadWarnings();
+  registerTestModel(type, { get: true });
+  try {
+    // Catalog rows spell the repo through the symlink, as a serve started
+    // from that path would; contributors are symlink-resolved.
+    const winner = canonicalizePath(join(linkDir, "aa_winner.ts"));
+    const loser = canonicalizePath(join(linkDir, "zz_loser.ts"));
+    for (const [sourcePath, label] of [[winner, "winner"], [loser, "loser"]]) {
+      await Deno.writeTextFile(sourcePath, "");
+      catalog.upsert({
+        source_path: sourcePath,
+        type_normalized: type,
+        kind: "extension",
+        bundle_path: `${sourcePath}.js`,
+        version: "",
+        description: "",
+        extends_type: type,
+        source_mtime: "",
+        source_fingerprint: `fp-${label}`,
+      });
+    }
+    const labels = new Map([[winner, "winner"], [loser, "loser"]]);
+    const imports: string[] = [];
+    const importFn = (paths: { sourcePath: string }) => {
+      imports.push(paths.sourcePath);
+      return Promise.resolve({
+        extension: labelledExtension(type, labels.get(paths.sourcePath)!),
+      });
+    };
+    const contributorFor = (sourcePath: string) =>
+      localContributor(realCanonicalPath(sourcePath));
+    const attachPass = () =>
+      modelKindAdapter.attachPendingExtensionsForType!(
+        type,
+        catalog,
+        importFn,
+        contributorFor,
+      );
+
+    await attachPass();
+    assertEquals(probeDescription(type), "probe from winner");
+
+    catalog.removeByRawSourcePath(winner);
+    await Deno.remove(winner);
+    const removed = realCanonicalPath(realDir) + "/aa_winner.ts";
+    assertEquals(
+      detachExtensionSources(
+        type,
+        (p) => p === winner || p === removed,
+      ),
+      true,
+    );
+    assertEquals(probeDescription(type), undefined);
+
+    imports.length = 0;
+    await attachPass();
+    assertEquals(imports, [loser], "only the freed loser is processed again");
+    assertEquals(probeDescription(type), "probe from loser");
+    assertEquals(
+      getExtensionMemberCollisions().filter((c) => c.type === type),
+      [],
+    );
+  } finally {
+    modelRegistry.invalidateType(type);
+    removeAttachedExtensionsForType(type);
+    resetExtensionLoadWarnings();
+    catalog.close();
+    await Deno.remove(linkDir);
+    if (Deno.build.os === "windows") {
+      await Deno.remove(realDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(realDir, { recursive: true });
+    }
   }
 });
 

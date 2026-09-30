@@ -55,3 +55,15 @@ export function canonicalizePathFor(p: string, isWindows: boolean): string {
   }
   return p;
 }
+
+/**
+ * The canonical form of `path` with symlinks resolved, or `path` itself
+ * when it cannot be resolved (e.g. the file no longer exists).
+ */
+export function realCanonicalPath(path: string): string {
+  try {
+    return canonicalizePath(Deno.realPathSync(path));
+  } catch {
+    return path;
+  }
+}

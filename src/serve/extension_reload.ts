@@ -35,6 +35,7 @@ import {
 } from "../libswamp/mod.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import {
+  detachExtensionSources,
   modelKindAdapter,
   removeAttachedExtensionsForType,
 } from "../domain/extensions/model_kind_adapter.ts";
@@ -45,7 +46,10 @@ import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_run
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
-import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
+import {
+  canonicalizePath,
+  realCanonicalPath,
+} from "../infrastructure/persistence/canonicalize_path.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
@@ -207,6 +211,7 @@ async function sweepRemovedPulledExtensions(args: {
   repoDir: string;
   pulledRoot: string;
   previous: PulledTypeSnapshot | undefined;
+  denoRuntime?: DenoRuntime;
 }): Promise<SweepResult> {
   const { catalog, lockfile, lockfilePath, repoDir, pulledRoot, previous } =
     args;
@@ -284,14 +289,31 @@ async function sweepRemovedPulledExtensions(args: {
       if (!removed) continue;
 
       const unregistered = new Set<string>();
+      const extendedTypes = new Set<string>();
       for (const ref of refs) {
+        if (ref.kind === "extension") {
+          extendedTypes.add(ref.type);
+          continue;
+        }
         const key = `${ref.kind}\0${ref.type}`;
         if (unregistered.has(key)) continue;
         // Another extension or a local source still provides this type.
         if (catalog.findAllByType(ref.type, ref.kind).length > 0) continue;
-        unregisterPulledType(ref);
+        unregisterPulledType({ kind: ref.kind, type: ref.type });
         unregistered.add(key);
       }
+      await detachRemovedAddOns({
+        extendedTypes,
+        prefixes: [prefix, pulledPrefix(realCanonicalPath(pulledRoot), name)],
+        loader: () =>
+          new ExtensionLoader(
+            args.denoRuntime ?? new EmbeddedDenoRuntime(),
+            modelKindAdapter,
+            repoDir,
+            undefined,
+            repository,
+          ),
+      });
       if (unregistered.size > 0) {
         logger.info(
           "Hot-reload: unregistered {count} type(s) of removed extension {extension}",
@@ -317,6 +339,31 @@ async function sweepRemovedPulledExtensions(args: {
     }
   }
   return { installed, unswept };
+}
+
+/**
+ * Detaches the members a removed extension's add-ons attached to model
+ * types it does not own (swamp-club#2745). A built-in or local base type
+ * is never re-registered by the reload, so without this the members stay
+ * until restart. The attach pass then runs for every extended type still
+ * registered, even when nothing was detached this time, so a retry after
+ * a failed pass still restores an add-on the removed one had displaced.
+ */
+async function detachRemovedAddOns(args: {
+  extendedTypes: ReadonlySet<string>;
+  prefixes: readonly string[];
+  loader: () => ExtensionLoader;
+}): Promise<void> {
+  if (args.extendedTypes.size === 0) return;
+  const isRemoved = (sourcePath: string) =>
+    args.prefixes.some((prefix) => sourcePath.startsWith(prefix));
+  let loader: ExtensionLoader | undefined;
+  for (const type of args.extendedTypes) {
+    detachExtensionSources(type, isRemoved);
+    if (!modelRegistry.get(type)) continue;
+    loader ??= args.loader();
+    await loader.attachPendingExtensionsForType(type);
+  }
 }
 
 /**
@@ -411,6 +458,7 @@ export async function reloadPulledExtensions(
       repoDir,
       pulledRoot,
       previous,
+      denoRuntime: denoRuntimeOverride,
     });
 
     const rebundled = new Set<string>();
