@@ -30,7 +30,10 @@
  */
 
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
-import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
+import {
+  isControlPlaneModelType,
+  normalizeModelTypeName,
+} from "../../domain/models/control_plane_types.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import {
@@ -247,6 +250,30 @@ export async function resolveRecordedModel(
   return exact.status === "missing"
     ? await resolveModelTargetById(definitionRepo, id, kind)
     : exact;
+}
+
+/**
+ * The model a method run is recorded under for its cancel and attach: the
+ * definition's own name (or `fallbackName` when there is none yet), and the
+ * normalized type the run executes (`typeArg`) or its model has. A
+ * control-plane type wins whichever it comes from, so a control-plane run
+ * stays admin-only once its model is gone (swamp-club#2756).
+ */
+export function recordedRunModel(
+  definition: DefinitionLookupResult | null,
+  fallbackName: string,
+  typeArg: string | undefined,
+): { name: string; type?: string } {
+  const types: string[] = [];
+  if (typeArg) {
+    const normalized = normalizeModelTypeName(typeArg);
+    if (normalized !== null) types.push(normalized);
+  }
+  if (definition) types.push(definition.type.normalized);
+  return {
+    name: definition?.definition.name ?? fallbackName,
+    type: types.find(isControlPlaneModelType) ?? types[0],
+  };
 }
 
 async function resolveWorkflow(

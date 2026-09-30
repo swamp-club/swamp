@@ -22,6 +22,7 @@ import { dirname, join } from "@std/path";
 import {
   authorizeReferenceAccess,
   CanonicalResources,
+  recordedRunModel,
   type ReferenceAccess,
   resolveModelTarget,
   resolveModelTargetById,
@@ -1277,5 +1278,39 @@ Deno.test("resolveOutputAccess: an output recorded under a control-plane type ne
         access.resources.map((r) => `${r.kind}:${r.name}`),
       ["model:mine", "access:swamp/fleet-probe"],
     );
+  });
+});
+
+Deno.test("recordedRunModel: records the definition's name and a control-plane type from either source", () => {
+  const user = {
+    definition: Definition.create({ name: "user-db", globalArguments: {} }),
+    type: SHELL,
+  };
+  const grant = {
+    definition: Definition.create({ name: "grant-abc", globalArguments: {} }),
+    type: GRANT_TYPE,
+  };
+  // A direct-type run of a control-plane type against a user model's name.
+  assertEquals(recordedRunModel(user, "raw", "swamp.Server-Token"), {
+    name: "user-db",
+    type: "swamp/server-token",
+  });
+  // A user typeArg against a control-plane model.
+  assertEquals(recordedRunModel(grant, "raw", "command/shell"), {
+    name: "grant-abc",
+    type: "swamp/grant",
+  });
+  assertEquals(recordedRunModel(user, "raw", undefined), {
+    name: "user-db",
+    type: "command/shell",
+  });
+  // No definition yet: the requested name and the executed type.
+  assertEquals(recordedRunModel(null, "new-grant", "@swamp/grant"), {
+    name: "new-grant",
+    type: "swamp/grant",
+  });
+  assertEquals(recordedRunModel(null, "x", undefined), {
+    name: "x",
+    type: undefined,
   });
 });

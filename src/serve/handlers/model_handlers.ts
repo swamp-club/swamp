@@ -138,6 +138,7 @@ import {
   authorizeResolved,
   canonicalResources,
   modelAccessResource,
+  recordedRunModel,
   resolveModelTarget,
   resolveOutputAccess,
   type ResourceResolution,
@@ -247,24 +248,6 @@ async function resolveMethodRunTarget(
     expectedName,
     resourceId: definition?.definition.id,
   };
-}
-
-/**
- * The model name a run is recorded under for cancel and attach: the
- * definition's own name, not its access resource's, which for a
- * control-plane model names only the type (swamp-club#2756).
- */
-function runResourceName(target: MethodRunTarget): string {
-  return target.definition?.definition.name ?? target.resource.name;
-}
-
-/** The normalized type a run's model has, or will have once created. */
-function runResourceType(
-  target: MethodRunTarget,
-  payload: ModelMethodRunPayload,
-): string | undefined {
-  if (target.definition) return target.definition.type.normalized;
-  return payload.typeArg ? normalizedTypeOrRaw(payload.typeArg) : undefined;
 }
 
 /**
@@ -502,6 +485,11 @@ export async function handleModelMethodRun(
     !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
   ) return;
   const preResult = target.definition;
+  const recorded = recordedRunModel(
+    target.definition,
+    target.resource.name,
+    payload.typeArg,
+  );
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
@@ -520,10 +508,10 @@ export async function handleModelMethodRun(
     registry.register({
       runId,
       kind: "method-run",
-      resourceName: runResourceName(target),
+      resourceName: recorded.name,
       resourceId: target.resourceId,
       methodName: payload.methodName,
-      resourceType: runResourceType(target, payload),
+      resourceType: recorded.type,
       buffer,
       controller: runController,
       startedAt,
@@ -717,10 +705,10 @@ export async function handleModelMethodRun(
 
   if (ctx.controlPlaneStore && ctx.instanceId) {
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
-      resourceName: runResourceName(target),
+      resourceName: recorded.name,
       resourceId: target.resourceId,
       methodName: payload.methodName,
-      resourceType: runResourceType(target, payload),
+      resourceType: recorded.type,
       runKind: "method-run",
       startedAt: startedAt.toISOString(),
     });
