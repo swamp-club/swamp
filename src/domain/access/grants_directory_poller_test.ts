@@ -645,6 +645,44 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a missing --grants-dir, as
   });
 });
 
+Deno.test("GrantsDirectoryPoller: revokes the grants of a --grants-dir that comes back empty after going missing", async () => {
+  // Missing keeps the grants; the remount without the file must still revoke
+  // them, so missing and empty cannot look the same to change detection.
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    const externalDir = join(dir, "external");
+    await ensureDir(grantsDir);
+    await ensureDir(externalDir);
+    const externalFile = join(externalDir, "deny.yaml");
+    await Deno.writeTextFile(externalFile, DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", `file:${externalFile}`, aliceDeny),
+    ]);
+    const mock = createMockLoader();
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      externalGrantsDir: externalDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 20,
+    });
+    await poller.start();
+    try {
+      await Deno.remove(externalDir, { recursive: true });
+      await waitFor(() => mock.loadCalls >= 1, "the unmount reconcile");
+      assertEquals(store.written.size, 0);
+
+      await ensureDir(externalDir);
+      await waitFor(
+        () => store.written.get("deny-1")?.state === "revoked",
+        "the empty remount to revoke the deny",
+      );
+    } finally {
+      await poller.stop();
+    }
+  });
+});
+
 Deno.test("GrantsDirectoryPoller: keeps the grants of a deleted --grants-file, as startup refuses it", async () => {
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");

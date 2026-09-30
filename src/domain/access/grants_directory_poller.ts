@@ -328,6 +328,10 @@ export class GrantsDirectoryPoller {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
         }
+        // A missing --grants-dir keeps its grants while an empty one revokes
+        // them, so the two must hash differently: a volume that unmounts and
+        // comes back empty has to trigger a reconcile.
+        parts.push("EXTDIR:MISSING");
       }
     }
 
