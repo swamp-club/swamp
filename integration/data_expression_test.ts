@@ -26,6 +26,7 @@
  * 3. Verify CEL expressions can access data via model.X.data.Y and data namespace functions
  */
 
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -128,7 +129,7 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
       repoDir,
       dataRepo,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Verify model.my-vpc.resource.vpc-info.vpc-info exists and has latest version
     const modelData = context.model["my-vpc"];
@@ -204,7 +205,7 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
       dataRepo,
       dataQueryService: new DataQueryService(catalog, dataRepo),
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Access specific versions via data.version()
     assertExists(context.data);
@@ -265,7 +266,7 @@ Deno.test("Integration: data.version() returns null for missing version", async 
       repoDir,
       dataRepo,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Try to access non-existent version
     assertExists(context.data);
@@ -328,7 +329,9 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
       const latest = await context.data.latest("my-model", "output");
@@ -389,7 +392,7 @@ Deno.test("Integration: data.listVersions() returns sorted version numbers", asy
       dataRepo,
       dataQueryService: new DataQueryService(catalog, dataRepo),
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     assertExists(context.data);
     const versions = context.data.listVersions("my-model", "log");
@@ -419,7 +422,7 @@ Deno.test("Integration: data.listVersions() returns empty array for missing data
       repoDir,
       dataRepo,
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     assertExists(context.data);
     const versions = context.data.listVersions("my-model", "nonexistent");
@@ -517,7 +520,9 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
 
@@ -617,7 +622,7 @@ Deno.test("Integration: model can have multiple named data items with mixed type
       dataRepo,
       dataQueryService: new DataQueryService(catalog, dataRepo),
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Resource items accessible via model.X.resource.specName.instanceName
     const modelData = context.model["my-command"];
@@ -690,7 +695,9 @@ Deno.test("Integration: handles hyphenated model names in data expressions", asy
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       // Access via bracket notation (required for hyphenated names)
       assertExists(context.data);
@@ -728,7 +735,7 @@ Deno.test("Integration: buildContext works without dataRepo", async () => {
       repoDir,
       // No dataRepo
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     // Model should still be accessible
     assertExists(context.model["my-model"]);

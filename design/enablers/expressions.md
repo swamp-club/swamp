@@ -207,7 +207,10 @@ child run, and `swamp workflow history get --json` /
 run's resource references. These reads are best-effort: ephemeral-lifetime
 data, garbage-collected versions and an uncached remote datastore yield no
 outputs. A run and its resume resolve sensitive fields from their vault
-references, as `data.latest` does; history shows them as stored. Over
+references, as `data.latest` does; history shows them as stored. A resolved
+sensitive value is plaintext inside expressions but reaches a step's executing
+arguments as a sentinel and is written to disk as its vault reference; see
+[Values Read Through Expressions](../primitives/vaults.md#values-read-through-expressions). Over
 `swamp serve`, history includes only outputs of models the caller may read as
 data.
 

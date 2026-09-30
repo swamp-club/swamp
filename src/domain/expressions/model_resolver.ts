@@ -45,7 +45,8 @@ import {
   VaultService,
 } from "../vaults/vault_service.ts";
 import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_refresh.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
+import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
+import { attachSensitiveValues } from "./sensitive_context.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 /**
@@ -600,6 +601,7 @@ export class ModelResolver {
    * @returns The expression context
    */
   async buildContext(
+    sensitiveValues: RunSensitiveValues,
     selfDefinition?: Definition,
     selfType?: ModelType,
     typeResolver?: (modelId: string) => ModelType | undefined,
@@ -773,8 +775,13 @@ export class ModelResolver {
     }
 
     const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
-    context.data = this.buildDataNamespace(ownNamespace, coordsMap);
+    context.data = this.buildDataNamespace(
+      ownNamespace,
+      coordsMap,
+      sensitiveValues,
+    );
     context.workers = this.buildWorkersNamespace();
+    attachSensitiveValues(context, sensitiveValues);
 
     // Create file namespace for lazy-loading file contents
     context.file = {
@@ -816,14 +823,19 @@ export class ModelResolver {
    * where definitions are already cached and only deferred data.*
    * expressions need resolution at step execution time.
    */
-  buildLightContext(): ExpressionContext {
+  buildLightContext(sensitiveValues: RunSensitiveValues): ExpressionContext {
     const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
     const context: ExpressionContext = {
       model: {},
       env: buildEnvContext(),
     };
-    context.data = this.buildDataNamespace(ownNamespace, new Map());
+    context.data = this.buildDataNamespace(
+      ownNamespace,
+      new Map(),
+      sensitiveValues,
+    );
     context.workers = this.buildWorkersNamespace();
+    attachSensitiveValues(context, sensitiveValues);
     return context;
   }
 
@@ -858,11 +870,13 @@ export class ModelResolver {
   /**
    * Resolves vault references in a data record's attributes, limited to the
    * fields the record's schema marked sensitive. Leaves refs unresolved when
-   * no vault is available.
+   * no vault is available. Every resolved value is recorded in the run's
+   * sensitive-value record, which also forwards it to the run redactor.
    */
   private async resolveRecordVaultRefs(
     record: DataRecord | null,
     tags: Record<string, string> | undefined,
+    sensitiveValues: RunSensitiveValues,
   ): Promise<void> {
     if (!record || !tags) return;
     if (Object.keys(record.attributes).length === 0) return;
@@ -874,6 +888,7 @@ export class ModelResolver {
         record.attributes,
         sensitiveFields,
         vaultService,
+        sensitiveValues,
       );
     } catch {
       // Vault unavailable — leave refs unresolved
@@ -897,6 +912,7 @@ export class ModelResolver {
   private buildDataNamespace(
     ownNamespace: Namespace,
     coordsMap: ModelCoordinatesMap,
+    sensitiveValues: RunSensitiveValues,
   ): DataNamespace {
     return {
       version: async (
@@ -962,7 +978,11 @@ export class ModelResolver {
                   undefined,
                   ns.modelName,
                 );
-                await this.resolveRecordVaultRefs(record, data.tags);
+                await this.resolveRecordVaultRefs(
+                  record,
+                  data.tags,
+                  sensitiveValues,
+                );
                 await this.materializePath(record);
                 return record;
               }
@@ -984,7 +1004,11 @@ export class ModelResolver {
             // The coordinates path above resolves sensitive vault references
             // through this resolver's own vault service; do the same here so
             // both paths return the same attributes.
-            await this.resolveRecordVaultRefs(record, record?.tags);
+            await this.resolveRecordVaultRefs(
+              record,
+              record?.tags,
+              sensitiveValues,
+            );
             await this.materializePath(record);
             return record;
           }

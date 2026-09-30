@@ -160,11 +160,18 @@ export function buildModelMethodRunDeps(
     },
     loadEvaluatedDefinition: (type, name) =>
       repoContext.evaluatedDefinitionRepo.findByNameWithProvenance(type, name),
-    saveEvaluatedDefinition: (type, definition, authoredExpressions) =>
+    saveEvaluatedDefinition: (
+      type,
+      definition,
+      authoredExpressions,
+      writtenReferences,
+    ) =>
       repoContext.evaluatedDefinitionRepo.save(
         type,
         definition,
         authoredExpressions,
+        undefined,
+        writtenReferences,
       ),
     createExecutionService: () => new DefaultMethodExecutionService(),
     createVaultService: () =>

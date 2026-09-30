@@ -265,3 +265,104 @@ Deno.test("modelEvaluate: byId without lookupDefinitionById fails instead of fal
   );
   assertEquals(nameLookups, 0);
 });
+
+Deno.test("modelEvaluate: shows sensitive values masked and caches them as vault references (swamp-club#2171)", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const evaluated = Definition.create({
+    id: "00000000-0000-4000-8000-000000000002",
+    name: "reads-secret",
+    version: 1,
+    globalArguments: { token: "Bearer Pl41n-s3cret", region: "eu" },
+  });
+  const saved: Definition[] = [];
+  const deps = makeDeps({
+    lookupDefinition: () =>
+      Promise.resolve({ definition: evaluated, type: modelType }),
+    // Evaluation read the secret through data.latest, which records it.
+    evaluateDefinition: (_definition, type, sensitiveValues) => {
+      sensitiveValues.addSecret("Pl41n-s3cret", {
+        vaultName: "prod",
+        key: "api-token",
+      });
+      return Promise.resolve({
+        definition: evaluated,
+        type,
+        hadExpressions: true,
+        authoredExpressions: new Set<string>(),
+      });
+    },
+    saveEvaluatedDefinition: (_type, definition) => {
+      saved.push(definition);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, {
+      modelIdOrName: "reads-secret",
+    }),
+  );
+  const completed = events.at(-1) as Extract<
+    ModelEvaluateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as ModelEvaluateItemData;
+  assertEquals(data.globalArguments, { token: "Bearer ***", region: "eu" });
+  assertEquals(
+    saved[0].globalArguments.token,
+    "Bearer ${{ vault.get('prod', 'api-token') }}",
+  );
+});
+
+Deno.test("modelEvaluate: --all writes sensitive values outside arguments as references (swamp-club#2171)", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const expression = "${{ data.latest('db', 'creds').attributes.password }}";
+  const source = Definition.create({
+    id: "00000000-0000-4000-8000-000000000003",
+    name: "default-from-secret",
+    version: 1,
+    inputs: {
+      type: "object",
+      properties: { password: { type: "string", default: expression } },
+    },
+  });
+  const evaluated = Definition.fromData({
+    ...source.toData(),
+    inputs: {
+      type: "object",
+      properties: { password: { type: "string", default: "Pl41n-s3cret" } },
+    },
+  });
+  const saved: Definition[] = [];
+  const deps = makeDeps({
+    evaluateAllDefinitions: (sensitiveValues) => {
+      sensitiveValues.addSecret("Pl41n-s3cret", {
+        vaultName: "prod",
+        key: "db-password",
+      });
+      return Promise.resolve([{
+        definition: evaluated,
+        sourceDefinition: source,
+        type: modelType,
+        hadExpressions: true,
+        authoredExpressions: new Set([expression]),
+      }]);
+    },
+    saveEvaluatedDefinition: (_type, definition) => {
+      saved.push(definition);
+      return Promise.resolve();
+    },
+  });
+  await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, {}),
+  );
+  assertEquals(
+    JSON.stringify(saved[0].toData()).includes("Pl41n-s3cret"),
+    false,
+  );
+  assertEquals(
+    JSON.stringify(saved[0].toData()).includes(
+      "${{ vault.get('prod', 'db-password') }}",
+    ),
+    true,
+  );
+});

@@ -1459,3 +1459,44 @@ windowsOnlyTest(
     assertStringIncludes(getOutputLogContent(getResults()), "some output");
   },
 );
+
+posixOnlyTest(
+  "shellModel.methods.execute: a data-read secret in single quotes is delivered without a warning (swamp-club#2171)",
+  async () => {
+    const vaultSecrets = new VaultSecretBag();
+    const sentinel = vaultSecrets.addDataSecret("data-s3cret");
+    const events: { type: string; message: string }[] = [];
+    const { context, getResults } = createTestContext({
+      vaultSecrets,
+      unresolvedMethodArgs: { run: `echo 'v=${sentinel}'` },
+      onEvent: (event) =>
+        events.push(event as { type: string; message: string }),
+    });
+    await shellModel.methods.execute.execute({ run: "placeholder" }, context);
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.stdout, "v=data-s3cret");
+    assertEquals(events, []);
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute: a data-read secret in a quoted heredoc warns that it is in the command line (swamp-club#2171)",
+  async () => {
+    const vaultSecrets = new VaultSecretBag();
+    const sentinel = vaultSecrets.addDataSecret("data-s3cret");
+    const events: { type: string; message: string }[] = [];
+    const { context, getResults } = createTestContext({
+      vaultSecrets,
+      unresolvedMethodArgs: { run: `cat <<'EOF'\n${sentinel}\nEOF` },
+      onEvent: (event) =>
+        events.push(event as { type: string; message: string }),
+    });
+    await shellModel.methods.execute.execute({ run: "placeholder" }, context);
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.stdout, "data-s3cret");
+    assertEquals(events.map((e) => e.type), [
+      "sensitive_value_in_command_line",
+    ]);
+    assertStringIncludes(events[0].message, "command line");
+  },
+);

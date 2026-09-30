@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { extractExpressions, replaceExpressions } from "./expression_parser.ts";
+import {
+  extractExpressions,
+  replaceExpressions,
+  type SpliceSanitizer,
+} from "./expression_parser.ts";
+import type { SplicePair } from "./splice_pair.ts";
 import {
   type AuthoredExpressions,
   containsRuntimeExpression,
@@ -73,13 +78,42 @@ export function resolveAvailableExpressions(
   authored: AuthoredExpressions,
   skipPath?: (path: string) => boolean,
 ): unknown {
+  const values = evaluateAvailable(data, context, evaluate, authored, skipPath);
+  if (values.size === 0) return data;
+  return replaceExpressions(data, values, skipPath);
+}
+
+/**
+ * {@link resolveAvailableExpressions} over a raw/sanitized pair: each
+ * expression is evaluated once from the raw copy and spliced into both, the
+ * sanitized copy through `sanitizer`.
+ */
+export function resolveAvailableExpressionsPair<T>(
+  pair: SplicePair<T>,
+  context: Record<string, unknown>,
+  evaluate: SyncCelEvaluator,
+  authored: AuthoredExpressions,
+  sanitizer: SpliceSanitizer,
+): SplicePair<T> {
+  const values = evaluateAvailable(pair.raw, context, evaluate, authored);
+  if (values.size === 0) return pair;
+  return pair.splice(values, sanitizer);
+}
+
+function evaluateAvailable(
+  data: unknown,
+  context: Record<string, unknown>,
+  evaluate: SyncCelEvaluator,
+  authored: AuthoredExpressions,
+  skipPath?: (path: string) => boolean,
+): Map<string, unknown> {
+  const values = new Map<string, unknown>();
   const locations = partitionAuthored(
     extractExpressions(data, "", skipPath),
     authored,
   );
-  if (locations.length === 0) return data;
+  if (locations.length === 0) return values;
 
-  const values = new Map<string, unknown>();
   for (const { raw, celExpression } of locations) {
     if (values.has(raw)) continue;
     // Deferred to runtime (resolved via the secret bag).
@@ -94,6 +128,5 @@ export function resolveAvailableExpressions(
     }
   }
 
-  if (values.size === 0) return data;
-  return replaceExpressions(data, values, skipPath);
+  return values;
 }

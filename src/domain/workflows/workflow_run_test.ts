@@ -27,6 +27,7 @@ import {
   WorkflowRun,
 } from "./workflow_run.ts";
 import { Workflow } from "./workflow.ts";
+import { RunSensitiveValues } from "../secrets/mod.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
@@ -2383,4 +2384,65 @@ Deno.test("WorkflowRun.reopenAbortedWork: leaves a same-named step in another jo
   assertEquals(pre.getStep("notify")!.status, "succeeded");
   assertEquals(main.status, "pending");
   assertEquals(main.getStep("notify")!.status, "pending");
+});
+
+Deno.test("WorkflowRun.toPersistedData: writes references at value positions only (swamp-club#2171)", () => {
+  const workflow = Workflow.create({
+    name: "persisted",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({ name: "s", task: StepTask.model("m", "run") })],
+    })],
+  });
+  const run = WorkflowRun.create(workflow);
+  const values = new RunSensitiveValues();
+  values.addSecret("true", { vaultName: "v", key: "flag" });
+  values.addSecret("Pl41n-s3cret", { vaultName: "v", key: "tok" });
+  run.attachSensitiveValues(values);
+  run.captureInputs({ token: "Bearer Pl41n-s3cret", enabled: true });
+  run.start();
+  const step = run.getJob("main")!.getStep("s")!;
+  step.start();
+  step.fail("rejected Pl41n-s3cret");
+
+  const persisted = run.toPersistedData();
+  const text = JSON.stringify(persisted);
+  assertEquals(text.includes("Pl41n-s3cret"), false);
+  assertEquals(
+    persisted.inputs?.token,
+    "Bearer ${{ vault.get('v', 'tok') }}",
+  );
+  assertEquals(persisted.inputs?.enabled, "${{ vault.get('v', 'flag') }}");
+  // Structural fields are never rewritten, even when they equal a secret.
+  assertEquals(persisted.id, run.id);
+  assertEquals(persisted.sensitiveFormat, 1);
+  assertEquals(
+    (persisted.writtenReferences ?? []).map((r) => r.path.join(".")).sort(),
+    [
+      "failureReason",
+      "inputs.enabled",
+      "inputs.token",
+      "jobs.0.steps.0.error",
+    ],
+  );
+});
+
+Deno.test("WorkflowRun.toPersistedData: without a record the stored references are written back unchanged", () => {
+  const workflow = Workflow.create({
+    name: "carried",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({ name: "s", task: StepTask.model("m", "run") })],
+    })],
+  });
+  const withRecord = WorkflowRun.create(workflow);
+  const values = new RunSensitiveValues();
+  values.addSecret("Pl41n-s3cret", { vaultName: "v", key: "tok" });
+  withRecord.attachSensitiveValues(values);
+  withRecord.captureInputs({ token: "Pl41n-s3cret" });
+  const stored = withRecord.toPersistedData();
+
+  // A later process (approve, cancel) loads and saves it without a record.
+  const reloaded = WorkflowRun.fromData(stored);
+  assertEquals(reloaded.toPersistedData(), stored);
 });

@@ -353,3 +353,53 @@ Deno.test("YamlEvaluatedDefinitionRepository: records the source typeVersion ver
     assertEquals(reloaded?.typeVersion, "2026.01.01.1");
   });
 });
+
+Deno.test("YamlEvaluatedDefinitionRepository: records the sensitive format and written references (swamp-club#2171)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    const definition = Definition.create({
+      name: "ref-definition",
+      globalArguments: { tok: "${{ vault.get('prod', 'api-token') }}" },
+    });
+    const reference = {
+      path: ["globalArguments", "tok"],
+      occurrence: 0,
+      vaultName: "prod",
+      key: "api-token",
+      encoding: "raw" as const,
+      dataOrigin: true,
+    };
+    await repo.save(type, definition, new Set(), [], [reference]);
+    const cached = await repo.findByNameWithProvenance(type, "ref-definition");
+    assertEquals(cached?.sensitiveFormat, 1);
+    assertEquals(cached?.writtenReferences, [reference]);
+    assertEquals(
+      cached?.definition.globalArguments.tok,
+      "${{ vault.get('prod', 'api-token') }}",
+    );
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository: a cache written before the format has no marker (swamp-club#2171)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    const definition = Definition.create({ name: "old-definition" });
+    const typeDir = join(
+      dir,
+      ".swamp",
+      "definitions-evaluated",
+      "command",
+      "shell",
+    );
+    await ensureDir(typeDir);
+    await Deno.writeTextFile(
+      join(typeDir, "old-definition.yaml"),
+      toCleanYaml({ ...definition.toData(), type: "command/shell" }),
+    );
+    const cached = await repo.findByNameWithProvenance(type, "old-definition");
+    assertEquals(cached?.sensitiveFormat, undefined);
+    assertEquals(cached?.writtenReferences, []);
+  });
+});

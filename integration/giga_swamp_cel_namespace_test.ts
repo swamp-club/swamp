@@ -25,6 +25,7 @@
  * invariant.
  */
 
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { Data } from "../src/domain/data/data.ts";
@@ -163,7 +164,7 @@ async function buildDataContext(
     dataRepo: setup.dataRepo,
     dataQueryService: setup.queryService,
   });
-  const context = await resolver.buildContext();
+  const context = await resolver.buildContext(new RunSensitiveValues());
   return context.data as unknown as Record<
     string,
     (...args: unknown[]) => unknown

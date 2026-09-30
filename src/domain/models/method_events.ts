@@ -47,6 +47,14 @@ export type MethodExecutionEvent =
     message: string;
   }
   | {
+    /**
+     * A sensitive value read through data stays in the command line because
+     * the shell cannot expand an environment variable where it sits.
+     */
+    type: "sensitive_value_in_command_line";
+    message: string;
+  }
+  | {
     type: "step_queued";
     requirement: string;
   }

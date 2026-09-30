@@ -26,6 +26,7 @@
  * 3. Verify version retention settings (garbage collection)
  */
 
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir, existsSync } from "@std/fs";
@@ -499,7 +500,9 @@ Deno.test("Data Versioning: access specific version via data.version()", async (
         dataRepo,
         dataQueryService: dqs,
       });
-      const context = await modelResolver.buildContext();
+      const context = await modelResolver.buildContext(
+        new RunSensitiveValues(),
+      );
 
       assertExists(context.data);
 
@@ -590,7 +593,7 @@ Deno.test("Data Versioning: listVersions returns all versions in order", async (
       dataRepo,
       dataQueryService: new DataQueryService(catalog, dataRepo),
     });
-    const context = await modelResolver.buildContext();
+    const context = await modelResolver.buildContext(new RunSensitiveValues());
 
     assertExists(context.data);
 

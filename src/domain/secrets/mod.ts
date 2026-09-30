@@ -18,3 +18,21 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 export { SecretRedactor } from "./secret_redactor.ts";
+export {
+  definedEntry,
+  RunSensitiveValues,
+  type SecretSink,
+  type SecretSource,
+  type SensitiveEntry,
+  vaultReferenceText,
+} from "./run_sensitive_values.ts";
+export {
+  type DataPath,
+  type PersistedForm,
+  rehydratePersistedForm,
+  SENSITIVE_FORMAT_VERSION,
+  toPersistedForm,
+  type VaultReader,
+  type WrittenReference,
+  WrittenReferenceSchema,
+} from "./persisted_sensitive_form.ts";

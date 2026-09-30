@@ -27,6 +27,7 @@
  * 4. Run methods, verify Data created with correct metadata
  */
 
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -318,6 +319,7 @@ Deno.test("Definition Lifecycle: evaluate with input values", async () => {
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
+      new RunSensitiveValues(),
       inputValues,
     );
 
@@ -382,6 +384,7 @@ Deno.test("Definition Lifecycle: nested JsonSchema inputs", async () => {
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
+      new RunSensitiveValues(),
       inputValues,
     );
 
@@ -431,6 +434,7 @@ Deno.test("Definition Lifecycle: CEL expression references other model input", a
     const result = await evalService.evaluateDefinition(
       dependentModel,
       modelType,
+      new RunSensitiveValues(),
     );
 
     assertEquals(result.hadExpressions, true);
@@ -470,7 +474,11 @@ Deno.test("Definition Lifecycle: CEL expression self-reference", async () => {
       repoDir,
     );
 
-    const result = await evalService.evaluateDefinition(definition, modelType);
+    const result = await evalService.evaluateDefinition(
+      definition,
+      modelType,
+      new RunSensitiveValues(),
+    );
 
     assertEquals(result.hadExpressions, true);
     assertEquals(result.definition.globalArguments.nameRef, "self-ref-model");
@@ -519,6 +527,7 @@ Deno.test("Definition Lifecycle: CEL expression with arithmetic", async () => {
     const result = await evalService.evaluateDefinition(
       computedModel,
       modelType,
+      new RunSensitiveValues(),
     );
 
     assertEquals(result.definition.globalArguments.port_offset, 8100);
@@ -678,6 +687,7 @@ Deno.test("Definition Lifecycle: evaluate all definitions in topological order",
     const middleResult = await evalService.evaluateDefinition(
       middleModel,
       modelType,
+      new RunSensitiveValues(),
     );
     assertEquals(middleResult.definition.globalArguments.derived, 20);
 
@@ -712,7 +722,11 @@ Deno.test("Definition Lifecycle: definition without expressions has hadExpressio
       repoDir,
     );
 
-    const result = await evalService.evaluateDefinition(definition, modelType);
+    const result = await evalService.evaluateDefinition(
+      definition,
+      modelType,
+      new RunSensitiveValues(),
+    );
 
     assertEquals(result.hadExpressions, false);
     assertEquals(result.definition.globalArguments.static1, "value1");
@@ -750,9 +764,14 @@ Deno.test("Definition Lifecycle: handles inputs with conditional expression", as
       repoDir,
     );
 
-    const result = await evalService.evaluateDefinition(definition, modelType, {
-      required: "provided",
-    });
+    const result = await evalService.evaluateDefinition(
+      definition,
+      modelType,
+      new RunSensitiveValues(),
+      {
+        required: "provided",
+      },
+    );
 
     assertEquals(result.definition.globalArguments.required_val, "provided");
     assertEquals(result.definition.globalArguments.computed_val, "yes");
@@ -785,6 +804,7 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
       const result = await evalService.evaluateDefinition(
         definition,
         modelType,
+        new RunSensitiveValues(),
       );
 
       assertEquals(

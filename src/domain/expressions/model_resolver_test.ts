@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -111,7 +112,7 @@ Deno.test("data.latest() reads from disk synchronously", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const result = await ctx.data.latest("my-model", "info");
@@ -168,7 +169,7 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     // Write new data AFTER context was built
     await dataRepo.save(
@@ -238,7 +239,7 @@ Deno.test("data.version() reads specific version from disk", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const v2 = await ctx.data.version("versioned", "history", 2);
@@ -294,7 +295,7 @@ Deno.test("data.listVersions() returns sorted version numbers", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const versions = ctx.data.listVersions("list-model", "logs");
@@ -363,7 +364,7 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const prodResults = await ctx.data.findByTag("env", "prod");
@@ -435,7 +436,7 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
 
@@ -514,7 +515,7 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
 
@@ -587,7 +588,7 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const results = await ctx.data.findBySpec("spec-model", "subnet");
@@ -665,7 +666,7 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
 
@@ -731,7 +732,7 @@ Deno.test("data.findBySpec() returns only latest version when multiple versions 
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const results = await ctx.data.findBySpec("spec-model", "subnet");
@@ -795,7 +796,7 @@ Deno.test("data.findByTag() returns only latest version when multiple versions e
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const results = await ctx.data.findByTag("env", "staging");
@@ -822,7 +823,7 @@ Deno.test("data.* returns null/empty for missing model", async () => {
     );
 
     const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     assertEquals(await ctx.data.latest("nonexistent", "data"), null);
@@ -852,7 +853,7 @@ Deno.test("data.* returns null/empty for missing data name", async () => {
     await defRepo.save(type, model);
 
     const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     assertEquals(await ctx.data.latest("empty-model", "nonexistent"), null);
@@ -932,7 +933,7 @@ Deno.test("findBySpec: returns all data regardless of workflowRunId", async () =
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     assertExists(ctx.data);
 
     // findBySpec no longer scopes by workflowRunId — returns all data
@@ -1011,7 +1012,7 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     assertExists(ctx.data);
 
     // No workflowRunId set — returns all data regardless of tags
@@ -1087,7 +1088,7 @@ Deno.test("findBySpec: returns both records when same data name written by diffe
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     assertExists(ctx.data);
 
     const results = await ctx.data.findBySpec("probe", "result");
@@ -1159,7 +1160,7 @@ Deno.test("findBySpec: deduplicates same-step same-name to latest version", asyn
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     assertExists(ctx.data);
 
     const results = await ctx.data.findBySpec("probe", "result");
@@ -1258,7 +1259,7 @@ Deno.test("workers.connected() returns only non-disconnected workers", async () 
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.workers);
     const connected = await ctx.workers.connected();
@@ -1328,7 +1329,7 @@ Deno.test("workers.connected() returns empty array when all workers disconnected
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.workers);
     const connected = await ctx.workers.connected();
@@ -1382,7 +1383,7 @@ Deno.test("latest: returns fresh data after intervening write", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     assertExists(ctx.data);
 
     const first = await ctx.data.latest("live-model", "result");
@@ -1429,7 +1430,7 @@ Deno.test("latest: returns data written after initial miss", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     assertExists(ctx.data);
 
     const miss = await ctx.data.latest("late-writer", "result");
@@ -1532,7 +1533,7 @@ Deno.test("data.latest() throws on ambiguous specName matches", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const data = ctx.data;
@@ -1586,7 +1587,7 @@ Deno.test("data.latest() passes when specName is unique", async () => {
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const result = await ctx.data.latest("fleet", "scan-result");
@@ -1660,7 +1661,7 @@ Deno.test("data.latest() with exact data name skips specName ambiguity check (sw
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data);
     const result = await ctx.data.latest("node-provisioner", "hs");
@@ -1926,6 +1927,7 @@ Deno.test("buildContext reuses definitions supplied by the caller", async () => 
 
     const resolver = new ModelResolver(countingRepo, { repoDir });
     const ctx = await resolver.buildContext(
+      new RunSensitiveValues(),
       undefined,
       undefined,
       undefined,
@@ -1982,10 +1984,11 @@ Deno.test("buildLightContext resolves data.latest for ephemeral data (swamp-club
         dataQueryService,
       });
 
-      const record = await resolver.buildLightContext().data!.latest(
-        "differ",
-        "diff",
-      );
+      const record = await resolver.buildLightContext(new RunSensitiveValues())
+        .data!.latest(
+          "differ",
+          "diff",
+        );
       assertExists(record);
       assertEquals(record.attributes.files, ["a.ts"]);
     } finally {
@@ -2045,7 +2048,11 @@ Deno.test("buildLightContext resolves data.latest sensitive vault refs like buil
       vaultService,
     });
 
-    const lightCtx = resolver.buildLightContext();
+    // Both data.latest paths record what they resolve, with its vault
+    // source, and forward it to the run redactor (swamp-club#2171).
+    const lightRedactor = new SecretRedactor();
+    const lightValues = new RunSensitiveValues(lightRedactor);
+    const lightCtx = resolver.buildLightContext(lightValues);
     const lightRecord = await lightCtx.data!.latest("secret-holder", "creds");
     assertExists(lightRecord);
     assertEquals(lightRecord.attributes.apiKey, "secret-123");
@@ -2055,11 +2062,20 @@ Deno.test("buildLightContext resolves data.latest sensitive vault refs like buil
       "${{ vault.get('my-vault', 'api-key') }}",
     );
 
-    const fullCtx = await resolver.buildContext();
+    const fullValues = new RunSensitiveValues();
+    const fullCtx = await resolver.buildContext(fullValues);
     const fullRecord = await fullCtx.data!.latest("secret-holder", "creds");
     assertExists(fullRecord);
     assertEquals(fullRecord.attributes.apiKey, lightRecord.attributes.apiKey);
     assertEquals(fullRecord.attributes.plain, lightRecord.attributes.plain);
+
+    const expected = [{
+      value: "secret-123",
+      source: { vaultName: "my-vault", key: "api-key" },
+    }];
+    assertEquals(lightValues.list(), expected);
+    assertEquals(fullValues.list(), expected);
+    assertEquals(lightRedactor.redact("key=secret-123"), "key=***");
   });
 });
 
@@ -2128,7 +2144,7 @@ Deno.test("data.latest(): path names the stored content file", async () => {
       repoDir,
       { evict: false },
     );
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     const record = await ctx.data!.latest("producer", "log");
     assertEquals(record?.path, contentPath);
     assertEquals(
@@ -2148,7 +2164,7 @@ Deno.test("data.latest(): the catalog fallback path also sets path", async () =>
     );
     // The light context has no model coordinates, so latest() resolves
     // through DataQueryService.getLatestRecord.
-    const ctx = resolver.buildLightContext();
+    const ctx = resolver.buildLightContext(new RunSensitiveValues());
     const record = await ctx.data!.latest("producer", "log");
     assertEquals(record?.path, contentPath);
     catalog.close();
@@ -2161,7 +2177,7 @@ Deno.test("data.version(): path names the stored content file", async () => {
       repoDir,
       { evict: false },
     );
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     const record = await ctx.data!.version("producer", "log", 1);
     assertEquals(record?.path, contentPath);
     catalog.close();
@@ -2174,7 +2190,7 @@ Deno.test("data.latest(): hydrates a raw file that is not local yet", async () =
       repoDir,
       { evict: true, mode: "restore" },
     );
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     const record = await ctx.data!.latest("producer", "log");
     assertEquals(record?.path, contentPath);
     assertEquals(hydrated, [contentPath]);
@@ -2192,7 +2208,7 @@ Deno.test("data.latest(): path is empty when the file cannot be hydrated", async
       evict: true,
       mode: "absent",
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     const record = await ctx.data!.latest("producer", "log");
     assertExists(record);
     assertEquals(record.path, "");
@@ -2207,7 +2223,7 @@ Deno.test("data.latest(): a failing hydrate clears path but still returns the re
       evict: true,
       mode: "throw",
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     const record = await ctx.data!.latest("producer", "log");
     assertExists(record);
     assertEquals(record.name, "log");
@@ -2222,7 +2238,7 @@ Deno.test("data.findBySpec(): clears a missing path without downloading", async 
       evict: true,
       mode: "restore",
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     const records = await ctx.data!.findBySpec("producer", "log");
     assertEquals(records.length, 1);
     assertEquals(records[0].path, "");
@@ -2237,7 +2253,7 @@ Deno.test("data.query(): record results and path projections carry the path", as
       repoDir,
       { evict: false },
     );
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
     const records = await ctx.data!.query('modelName == "producer"');
     assertEquals(
       (records as { path: string }[]).map((r) => r.path),
@@ -2295,7 +2311,7 @@ Deno.test("data.specInstanceNames() lists data names of a spec, scoped like late
       dataRepo,
       dataQueryService: dqs,
     });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertExists(ctx.data?.specInstanceNames);
     assertEquals(ctx.data.specInstanceNames("mirror", "summary"), [
@@ -2321,7 +2337,7 @@ Deno.test("data.specInstanceNames() returns no names without a data query servic
       catalog,
     );
     const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
-    const ctx = await resolver.buildContext();
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
 
     assertEquals(ctx.data?.specInstanceNames?.("mirror", "summary") ?? [], []);
     catalog.close();

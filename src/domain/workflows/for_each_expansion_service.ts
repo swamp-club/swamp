@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { sensitiveValuesOf } from "../expressions/sensitive_context.ts";
+import { forEachNameWithoutSecrets } from "./persisted_workflow.ts";
 import {
   type AuthoredExpressions,
   partitionAuthored,
@@ -99,6 +101,20 @@ export function resolveForEachStepName(
 }
 
 /**
+ * The expanded name with any sensitive value the run recorded replaced by a
+ * stable placeholder, so a secret iterated over never becomes a step name in
+ * memory, logs, events or the run record.
+ */
+function nameWithoutSecrets(
+  name: string,
+  index: number,
+  context: ExpressionContext,
+): string {
+  const values = sensitiveValuesOf(context);
+  return values ? forEachNameWithoutSecrets(name, index, values) : name;
+}
+
+/**
  * Expands forEach steps in a job into multiple concrete steps.
  *
  * For steps with `forEach`, evaluates the `in` expression and creates
@@ -168,7 +184,7 @@ export class ForEachExpansionService {
           );
         }
       } else if (items && typeof items === "object") {
-        for (const [key, value] of Object.entries(items)) {
+        for (const [index, [key, value]] of Object.entries(items).entries()) {
           expandedSteps.push(
             this.expandObjectItem(
               step,
@@ -176,6 +192,7 @@ export class ForEachExpansionService {
               itemName,
               key,
               value,
+              index,
               nameHasExpression,
               authored,
             ),
@@ -243,7 +260,7 @@ export class ForEachExpansionService {
 
     return {
       step,
-      expandedName,
+      expandedName: nameWithoutSecrets(expandedName, index, context),
       forEachVar: { name: itemName, value: item },
     };
   }
@@ -254,6 +271,7 @@ export class ForEachExpansionService {
     itemName: string,
     key: string,
     value: unknown,
+    index: number,
     nameHasExpression: boolean,
     authored: AuthoredExpressions,
   ): ExpandedStep {
@@ -282,7 +300,7 @@ export class ForEachExpansionService {
 
     return {
       step,
-      expandedName,
+      expandedName: nameWithoutSecrets(expandedName, index, context),
       forEachVar: { name: itemName, value: objItem },
     };
   }

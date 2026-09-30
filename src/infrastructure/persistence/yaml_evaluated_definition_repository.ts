@@ -38,17 +38,31 @@ import {
   isFilenameSafeDefinitionName,
 } from "../../domain/definitions/definition.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  SENSITIVE_FORMAT_VERSION,
+  type WrittenReference,
+  WrittenReferenceSchema,
+} from "../../domain/secrets/mod.ts";
 
 interface EvaluatedDefinitionCache {
   definition: Definition;
   authoredExpressions: ReadonlySet<string>;
   deferredExpressions: readonly DeferredExpression[];
+  /** Where the file holds vault references in place of sensitive values. */
+  writtenReferences: readonly WrittenReference[];
+  /**
+   * Set when the file was written with sensitive values kept as references;
+   * absent in caches written before that, which may hold plaintext.
+   */
+  sensitiveFormat?: number;
 }
 
 // Cache metadata is deliberately separate from the source Definition schema.
 const CacheMetadataSchema = z.object({
   authoredExpressions: z.array(z.string()).optional(),
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
+  writtenReferences: z.array(WrittenReferenceSchema).optional(),
+  sensitiveFormat: z.number().int().positive().optional(),
 });
 
 function parseCache(content: string): EvaluatedDefinitionCache | null {
@@ -59,6 +73,8 @@ function parseCache(content: string): EvaluatedDefinitionCache | null {
     definition: Definition.fromData(data),
     authoredExpressions: new Set(metadata.authoredExpressions),
     deferredExpressions: metadata.deferredExpressions ?? [],
+    writtenReferences: metadata.writtenReferences ?? [],
+    sensitiveFormat: metadata.sensitiveFormat,
   };
 }
 
@@ -339,6 +355,7 @@ export class YamlEvaluatedDefinitionRepository {
     definition: Definition,
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
+    writtenReferences: readonly WrittenReference[] = [],
   ): Promise<void> {
     const targetPath = this.resolveWritePath(type, definition);
     await this.notifyDirty(targetPath);
@@ -355,6 +372,10 @@ export class YamlEvaluatedDefinitionRepository {
       authoredExpressions: authoredExpressions === undefined
         ? undefined
         : [...authoredExpressions],
+      writtenReferences: writtenReferences.length
+        ? writtenReferences
+        : undefined,
+      sensitiveFormat: SENSITIVE_FORMAT_VERSION,
     };
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;

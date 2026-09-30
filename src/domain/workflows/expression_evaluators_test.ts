@@ -32,6 +32,9 @@ import { Definition } from "../definitions/definition.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
+import { attachSensitiveValues } from "../expressions/sensitive_context.ts";
+import { RunSensitiveValues } from "../secrets/mod.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 function emptyContext(): ExpressionContext {
   return { model: {}, env: {} };
@@ -966,5 +969,139 @@ Deno.test("createTaskTargetDeferral: defers only task targets, by step-output de
       ),
     ),
     true,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Sensitive values spliced by evaluation (swamp-club#2171)
+// ---------------------------------------------------------------------------
+
+const SECRET = "Pl41n-s3cret";
+
+/** A context whose inputs hold a value the run recorded as sensitive. */
+function sensitiveContext(): ExpressionContext {
+  const values = new RunSensitiveValues();
+  values.addSecret(SECRET, { vaultName: "prod", key: "api-token" });
+  return attachSensitiveValues(
+    { model: {}, env: {}, inputs: { tok: SECRET, region: "eu" } },
+    values,
+  );
+}
+
+Deno.test("WorkflowExpressionEvaluator: keeps real values and returns a sanitized overlay for task arguments", async () => {
+  const workflow = Workflow.create({
+    name: "overlay",
+    jobs: [Job.create({
+      name: "j",
+      steps: [Step.create({
+        name: "s",
+        task: StepTask.directExecution(
+          "command/shell",
+          "x",
+          "execute",
+          { run: "echo ${{ inputs.tok }}" },
+          { region: "${{ inputs.region }}", tok: "${{ inputs.tok }}" },
+        ),
+      })],
+    })],
+  });
+  const result = await new WorkflowExpressionEvaluator(new CelEvaluator())
+    .evaluate(workflow, sensitiveContext(), "unrestricted");
+  const step = result.workflow.jobs[0].steps[0];
+  const task = step.task.data as {
+    inputs: Record<string, unknown>;
+    globalArgs: Record<string, unknown>;
+  };
+  assertEquals(task.inputs.run, `echo ${SECRET}`);
+  assertEquals(task.globalArgs.tok, SECRET);
+
+  const stepBag = new VaultSecretBag();
+  const fields = result.sanitizedTasks!.forStep(step, stepBag)!;
+  const inputs = fields.inputs as Record<string, string>;
+  const globals = fields.globalArgs as Record<string, string>;
+  assertEquals(inputs.run.includes(SECRET), false);
+  assertEquals(globals.region, "eu");
+  // The overlay's sentinels are the step's own.
+  assertEquals(stepBag.resolveRaw(inputs.run), `echo ${SECRET}`);
+  assertEquals(stepBag.resolveRaw(globals.tok), SECRET);
+});
+
+Deno.test("WorkflowExpressionEvaluator: no overlay when nothing sensitive was spliced", async () => {
+  const workflow = Workflow.create({
+    name: "plain",
+    jobs: [Job.create({
+      name: "j",
+      steps: [Step.create({
+        name: "s",
+        task: StepTask.model("m", "run", { region: "${{ inputs.region }}" }),
+      })],
+    })],
+  });
+  const result = await new WorkflowExpressionEvaluator(new CelEvaluator())
+    .evaluate(workflow, sensitiveContext(), "unrestricted");
+  assertEquals(result.sanitizedTasks, undefined);
+});
+
+Deno.test("DefinitionExpressionEvaluator: sanitizes argument splices and binds real global arguments", async () => {
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: { tok: "${{ inputs.tok }}" },
+    methods: {
+      run: {
+        arguments: {
+          run: "echo ${{ self.globalArguments.tok }}",
+          len: "${{ size(self.globalArguments.tok) }}",
+        },
+      },
+    },
+  });
+  const context = sensitiveContext();
+  context.self = {
+    id: definition.id,
+    name: definition.name,
+    version: definition.version,
+    tags: {},
+    globalArguments: definition.globalArguments,
+  };
+  const bag = new VaultSecretBag();
+  const result = await new DefinitionExpressionEvaluator(new CelEvaluator())
+    .evaluate(definition, context, "unrestricted", bag);
+  assertEquals(result.definition.globalArguments.tok, SECRET);
+  assertEquals(result.definition.getMethodArguments("run"), {
+    run: `echo ${SECRET}`,
+    len: SECRET.length,
+  });
+  const executed = result.sanitizedDefinition;
+  const run = executed.getMethodArguments("run").run as string;
+  assertEquals(run.includes(SECRET), false);
+  assertEquals(bag.resolveRaw(run), `echo ${SECRET}`);
+  assertEquals(executed.getMethodArguments("run").len, SECRET.length);
+  assertEquals(
+    bag.resolveRaw(executed.globalArguments.tok as string),
+    SECRET,
+  );
+});
+
+Deno.test("DefinitionExpressionEvaluator: splices the sanitized copy into a distinct sanitized base", async () => {
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: { tok: SECRET },
+    methods: { run: { arguments: { region: "${{ inputs.region }}" } } },
+  });
+  const bag = new VaultSecretBag();
+  const base = Definition.fromData({
+    ...definition.toData(),
+    globalArguments: { tok: bag.addDataSecret(SECRET) },
+  });
+  const result = await new DefinitionExpressionEvaluator(new CelEvaluator())
+    .evaluate(definition, sensitiveContext(), "unrestricted", bag, base);
+  assertEquals(result.definition.globalArguments.tok, SECRET);
+  assertEquals(
+    result.sanitizedDefinition.globalArguments.tok,
+    base.globalArguments.tok,
+  );
+  assertEquals(
+    result.sanitizedDefinition.getMethodArguments("run").region,
+    "eu",
   );
 });

@@ -66,6 +66,14 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import {
+  RunSensitiveValues,
+  type WrittenReference,
+} from "../../domain/secrets/mod.ts";
+import {
+  forEachNameWithoutSecrets,
+  persistEvaluatedWorkflow,
+} from "../../domain/workflows/persisted_workflow.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
@@ -130,6 +138,7 @@ export interface WorkflowEvaluateDeps {
    */
   buildExpressionContext: (
     needsModelNamespace: boolean,
+    sensitiveValues: RunSensitiveValues,
   ) => Promise<ExpressionContext>;
   evaluateCel: (
     expression: string,
@@ -146,6 +155,7 @@ export interface WorkflowEvaluateDeps {
   saveEvaluatedWorkflow: (
     workflow: Workflow,
     authoredExpressions: ReadonlySet<string>,
+    writtenReferences?: readonly WrittenReference[],
   ) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
@@ -186,16 +196,21 @@ export function createWorkflowEvaluateDeps(
     findWorkflowById: (id) => workflowRepo.findById(id),
     findWorkflowByName: (name) => workflowRepo.findByName(name),
     findAllWorkflows: () => workflowRepo.findAll(),
-    buildExpressionContext: (needsModelNamespace) =>
+    buildExpressionContext: (needsModelNamespace, sensitiveValues) =>
       needsModelNamespace
-        ? modelResolver.buildContext()
-        : Promise.resolve(modelResolver.buildLightContext()),
+        ? modelResolver.buildContext(sensitiveValues)
+        : Promise.resolve(modelResolver.buildLightContext(sensitiveValues)),
     evaluateCel: (expression, context) =>
       celEvaluator.evaluate(expression, context),
     evaluateCelAsync: (expression, context) =>
       celEvaluator.evaluateAsync(expression, context),
-    saveEvaluatedWorkflow: (workflow, authoredExpressions) =>
-      evaluatedWorkflowRepo.save(workflow, authoredExpressions),
+    saveEvaluatedWorkflow: (workflow, authoredExpressions, writtenReferences) =>
+      evaluatedWorkflowRepo.save(
+        workflow,
+        authoredExpressions,
+        undefined,
+        writtenReferences,
+      ),
     getEvaluatedPath: (id) => evaluatedWorkflowRepo.getPath(id),
   };
 }
@@ -233,8 +248,10 @@ async function evaluateWorkflowInternal(
   const coercedInputs = coerceInputTypes(inputs, workflow.inputs);
 
   // Build expression context with inputs
+  const sensitiveValues = new RunSensitiveValues();
   const context = await deps.buildExpressionContext(
     requiresModelNamespace(workflowData),
+    sensitiveValues,
   );
   context.inputs = coercedInputs;
 
@@ -348,6 +365,7 @@ async function evaluateWorkflowInternal(
       const buildExpandedStep = (
         stepContext: Record<string, unknown>,
         fallbackSuffix: string,
+        index: number,
       ) => {
         const resolved = resolveAvailableExpressions(
           {
@@ -384,7 +402,7 @@ async function evaluateWorkflowInternal(
 
         return {
           ...stepData,
-          name: expandedName,
+          name: forEachNameWithoutSecrets(expandedName, index, sensitiveValues),
           task: resolved.task,
           target: resolved.target,
           labels: resolved.labels,
@@ -394,21 +412,23 @@ async function evaluateWorkflowInternal(
       };
 
       if (Array.isArray(items)) {
-        for (const item of items) {
+        for (const [index, item] of items.entries()) {
           const stepContext = {
             ...context,
             self: { ...context.self, [itemName]: item },
           };
-          expandedSteps.push(buildExpandedStep(stepContext, String(item)));
+          expandedSteps.push(
+            buildExpandedStep(stepContext, String(item), index),
+          );
         }
       } else if (items && typeof items === "object") {
-        for (const [key, value] of Object.entries(items)) {
+        for (const [index, [key, value]] of Object.entries(items).entries()) {
           const objItem = { key, value };
           const stepContext = {
             ...context,
             self: { ...context.self, [itemName]: objItem },
           };
-          expandedSteps.push(buildExpandedStep(stepContext, key));
+          expandedSteps.push(buildExpandedStep(stepContext, key, index));
         }
       } else {
         // Not iterable — keep original step
@@ -430,7 +450,19 @@ async function evaluateWorkflowInternal(
   const workflowToSave = forEachExpanded
     ? Workflow.fromData(expandedWorkflowData as WorkflowData)
     : evaluatedWorkflow;
-  await deps.saveEvaluatedWorkflow(workflowToSave, authoredExpressions);
+  // Sensitive values are written as the vault references they came from.
+  const persisted = persistEvaluatedWorkflow(
+    workflowToSave,
+    workflow,
+    undefined,
+    [],
+    sensitiveValues,
+  );
+  await deps.saveEvaluatedWorkflow(
+    persisted.workflow,
+    authoredExpressions,
+    persisted.writtenReferences,
+  );
 
   return {
     id: workflow.id,
@@ -438,7 +470,10 @@ async function evaluateWorkflowInternal(
     hadExpressions: evaluatedValues.size > 0 || forEachExpanded,
     forEachExpanded,
     outputPath: deps.getEvaluatedPath(workflow.id),
-    jobs: expandedWorkflowData.jobs,
+    // Shown with sensitive values masked; the cache holds references.
+    jobs: sensitiveValues.masked(
+      expandedWorkflowData.jobs,
+    ) as typeof expandedWorkflowData.jobs,
   };
 }
 

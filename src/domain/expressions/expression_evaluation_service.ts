@@ -27,7 +27,14 @@ import {
   extractCelExpression,
   extractExpressions,
   replaceExpressions,
+  type SpliceSanitizer,
 } from "./expression_parser.ts";
+import { sensitiveValuesOf } from "./sensitive_context.ts";
+import {
+  isDefinitionArgumentPath,
+  sensitiveSpliceSanitizer,
+  type SplicePair,
+} from "./splice_pair.ts";
 import { getLogger } from "@logtape/logtape";
 import { type ASTNode, parse as parseCel } from "cel-js";
 import type { ExpressionLocation } from "./expression.ts";
@@ -46,7 +53,7 @@ import { evaluateDefinitionExpressions } from "./definition_expression_pass.ts";
 import { BINDING_MACROS, freeRoots } from "./cel_grammar.ts";
 import { maskLiteralCalls, stripStringLiterals } from "./cel_string_lexer.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
+import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   CyclicDependencyError as TopoCyclicError,
@@ -289,6 +296,18 @@ export interface EvaluatedDefinition {
    * `--last-evaluated`).
    */
   failedExpressions?: FailedExpressions;
+  /**
+   * The definition to execute: `definition` with sensitive data values in
+   * its arguments replaced by sentinels from the caller's bag. Present only
+   * when a bag was given; `definition` keeps real values for caching,
+   * reports and `self.globalArguments`.
+   */
+  sanitizedDefinition?: Definition;
+  /**
+   * The definition as it was before evaluation. Its expression paths are the
+   * positions a persisted evaluation must treat as values.
+   */
+  sourceDefinition?: Definition;
 }
 
 /**
@@ -328,6 +347,28 @@ export class ExpressionEvaluationService {
   }
 
   /**
+   * {@link evaluateData} over a raw/sanitized pair: each expression is
+   * evaluated once, from the raw copy, and spliced into both; the sanitized
+   * copy replaces sensitive data values with sentinels from `secretBag`.
+   */
+  async evaluateDataPair<T>(
+    pair: SplicePair<T>,
+    context: ExpressionContext,
+    authored: AuthoredExpressions,
+    secretBag: VaultSecretBag,
+  ): Promise<SplicePair<T>> {
+    const sensitiveValues = sensitiveValuesOf(context);
+    const values = await this.evaluateDataValues(pair.raw, context, authored);
+    if (values.size === 0) return pair;
+    return pair.splice(
+      values,
+      sensitiveValues
+        ? sensitiveSpliceSanitizer(sensitiveValues, secretBag)
+        : { whole: (value) => value, embedded: (text) => text },
+    );
+  }
+
+  /**
    * Evaluates expressions in arbitrary data with the given context.
    * Used at step-execution seams over workflow-level data.
    *
@@ -345,9 +386,19 @@ export class ExpressionEvaluationService {
     context: ExpressionContext,
     authored: AuthoredExpressions,
   ): Promise<unknown> {
+    const values = await this.evaluateDataValues(data, context, authored);
+    if (values.size === 0) return data;
+    return replaceExpressions(data, values);
+  }
+
+  private async evaluateDataValues(
+    data: unknown,
+    context: ExpressionContext,
+    authored: AuthoredExpressions,
+  ): Promise<Map<string, unknown>> {
     const expressions = partitionAuthored(extractExpressions(data), authored);
     if (expressions.length === 0) {
-      return data;
+      return new Map();
     }
 
     // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
@@ -371,7 +422,7 @@ export class ExpressionEvaluationService {
       evaluatedValues.set(expr.raw, value);
     }
 
-    return replaceExpressions(data, evaluatedValues);
+    return evaluatedValues;
   }
 
   /**
@@ -384,13 +435,14 @@ export class ExpressionEvaluationService {
    */
   async buildRuntimeContext(
     definition: Definition,
+    sensitiveValues: RunSensitiveValues,
     inputs?: Record<string, unknown>,
     deferredExpressions: readonly DeferredExpression[] = [],
   ): Promise<ExpressionContext> {
     const ctx =
       requiresModelNamespace([definition.toData(), deferredExpressions])
-        ? await this.modelResolver.buildContext()
-        : this.modelResolver.buildLightContext();
+        ? await this.modelResolver.buildContext(sensitiveValues)
+        : this.modelResolver.buildLightContext(sensitiveValues);
     if (inputs) {
       ctx.inputs = inputs;
     }
@@ -403,6 +455,7 @@ export class ExpressionEvaluationService {
    *
    * @param definition - The definition to evaluate
    * @param type - The model type
+   * @param sensitiveValues - The run's record of resolved sensitive values
    * @param inputValues - Optional input values to use in expression evaluation
    * @param context - Optional pre-built context (for batch evaluation)
    * @returns The evaluated definition
@@ -410,8 +463,10 @@ export class ExpressionEvaluationService {
   async evaluateDefinition(
     definition: Definition,
     type: ModelType,
+    sensitiveValues: RunSensitiveValues,
     inputValues?: Record<string, unknown>,
     context?: ExpressionContext,
+    secretBag?: VaultSecretBag,
   ): Promise<EvaluatedDefinition> {
     const definitionData = definition.toData();
     const authoredExpressions = collectAuthoredExpressions(
@@ -421,7 +476,7 @@ export class ExpressionEvaluationService {
 
     // Build context if not provided.
     const ctx = context ??
-      await this.buildRuntimeContext(definition, inputValues);
+      await this.buildRuntimeContext(definition, sensitiveValues, inputValues);
 
     // Add inputs to context if provided
     if (inputValues) {
@@ -441,12 +496,18 @@ export class ExpressionEvaluationService {
     const expressions = extractExpressions(definitionData);
 
     if (expressions.length === 0) {
-      return { definition, type, hadExpressions: false, authoredExpressions };
+      return {
+        definition,
+        type,
+        hadExpressions: false,
+        authoredExpressions,
+        sourceDefinition: definition,
+      };
     }
 
     // Evaluate CEL-only expressions; runtime expressions (vault, env, and
     // mixed) are left raw — they are resolved at runtime only, never persisted.
-    const { data: evaluatedData, failedExpressions } =
+    const { data: evaluatedData, sanitizedData, failedExpressions } =
       await evaluateDefinitionExpressions(
         definitionData,
         expressions.filter((expr) =>
@@ -454,6 +515,13 @@ export class ExpressionEvaluationService {
         ),
         ctx,
         this.celEvaluator,
+        secretBag
+          ? sensitiveSpliceSanitizer(
+            sensitiveValuesOf(ctx) ?? sensitiveValues,
+            secretBag,
+            isDefinitionArgumentPath,
+          )
+          : undefined,
       );
 
     // Create new Definition from evaluated data
@@ -465,6 +533,10 @@ export class ExpressionEvaluationService {
       hadExpressions: true,
       authoredExpressions,
       failedExpressions,
+      sourceDefinition: definition,
+      ...(sanitizedData
+        ? { sanitizedDefinition: DefinitionClass.fromData(sanitizedData) }
+        : {}),
     };
   }
 
@@ -498,7 +570,9 @@ export class ExpressionEvaluationService {
    * @returns Array of evaluated definitions
    * @throws CyclicDependencyError if circular dependencies are detected
    */
-  async evaluateAllDefinitions(): Promise<EvaluatedDefinition[]> {
+  async evaluateAllDefinitions(
+    sensitiveValues: RunSensitiveValues,
+  ): Promise<EvaluatedDefinition[]> {
     // Load all definitions
     const allDefinitions = await this.definitionRepo.findAllGlobal();
 
@@ -520,6 +594,7 @@ export class ExpressionEvaluationService {
     // Build initial context from the definitions already loaded above, so the
     // repository is not walked a second time.
     const context = await this.modelResolver.buildContext(
+      sensitiveValues,
       undefined,
       undefined,
       undefined,
@@ -556,6 +631,7 @@ export class ExpressionEvaluationService {
       const result = await this.evaluateDefinition(
         entry.definition,
         entry.type,
+        sensitiveValues,
         undefined,
         ctxWithSelf,
       );
@@ -658,9 +734,21 @@ export class ExpressionEvaluationService {
     redactor: SecretRedactor | undefined,
     expressionContext: ExpressionContext | undefined,
     authored: AuthoredExpressions,
+    options: {
+      /**
+       * The step's bag. Sentinels the definition pass already spliced for
+       * sensitive data values live in it, so the method receives one bag.
+       */
+      secretBag?: VaultSecretBag;
+      /**
+       * Global arguments with real values, bound as `self.globalArguments`
+       * so CEL never reads the sentinels the executed copy carries.
+       */
+      rawGlobalArguments?: Record<string, unknown>;
+    } = {},
   ): Promise<RuntimeResolutionResult> {
     const logger = getLogger(["swamp", "expressions"]);
-    const secretBag = new VaultSecretBag();
+    const secretBag = options.secretBag ?? new VaultSecretBag();
     const definitionData = definition.toData();
     const expressions = extractExpressions(definitionData);
 
@@ -684,12 +772,25 @@ export class ExpressionEvaluationService {
       return { definition, secretBag };
     }
 
+    // A runtime expression can also read a sensitive data value
+    // (`env.X + data.latest(...)`), so its result is sanitized as it is
+    // spliced into an argument, like the definition pass does.
+    const sensitiveValues = sensitiveValuesOf(expressionContext);
+    const sanitizer = sensitiveValues
+      ? sensitiveSpliceSanitizer(
+        sensitiveValues,
+        secretBag,
+        isDefinitionArgumentPath,
+      )
+      : undefined;
     const resolvedDefinition = await this.resolveRuntimeInExpressions(
       definitionData,
       runtimeExpressions,
       redactor,
       secretBag,
       expressionContext,
+      options.rawGlobalArguments,
+      sanitizer,
     );
 
     return { definition: resolvedDefinition, secretBag };
@@ -830,6 +931,8 @@ export class ExpressionEvaluationService {
     redactor?: SecretRedactor,
     secretBag?: VaultSecretBag,
     expressionContext?: ExpressionContext,
+    rawGlobalArguments?: Record<string, unknown>,
+    sanitizer?: SpliceSanitizer,
   ): Promise<Definition> {
     const celContext: ExpressionContext = {
       model: {},
@@ -839,7 +942,8 @@ export class ExpressionEvaluationService {
         name: definitionData.name,
         version: definitionData.version,
         tags: definitionData.tags,
-        globalArguments: definitionData.globalArguments ?? {},
+        globalArguments: rawGlobalArguments ??
+          definitionData.globalArguments ?? {},
         ...expressionContext?.self,
       },
       env: buildEnvContext(),
@@ -850,6 +954,7 @@ export class ExpressionEvaluationService {
       celContext,
       redactor,
       secretBag ?? new VaultSecretBag(),
+      sanitizer,
     );
     return DefinitionClass.fromData(
       resolvedData as ReturnType<Definition["toData"]>,
@@ -863,6 +968,7 @@ export class ExpressionEvaluationService {
     context: ExpressionContext,
     redactor: SecretRedactor | undefined,
     secretBag: VaultSecretBag,
+    sanitizer?: SpliceSanitizer,
   ): Promise<unknown> {
     const records = new Map(
       (context.deferredExpressions ?? []).map((
@@ -961,6 +1067,8 @@ export class ExpressionEvaluationService {
     for (const expr of expressions) {
       values.set(expr.raw, await resolve(expr, context));
     }
-    return replaceExpressions(data, values);
+    // Only this final splice is sanitized; the binding resolution above builds
+    // context, which keeps raw values.
+    return replaceExpressions(data, values, undefined, sanitizer);
   }
 }

@@ -24,7 +24,7 @@ import type { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
+import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isTextContentType } from "./content_type.ts";
 import {
@@ -310,8 +310,8 @@ export async function fromResourceHandle(
   modelId: string,
   fallbackModelName: string,
   dataRepo: UnifiedDataRepository,
+  sensitiveValues: SecretSink,
   vaultService?: VaultService,
-  redactor?: SecretRedactor,
 ): Promise<DataRecord> {
   let attributes: Record<string, unknown> = {};
   if (handle.metadata.contentType === "application/json") {
@@ -338,7 +338,7 @@ export async function fromResourceHandle(
           attributes,
           sensitiveFields,
           vaultService,
-          redactor,
+          sensitiveValues,
         );
       } catch {
         // Vault unavailable or specific keys failed — leave unresolved
