@@ -2084,71 +2084,75 @@ Deno.test("data.latest records sensitive vault refs resolved through the catalog
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
     const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
-    const dataRepo = new FileSystemUnifiedDataRepository(
-      repoDir,
-      undefined,
-      catalog,
-    );
-    const type = ModelType.create("test/model");
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalog,
+      );
+      const type = ModelType.create("test/model");
 
-    // The definition is never saved, so the resolver has no coordinates for
-    // "orphan-holder" and data.latest() has to go through getLatestRecord().
-    const model = Definition.create({ name: "orphan-holder" });
+      // The definition is never saved, so the resolver has no coordinates for
+      // "orphan-holder" and data.latest() has to go through getLatestRecord().
+      const model = Definition.create({ name: "orphan-holder" });
 
-    const data = Data.create({
-      name: "creds",
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      tags: {
-        type: "resource",
-        modelName: "orphan-holder",
-        "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
-      },
-      ownerDefinition: owner,
-    });
-    await dataRepo.save(
-      type,
-      model.id,
-      data,
-      new TextEncoder().encode(JSON.stringify({
-        apiKey: "${{ vault.get('my-vault', 'api-key') }}",
-        plain: "${{ vault.get('my-vault', 'api-key') }}",
-      })),
-    );
-    const dqs = new DataQueryService(catalog, dataRepo);
-    await dqs.query('name == ""');
+      const data = Data.create({
+        name: "creds",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: {
+          type: "resource",
+          modelName: "orphan-holder",
+          "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
+        },
+        ownerDefinition: owner,
+      });
+      await dataRepo.save(
+        type,
+        model.id,
+        data,
+        new TextEncoder().encode(JSON.stringify({
+          apiKey: "${{ vault.get('my-vault', 'api-key') }}",
+          plain: "${{ vault.get('my-vault', 'api-key') }}",
+        })),
+      );
+      const dqs = new DataQueryService(catalog, dataRepo);
+      await dqs.query('name == ""');
 
-    const vaultService = {
-      get: (_vaultName: string, _secretKey: string) =>
-        Promise.resolve("secret-456"),
-    } as unknown as VaultService;
+      const vaultService = {
+        get: (_vaultName: string, _secretKey: string) =>
+          Promise.resolve("secret-456"),
+      } as unknown as VaultService;
 
-    const resolver = new ModelResolver(defRepo, {
-      repoDir,
-      dataRepo,
-      dataQueryService: dqs,
-      vaultService,
-    });
+      const resolver = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+        vaultService,
+      });
 
-    const redactor = new SecretRedactor();
-    const values = new RunSensitiveValues(redactor);
-    const record = await resolver.buildLightContext(values).data!.latest(
-      "orphan-holder",
-      "creds",
-    );
-    assertExists(record);
-    assertEquals(record.attributes.apiKey, "secret-456");
-    // Fields the schema did not mark sensitive stay unresolved.
-    assertEquals(
-      record.attributes.plain,
-      "${{ vault.get('my-vault', 'api-key') }}",
-    );
-    assertEquals(values.list(), [{
-      value: "secret-456",
-      source: { vaultName: "my-vault", key: "api-key" },
-    }]);
-    assertEquals(redactor.redact("key=secret-456"), "key=***");
+      const redactor = new SecretRedactor();
+      const values = new RunSensitiveValues(redactor);
+      const record = await resolver.buildLightContext(values).data!.latest(
+        "orphan-holder",
+        "creds",
+      );
+      assertExists(record);
+      assertEquals(record.attributes.apiKey, "secret-456");
+      // Fields the schema did not mark sensitive stay unresolved.
+      assertEquals(
+        record.attributes.plain,
+        "${{ vault.get('my-vault', 'api-key') }}",
+      );
+      assertEquals(values.list(), [{
+        value: "secret-456",
+        source: { vaultName: "my-vault", key: "api-key" },
+      }]);
+      assertEquals(redactor.redact("key=secret-456"), "key=***");
+    } finally {
+      catalog.close();
+    }
   });
 });
 
