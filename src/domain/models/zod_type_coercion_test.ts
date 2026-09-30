@@ -388,3 +388,10 @@ Deno.test("parseGlobalArgumentsLeniently: passes a subset of a schema without pa
   );
   assertEquals(result, { success: true, data: { name: "a" } });
 });
+
+Deno.test("parseGlobalArgumentsLeniently: treats an own __proto__ key as data, not a prototype", () => {
+  const schema = z.object({ top: z.number().default(6) });
+  const args = JSON.parse('{"__proto__": {"top": "polluted"}}');
+  const result = parseGlobalArgumentsLeniently(schema, args);
+  assertEquals(result, { success: true, data: { top: 6 } });
+});

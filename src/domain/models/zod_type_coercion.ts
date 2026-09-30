@@ -226,10 +226,10 @@ export function parseGlobalArgumentsLeniently(
   args: Record<string, unknown>,
   skipKeys: ReadonlySet<string> = new Set(),
 ): LenientParseResult {
-  const input: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (!skipKeys.has(key)) input[key] = value;
-  }
+  // fromEntries defines own properties, so a "__proto__" key stays a key.
+  const input: Record<string, unknown> = Object.fromEntries(
+    Object.entries(args).filter(([key]) => !skipKeys.has(key)),
+  );
 
   const partial = tryPartial(schema);
   const shape = partial === "refused" ? getObjectShape(schema) : undefined;

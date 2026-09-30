@@ -622,7 +622,9 @@ their zod defaults, exactly as when every global argument resolved; an
 unresolved field is never replaced by its default, so the Proxy still guards
 it. The check is lenient, so missing fields are not required
 (`parseGlobalArgumentsLeniently` in `src/domain/models/zod_type_coercion.ts`,
-shared with `swamp model validate` and direct type execution). It uses the
+shared with `swamp model validate` and direct type execution; `model validate`
+still skips the global-argument check entirely when any field holds an
+expression, and direct type execution checks only the static fields). It uses the
 schema's `.partial()`. An object schema with refinements refuses `.partial()`
 in zod 4, so its fields are checked one by one and its object-level
 refinements do not run there. A schema without `.partial()`, such as a
