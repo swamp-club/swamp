@@ -124,7 +124,7 @@ function groupByFilename(
  * is total, so peers that see the same copies keep the same one and never
  * revoke every copy between them.
  */
-export function selectKeeper<T extends { grant: Grant; modelId: string }>(
+function selectKeeper<T extends { grant: Grant; modelId: string }>(
   copies: readonly T[],
 ): T {
   const byModelId = [...copies].sort((a, b) =>

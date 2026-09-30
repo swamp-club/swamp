@@ -195,13 +195,21 @@ from method-created grants during reconciliation.
 
 Reconcile treats every stored copy of a grant as the same grant. Serve
 instances that start against one datastore can each store a copy of a file
-grant or `--admins` grant. Reconcile keeps one active copy and revokes the
-rest. For file grants the kept copy is the active one with the lowest model id.
-For admin grants it is the copy whose model id matches the stored definition.
-The order is total, so peers that see the same copies keep the same one. An
-entry removed from a file, or an admin removed from `--admins`, has every copy
-revoked. Startup and `--grant-reload auto` push their grant writes to the
-datastore, as `access reload` does, inside the exclusive sync gate
+grant or `--admins` grant. An entry removed from a file, or an admin removed
+from `--admins`, has every copy revoked.
+
+For a file grant still in its file, reconcile keeps the active copy with the
+lowest model id and revokes the others. The order does not depend on local
+state, so no peer ever revokes the lowest active copy it can see, and at least
+one copy stays active while peers sync. Admin grants for admins still in
+`--admins` are left as they are, duplicates included: their definitions share a
+name-derived path, so peers cannot agree on a copy to keep until they sync. A
+wrong pick could revoke the last active copy, and an active duplicate does no
+harm. When every copy is revoked and the admin is added back, the copy backed
+by the stored definition is reactivated.
+
+Startup and `--grant-reload auto` push their grant writes to the datastore, as
+`access reload` does, inside the exclusive sync gate
 (`src/serve/grant_write_tracking.ts`).
 
 Under `--grant-reload auto`, a source that fails to read or validate keeps its

@@ -146,9 +146,8 @@ export function createGrantWriteCommit(
 ): <T>(unit: () => Promise<T>) => Promise<T> {
   return (unit) =>
     withSyncGate(gate, async () => {
-      // Drop anything recorded outside a unit, so this push carries only
-      // this unit's writes.
-      tracking.takeWrittenPaths();
+      // Paths left by a unit that threw are still pushed here: their writes
+      // are on disk and belong in the datastore.
       const result = await unit();
       await publishGrantWrites(tracking.takeWrittenPaths(), deps);
       return result;

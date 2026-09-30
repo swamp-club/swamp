@@ -432,7 +432,8 @@ Deno.test("materializeAdmins: revokes every active copy of a removed admin", asy
   assertEquals(second.revoked, 0);
 });
 
-Deno.test("materializeAdmins: keeps the definition-backed copy and revokes the other", async () => {
+Deno.test("materializeAdmins: leaves every active copy of a wanted admin active", async () => {
+  // Revoking extras could leave no active copy if peers pick differently.
   const instanceName = await adminInstanceName("user:adam");
   const store = createMockStore(new Map(), {
     duplicates: new Map([[instanceName, [
@@ -445,26 +446,24 @@ Deno.test("materializeAdmins: keeps the definition-backed copy and revokes the o
   const result = await materializeAdmins("token", ["user:adam"], store);
 
   assertEquals(result.unchanged, 1);
-  assertEquals(result.revoked, 1);
-  assertEquals(store.writtenByModelId.get("model-a")?.state, "revoked");
-  assertEquals(store.writtenByModelId.has("model-b"), false);
+  assertEquals(result.revoked, 0);
+  assertEquals(store.writtenByModelId.size, 0);
 });
 
-Deno.test("materializeAdmins: keeps the lowest-modelId copy when no copy has a definition", async () => {
+Deno.test("materializeAdmins: reactivates the lowest-modelId copy when no copy has a definition", async () => {
   const instanceName = await adminInstanceName("user:adam");
   const store = createMockStore(new Map(), {
     duplicates: new Map([[instanceName, [
-      { grant: makeGrant(), modelId: "model-b" },
-      { grant: makeGrant(), modelId: "model-a" },
+      { grant: makeGrant({ state: "revoked" }), modelId: "model-b" },
+      { grant: makeGrant({ state: "revoked" }), modelId: "model-a" },
     ]]]),
   });
 
   const result = await materializeAdmins("token", ["user:adam"], store);
 
-  assertEquals(result.unchanged, 1);
-  assertEquals(result.revoked, 1);
-  assertEquals(store.writtenByModelId.has("model-a"), false);
-  assertEquals(store.writtenByModelId.get("model-b")?.state, "revoked");
+  assertEquals(result.reactivated, 1);
+  assertEquals(store.writtenByModelId.get("model-a")?.state, "active");
+  assertEquals(store.writtenByModelId.has("model-b"), false);
 });
 
 Deno.test("materializeAdmins: reactivates only the definition-backed copy of several revoked copies", async () => {

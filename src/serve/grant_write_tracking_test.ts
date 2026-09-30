@@ -93,7 +93,7 @@ Deno.test("publishGrantWrites: logs a failed push instead of throwing", async ()
 Deno.test("createGrantWriteCommit: pushes the unit's writes inside the exclusive gate", async () => {
   const gate = createSyncGate();
   const { events, deps } = recordingDeps(gate);
-  let pending = ["stale-from-outside-a-unit"];
+  let pending = ["left-by-a-failed-unit"];
   const tracking = {
     takeWrittenPaths() {
       const paths = pending;
@@ -111,6 +111,7 @@ Deno.test("createGrantWriteCommit: pushes the unit's writes inside the exclusive
 
   assertEquals(result, "done");
   assertEquals(events, [
+    { kind: "mark", path: "left-by-a-failed-unit" },
     { kind: "mark", path: "grant-data-dir" },
     { kind: "push", namespace: "infra", gateHeld: true },
   ]);

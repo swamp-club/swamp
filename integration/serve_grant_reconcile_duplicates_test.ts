@@ -217,16 +217,16 @@ Deno.test("duplicate admin grants: dropping an admin revokes every copy", async 
   });
 });
 
-Deno.test("duplicate admin grants: the definition-backed copy is the one kept", async () => {
-  await withHarness(async ({ tracking }) => {
+Deno.test("duplicate admin grants: re-adding an admin reactivates the definition-backed copy", async () => {
+  await withHarness(async ({ tracking, loader }) => {
     const store = tracking.adminGrantStore;
     await materializeAdmins("token", ["user:admin"], store);
     await materializeAdmins("token", ["user:admin"], peerAdminStore(store));
+    await materializeAdmins("token", ["user:bob"], store);
 
     const result = await materializeAdmins("token", ["user:admin"], store);
 
-    assertEquals(result.revoked, 1);
-    assertEquals(result.unchanged, 1);
+    assertEquals(result.reactivated, 1);
     const instanceName = instanceNameForAdmin(
       await hashPrincipal("user:admin"),
     );
@@ -236,6 +236,10 @@ Deno.test("duplicate admin grants: the definition-backed copy is the one kept", 
     assertEquals(
       active[0].modelId,
       await store.findDefinitionId(instanceName),
+    );
+    assertEquals(
+      await decide(loader, "admin", "admin", ALL_ACCESS),
+      "allow",
     );
   });
 });

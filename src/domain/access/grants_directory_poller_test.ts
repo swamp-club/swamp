@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -725,7 +725,7 @@ Deno.test("GrantsDirectoryPoller: runs store writes and the snapshot reload insi
       },
     );
 
-    assertEquals(units >= 1, true);
+    assert(units >= 1);
     assertEquals(store.written.size, 1);
     assertEquals(writesOutsideUnit, 0);
   });

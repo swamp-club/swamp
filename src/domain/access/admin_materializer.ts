@@ -232,25 +232,22 @@ export async function materializeAdmins(
     const instanceName = instanceNameForAdmin(hash);
     desiredInstanceNames.add(instanceName);
 
+    // Every copy of a wanted admin grant is left as it is. Revoking the
+    // extras would need peers to agree on which copy survives, and a peer
+    // whose synced definition differs could revoke the one the other kept,
+    // leaving the admin with no active grant. An active duplicate is
+    // harmless: removing the admin revokes every copy below.
     const copies = configGrants.get(instanceName) ?? [];
-    const existing = copies.length > 0
-      ? selectConfigKeeper(copies, await store.findDefinitionId(instanceName))
-      : undefined;
-
-    for (const copy of copies) {
-      if (copy === existing || copy.grant.state !== "active") continue;
-      const revoked: Grant = { ...copy.grant, state: "revoked" };
-      await store.writeGrant(copy.modelId, instanceName, revoked);
-      result.revoked++;
-      logger.info`Revoked duplicate admin grant for ${admin}`;
-    }
-
-    if (existing && existing.grant.state === "active") {
+    if (copies.some((c) => c.grant.state === "active")) {
       result.unchanged++;
       continue;
     }
 
-    if (existing && existing.grant.state === "revoked") {
+    if (copies.length > 0) {
+      const existing = selectCopyToReactivate(
+        copies,
+        await store.findDefinitionId(instanceName),
+      );
       const reactivated: Grant = { ...existing.grant, state: "active" };
       await store.writeGrant(existing.modelId, instanceName, reactivated);
       result.reactivated++;
@@ -285,24 +282,18 @@ export async function materializeAdmins(
 }
 
 /**
- * Picks the copy of an admin grant that materialization keeps. Peers write
- * the same name-derived definition path, so only one copy's modelId still
- * has a definition once their writes meet: that copy is preferred, then the
- * lowest modelId, with active copies ahead of revoked ones at each step. The
- * order is total, so peers that see the same copies keep the same one.
+ * Picks which revoked copy of a wanted admin grant to reactivate: the copy
+ * whose model id matches the stored definition, so it is not orphaned data,
+ * then the lowest model id.
  */
-function selectConfigKeeper(
+function selectCopyToReactivate(
   copies: readonly StoredConfigGrant[],
   definitionId: string | undefined,
 ): StoredConfigGrant {
   const byModelId = [...copies].sort((a, b) =>
     a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0
   );
-  const backed = (c: StoredConfigGrant) => c.modelId === definitionId;
-  const active = (c: StoredConfigGrant) => c.grant.state === "active";
-  return byModelId.find((c) => active(c) && backed(c)) ??
-    byModelId.find(active) ??
-    byModelId.find(backed) ??
+  return byModelId.find((c) => c.modelId === definitionId) ??
     byModelId[0];
 }
 
