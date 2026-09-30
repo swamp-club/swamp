@@ -29,6 +29,7 @@ import {
 } from "./update.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 
 /**
  * Builds a fixture UpstreamExtensionsMap from a shorthand
@@ -215,6 +216,74 @@ Deno.test("extensionUpdate: update mode with install failure", async () => {
     assertEquals(completed.mode, "update");
     assertEquals(completed.data.summary.failed, 1);
     assertEquals(completed.data.extensions[0].status, "failed");
+  }
+});
+
+function collision(
+  rollback: ConstructorParameters<typeof DuplicateTypeUserError>[0]["rollback"],
+): DuplicateTypeUserError {
+  const occupant = (name: string) => ({
+    extensionName: name,
+    extensionVersion: "2026.01.01.1",
+    canonicalPath: `/repo/${name}/models/m.ts`,
+  });
+  return new DuplicateTypeUserError({
+    kind: "model",
+    typeNormalized: "@ns/shared",
+    existing: occupant("@ns/b"),
+    conflicting: occupant("@ns/a"),
+    rollback,
+  });
+}
+
+Deno.test("extensionUpdate: a collision that was rolled back reports the version still installed (swamp-club#2724)", async () => {
+  const deps = makeDeps({
+    upstream: { "@ns/a": "2026.01.01.1" },
+    getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+    installExtension: () =>
+      Promise.reject(collision({ status: "rolled-back" })),
+  });
+
+  const completed = (await collect<ExtensionUpdateEvent>(
+    extensionUpdate(makeCtx(), deps, { checkOnly: false }),
+  )).find((e) => e.kind === "completed");
+
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const status = completed.data.extensions[0];
+    assertEquals(status.status, "failed");
+    if (status.status === "failed") {
+      assertEquals(status.installedVersion, "2026.01.01.1");
+    }
+  }
+});
+
+Deno.test("extensionUpdate: a collision whose install was kept reports the new version as installed (swamp-club#2724)", async () => {
+  const deps = makeDeps({
+    upstream: { "@ns/a": "2026.01.01.1" },
+    getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+    installExtension: () =>
+      Promise.reject(collision({
+        status: "kept",
+        kept: [{
+          name: "@ns/a",
+          version: "2026.03.01.1",
+          priorVersion: "2026.01.01.1",
+        }],
+      })),
+  });
+
+  const completed = (await collect<ExtensionUpdateEvent>(
+    extensionUpdate(makeCtx(), deps, { checkOnly: false }),
+  )).find((e) => e.kind === "completed");
+
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const status = completed.data.extensions[0];
+    assertEquals(status.status, "failed");
+    if (status.status === "failed") {
+      assertEquals(status.installedVersion, "2026.03.01.1");
+    }
   }
 });
 
