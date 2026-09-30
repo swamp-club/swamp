@@ -455,10 +455,18 @@ export async function resolveOrCreateDefinition(
     // (e.g. a `vault.get(...)` reference) are resolved and validated at runtime;
     // checking them now would reject a sentinel string against a constrained
     // field, blocking the vault remediation for a sensitive argument.
+    // The stripped keys are passed as skipped, so object-level refinements
+    // never run against an object missing a field that has a value.
     const staticArgs = stripExpressionFields(routed.globalArguments);
+    const strippedKeys = new Set(
+      Object.keys(routed.globalArguments).filter((key) =>
+        !Object.hasOwn(staticArgs, key)
+      ),
+    );
     const result = parseGlobalArgumentsLeniently(
       modelDef.globalArguments,
       staticArgs,
+      strippedKeys,
     );
     if (!result.success) {
       const issues = result.issues.map((i: z.ZodIssue) => {

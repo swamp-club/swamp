@@ -1353,3 +1353,49 @@ Deno.test("resolveOrCreateDefinition: validates a refined globalArguments schema
     assertStringIncludes(invalid.error.message, "region:");
   }
 });
+
+Deno.test("resolveOrCreateDefinition: enforces an object-level globalArguments refinement unless a field holds an expression (swamp-club#2783)", async () => {
+  const modelDef = createTestModelDef(
+    z.object({
+      apiKey: z.string().optional(),
+      token: z.string().optional(),
+    }).superRefine((v, ctx) => {
+      if (!v.apiKey && !v.token) {
+        ctx.addIssue({ code: "custom", message: "apiKey or token required" });
+      }
+    }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/refined-model");
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: () => Promise.resolve(),
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/${id}.yaml`,
+  };
+  const resolve = (args: Record<string, unknown>) =>
+    resolveOrCreateDefinition(
+      deps,
+      "test/refined-model",
+      "my-model",
+      "run",
+      args,
+      resolvedType,
+      modelDef,
+    );
+
+  const invalid = await resolve({ id: "abc" });
+  assertEquals(invalid.ok, false);
+  if (!invalid.ok) {
+    assertStringIncludes(invalid.error.message, "apiKey or token required");
+  }
+  assertEquals((await resolve({ token: "t", id: "abc" })).ok, true);
+  assertEquals(
+    (await resolve({
+      apiKey: "${{ vault.get('main', 'api-key') }}",
+      id: "abc",
+    })).ok,
+    true,
+  );
+});
