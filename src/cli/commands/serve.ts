@@ -28,7 +28,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { pullManagedConfigAtBoot } from "../managed_config_sync.ts";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   MAX_TIMER_DELAY_MS,
   parseTimeout,
@@ -1770,23 +1770,32 @@ const reloadCommand = new Command()
     try {
       pidStr = await Deno.readTextFile(pidPath);
     } catch {
-      throw new UserError(
-        "No PID file found at " + pidPath + ". " +
-          "Is swamp serve running with --hot-reload?",
+      throw markErrorPaths(
+        new UserError(
+          "No PID file found at " + pidPath + ". " +
+            "Is swamp serve running with --hot-reload?",
+        ),
+        [pidPath],
       );
     }
 
     const pid = parseInt(pidStr.trim(), 10);
     if (isNaN(pid)) {
-      throw new UserError("Invalid PID in " + pidPath + ": " + pidStr.trim());
+      throw markErrorPaths(
+        new UserError("Invalid PID in " + pidPath + ": " + pidStr.trim()),
+        [pidPath],
+      );
     }
 
     try {
       Deno.kill(pid, "SIGHUP");
     } catch {
-      throw new UserError(
-        "Process " + pid + " not found — stale PID file. " +
-          "Remove " + pidPath + " and restart serve with --hot-reload.",
+      throw markErrorPaths(
+        new UserError(
+          "Process " + pid + " not found — stale PID file. " +
+            "Remove " + pidPath + " and restart serve with --hot-reload.",
+        ),
+        [pidPath],
       );
     }
 
@@ -3437,12 +3446,18 @@ export const serveCommand = new Command()
         content = await Deno.readTextFile(externalGrantsFilePath);
       } catch (cause) {
         if (cause instanceof Deno.errors.NotFound) {
-          throw new UserError(
-            `External grants file not found: ${externalGrantsFilePath}`,
+          throw markErrorPaths(
+            new UserError(
+              `External grants file not found: ${externalGrantsFilePath}`,
+            ),
+            [externalGrantsFilePath],
           );
         }
-        throw new UserError(
-          `Failed to read external grants file ${externalGrantsFilePath}: ${cause}`,
+        throw markErrorPaths(
+          new UserError(
+            `Failed to read external grants file ${externalGrantsFilePath}: ${cause}`,
+          ),
+          [externalGrantsFilePath, ...errorPaths(cause)],
         );
       }
 
@@ -3491,12 +3506,18 @@ export const serveCommand = new Command()
         }
       } catch (cause) {
         if (cause instanceof Deno.errors.NotFound) {
-          throw new UserError(
-            `External grants directory not found: ${externalGrantsDirPath}`,
+          throw markErrorPaths(
+            new UserError(
+              `External grants directory not found: ${externalGrantsDirPath}`,
+            ),
+            [externalGrantsDirPath],
           );
         }
-        throw new UserError(
-          `Failed to read external grants directory ${externalGrantsDirPath}: ${cause}`,
+        throw markErrorPaths(
+          new UserError(
+            `Failed to read external grants directory ${externalGrantsDirPath}: ${cause}`,
+          ),
+          [externalGrantsDirPath, ...errorPaths(cause)],
         );
       }
 
@@ -3515,8 +3536,11 @@ export const serveCommand = new Command()
         try {
           content = await Deno.readTextFile(filePath);
         } catch (cause) {
-          throw new UserError(
-            `Failed to read grants file ${filePath}: ${cause}`,
+          throw markErrorPaths(
+            new UserError(
+              `Failed to read grants file ${filePath}: ${cause}`,
+            ),
+            [filePath, ...errorPaths(cause)],
           );
         }
 

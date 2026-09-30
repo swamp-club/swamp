@@ -39,7 +39,7 @@ import {
   isExtensionBackedDatastore,
 } from "../infrastructure/persistence/managed_config_lockfile.ts";
 import { migrateHomeRepoTelemetry } from "../infrastructure/persistence/telemetry_spool_migration.ts";
-import { UserError } from "../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import {
   choosePulledDatastoreDirsOnDisk,
   enumeratePulledExtensionDirs,
@@ -1007,10 +1007,13 @@ function throwOnTransientLoadFailures(
   const details = transient
     .map((f) => `${f.file}: ${f.error}`)
     .join("; ");
-  throw new UserError(
-    `Failed to load ${transient.length} extension ${kind}(s): ${details}. ` +
-      "If another swamp process is writing the extension index, retry once it finishes.",
-    "lock_timeout",
+  throw markErrorPaths(
+    new UserError(
+      `Failed to load ${transient.length} extension ${kind}(s): ${details}. ` +
+        "If another swamp process is writing the extension index, retry once it finishes.",
+      "lock_timeout",
+    ),
+    transient.flatMap((f) => [f.file, ...errorPaths(f.originalError)]),
   );
 }
 

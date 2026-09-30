@@ -152,3 +152,39 @@ Deno.test("DispatchResultSchema: rejects unknown output types", () => {
   });
   assertEquals(result.success, false);
 });
+
+Deno.test("DispatchResultSchema: carries marked errorPaths (swamp-club#2830)", () => {
+  const parsed = DispatchResultSchema.parse({
+    status: "error",
+    error: "cannot read /srv/acme/final report",
+    errorPaths: ["/srv/acme/final report"],
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  });
+  assertEquals(parsed.errorPaths, ["/srv/acme/final report"]);
+});
+
+Deno.test("DispatchResultSchema: drops out-of-bounds errorPaths without failing the result", () => {
+  const base = {
+    status: "error",
+    error: "boom",
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  };
+  for (
+    const errorPaths of [
+      Array.from({ length: 33 }, (_, i) => `/p/${i}`),
+      ["/p/" + "x".repeat(4096)],
+      [42],
+      "/not/an/array",
+    ]
+  ) {
+    const parsed = DispatchResultSchema.parse({ ...base, errorPaths });
+    assertEquals(parsed.errorPaths, undefined);
+    assertEquals(parsed.error, "boom");
+  }
+  // A result from a worker without the field still parses.
+  assertEquals(DispatchResultSchema.parse(base).errorPaths, undefined);
+});

@@ -48,7 +48,7 @@ import {
   RENAMED_DATASTORE_TYPES,
   resolveConfigTierPath,
 } from "../resolve_datastore.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { parseTimeoutFlag } from "./datastore_sync.ts";
@@ -97,9 +97,12 @@ async function resolveOutgoingCachePath(
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
     if (!marker) {
-      throw new UserError(
-        `Not a swamp repository: ${repoPath.value}. ` +
-          "To initialize a new repository, run 'swamp repo init'.",
+      throw markErrorPaths(
+        new UserError(
+          `Not a swamp repository: ${repoPath.value}. ` +
+            "To initialize a new repository, run 'swamp repo init'.",
+        ),
+        [repoPath.value],
       );
     }
     if (marker.repoId && marker.datastore?.type !== "filesystem") {

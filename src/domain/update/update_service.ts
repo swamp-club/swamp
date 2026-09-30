@@ -20,7 +20,7 @@
 import { dirname, join } from "@std/path";
 import type { Platform } from "./platform.ts";
 import { validateRedirectUrl } from "./integrity.ts";
-import { UserError } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 
 /**
  * Port for checking and performing updates.
@@ -171,8 +171,11 @@ export class UpdateService {
         await Deno.remove(probeFile);
       } catch (error) {
         if (error instanceof Deno.errors.PermissionDenied) {
-          throw new UserError(
-            `Cannot update ${this.binaryPath}: permission denied. ${permissionHint}`,
+          throw markErrorPaths(
+            new UserError(
+              `Cannot update ${this.binaryPath}: permission denied. ${permissionHint}`,
+            ),
+            [this.binaryPath],
           );
         }
         // Other errors (e.g. disk full) are not permission issues
@@ -185,8 +188,11 @@ export class UpdateService {
       file.close();
     } catch (error) {
       if (error instanceof Deno.errors.PermissionDenied) {
-        throw new UserError(
-          `Cannot update ${this.binaryPath}: permission denied. ${permissionHint}`,
+        throw markErrorPaths(
+          new UserError(
+            `Cannot update ${this.binaryPath}: permission denied. ${permissionHint}`,
+          ),
+          [this.binaryPath],
         );
       }
       // Other errors (e.g. NotFound) are fine — the file may not exist yet

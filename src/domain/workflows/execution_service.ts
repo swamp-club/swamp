@@ -171,7 +171,7 @@ import {
   assertMethodArgumentsEvaluated,
   type FailedExpressions,
 } from "../expressions/unresolved_expression_guard.ts";
-import { UserError } from "../errors.ts";
+import { errorPaths, UserError } from "../errors.ts";
 import {
   getRunLogger,
   getSwampLogger,
@@ -4790,6 +4790,9 @@ export class WorkflowExecutionService {
       const failedDataHandles = taskData.type === "model_method"
         ? recoveredDataHandles(error)
         : [];
+      const failedErrorPaths = taskData.type === "model_method"
+        ? errorPaths(error)
+        : [];
       yield {
         kind: "step_failed",
         jobId: job.name,
@@ -4806,6 +4809,7 @@ export class WorkflowExecutionService {
         dataHandles: failedDataHandles.length > 0
           ? failedDataHandles
           : undefined,
+        errorPaths: failedErrorPaths.length > 0 ? failedErrorPaths : undefined,
         forEachTemplate,
         forEachIndex,
       };

@@ -27,7 +27,7 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { WebhookPayload } from "../domain/expressions/model_resolver.ts";
-import { UserError } from "../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import type { SyncGate } from "./sync_gate.ts";
 import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
@@ -142,15 +142,21 @@ export async function resolveSecret(
     try {
       content = Deno.readTextFileSync(filePath);
     } catch (cause) {
-      throw new UserError(
-        `Webhook secret references file '${filePath}' ` +
-          `(via ${FILE_PREFIX}), but it could not be read: ${cause}`,
+      throw markErrorPaths(
+        new UserError(
+          `Webhook secret references file '${filePath}' ` +
+            `(via ${FILE_PREFIX}), but it could not be read: ${cause}`,
+        ),
+        [filePath, ...errorPaths(cause)],
       );
     }
     content = content.replace(/\r?\n$/, "");
     if (!content) {
-      throw new UserError(
-        `Webhook secret file '${filePath}' is empty`,
+      throw markErrorPaths(
+        new UserError(
+          `Webhook secret file '${filePath}' is empty`,
+        ),
+        [filePath],
       );
     }
     return content;

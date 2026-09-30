@@ -315,9 +315,25 @@ export const DispatchOutputSchema = z.object({
 
 export type DispatchOutput = z.infer<typeof DispatchOutputSchema>;
 
+/** Most marked error paths a dispatch result may carry. */
+export const MAX_ERROR_PATHS = 32;
+/** Longest marked error path a dispatch result may carry. */
+export const MAX_ERROR_PATH_LENGTH = 4096;
+
 export const DispatchResultSchema = z.object({
   status: z.enum(["success", "error"]),
   error: z.string().optional(),
+  /**
+   * Filesystem paths the runner's error marked (see `markErrorPaths`), so the
+   * orchestrator's telemetry can remove them exactly from `error`
+   * (swamp-club#2830). Bounded because a worker supplies it. A value outside
+   * the bounds is dropped, never fatal to the result, since these can only
+   * add redaction.
+   */
+  errorPaths: z.array(z.string().max(MAX_ERROR_PATH_LENGTH))
+    .max(MAX_ERROR_PATHS)
+    .optional()
+    .catch(undefined),
   outputs: z.array(DispatchOutputSchema),
   logs: z.array(z.string()),
   durationMs: z.number(),

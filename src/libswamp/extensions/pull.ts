@@ -25,7 +25,7 @@ import {
   resolve,
   SEPARATOR,
 } from "@std/path";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import type {
   InstallChange,
   InstallRollbackOutcome,
@@ -528,8 +528,11 @@ async function validateNoSymlinkEscape(
     const linkTarget = await Deno.readLink(path);
     const resolvedTarget = resolve(join(path, "..", linkTarget));
     if (!resolvedTarget.startsWith(resolvedTmpDir + SEPARATOR)) {
-      throw new UserError(
-        `Archive contains a symlink that escapes the temp directory: ${path}`,
+      throw markErrorPaths(
+        new UserError(
+          `Archive contains a symlink that escapes the temp directory: ${path}`,
+        ),
+        [path],
       );
     }
   } else if (stat.isDirectory) {
@@ -1024,8 +1027,11 @@ class PreparedInstall {
       await Deno.stat(this.extractDir);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        throw new Error(
-          `Prepared install of ${this.ref.name} lost its extract dir ${this.extractDir}`,
+        throw markErrorPaths(
+          new Error(
+            `Prepared install of ${this.ref.name} lost its extract dir ${this.extractDir}`,
+          ),
+          [this.extractDir],
         );
       }
       throw error;
@@ -1150,7 +1156,10 @@ export async function prepareInstall(
       );
     }
     const message = error instanceof Error ? error.message : String(error);
-    return new UserError(`Failed to ${action}: ${message}`);
+    return markErrorPaths(
+      new UserError(`Failed to ${action}: ${message}`),
+      errorPaths(error),
+    );
   };
   try {
     const archivePath = join(tmpDir, "extension.tar.gz");
@@ -1165,8 +1174,11 @@ export async function prepareInstall(
     }
     for (const entry of archiveEntries) {
       if (entry.includes("..") || entry.startsWith("/")) {
-        throw new UserError(
-          `Archive contains unsafe path: ${entry}`,
+        throw markErrorPaths(
+          new UserError(
+            `Archive contains unsafe path: ${entry}`,
+          ),
+          [entry],
         );
       }
     }

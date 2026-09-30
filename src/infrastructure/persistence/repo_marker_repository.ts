@@ -26,7 +26,7 @@ import { swampMarkerPath } from "./paths.ts";
 import type { DatastoreConfigData } from "../../domain/datastore/datastore_config.ts";
 import { parseDataDuration } from "../../domain/data/duration.ts";
 import type { AiTool } from "../../domain/repo/ai_tool.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { removedDriverFieldMessage } from "../../domain/removed_driver_fields.ts";
 
 export type { AiTool };
@@ -96,8 +96,11 @@ function normalizeMarker(data: RepoMarkerData): RepoMarkerData {
 function rejectRemovedDriverFields(data: RepoMarkerData, path: string): void {
   for (const field of ["defaultDriver", "defaultDriverConfig"]) {
     if (field in data) {
-      throw new UserError(
-        `${path}: ${removedDriverFieldMessage(field)}`,
+      throw markErrorPaths(
+        new UserError(
+          `${path}: ${removedDriverFieldMessage(field)}`,
+        ),
+        [path],
       );
     }
   }
@@ -111,15 +114,21 @@ function validateGarbageCollection(
   if (config === undefined) return;
 
   if (typeof config !== "object" || config === null || Array.isArray(config)) {
-    throw new UserError(`${path}: garbageCollection must be a mapping`);
+    throw markErrorPaths(
+      new UserError(`${path}: garbageCollection must be a mapping`),
+      [path],
+    );
   }
 
   for (const field of ["workflowRuns", "outputs"] as const) {
     const duration = config[field];
     if (duration === undefined) continue;
     if (typeof duration !== "string") {
-      throw new UserError(
-        `${path}: garbageCollection.${field} must be a duration string`,
+      throw markErrorPaths(
+        new UserError(
+          `${path}: garbageCollection.${field} must be a duration string`,
+        ),
+        [path],
       );
     }
 
@@ -128,8 +137,11 @@ function validateGarbageCollection(
         throw new Error("duration must be positive");
       }
     } catch {
-      throw new UserError(
-        `${path}: garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w`,
+      throw markErrorPaths(
+        new UserError(
+          `${path}: garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w`,
+        ),
+        [path],
       );
     }
   }

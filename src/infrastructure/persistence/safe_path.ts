@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join, resolve, SEPARATOR } from "@std/path";
+import { markErrorPaths } from "../../domain/errors.ts";
 
 /**
  * Error thrown when a path resolves outside its expected boundary,
@@ -36,6 +37,7 @@ export class PathTraversalError extends Error {
     this.path = path;
     this.boundary = boundary;
     this.resolvedTarget = resolvedTarget;
+    markErrorPaths(this, [path, resolvedTarget, boundary]);
   }
 }
 

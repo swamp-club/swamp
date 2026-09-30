@@ -17,11 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { EventHandlers, ModelMethodRunEvent } from "../../libswamp/mod.ts";
+import {
+  type EventHandlers,
+  type ModelMethodRunEvent,
+  userErrorFromSwampError,
+} from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import { UserError } from "../../domain/errors.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
@@ -236,7 +239,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message, e.error.code);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }
@@ -340,7 +343,7 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       auto_gc_started: () => {},
       auto_gc_completed: () => {},
       error: (e) => {
-        throw new UserError(e.error.message, e.error.code);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }

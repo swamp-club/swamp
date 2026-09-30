@@ -19,7 +19,7 @@
 
 import { join, resolve, SEPARATOR } from "@std/path";
 import type { AiTool } from "./ai_tool.ts";
-import { UserError } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 
 export interface CustomToolDefinition {
   name: string;
@@ -90,8 +90,11 @@ export function assertPathContained(
     !resolved.startsWith(normalizedRoot + SEPARATOR) &&
     resolved !== normalizedRoot
   ) {
-    throw new UserError(
-      `${label} "${relativePath}" escapes the repository root.`,
+    throw markErrorPaths(
+      new UserError(
+        `${label} "${relativePath}" escapes the repository root.`,
+      ),
+      [relativePath],
     );
   }
 }

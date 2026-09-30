@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import { UserError } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 import { isSafeRelativePath } from "./extension_manifest.ts";
 
 // Hardcoded on purpose: importing SWAMP_DATA_DIR from infrastructure would
@@ -76,9 +76,12 @@ export function resolveExtensionFile(
           `pick up the nested layout.`,
       );
     }
-    throw new UserError(
-      `Extension file not found: ${absPath}. Check that the file exists ` +
-        `on disk and matches the manifest's additionalFiles entry.`,
+    throw markErrorPaths(
+      new UserError(
+        `Extension file not found: ${absPath}. Check that the file exists ` +
+          `on disk and matches the manifest's additionalFiles entry.`,
+      ),
+      [absPath],
     );
   }
   return absPath;

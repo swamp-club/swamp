@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { errorPaths } from "../errors.ts";
 import { redactErrorMessage } from "./error_message_redaction.ts";
 
 /**
@@ -60,6 +61,10 @@ export function createSuccessResult(): InvocationResult {
 
 /**
  * Creates an error InvocationResult from an Error.
+ *
+ * Paths the error marked with `markErrorPaths` (on it or its cause chain) are
+ * removed exactly alongside `knownValues`, so a path the patterns cannot
+ * delimit is still replaced whole (swamp-club#2830).
  */
 export function createErrorResult(
   error: Error,
@@ -71,7 +76,10 @@ export function createErrorResult(
   return {
     status: isUserError ? "user_error" : "error",
     errorType: error.constructor.name,
-    errorMessage: redactErrorMessage(firstLine, knownValues),
+    errorMessage: redactErrorMessage(firstLine, [
+      ...knownValues,
+      ...errorPaths(error),
+    ]),
     exitCode: 1,
   };
 }

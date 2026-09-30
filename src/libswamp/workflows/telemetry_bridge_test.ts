@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { errorPaths } from "../../domain/errors.ts";
 import type { CommandInvocationData } from "../../domain/telemetry/command_invocation.ts";
 import type { WorkflowContextData } from "../../domain/telemetry/workflow_context.ts";
 import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
@@ -789,4 +790,43 @@ Deno.test("bridge finalize() names a job whose name contains a colon", async () 
   );
   assertEquals(sink.calls[0].workflowContext.jobName, "deploy:prod");
   assertEquals(sink.calls[0].workflowContext.stepName, "apply");
+});
+
+Deno.test("bridge marks the step's errorPaths on the error it records", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+  const path = "/srv/acme/final report";
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe({
+    kind: "method_executing",
+    jobId: "build",
+    stepId: "transform",
+    runId: "run-1",
+    modelName: "etl",
+    methodName: "transform",
+  });
+  await bridge.observe({
+    kind: "step_failed",
+    jobId: "build",
+    stepId: "transform",
+    runId: "run-1",
+    error: `cannot read ${path}`,
+    errorPaths: [path],
+  });
+  await bridge.observe({
+    kind: "step_failed",
+    jobId: "lookup",
+    stepId: "fetch",
+    runId: "run-1",
+    error: `cannot read ${path}`,
+    modelName: "missing",
+    methodName: "enrich",
+    errorPaths: [path],
+  });
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 2);
+  assertEquals(errorPaths(sink.calls[0].error), [path]);
+  assertEquals(errorPaths(sink.calls[1].error), [path]);
 });

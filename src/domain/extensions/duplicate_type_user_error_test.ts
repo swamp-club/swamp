@@ -23,7 +23,7 @@ import {
   assertInstanceOf,
   assertStringIncludes,
 } from "@std/assert";
-import { UserError } from "../errors.ts";
+import { errorPaths, UserError } from "../errors.ts";
 import {
   DuplicateTypeUserError,
   type InstallRollbackOutcome,
@@ -256,4 +256,11 @@ Deno.test("DuplicateTypeUserError: kept with no extensions listed still gives a 
   const err = makeError({ rollback: { status: "kept", kept: [] } });
   assertEquals(err.message.includes("run ;"), false);
   assertEquals(err.message.includes("swamp extension rm"), true);
+});
+
+Deno.test("DuplicateTypeUserError: marks both canonical paths (swamp-club#2830)", () => {
+  assertEquals(errorPaths(makeError()), [
+    EXISTING.canonicalPath,
+    CONFLICTING.canonicalPath,
+  ]);
 });

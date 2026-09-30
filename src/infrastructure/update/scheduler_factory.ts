@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AutoupdateScheduler } from "../../domain/update/autoupdate_scheduler.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   detectInstalledLaunchdMode,
   type LaunchdMode,
@@ -86,12 +86,15 @@ export async function resolveLaunchdMode(): Promise<LaunchdMode> {
 
   const result = detectBinaryOwnership(binaryUid, currentUid);
   if (result === "foreign") {
-    throw new UserError(
-      `The swamp binary at ${Deno.execPath()} is owned by uid ${binaryUid}, ` +
-        `not the current user or root.\n` +
-        `Fix the installation so the binary is owned by your user or root:\n\n` +
-        `  Option 1: sudo chown $(whoami) ${Deno.execPath()}\n` +
-        `  Option 2: sudo chown root ${Deno.execPath()}`,
+    throw markErrorPaths(
+      new UserError(
+        `The swamp binary at ${Deno.execPath()} is owned by uid ${binaryUid}, ` +
+          `not the current user or root.\n` +
+          `Fix the installation so the binary is owned by your user or root:\n\n` +
+          `  Option 1: sudo chown $(whoami) ${Deno.execPath()}\n` +
+          `  Option 2: sudo chown root ${Deno.execPath()}`,
+      ),
+      [Deno.execPath()],
     );
   }
   return result;

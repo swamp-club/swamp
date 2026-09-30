@@ -21,6 +21,7 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { findRepoRoot } from "./find_repo_root.ts";
 import { RepoRootNotFoundError } from "./repo_root_not_found_error.ts";
+import { errorPaths } from "../errors.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 async function withTempDir(
@@ -135,4 +136,9 @@ Deno.test("findRepoRoot: lexical only — does NOT realpath through symlinks", a
     // the lexical "link", not the realpath "real".
     assertEquals(findRepoRoot(start), link);
   });
+});
+
+Deno.test("RepoRootNotFoundError: marks the start path (swamp-club#2830)", () => {
+  const start = "/srv/acme/final report";
+  assertEquals(errorPaths(new RepoRootNotFoundError(start)), [start]);
 });

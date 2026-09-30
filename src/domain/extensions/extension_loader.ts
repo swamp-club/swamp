@@ -81,6 +81,7 @@ import {
   isPulledExtensionPath,
 } from "./extension_precedence.ts";
 import { isStagingEntryName } from "./install_journal.ts";
+import { markErrorPaths } from "../errors.ts";
 
 /**
  * Build the dynamic import() URL for a bundle file, keyed on the bundle's
@@ -739,7 +740,11 @@ export class ExtensionLoader {
           extension: ext,
           location: existingSource?.id ?? loc,
           kindDir,
-          error: failure.originalError ?? new Error(failure.error),
+          error: failure.originalError ??
+            markErrorPaths(new Error(failure.error), [
+              failure.file,
+              absolutePath,
+            ]),
           existingSource,
           fingerprint: failFp,
           sourceMtime,

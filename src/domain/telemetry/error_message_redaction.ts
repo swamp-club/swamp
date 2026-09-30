@@ -23,6 +23,10 @@
 // diagnostic structure by normalizing in-place instead.
 
 /**
+ * Paths an error marks with `markErrorPaths` arrive in `knownValues` and are
+ * removed exactly first (swamp-club#2830). The patterns below are the
+ * fallback for text nobody marked, such as runtime and third-party errors.
+ *
  * Filesystem paths are user-chosen and can name customers, projects and
  * people, so a path is replaced whole (swamp-club#2817) — not just its home
  * username segment, which left everything below it and every path outside a

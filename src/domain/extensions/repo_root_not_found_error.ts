@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { markErrorPaths } from "../errors.ts";
+
 /**
  * Thrown by {@link findRepoRoot} when no ancestor directory of the start
  * path contains a `.swamp/` marker. Callers should treat this as
@@ -31,5 +33,6 @@ export class RepoRootNotFoundError extends Error {
         `filesystem root without a match.`,
     );
     this.name = "RepoRootNotFoundError";
+    markErrorPaths(this, [start]);
   }
 }

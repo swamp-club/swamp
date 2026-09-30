@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { markErrorPaths, UserError } from "../errors.ts";
 import { createErrorResult, createSuccessResult } from "./invocation_result.ts";
 
 Deno.test("createSuccessResult: returns success status", () => {
@@ -63,4 +64,25 @@ Deno.test("createErrorResult: captures error constructor name as errorType", () 
   const error = new CustomError("something failed");
   const result = createErrorResult(error);
   assertEquals(result.errorType, "CustomError");
+});
+
+Deno.test("createErrorResult: removes a marked path whose last segment has a space", () => {
+  const path = "/srv/acme/discovered/final report";
+  const error = markErrorPaths(
+    new UserError(`Failed to read definition file ${path}: denied`),
+    [path],
+  );
+  const result = createErrorResult(error, true);
+  assertEquals(
+    result.errorMessage,
+    "Failed to read definition file <PATH>: denied",
+  );
+});
+
+Deno.test("createErrorResult: removes paths marked on the cause chain", () => {
+  const path = "/srv/acme/discovered/final report";
+  const inner = markErrorPaths(new Error(`open ${path}`), [path]);
+  const error = new Error(`Load failed: ${inner.message}`, { cause: inner });
+  const result = createErrorResult(error);
+  assertEquals(result.errorMessage, "Load failed: open <PATH>");
 });

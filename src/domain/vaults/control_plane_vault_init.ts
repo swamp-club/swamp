@@ -19,7 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
-import { UserError } from "../errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../errors.ts";
 import {
   ControlPlaneVaultProvider,
   type ExternalTokenKey,
@@ -89,19 +89,25 @@ export async function resolveTokenSecretsKey(
       "serve:token-secrets-key",
     );
   } catch (err) {
-    throw new TokenSecretsKeyError(
-      `Could not read the token secrets key from ${location}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+    throw markErrorPaths(
+      new TokenSecretsKeyError(
+        `Could not read the token secrets key from ${location}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      ),
+      errorPaths(err),
     );
   }
   try {
     return { ref, key: parseTokenSecretsKeyMaterial(value) };
   } catch (err) {
-    throw new TokenSecretsKeyError(
-      `Token secrets key in ${location} is not usable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+    throw markErrorPaths(
+      new TokenSecretsKeyError(
+        `Token secrets key in ${location} is not usable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      ),
+      errorPaths(err),
     );
   }
 }

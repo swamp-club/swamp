@@ -43,6 +43,7 @@ import {
   STAGING_DIR_NAME,
 } from "../../domain/extensions/install_journal.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 
 const logger = getLogger(["swamp", "extensions", "install-transaction"]);
 
@@ -563,14 +564,20 @@ export class ExtensionInstallTransaction {
       onDisk = JSON.parse(await this.#ops.readText(this.#journalPath()));
     } catch (error) {
       if (this.#isCrash(error)) throw error;
-      throw new Error(
-        `Install journal ${this.#journalPath()} is unreadable: ${error}`,
+      throw markErrorPaths(
+        new Error(
+          `Install journal ${this.#journalPath()} is unreadable: ${error}`,
+        ),
+        [this.#journalPath(), ...errorPaths(error)],
       );
     }
     const owner = (onDisk as { ownerId?: unknown } | null)?.ownerId;
     if (owner !== ownerId || !activeOwners.has(ownerId)) {
-      throw new Error(
-        `Install journal ${this.#journalPath()} is no longer owned by this install`,
+      throw markErrorPaths(
+        new Error(
+          `Install journal ${this.#journalPath()} is no longer owned by this install`,
+        ),
+        [this.#journalPath()],
       );
     }
   }

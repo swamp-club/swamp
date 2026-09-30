@@ -60,7 +60,7 @@ import {
   LITERAL_SENSITIVE_GLOBAL_ARG_CODE,
   literalSensitiveGlobalArgsMessage,
 } from "../../domain/models/sensitive_field_extractor.ts";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import {
   createDefinitionCreated,
@@ -270,10 +270,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             definitions.push(definition);
           } catch (error) {
             if (isIoError(error)) {
-              throw new UserError(
-                `Failed to read definition file ${path}: ${
-                  error instanceof Error ? error.message : error
-                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              throw markErrorPaths(
+                new UserError(
+                  `Failed to read definition file ${path}: ${
+                    error instanceof Error ? error.message : error
+                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+                ),
+                [path, ...errorPaths(error)],
               );
             }
             const msg = error instanceof Error ? error.message : String(error);
@@ -421,10 +424,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             definitions.push({ definition: Definition.fromData(data), path });
           } catch (error) {
             if (isIoError(error)) {
-              throw new UserError(
-                `Failed to read definition file ${path}: ${
-                  error instanceof Error ? error.message : error
-                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              throw markErrorPaths(
+                new UserError(
+                  `Failed to read definition file ${path}: ${
+                    error instanceof Error ? error.message : error
+                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+                ),
+                [path, ...errorPaths(error)],
               );
             }
             const msg = error instanceof Error ? error.message : String(error);
@@ -583,10 +589,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             }
           } catch (error) {
             if (isIoError(error)) {
-              throw new UserError(
-                `Failed to read definition file ${fullPath}: ${
-                  error instanceof Error ? error.message : error
-                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              throw markErrorPaths(
+                new UserError(
+                  `Failed to read definition file ${fullPath}: ${
+                    error instanceof Error ? error.message : error
+                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+                ),
+                [fullPath, ...errorPaths(error)],
               );
             }
             const msg = error instanceof Error ? error.message : String(error);
@@ -700,10 +709,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             results.push({ definition, type: ModelType.create(typeStr) });
           } catch (error) {
             if (isIoError(error)) {
-              throw new UserError(
-                `Failed to read definition file ${fullPath}: ${
-                  error instanceof Error ? error.message : error
-                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              throw markErrorPaths(
+                new UserError(
+                  `Failed to read definition file ${fullPath}: ${
+                    error instanceof Error ? error.message : error
+                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+                ),
+                [fullPath, ...errorPaths(error)],
               );
             }
             const msg = error instanceof Error ? error.message : String(error);

@@ -21,7 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { dirname, join, resolve } from "@std/path";
 import * as zodModule from "zod";
-import { UserError } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
 
@@ -687,8 +687,11 @@ export async function bundleExtension(
       const rawDetails = (stderr + stdout).trim() ||
         "(no output — try running deno 2.7.x or later)";
       const details = stripAnsiCode(rawDetails);
-      throw new Error(
-        `deno bundle failed for ${absolutePath}: ${details}`,
+      throw markErrorPaths(
+        new Error(
+          `deno bundle failed for ${absolutePath}: ${details}`,
+        ),
+        [absolutePath],
       );
     }
 

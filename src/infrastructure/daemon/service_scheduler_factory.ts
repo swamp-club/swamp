@@ -19,7 +19,7 @@
 
 import type { ServiceScheduler } from "../../domain/serve/service_scheduler.ts";
 import type { LaunchdMode } from "../update/launchd_scheduler.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { detectBinaryOwnership } from "../update/scheduler_factory.ts";
 import { LaunchdServiceScheduler } from "./launchd_service_scheduler.ts";
 import { SystemdServiceScheduler } from "./systemd_service_scheduler.ts";
@@ -44,12 +44,15 @@ export async function resolveServiceMode(
 
   const result = detectBinaryOwnership(binaryUid, currentUid);
   if (result === "foreign") {
-    throw new UserError(
-      `The swamp binary at ${Deno.execPath()} is owned by uid ${binaryUid}, ` +
-        `not the current user or root.\n` +
-        `Fix the installation so the binary is owned by your user or root:\n\n` +
-        `  Option 1: sudo chown $(whoami) ${Deno.execPath()}\n` +
-        `  Option 2: sudo chown root ${Deno.execPath()}`,
+    throw markErrorPaths(
+      new UserError(
+        `The swamp binary at ${Deno.execPath()} is owned by uid ${binaryUid}, ` +
+          `not the current user or root.\n` +
+          `Fix the installation so the binary is owned by your user or root:\n\n` +
+          `  Option 1: sudo chown $(whoami) ${Deno.execPath()}\n` +
+          `  Option 2: sudo chown root ${Deno.execPath()}`,
+      ),
+      [Deno.execPath()],
     );
   }
   return result;

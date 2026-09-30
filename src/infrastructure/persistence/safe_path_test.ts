@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { dirname, join } from "@std/path";
+import { errorPaths } from "../../domain/errors.ts";
 import {
   assertContainedPath,
   assertSafePath,
@@ -307,4 +308,17 @@ Deno.test("isSinglePathSegment: accepts plain names and rejects anything that is
   }
   assertEquals(isSinglePathSegment(42), false);
   assertEquals(isSinglePathSegment(undefined), false);
+});
+
+Deno.test("PathTraversalError: marks its path, target and boundary (swamp-club#2830)", () => {
+  const error = new PathTraversalError(
+    "/repo/models/a b",
+    "/repo",
+    "/etc/final report",
+  );
+  assertEquals(errorPaths(error), [
+    "/repo/models/a b",
+    "/etc/final report",
+    "/repo",
+  ]);
 });

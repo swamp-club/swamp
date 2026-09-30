@@ -25,7 +25,7 @@ import {
   type WorkflowRunView,
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "./workflow_run.ts";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 function makeRunView(
@@ -1229,5 +1229,29 @@ Deno.test("JsonWorkflowRunRenderer: a failed run's JSON output carries no retry 
     assertEquals(logs[0].includes("build-host"), false);
   } finally {
     console.log = originalLog;
+  }
+});
+
+Deno.test("WorkflowRunRenderer: error event carries the cause's marked paths (swamp-club#2830)", () => {
+  const path = "/srv/acme/final report";
+  for (const mode of ["log", "json"] as const) {
+    const handlers = createWorkflowRunRenderer(mode, {
+      workflowName: "test-pipeline",
+    }).handlers();
+    const error = assertThrows(
+      () =>
+        handlers.error({
+          kind: "error",
+          error: {
+            code: "execution_failed",
+            message: `cannot read ${path}`,
+            cause: markErrorPaths(new Error(`cannot read ${path}`), [path]),
+          },
+        }),
+      UserError,
+      "cannot read",
+    );
+    assertEquals(error.code, "execution_failed");
+    assertEquals(errorPaths(error), [path]);
   }
 });

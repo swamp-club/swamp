@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
 /**
  * Pattern that matches environment variable references and tilde:
@@ -45,8 +45,11 @@ export function expandEnvVars(path: string): string {
     if (match === "~") {
       const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
       if (!home) {
-        throw new UserError(
-          `Cannot expand "~" in path "${path}": neither HOME nor USERPROFILE is set`,
+        throw markErrorPaths(
+          new UserError(
+            `Cannot expand "~" in path "${path}": neither HOME nor USERPROFILE is set`,
+          ),
+          [path],
         );
       }
       return home;
@@ -55,8 +58,11 @@ export function expandEnvVars(path: string): string {
     const varName = bracedVar ?? unbracedVar;
     const value = Deno.env.get(varName);
     if (value === undefined || value === "") {
-      throw new UserError(
-        `Environment variable "${varName}" is not set or empty (referenced in path "${path}")`,
+      throw markErrorPaths(
+        new UserError(
+          `Environment variable "${varName}" is not set or empty (referenced in path "${path}")`,
+        ),
+        [path],
       );
     }
     return value;

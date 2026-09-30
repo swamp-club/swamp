@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertInstanceOf } from "@std/assert";
+import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import {
   alreadyExists,
   cancelled,
@@ -25,6 +26,7 @@ import {
   isSwampError,
   notAuthenticated,
   notFound,
+  userErrorFromSwampError,
   validationFailed,
 } from "./errors.ts";
 
@@ -95,4 +97,24 @@ Deno.test("isSwampError: rejects values that are not SwampError-shaped", () => {
   assertEquals(isSwampError("not_found"), false);
   assertEquals(isSwampError({ code: "not_found" }), false);
   assertEquals(isSwampError({ code: 404, message: "Model not found" }), false);
+});
+
+Deno.test("userErrorFromSwampError: keeps message and code and carries the cause's marked paths", () => {
+  const path = "/srv/acme/final report";
+  const cause = markErrorPaths(new Error(`cannot read ${path}`), [path]);
+  const error = userErrorFromSwampError({
+    code: "method_execution_failed",
+    message: `Method execution failed: cannot read ${path}`,
+    cause,
+  });
+  assertInstanceOf(error, UserError);
+  assertEquals(error.message, `Method execution failed: cannot read ${path}`);
+  assertEquals(error.code, "method_execution_failed");
+  assertEquals(errorPaths(error), [path]);
+});
+
+Deno.test("userErrorFromSwampError: marks nothing when there is no cause", () => {
+  const error = userErrorFromSwampError(notFound("Model", "x"));
+  assertEquals(error.code, "not_found");
+  assertEquals(errorPaths(error), []);
 });
