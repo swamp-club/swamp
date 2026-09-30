@@ -2673,3 +2673,31 @@ Deno.test("validateModel rejects a constant expression calling a function swamp 
     assertEquals(expressionPaths?.passed, false, message);
   }
 });
+
+Deno.test("validateModel validates a refined globalArguments schema instead of crashing on partial() (swamp-club#2766)", async () => {
+  const service = new DefaultModelValidationService();
+  const model: ModelDefinition = {
+    ...testExprModel,
+    globalArguments: z.object({ message: z.string(), count: z.number() })
+      .refine(() => true),
+  };
+
+  const valid = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    methods: { write: { arguments: { message: "hello" } } },
+  });
+  const validResult = (await service.validateModel(valid, model)).results
+    .find((r) => r.name === "Global arguments");
+  assertEquals(validResult?.passed, true);
+
+  const invalid = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello", count: "many" },
+    methods: { write: { arguments: { message: "hello" } } },
+  });
+  const invalidResult = (await service.validateModel(invalid, model)).results
+    .find((r) => r.name === "Global arguments");
+  assertEquals(invalidResult?.passed, false);
+  assertStringIncludes(invalidResult?.error ?? "", '"count"');
+});

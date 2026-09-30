@@ -1313,3 +1313,43 @@ Deno.test("resolveOrCreateDefinition: stores a data-read secret as its vault ref
   assertEquals(reused.definition.globalArguments.token, "Pl41n-s3cret");
   assertEquals(store.definition?.globalArguments.token, reference);
 });
+
+Deno.test("resolveOrCreateDefinition: validates a refined globalArguments schema instead of crashing on partial() (swamp-club#2766)", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string(), account: z.string() }).refine(() => true),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/refined-model");
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: () => Promise.resolve(),
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/${id}.yaml`,
+  };
+
+  const valid = await resolveOrCreateDefinition(
+    deps,
+    "test/refined-model",
+    "my-model",
+    "run",
+    { region: "us-east-1", id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+  assertEquals(valid.ok, true);
+
+  const invalid = await resolveOrCreateDefinition(
+    deps,
+    "test/refined-model",
+    "my-model",
+    "run",
+    { region: 12345, id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+  assertEquals(invalid.ok, false);
+  if (!invalid.ok) {
+    assertStringIncludes(invalid.error.message, "region:");
+  }
+});

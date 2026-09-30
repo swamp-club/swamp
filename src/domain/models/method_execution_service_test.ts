@@ -4117,3 +4117,201 @@ Deno.test("recoveredDataHandles: drops entries that are not shaped like a data h
 
   assertEquals(recoveredDataHandles(error), [valid]);
 });
+
+// ---------- Global argument defaults next to unresolved expressions (swamp-club#2766) ----------
+
+function createGlobalArgsCaptureModel(
+  globalArguments: z.ZodTypeAny,
+  read: (globalArgs: Record<string, unknown>) => void,
+): ModelDefinition {
+  return {
+    type: ModelType.create(`test/global-defaults-${crypto.randomUUID()}`),
+    version: "1",
+    globalArguments,
+    methods: {
+      show: {
+        description: "Reads global arguments",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          read(context.globalArgs);
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+}
+
+const UNRESOLVED_TOKEN =
+  '${{ data.latest("missing", "current").attributes.token }}';
+
+Deno.test("executeWorkflow: applies globalArguments defaults when a sibling holds an unresolved expression (swamp-club#2766)", async () => {
+  const service = new DefaultMethodExecutionService();
+  let received: unknown;
+  const model = createGlobalArgsCaptureModel(
+    z.object({
+      top: z.number().default(6),
+      tok: z.string().optional(),
+      nested: z.object({
+        list: z.array(z.string()).default([]),
+        n: z.number().default(6),
+      }),
+    }),
+    (g) => {
+      received = { nested: g.nested, top: g.top };
+    },
+  );
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { nested: {}, tok: UNRESOLVED_TOKEN },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await service.executeWorkflow(definition, model, "show", context);
+
+  assertEquals(received, { nested: { list: [], n: 6 }, top: 6 });
+});
+
+Deno.test("executeWorkflow: applies the same defaults whether or not a sibling is unresolved (swamp-club#2766)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const schema = z.object({
+    top: z.number().default(6),
+    tok: z.string().optional(),
+    nested: z.object({ list: z.array(z.string()).default([]) }),
+  });
+  const seen: unknown[] = [];
+  for (const tok of ["resolved", UNRESOLVED_TOKEN]) {
+    const model = createGlobalArgsCaptureModel(schema, (g) => {
+      seen.push({ nested: g.nested, top: g.top });
+    });
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: { nested: {}, tok },
+    });
+    const { context } = createTestContext({ modelType: model.type });
+    await service.executeWorkflow(definition, model, "show", context);
+  }
+  assertEquals(seen[0], seen[1]);
+});
+
+Deno.test("executeWorkflow: rejects a wrongly typed global argument next to an unresolved expression (swamp-club#2766)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createGlobalArgsCaptureModel(
+    z.object({ top: z.number(), tok: z.string() }),
+    () => {},
+  );
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { top: "notanumber", tok: UNRESOLVED_TOKEN },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "show", context),
+    Error,
+    "Global arguments validation failed",
+  );
+});
+
+Deno.test("executeWorkflow: rejects an unknown global argument next to an unresolved expression (swamp-club#2766)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createGlobalArgsCaptureModel(
+    z.object({ top: z.number(), tok: z.string() }),
+    () => {},
+  );
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { top: 1, bogus: 1, tok: UNRESOLVED_TOKEN },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "show", context),
+    Error,
+    "Unknown argument(s): bogus",
+  );
+});
+
+Deno.test("executeWorkflow: coerces resolved global arguments next to an unresolved expression (swamp-club#2766)", async () => {
+  const service = new DefaultMethodExecutionService();
+  let received: unknown;
+  const model = createGlobalArgsCaptureModel(
+    z.object({ count: z.number(), tok: z.string() }),
+    (g) => {
+      received = g.count;
+    },
+  );
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { count: "3", tok: UNRESOLVED_TOKEN },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await service.executeWorkflow(definition, model, "show", context);
+
+  assertEquals(received, 3);
+});
+
+Deno.test("executeWorkflow: keeps an unresolved global argument guarded even when its schema has a default (swamp-club#2766)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createGlobalArgsCaptureModel(
+    z.object({ tok: z.string().default("fallback") }),
+    (g) => {
+      const _tok = g.tok;
+    },
+  );
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { tok: UNRESOLVED_TOKEN },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "show", context),
+    Error,
+    "Unresolved expression in globalArguments.tok",
+  );
+});
+
+Deno.test("executeWorkflow: runs a refined globalArguments schema instead of crashing on partial() (swamp-club#2766)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const schema = z.object({
+    top: z.number().default(6),
+    tok: z.string().optional(),
+    nested: z.object({ list: z.array(z.string()).default([]) }),
+  }).refine((v) => (v.top ?? 1) > 0);
+  const seen: unknown[] = [];
+  for (const tok of ["resolved", UNRESOLVED_TOKEN]) {
+    const model = createGlobalArgsCaptureModel(schema, (g) => {
+      seen.push({ nested: g.nested, top: g.top });
+    });
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: { nested: {}, tok },
+    });
+    const { context } = createTestContext({ modelType: model.type });
+    await service.executeWorkflow(definition, model, "show", context);
+  }
+  assertEquals(seen, [
+    { nested: { list: [] }, top: 6 },
+    { nested: { list: [] }, top: 6 },
+  ]);
+});
+
+Deno.test("executeWorkflow: rejects a wrongly typed field in a refined globalArguments schema (swamp-club#2766)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createGlobalArgsCaptureModel(
+    z.object({ top: z.number() }).refine(() => true),
+    () => {},
+  );
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { top: "notanumber" },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "show", context),
+    Error,
+    'Global arguments validation failed: Invalid input: expected number, received string at "top"',
+  );
+});

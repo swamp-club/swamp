@@ -182,6 +182,94 @@ export function getObjectShape(
 }
 
 /**
+ * Result of {@link parseGlobalArgumentsLeniently}: the parsed values on
+ * success, or the Zod issues (with paths rooted at the global argument key).
+ */
+export type LenientParseResult =
+  | { success: true; data: Record<string, unknown> }
+  | { success: false; issues: z.ZodIssue[] };
+
+/**
+ * Returns the schema's `.partial()` form, "none" when the schema has no
+ * `.partial()` (e.g. a transform), or "refused" when calling it throws — Zod
+ * v4 throws for object schemas that carry refinements.
+ */
+function tryPartial(schema: z.ZodTypeAny): z.ZodTypeAny | "none" | "refused" {
+  if (!("partial" in schema) || typeof schema.partial !== "function") {
+    return "none";
+  }
+  try {
+    return schema.partial() as z.ZodTypeAny;
+  } catch {
+    return "refused";
+  }
+}
+
+/**
+ * Validates global arguments against a model's schema without requiring the
+ * fields that are missing: provided fields are checked and missing fields get
+ * their Zod defaults.
+ *
+ * - A schema that supports `.partial()` is parsed with its partial form.
+ * - An object schema whose `.partial()` throws (a Zod v4 object with
+ *   refinements) is parsed field by field against its shape; object-level
+ *   refinements do not run, since the object may be incomplete.
+ * - Any other schema (no `.partial()`, e.g. a transform) is parsed as-is,
+ *   unless keys are skipped: it cannot check an incomplete object, so the
+ *   input is returned unchecked.
+ *
+ * Keys in `skipKeys` (global arguments holding an unresolved expression) are
+ * neither parsed nor returned, so a default can never replace them.
+ */
+export function parseGlobalArgumentsLeniently(
+  schema: z.ZodTypeAny,
+  args: Record<string, unknown>,
+  skipKeys: ReadonlySet<string> = new Set(),
+): LenientParseResult {
+  const input: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (!skipKeys.has(key)) input[key] = value;
+  }
+
+  const partial = tryPartial(schema);
+  const shape = partial === "refused" ? getObjectShape(schema) : undefined;
+  if (shape) {
+    const data: Record<string, unknown> = {};
+    const issues: z.ZodIssue[] = [];
+    for (const [key, fieldSchema] of Object.entries(shape)) {
+      if (skipKeys.has(key)) continue;
+      const present = Object.hasOwn(input, key);
+      const result = fieldSchema.safeParse(present ? input[key] : undefined);
+      if (result.success) {
+        if (present || result.data !== undefined) data[key] = result.data;
+      } else if (present) {
+        for (const issue of result.error.issues) {
+          issues.push({ ...issue, path: [key, ...issue.path] } as z.ZodIssue);
+        }
+      }
+    }
+    return issues.length > 0
+      ? { success: false, issues }
+      : { success: true, data };
+  }
+
+  if (typeof partial === "string" && skipKeys.size > 0) {
+    // Without a partial or per-field form, the schema can only check a
+    // complete object, so a subset passes through unchecked.
+    return { success: true, data: input };
+  }
+  const result = (typeof partial === "string" ? schema : partial).safeParse(
+    input,
+  );
+  if (!result.success) {
+    return { success: false, issues: result.error.issues };
+  }
+  const data = { ...(result.data as Record<string, unknown>) };
+  for (const key of skipKeys) delete data[key];
+  return { success: true, data };
+}
+
+/**
  * Returns true when the schema (after unwrapping optional/nullable/default/
  * effects wrappers) resolves to a ZodRecord. Record schemas accept arbitrary
  * string keys, so key-based routing and unknown-key checks don't apply.

@@ -23,6 +23,7 @@ import {
   coerceMethodArgs,
   getObjectShape,
   isRecordSchema,
+  parseGlobalArgumentsLeniently,
 } from "./zod_type_coercion.ts";
 
 Deno.test("coerces string 'true' to boolean true", () => {
@@ -290,4 +291,100 @@ Deno.test("isRecordSchema: returns false for z.string()", () => {
 
 Deno.test("isRecordSchema: returns false for z.array()", () => {
   assertEquals(isRecordSchema(z.array(z.string())), false);
+});
+
+Deno.test("parseGlobalArgumentsLeniently: applies top-level and nested defaults without requiring missing fields", () => {
+  const schema = z.object({
+    top: z.number().default(6),
+    name: z.string(),
+    nested: z.object({
+      list: z.array(z.string()).default([]),
+      n: z.number().default(6),
+    }),
+  });
+  const result = parseGlobalArgumentsLeniently(schema, { nested: {} });
+  assertEquals(result, {
+    success: true,
+    data: { top: 6, nested: { list: [], n: 6 } },
+  });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: reports a wrongly typed field", () => {
+  const schema = z.object({ top: z.number().default(6) });
+  const result = parseGlobalArgumentsLeniently(schema, { top: "many" });
+  assertEquals(result.success, false);
+  if (!result.success) assertEquals(result.issues[0].path, ["top"]);
+});
+
+Deno.test("parseGlobalArgumentsLeniently: skipped keys are neither checked nor defaulted", () => {
+  const schema = z.object({
+    top: z.number().default(6),
+    tok: z.string().default("fallback"),
+  });
+  const result = parseGlobalArgumentsLeniently(
+    schema,
+    { tok: "${{ data.latest('x', 'y').attributes.token }}" },
+    new Set(["tok"]),
+  );
+  assertEquals(result, { success: true, data: { top: 6 } });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: parses a refined object field by field instead of throwing", () => {
+  const schema = z.object({
+    top: z.number().default(6),
+    name: z.string(),
+    nested: z.object({ list: z.array(z.string()).default([]) }),
+  }).refine((v) => v.top > 0);
+  const result = parseGlobalArgumentsLeniently(schema, { nested: {} });
+  assertEquals(result, {
+    success: true,
+    data: { top: 6, nested: { list: [] } },
+  });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: reports refined-object field issues under the field's path", () => {
+  const schema = z.object({
+    nested: z.object({ n: z.number() }),
+  }).refine(() => true);
+  const result = parseGlobalArgumentsLeniently(schema, {
+    nested: { n: "x" },
+  });
+  assertEquals(result.success, false);
+  if (!result.success) assertEquals(result.issues[0].path, ["nested", "n"]);
+});
+
+Deno.test("parseGlobalArgumentsLeniently: skips a refined object's skipped keys", () => {
+  const schema = z.object({
+    top: z.number().default(6),
+    tok: z.string().default("fallback"),
+  }).refine(() => true);
+  const result = parseGlobalArgumentsLeniently(
+    schema,
+    { tok: "${{ inputs.tok }}" },
+    new Set(["tok"]),
+  );
+  assertEquals(result, { success: true, data: { top: 6 } });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: parses a schema without partial() in full", () => {
+  const schema = z.object({ name: z.string() }).transform((v) => ({
+    name: v.name.toUpperCase(),
+  }));
+  assertEquals(parseGlobalArgumentsLeniently(schema, { name: "a" }), {
+    success: true,
+    data: { name: "A" },
+  });
+  assertEquals(parseGlobalArgumentsLeniently(schema, {}).success, false);
+});
+
+Deno.test("parseGlobalArgumentsLeniently: passes a subset of a schema without partial() through unchecked", () => {
+  const schema = z.object({ name: z.string(), tok: z.string() }).transform((
+    v,
+  ) => v);
+  const result = parseGlobalArgumentsLeniently(
+    schema,
+    { name: "a", tok: "${{ inputs.tok }}" },
+    new Set(["tok"]),
+  );
+  assertEquals(result, { success: true, data: { name: "a" } });
 });

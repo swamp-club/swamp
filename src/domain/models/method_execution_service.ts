@@ -41,6 +41,7 @@ import {
   coerceMethodArgs,
   getObjectShape,
   isRecordSchema,
+  parseGlobalArgumentsLeniently,
 } from "./zod_type_coercion.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import { containsSwampExpression } from "../expressions/swamp_namespaces.ts";
@@ -105,7 +106,7 @@ function collectPersistedHandles(outputs: ExecutionOutput[]): DataHandle[] {
 /**
  * Formats a Zod error into a human-readable string.
  */
-function formatZodError(error: z.ZodError): string {
+function formatZodError(error: { issues: readonly z.ZodIssue[] }): string {
   if (error.issues.length === 1) {
     const issue = error.issues[0];
     const path = issue.path.length > 0 ? ` at "${issue.path.join(".")}"` : "";
@@ -585,73 +586,57 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         // model resource/file refs, or any other swamp ${{ ... }} that wasn't
         // evaluated). Uses containsSwampExpression for recursive detection of
         // expressions inside nested objects and arrays.
-        let hasUnresolved = false;
+        const unresolvedKeys = new Set<string>();
         const resolvedGlobalArgs: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(rawGlobalArgs)) {
           if (containsSwampExpression(value)) {
-            hasUnresolved = true;
+            unresolvedKeys.add(key);
           } else {
             resolvedGlobalArgs[key] = value;
           }
         }
 
-        if (hasUnresolved) {
-          // Validate only the resolved fields — unresolved fields are guarded
-          // by a Proxy that throws when the method actually accesses them
-          const coercedGlobalArgs = coerceMethodArgs(
-            resolvedGlobalArgs,
-            modelDef.globalArguments,
+        const globalArgsSchema = modelDef.globalArguments;
+        const coercedGlobalArgs = coerceMethodArgs(
+          resolvedGlobalArgs,
+          globalArgsSchema,
+        );
+        const shape = getObjectShape(globalArgsSchema);
+        if (shape) {
+          const unknownKeys = Object.keys(rawGlobalArgs).filter(
+            (k) => !Object.hasOwn(shape, k),
           );
-          // Apply coerced values for resolved fields
-          for (const [key, value] of Object.entries(coercedGlobalArgs)) {
-            currentDefinition.setGlobalArgument(key, value);
-          }
-        } else {
-          const coercedGlobalArgs = coerceMethodArgs(
-            rawGlobalArgs,
-            modelDef.globalArguments,
-          );
-          const globalArgsSchema = modelDef.globalArguments;
-          const shape = getObjectShape(globalArgsSchema);
-          if (shape) {
-            const unknownKeys = Object.keys(coercedGlobalArgs).filter(
-              (k) => !Object.hasOwn(shape, k),
-            );
-            if (unknownKeys.length > 0) {
-              const validKeys = Object.keys(shape).join(", ");
-              throw new Error(
-                `Global arguments validation failed: Unknown argument(s): ${
-                  unknownKeys.join(", ")
-                }. Valid arguments are: ${validKeys || "none"}`,
-              );
-            }
-          }
-          // Use lenient validation: validate provided fields but don't
-          // require missing ones. Direct execution creates ephemeral instances
-          // where not all globalArgs are needed (e.g. get doesn't need
-          // creation-time fields). swamp model create validates strictly.
-          const lenientSchema = "partial" in globalArgsSchema &&
-              typeof globalArgsSchema.partial === "function"
-            ? (globalArgsSchema.partial() as z.ZodTypeAny)
-            : globalArgsSchema;
-          const globalArgsResult = lenientSchema.safeParse(
-            coercedGlobalArgs,
-          );
-          if (!globalArgsResult.success) {
+          if (unknownKeys.length > 0) {
+            const validKeys = Object.keys(shape).join(", ");
             throw new Error(
-              `Global arguments validation failed: ${
-                formatZodError(globalArgsResult.error)
-              }`,
+              `Global arguments validation failed: Unknown argument(s): ${
+                unknownKeys.join(", ")
+              }. Valid arguments are: ${validKeys || "none"}`,
             );
           }
-          // Update definition with parsed values so methods receive correct types
-          const parsedGlobalArgs = globalArgsResult.data as Record<
-            string,
-            unknown
-          >;
-          for (const [key, value] of Object.entries(parsedGlobalArgs)) {
-            currentDefinition.setGlobalArgument(key, value);
-          }
+        }
+
+        // Use lenient validation: validate provided fields but don't
+        // require missing ones. Direct execution creates ephemeral instances
+        // where not all globalArgs are needed (e.g. get doesn't need
+        // creation-time fields). swamp model create validates strictly.
+        // Unresolved fields are skipped — the Proxy on context.globalArgs
+        // guards them — while resolved fields still get their Zod defaults.
+        const globalArgsResult = parseGlobalArgumentsLeniently(
+          globalArgsSchema,
+          coercedGlobalArgs,
+          unresolvedKeys,
+        );
+        if (!globalArgsResult.success) {
+          throw new Error(
+            `Global arguments validation failed: ${
+              formatZodError(globalArgsResult)
+            }`,
+          );
+        }
+        // Update definition with parsed values so methods receive correct types
+        for (const [key, value] of Object.entries(globalArgsResult.data)) {
+          currentDefinition.setGlobalArgument(key, value);
         }
       }
 
