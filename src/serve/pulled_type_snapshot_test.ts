@@ -54,12 +54,13 @@ function row(
   };
 }
 
-Deno.test("capturePulledTypes: records typed rows of registering kinds per extension", () => {
+Deno.test("capturePulledTypes: records typed rows and add-on targets per extension", () => {
   const rows = [
     row(join(pulledRoot, "@a/one", "models", "m.ts"), "model", "@a/m"),
     row(join(pulledRoot, "@a/one", "vaults", "v.ts"), "vault", "@a/v"),
     row(join(pulledRoot, "@a/one", "models", "x.ts"), "extension", "@a/m"),
     row(join(pulledRoot, "@a/one", "models", "bad.ts"), "model", ""),
+    row(join(pulledRoot, "@a/one", "models", "y.ts"), "extension", ""),
   ];
   const catalog = {
     findBySourcePathPrefix: (prefix: string) =>
@@ -75,6 +76,8 @@ Deno.test("capturePulledTypes: records typed rows of registering kinds per exten
   assertEquals(snapshot.get("@a/one"), [
     { kind: "model", type: "@a/m" },
     { kind: "vault", type: "@a/v" },
+    // An add-on records the type it extends (swamp-club#2745).
+    { kind: "extension", type: "@a/m" },
   ]);
 });
 

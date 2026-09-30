@@ -55,7 +55,10 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
-import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
+import {
+  canonicalizePath,
+  realCanonicalPath,
+} from "../../infrastructure/persistence/canonicalize_path.ts";
 import { evictRemovedBundles } from "./bundle_eviction.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 import type {
@@ -112,18 +115,6 @@ export async function bundleImportUrl(
  * Path format: .../.swamp/pulled-extensions/@scope/name/<kind>/...
  * For scoped: @scope/name. For unscoped: name.
  */
-/**
- * The canonical form of `path` with symlinks resolved, or `path` itself
- * when it cannot be resolved (e.g. the file no longer exists).
- */
-function realCanonicalPath(path: string): string {
-  try {
-    return canonicalizePath(Deno.realPathSync(path));
-  } catch {
-    return path;
-  }
-}
-
 /** A row that holds a usable type for its source. */
 function isIndexedRow(row: ExtensionTypeRow): boolean {
   return (row.state ?? "Indexed") !== "Tombstoned" &&

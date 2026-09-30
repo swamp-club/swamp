@@ -63,6 +63,7 @@ import {
   type ExtensionContributor,
 } from "./extension_precedence.ts";
 import { evictRemovedBundles } from "./bundle_eviction.ts";
+import { realCanonicalPath } from "../../infrastructure/persistence/canonicalize_path.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
@@ -147,6 +148,80 @@ export function removeAttachedExtensionsForType(
   attachedExtensions.delete(typeNormalized);
   memberProvenance.delete(typeNormalized);
   memberCollisions.delete(typeNormalized);
+}
+
+/**
+ * Detaches from one model type the members that removed extension
+ * sources added, leaving the base type and every other extension's
+ * members in place (swamp-club#2745). A member a removed source had won
+ * from another extension is freed: that extension loses its attached
+ * mark, so the next attach pass processes it again and claims the name.
+ *
+ * `isRemoved` is asked about both spellings of a source: the catalog's
+ * (attach marks) and the symlink-resolved one (member provenance and
+ * collisions).
+ *
+ * @returns true when anything was detached or unmarked
+ */
+export function detachExtensionSources(
+  typeNormalized: string,
+  isRemoved: (sourcePath: string) => boolean,
+): boolean {
+  let changed = false;
+
+  const provenance = memberProvenance.get(typeNormalized);
+  if (provenance) {
+    const members: ExtensionMemberSet = {};
+    const sets: Record<ExtensionMemberKind, keyof ExtensionMemberSet> = {
+      method: "methods",
+      check: "checks",
+      resource: "resources",
+    };
+    for (const [key, prov] of provenance) {
+      if (!isRemoved(prov.contributor.sourcePath)) continue;
+      const sep = key.indexOf(":");
+      const set = sets[key.slice(0, sep) as ExtensionMemberKind];
+      const bucket = (members[set] ??= {}) as Record<string, unknown>;
+      bucket[key.slice(sep + 1)] = prov.definition;
+      provenance.delete(key);
+      changed = true;
+    }
+    modelRegistry.removeExtensionMembers(typeNormalized, members);
+  }
+
+  const freedLosers = new Set<string>();
+  const collisions = memberCollisions.get(typeNormalized);
+  if (collisions) {
+    for (const [key, state] of collisions) {
+      for (const loser of state.losers) {
+        if (!isRemoved(loser)) continue;
+        state.losers.delete(loser);
+        changed = true;
+      }
+      if (state.winner !== null && isRemoved(state.winner)) {
+        for (const loser of state.losers) freedLosers.add(loser);
+        collisions.delete(key);
+        changed = true;
+      } else if (state.losers.size === 0) {
+        collisions.delete(key);
+      }
+    }
+  }
+
+  const attached = attachedExtensions.get(typeNormalized);
+  if (attached) {
+    for (const sourcePath of [...attached.keys()]) {
+      if (
+        isRemoved(sourcePath) ||
+        freedLosers.has(realCanonicalPath(sourcePath))
+      ) {
+        attached.delete(sourcePath);
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
 }
 
 /**

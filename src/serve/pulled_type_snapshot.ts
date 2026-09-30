@@ -35,9 +35,13 @@ export type PulledTypeKind =
   | "report"
   | "webhook";
 
-/** One type a pulled extension registered in this process. */
+/**
+ * One type a pulled extension registered in this process, or, with kind
+ * `extension`, a model type its add-on attached members to
+ * (swamp-club#2745).
+ */
 export interface PulledTypeRef {
-  readonly kind: PulledTypeKind;
+  readonly kind: PulledTypeKind | "extension";
   readonly type: string;
 }
 
@@ -63,8 +67,8 @@ function isPulledTypeKind(kind: string): kind is PulledTypeKind {
 
 /**
  * Reads, for each named extension, the types its catalog rows under the
- * pulled root register. Rows without a type (failed or conflict-settled)
- * and model add-on rows are left out.
+ * pulled root register, and the model types its add-on rows extend. Rows
+ * without a type (failed or conflict-settled) are left out.
  */
 export function capturePulledTypes(
   catalog: Pick<ExtensionCatalogStore, "findBySourcePathPrefix">,
@@ -76,6 +80,12 @@ export function capturePulledTypes(
     const prefix = canonicalizePath(join(pulledRoot, name) + "/");
     const refs: PulledTypeRef[] = [];
     for (const row of catalog.findBySourcePathPrefix(prefix)) {
+      if (row.kind === "extension") {
+        if (row.extends_type) {
+          refs.push({ kind: "extension", type: row.extends_type });
+        }
+        continue;
+      }
       if (!row.type_normalized || !isPulledTypeKind(row.kind)) continue;
       refs.push({ kind: row.kind, type: row.type_normalized });
     }
@@ -85,7 +95,9 @@ export function capturePulledTypes(
 }
 
 /** Removes one pulled type from the registry of its kind. */
-export function unregisterPulledType(ref: PulledTypeRef): void {
+export function unregisterPulledType(
+  ref: PulledTypeRef & { readonly kind: PulledTypeKind },
+): void {
   switch (ref.kind) {
     case "model":
       modelRegistry.invalidateType(ref.type);

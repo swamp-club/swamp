@@ -1362,6 +1362,61 @@ export class ModelRegistry {
   }
 
   /**
+   * Removes extension members from a registered type in one immutable
+   * merge, the reverse of {@link applyExtensionMembers}. A member is
+   * removed only while the type still holds the exact definition passed
+   * in, so a base-model member or a later override of the same name
+   * stays (swamp-club#2745).
+   *
+   * @returns The members that were removed. Empty when the type is not
+   *   registered.
+   */
+  removeExtensionMembers(
+    type: string | ModelType,
+    members: ExtensionMemberSet,
+  ): ExtensionMemberSet {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    const key = modelType.normalized;
+    const existing = this.models.get(key);
+    const removed: ExtensionMemberSet = {};
+    if (!existing) return removed;
+
+    const current: Record<keyof ExtensionMemberSet, Record<string, unknown>> = {
+      methods: { ...existing.methods },
+      checks: { ...(existing.checks ?? {}) },
+      resources: { ...(existing.resources ?? {}) },
+    };
+    let changed = false;
+    for (const kind of ["methods", "checks", "resources"] as const) {
+      for (const [name, definition] of Object.entries(members[kind] ?? {})) {
+        if (
+          !Object.hasOwn(current[kind], name) ||
+          current[kind][name] !== definition
+        ) continue;
+        delete current[kind][name];
+        const bucket = (removed[kind] ??= {}) as Record<string, unknown>;
+        bucket[name] = definition;
+        changed = true;
+      }
+    }
+    if (!changed) return removed;
+
+    this.models.set(key, {
+      ...existing,
+      methods: current.methods as Record<string, MethodDefinition>,
+      ...(existing.checks
+        ? { checks: current.checks as Record<string, CheckDefinition> }
+        : {}),
+      ...(existing.resources
+        ? {
+          resources: current.resources as Record<string, ResourceOutputSpec>,
+        }
+        : {}),
+    });
+    return removed;
+  }
+
+  /**
    * Gets a model definition by type.
    *
    * @param type - The model type (raw or normalized)

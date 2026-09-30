@@ -564,7 +564,13 @@ sweep until the next poll, because it reads as no entries and removing the last
 extension leaves an empty file. On a peer, the reload also retires the removed
 extension's catalog rows, so the loader cannot register them again. The peer's
 files stay in its pulled root until swamp-club#2612. A type that another
-extension or a local source still provides stays registered. If one extension
+extension or a local source still provides stays registered. The record also
+lists the model types each extension's add-ons extend, and the sweep detaches
+the members those add-ons attached to built-in and local types, which the
+reload never re-registers (swamp-club#2745). Only the removed extension's
+members go; the base type and other add-ons stay, and a member name the removed
+add-on had won is attached again from the add-on that ranks next. If one
+extension
 fails to unregister (for example, the pulled-extensions lock times out), the
 next reload retries it. `sweepRemovedPulledExtensions` in
 `src/serve/extension_reload.ts` implements this.
@@ -750,9 +756,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `src/serve/boot_reconciliation.ts`).
 - The config poller reloads extension type registries when the config-tier
   lockfile changes, but only from the instance's own pulled root: sources stay
-  in each repo (swamp-club#2612). A removed extension's types are unregistered,
-  but methods it added to a built-in or local model type stay attached until a
-  restart (swamp-club#2745). Extension types a peer added need
+  in each repo (swamp-club#2612). Extension types a peer added need
   `extension install` on each instance, then `swamp serve reload` or a restart
   (`src/cli/commands/serve.ts`, `ConfigPoller` wiring). After a successful
   `--server` operation, state-modifying extension commands (`pull`, `install`,
