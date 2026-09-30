@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { CommandInvocationData } from "../domain/telemetry/mod.ts";
+import { resolve } from "@std/path";
 import type { AnyCommand } from "./cli_schema.ts";
 import { GLOBAL_OPTIONS } from "./telemetry_integration.ts";
 
@@ -148,6 +149,7 @@ export function isSentArgument(
 export function resolveTelemetryInvocation(
   root: AnyCommand,
   args: string[],
+  sensitiveValues: string[] = [],
 ): CommandInvocationData {
   const commandPath: string[] = [];
   const typedPath: string[] = [];
@@ -174,16 +176,23 @@ export function resolveTelemetryInvocation(
 
     if (arg === "--") {
       // Everything after `--` is literal pass-through.
-      for (let j = i + 1; j < args.length; j++) positionals.push(REDACTED);
+      for (let j = i + 1; j < args.length; j++) {
+        positionals.push(REDACTED);
+        sensitiveValues.push(args[j]);
+      }
       break;
     }
 
     if (arg.startsWith("-") && arg.length > 1) {
       const eq = arg.indexOf("=");
       const key = eq === -1 ? arg : arg.slice(0, eq);
-      recordOption(optionKeyToRecord(current, key));
+      const recordedKey = optionKeyToRecord(current, key);
+      recordOption(recordedKey);
+      if (recordedKey === UNKNOWN_OPTION) sensitiveValues.push(key);
+      if (eq !== -1) sensitiveValues.push(arg.slice(eq + 1));
       if (eq === -1 && optionConsumesNext(current, key, args[i + 1])) {
         if (findOption(current, key) === undefined) positionsUntrusted = true;
+        sensitiveValues.push(args[i + 1]);
         i++; // The value is never recorded.
       }
       i++;
@@ -221,6 +230,13 @@ export function resolveTelemetryInvocation(
   const missing = Math.max(0, declared.length - positionals.length);
   const commandWords = commandWordFlags(root, positionals);
   const recordedPositionals = positionals.map((value, index) => {
+    const recorded = recordPositional(value, index);
+    if (recorded === REDACTED && value !== REDACTED) {
+      sensitiveValues.push(value);
+    }
+    return recorded;
+  });
+  function recordPositional(value: string, index: number): string {
     if (underfilled || positionsUntrusted) return REDACTED;
     if (value === REDACTED) return REDACTED;
     const last = declared.length - 1;
@@ -236,7 +252,7 @@ export function resolveTelemetryInvocation(
       }
     }
     return value;
-  });
+  }
 
   const result: CommandInvocationData = {
     command: typedPath[0] ?? "",
@@ -333,4 +349,45 @@ function findOption(command: AnyCommand, key: string) {
     (name.startsWith("no-")
       ? command.getOption(name.slice(3), true)
       : undefined);
+}
+
+/** Where this invocation ran, for {@link buildKnownSensitiveValues}. */
+export interface InvocationLocations {
+  cwd: string;
+  home?: string;
+  repoDir?: string;
+}
+
+/**
+ * The values an error message is scrubbed of exactly, before any pattern
+ * runs: every value the invocation redacted, each also resolved to its
+ * absolute form (errors usually print the resolved path), plus the
+ * working, home and repo directories. Bare numbers and booleans are dropped —
+ * they would erase unrelated text.
+ *
+ * Used only to scrub the message of the invocation that produced them; never
+ * persisted.
+ */
+export function buildKnownSensitiveValues(
+  sensitiveValues: readonly string[],
+  locations: InvocationLocations,
+): string[] {
+  const known = new Set<string>();
+  for (const value of sensitiveValues) {
+    if (value.length < 3 || /^\d+$/.test(value)) continue;
+    if (value === "true" || value === "false") continue;
+    known.add(value);
+    // Any value may be a relative file name (`final report.yaml`); errors
+    // usually print it resolved against the working directory.
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+      const expanded = locations.home && value.startsWith("~")
+        ? locations.home + value.slice(1)
+        : value;
+      known.add(resolve(locations.cwd, expanded));
+    }
+  }
+  for (const location of [locations.cwd, locations.home, locations.repoDir]) {
+    if (location && location.length > 1) known.add(location);
+  }
+  return [...known];
 }

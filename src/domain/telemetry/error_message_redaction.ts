@@ -96,8 +96,59 @@ const TRAILING_RE = /(?::\d+(?::\d+)?)?[.:]?$/;
 const INTERNAL_HOST_RE =
   /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b/g;
 
-export function redactErrorMessage(message: string): string {
-  let result = message.replace(
+/** A value that names a location rather than being an opaque input. */
+function isPathLike(value: string): boolean {
+  return /[\\/]/.test(value) || value.startsWith("~");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Replaces exact occurrences of values known to be sensitive — what the user
+ * typed that telemetry redacts, and machine locations such as the working and
+ * home directories. Unlike the patterns below this does not have to guess
+ * where a path ends, so `/opt/acme/final report.yaml` is removed whole. A path
+ * value also takes any path segments that follow it (a file under the home
+ * directory). Longest values go first so a value is never split by one of its
+ * own prefixes.
+ */
+function redactKnownValues(
+  message: string,
+  knownValues: readonly string[],
+): string {
+  const values = [...new Set(knownValues)]
+    .filter((v) => v.length >= 3)
+    .sort((a, b) => b.length - a.length);
+  let result = message;
+  for (const value of values) {
+    const pathLike = isPathLike(value);
+    const pattern = pathLike
+      ? `${escapeRegExp(value)}(?:[\\\\/]${PATH_BODY}*${SPACED_SEGMENT})?`
+      : escapeRegExp(value);
+    result = result.replace(
+      new RegExp(pattern, "g"),
+      pathLike ? "<PATH>" : "<REDACTED>",
+    );
+  }
+  return result;
+}
+
+/**
+ * Redacts an error message for telemetry.
+ *
+ * @param message - The error text
+ * @param knownValues - Values known to be sensitive for this invocation,
+ *   removed exactly before any pattern runs. Used only for this call; the
+ *   caller must never persist them.
+ */
+export function redactErrorMessage(
+  message: string,
+  knownValues: readonly string[] = [],
+): string {
+  let result = redactKnownValues(message, knownValues);
+  result = result.replace(
     FILE_URL_RE,
     (match, quote: string | undefined) => {
       if (quote) return `${quote}<PATH>${quote}`;
@@ -119,6 +170,8 @@ export function redactErrorMessage(message: string): string {
     (_match, prefix: string) => `${prefix}<REDACTED>`,
   );
   result = result.replace(INTERNAL_HOST_RE, "<REDACTED-HOST>");
+  // A known prefix followed by a pattern match leaves adjacent markers.
+  result = result.replace(/<PATH>(?:<PATH>)+/g, "<PATH>");
 
   return result;
 }

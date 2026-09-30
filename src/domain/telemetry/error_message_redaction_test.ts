@@ -247,3 +247,42 @@ Deno.test("redactErrorMessage: home usernames are hidden in relative paths and U
     "import ../../Users/<REDACTED>/acme/x.ts failed; ssh://h/home/<REDACTED>/x",
   );
 });
+
+Deno.test("redactErrorMessage: a known path is removed whole, however it is spaced", () => {
+  assertEquals(
+    redactErrorMessage("Input file not found: /opt/acme/final report.yaml", [
+      "/opt/acme/final report.yaml",
+    ]),
+    "Input file not found: <PATH>",
+  );
+});
+
+Deno.test("redactErrorMessage: a known directory takes the path segments under it", () => {
+  assertEquals(
+    redactErrorMessage(
+      "Cannot read C:\\Users\\Jane Doe and /home/alice/acme corp/x.yaml",
+      [
+        "C:\\Users\\Jane Doe",
+        "/home/alice",
+      ],
+    ),
+    "Cannot read <PATH> and <PATH>",
+  );
+});
+
+Deno.test("redactErrorMessage: a known non-path value is redacted, short ones are ignored", () => {
+  assertEquals(
+    redactErrorMessage("Invalid token s3cr3t-value for id 42", [
+      "s3cr3t-value",
+      "42",
+    ]),
+    "Invalid token <REDACTED> for id 42",
+  );
+});
+
+Deno.test("redactErrorMessage: known values are matched literally", () => {
+  assertEquals(
+    redactErrorMessage("No match for a.b and (x|y)", ["a.b", "(x|y)"]),
+    "No match for <REDACTED> and <REDACTED>",
+  );
+});

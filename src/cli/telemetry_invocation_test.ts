@@ -19,7 +19,9 @@
 
 import { assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
+import { resolve } from "@std/path";
 import {
+  buildKnownSensitiveValues,
   REDACTED,
   resolveTelemetryInvocation,
   UNKNOWN_OPTION,
@@ -407,4 +409,45 @@ Deno.test("resolveTelemetryInvocation: a value shaped like a long option is not 
     "--sk-live-abc123",
   ]);
   assertEquals(result.optionKeys, [UNKNOWN_OPTION]);
+});
+
+Deno.test("resolveTelemetryInvocation: collects every value it redacts", () => {
+  const collected: string[] = [];
+  resolveTelemetryInvocation(buildTree(), [
+    "--log-level=debug",
+    "vault",
+    "put",
+    "prod",
+    "DB_PASSWORD",
+    "hunter2",
+    "--sk-live-abc",
+  ], collected);
+  assertEquals(collected.sort(), [
+    "--sk-live-abc",
+    "DB_PASSWORD",
+    "debug",
+    "hunter2",
+  ]);
+});
+
+Deno.test("buildKnownSensitiveValues: resolves values, adds locations, drops numbers and booleans", () => {
+  const cwd = resolve("/work/acme");
+  const home = resolve("/home/alice");
+  const known = buildKnownSensitiveValues(
+    ["final report.yaml", "~/acme/x", "8080", "true", "s3cr3t"],
+    { cwd, home, repoDir: cwd },
+  );
+  assertEquals(
+    known.sort(),
+    [
+      cwd,
+      home,
+      resolve(`${home}/acme/x`),
+      resolve(cwd, "final report.yaml"),
+      resolve(cwd, "s3cr3t"),
+      "final report.yaml",
+      "s3cr3t",
+      "~/acme/x",
+    ].sort(),
+  );
 });

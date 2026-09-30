@@ -198,7 +198,10 @@ import { detectInstalledLinuxMode } from "../infrastructure/update/scheduler_fac
 import { cronLogPath } from "../infrastructure/update/cron_scheduler.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
 import { isValueOnlyStdoutCommand } from "./stdout_contract.ts";
-import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
+import {
+  buildKnownSensitiveValues,
+  resolveTelemetryInvocation,
+} from "./telemetry_invocation.ts";
 import type { AnyCommand } from "./cli_schema.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import {
@@ -2255,7 +2258,14 @@ async function runInvocation(
   // parsing — the recording below needs it whether the parse succeeds or
   // throws. Redaction is decided per declared argument, see
   // telemetry_invocation.ts (swamp-club#2817).
-  const telemetryInvocation = resolveTelemetryInvocation(cli, args);
+  // The raw values it redacts are kept only in memory, to scrub them exactly
+  // from an error message below; they are never recorded.
+  const redactedValues: string[] = [];
+  const telemetryInvocation = resolveTelemetryInvocation(
+    cli,
+    args,
+    redactedValues,
+  );
 
   bootstrapSpan.end();
 
@@ -2469,6 +2479,11 @@ async function runInvocation(
         telemetryInvocation,
         startTime,
         error,
+        buildKnownSensitiveValues(redactedValues, {
+          cwd: Deno.cwd(),
+          home: Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"),
+          repoDir: resolve(repoDir),
+        }),
       );
 
       // distinct_id is required by the sender (see success path). Skip the

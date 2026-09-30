@@ -64,13 +64,14 @@ export function createSuccessResult(): InvocationResult {
 export function createErrorResult(
   error: Error,
   isUserError: boolean = false,
+  knownValues: readonly string[] = [],
 ): InvocationResult {
   const firstLine = error.message.split("\n")[0];
 
   return {
     status: isUserError ? "user_error" : "error",
     errorType: error.constructor.name,
-    errorMessage: redactErrorMessage(firstLine),
+    errorMessage: redactErrorMessage(firstLine, knownValues),
     exitCode: 1,
   };
 }

@@ -21,6 +21,10 @@ something a primitive depends on, move it to `enablers/` and give it an
   input values, option values, access groups and principals, and the
   `data query` predicate are redacted. Error messages keep names but replace
   whole paths with `<PATH>` (`src/domain/telemetry/error_message_redaction.ts`).
+  Before any pattern runs, the exact values the invocation redacted (and their
+  absolute forms), the working, home and repo directories are removed from the
+  message, so a path with a space in it needs no guessing. Those values stay in
+  memory and are never recorded.
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`.
