@@ -133,9 +133,9 @@ import {
 } from "./shared.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
-  canonicalResources,
   authorizeReferenceAccess,
   authorizeResolved,
+  canonicalResources,
   modelAccessResource,
   resolveModelTarget,
   resolveOutputAccess,

@@ -169,9 +169,9 @@ import {
   findWorkflowByIdOrName,
 } from "../../domain/workflows/workflow_lookup.ts";
 import {
-  canonicalResources,
   authorizeReferenceAccess,
   authorizeResolved,
+  canonicalResources,
   resolveRecordedWorkflow,
   resolveRunAccess,
   resolveWorkflowTarget,
