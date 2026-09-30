@@ -129,8 +129,9 @@ const configSetCommand = new Command()
         ctx.logger.info(
           disabled
             ? "Telemetry disabled for every run, in any repository"
-            : "Telemetry enabled",
+            : "User-level telemetry opt-out removed; --no-telemetry, SWAMP_NO_TELEMETRY, DO_NOT_TRACK and a repository's telemetryDisabled still apply",
         );
+        ctx.logger.info("Restart any running swamp serve daemon to apply it");
       }
       return;
     }

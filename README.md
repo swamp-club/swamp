@@ -534,7 +534,9 @@ Each event is sent only to the telemetry endpoint in effect when it was
 recorded. Events from a repository that sets `telemetryEndpoint` in
 `.swamp.yaml` stay in the spool until a run that resolves the same endpoint
 sends them; a run outside that repository never sends them to the default
-endpoint.
+endpoint. Events recorded by a version of swamp before this routing existed
+carry no endpoint and are sent by the next run that flushes, wherever it sends
+to.
 
 ### Migrating from Repo-Local Telemetry
 
