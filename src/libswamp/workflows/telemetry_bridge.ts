@@ -23,23 +23,24 @@ import type { WorkflowRunEvent, WorkflowTelemetrySink } from "./run.ts";
 
 /**
  * Build the CommandInvocationData for a workflow-internal method
- * invocation. Shape matches what `extractCommandInfo` would produce for a
- * direct `swamp model method run <name> <method>` invocation, with the
- * same redactions per ARG_SCHEMAS["model method"] = ["categorical",
- * "redact", "categorical"]:
- *   - args[0] = "run" (categorical, kept verbatim)
- *   - args[1] = "<REDACTED>" (model name is user-identifiable)
- *   - args[2] = methodName (categorical, kept verbatim)
+ * invocation. Shape matches what `resolveTelemetryInvocation` produces for
+ * a direct `swamp model method run <name> <method>` invocation. Model and
+ * method names are not sensitive and are sent as-is (swamp-club#2817):
+ *   - args[0] = "run"
+ *   - args[1] = modelName
+ *   - args[2] = methodName
  */
 export function buildChildInvocation(
+  modelName: string,
   methodName: string,
 ): CommandInvocationData {
   return {
     command: "model",
     subcommand: "method",
-    args: ["run", "<REDACTED>", methodName],
+    args: ["run", modelName, methodName],
     optionKeys: [],
     globalOptions: [],
+    commandPath: ["model", "method", "run"],
   };
 }
 
@@ -118,7 +119,7 @@ export class WorkflowTelemetryBridge {
         if (!tracked) return; // workflow_task step or non-method step
         this.inFlight.delete(key);
         await this.sink.recordChildInvocation(
-          buildChildInvocation(tracked.methodName),
+          buildChildInvocation(tracked.modelName, tracked.methodName),
           tracked.startedAt,
           new Date(),
           null,
@@ -141,7 +142,7 @@ export class WorkflowTelemetryBridge {
           // actual duration from method_executing → step_failed.
           this.inFlight.delete(key);
           await this.sink.recordChildInvocation(
-            buildChildInvocation(tracked.methodName),
+            buildChildInvocation(tracked.modelName, tracked.methodName),
             tracked.startedAt,
             new Date(),
             new Error(event.error),
@@ -166,7 +167,7 @@ export class WorkflowTelemetryBridge {
         };
         const sameInstant = new Date();
         await this.sink.recordChildInvocation(
-          buildChildInvocation(event.methodName),
+          buildChildInvocation(event.modelName, event.methodName),
           sameInstant,
           sameInstant,
           new Error(event.error),
@@ -206,7 +207,7 @@ export class WorkflowTelemetryBridge {
         `(method ${tracked.methodName} on ${tracked.modelName}, ` +
         `running for ${elapsedStr})`;
       await this.sink.recordChildInvocation(
-        buildChildInvocation(tracked.methodName),
+        buildChildInvocation(tracked.modelName, tracked.methodName),
         tracked.startedAt,
         now,
         new Error(errorMessage),

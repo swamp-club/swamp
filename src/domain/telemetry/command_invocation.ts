@@ -32,6 +32,12 @@ export interface CommandInvocation {
   readonly optionKeys: string[];
   /** Global option keys (e.g., ["--verbose", "--json"]) */
   readonly globalOptions: string[];
+  /**
+   * The full canonical command path as resolved from the command tree
+   * (e.g., ["model", "type", "describe"]). Aliases are resolved to the
+   * command's name. Absent on entries recorded before it existed.
+   */
+  readonly commandPath?: string[];
 }
 
 /**
@@ -43,6 +49,7 @@ export interface CommandInvocationData {
   args: string[];
   optionKeys: string[];
   globalOptions: string[];
+  commandPath?: string[];
 }
 
 /**
@@ -57,6 +64,7 @@ export function createCommandInvocation(
     args: props.args,
     optionKeys: props.optionKeys,
     globalOptions: props.globalOptions,
+    commandPath: props.commandPath,
   };
 }
 
@@ -74,6 +82,9 @@ export function commandInvocationToData(
   };
   if (invocation.subcommand) {
     data.subcommand = invocation.subcommand;
+  }
+  if (invocation.commandPath) {
+    data.commandPath = [...invocation.commandPath];
   }
   return data;
 }

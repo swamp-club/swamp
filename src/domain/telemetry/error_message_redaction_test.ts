@@ -20,23 +20,23 @@
 import { assertEquals } from "@std/assert";
 import { redactErrorMessage } from "./error_message_redaction.ts";
 
-Deno.test("redactErrorMessage: redacts macOS home directory path", () => {
+Deno.test("redactErrorMessage: redacts macOS home directory path whole", () => {
   const result = redactErrorMessage(
     "Not a swamp repository: /Users/johndoe/projects/myapp. Run 'swamp repo init'.",
   );
   assertEquals(
     result,
-    "Not a swamp repository: /Users/<REDACTED>/projects/myapp. Run 'swamp repo init'.",
+    "Not a swamp repository: <PATH>. Run 'swamp repo init'.",
   );
 });
 
-Deno.test("redactErrorMessage: redacts Linux home directory path", () => {
+Deno.test("redactErrorMessage: redacts Linux home directory path whole", () => {
   const result = redactErrorMessage(
     "File not found: /home/alice/workspace/models/test.yaml",
   );
   assertEquals(
     result,
-    "File not found: /home/<REDACTED>/workspace/models/test.yaml",
+    "File not found: <PATH>",
   );
 });
 
@@ -46,7 +46,7 @@ Deno.test("redactErrorMessage: redacts Windows backslash path", () => {
   );
   assertEquals(
     result,
-    "Cannot read file: C:\\Users\\<REDACTED>\\Documents\\swamp\\model.yaml",
+    "Cannot read file: <PATH>",
   );
 });
 
@@ -56,17 +56,17 @@ Deno.test("redactErrorMessage: redacts Windows forward-slash path", () => {
   );
   assertEquals(
     result,
-    "Cannot read file: C:/Users/<REDACTED>/Documents/swamp/model.yaml",
+    "Cannot read file: <PATH>",
   );
 });
 
-Deno.test("redactErrorMessage: redacts multiple home paths in one message", () => {
+Deno.test("redactErrorMessage: redacts multiple paths in one message", () => {
   const result = redactErrorMessage(
     "Cannot copy /Users/alice/src to /Users/alice/dest",
   );
   assertEquals(
     result,
-    "Cannot copy /Users/<REDACTED>/src to /Users/<REDACTED>/dest",
+    "Cannot copy <PATH> to <PATH>",
   );
 });
 
@@ -116,6 +116,47 @@ Deno.test("redactErrorMessage: handles combined path and hostname", () => {
   );
   assertEquals(
     result,
-    "Failed syncing /home/<REDACTED>/repo to <REDACTED-HOST>",
+    "Failed syncing <PATH> to <REDACTED-HOST>",
   );
+});
+
+Deno.test("redactErrorMessage: redacts non-home absolute paths", () => {
+  assertEquals(
+    redactErrorMessage("Not a swamp repository: /opt/automation/acme-billing"),
+    "Not a swamp repository: <PATH>",
+  );
+});
+
+Deno.test("redactErrorMessage: redacts home-relative and UNC paths", () => {
+  assertEquals(
+    redactErrorMessage(
+      "Cannot open ~/acme/secret.yaml or \\\\fileserver\\acme",
+    ),
+    "Cannot open <PATH> or <PATH>",
+  );
+});
+
+Deno.test("redactErrorMessage: redacts quoted paths and keeps the quotes", () => {
+  assertEquals(
+    redactErrorMessage("Directory '/srv/acme' is not empty; \"/tmp/x\" too"),
+    "Directory '<PATH>' is not empty; \"<PATH>\" too",
+  );
+});
+
+Deno.test("redactErrorMessage: keeps sentence punctuation and line suffixes", () => {
+  assertEquals(
+    redactErrorMessage("Parse error at /srv/acme/model.yaml:12:4."),
+    "Parse error at <PATH>:12:4.",
+  );
+});
+
+Deno.test("redactErrorMessage: keeps names, type names and relative paths", () => {
+  const message =
+    "Model not found: acme-prod (type command/shell, @swamp/aws/ec2, see ./models/x.yaml)";
+  assertEquals(redactErrorMessage(message), message);
+});
+
+Deno.test("redactErrorMessage: keeps URLs", () => {
+  const message = "Fetch failed: https://example.com/a/b and file:///x";
+  assertEquals(redactErrorMessage(message), message);
 });

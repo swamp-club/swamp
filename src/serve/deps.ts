@@ -438,9 +438,13 @@ export async function executeWorkflowWithLocks(
   // when telemetry is disabled for this process, in which case the run
   // produces no telemetry at all — exactly as before this was wired.
   const runTelemetry = options.triggerSource
-    ? createRunTelemetry(options.triggerSource, {
-      initiatedBy: options.initiatedBy,
-    })
+    ? createRunTelemetry(
+      options.triggerSource,
+      workflow?.name ?? input.workflowIdOrName,
+      {
+        initiatedBy: options.initiatedBy,
+      },
+    )
     : undefined;
 
   const deps = await createWorkflowRunDeps(

@@ -95,7 +95,8 @@ Deno.test("bridge records success entry on method_executing → step_completed",
   const call = sink.calls[0];
   assertEquals(call.invocation.command, "model");
   assertEquals(call.invocation.subcommand, "method");
-  assertEquals(call.invocation.args, ["run", "<REDACTED>", "run"]);
+  assertEquals(call.invocation.args, ["run", "shell-step", "run"]);
+  assertEquals(call.invocation.commandPath, ["model", "method", "run"]);
   assertEquals(call.error, null);
   assertEquals(call.parentInvocationId, "parent-x");
   assertEquals(call.workflowContext.workflowName, "deploy");
@@ -162,7 +163,7 @@ Deno.test("bridge synthesizes durationMs=0 entry for pre-method-executing failur
     "synthesized entries have zero duration",
   );
   assertEquals(call.error?.message, "model not found: missing");
-  assertEquals(call.invocation.args, ["run", "<REDACTED>", "enrich"]);
+  assertEquals(call.invocation.args, ["run", "missing", "enrich"]);
 });
 
 Deno.test("bridge skips workflow-task / structural step_failed (no modelName)", async () => {

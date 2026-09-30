@@ -28,7 +28,7 @@ Deno.test("createSuccessResult: returns success status", () => {
   assertEquals(result.errorMessage, undefined);
 });
 
-Deno.test("createErrorResult: redacts home directory paths in errorMessage", () => {
+Deno.test("createErrorResult: redacts paths in errorMessage", () => {
   const error = new Error(
     "Not a swamp repository: /Users/johndoe/projects/myapp",
   );
@@ -36,7 +36,7 @@ Deno.test("createErrorResult: redacts home directory paths in errorMessage", () 
   assertEquals(result.status, "error");
   assertEquals(
     result.errorMessage,
-    "Not a swamp repository: /Users/<REDACTED>/projects/myapp",
+    "Not a swamp repository: <PATH>",
   );
 });
 

@@ -198,6 +198,8 @@ import { detectInstalledLinuxMode } from "../infrastructure/update/scheduler_fac
 import { cronLogPath } from "../infrastructure/update/cron_scheduler.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
 import { isValueOnlyStdoutCommand } from "./stdout_contract.ts";
+import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
+import type { AnyCommand } from "./cli_schema.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import {
   getTracer,
@@ -1820,6 +1822,48 @@ async function initTelemetryService(
   }
 }
 
+/**
+ * Registers every top-level command, and `help` last, on the root command.
+ *
+ * Kept free of invocation state so the real command tree can be built outside
+ * `runInvocation` — the telemetry redaction fitness test walks it.
+ */
+export function registerCommands(cli: AnyCommand): void {
+  cli
+    .command("access", accessCommand)
+    .command("version", versionCommand)
+    .command("model", modelCommand)
+    .command("init", repoInitCommand)
+    .command("repo", repoCommand)
+    .command("workflow", workflowCommand)
+    .command("vault", vaultCommand)
+    .command("data", dataCommand)
+    .command("telemetry", telemetryCommand)
+    .command("audit", auditCommand.hidden())
+    .command("update", updateCommand)
+    .command("config", configCommand)
+    .command("source", sourceCommand)
+    .command("completions", completionCommand)
+    .command("issue", issueCommand)
+    .command("invite", inviteCommand)
+    // Hidden easter egg — the same command as `swamp invite link`.
+    .command("first-rule", firstRuleCommand)
+    .command("auth", authCommand)
+    .command("extension", extensionCommand)
+    .command("summarise", summariseCommand)
+    .command("datastore", datastoreCommand)
+    .command("doctor", doctorCommand)
+    .command("run", runCommand)
+    .command("report", reportCommand)
+    .command("serve", serveCommand)
+    .command("agent", agentCommand)
+    .command("worker", workerCommand)
+    .command("quest", questCommand);
+
+  // Register help command last — needs reference to the fully-built CLI tree
+  cli.command("help", createHelpCommand(cli));
+}
+
 export async function runCli(args: string[]): Promise<void> {
   // Rewrite `model @type method run` → `model method run @type` before
   // Cliffy parses the command tree. Must happen before any arg inspection.
@@ -1827,7 +1871,9 @@ export async function runCli(args: string[]): Promise<void> {
   args = rewriteDirectTypeArgs(args);
 
   // Extract command info once the args are final — nothing reassigns `args`
-  // below this point. It feeds telemetry, hook detection and stdout routing,
+  // below this point. It feeds span attributes, hook detection and stdout
+  // routing (recorded telemetry is resolved against the command tree instead,
+  // see `resolveTelemetryInvocation`),
   // and it is also how `--no-color` is found: a real parse that tracks the flag
   // wherever it appears and skips option values, rather than a bare scan.
   const commandInfo = extractCommandInfo(args);
@@ -2201,39 +2247,15 @@ async function runInvocation(
       }
     })
     .error(unknownCommandErrorHandler)
-    .action(groupCommandAction)
-    .command("access", accessCommand)
-    .command("version", versionCommand)
-    .command("model", modelCommand)
-    .command("init", repoInitCommand)
-    .command("repo", repoCommand)
-    .command("workflow", workflowCommand)
-    .command("vault", vaultCommand)
-    .command("data", dataCommand)
-    .command("telemetry", telemetryCommand)
-    .command("audit", auditCommand.hidden())
-    .command("update", updateCommand)
-    .command("config", configCommand)
-    .command("source", sourceCommand)
-    .command("completions", completionCommand)
-    .command("issue", issueCommand)
-    .command("invite", inviteCommand)
-    // Hidden easter egg — the same command as `swamp invite link`.
-    .command("first-rule", firstRuleCommand)
-    .command("auth", authCommand)
-    .command("extension", extensionCommand)
-    .command("summarise", summariseCommand)
-    .command("datastore", datastoreCommand)
-    .command("doctor", doctorCommand)
-    .command("run", runCommand)
-    .command("report", reportCommand)
-    .command("serve", serveCommand)
-    .command("agent", agentCommand)
-    .command("worker", workerCommand)
-    .command("quest", questCommand);
+    .action(groupCommandAction);
 
-  // Register help command last — needs reference to the fully-built CLI tree
-  cli.command("help", createHelpCommand(cli));
+  registerCommands(cli);
+
+  // Resolve the telemetry invocation against the real command tree, before
+  // parsing — the recording below needs it whether the parse succeeds or
+  // throws. Redaction is decided per declared argument, see
+  // telemetry_invocation.ts (swamp-club#2817).
+  const telemetryInvocation = resolveTelemetryInvocation(cli, args);
 
   bootstrapSpan.end();
 
@@ -2253,7 +2275,10 @@ async function runInvocation(
       // Record successful invocation
       if (telemetryCtx) {
         try {
-          await telemetryCtx.service.recordSuccess(commandInfo, startTime);
+          await telemetryCtx.service.recordSuccess(
+            telemetryInvocation,
+            startTime,
+          );
 
           // distinct_id is required by the sender. For repo-less runs it is
           // the global userId; if neither userId nor repoId resolved, skip the
@@ -2440,7 +2465,11 @@ async function runInvocation(
 
     // Record error invocation and flush before re-throwing
     if (telemetryCtx && error instanceof Error) {
-      await telemetryCtx.service.recordError(commandInfo, startTime, error);
+      await telemetryCtx.service.recordError(
+        telemetryInvocation,
+        startTime,
+        error,
+      );
 
       // distinct_id is required by the sender (see success path). Skip the
       // flush if neither userId nor repoId resolved.

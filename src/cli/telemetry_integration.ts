@@ -156,7 +156,7 @@ const ARG_SCHEMAS: Record<string, readonly ("categorical" | "redact")[]> = {
 };
 
 /** Global options that are tracked separately */
-const GLOBAL_OPTIONS = new Set([
+export const GLOBAL_OPTIONS: ReadonlySet<string> = new Set([
   "--json",
   "-q",
   "--quiet",
@@ -168,7 +168,9 @@ const GLOBAL_OPTIONS = new Set([
 ]);
 
 /**
- * Extracts command information from CLI arguments for telemetry.
+ * Extracts command information from CLI arguments before the command tree is
+ * built. Drives hook detection, loader gating, stdout routing and span
+ * attributes; recorded telemetry uses `resolveTelemetryInvocation` instead.
  * Option values are redacted - only keys are recorded.
  *
  * @param args - The raw CLI arguments

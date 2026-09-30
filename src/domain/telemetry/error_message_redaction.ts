@@ -22,16 +22,40 @@
 // destructive strategy (replaces the entire message). Telemetry preserves
 // diagnostic structure by normalizing in-place instead.
 
-const HOME_PATH_RE = /(\/Users\/|\/home\/|C:\\Users\\|C:\/Users\/)([^\s/\\]+)/g;
+/**
+ * Filesystem paths are user-chosen and can name customers, projects and
+ * people, so a path is replaced whole (swamp-club#2817) — not just its home
+ * username segment, which left everything below it and every path outside a
+ * home directory intact. Names that are not paths (`Model not found: foo`,
+ * `command/shell`, `@swamp/aws/ec2`) are not sensitive and are kept.
+ *
+ * Matched forms: POSIX absolute (`/opt/x`), home-relative (`~/x`), Windows
+ * drive with either slash (`C:\x`, `C:/x`) and UNC (`\\host\share`). A POSIX
+ * path must not follow a word character, `:`, `/`, `.`, `@` or `-`, so type
+ * names, relative paths and URLs (`https://host/path`) are left alone.
+ */
+const PATH_CHARS = "[^\\s\"'`<>|,;()\\[\\]{}]";
+const PATH_RE = new RegExp(
+  [
+    `\\\\\\\\${PATH_CHARS}+`, // UNC
+    `\\b[A-Za-z]:[\\\\/]${PATH_CHARS}*`, // Windows drive
+    `(?<![\\w:/.@~-])~[\\\\/]${PATH_CHARS}*`, // home-relative
+    `(?<![\\w:/.@~-])/${PATH_CHARS}+`, // POSIX absolute
+  ].join("|"),
+  "g",
+);
+
+/** Sentence punctuation or a `:line[:col]` suffix, kept outside the redaction. */
+const TRAILING_RE = /(?:[.:]|:\d+(?::\d+)?)+$/;
 
 const INTERNAL_HOST_RE =
   /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b/g;
 
 export function redactErrorMessage(message: string): string {
-  let result = message.replace(
-    HOME_PATH_RE,
-    (_match, prefix: string, _username: string) => `${prefix}<REDACTED>`,
-  );
+  let result = message.replace(PATH_RE, (match) => {
+    const trailing = match.match(TRAILING_RE)?.[0] ?? "";
+    return `<PATH>${trailing}`;
+  });
 
   result = result.replace(INTERNAL_HOST_RE, "<REDACTED-HOST>");
 

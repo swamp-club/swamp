@@ -54,6 +54,37 @@ Deno.test("TelemetryEntry.create creates entry with generated ID", () => {
   assertEquals(entry.platform, "linux");
 });
 
+Deno.test("TelemetryEntry: commandPath round-trips and stays absent on legacy entries", () => {
+  const invocation = {
+    command: "model",
+    subcommand: "type",
+    args: ["describe", "command/shell"],
+    optionKeys: [],
+    globalOptions: [],
+  };
+  const common = {
+    result: { status: "success" as const, exitCode: 0 },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:01Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  };
+
+  const data = TelemetryEntry.create({
+    ...common,
+    invocation: { ...invocation, commandPath: ["model", "type", "describe"] },
+  }).toData();
+  assertEquals(data.invocation.commandPath, ["model", "type", "describe"]);
+  assertEquals(
+    TelemetryEntry.fromData(data).invocation.commandPath,
+    ["model", "type", "describe"],
+  );
+
+  const legacy = TelemetryEntry.create({ ...common, invocation }).toData();
+  assertEquals("commandPath" in legacy.invocation, false);
+});
+
 Deno.test("TelemetryEntry.create with explicit ID uses provided ID", () => {
   const entry = TelemetryEntry.create({
     id: "test-id-123",
