@@ -807,3 +807,55 @@ Deno.test("reconcileAllFileGrants: leaves the grants of an unavailable source un
   assertEquals(result.perFile.get("gone.yaml")?.revoked, 1);
   assertEquals(store.written.get("inst-model-g")?.state, "revoked");
 });
+
+// Grants stored before swamp-club#2848 carry the absolute path of their
+// --grants-dir file. No instance loads that source any more, so reconcile
+// revokes it and creates the grant under grants-dir/<name> in the same pass.
+Deno.test("reconcileAllFileGrants: replaces a legacy absolute-path source with its grants-dir source in one reconcile", async () => {
+  const deny: GrantFileEntry = {
+    subject: { kind: "user", name: "mallory" },
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  };
+  const store = createMockStore(
+    new Map([
+      [
+        "model-legacy",
+        {
+          grant: makeFileGrant({
+            ...deny,
+            source: "file:/srv/a/grants/deny.yaml",
+          }),
+          modelId: "model-legacy",
+          instanceName: "grant-file-legacy",
+        },
+      ],
+    ]),
+  );
+
+  const result = await reconcileAllFileGrants(
+    new Map([["grants-dir/deny.yaml", [deny]]]),
+    store,
+  );
+
+  assertEquals(result.totalCreated, 1);
+  assertEquals(result.totalRevoked, 1);
+  assertEquals(store.written.get("grant-file-legacy")?.state, "revoked");
+  const active = [...store.written.values()].filter((g) =>
+    g.state === "active"
+  );
+  assertEquals(active.map((g) => [g.source, g.effect]), [
+    ["file:grants-dir/deny.yaml", "deny"],
+  ]);
+
+  // Revoked legacy grants stay stored as history and are not reported again.
+  const again = await reconcileAllFileGrants(
+    new Map([["grants-dir/deny.yaml", [deny]]]),
+    store,
+  );
+  assertEquals(again.totalCreated, 0);
+  assertEquals(again.totalRevoked, 0);
+  assertEquals(again.totalUnchanged, 1);
+  assertEquals([...again.perFile.keys()], ["grants-dir/deny.yaml"]);
+});

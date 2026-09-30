@@ -19,8 +19,11 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  GRANTS_FILE_SOURCE_NAME,
+  grantsDirSourceName,
   GrantSourceSchema,
   isFileSource,
+  isGrantsDirSourceName,
   parseFileSourceFilename,
   parseGrantSource,
 } from "./grant_source.ts";
@@ -106,4 +109,34 @@ Deno.test("parseFileSourceFilename: throws for non-file source", () => {
     Error,
     "non-file source",
   );
+});
+
+Deno.test("grantsDirSourceName: prefixes the basename with grants-dir/", () => {
+  assertEquals(grantsDirSourceName("deny.yaml"), "grants-dir/deny.yaml");
+  assertEquals(
+    parseGrantSource(`file:${grantsDirSourceName("deny.yaml")}`),
+    "file:grants-dir/deny.yaml",
+  );
+});
+
+Deno.test("GRANTS_FILE_SOURCE_NAME: is a valid file source name", () => {
+  assertEquals(
+    parseGrantSource(`file:${GRANTS_FILE_SOURCE_NAME}`),
+    "file:grants-file",
+  );
+});
+
+Deno.test("isGrantsDirSourceName: matches only grants-dir sources", () => {
+  assertEquals(isGrantsDirSourceName("grants-dir/deny.yaml"), true);
+  assertEquals(isGrantsDirSourceName("deny.yaml"), false);
+  assertEquals(isGrantsDirSourceName(GRANTS_FILE_SOURCE_NAME), false);
+  assertEquals(isGrantsDirSourceName("/etc/swamp/grants/deny.yaml"), false);
+});
+
+Deno.test("grantsDirSourceName: never equals a repository grants/ file name", () => {
+  for (const name of ["grants-dir.yaml", "grants-file.yml", "deny.yaml"]) {
+    assertEquals(grantsDirSourceName(name) === name, false);
+    assertEquals(GRANTS_FILE_SOURCE_NAME === name, false);
+    assertEquals(isGrantsDirSourceName(name), false);
+  }
 });

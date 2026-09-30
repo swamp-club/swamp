@@ -42,6 +42,10 @@ import {
   readGrantFiles,
 } from "../../domain/access/grant_file.ts";
 import {
+  GRANTS_FILE_SOURCE_NAME,
+  grantsDirSourceName,
+} from "../../domain/access/grant_source.ts";
+import {
   createFileGrantStore,
   type FileGrantStore,
   GRANT_DATA_NAME,
@@ -649,7 +653,7 @@ export async function handleAccessReload(
               filename: "external-grants-file",
             })));
           } else {
-            validEntries.set(ctx.grantsFile, externalResult.entries);
+            validEntries.set(GRANTS_FILE_SOURCE_NAME, externalResult.entries);
           }
         }
       } catch (error) {
@@ -703,7 +707,7 @@ export async function handleAccessReload(
             if (result.errors.length > 0) {
               allErrors.push(...result.errors);
             } else {
-              validEntries.set(filePath, result.entries);
+              validEntries.set(grantsDirSourceName(file.name), result.entries);
             }
           } catch (error) {
             logger
