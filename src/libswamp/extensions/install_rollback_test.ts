@@ -20,9 +20,17 @@
 // An install held uncommitted across the catalog save, and what its
 // commit and rollback do on disk (swamp-club#2724). These drive the real
 // installExtension through InstallExtensionService with a fake registry
-// and real archives.
+// and real archives. There is no install_rollback.ts: the code under test
+// is PendingInstall and applyInstall/installExtension in pull.ts, phase 8
+// in install_extension_service.ts, and UpgradeExtensionService.
 
-import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { ensureDir, walk } from "@std/fs";
 import { basename, dirname, join, relative } from "@std/path";
 import { InstallExtensionService } from "./install_extension_service.ts";
@@ -59,8 +67,10 @@ const V1 = "2026.01.01.1";
 const V2 = "2026.01.02.1";
 const V1_1 = "2026.01.01.2";
 
-const MODEL = (typeId: string) => `
-import { z } from "npm:zod@4";
+// The zod swamp provides to extensions, so no npm download is needed.
+const MODEL = (typeId: string) =>
+  `// deno-lint-ignore no-explicit-any
+const { z } = (globalThis as any).__swamp_zod;
 
 export const model = {
   type: "${typeId}",
@@ -352,6 +362,7 @@ Deno.test("InstallExtensionService.execute: an upgrade that collides leaves the 
     );
 
     assertEquals(thrown.rolledBack, true);
+    assertStringIncludes(thrown.message, `${n.a}@${V1} remains installed`);
     assertEquals(await repo.snapshot(n.a), before);
     assertEquals(await stagingLeft(repo.repoDir), []);
     // The catalog still holds v1 only.
@@ -663,9 +674,11 @@ Deno.test("PendingInstall: rollback and commit are idempotent and only the first
       outcomes.push(await pending.rollback());
       await pending.commit();
     });
-    assertEquals(outcomes, [{ status: "rolled-back" }, {
-      status: "rolled-back",
-    }]);
+    const reverted = [{ name: n.a, version: V2, priorVersion: V1 }];
+    assertEquals(outcomes, [
+      { status: "rolled-back", reverted },
+      { status: "rolled-back", reverted },
+    ]);
     assertEquals(await repo.snapshot(n.a), before);
 
     // Commit first: a later rollback moves nothing.

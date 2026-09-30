@@ -27,8 +27,8 @@ import {
 } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import type {
+  InstallChange,
   InstallRollbackOutcome,
-  KeptInstall,
 } from "../../domain/extensions/duplicate_type_user_error.ts";
 import {
   type ExtensionManifest,
@@ -1385,7 +1385,7 @@ class PendingInstallNode implements PendingInstall {
     const nodes = this.#pendingNodes();
     if (nodes.length === 0) {
       // Already committed: everything in it stays on the new version.
-      return { status: "kept", kept: this.#allNodes().map((n) => n.#kept()) };
+      return { status: "kept", kept: this.#allNodes().map((n) => n.#change()) };
     }
     this.#outcome = await this.#rollbackNodes(nodes);
     return this.#outcome;
@@ -1396,7 +1396,7 @@ class PendingInstallNode implements PendingInstall {
     return [this, ...this.#children.flatMap((c) => c.#allNodes())];
   }
 
-  #kept(): KeptInstall {
+  #change(): InstallChange {
     return {
       name: this.result.name,
       version: this.result.version,
@@ -1436,7 +1436,7 @@ class PendingInstallNode implements PendingInstall {
 
     if (restored === "none") {
       for (const node of [...nodes].reverse()) await node.#commitOwn();
-      return { status: "kept", kept: nodes.map((node) => node.#kept()) };
+      return { status: "kept", kept: nodes.map((node) => node.#change()) };
     }
     if (restored === "unknown") {
       for (const node of nodes) {
@@ -1453,7 +1453,7 @@ class PendingInstallNode implements PendingInstall {
       await deleteCreatedPaths(node.#skillCreatedPaths, this.#ctx);
     }
     return settled
-      ? { status: "rolled-back" }
+      ? { status: "rolled-back", reverted: nodes.map((node) => node.#change()) }
       : { status: "unsettled", lockfilePath: lockfile.lockfilePath };
   }
 

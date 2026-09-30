@@ -539,7 +539,10 @@ Deno.test(
     });
 
     const result = buildErrorJson(err);
-    assertStringIncludes(result.error as string, lockfilePath);
+    assertStringIncludes(
+      result.error as string,
+      "The rollback could not finish",
+    );
     const dup = result.duplicateType as Record<string, unknown>;
     assertEquals(dup.kind, "vault");
     assertEquals(dup.isGhostRow, true);

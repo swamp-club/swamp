@@ -1600,7 +1600,10 @@ checksum, the old and new manifest digests, every root (live, old and new
 paths, whether the live root existed and whether it was a symlink, whether the
 new version has files for it), and the nested entry roots carried over. A bundle
 root may have neither existed nor have new files; the extension root always has
-new files.
+new files. A binary from before swamp-club#2724 rejects such a journal as having
+"nothing to swap" and leaves it with a warning, so after a downgrade in the middle
+of an interrupted install that extension stays blocked until the journal is
+settled by a current binary or resolved by hand.
 
 **Swap.** Phase 1 moves each existing live root to `old/<i>`. Phase 2 moves
 each new root into place, bundles first, then the extension root (staged
@@ -2050,15 +2053,22 @@ and a structured `duplicateType` object in `--json` mode:
 the repository decides this from which sources are in the failing save, not
 from catalog row order.
 
-`rollback` says how the rollback ended: `rolled-back`, `kept` (with each kept
-extension's name, new version and prior version) or `unsettled` (with the
-lockfile path); `rolledBack` is true only for `rolled-back`. A `kept` message
-says the install was kept rather than "Cannot install", and suggests `swamp
-extension pull <name>@<prior>` for each kept extension that had a prior version,
-`swamp extension rm <name>` for one that did not, or removing the extension that
-already held the type. An `unsettled` message says the next `swamp extension`
-install or removal completes the rollback, or names the install journal it
-could not settle.
+`rollback` says how the rollback ended: `rolled-back` (with `reverted`: each
+extension's name, the version it tried and its prior version), `kept` (the same,
+as `kept`) or `unsettled` (with the lockfile path); `rolledBack` is true only for
+`rolled-back`. A `rolled-back` message names the version that remains installed
+when the extension had one ("rolled back; `<name>@<prior>` remains installed").
+A `kept` message says the install was kept rather than "Cannot install", and
+suggests `swamp extension pull <name>@<prior>` for each kept extension that had a
+prior version, `swamp extension rm <name>` for one that did not, or removing the
+extension that already held the type (or `swamp doctor extensions` when that is
+a ghost row). An `unsettled` message says the next `swamp extension` install or
+removal will finish the rollback or name the install journal to resolve by hand;
+the lockfile path is in the JSON only.
+
+`extension update` reports an update whose collision left it `kept` as
+`kept_with_collision` (previous and new version, and the error), counted apart
+from `updated` and `failed` in the summary (`keptWithCollision`).
 
 The message suggests `swamp extension rm <existing-name>`. A conflict may come
 from a **ghost catalog row**, whose source file was deleted outside swamp. The

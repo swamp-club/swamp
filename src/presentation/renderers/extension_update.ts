@@ -253,6 +253,12 @@ function renderUpdateLog(result: ExtensionUpdateResult, logger: Logger): void {
           line: `${ext.name}: ${ext.error}`,
         });
         break;
+      case "kept_with_collision":
+        logger.warn("{line}", {
+          line:
+            `${ext.name}: kept v${ext.newVersion} (was v${ext.previousVersion}) despite a type collision: ${ext.error}`,
+        });
+        break;
       case "deprecated": {
         let line = `${ext.name}: deprecated`;
         if (ext.supersededBy) {
@@ -265,9 +271,12 @@ function renderUpdateLog(result: ExtensionUpdateResult, logger: Logger): void {
   }
 
   const { summary } = result;
+  const kept = summary.keptWithCollision > 0
+    ? `, ${summary.keptWithCollision} kept with a type collision`
+    : "";
   logger.info("\n{line}", {
     line:
-      `${summary.total} extension(s): ${summary.updated} updated, ${summary.upToDate} up to date, ${summary.failed} failed`,
+      `${summary.total} extension(s): ${summary.updated} updated, ${summary.upToDate} up to date, ${summary.failed} failed${kept}`,
   });
 }
 

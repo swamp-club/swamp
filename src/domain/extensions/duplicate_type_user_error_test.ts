@@ -153,7 +153,7 @@ Deno.test("DuplicateTypeUserError: kept advice lists every kept extension in ins
   assertEquals(err.rolledBack, false);
 });
 
-Deno.test("DuplicateTypeUserError: kept message never suggests doctor, even for a ghost row", () => {
+Deno.test("DuplicateTypeUserError: kept message with a ghost row points at doctor, not at removing the ghost's extension", () => {
   const err = makeError({
     isGhostRow: true,
     rollback: {
@@ -161,10 +161,54 @@ Deno.test("DuplicateTypeUserError: kept message never suggests doctor, even for 
       kept: [{ name: "@scopeB/bb", version: "2.0.0", priorVersion: "1.0.0" }],
     },
   });
-  assertEquals(err.message.includes("doctor"), false);
+  assertStringIncludes(err.message, "`swamp extension pull @scopeB/bb@1.0.0`");
+  assertStringIncludes(
+    err.message,
+    "run `swamp doctor extensions` to reclassify the ghost catalog entry",
+  );
+  assertEquals(err.message.includes("swamp extension rm @scopeA/aa"), false);
   assertEquals(err.message.includes("Cannot install"), false);
   assertEquals(err.message.includes("rolled back"), false);
   assertEquals(err.isGhostRow, true);
+});
+
+Deno.test("DuplicateTypeUserError: kept message without a ghost row never suggests doctor", () => {
+  const err = makeError({
+    rollback: {
+      status: "kept",
+      kept: [{ name: "@scopeB/bb", version: "2.0.0", priorVersion: "1.0.0" }],
+    },
+  });
+  assertEquals(err.message.includes("doctor"), false);
+});
+
+Deno.test("DuplicateTypeUserError: rolled-back message names the version that remains installed", () => {
+  const err = makeError({
+    rollback: {
+      status: "rolled-back",
+      reverted: [
+        { name: "@scopeB/bb", version: "1.0.0", priorVersion: "0.9.0" },
+        { name: "@scopeC/dep", version: "1.0.0", priorVersion: null },
+      ],
+    },
+  });
+  assertStringIncludes(
+    err.message,
+    `Cannot install ${CONFLICTING_AT} — rolled back; @scopeB/bb@0.9.0 ` +
+      "remains installed.",
+  );
+  assertEquals(err.rolledBack, true);
+});
+
+Deno.test("DuplicateTypeUserError: rolled-back message for a first install says only that it was rolled back", () => {
+  const err = makeError({
+    rollback: {
+      status: "rolled-back",
+      reverted: [{ name: "@scopeB/bb", version: "1.0.0", priorVersion: null }],
+    },
+  });
+  assertStringIncludes(err.message, "— filesystem changes rolled back.");
+  assertEquals(err.message.includes("remains installed"), false);
 });
 
 Deno.test("DuplicateTypeUserError: unsettled message says the next install or removal completes it", () => {
@@ -177,10 +221,11 @@ Deno.test("DuplicateTypeUserError: unsettled message says the next install or re
   assertEquals(
     err.message,
     `${CLAIMED} Cannot install ${CONFLICTING_AT}. The rollback could not ` +
-      "finish; the next `swamp extension` install or removal completes it, " +
-      "or names the install journal it could not settle " +
-      `(lockfile: ${lockfilePath}). ${RM_RECOVERY}`,
+      "finish: the next `swamp extension` install or removal will finish it, " +
+      `or name the install journal to resolve by hand. ${RM_RECOVERY}`,
   );
+  // The lockfile path is in the JSON outcome, not the log-mode message.
+  assertEquals(err.message.includes(lockfilePath), false);
   assertEquals(err.rollback, rollback);
   assertEquals(err.rolledBack, false);
   assertEquals(err.message.includes("rolled back"), false);
@@ -191,7 +236,7 @@ Deno.test("DuplicateTypeUserError: unsettled ghost row keeps the doctor recovery
     isGhostRow: true,
     rollback: { status: "unsettled", lockfilePath: "/l.json" },
   });
-  assertStringIncludes(err.message, "(lockfile: /l.json)");
+  assertStringIncludes(err.message, "The rollback could not finish");
   assert(err.message.endsWith(GHOST_RECOVERY));
   assertEquals(err.rolledBack, false);
 });

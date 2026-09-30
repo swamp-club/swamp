@@ -130,9 +130,9 @@ export interface PullContext {
    * W2 service deps. When BOTH are provided, `extensionPull` routes
    * through {@link InstallExtensionService} so phase 8 fires (catalog
    * populated synchronously, I-Repo-1 fires on `(kind, type)` collision,
-   * rollback to the previous version on conflict). When either is missing, falls back to
-   * the pre-W2 free-function path. See {@link ExtensionPullDeps} for
-   * the full contract.
+   * rollback to the previous version on conflict). When either is
+   * missing, falls back to the pre-W2 free-function path. See
+   * {@link ExtensionPullDeps} for the full contract.
    */
   denoRuntime?: DenoRuntime;
   repository?: ExtensionRepository;

@@ -1423,7 +1423,8 @@ Deno.test("recoverInstallStaging: puts the prior tree back after a crash at ever
     probe.control.rollingBack = true;
     assertEquals(await probeTx.rollback(), true);
     const total = probe.rollbackRenames.length;
-    // ext and bundle root: live -> discard, old -> live; absent: live -> discard.
+    // ext and bundle root: live -> discard, old -> live;
+    // absent: live -> discard.
     assertEquals(total, 5);
     assertEquals(await readTree(f.repoDir), before);
 

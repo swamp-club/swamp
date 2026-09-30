@@ -360,3 +360,19 @@ Deno.test("buildUpdateResult handles empty array", () => {
   assertEquals(result.summary.failed, 0);
   assertEquals(result.extensions, []);
 });
+
+Deno.test("buildUpdateResult counts a kept_with_collision update apart from updated and failed", () => {
+  const result = buildUpdateResult([
+    {
+      status: "kept_with_collision",
+      name: "@test/a",
+      previousVersion: "2026.01.01.1",
+      newVersion: "2026.02.01.1",
+      error: "Type collides",
+    },
+  ]);
+  assertEquals(result.summary.total, 1);
+  assertEquals(result.summary.updated, 0);
+  assertEquals(result.summary.failed, 0);
+  assertEquals(result.summary.keptWithCollision, 1);
+});

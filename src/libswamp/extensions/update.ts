@@ -298,18 +298,29 @@ export async function* extensionUpdate(
               ? error.message
               : String(error);
             // A collision whose rollback could not restore the lockfile
-            // keeps the new version installed: report that one.
+            // keeps the new version installed: say so, not "failed".
             const kept = error instanceof DuplicateTypeUserError &&
                 error.rollback.status === "kept"
               ? error.rollback.kept.find((k) => k.name === s.name)
               : undefined;
-            finalStatuses.push({
-              status: "failed",
-              name: s.name,
-              installedVersion: kept?.version ?? s.installedVersion,
-              error: `Update failed: ${message}`,
-              channel: s.channel,
-            });
+            finalStatuses.push(
+              kept
+                ? {
+                  status: "kept_with_collision",
+                  name: s.name,
+                  previousVersion: s.installedVersion,
+                  newVersion: kept.version,
+                  error: message,
+                  channel: s.channel,
+                }
+                : {
+                  status: "failed",
+                  name: s.name,
+                  installedVersion: s.installedVersion,
+                  error: `Update failed: ${message}`,
+                  channel: s.channel,
+                },
+            );
           }
         } else {
           finalStatuses.push(s);

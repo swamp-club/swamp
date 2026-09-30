@@ -258,7 +258,7 @@ Deno.test("extensionUpdate: a collision that was rolled back reports the version
   }
 });
 
-Deno.test("extensionUpdate: a collision whose install was kept reports the new version as installed (swamp-club#2724)", async () => {
+Deno.test("extensionUpdate: a collision whose install was kept reports kept_with_collision with both versions (swamp-club#2724)", async () => {
   const deps = makeDeps({
     upstream: { "@ns/a": "2026.01.01.1" },
     getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
@@ -280,10 +280,15 @@ Deno.test("extensionUpdate: a collision whose install was kept reports the new v
   assertEquals(completed?.kind, "completed");
   if (completed?.kind === "completed") {
     const status = completed.data.extensions[0];
-    assertEquals(status.status, "failed");
-    if (status.status === "failed") {
-      assertEquals(status.installedVersion, "2026.03.01.1");
+    assertEquals(status.status, "kept_with_collision");
+    if (status.status === "kept_with_collision") {
+      assertEquals(status.name, "@ns/a");
+      assertEquals(status.previousVersion, "2026.01.01.1");
+      assertEquals(status.newVersion, "2026.03.01.1");
+      assertEquals(status.error.includes("installed anyway"), true);
     }
+    assertEquals(completed.data.summary.failed, 0);
+    assertEquals(completed.data.summary.keptWithCollision, 1);
   }
 });
 
