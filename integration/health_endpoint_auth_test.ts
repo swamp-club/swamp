@@ -61,6 +61,7 @@ function denyAll(): PolicySnapshotLoader {
     decide: () => null,
     explain: () => [],
     hasAnyGrantForKind: () => false,
+    decideAll: () => null,
   };
   return { decisionService: service } as unknown as PolicySnapshotLoader;
 }

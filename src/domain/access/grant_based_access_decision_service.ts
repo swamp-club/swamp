@@ -144,12 +144,18 @@ function evaluateGrant(
   if (!grant.condition) {
     return "match";
   }
-  return snapshot.evaluateConditionOutcome(
+  // The name is known by definition, even where a caller passes no fields.
+  const outcome = snapshot.evaluateConditionOutcome(
     grant.condition,
     resource.kind,
-    resource.fields,
+    { name: resource.name, ...resource.fields },
     principalContext,
   );
+  // A kind-level check touches no resource, so a condition on resource
+  // fields decides nothing there.
+  return outcome === "missing-field" && resource.scope === "kind"
+    ? "error"
+    : outcome;
 }
 
 interface MatchedGrant {
@@ -298,7 +304,11 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         resource,
         principalContext,
       );
-      if (outcome === "match") return toDecision(grant, match);
+      // A deny that needs a field the resource does not carry fails closed
+      // (swamp-club#2675).
+      if (outcome === "match" || outcome === "missing-field") {
+        return toDecision(grant, match);
+      }
       if (outcome === "error") denyUndecided = true;
     }
 
@@ -365,7 +375,10 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         principalContext,
       );
       if (outcome === "error" && grant.effect === "deny") denyUndecided = true;
-      if (outcome === "match") {
+      if (
+        outcome === "match" ||
+        (outcome === "missing-field" && grant.effect === "deny")
+      ) {
         if (grant.effect === "deny") {
           denyDecisions.push(toDecision(grant, match));
         } else {
@@ -382,6 +395,27 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       if (builtin) return [builtin];
     }
     return [...denyDecisions, ...allowDecisions];
+  }
+
+  decideAll(
+    principal: AccessPrincipal,
+    action: Action,
+    kind: ResourceKind,
+  ): AccessDecision | null {
+    const snapshot = this.#snapshot;
+    const principalKey = principalToString(principal.principal);
+    const localGroups = snapshot.groupsForPrincipal(principalKey);
+    const subjects = resolveSubjects(principal, localGroups);
+    for (const grant of snapshot.grantsForSubjects(subjects)) {
+      if (grant.effect !== "deny" || grant.resource.kind !== kind) continue;
+      const match = grantMatchesAction(grant, action, this.#runImpliesApprove);
+      if (match) return toDecision(grant, match);
+    }
+    return this.decide(principal, action, {
+      kind,
+      name: "*",
+      fields: { name: "*" },
+    });
   }
 
   hasAnyGrantForKind(

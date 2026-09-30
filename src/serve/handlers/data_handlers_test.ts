@@ -79,7 +79,7 @@ Deno.test("resolveDataFields: returns tags when model has them", async () => {
   assertEquals(fields.tags, { env: "prod" });
 });
 
-Deno.test("resolveDataFields: omits tags when model has none", async () => {
+Deno.test("resolveDataFields: carries empty tags when model has none", async () => {
   const repo = makeDefinitionRepo(
     new Map([["plain-model", { name: "plain-model" }]]),
   );
@@ -87,16 +87,15 @@ Deno.test("resolveDataFields: omits tags when model has none", async () => {
   const fields = await resolveDataFields(repo, "plain-model");
 
   assertEquals(fields.name, "plain-model");
-  assertEquals(fields.tags, undefined);
+  assertEquals(fields.tags, {});
 });
 
-Deno.test("resolveDataFields: falls back to name-only when model not found", async () => {
+Deno.test("resolveDataFields: falls back to an unresolved resource when model not found", async () => {
   const repo = makeDefinitionRepo(new Map());
 
   const fields = await resolveDataFields(repo, "missing-model");
 
-  assertEquals(fields.name, "missing-model");
-  assertEquals(fields.tags, undefined);
+  assertEquals(fields, { name: "missing-model", ns: "", tags: {} });
 });
 
 Deno.test("resolveDataFields: returns ns from user namespace type", async () => {
@@ -115,7 +114,7 @@ Deno.test("resolveDataFields: returns ns from user namespace type", async () => 
   assertEquals(fields.tags, { env: "prod" });
 });
 
-Deno.test("resolveDataFields: omits ns for non-namespaced type", async () => {
+Deno.test("resolveDataFields: carries an empty ns for non-namespaced type", async () => {
   const repo = makeDefinitionRepo(
     new Map([["plain-type-model", {
       name: "plain-type-model",
@@ -126,10 +125,10 @@ Deno.test("resolveDataFields: omits ns for non-namespaced type", async () => {
   const fields = await resolveDataFields(repo, "plain-type-model");
 
   assertEquals(fields.name, "plain-type-model");
-  assertEquals(fields.ns, undefined);
+  assertEquals(fields.ns, "");
 });
 
-Deno.test("resolveDataFields: falls back to name-only when repo throws", async () => {
+Deno.test("resolveDataFields: falls back to name-only when repo throws, so tag denies fail closed", async () => {
   const repo = {
     findByNameGlobal: () => Promise.reject(new Error("PermissionDenied")),
     findById: () => Promise.reject(new Error("PermissionDenied")),

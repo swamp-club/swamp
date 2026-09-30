@@ -50,7 +50,7 @@ import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
-import { evaluateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 
 Deno.test("isReservedVaultName: returns true for _token-secrets", () => {
   assertEquals(isReservedVaultName("_token-secrets"), true);
@@ -613,7 +613,11 @@ async function runVaultEdit(
           authConfig: { ...base.authConfig, mode: "token" as const },
           policySnapshotLoader: {
             decisionService: new GrantBasedAccessDecisionService(
-              new PolicySnapshot(options.grants, [], evaluateGrantCondition),
+              new PolicySnapshot(
+                options.grants,
+                [],
+                createConditionEvaluator(),
+              ),
             ),
           } as unknown as PolicySnapshotLoader,
         }

@@ -98,41 +98,70 @@ export type ResourceResolution =
 /** Which resource kind a model reference is authorized as. */
 export type ModelResourceKind = "model" | "data";
 
+/**
+ * The resource fields a model or data resource of `type` carries, as `kind`.
+ * Every resource field of the kind is present, empty when the resource has
+ * none (tags `{}`, ns `""`): a deny that needs a field the resource lacks
+ * fails closed, so an untagged resource must say it has no tags
+ * (swamp-club#2675).
+ */
+function modelTypeFields(
+  name: string,
+  type: string,
+  tags: Record<string, string> | undefined,
+  kind: ModelResourceKind,
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = { name };
+  if (kind === "model") {
+    fields.modelType = type;
+  } else {
+    fields.ns = ModelType.getUserNamespace(type) ?? "";
+  }
+  fields.tags = tags ?? {};
+  return fields;
+}
+
 /** The access resource for a model definition, authorized as `kind`. */
 export function modelAccessResource(
   result: DefinitionLookupResult,
   kind: ModelResourceKind = "model",
 ): AccessResource {
   const name = result.definition.name;
-  const fields: Record<string, unknown> = { name };
-  if (kind === "model") {
-    fields.modelType = result.type.normalized;
-  } else {
-    const ns = ModelType.getUserNamespace(result.type.normalized);
-    if (ns) fields.ns = ns;
-  }
-  const tags = result.definition.tags;
-  if (tags && Object.keys(tags).length > 0) fields.tags = tags;
-  return { kind, name, fields };
+  return {
+    kind,
+    name,
+    fields: modelTypeFields(
+      name,
+      result.type.normalized,
+      result.definition.tags,
+      kind,
+    ),
+  };
 }
 
-/** The access resource for a workflow. */
+/** The access resource for a workflow; its tags are `{}` when it has none. */
 export function workflowAccessResource(
   workflow: Pick<Workflow, "name" | "tags">,
 ): AccessResource {
-  const fields: Record<string, unknown> = { name: workflow.name };
-  if (workflow.tags && Object.keys(workflow.tags).length > 0) {
-    fields.tags = workflow.tags;
-  }
-  return { kind: "workflow", name: workflow.name, fields };
+  return {
+    kind: "workflow",
+    name: workflow.name,
+    fields: { name: workflow.name, tags: workflow.tags ?? {} },
+  };
 }
 
-/** The access resource for a request whose id-or-name matched nothing. */
+/**
+ * The access resource for a request whose id-or-name matched nothing. A
+ * resource that does not exist has no tags, so its fields say so.
+ */
 export function unresolvedAccessResource(
   kind: AccessResource["kind"],
   idOrName: string,
 ): AccessResource {
-  return { kind, name: idOrName, fields: { name: idOrName } };
+  const fields: Record<string, unknown> = { name: idOrName };
+  if (kind !== "access") fields.tags = {};
+  if (kind === "data") fields.ns = "";
+  return { kind, name: idOrName, fields };
 }
 
 async function resolveModel(
@@ -426,16 +455,11 @@ async function outputOwners(
       kinds.map((kind) => modelAccessResource(owner, kind))
     );
   }
-  return kinds.map((kind) => {
-    const fields: Record<string, unknown> = { name: definitionId };
-    if (kind === "model") {
-      fields.modelType = type.normalized;
-    } else {
-      const ns = ModelType.getUserNamespace(type.normalized);
-      if (ns) fields.ns = ns;
-    }
-    return { kind, name: definitionId, fields };
-  });
+  return kinds.map((kind) => ({
+    kind,
+    name: definitionId,
+    fields: modelTypeFields(definitionId, type.normalized, undefined, kind),
+  }));
 }
 
 /** Drops resources that repeat an earlier one exactly. */

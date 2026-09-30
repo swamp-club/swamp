@@ -38,7 +38,7 @@ import type {
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
-import { evaluateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 
@@ -396,7 +396,7 @@ function createPolicyEditCtx(
     authConfig: { ...ctx.authConfig, mode: "token" },
     policySnapshotLoader: {
       decisionService: new GrantBasedAccessDecisionService(
-        new PolicySnapshot(grants, [], evaluateGrantCondition),
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
       ),
     } as unknown as PolicySnapshotLoader,
   };

@@ -31,7 +31,7 @@ import {
 import type { WorkflowRepository } from "../domain/workflows/repositories.ts";
 import { Workflow } from "../domain/workflows/workflow.ts";
 import type { WorkflowId } from "../domain/workflows/workflow_id.ts";
-import { evaluateGrantCondition } from "../infrastructure/cel/grant_condition_environment.ts";
+import { createConditionEvaluator } from "../domain/access/policy_snapshot_loader.ts";
 import { createTriggerAuthorizer } from "./trigger_authorizer.ts";
 
 function repoWith(workflows: Workflow[]): WorkflowRepository {
@@ -51,7 +51,7 @@ function repoWith(workflows: Workflow[]): WorkflowRepository {
 function loaderWith(grants: Grant[]) {
   return {
     decisionService: new GrantBasedAccessDecisionService(
-      new PolicySnapshot(grants, [], evaluateGrantCondition),
+      new PolicySnapshot(grants, [], createConditionEvaluator()),
     ),
   };
 }
@@ -229,7 +229,7 @@ Deno.test("createTriggerAuthorizer: runs the configured id, not a same-named wor
   assertEquals(result.allowed, true);
   assertEquals(result.workflowIdOrName, extension.id);
   assertEquals(result.resource.name, "deploy");
-  assertEquals(result.resource.fields, { name: "deploy" });
+  assertEquals(result.resource.fields, { name: "deploy", tags: {} });
 });
 
 Deno.test("createTriggerAuthorizer: reports the id of the workflow it decided on", async () => {

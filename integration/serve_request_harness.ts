@@ -35,7 +35,7 @@ import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../src/domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_loader.ts";
-import { evaluateGrantCondition } from "../src/infrastructure/cel/grant_condition_environment.ts";
+import { createConditionEvaluator } from "../src/domain/access/policy_snapshot_loader.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
@@ -183,7 +183,7 @@ export function createServeCtx(
       ? {
         policySnapshotLoader: {
           decisionService: new GrantBasedAccessDecisionService(
-            new PolicySnapshot(grants, [], evaluateGrantCondition),
+            new PolicySnapshot(grants, [], createConditionEvaluator()),
           ),
         } as unknown as PolicySnapshotLoader,
       }

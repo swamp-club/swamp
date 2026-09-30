@@ -175,6 +175,7 @@ import {
   send,
   sendError,
 } from "./shared.ts";
+import { kindResource } from "../../domain/access/access_decision_service.ts";
 import {
   performServeReload,
   resolveLockfilePath,
@@ -479,11 +480,14 @@ export async function handleExtensionList(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -537,11 +541,14 @@ export async function handleExtensionSearch(
   payload?: ExtensionSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -623,11 +630,14 @@ export async function handleExtensionInfo(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -686,11 +696,14 @@ export async function handleExtensionInstall(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "admin", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -753,11 +766,14 @@ export async function handleExtensionPull(
 ): Promise<void> {
   const logger = getSwampLogger(["serve", "extension", "pull"]);
   if (
-    !authorizeOrReject(socket, requestId, principal, "admin", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   let catalog: ExtensionCatalogStore | undefined;
@@ -870,11 +886,14 @@ export async function handleExtensionRm(
 ): Promise<void> {
   const logger = getSwampLogger(["serve", "extension", "rm"]);
   if (
-    !authorizeOrReject(socket, requestId, principal, "admin", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   let deps: Awaited<ReturnType<typeof createExtensionRmDeps>> | undefined;
@@ -931,11 +950,14 @@ export async function handleExtensionOutdated(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -999,11 +1021,14 @@ export async function handleExtensionUpdate(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "admin", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   let catalog: ExtensionCatalogStore | undefined;
@@ -1116,11 +1141,14 @@ export async function handleDatastoreSetupExtension(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "admin", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -1210,11 +1238,14 @@ export async function handleVaultMigrate(
   }
 
   if (
-    !authorizeOrReject(socket, requestId, principal, "admin", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -1707,11 +1738,14 @@ export function handleRunHistory(
   principal: Principal | null,
 ): void {
   if (
-    !authorizeOrReject(socket, requestId, principal, "admin", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
   if (!ctx.runTracker) {
     sendError(socket, requestId, "not_available", "Run tracker not available");
@@ -1754,11 +1788,14 @@ export async function handleRunDoctor(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "admin", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
   if (!ctx.runTracker) {
     sendError(socket, requestId, "not_available", "Run tracker not available");
@@ -1856,11 +1893,14 @@ export async function handleAuditTimeline(
   payload?: AuditTimelinePayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("model"),
+      ctx,
+    ).allowed
   ) return;
 
   try {
@@ -2366,11 +2406,14 @@ export async function handleDatastoreNamespaceList(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      kindResource("data"),
+      ctx,
+    ).allowed
   ) return;
 
   try {

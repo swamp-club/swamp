@@ -87,6 +87,7 @@ import {
   authorizeResolved,
   resolveModelTarget,
   targetArgument,
+  unresolvedAccessResource,
 } from "./resource_resolution.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -118,9 +119,12 @@ export async function resolveDataFields(
     modelIdOrName,
     "data",
   );
-  // Fall back to name-only fields when nothing matches or the lookup fails.
-  return target.status === "found"
-    ? { ...target.resource.fields }
+  if (target.status === "found") return { ...target.resource.fields };
+  // A model that does not exist has no tags or namespace. A lookup that
+  // failed says nothing about them, so only the name is known and a deny
+  // conditioned on the rest fails closed (swamp-club#2675).
+  return target.status === "missing"
+    ? { ...unresolvedAccessResource("data", modelIdOrName).fields }
     : { name: modelIdOrName };
 }
 

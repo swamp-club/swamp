@@ -117,7 +117,7 @@ Deno.test("resolveModelTarget: as data, carries the namespace instead of the mod
     assertEquals(resolution.status === "found" && resolution.resource, {
       kind: "data",
       name: "widget-a",
-      fields: { name: "widget-a", ns: "acme" },
+      fields: { name: "widget-a", ns: "acme", tags: {} },
     });
   });
 });
@@ -129,7 +129,11 @@ Deno.test("resolveModelTarget: an unknown name is missing, authorized as sent an
 
     assertEquals(resolution, {
       status: "missing",
-      resource: { kind: "model", name: "nope", fields: { name: "nope" } },
+      resource: {
+        kind: "model",
+        name: "nope",
+        fields: { name: "nope", tags: {} },
+      },
     });
     if (resolution.status !== "missing") return;
     assertEquals(targetArgument(resolution, "nope"), {
@@ -331,12 +335,16 @@ Deno.test("resolveOutputAccess: an output of a deleted model is authorized on it
       {
         kind: "model",
         name: OUTPUT.definitionId,
-        fields: { name: OUTPUT.definitionId, modelType: "@acme/db" },
+        fields: {
+          name: OUTPUT.definitionId,
+          modelType: "@acme/db",
+          tags: {},
+        },
       },
       {
         kind: "data",
         name: OUTPUT.definitionId,
-        fields: { name: OUTPUT.definitionId, ns: "acme" },
+        fields: { name: OUTPUT.definitionId, ns: "acme", tags: {} },
       },
     ]);
   });
@@ -387,7 +395,7 @@ Deno.test("resolveOutputAccess: an unmatched argument is authorized as sent", as
       ["model"],
     );
     assertEquals(access.status === "resolved" && access.resources, [
-      { kind: "model", name: "abc", fields: { name: "abc" } },
+      { kind: "model", name: "abc", fields: { name: "abc", tags: {} } },
     ]);
   }
 });
@@ -527,7 +535,11 @@ Deno.test("resolveRunAccess: a run of a deleted workflow is authorized on its re
     "abd",
   );
   assertEquals(access.status === "resolved" && access.resources, [
-    { kind: "workflow", name: "prod-flow", fields: { name: "prod-flow" } },
+    {
+      kind: "workflow",
+      name: "prod-flow",
+      fields: { name: "prod-flow", tags: {} },
+    },
   ]);
 });
 
@@ -614,7 +626,7 @@ Deno.test("resolveRunAccess: an unmatched argument is authorized as sent", async
     "abd",
   );
   assertEquals(access.status === "resolved" && access.resources, [
-    { kind: "workflow", name: "abd", fields: { name: "abd" } },
+    { kind: "workflow", name: "abd", fields: { name: "abd", tags: {} } },
   ]);
 });
 

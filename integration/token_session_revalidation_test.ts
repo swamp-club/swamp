@@ -141,6 +141,11 @@ function allowAll(): AccessDecisionService {
     }),
     explain: () => [],
     hasAnyGrantForKind: () => true,
+    decideAll: () => ({
+      effect: "allow",
+      grantId: "test-grant",
+      subject: { kind: "user" as const, name: "admin" },
+    }),
   };
 }
 

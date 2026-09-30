@@ -193,9 +193,14 @@ async function resolveMethodRunTarget(
   );
   const methodName = payload.methodName;
   if (payload.typeArg && payload.definitionName) {
+    // A definition not created yet has no tags; its type is the one named.
     const fields: Record<string, unknown> = definition
       ? { ...modelAccessResource(definition).fields }
-      : {};
+      : {
+        name: payload.modelIdOrName,
+        modelType: ModelType.create(payload.typeArg).normalized,
+        tags: {},
+      };
     return {
       definition,
       resource: {
@@ -273,10 +278,17 @@ function authorizeMethodRun(
   ) return false;
   if (payload.typeArg) {
     const executionTarget = ModelType.create(payload.typeArg).normalized;
+    // A type carries no tags; every resource field is present so a
+    // conditional deny decides on it rather than failing closed.
     return authorizeOrReject(socket, requestId, principal, "run", {
       kind: "model",
       name: executionTarget,
-      fields: {},
+      fields: {
+        name: executionTarget,
+        modelType: executionTarget,
+        tags: {},
+        methodName: payload.methodName,
+      },
     }, ctx).allowed;
   }
   return true;
@@ -924,7 +936,12 @@ export async function handleModelCreate(
       !authorizeOrReject(socket, requestId, principal, "write", {
         kind: "model",
         name: payload.name ?? payload.typeArg,
-        fields: {},
+        // A model being created has no tags yet; its type is the one named.
+        fields: {
+          name: payload.name ?? payload.typeArg,
+          modelType: ModelType.create(payload.typeArg).normalized,
+          tags: {},
+        },
       }, ctx).allowed
     ) return;
   }
@@ -1942,7 +1959,7 @@ export async function handleModelEdit(
       "write",
       current
         ? modelEditResource(current)
-        : { kind: "model", name: payload.modelIdOrName, fields: {} },
+        : unresolvedAccessResource("model", payload.modelIdOrName),
       ctx,
     ).allowed
   ) return;
@@ -2033,12 +2050,15 @@ export async function handleModelEdit(
 }
 
 function modelEditResource(target: ModelEditTarget): AccessResource {
-  const fields: Record<string, unknown> = {
-    modelType: target.modelType,
+  return {
+    kind: "model",
     name: target.name,
+    fields: {
+      modelType: target.modelType,
+      name: target.name,
+      tags: target.tags,
+    },
   };
-  if (Object.keys(target.tags).length > 0) fields.tags = target.tags;
-  return { kind: "model", name: target.name, fields };
 }
 
 export async function handleModelTypeDescribe(

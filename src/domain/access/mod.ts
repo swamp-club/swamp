@@ -22,7 +22,15 @@ export {
   type AccessDecisionService,
   type AccessPrincipal,
   type AccessResource,
+  kindResource,
 } from "./access_decision_service.ts";
+
+export {
+  CONDITION_FIELDS,
+  type ConditionField,
+  MissingConditionFieldError,
+  suppliedResourceFields,
+} from "./condition_fields.ts";
 
 export { type Action, ActionSchema } from "./action.ts";
 
@@ -34,7 +42,10 @@ export {
 
 export { type ConditionEvaluator, PolicySnapshot } from "./policy_snapshot.ts";
 
-export { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
+export {
+  createConditionEvaluator,
+  PolicySnapshotLoader,
+} from "./policy_snapshot_loader.ts";
 
 export { type PrincipalContext } from "./principal_context.ts";
 

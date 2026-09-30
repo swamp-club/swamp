@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
@@ -33,7 +33,12 @@ import { GRANT_MODEL_TYPE } from "../models/access/grant_model.ts";
 import type { Group } from "../models/access/group_model.ts";
 import { GROUP_MODEL_TYPE } from "../models/access/group_model.ts";
 import type { ModelType } from "../models/model_type.ts";
-import { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
+import {
+  createConditionEvaluator,
+  PolicySnapshotLoader,
+} from "./policy_snapshot_loader.ts";
+import { MissingConditionFieldError } from "./condition_fields.ts";
+import type { PrincipalContext } from "./principal_context.ts";
 
 await initializeLogging({});
 
@@ -658,4 +663,134 @@ Deno.test("PolicySnapshotLoader.decisionService: keeps runImpliesApprove false a
   assertEquals(rebuilt.decide(principal, "run", resource)?.effect, "allow");
 
   await loader.dispose();
+});
+
+const PRINCIPAL: PrincipalContext = {
+  sub: "user-123",
+  groups: ["release-managers", "platform"],
+  collectives: ["acme", "ops"],
+};
+
+Deno.test("createConditionEvaluator: returns true when condition matches", () => {
+  const evaluate = createConditionEvaluator();
+  assertEquals(
+    evaluate(
+      'tags.env == "staging"',
+      "workflow",
+      { name: "deploy", tags: { env: "staging" } },
+      PRINCIPAL,
+    ),
+    true,
+  );
+});
+
+Deno.test("createConditionEvaluator: returns false when condition does not match", () => {
+  const evaluate = createConditionEvaluator();
+  assertEquals(
+    evaluate(
+      'tags.env == "prod"',
+      "workflow",
+      { name: "deploy", tags: { env: "staging" } },
+      PRINCIPAL,
+    ),
+    false,
+  );
+});
+
+Deno.test("createConditionEvaluator: evaluates principal context", () => {
+  const evaluate = createConditionEvaluator();
+  assertEquals(
+    evaluate(
+      'tags.env == "staging" && "ops" in principal.collectives && size(principal.groups) > 1',
+      "workflow",
+      { name: "deploy", tags: { env: "staging" } },
+      PRINCIPAL,
+    ),
+    true,
+  );
+});
+
+Deno.test("createConditionEvaluator: returns false for a non-boolean result", () => {
+  const evaluate = createConditionEvaluator();
+  assertEquals(
+    evaluate("name", "access", { name: "admin-grant" }, PRINCIPAL),
+    false,
+  );
+});
+
+Deno.test("createConditionEvaluator: evaluates methodName, which the runtime once lacked", () => {
+  const evaluate = createConditionEvaluator();
+  const model = { name: "m", modelType: "aws/ec2", tags: {} };
+  assertEquals(
+    evaluate('methodName == "read"', "model", {
+      ...model,
+      methodName: "read",
+    }, PRINCIPAL),
+    true,
+  );
+  assertEquals(
+    evaluate('methodName == "read"', "model", {
+      ...model,
+      methodName: "create",
+    }, PRINCIPAL),
+    false,
+  );
+});
+
+Deno.test("createConditionEvaluator: an absent request field evaluates as its zero value", () => {
+  const evaluate = createConditionEvaluator();
+  const model = { name: "m", modelType: "aws/ec2", tags: {} };
+  assertEquals(
+    evaluate('methodName == "read"', "model", model, PRINCIPAL),
+    false,
+  );
+  assertEquals(evaluate('methodName == ""', "model", model, PRINCIPAL), true);
+});
+
+Deno.test("createConditionEvaluator: an absent resource field throws MissingConditionFieldError", () => {
+  const evaluate = createConditionEvaluator();
+  const error = assertThrows(
+    () => evaluate('tags.env == "prod"', "model", { name: "m" }, PRINCIPAL),
+    MissingConditionFieldError,
+  );
+  assertEquals(error.fields, ["tags"]);
+});
+
+Deno.test("createConditionEvaluator: a variable no handler supplies is missing", () => {
+  const evaluate = createConditionEvaluator();
+  assertThrows(
+    () =>
+      evaluate(
+        'collective == "acme"',
+        "workflow",
+        { name: "w", tags: {} },
+        PRINCIPAL,
+      ),
+    MissingConditionFieldError,
+  );
+});
+
+Deno.test("createConditionEvaluator: a tag key the resource lacks is an evaluation error, not a missing field", () => {
+  const evaluate = createConditionEvaluator();
+  const error = assertThrows(() =>
+    evaluate('tags.env == "prod"', "model", {
+      name: "m",
+      modelType: "t",
+      tags: {},
+    }, PRINCIPAL)
+  );
+  assertEquals(error instanceof MissingConditionFieldError, false);
+});
+
+Deno.test("createConditionEvaluator: a name bound by a comprehension is not a field reference", () => {
+  const evaluate = createConditionEvaluator();
+  assertEquals(
+    evaluate(
+      'principal.groups.exists(owner, owner == "platform")',
+      "data",
+      { name: "d", ns: "", tags: {} },
+      PRINCIPAL,
+    ),
+    true,
+  );
 });

@@ -219,11 +219,7 @@ function resolveWorkflowRequest(
 export function workflowAccessFields(
   target: WorkflowEditTarget,
 ): Record<string, unknown> {
-  const fields: Record<string, unknown> = { name: target.name };
-  if (target.tags && Object.keys(target.tags).length > 0) {
-    fields.tags = target.tags;
-  }
-  return fields;
+  return { name: target.name, tags: target.tags ?? {} };
 }
 
 export async function handleWorkflowRun(
@@ -1744,7 +1740,8 @@ export async function handleWorkflowCreate(
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "workflow",
       name: payload.name,
-      fields: { name: payload.name },
+      // A workflow being created has no tags yet.
+      fields: { name: payload.name, tags: {} },
     }, ctx).allowed
   ) return;
 

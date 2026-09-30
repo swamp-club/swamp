@@ -19,18 +19,9 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  evaluateGrantCondition,
   MAX_AST_DEPTH,
-  type PrincipalContext,
   validateGrantCondition,
 } from "./grant_condition_environment.ts";
-
-const PRINCIPAL: PrincipalContext = {
-  sub: "user-123",
-  email: "alice@example.com",
-  groups: ["release-managers", "platform"],
-  collectives: ["acme", "ops"],
-};
 
 // --- Validation: valid conditions per resource kind ---
 
@@ -185,83 +176,6 @@ Deno.test("validateGrantCondition: seal rejects arbitrary unknown variable", () 
     "workflow",
   );
   assertEquals(result.valid, false);
-});
-
-// --- Evaluation ---
-
-Deno.test("evaluateGrantCondition: returns true when condition matches", () => {
-  const result = evaluateGrantCondition(
-    'tags.env == "staging"',
-    "workflow",
-    { name: "deploy", tags: { env: "staging" }, collective: "acme" },
-    PRINCIPAL,
-  );
-  assertEquals(result, true);
-});
-
-Deno.test("evaluateGrantCondition: returns false when condition does not match", () => {
-  const result = evaluateGrantCondition(
-    'tags.env == "prod"',
-    "workflow",
-    { name: "deploy", tags: { env: "staging" }, collective: "acme" },
-    PRINCIPAL,
-  );
-  assertEquals(result, false);
-});
-
-Deno.test("evaluateGrantCondition: evaluates principal context", () => {
-  const result = evaluateGrantCondition(
-    '"acme" in principal.collectives',
-    "workflow",
-    { name: "deploy", tags: {}, collective: "acme" },
-    PRINCIPAL,
-  );
-  assertEquals(result, true);
-});
-
-Deno.test("evaluateGrantCondition: evaluates principal.sub", () => {
-  const result = evaluateGrantCondition(
-    "owner.createdBy == principal.sub",
-    "data",
-    {
-      name: "report",
-      ns: "default",
-      tags: {},
-      owner: { createdBy: "user-123" },
-    },
-    PRINCIPAL,
-  );
-  assertEquals(result, true);
-});
-
-Deno.test("evaluateGrantCondition: evaluates compound condition", () => {
-  const result = evaluateGrantCondition(
-    'tags.env == "staging" && "ops" in principal.collectives',
-    "workflow",
-    { name: "deploy", tags: { env: "staging" }, collective: "acme" },
-    PRINCIPAL,
-  );
-  assertEquals(result, true);
-});
-
-Deno.test("evaluateGrantCondition: returns false for non-boolean result", () => {
-  const result = evaluateGrantCondition(
-    "name",
-    "access",
-    { name: "admin-grant" },
-    PRINCIPAL,
-  );
-  assertEquals(result, false);
-});
-
-Deno.test("evaluateGrantCondition: arithmetic works with mixed types", () => {
-  const result = evaluateGrantCondition(
-    "size(principal.groups) > 1",
-    "workflow",
-    { name: "deploy", tags: {}, collective: "acme" },
-    PRINCIPAL,
-  );
-  assertEquals(result, true);
 });
 
 // --- RESOURCE_FIELDS fix: model name and tags now valid ---
@@ -444,56 +358,4 @@ Deno.test("validateGrantCondition: all existing condition patterns pass cost bou
     );
     assertEquals(result, { valid: true }, `Failed for: ${condition}`);
   }
-});
-
-Deno.test("evaluateGrantCondition: methodName matches when present", () => {
-  const result = evaluateGrantCondition(
-    'methodName == "read"',
-    "model",
-    {
-      name: "my-model",
-      modelType: "aws/ec2",
-      tags: {},
-      collective: "",
-      methodName: "read",
-    },
-    PRINCIPAL,
-  );
-  assertEquals(result, true);
-});
-
-Deno.test("evaluateGrantCondition: methodName does not match wrong value", () => {
-  const result = evaluateGrantCondition(
-    'methodName == "read"',
-    "model",
-    {
-      name: "my-model",
-      modelType: "aws/ec2",
-      tags: {},
-      collective: "",
-      methodName: "create",
-    },
-    PRINCIPAL,
-  );
-  assertEquals(result, false);
-});
-
-Deno.test("evaluateGrantCondition: absent methodName defaults to empty string", () => {
-  const result = evaluateGrantCondition(
-    'methodName == "read"',
-    "model",
-    { name: "my-model", modelType: "aws/ec2", tags: {}, collective: "" },
-    PRINCIPAL,
-  );
-  assertEquals(result, false);
-});
-
-Deno.test("evaluateGrantCondition: absent field does not throw", () => {
-  const result = evaluateGrantCondition(
-    'methodName == ""',
-    "model",
-    { name: "my-model" },
-    PRINCIPAL,
-  );
-  assertEquals(result, true);
 });

@@ -25,7 +25,7 @@ import type {
 } from "../src/domain/access/access_decision_service.ts";
 import { GrantBasedAccessDecisionService } from "../src/domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
-import { evaluateGrantCondition } from "../src/infrastructure/cel/grant_condition_environment.ts";
+import { createConditionEvaluator } from "../src/domain/access/policy_snapshot_loader.ts";
 import { parseGrantFile } from "../src/domain/access/grant_file.ts";
 import { validateGrantCondition } from "../src/infrastructure/cel/grant_condition_environment.ts";
 
@@ -65,7 +65,7 @@ function makeModelResource(
 }
 
 function buildService(grants: Grant[]): GrantBasedAccessDecisionService {
-  const snapshot = new PolicySnapshot(grants, [], evaluateGrantCondition);
+  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
   return new GrantBasedAccessDecisionService(snapshot);
 }
 

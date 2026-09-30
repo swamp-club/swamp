@@ -24,6 +24,7 @@ import type { PrincipalContext } from "./principal_context.ts";
 import { principalToString } from "./principal.ts";
 import type { ResourceKind } from "./resource_selector.ts";
 import { subjectToString } from "./subject.ts";
+import { MissingConditionFieldError } from "./condition_fields.ts";
 
 const logger = getLogger(["swamp", "domain", "access", "policy-snapshot"]);
 
@@ -38,8 +39,11 @@ function alwaysFalse(): boolean {
   return false;
 }
 
-/** How a grant condition evaluated. */
-export type ConditionOutcome = "match" | "no-match" | "error";
+/**
+ * How a grant condition evaluated. `missing-field` means the condition needs
+ * a resource field the resource does not carry (swamp-club#2675).
+ */
+export type ConditionOutcome = "match" | "no-match" | "missing-field" | "error";
 
 export class PolicySnapshot {
   readonly #grantsBySubject: Map<string, Grant[]>;
@@ -131,6 +135,13 @@ export class PolicySnapshot {
       }
       return result ? "match" : "no-match";
     } catch (error) {
+      if (error instanceof MissingConditionFieldError) {
+        logger
+          .debug`Condition ${condition} needs missing field(s) ${
+          error.fields.join(", ")
+        }`;
+        return "missing-field";
+      }
       if (
         error instanceof Error &&
         error.message.startsWith("Unknown variable:")

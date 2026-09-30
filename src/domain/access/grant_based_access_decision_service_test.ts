@@ -18,15 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import {
-  evaluateGrantCondition,
-  MAX_AGGREGATE_CONDITIONS,
-} from "../../infrastructure/cel/grant_condition_environment.ts";
+import { MAX_AGGREGATE_CONDITIONS } from "../../infrastructure/cel/grant_condition_environment.ts";
+import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
 import type { Grant } from "../models/access/grant_model.ts";
 import type { Group } from "../models/access/group_model.ts";
-import type {
-  AccessPrincipal,
-  AccessResource,
+import {
+  type AccessPrincipal,
+  type AccessResource,
+  kindResource,
 } from "./access_decision_service.ts";
 import {
   GrantBasedAccessDecisionService,
@@ -35,7 +34,7 @@ import {
 import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
 
-const celEvaluator: ConditionEvaluator = evaluateGrantCondition;
+const celEvaluator: ConditionEvaluator = createConditionEvaluator();
 
 function makeGrant(overrides: Partial<Grant> = {}): Grant {
   return {
@@ -1334,4 +1333,235 @@ Deno.test("decide: a deny whose condition errors withholds the service default",
     service.decide(webhook, "run", tagged)?.grantId,
     SERVICE_TRIGGER_DEFAULT_GRANT_ID,
   );
+});
+
+// --- Missing condition fields (swamp-club#2675) ---
+
+function allowAndConditionalDeny(condition: string): Grant[] {
+  return [
+    makeGrant({ effect: "allow", resource: { kind: "model", pattern: "*" } }),
+    makeGrant({
+      effect: "deny",
+      resource: { kind: "model", pattern: "*" },
+      condition,
+    }),
+  ];
+}
+
+Deno.test("decide: a deny that needs a resource field the resource lacks fails closed", () => {
+  const snapshot = new PolicySnapshot(
+    allowAndConditionalDeny('tags.env == "prod"'),
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const result = service.decide(makePrincipal("adam"), "read", {
+    kind: "model",
+    name: "db",
+    fields: { name: "db", modelType: "t" },
+  });
+  assertEquals(result?.effect, "deny");
+});
+
+Deno.test("decide: a deny over a tag the resource does not have decides nothing", () => {
+  const snapshot = new PolicySnapshot(
+    allowAndConditionalDeny('tags.env == "prod"'),
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const result = service.decide(makePrincipal("adam"), "read", {
+    kind: "model",
+    name: "db",
+    fields: { name: "db", modelType: "t", tags: {} },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: an allow that needs a missing resource field does not match", () => {
+  const grant = makeGrant({
+    effect: "allow",
+    resource: { kind: "model", pattern: "*" },
+    condition: 'tags.env == "dev"',
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([grant], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "read", {
+    kind: "model",
+    name: "db",
+    fields: { name: "db" },
+  });
+  assertEquals(result, null);
+});
+
+Deno.test("decide: a methodName deny does not refuse a request that has no method", () => {
+  const snapshot = new PolicySnapshot(
+    allowAndConditionalDeny('methodName == "delete"'),
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const resource = { kind: "model" as const, name: "db", fields: {} };
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", resource)?.effect,
+    "allow",
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "run", {
+      ...resource,
+      fields: { methodName: "delete" },
+    }),
+    null,
+  );
+});
+
+Deno.test("decide: evaluates name from the resource when fields omit it", () => {
+  const snapshot = new PolicySnapshot(
+    [makeGrant({
+      effect: "allow",
+      resource: { kind: "access", pattern: "*" },
+      actions: ["admin"],
+      condition: 'name == "*"',
+    })],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const result = service.decide(makePrincipal("adam"), "admin", {
+    kind: "access",
+    name: "*",
+    fields: {},
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: a kind-level check is not refused by a deny on resource fields", () => {
+  const snapshot = new PolicySnapshot(
+    allowAndConditionalDeny('tags.env == "prod"'),
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const result = service.decide(
+    makePrincipal("adam"),
+    "read",
+    kindResource("model"),
+  );
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("explain: reports a deny that fails closed on a missing field", () => {
+  const snapshot = new PolicySnapshot(
+    allowAndConditionalDeny('tags.env == "prod"'),
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const decisions = service.explain(makePrincipal("adam"), "read", {
+    kind: "model",
+    name: "db",
+    fields: { name: "db" },
+  });
+  assertEquals(decisions.map((d) => d.effect), ["deny", "allow"]);
+});
+
+// --- decideAll ---
+
+Deno.test("decideAll: allows when an allow covers every resource and no deny applies", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({
+          effect: "allow",
+          actions: ["write"],
+          resource: { kind: "data", pattern: "*" },
+        }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  assertEquals(
+    service.decideAll(makePrincipal("adam"), "write", "data")?.effect,
+    "allow",
+  );
+});
+
+Deno.test("decideAll: any applicable deny refuses, whatever its pattern", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["write"],
+    resource: { kind: "data", pattern: "prod-*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({
+          effect: "allow",
+          actions: ["write"],
+          resource: { kind: "data", pattern: "*" },
+        }),
+        deny,
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  const result = service.decideAll(makePrincipal("adam"), "write", "data");
+  assertEquals(result?.effect, "deny");
+  assertEquals(result?.grantId, deny.id);
+});
+
+Deno.test("decideAll: a deny for another action or kind does not refuse", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({
+          effect: "allow",
+          actions: ["write"],
+          resource: { kind: "data", pattern: "*" },
+        }),
+        makeGrant({
+          effect: "deny",
+          actions: ["read"],
+          resource: { kind: "data", pattern: "prod-*" },
+        }),
+        makeGrant({
+          effect: "deny",
+          actions: ["write"],
+          resource: { kind: "model", pattern: "*" },
+        }),
+        makeGrant({
+          subject: { kind: "user", name: "someone-else" },
+          effect: "deny",
+          actions: ["write"],
+          resource: { kind: "data", pattern: "*" },
+        }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  assertEquals(
+    service.decideAll(makePrincipal("adam"), "write", "data")?.effect,
+    "allow",
+  );
+});
+
+Deno.test("decideAll: an allow scoped to some resources does not cover every resource", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({
+          effect: "allow",
+          actions: ["write"],
+          resource: { kind: "data", pattern: "dev-*" },
+        }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  assertEquals(service.decideAll(makePrincipal("adam"), "write", "data"), null);
 });

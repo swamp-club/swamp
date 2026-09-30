@@ -52,7 +52,6 @@ const PINNED = [
   "src/serve/handlers/model_handlers.ts::resolveMethodRunTarget::modelIdOrName",
   // Edit resolves first and replies not_found when nothing matched; the raw
   // name is only authorized for that reply.
-  "src/serve/handlers/model_handlers.ts::handleModelEdit::modelIdOrName",
   "src/serve/handlers/workflow_handlers.ts::handleWorkflowEdit::workflowIdOrName",
 ];
 

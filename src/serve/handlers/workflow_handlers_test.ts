@@ -21,7 +21,7 @@ import { assertEquals } from "@std/assert";
 import { dirname } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
-import { evaluateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import {
   applyTriggerOverrides,
   handleWorkflowCancel,
@@ -640,7 +640,7 @@ function workflowEditCtx(
   if (grants) {
     ctx.policySnapshotLoader = {
       decisionService: new GrantBasedAccessDecisionService(
-        new PolicySnapshot(grants, [], evaluateGrantCondition),
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
       ),
     } as unknown as PolicySnapshotLoader;
   }

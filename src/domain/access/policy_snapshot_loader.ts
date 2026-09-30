@@ -45,6 +45,12 @@ import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
 import type { ResourceKind } from "./resource_selector.ts";
 import {
+  CONDITION_FIELDS,
+  conditionFieldZeroValue,
+  MissingConditionFieldError,
+  referencedConditionFields,
+} from "./condition_fields.ts";
+import {
   GrantBasedAccessDecisionService,
   type GrantBasedAccessDecisionServiceOptions,
 } from "./grant_based_access_decision_service.ts";
@@ -54,35 +60,27 @@ const logger = getLogger(["swamp", "domain", "access", "policy-snapshot"]);
 const GRANT_MODEL_TYPE_STR = GRANT_MODEL_TYPE.normalized;
 const GROUP_MODEL_TYPE_STR = GROUP_MODEL_TYPE.normalized;
 
-const RESOURCE_FIELDS: Record<ResourceKind, string[]> = {
-  workflow: ["name", "tags", "collective"],
-  model: ["name", "modelType", "tags", "collective"],
-  data: ["name", "ns", "tags", "owner"],
-  access: ["name"],
-};
-
 function buildCelEnvironment(kind: ResourceKind): Environment {
   const env = new Environment({ unlistedVariablesAreDyn: false });
   registerArithmeticOverloads(env);
-
-  for (const field of RESOURCE_FIELDS[kind]) {
-    env.registerVariable(
-      field,
-      field === "tags" || field === "owner"
-        ? "map"
-        : field === "name" || field === "ns" || field === "modelType" ||
-            field === "collective"
-        ? "string"
-        : "dyn",
-    );
+  for (const field of CONDITION_FIELDS[kind]) {
+    env.registerVariable(field.name, field.type);
   }
-
   env.registerVariable("principal", "map");
   return env;
 }
 
-function buildConditionEvaluator(): ConditionEvaluator {
+/**
+ * The evaluator serve decides grant conditions with. Before evaluating, it
+ * checks which condition variables the condition references: a request field
+ * the request lacks is evaluated as its zero value, and a resource field the
+ * resource lacks throws {@link MissingConditionFieldError}, so a deny that
+ * needs it fails closed. The check is structural — on the parsed condition —
+ * never on the evaluator's error text.
+ */
+export function createConditionEvaluator(): ConditionEvaluator {
   const environments = new Map<ResourceKind, Environment>();
+  const references = new Map<string, string[]>();
   const kinds: ResourceKind[] = ["workflow", "model", "data", "access"];
   for (const kind of kinds) {
     environments.set(kind, buildCelEnvironment(kind));
@@ -96,11 +94,56 @@ function buildConditionEvaluator(): ConditionEvaluator {
   ): boolean => {
     const env = environments.get(resourceKind);
     if (!env) return false;
+    const key = `${resourceKind}:${condition}`;
+    let referenced = references.get(key);
+    if (!referenced) {
+      const parsed = env.parse(condition) as unknown as { ast: unknown };
+      referenced = referencedConditionFields(parsed.ast, resourceKind);
+      references.set(key, referenced);
+    }
     const context: Record<string, unknown> = { ...resourceFields };
+    const missing: string[] = [];
+    for (const field of CONDITION_FIELDS[resourceKind]) {
+      if (!referenced.includes(field.name) || field.name in context) continue;
+      if (field.role === "request") {
+        context[field.name] = conditionFieldZeroValue(field.type);
+      } else {
+        missing.push(field.name);
+      }
+    }
+    if (missing.length > 0) throw new MissingConditionFieldError(missing);
     context.principal = principalContext;
     const result = env.evaluate(condition, context);
     return result === true;
   };
+}
+
+/**
+ * The stored grants whose condition references a variable no handler
+ * supplies yet. A deny among them now refuses every request of its kind,
+ * so the loader names them.
+ */
+function grantsReferencingUnsupplied(grants: readonly Grant[]): Grant[] {
+  return grants.filter((grant) => {
+    if (!grant.condition) return false;
+    const kind = grant.resource.kind;
+    const unsupplied = CONDITION_FIELDS[kind]
+      .filter((f) => !f.supplied)
+      .map((f) => f.name);
+    if (unsupplied.length === 0) return false;
+    try {
+      const parsed = buildCelEnvironment(kind).parse(
+        grant.condition,
+      ) as unknown as {
+        ast: unknown;
+      };
+      return referencedConditionFields(parsed.ast, kind).some((name) =>
+        unsupplied.includes(name)
+      );
+    } catch {
+      return false;
+    }
+  });
 }
 
 export type PolicyReloadMode = "manual" | "auto";
@@ -123,7 +166,7 @@ export class PolicySnapshotLoader {
   ) {
     this.#dataRepo = dataRepo;
     this.#decisionOptions = decisionOptions;
-    this.#conditionEvaluator = buildConditionEvaluator();
+    this.#conditionEvaluator = createConditionEvaluator();
 
     if (mode === "auto") {
       this.#unsubscribers.push(
@@ -246,6 +289,10 @@ export class PolicySnapshotLoader {
 
     logger
       .info`Loaded policy snapshot: ${grants.length} active grant(s), ${groups.length} group(s)`;
+    for (const grant of grantsReferencingUnsupplied(grants)) {
+      logger
+        .warn`Grant ${grant.id} has a condition on collective or owner, which serve does not supply yet: as a deny it refuses every ${grant.resource.kind} request of its subject, and as an allow it never matches (${grant.condition})`;
+    }
     return {
       snapshot: new PolicySnapshot(grants, groups, this.#conditionEvaluator),
       grantCount: grants.length,
