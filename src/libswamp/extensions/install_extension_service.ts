@@ -500,9 +500,11 @@ function mapDuplicateTypeErrorToUserError(
 async function isGhostRow(error: DuplicateTypeError): Promise<boolean> {
   // Only check firstSource, which the repository reports as the
   // pre-existing catalog occupant when the other side is being saved.
-  // secondSource is the extension being installed — its files are
+  // secondSource is then the extension being installed — its files are
   // always absent after rollbackOnCollision, so it can never be a
-  // meaningful ghost-row signal.
+  // meaningful ghost-row signal. When both sides are in the same save
+  // (e.g. two dependencies of one install), the order is catalog order
+  // and firstSource may be an incoming extension.
   try {
     await Deno.stat(error.firstSource.canonicalPath);
   } catch (e) {

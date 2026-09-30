@@ -463,7 +463,7 @@ for (
     ["@scope/aa", "@scope/zz"],
   ]
 ) {
-  Deno.test(`ExtensionRepository.saveAll: DuplicateTypeError names pre-existing ${existingName} as firstSource and incoming ${incomingName} as secondSource`, () => {
+  Deno.test(`ExtensionRepository.save: DuplicateTypeError names pre-existing ${existingName} as firstSource and incoming ${incomingName} as secondSource`, () => {
     withRepository((repo, _cat, repoRoot) => {
       repo.save(pulledExtension({
         repoRoot,

@@ -1982,9 +1982,9 @@ and a structured `duplicateType` object in `--json` mode:
 ```
 
 `existing` is the extension that already held the type in the catalog and
-`conflicting` is the one being installed, whichever sorts first: the repository
-decides this from which sources are in the failing save, not from catalog row
-order.
+`conflicting` is the one being installed, regardless of how their paths sort:
+the repository decides this from which sources are in the failing save, not
+from catalog row order.
 
 The message suggests `swamp extension rm <existing-name>`. A conflict may come
 from a **ghost catalog row**, whose source file was deleted outside swamp. The
