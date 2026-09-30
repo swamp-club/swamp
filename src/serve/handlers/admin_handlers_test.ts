@@ -25,6 +25,7 @@ import "../../domain/vaults/vault_types.ts";
 import { buildMarkDirtyHook } from "../../cli/repo_context.ts";
 import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { MockVaultProvider } from "../../domain/vaults/mock_vault_provider.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -358,7 +359,12 @@ function createMockSocket(): WebSocket & { sent: string[] } {
   } as unknown as WebSocket & { sent: string[] };
 }
 
-type SyncEvent = { kind: "mark"; relPath?: string } | { kind: "push" };
+type SyncEvent =
+  | { kind: "mark"; relPath?: string }
+  | { kind: "push" }
+  | { kind: "pull"; subdirs?: readonly string[] }
+  | { kind: "lock" }
+  | { kind: "unlock" };
 
 function createRecordingSyncService(): {
   service: DatastoreSyncService;
@@ -366,7 +372,10 @@ function createRecordingSyncService(): {
 } {
   const events: SyncEvent[] = [];
   const service: DatastoreSyncService = {
-    pullChanged: () => Promise.resolve(0),
+    pullChanged: (options) => {
+      events.push({ kind: "pull", subdirs: options?.subdirs });
+      return Promise.resolve(0);
+    },
     pushChanged: () => {
       events.push({ kind: "push" });
       return Promise.resolve(0);
@@ -443,12 +452,45 @@ async function createSyncRepo(dir: string, managedConfig: boolean) {
   return { repoDir, datastoreResolver, ctx, events, cleanup };
 }
 
-Deno.test("handleExtensionRm: marks only the config-tier lockfile before the push under managedConfig (swamp-club#2415)", async () => {
+/**
+ * Registers `@test/remote`, the datastore type {@link createSyncRepo} uses,
+ * with a global lock that records into `events`.
+ */
+function registerRecordingLockProvider(events: SyncEvent[]): void {
+  datastoreTypeRegistry.register({
+    type: "@test/remote",
+    name: "Test remote",
+    description: "Records global lock use for the extension handler tests",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(void events.push({ kind: "lock" })),
+        release: () => Promise.resolve(void events.push({ kind: "unlock" })),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
+      }),
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: "@test/remote",
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => join(repoDir, ".remote"),
+    }),
+  });
+}
+
+Deno.test("handleExtensionRm: fetches the lockfile under the global lock, then marks only it before the push under managedConfig (swamp-club#2415, swamp-club#2838)", async () => {
   await withTempDir(async (dir) => {
     const { datastoreResolver, ctx, events, cleanup } = await createSyncRepo(
       dir,
       true,
     );
+    registerRecordingLockProvider(events);
     try {
       const configDir = datastoreResolver.resolvePath("config");
       await ensureDir(configDir);
@@ -474,14 +516,21 @@ Deno.test("handleExtensionRm: marks only the config-tier lockfile before the pus
       );
 
       assertEquals(JSON.parse(socket.sent[0]).type, "extension.rm");
-      // Extension sources still live outside the datastore tier
-      // (swamp-club#2612), so the lockfile is the only file to mark. A bare
-      // markDirty() would turn the push into a walk of the whole cache.
+      // The shared lockfile is fetched under the datastore global lock
+      // before the removal, so a stale cache cannot revert other
+      // instances' entries (swamp-club#2838). Extension sources still live
+      // outside the datastore tier (swamp-club#2612), so the lockfile is the
+      // only file to mark. A bare markDirty() would turn the push into a
+      // walk of the whole cache.
       assertEquals(events, [
+        { kind: "lock" },
+        { kind: "pull", subdirs: ["config"] },
         { kind: "mark", relPath: "config/upstream_extensions.json" },
         { kind: "push" },
+        { kind: "unlock" },
       ]);
     } finally {
+      datastoreTypeRegistry.invalidateType("@test/remote");
       cleanup();
     }
   });

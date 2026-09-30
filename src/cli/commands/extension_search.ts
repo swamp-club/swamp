@@ -45,16 +45,14 @@ import {
   type ExtensionSearchData,
   type ExtensionSearchDeps,
   warnLegacyExtensionLayout,
+  withManagedLockfileTransaction,
 } from "../../libswamp/mod.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
-import {
-  pushManagedLockfileIfChangedDeferred,
-  snapshotLockfileHash,
-} from "../managed_config_sync.ts";
+import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -267,7 +265,7 @@ export const extensionSearchCommand = withRemoteOptions(
     // Refuses to record into a guessed managed config base, except when
     // installing the repo's own datastore extension, as `extension pull`
     // allows (swamp-club#2483, #445).
-    const { lockfilePath, publish } = await resolveManagedLockfileForWrite(
+    const lockfileWrite = await resolveManagedLockfileForWrite(
       repoDir,
       marker,
       {
@@ -275,6 +273,7 @@ export const extensionSearchCommand = withRemoteOptions(
         extensionLookup: createExtensionRegistryLookup(serverUrl, identity),
       },
     );
+    const { lockfilePath } = lockfileWrite;
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -285,7 +284,6 @@ export const extensionSearchCommand = withRemoteOptions(
       primarySkillsDirRelative,
     );
 
-    const lockfileHashBefore = await snapshotLockfileHash(lockfilePath);
     const lockfileRepository = await LockfileRepository.create(lockfilePath);
     const apiKey = identity.bearerToken;
     const pullCtx: PullContext = {
@@ -304,18 +302,11 @@ export const extensionSearchCommand = withRemoteOptions(
       depth: 0,
     };
 
-    await pullExtension(
-      { name: selected.name, version: null },
-      pullCtx,
+    // Made against the datastore's lockfile and published as it lands
+    // (swamp-club#2838).
+    await withManagedLockfileTransaction(
+      createManagedLockfileTransaction(repoDir, marker, lockfileWrite),
+      () => pullExtension({ name: selected.name, version: null }, pullCtx),
     );
-
-    if (publish) {
-      await pushManagedLockfileIfChangedDeferred(
-        repoDir,
-        marker,
-        lockfilePath,
-        lockfileHashBefore,
-      );
-    }
   }
 });

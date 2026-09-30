@@ -24,10 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import {
-  pushManagedLockfileIfChangedDeferred,
-  snapshotLockfileHash,
-} from "../managed_config_sync.ts";
+import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -35,6 +32,7 @@ import {
   createLibSwampContext,
   extensionInstall,
   type ExtensionInstallData,
+  withManagedLockfileTransaction,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionInstallRenderer } from "../../presentation/renderers/extension_install.ts";
@@ -109,7 +107,6 @@ export const extensionInstallCommand = withRemoteOptions(
   // unresolved managed config base reports managed_config_unresolved
   // rather than a raw "Unknown datastore type" (swamp-club#2483).
   const deps = await createExtensionInstallDeps(repoDir, cliCtx.logger);
-  const lockfileHashBefore = await snapshotLockfileHash(deps.lockfilePath);
   await requireInitializedRepoReadOnly({
     repoDir,
     outputMode: cliCtx.outputMode,
@@ -118,18 +115,18 @@ export const extensionInstallCommand = withRemoteOptions(
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const renderer = createExtensionInstallRenderer(cliCtx.outputMode);
 
-  await consumeStream(
-    extensionInstall(ctx, deps),
-    renderer.handlers(),
-  );
-
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
-  await pushManagedLockfileIfChangedDeferred(
-    repoDir,
-    marker,
-    deps.lockfilePath,
-    lockfileHashBefore,
+  // Restores what the datastore's lockfile pins, and publishes any entry
+  // the restore rewrites as it lands (swamp-club#2838). The guard in
+  // createExtensionInstallDeps has already refused an unresolved base, so
+  // the lockfile is the datastore's.
+  await withManagedLockfileTransaction(
+    createManagedLockfileTransaction(repoDir, marker, {
+      lockfilePath: deps.lockfilePath,
+      publish: true,
+    }),
+    () => consumeStream(extensionInstall(ctx, deps), renderer.handlers()),
   );
 
   cliCtx.logger.debug("Extension install command completed");

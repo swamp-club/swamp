@@ -1031,6 +1031,20 @@ export {
   extensionRmPreview,
 } from "./extensions/rm.ts";
 
+// Managed lockfile transactions — writes to a datastore-shared lockfile
+// fetch it under the datastore global lock first (swamp-club#2838).
+export {
+  createDatastoreLockfileSync,
+  createRepoPendingLockfileStore,
+  type LockfileTransaction,
+  type ManagedLockfileLock,
+  type ManagedLockfileSyncPort,
+  ManagedLockfileTransaction,
+  type ManagedLockfileTransactionOptions,
+  type PendingLockfileDeltaStore,
+  withManagedLockfileTransaction,
+} from "./extensions/managed_lockfile_transaction.ts";
+
 // Lockfile repository — sole gateway for upstream_extensions.json.
 export { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 

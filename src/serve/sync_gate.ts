@@ -54,7 +54,11 @@
  * in `integration/serve_deps_rules_test.ts` forbids a dispatch-gated handler
  * from taking the shared mode. Lock order: a run takes its model lock before
  * the gate, never the reverse — which is safe only because no gate holder
- * ever waits on a model lock.
+ * ever waits on a model lock. The datastore global lock always comes after
+ * the gate: a run's flush takes it inside the shared gate (`wrapSync` wraps
+ * the whole flush), and an extension handler takes it inside its exclusive
+ * gate to change the shared extension lockfile (swamp-club#2838). Never
+ * wait on the gate while holding the global lock.
  *
  * Scope limits, documented in `design/enablers/datastores.md`: the gate is
  * in-process only (it gives no guarantee between HA peers); a run's own

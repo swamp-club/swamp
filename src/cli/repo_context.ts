@@ -68,6 +68,11 @@ import {
 import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import {
+  createDatastoreLock,
+  datastoreGlobalLockOptions,
+  resolveCustomProvider,
+} from "../infrastructure/persistence/datastore_global_lock.ts";
+import {
   getManagedConfigBase,
   isManagedConfigBaseResolved,
   managedConfigLockfilePath,
@@ -82,7 +87,6 @@ import {
 import {
   type DistributedLock,
   type LockInfo,
-  type LockOptions,
   LockTimeoutError,
 } from "../domain/datastore/distributed_lock.ts";
 import {
@@ -186,24 +190,6 @@ export async function refreshExtensionWorkflowDirs(
   );
   extWorkflowRepo.updateAdditionalDirs([...sourceWfDirs, ...pulledWfDirs]);
   return pulledWfDirs.length;
-}
-
-/**
- * Resolves a DatastoreProvider for a custom datastore config.
- * Ensures the datastore extension registry is loaded before lookup.
- */
-async function resolveCustomProvider(
-  config: CustomDatastoreConfig,
-): Promise<DatastoreProvider> {
-  await datastoreTypeRegistry.ensureLoaded();
-  await datastoreTypeRegistry.ensureTypeLoaded(config.type);
-  const typeInfo = datastoreTypeRegistry.get(config.type);
-  if (!typeInfo?.createProvider) {
-    throw new UserError(
-      `Datastore type "${config.type}" is not registered or has no provider.`,
-    );
-  }
-  return typeInfo.createProvider(config.config);
 }
 
 /**
@@ -2063,47 +2049,4 @@ export function acquireVaultSync(
   return Promise.resolve({ flush: () => Promise.resolve() });
 }
 
-/**
- * Lock options selecting the global datastore lock for a config's namespace
- * (giga-swamp Phase 3).
- *
- * Solo mode (no namespace) returns `undefined`, so the lock falls back to the
- * single shared `.datastore.lock` — byte-identical to before. When a namespace
- * is configured, returns `{ lockKey: ".datastore.lock", namespace }` so the
- * lock provider places the key at `{namespace}/.datastore.lock`, keeping it
- * within the namespace prefix for IAM-scoped credentials. Repos sharing a
- * datastore with different namespaces never contend on structural commands.
- *
- * Every construction of the GLOBAL datastore lock — the structural-command
- * acquire, the `acquireModelLocks` drain-coordination inspect, the per-model
- * flush push lock, and the breakglass status/release commands — must pass
- * these options so they all agree on the same namespaced key. A mismatch
- * would make the symmetric drain silently inspect a different lock than the
- * one held.
- */
-export function datastoreGlobalLockOptions(
-  config: DatastoreConfig,
-): LockOptions | undefined {
-  const namespace = config.namespace ?? "";
-  if (namespace.length === 0) return undefined;
-  return { lockKey: ".datastore.lock", namespace };
-}
-
-/**
- * Creates the appropriate distributed lock for a datastore configuration.
- *
- * Used by the lock breakglass commands to inspect/release locks without
- * going through the full sync coordinator lifecycle.
- */
-export async function createDatastoreLock(
-  config: DatastoreConfig,
-): Promise<DistributedLock> {
-  const maxWaitMs = resolveLockTimeoutMs();
-  const options = datastoreGlobalLockOptions(config);
-  const merged = { ...options, maxWaitMs };
-  if (isCustomDatastoreConfig(config)) {
-    const provider = await resolveCustomProvider(config);
-    return provider.createLock(config.datastorePath, merged);
-  }
-  return new FileLock(config.path, merged);
-}
+export { createDatastoreLock, datastoreGlobalLockOptions };

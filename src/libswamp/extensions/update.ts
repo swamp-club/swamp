@@ -33,6 +33,7 @@ import { validationFailed } from "../errors.ts";
 import type { InstallResult, ShadowedTypeInfo } from "./pull.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { refreshManagedLockfile } from "./managed_lockfile_transaction.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 function resolveServerUrl(): string {
@@ -176,6 +177,9 @@ export async function* extensionUpdate(
     (async function* () {
       ctx.logger.debug`Executing extension update`;
 
+      // Choose targets from the datastore's lockfile, not a stale cache
+      // (swamp-club#2838).
+      await refreshManagedLockfile(deps.lockfileRepository);
       const upstream = deps.lockfileRepository.getAllEntries();
       const installedNames = Object.keys(upstream);
 

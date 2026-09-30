@@ -32,10 +32,7 @@ import {
 } from "../repo_context.ts";
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
-import {
-  pushManagedLockfileIfChangedDeferred,
-  snapshotLockfileHash,
-} from "../managed_config_sync.ts";
+import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
 import {
   consumeStream,
@@ -43,8 +40,10 @@ import {
   createLibSwampContext,
   extensionUpdate,
   type ExtensionUpdateResult,
+  type LockfileTransaction,
   UpgradeExtensionService,
   warnLegacyExtensionLayout,
+  withManagedLockfileTransaction,
 } from "../../libswamp/mod.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -144,7 +143,7 @@ export const extensionUpdateCommand = withRemoteOptions(
   const serverUrl = resolveServerUrl();
   const identity = await loadIdentity();
   let lockfilePath: string;
-  let publish = false;
+  let lockfileTransaction: LockfileTransaction | undefined;
   let fallbackLockfile = false;
   if (options.check) {
     // Read-only: no guard, but say when the answer comes from the in-repo
@@ -162,9 +161,14 @@ export const extensionUpdateCommand = withRemoteOptions(
       extensionLookup: createExtensionRegistryLookup(serverUrl, identity),
     });
     lockfilePath = target.lockfilePath;
-    publish = target.publish;
+    // Updates are made against the datastore's lockfile and published as
+    // they land (swamp-club#2838).
+    lockfileTransaction = createManagedLockfileTransaction(
+      repoDir,
+      marker,
+      target,
+    );
   }
-  const lockfileHashBefore = await snapshotLockfileHash(lockfilePath);
 
   // Per-extension models/workflows/vaults/datastores/reports
   // destinations are derived inside installExtension from the
@@ -236,24 +240,19 @@ export const extensionUpdateCommand = withRemoteOptions(
 
     // 5. Execute and render
     const renderer = createExtensionUpdateRenderer(cliCtx.outputMode);
-    await consumeStream(
-      extensionUpdate(ctx, deps, {
-        extensionName,
-        checkOnly: !!options.check,
-        fallbackLockfile,
-      }),
-      renderer.handlers(),
+    await withManagedLockfileTransaction(
+      lockfileTransaction,
+      () =>
+        consumeStream(
+          extensionUpdate(ctx, deps, {
+            extensionName,
+            checkOnly: !!options.check,
+            fallbackLockfile,
+          }),
+          renderer.handlers(),
+        ),
     );
   } finally {
     catalog.close();
-  }
-
-  if (publish) {
-    await pushManagedLockfileIfChangedDeferred(
-      repoDir,
-      marker,
-      lockfilePath,
-      lockfileHashBefore,
-    );
   }
 });

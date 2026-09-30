@@ -220,6 +220,32 @@ export function getManagedConfigBase(repoDir: string): string | undefined {
   return val ? val.base : undefined;
 }
 
+/** Advisory lock for a managed lockfile, under the repo's own `.swamp/`. */
+export const MANAGED_LOCKFILE_LOCK_FILE = "managed-lockfile.lock";
+
+/**
+ * Where {@link LockfileRepository} takes its advisory lock for the lockfile
+ * at `lockfilePath`.
+ *
+ * A lockfile inside a registered managed config base sits in the datastore
+ * cache, whose files a push may upload; a lock file next to it would reach
+ * other checkouts and block their extension writes (swamp-club#2838). Its
+ * lock lives in the owning repo's `.swamp/` directory instead, which is
+ * never synced. Any other lockfile is in the repo and keeps
+ * `<lockfile>.lock`.
+ */
+export function lockfileAdvisoryLockPath(lockfilePath: string): string {
+  const target = resolve(lockfilePath);
+  for (const [repoDir, registration] of managedConfigRegistry) {
+    if (!registration) continue;
+    const rel = relative(resolve(registration.base), target);
+    if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) {
+      return swampPath(repoDir, MANAGED_LOCKFILE_LOCK_FILE);
+    }
+  }
+  return `${lockfilePath}.lock`;
+}
+
 /**
  * True when the registered managed config base came from the datastore
  * resolver rather than the in-repo fallback.

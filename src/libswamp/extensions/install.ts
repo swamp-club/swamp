@@ -31,6 +31,7 @@ import { assertContainedPath } from "../../infrastructure/persistence/safe_path.
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { refreshManagedLockfile } from "./managed_lockfile_transaction.ts";
 import {
   type ExtensionRef,
   type InstallContext,
@@ -168,6 +169,9 @@ export async function* extensionInstall(
       const lockfileRepository = await LockfileRepository.create(
         deps.lockfilePath,
       );
+      // Restore what the datastore's lockfile pins, not a stale cache
+      // (swamp-club#2838).
+      await refreshManagedLockfile(lockfileRepository);
       const upstream = lockfileRepository.getAllEntries();
       const entries: ExtensionInstallEntry[] = [];
       let installed = 0;

@@ -28,20 +28,20 @@ import { ensureDir } from "@std/fs";
 import { join, resolve } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import {
+  buildManagedLockfileTransaction,
+  createManagedLockfileTransaction,
   flushAfterManagedConfigMutation,
   ManagedConfigUnpublishedError,
+  ManagedLockfileUnavailableError,
   pullManagedConfigAtBoot,
   pushManagedConfigChanges,
   pushManagedConfigPaths,
   pushManagedConfigPathsDeferred,
-  pushManagedLockfileIfChangedDeferred,
-  snapshotLockfileHash,
 } from "./managed_config_sync.ts";
 import { UserError } from "../domain/errors.ts";
-import {
-  isLockfilePublishPending,
-  markLockfilePublishPending,
-} from "../infrastructure/persistence/pending_lockfile_publish.ts";
+import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
+import { readLockfilePublishPending } from "../infrastructure/persistence/pending_lockfile_publish.ts";
+import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import type {
@@ -374,239 +374,284 @@ Deno.test("pushManagedConfigPathsDeferred: no-op without managedConfig or paths"
   });
 });
 
-Deno.test("snapshotLockfileHash: null for a missing lockfile, stable for unchanged content", async () => {
-  await withTempDir(async (dir) => {
-    const path = join(dir, "upstream_extensions.json");
-    assertEquals(await snapshotLockfileHash(path), null);
-    await Deno.writeTextFile(path, "{}");
-    const hash = await snapshotLockfileHash(path);
-    assertEquals(await snapshotLockfileHash(path), hash);
-  });
-});
-
-function createRecordingPush() {
-  const calls: Array<{ repoDir: string; paths: readonly string[] }> = [];
-  const push = (
-    repoDir: string,
-    _marker: RepoMarkerData | null,
-    paths: readonly string[],
-  ) => {
-    calls.push({ repoDir, paths });
-    return Promise.resolve();
-  };
-  return { calls, push };
+function createLockfileSyncService(
+  cacheDir: string,
+  remote: { lockfile: string | null },
+  options: { failPull?: boolean } = {},
+): {
+  service: DatastoreSyncService;
+  events: Array<Record<string, unknown>>;
+} {
+  const events: Array<Record<string, unknown>> = [];
+  const tierLockfile = join(
+    cacheDir,
+    "ns1",
+    "config",
+    "upstream_extensions.json",
+  );
+  const service = {
+    markDirty: (opts?: { relPath?: string }) => {
+      events.push({ kind: "mark", relPath: opts?.relPath });
+      return Promise.resolve();
+    },
+    pullChanged: async (
+      opts?: { subdirs?: string[]; namespace?: string; signal?: AbortSignal },
+    ) => {
+      events.push({
+        kind: "pull",
+        subdirs: opts?.subdirs,
+        namespace: opts?.namespace,
+        hasSignal: opts?.signal instanceof AbortSignal,
+      });
+      if (options.failPull) throw new Error("bucket unreachable");
+      if (remote.lockfile !== null) {
+        await ensureDir(join(cacheDir, "ns1", "config"));
+        await Deno.writeTextFile(tierLockfile, remote.lockfile);
+      }
+      return 1;
+    },
+    pushChanged: async (opts?: { namespace?: string }) => {
+      events.push({ kind: "push", namespace: opts?.namespace });
+      remote.lockfile = await Deno.readTextFile(tierLockfile);
+      return 1;
+    },
+  } as unknown as DatastoreSyncService;
+  return { service, events };
 }
 
-Deno.test("pushManagedLockfileIfChangedDeferred: pushes the lockfile only when its content changed", async () => {
-  await withTempDir(async (dir) => {
-    const path = join(dir, "upstream_extensions.json");
-    await Deno.writeTextFile(path, "{}");
-    const before = await snapshotLockfileHash(path);
-    const marker = makeMarker({ managedConfig: true });
-    const { calls, push } = createRecordingPush();
+async function withLockfileTxnDirs(
+  fn: (repoDir: string, cacheDir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-lockfile-txn-cli-" });
+  try {
+    const repoDir = join(dir, "repo");
+    await ensureDir(join(repoDir, ".swamp"));
+    await fn(repoDir, join(dir, "cache"));
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
 
-    await pushManagedLockfileIfChangedDeferred(dir, marker, path, before, push);
-    assertEquals(calls, []);
+const NOOP_LOCK = {
+  acquire: () => Promise.resolve(),
+  release: () => Promise.resolve(),
+};
 
-    await Deno.writeTextFile(path, '{"@acme/a":{}}');
-    await pushManagedLockfileIfChangedDeferred(dir, marker, path, before, push);
-    assertEquals(calls, [{ repoDir: dir, paths: [path] }]);
-  });
-});
-
-Deno.test("pushManagedLockfileIfChangedDeferred: a lockfile the command created counts as changed", async () => {
-  await withTempDir(async (dir) => {
-    const path = join(dir, "upstream_extensions.json");
-    const before = await snapshotLockfileHash(path);
-    await Deno.writeTextFile(path, "{}");
-    const { calls, push } = createRecordingPush();
-
-    await pushManagedLockfileIfChangedDeferred(
-      dir,
-      makeMarker({ managedConfig: true }),
-      path,
-      before,
-      push,
-    );
-
-    assertEquals(calls, [{ repoDir: dir, paths: [path] }]);
-  });
-});
-
-Deno.test("pushManagedLockfileIfChangedDeferred: no-op without managedConfig", async () => {
-  await withTempDir(async (dir) => {
-    const path = join(dir, "upstream_extensions.json");
-    await Deno.writeTextFile(path, "{}");
-    const { calls, push } = createRecordingPush();
-
-    await pushManagedLockfileIfChangedDeferred(
-      dir,
-      makeMarker({ managedConfig: false }),
-      path,
-      null,
-      push,
-    );
-
-    assertEquals(calls, []);
-  });
-});
-
-Deno.test("pushManagedLockfileIfChangedDeferred: an unchanged lockfile makes no push even when the push would fail", async () => {
-  await withTempDir(async (dir) => {
-    const path = join(dir, "upstream_extensions.json");
-    await Deno.writeTextFile(path, "{}");
-    const before = await snapshotLockfileHash(path);
-    let pushes = 0;
-    const failingPush = () => {
-      pushes++;
-      return Promise.reject(
-        new ManagedConfigUnpublishedError(new Error("S3 unreachable")),
-      );
+Deno.test("buildManagedLockfileTransaction: fetches the config tier, then publishes only the lockfile (swamp-club#2838)", async () => {
+  await withLockfileTxnDirs(async (repoDir, cacheDir) => {
+    const remote = {
+      lockfile: JSON.stringify({
+        "@peer/p": { version: "1", pulledAt: "2026-09-30T00:00:00.000Z" },
+      }),
     };
+    const { service, events } = createLockfileSyncService(cacheDir, remote);
+    const lockfilePath = join(
+      cacheDir,
+      "ns1",
+      "config",
+      "upstream_extensions.json",
+    );
+    const transaction = buildManagedLockfileTransaction({
+      syncService: service,
+      datastoreConfig: {
+        ...S3_CONFIG,
+        datastorePath: cacheDir,
+        cachePath: cacheDir,
+      },
+      repoDir,
+      lockfilePath,
+      lock: NOOP_LOCK,
+    });
 
-    await pushManagedLockfileIfChangedDeferred(
-      dir,
+    await transaction.run(async () => {
+      const repo = await LockfileRepository.create(lockfilePath);
+      await repo.writeEntry("@me/x", "1", []);
+    });
+
+    assertEquals(events, [
+      {
+        kind: "pull",
+        subdirs: ["config"],
+        namespace: "ns1",
+        hasSignal: true,
+      },
+      { kind: "mark", relPath: "ns1/config/upstream_extensions.json" },
+      { kind: "push", namespace: "ns1" },
+    ]);
+    assertEquals(
+      Object.keys(JSON.parse(remote.lockfile!)).sort(),
+      ["@me/x", "@peer/p"],
+    );
+    assertEquals(await readLockfilePublishPending(repoDir), { kind: "none" });
+  });
+});
+
+Deno.test("buildManagedLockfileTransaction: a failed fetch throws ManagedLockfileUnavailableError and changes nothing", async () => {
+  await withLockfileTxnDirs(async (repoDir, cacheDir) => {
+    const { service, events } = createLockfileSyncService(
+      cacheDir,
+      { lockfile: null },
+      { failPull: true },
+    );
+    const transaction = buildManagedLockfileTransaction({
+      syncService: service,
+      datastoreConfig: {
+        ...S3_CONFIG,
+        datastorePath: cacheDir,
+        cachePath: cacheDir,
+      },
+      repoDir,
+      lockfilePath: join(cacheDir, "ns1", "config", "upstream_extensions.json"),
+      lock: NOOP_LOCK,
+    });
+    let ran = false;
+    const error = await assertRejects(
+      () =>
+        transaction.run(() => {
+          ran = true;
+          return Promise.resolve();
+        }),
+      ManagedLockfileUnavailableError,
+      "bucket unreachable",
+    );
+    assertInstanceOf(error, UserError);
+    assertEquals(ran, false);
+    assertEquals(events.map((e) => e.kind), ["pull"]);
+  });
+});
+
+Deno.test("buildManagedLockfileTransaction: an unreachable datastore lock throws ManagedLockfileUnavailableError; a held lock keeps LockTimeoutError", async () => {
+  await withLockfileTxnDirs(async (repoDir, cacheDir) => {
+    const { service, events } = createLockfileSyncService(cacheDir, {
+      lockfile: null,
+    });
+    const build = (acquire: () => Promise<void>) =>
+      buildManagedLockfileTransaction({
+        syncService: service,
+        datastoreConfig: {
+          ...S3_CONFIG,
+          datastorePath: cacheDir,
+          cachePath: cacheDir,
+        },
+        repoDir,
+        lockfilePath: join(
+          cacheDir,
+          "ns1",
+          "config",
+          "upstream_extensions.json",
+        ),
+        lock: { acquire, release: () => Promise.resolve() },
+      });
+
+    await assertRejects(
+      () =>
+        build(() =>
+          Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:19001"))
+        ).run(() => Promise.resolve()),
+      ManagedLockfileUnavailableError,
+      "ECONNREFUSED",
+    );
+    await assertRejects(
+      () =>
+        build(() =>
+          Promise.reject(
+            new LockTimeoutError(".datastore.lock", null, 60_000),
+          )
+        ).run(() => Promise.resolve()),
+      LockTimeoutError,
+    );
+    assertEquals(events, []);
+  });
+});
+
+Deno.test("buildManagedLockfileTransaction: a failed publish throws ManagedConfigUnpublishedError and leaves the change pending", async () => {
+  await withLockfileTxnDirs(async (repoDir, cacheDir) => {
+    const { service } = createLockfileSyncService(cacheDir, { lockfile: null });
+    (service as unknown as { pushChanged: () => Promise<number> })
+      .pushChanged = () => Promise.reject(new Error("push refused"));
+    const lockfilePath = join(
+      cacheDir,
+      "ns1",
+      "config",
+      "upstream_extensions.json",
+    );
+    const transaction = buildManagedLockfileTransaction({
+      syncService: service,
+      datastoreConfig: {
+        ...S3_CONFIG,
+        datastorePath: cacheDir,
+        cachePath: cacheDir,
+      },
+      repoDir,
+      lockfilePath,
+      lock: NOOP_LOCK,
+    });
+    const error = await assertRejects(
+      () =>
+        transaction.run(async () => {
+          const repo = await LockfileRepository.create(lockfilePath);
+          await repo.writeEntry("@me/x", "1", []);
+        }),
+      ManagedConfigUnpublishedError,
+      "push refused",
+    );
+    // A plain `datastore sync --push` would publish the local copy without
+    // fetching; `extension install` replays the change onto a fresh fetch.
+    assertStringIncludes(error.message, "Run 'swamp extension install'");
+    const pending = await readLockfilePublishPending(repoDir);
+    assertEquals(pending.kind, "delta");
+    assertEquals(
+      pending.kind === "delta" ? Object.keys(pending.delta.upserts) : [],
+      ["@me/x"],
+    );
+  });
+});
+
+Deno.test("createManagedLockfileTransaction: none unless the lockfile is shared through an extension datastore", () => {
+  const write = {
+    lockfilePath: "/cache/config/upstream_extensions.json",
+    publish: true,
+  };
+  assertEquals(
+    createManagedLockfileTransaction(
+      "/repo",
+      makeMarker({ managedConfig: false }),
+      write,
+    ),
+    undefined,
+  );
+  assertEquals(
+    createManagedLockfileTransaction(
+      "/repo",
+      makeMarker({ managedConfig: true, type: "filesystem" }),
+      write,
+    ),
+    undefined,
+  );
+  assertEquals(
+    createManagedLockfileTransaction(
+      "/repo",
       makeMarker({ managedConfig: true }),
-      path,
-      before,
-      failingPush,
-    );
-
-    assertEquals(pushes, 0);
-  });
-});
-
-Deno.test("pushManagedLockfileIfChangedDeferred: propagates the push helper's error for a changed lockfile", async () => {
-  await withTempDir(async (dir) => {
-    const path = join(dir, "upstream_extensions.json");
-    const before = await snapshotLockfileHash(path);
-    await Deno.writeTextFile(path, "{}");
-    const cause = new ManagedConfigUnpublishedError(new Error("S3 down"));
-
-    const error = await assertRejects(() =>
-      pushManagedLockfileIfChangedDeferred(
-        dir,
-        makeMarker({ managedConfig: true }),
-        path,
-        before,
-        () => Promise.reject(cause),
-      )
-    );
-
-    assertEquals(error, cause);
-  });
-});
-
-Deno.test("pushManagedLockfileIfChangedDeferred: an unreadable lockfile throws ManagedConfigUnpublishedError", async () => {
-  await withTempDir(async (dir) => {
-    // A directory at the lockfile path cannot be read as a file.
-    const path = join(dir, "upstream_extensions.json");
-    await ensureDir(path);
-    const { calls, push } = createRecordingPush();
-
-    const error = await assertRejects(() =>
-      pushManagedLockfileIfChangedDeferred(
-        dir,
-        makeMarker({ managedConfig: true }),
-        path,
-        null,
-        push,
-      )
-    );
-
-    assertInstanceOf(error, ManagedConfigUnpublishedError);
-    assertEquals(calls, []);
-  });
-});
-
-Deno.test("pushManagedLockfileIfChangedDeferred: a re-run after a failed publish retries it though the lockfile is unchanged", async () => {
-  await withTempDir(async (dir) => {
-    await ensureDir(join(dir, ".swamp"));
-    const path = join(dir, "upstream_extensions.json");
-    const marker = makeMarker({ managedConfig: true });
-
-    // First run changes the lockfile, and its publish fails.
-    const before = await snapshotLockfileHash(path);
-    await Deno.writeTextFile(path, "{}");
-    await assertRejects(
-      () =>
-        pushManagedLockfileIfChangedDeferred(
-          dir,
-          marker,
-          path,
-          before,
-          () =>
-            Promise.reject(
-              new ManagedConfigUnpublishedError(new Error("S3 down")),
-            ),
-        ),
-      ManagedConfigUnpublishedError,
-    );
-    assertEquals(await isLockfilePublishPending(dir), true);
-
-    // The re-run leaves the lockfile unchanged but still publishes it.
-    const { calls, push } = createRecordingPush();
-    await pushManagedLockfileIfChangedDeferred(
-      dir,
-      marker,
-      path,
-      await snapshotLockfileHash(path),
-      push,
-    );
-    assertEquals(calls, [{ repoDir: dir, paths: [path] }]);
-    assertEquals(await isLockfilePublishPending(dir), false);
-
-    // Once published, an unchanged lockfile is left alone again.
-    await pushManagedLockfileIfChangedDeferred(
-      dir,
-      marker,
-      path,
-      await snapshotLockfileHash(path),
-      push,
-    );
-    assertEquals(calls.length, 1);
-  });
-});
-
-Deno.test("pushManagedLockfileIfChangedDeferred: an unreadable lockfile records the publish as pending", async () => {
-  await withTempDir(async (dir) => {
-    await ensureDir(join(dir, ".swamp"));
-    const path = join(dir, "upstream_extensions.json");
-    await ensureDir(path);
-
-    await assertRejects(
-      () =>
-        pushManagedLockfileIfChangedDeferred(
-          dir,
-          makeMarker({ managedConfig: true }),
-          path,
-          null,
-          createRecordingPush().push,
-        ),
-      ManagedConfigUnpublishedError,
-    );
-    assertEquals(await isLockfilePublishPending(dir), true);
-  });
-});
-
-Deno.test("pushManagedLockfileIfChangedDeferred: a pending record is ignored without managedConfig", async () => {
-  await withTempDir(async (dir) => {
-    await ensureDir(join(dir, ".swamp"));
-    await markLockfilePublishPending(dir);
-    const path = join(dir, "upstream_extensions.json");
-    await Deno.writeTextFile(path, "{}");
-    const { calls, push } = createRecordingPush();
-
-    await pushManagedLockfileIfChangedDeferred(
-      dir,
-      makeMarker(),
-      path,
-      await snapshotLockfileHash(path),
-      push,
-    );
-
-    assertEquals(calls, []);
-  });
+      {
+        ...write,
+        publish: false,
+      },
+    ),
+    undefined,
+  );
+  assertEquals(
+    createManagedLockfileTransaction(
+      "/repo",
+      makeMarker({ managedConfig: true }),
+      write,
+    )
+      ?.lockfilePath,
+    write.lockfilePath,
+  );
 });
 
 Deno.test("flushAfterManagedConfigMutation: a failed flush after the mutation throws ManagedConfigUnpublishedError", async () => {

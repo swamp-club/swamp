@@ -1966,12 +1966,45 @@ inspection). `update`,
 `rm` and `install` act on the resolved lockfile only, and workflows from
 auto-resolved extensions stay invisible to the workflow loaders, as before.
 
-The resolved lockfile is a cache file: on a fresh machine it is absent until
-`swamp datastore sync --pull` hydrates it. Extension write commands do not
-hydrate it first, so on a fresh machine a write can replace the team's
-lockfile with one that lists only its own change; run
-`swamp datastore sync --pull` before extension writes there.
-swamp-club#2495 tracks that lost-update risk.
+The resolved lockfile is a cache file, and the datastore stores each file
+last-writer-wins, so publishing it from a stale cache would erase entries
+other checkouts added. Extension writes therefore run in a managed lockfile
+transaction (`ManagedLockfileTransaction`, swamp-club#2838) on
+extension-backed datastores:
+
+1. Download, verify and extract outside any lock.
+2. Take the datastore global lock (`datastoreGlobalLock`, namespace-aware),
+   fetch the shared lockfile with a `config`-scoped `pullChanged`, and replay
+   any change an earlier transaction failed to publish.
+3. Under the pulled-extensions lock, apply the change to the lockfile.
+4. Record the whole outstanding change (the diff against the fetched
+   lockfile) in `.swamp/managed-config-lockfile-unpublished`, publish exactly
+   the lockfile, clear the record, and release the global lock. This also
+   runs when the change throws after writing the lockfile.
+
+`extension rm`'s preview, `extension update`'s target selection and
+`extension install`'s restore fetch under the lock first, so they read what
+other checkouts wrote. A dependency that the fetched lockfile lists but whose
+files are missing from this checkout is installed at the version it pins, not
+skipped. When the fetch fails nothing changes
+(`ManagedLockfileUnavailableError`); when the publish fails the change stays
+recorded and the next extension write replays it onto a fresh fetch. The error
+names `swamp extension install` as the retry, since it fetches and replays;
+`swamp datastore sync --push` would publish the stale local copy. In
+`swamp serve` the handlers take the global lock inside their exclusive sync
+gate, and a failed publish is logged and left pending. A command already
+holding the global lock (the sync coordinator) does not take it again.
+Filesystem datastores and repos without managedConfig skip all of this.
+
+The fetch is a scoped pull under the lock, and a scoped pull's slow path
+re-downloads any `config/` file that differs from the datastore's index. A
+config write another process on the same checkout made and has not pushed
+yet can therefore be overwritten; the lockfile itself is protected by the
+pending-change record.
+
+The lockfile's own advisory lock (`LockfileRepository`) lives in the repo's
+`.swamp/managed-lockfile.lock`, outside the synced tier, so a push never
+uploads it to other checkouts.
 
 ### Pod boot sequence under managed config
 

@@ -59,6 +59,7 @@ import {
   repairExtensions,
   resolveServerUrl,
   toDoctorWarnings,
+  withManagedLockfileTransaction,
 } from "../../libswamp/mod.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { pullExtension } from "./extension_pull.ts";
@@ -92,10 +93,7 @@ import {
   requireRepoMarker,
   resolveManagedConfigPaths,
 } from "../repo_context.ts";
-import {
-  pushManagedLockfileIfChangedDeferred,
-  snapshotLockfileHash,
-} from "../managed_config_sync.ts";
+import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import {
   type DatastoreEnvReader,
   isExtensionBackedDatastore,
@@ -369,144 +367,144 @@ export const doctorExtensionsCommand = withRemoteOptions(
     });
 
     const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
-    const lockfileHashBefore = repair && !rescanSkipped && !dryRun
-      ? await snapshotLockfileHash(lockfilePath)
-      : null;
-    await consumeStream(
-      doctorExtensions({
-        registries,
-        lockfileRepository: doctorLockfileRepo,
-        repoDir,
-        skillsDirs: repoRelativeSkillsDirs,
-        abortSignal: controller.signal,
-        rescanSkipped,
-        buildAggregateState: async () => {
-          const aggLockfileRepo = await LockfileRepository.create(
-            lockfilePath,
-          );
-          const localIdentity = readLocalManifestIdentity(repoDir);
-          const repo = new ExtensionRepository({
-            catalog: sharedCatalog,
-            lockfileRepository: aggLockfileRepo,
-            repoRoot: repoDir,
-            localManifestIdentity: localIdentity,
-          });
-          const extensions = repo.loadAll();
-          return buildAggregateState({ extensions, repoDir });
-        },
-        getRecentTransitions: () => reconcileTransitions,
-        getWarnings: () => toDoctorWarnings(getExtensionLoadWarnings()),
-        resetWarnings: resetExtensionLoadWarnings,
-        ...extensionMemberDoctorDeps(sharedCatalog),
-        runRepair: repair && !rescanSkipped
-          ? async (aggregateReport) => {
-            // In interactive mode without --force, preview first and prompt.
-            if (needsPrompt) {
-              const preview = await repairExtensions({
-                aggregateReport,
-                deleteBySourcePaths: () => 0,
-                apply: false,
-              });
-              if (preview.operations.length === 0) {
-                return preview;
-              }
-              const n = preview.operations.length;
-              writeOutput(
-                `\n${bold(`${n} repair operation(s) planned`)} ${
-                  dim("(use --dry-run to see details without prompting)")
-                }`,
-              );
-              const confirmed = await promptConfirmation(
-                "Proceed with repair?",
-              );
-              if (!confirmed) {
-                writeOutput(dim("Repair cancelled."));
-                return preview;
-              }
-            }
-            const repairLockfileRepo = await LockfileRepository.create(
-              lockfilePath,
-            );
-            const repo = new ExtensionRepository({
-              catalog: sharedCatalog,
-              lockfileRepository: repairLockfileRepo,
-              repoRoot: repoDir,
-            });
-            const repullExtension = async (
-              name: string,
-            ): Promise<boolean> => {
-              try {
-                const serverUrl = resolveServerUrl();
-                const identity = await loadIdentity();
-                const pullLockfileRepo = await LockfileRepository.create(
-                  lockfilePath,
-                );
-                const denoRuntime = new EmbeddedDenoRuntime();
-                const pullRepo = new ExtensionRepository({
-                  catalog: sharedCatalog,
-                  lockfileRepository: pullLockfileRepo,
-                  repoRoot: repoDir,
-                  localManifestIdentity: readLocalManifestIdentity(repoDir),
-                });
-                const deps = await createExtensionPullDeps(
-                  serverUrl,
-                  lockfilePath,
-                  absoluteSkillsDirs,
-                  repoDir,
-                  { identity },
-                );
-                // Repair restores what the lockfile pins, not whatever
-                // the registry currently calls latest — pulling latest
-                // here rewrites the entry and destroys the pin
-                // (swamp-club#2150). Extensions with no entry have
-                // nothing to pin to, so they still resolve latest.
-                const pinnedVersion =
-                  pullLockfileRepo.getEntry(name)?.version ?? null;
-                await pullExtension(
-                  { name, version: pinnedVersion },
-                  {
-                    getExtension: deps.getExtension,
-                    downloadArchive: deps.downloadArchive,
-                    getChecksum: deps.getChecksum,
-                    logger: cliCtx.logger,
-                    lockfileRepository: deps.lockfileRepository,
-                    skillsDirs: absoluteSkillsDirs,
-                    repoDir,
-                    force: true,
-                    outputMode: cliCtx.outputMode,
-                    alreadyPulled: new Set(),
-                    depth: 0,
-                    denoRuntime,
-                    repository: pullRepo,
-                  },
-                );
-                return true;
-              } catch {
-                return false;
-              }
-            };
-            return repairExtensions({
-              aggregateReport,
-              deleteBySourcePaths: (paths) => repo.deleteBySourcePaths(paths),
-              repullExtension,
-              apply: !dryRun,
-            });
-          }
-          : undefined,
-      }),
-      renderer.handlers(),
-    );
-
-    // A repair re-pull can rewrite the lockfile; publish it like the other
-    // extension writers. Before the exit below, which would skip it.
-    if (repair && !rescanSkipped && !dryRun) {
-      await pushManagedLockfileIfChangedDeferred(
-        repoDir,
-        marker,
+    // A repair re-pull can rewrite the lockfile; it is made against the
+    // datastore's lockfile and published as it lands, like the other
+    // extension writers (swamp-club#2838).
+    const lockfileTransaction = repair && !rescanSkipped && !dryRun
+      ? createManagedLockfileTransaction(repoDir, marker, {
         lockfilePath,
-        lockfileHashBefore,
-      );
-    }
+        publish: true,
+      })
+      : undefined;
+    await withManagedLockfileTransaction(
+      lockfileTransaction,
+      () =>
+        consumeStream(
+          doctorExtensions({
+            registries,
+            lockfileRepository: doctorLockfileRepo,
+            repoDir,
+            skillsDirs: repoRelativeSkillsDirs,
+            abortSignal: controller.signal,
+            rescanSkipped,
+            buildAggregateState: async () => {
+              const aggLockfileRepo = await LockfileRepository.create(
+                lockfilePath,
+              );
+              const localIdentity = readLocalManifestIdentity(repoDir);
+              const repo = new ExtensionRepository({
+                catalog: sharedCatalog,
+                lockfileRepository: aggLockfileRepo,
+                repoRoot: repoDir,
+                localManifestIdentity: localIdentity,
+              });
+              const extensions = repo.loadAll();
+              return buildAggregateState({ extensions, repoDir });
+            },
+            getRecentTransitions: () => reconcileTransitions,
+            getWarnings: () => toDoctorWarnings(getExtensionLoadWarnings()),
+            resetWarnings: resetExtensionLoadWarnings,
+            ...extensionMemberDoctorDeps(sharedCatalog),
+            runRepair: repair && !rescanSkipped
+              ? async (aggregateReport) => {
+                // In interactive mode without --force, preview first and prompt.
+                if (needsPrompt) {
+                  const preview = await repairExtensions({
+                    aggregateReport,
+                    deleteBySourcePaths: () => 0,
+                    apply: false,
+                  });
+                  if (preview.operations.length === 0) {
+                    return preview;
+                  }
+                  const n = preview.operations.length;
+                  writeOutput(
+                    `\n${bold(`${n} repair operation(s) planned`)} ${
+                      dim("(use --dry-run to see details without prompting)")
+                    }`,
+                  );
+                  const confirmed = await promptConfirmation(
+                    "Proceed with repair?",
+                  );
+                  if (!confirmed) {
+                    writeOutput(dim("Repair cancelled."));
+                    return preview;
+                  }
+                }
+                const repairLockfileRepo = await LockfileRepository.create(
+                  lockfilePath,
+                );
+                const repo = new ExtensionRepository({
+                  catalog: sharedCatalog,
+                  lockfileRepository: repairLockfileRepo,
+                  repoRoot: repoDir,
+                });
+                const repullExtension = async (
+                  name: string,
+                ): Promise<boolean> => {
+                  try {
+                    const serverUrl = resolveServerUrl();
+                    const identity = await loadIdentity();
+                    const pullLockfileRepo = await LockfileRepository.create(
+                      lockfilePath,
+                    );
+                    const denoRuntime = new EmbeddedDenoRuntime();
+                    const pullRepo = new ExtensionRepository({
+                      catalog: sharedCatalog,
+                      lockfileRepository: pullLockfileRepo,
+                      repoRoot: repoDir,
+                      localManifestIdentity: readLocalManifestIdentity(repoDir),
+                    });
+                    const deps = await createExtensionPullDeps(
+                      serverUrl,
+                      lockfilePath,
+                      absoluteSkillsDirs,
+                      repoDir,
+                      { identity },
+                    );
+                    // Repair restores what the lockfile pins, not whatever
+                    // the registry currently calls latest — pulling latest
+                    // here rewrites the entry and destroys the pin
+                    // (swamp-club#2150). Extensions with no entry have
+                    // nothing to pin to, so they still resolve latest.
+                    const pinnedVersion =
+                      pullLockfileRepo.getEntry(name)?.version ?? null;
+                    await pullExtension(
+                      { name, version: pinnedVersion },
+                      {
+                        getExtension: deps.getExtension,
+                        downloadArchive: deps.downloadArchive,
+                        getChecksum: deps.getChecksum,
+                        logger: cliCtx.logger,
+                        lockfileRepository: deps.lockfileRepository,
+                        skillsDirs: absoluteSkillsDirs,
+                        repoDir,
+                        force: true,
+                        outputMode: cliCtx.outputMode,
+                        alreadyPulled: new Set(),
+                        depth: 0,
+                        denoRuntime,
+                        repository: pullRepo,
+                      },
+                    );
+                    return true;
+                  } catch {
+                    return false;
+                  }
+                };
+                return repairExtensions({
+                  aggregateReport,
+                  deleteBySourcePaths: (paths) =>
+                    repo.deleteBySourcePaths(paths),
+                  repullExtension,
+                  apply: !dryRun,
+                });
+              }
+              : undefined,
+          }),
+          renderer.handlers(),
+        ),
+    );
 
     cliCtx.logger.debug("doctor extensions command completed");
 
