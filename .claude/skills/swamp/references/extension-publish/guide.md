@@ -1,10 +1,9 @@
 # Swamp Extension Publish
 
-Publish extensions (models, workflows, vaults, drivers, datastores, reports) to
-the swamp registry. This skill is a **state machine** — each state gates the
-next. You MUST NOT advance to the next state until the current state's
-**Verify** step passes. The final push is blocked until every prior state has
-passed.
+Publish extensions (models, workflows, vaults, datastores, reports) to the swamp
+registry. This skill is a **state machine** — each state gates the next. You
+MUST NOT advance to the next state until the current state's **Verify** step
+passes. The final push is blocked until every prior state has passed.
 
 ## State Machine
 

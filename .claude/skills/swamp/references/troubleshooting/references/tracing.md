@@ -31,8 +31,8 @@ Tracing is most useful when:
 - `data gc` is taking too long and you want to see how many entries are being
   processed
 - Extension pull/push is failing and you want to see which network phase fails
-- You need to trace context across Docker container boundaries to connect
-  extension spans to the parent workflow
+- You need to trace context across remote workers (including containerized ones)
+  to connect their method spans to the parent workflow
 
 ## Configuration
 

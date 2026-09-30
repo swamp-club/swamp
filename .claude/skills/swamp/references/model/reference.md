@@ -439,15 +439,14 @@ variables are correct for the intended target. See
 
 **Options:**
 
-| Flag                         | Description                                      |
-| ---------------------------- | ------------------------------------------------ |
-| `--input <value>`            | Input values (key=value repeatable, or JSON)     |
-| `--input-file <f>`           | Input values from YAML file                      |
-| `--last-evaluated`           | Use previously evaluated model (skip eval)       |
-| `--skip-checks`              | Skip all pre-flight checks                       |
-| `--skip-check <name>`        | Skip a specific check by name (repeatable)       |
-| `--skip-check-label <label>` | Skip all checks with a given label (repeatable)  |
-| `--driver <driver>`          | Override execution driver (e.g. `raw`, `docker`) |
+| Flag                         | Description                                     |
+| ---------------------------- | ----------------------------------------------- |
+| `--input <value>`            | Input values (key=value repeatable, or JSON)    |
+| `--input-file <f>`           | Input values from YAML file                     |
+| `--last-evaluated`           | Use previously evaluated model (skip eval)      |
+| `--skip-checks`              | Skip all pre-flight checks                      |
+| `--skip-check <name>`        | Skip a specific check by name (repeatable)      |
+| `--skip-check-label <label>` | Skip all checks with a given label (repeatable) |
 
 **Output shape:**
 

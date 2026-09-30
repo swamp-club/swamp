@@ -8,7 +8,6 @@ my-swamp-repo/
 ├── extensions/              # Custom extensions
 │   ├── models/              # TypeScript model definitions
 │   ├── vaults/              # TypeScript vault implementations
-│   ├── drivers/             # TypeScript driver implementations
 │   └── datastores/          # TypeScript datastore implementations
 ├── .swamp/                  # Runtime data (datastore)
 │   ├── data/                # Versioned model data
@@ -288,7 +287,7 @@ export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
 export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 ```
 
-For custom datastore or driver implementations, see the `swamp-extension` skill.
+For custom datastore implementations, see the `swamp-extension` skill.
 
 ### Config Value Interpolation
 
@@ -389,7 +388,7 @@ sources:
      same directory, the repo-root layout wins — the direct-content files at the
      root are ignored to prevent double-loading.
 - `only` — optional filter limiting which extension types to load from this
-  source: `models`, `vaults`, `drivers`, `datastores`, `reports`, `workflows`.
+  source: `models`, `vaults`, `datastores`, `reports`, `workflows`.
 
 ### Managing Sources
 
@@ -441,7 +440,6 @@ pointing at your local development copy — your local version loads instead.
 | Manage model data               | `swamp-data`            |
 | Create custom TypeScript models | `swamp-extension`       |
 | Create custom datastores        | `swamp-extension`       |
-| Create custom drivers           | `swamp-extension`       |
 | Understand swamp internals      | `swamp-troubleshooting` |
 
 ## References

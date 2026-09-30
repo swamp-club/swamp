@@ -1,7 +1,7 @@
 # Publishing Extensions
 
-Publish extension models, workflows, vaults, drivers, and datastores to the
-swamp registry so others can install and use them.
+Publish extension models, workflows, vaults, and datastores to the swamp
+registry so others can install and use them.
 
 ## Repository Prerequisite
 
@@ -60,7 +60,6 @@ dependencies:
 | `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                                  |
 | `workflows`       | No*      | Workflow file paths. Resolved via `paths.base`. Under `manifest`, resolves from manifest dir first, then repo-root fallbacks.                                 |
 | `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                                  |
-| `drivers`         | No*      | Driver file paths. Resolved via `paths.base`.                                                                                                                 |
 | `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                              |
 | `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                                 |
 | `skills`          | No*      | Skill directory names. Honours `paths.base: manifest` (manifest-relative first, then project-local, then global). Multi-tool repos search all enrolled tools. |
@@ -70,8 +69,8 @@ dependencies:
 | `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                                  |
 | `dependencies`    | No       | Other extensions this one depends on                                                                                                                          |
 
-*At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
-`reports`, or `skills` must be present with entries.
+*At least one of `models`, `workflows`, `vaults`, `datastores`, `reports`, or
+`skills` must be present with entries.
 
 ### Private publication
 
@@ -147,8 +146,7 @@ paths — hardcoding breaks smoke tests run against a source-loaded extension.
 ### Path resolution — `paths.base`
 
 This is the canonical reference for path resolution semantics across all
-extension-type skills (model, vault, driver, datastore, report). Other skills
-link here.
+extension-type skills (model, vault, datastore, report). Other skills link here.
 
 > **The default is the existing path resolution. Omit `paths.base` and nothing
 > about your manifest changes — historical behavior end to end.** The
@@ -158,8 +156,8 @@ link here.
 > fallback, no "best guess" — opt in to opt in.
 
 `paths.base` selects which directory typed-key entries (`models`, `vaults`,
-`drivers`, `datastores`, `reports`, `include`) and `additionalFiles` resolve
-against during push. Two modes:
+`datastores`, `reports`, `include`) and `additionalFiles` resolve against during
+push. Two modes:
 
 | Mode                 | Typed keys resolve relative to                        | `additionalFiles` resolves relative to |
 | -------------------- | ----------------------------------------------------- | -------------------------------------- |
@@ -305,7 +303,6 @@ for import style examples and helper script details.
 
 - `models` paths resolve relative to `extensions/models/`
 - `vaults` paths resolve relative to `extensions/vaults/`
-- `drivers` paths resolve relative to `extensions/drivers/`
 - `datastores` paths resolve relative to `extensions/datastores/`
 - Only list entry-point files — local imports are auto-resolved and included
 - Each entry-point is bundled into a standalone JS file for the registry
@@ -459,13 +456,13 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 6. **Safety analysis** — scans all files (including `include` files) for
    disallowed patterns and limits
 7. **Quality checks** — runs `deno fmt --check` and `deno lint` on model, vault,
-   driver, datastore, and report files (using the project's `deno.json` config
-   if present, otherwise default rules). Include files are excluded.
+   datastore, and report files (using the project's `deno.json` config if
+   present, otherwise default rules). Include files are excluded.
 8. **Bare specifier check** — scans source files for bare import specifiers
    (e.g. `from "zod"` instead of `from "npm:zod@4"`). The server-side scorer
    cannot resolve bare specifiers, so a warning is added to the review warnings
    prompting the user to confirm before push.
-9. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
+9. **Bundle TypeScript** — compiles each entry point (models, vaults,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
 10. **Version-drift check** — advisory check comparing current model versions
@@ -584,21 +581,21 @@ swamp extension version --manifest manifest.yaml --json
 
 ## Common Errors and Fixes
 
-| Error                             | Fix                                                                               |
-| --------------------------------- | --------------------------------------------------------------------------------- |
-| "Not a swamp repository"          | Run `swamp repo init --json` in the extension directory                           |
-| "Not authenticated"               | Run `swamp auth login` first                                                      |
-| "collective does not match"       | Manifest `name` must use `@your-username/...`                                     |
-| "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                     |
-| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `drivers`, `datastores`, or `skills` array |
-| "Model file not found"            | Check path is relative to `extensions/models/`                                    |
-| "Workflow file not found"         | Check path is relative to `workflows/`                                            |
-| "eval() or new Function()"        | Remove dynamic code execution from your models                                    |
-| "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                     |
-| "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                         |
-| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                         |
-| "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason    |
-| "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                    |
+| Error                             | Fix                                                                            |
+| --------------------------------- | ------------------------------------------------------------------------------ |
+| "Not a swamp repository"          | Run `swamp repo init --json` in the extension directory                        |
+| "Not authenticated"               | Run `swamp auth login` first                                                   |
+| "collective does not match"       | Manifest `name` must use `@your-username/...`                                  |
+| "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                  |
+| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `datastores`, or `skills` array         |
+| "Model file not found"            | Check path is relative to `extensions/models/`                                 |
+| "Workflow file not found"         | Check path is relative to `workflows/`                                         |
+| "eval() or new Function()"        | Remove dynamic code execution from your models                                 |
+| "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                  |
+| "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                      |
+| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                      |
+| "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason |
+| "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                 |
 
 ## Related Skills
 
@@ -607,7 +604,6 @@ swamp extension version --manifest manifest.yaml --json
 | Create custom models               | `swamp-extension`         |
 | Create custom vaults               | `swamp-extension`         |
 | Create custom datastores           | `swamp-extension`         |
-| Create custom execution drivers    | `swamp-extension`         |
 | Repository setup and management    | `swamp-repo`              |
 | Create reports                     | `swamp-report`            |
 | Quality scorecard & best practices | `swamp-extension`         |
