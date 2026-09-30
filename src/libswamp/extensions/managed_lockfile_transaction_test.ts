@@ -353,3 +353,67 @@ Deno.test("refreshManagedLockfile: refreshes the repository's snapshot from the 
     assertEquals(repo.getEntry("@peer/p")?.version, "1");
   });
 });
+
+Deno.test("ManagedLockfileTransaction.run: a pending change is published even when the fetch leaves it in place (no datastore lockfile yet)", async () => {
+  await withHarness(async (h) => {
+    const remote: { entries: UpstreamExtensionsMap | null } = {
+      entries: null,
+    };
+    const pending = { value: { kind: "none" } as PendingLockfilePublish };
+    let failPublish = true;
+    const transaction = () =>
+      new ManagedLockfileTransaction({
+        lockfilePath: h.lockfilePath,
+        lock: {
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+        },
+        sync: {
+          // A fetch with nothing to download leaves the local file alone.
+          hydrate: async () => {
+            if (remote.entries) {
+              await new LockfileRepository(h.lockfilePath).replaceAll(
+                remote.entries,
+              );
+            }
+          },
+          publish: async () => {
+            if (failPublish) throw new Error("datastore unreachable");
+            remote.entries = await readUpstreamExtensions(h.lockfilePath);
+          },
+        },
+        pending: {
+          read: () => Promise.resolve(pending.value),
+          write: (delta) => {
+            pending.value = { kind: "delta", delta };
+            return Promise.resolve();
+          },
+          clear: () => {
+            pending.value = { kind: "none" };
+            return Promise.resolve();
+          },
+        },
+      });
+
+    await assertRejects(
+      () =>
+        transaction().run(async () => {
+          await (await LockfileRepository.create(h.lockfilePath)).writeEntry(
+            "@me/x",
+            "1",
+            [],
+          );
+        }),
+      Error,
+      "datastore unreachable",
+    );
+    assertEquals(remote.entries, null);
+
+    // The retry sees the change already in the fetched copy; the diff is
+    // empty, but the pending record still forces the publish.
+    failPublish = false;
+    await transaction().refresh();
+    assertEquals(Object.keys(remote.entries ?? {}), ["@me/x"]);
+    assertEquals(pending.value, { kind: "none" });
+  });
+});

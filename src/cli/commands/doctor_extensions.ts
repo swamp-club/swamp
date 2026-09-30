@@ -488,7 +488,19 @@ export const doctorExtensionsCommand = withRemoteOptions(
                       },
                     );
                     return true;
-                  } catch {
+                  } catch (error) {
+                    // Keep the reason visible: under managedConfig a
+                    // re-pull can fail before it starts because the
+                    // datastore's lockfile cannot be fetched (swamp-club#2838).
+                    cliCtx.logger.warn(
+                      "Re-pull of {name} failed: {error}",
+                      {
+                        name,
+                        error: error instanceof Error
+                          ? error.message
+                          : String(error),
+                      },
+                    );
                     return false;
                   }
                 };

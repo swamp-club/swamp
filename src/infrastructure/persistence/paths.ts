@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isAbsolute, join, relative, resolve } from "@std/path";
+import { dirname, isAbsolute, join, relative, resolve } from "@std/path";
 
 /**
  * Central constants for swamp data storage paths.
@@ -220,27 +220,26 @@ export function getManagedConfigBase(repoDir: string): string | undefined {
   return val ? val.base : undefined;
 }
 
-/** Advisory lock for a managed lockfile, under the repo's own `.swamp/`. */
-export const MANAGED_LOCKFILE_LOCK_FILE = "managed-lockfile.lock";
-
 /**
  * Where {@link LockfileRepository} takes its advisory lock for the lockfile
  * at `lockfilePath`.
  *
- * A lockfile inside a registered managed config base sits in the datastore
- * cache, whose files a push may upload; a lock file next to it would reach
- * other checkouts and block their extension writes (swamp-club#2838). Its
- * lock lives in the owning repo's `.swamp/` directory instead, which is
- * never synced. Any other lockfile is in the repo and keeps
- * `<lockfile>.lock`.
+ * A lockfile inside a registered managed config base locks a sibling file
+ * named exactly `.lock`. Everyone who writes that lockfile shares the one
+ * lock: repos on a shared filesystem datastore, and worktrees sharing a
+ * datastore cache. In a datastore cache, a `<lockfile>.lock` could be
+ * uploaded by a push and block other checkouts' extension writes
+ * (swamp-club#2838); datastore sync excludes files named `.lock` in both
+ * directions, as it does the per-model `data/.../.lock` keys. Any other
+ * lockfile is in the repo and keeps `<lockfile>.lock`.
  */
 export function lockfileAdvisoryLockPath(lockfilePath: string): string {
   const target = resolve(lockfilePath);
-  for (const [repoDir, registration] of managedConfigRegistry) {
+  for (const registration of managedConfigRegistry.values()) {
     if (!registration) continue;
     const rel = relative(resolve(registration.base), target);
     if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) {
-      return swampPath(repoDir, MANAGED_LOCKFILE_LOCK_FILE);
+      return join(dirname(lockfilePath), ".lock");
     }
   }
   return `${lockfilePath}.lock`;

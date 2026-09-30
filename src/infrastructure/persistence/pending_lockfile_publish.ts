@@ -34,7 +34,9 @@ import type { UpstreamExtensionEntry } from "./upstream_extensions.ts";
  * content was never recorded.
  *
  * It lives in the repo's own `.swamp/` directory, which is never synced, and
- * is cleared by the next successful lockfile publish or `datastore sync` push.
+ * is cleared by the next successful lockfile publish. A `datastore sync`
+ * push clears only an `unknown` record; a recorded delta stays for the next
+ * extension write to replay.
  */
 const PENDING_FILE = "managed-config-lockfile-unpublished";
 const PENDING_FORMAT_VERSION = 1;
@@ -126,4 +128,18 @@ function parseDelta(content: string): LockfileEntryDelta | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Clears a record whose change content was never recorded (`unknown`),
+ * after a full `datastore sync` push published the local lockfile. A
+ * recorded delta is kept: it is the only copy of the change, and replaying
+ * it on the next extension write is harmless when the push already
+ * delivered it, while the push may have been overwritten meanwhile.
+ */
+export async function clearUnrecordedLockfilePublishPending(
+  repoDir: string,
+): Promise<void> {
+  if ((await readLockfilePublishPending(repoDir)).kind !== "unknown") return;
+  await clearLockfilePublishPending(repoDir);
 }

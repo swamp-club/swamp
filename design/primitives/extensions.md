@@ -1343,10 +1343,10 @@ Extensions with no lockfile entry have no pin and still resolve latest.
 All changes to `upstream_extensions.json` take an advisory lockfile with
 retries (10 attempts, 100ms backoff) and use atomic writes, so concurrent
 operations cannot corrupt it. The lock sits next to an in-repo lockfile
-(`upstream_extensions.json.lock`). For a managed lockfile in a datastore cache
-it is the repo's `.swamp/managed-lockfile.lock` instead
-(`lockfileAdvisoryLockPath`), so a push never uploads it to other checkouts
-(swamp-club#2838).
+(`upstream_extensions.json.lock`). For a managed lockfile it is a sibling file
+named exactly `.lock` (`lockfileAdvisoryLockPath`): datastore sync excludes
+that name, so a push never uploads it to other checkouts, and every repo or
+worktree writing the same lockfile shares it (swamp-club#2838).
 
 That lock covers a single entry write. The rest of an install or removal (the
 stage and swap of the extension's roots, the skills copy, orphan pruning, crash

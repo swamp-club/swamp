@@ -111,7 +111,9 @@ export interface ManagedLockfileTransactionOptions {
  * Step 4 also runs when the change throws, since an install can fail after
  * its lockfile entry landed; the original error is rethrown. Lock order:
  * this lock, then the pulled-extensions lock, then the lockfile's own
- * advisory lock. Downloads happen before `run`, outside every lock.
+ * advisory lock. An install downloads before `run`, outside every lock;
+ * its dependencies download inside it, because whether one needs
+ * installing is only known from the lockfile read under the lock.
  */
 export class ManagedLockfileTransaction implements LockfileTransaction {
   readonly lockfilePath: string;
@@ -178,12 +180,13 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
       lease.active = false;
     }
 
+    const hadPending = pending.kind !== "none";
     if (result.ok) {
-      await this.#settle(fetched, false);
+      await this.#settle(fetched, hadPending, false);
       return result.value;
     }
     try {
-      await this.#settle(fetched, true);
+      await this.#settle(fetched, hadPending, true);
     } catch (error) {
       this.#onWarning("Failed to publish the extension lockfile", error);
     }
@@ -193,19 +196,24 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
   /**
    * Records and publishes everything the local lockfile changed relative
    * to the fetched one.
+   *
+   * With a pending record from an earlier transaction, the lockfile is
+   * published even when that diff is empty: a fetch that found nothing to
+   * download (no lockfile in the datastore yet, or a sync service that
+   * keeps a locally changed file) leaves the pending change in the fetched
+   * copy, so the diff cannot show it (swamp-club#2752).
    */
   async #settle(
     fetched: UpstreamExtensionsMap,
+    hadPending: boolean,
     changeFailed: boolean,
   ): Promise<void> {
     const delta = diffLockfileEntries(fetched, await this.#readEntries());
-    if (isEmptyLockfileDelta(delta)) {
-      await this.#pending.clear();
-      return;
-    }
+    if (isEmptyLockfileDelta(delta) && !hadPending) return;
     // Written ahead of the publish, so a crash or a failed publish leaves
-    // the change for the next transaction to replay.
-    await this.#pending.write(delta);
+    // the change for the next transaction to replay. An empty diff keeps
+    // the earlier record, which still describes the unpublished change.
+    if (!isEmptyLockfileDelta(delta)) await this.#pending.write(delta);
     try {
       await this.#sync.publish();
     } catch (error) {

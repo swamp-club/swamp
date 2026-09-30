@@ -27,7 +27,7 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import type { PushPreviewSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { dirHasFiles } from "../../infrastructure/persistence/directory_merge.ts";
-import { clearLockfilePublishPending } from "../../infrastructure/persistence/pending_lockfile_publish.ts";
+import { clearUnrecordedLockfilePublishPending } from "../../infrastructure/persistence/pending_lockfile_publish.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -161,10 +161,12 @@ export async function createDatastoreSyncDeps(
               ...(ns ? { namespace: ns } : {}),
             }),
         );
-        // A full push publishes the lockfile too, so a failed lockfile
-        // publish no longer needs retrying (swamp-club#2752). Best effort:
-        // the push succeeded, and a stale record costs one extra publish.
-        await clearLockfilePublishPending(repoDir).catch(() => {});
+        // A full push publishes the lockfile too, so a failed publish whose
+        // change was never recorded no longer needs retrying
+        // (swamp-club#2752). A recorded change is kept for the next
+        // extension write to replay onto a fresh fetch (swamp-club#2838).
+        // Best effort: the push succeeded.
+        await clearUnrecordedLockfilePublishPending(repoDir).catch(() => {});
         return { filesPushed: typeof count === "number" ? count : 0 };
       },
       pullSync: async () => {
@@ -201,7 +203,7 @@ export async function createDatastoreSyncDeps(
               ...(ns ? { namespace: ns } : {}),
             }),
         );
-        await clearLockfilePublishPending(repoDir).catch(() => {});
+        await clearUnrecordedLockfilePublishPending(repoDir).catch(() => {});
         return {
           filesPulled: typeof pulled === "number" ? pulled : 0,
           filesPushed: typeof pushed === "number" ? pushed : 0,

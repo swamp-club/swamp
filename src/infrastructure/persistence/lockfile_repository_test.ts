@@ -456,15 +456,15 @@ Deno.test("LockfileRepository.replaceAll: writes exactly the given entries and u
   });
 });
 
-Deno.test("LockfileRepository: a managed lockfile takes its lock in the repo's .swamp dir, never next to the synced lockfile (swamp-club#2838)", async () => {
+Deno.test("LockfileRepository: a managed lockfile locks a sibling .lock file that sync never carries (swamp-club#2838)", async () => {
   await withTempDir(async (dir) => {
     const repoDir = join(dir, "repo");
     const configBase = join(dir, "cache", "config");
     const path = join(configBase, "upstream_extensions.json");
     registerManagedConfig(repoDir, true, configBase);
     try {
-      // A lock file another checkout uploaded next to the lockfile is
-      // ignored: it no longer blocks writes.
+      // A <lockfile>.lock another checkout uploaded is ignored: it no
+      // longer blocks writes.
       await Deno.mkdir(configBase, { recursive: true });
       await Deno.writeTextFile(`${path}.lock`, "");
       const repo = await LockfileRepository.create(path);
@@ -472,19 +472,17 @@ Deno.test("LockfileRepository: a managed lockfile takes its lock in the repo's .
       assertEquals(repo.getEntry("@scope/foo")?.version, "1.0.0");
       await Deno.remove(`${path}.lock`);
 
-      // The repo-local lock is the one writes contend on.
-      const repoLock = lockfileAdvisoryLockPath(path);
-      assertPathEquals(
-        repoLock,
-        join(repoDir, ".swamp", "managed-lockfile.lock"),
-      );
-      await Deno.writeTextFile(repoLock, "");
+      // Writes contend on the sibling `.lock`, a name datastore sync
+      // excludes in both directions.
+      const lockPath = lockfileAdvisoryLockPath(path);
+      assertPathEquals(lockPath, join(configBase, ".lock"));
+      await Deno.writeTextFile(lockPath, "");
       await assertRejects(
         () => repo.writeEntry("@scope/bar", "1.0.0", []),
         UserError,
         "Could not acquire lock on upstream_extensions.json",
       );
-      await Deno.remove(repoLock);
+      await Deno.remove(lockPath);
 
       await repo.removeEntry("@scope/foo");
       const leftovers: string[] = [];
@@ -492,6 +490,29 @@ Deno.test("LockfileRepository: a managed lockfile takes its lock in the repo's .
         leftovers.push(entry.name);
       }
       assertEquals(leftovers, ["upstream_extensions.json"]);
+    } finally {
+      resetManagedConfigRegistry();
+    }
+  });
+});
+
+Deno.test("LockfileRepository: repos sharing a filesystem datastore's lockfile contend on one lock", async () => {
+  await withTempDir(async (dir) => {
+    const shared = join(dir, "shared-datastore", "config");
+    const path = join(shared, "upstream_extensions.json");
+    registerManagedConfig(join(dir, "repo-a"), true, shared);
+    registerManagedConfig(join(dir, "repo-b"), true, shared);
+    try {
+      await Deno.mkdir(shared, { recursive: true });
+      // repo-a holds the lock; repo-b's write must wait on the same file.
+      await Deno.writeTextFile(lockfileAdvisoryLockPath(path), "");
+      const repoB = await LockfileRepository.create(path);
+      await assertRejects(
+        () => repoB.writeEntry("@scope/b", "1.0.0", []),
+        UserError,
+        "Could not acquire lock on upstream_extensions.json",
+      );
+      await Deno.remove(lockfileAdvisoryLockPath(path));
     } finally {
       resetManagedConfigRegistry();
     }

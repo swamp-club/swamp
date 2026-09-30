@@ -24,11 +24,12 @@ import {
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
-import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { UserError } from "../domain/errors.ts";
 import {
+  flushDatastoreSyncNamed,
   getRegisteredLockKeys,
   GLOBAL_LOCK_KEY,
+  registerDatastoreSyncNamed,
   runBoundedSync,
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
@@ -41,7 +42,7 @@ import {
   type ManagedLockfileLock,
   ManagedLockfileTransaction,
 } from "../libswamp/mod.ts";
-import { datastoreGlobalLock } from "../infrastructure/persistence/datastore_global_lock.ts";
+import { createDatastoreLock } from "../infrastructure/persistence/datastore_global_lock.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
   buildMarkDirtyHook,
@@ -57,22 +58,20 @@ import {
  */
 export class ManagedConfigUnpublishedError extends UserError {
   /**
-   * @param retryCommand The command that publishes the change. An extension
-   *   lockfile change names `swamp extension install`, which fetches the
-   *   datastore's lockfile and replays the change onto it; a plain push
-   *   would publish the local copy over other checkouts' entries
-   *   (swamp-club#2838).
+   * @param retryAdvice How to publish the change. An extension lockfile
+   *   change names `swamp extension install`, which fetches the datastore's
+   *   lockfile and replays the change onto it; a plain push would publish
+   *   the local copy over other checkouts' entries (swamp-club#2838).
    */
   constructor(
     cause: unknown,
-    retryCommand = "swamp datastore sync --push",
+    retryAdvice = "Run 'swamp datastore sync --push' to publish it.",
   ) {
     const reason = (cause instanceof Error ? cause.message : String(cause))
       .replace(/\.+$/, "");
     super(
       "The change is saved locally but was not published to the datastore: " +
-        `${reason}. ` +
-        `Run '${retryCommand}' to publish it.`,
+        `${reason}. ${retryAdvice}`,
       "managed_config_unpublished",
     );
     this.name = "ManagedConfigUnpublishedError";
@@ -278,7 +277,7 @@ export interface ManagedLockfileTransactionDeps {
   datastoreConfig: DatastoreConfig;
   repoDir: string;
   lockfilePath: string;
-  /** The datastore global lock (see datastoreGlobalLock). */
+  /** The datastore global lock (see datastoreGlobalLockOptions). */
   lock: ManagedLockfileLock;
 }
 
@@ -314,13 +313,14 @@ export function buildManagedLockfileTransaction(
     lockfilePath,
     lock: {
       // A datastore that cannot be reached fails here, before anything is
-      // downloaded or changed. A lock another process holds keeps its own
-      // LockTimeoutError, which already says so.
+      // downloaded or changed. Errors that already explain themselves pass
+      // through: a lock another process holds (LockTimeoutError) or a
+      // datastore that is misconfigured.
       acquire: async () => {
         try {
           await deps.lock.acquire();
         } catch (error) {
-          if (error instanceof LockTimeoutError) throw error;
+          if (error instanceof UserError) throw error;
           throw new ManagedLockfileUnavailableError(error);
         }
       },
@@ -345,7 +345,8 @@ export function buildManagedLockfileTransaction(
         } catch (error) {
           throw new ManagedConfigUnpublishedError(
             error,
-            "swamp extension install",
+            "Run 'swamp extension install' to publish it: it fetches the " +
+              "datastore's lockfile and replays the change onto it.",
           );
         }
       },
@@ -388,9 +389,32 @@ export function createManagedLockfileTransaction(
       lockfilePath: write.lockfilePath,
       lock: getRegisteredLockKeys().includes(GLOBAL_LOCK_KEY)
         ? HELD_LOCK
-        : datastoreGlobalLock(datastoreConfig),
+        : coordinatedGlobalLock(datastoreConfig),
     });
   });
+}
+
+/** Coordinator key under which a lockfile transaction holds the global lock. */
+const MANAGED_LOCKFILE_LOCK_KEY = "__managed_lockfile__";
+
+/**
+ * The datastore global lock, held through the sync coordinator so its
+ * SIGINT handler releases it: a Ctrl-C during a transaction, which can
+ * include dependency downloads, must not leave other checkouts waiting out
+ * the lock's TTL.
+ */
+function coordinatedGlobalLock(config: DatastoreConfig): ManagedLockfileLock {
+  return {
+    acquire: async () =>
+      await registerDatastoreSyncNamed(MANAGED_LOCKFILE_LOCK_KEY, {
+        lock: await createDatastoreLock(config),
+        label: config.type,
+        namespace: isCustomDatastoreConfig(config)
+          ? config.namespace
+          : undefined,
+      }),
+    release: () => flushDatastoreSyncNamed(MANAGED_LOCKFILE_LOCK_KEY),
+  };
 }
 
 /** A transaction built on its first use, so an unused one costs nothing. */

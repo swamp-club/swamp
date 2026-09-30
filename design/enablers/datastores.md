@@ -1073,10 +1073,12 @@ writing:
   `YamlVaultConfigRepository` has no hook. `vault.migrate` also marks the old
   config it removed, so the scoped push deletes the remote copy. Otherwise the
   config poller would bring it back as a second config with the same name.
-- The extension handlers (`extension.install`, `pull`, `rm`, `update`) mark
-  each file they changed through `markExtensionChanges(paths)`. Today that is
-  the config-tier lockfile alone: serve still writes extension sources to the
-  repo-local pulled-extensions root (swamp-club#2612).
+- The extension handlers (`extension.install`, `pull`, `rm`, `update`) change
+  the config-tier lockfile inside a managed lockfile transaction, which marks
+  exactly the lockfile and pushes under the datastore global lock (see
+  [Extension commands and the chicken-and-egg](#extension-commands-and-the-chicken-and-egg)). Serve still
+  writes extension sources to the repo-local pulled-extensions root
+  (swamp-club#2612).
 - The serve startup migration moves grant and server-token definitions from
   `models/` to `auto-definitions/` on disk, and marks each moved file.
 
@@ -1096,13 +1098,14 @@ item's folder.
 
 The CLI extension commands follow the same rule. `extension pull`, `update`,
 `rm` and `install`, search install, `repo upgrade` and
-`doctor extensions --repair` mark the config-tier lockfile by path and push
-through `pushManagedLockfileIfChangedDeferred`, instead of the bulk mark that
-`pushManagedConfigChanges` sends, and only when the lockfile's content hash
-changed during the command. `pushManagedConfigPaths` drops any
-path outside the namespace's cache tree rather than forwarding it, and bounds
-the push by the datastore's sync timeout. An extension that keeps its dirty set
-in memory still walks the whole cache on a fresh process (rule 4), so "exact
+`doctor extensions --repair` run their lockfile change in a managed lockfile
+transaction, which marks the config-tier lockfile by path and pushes it,
+bounded by the datastore's sync timeout, instead of the bulk mark that
+`pushManagedConfigChanges` sends. It publishes only when the lockfile changed
+or an earlier publish is still pending. `pushManagedConfigPaths`, used by the
+other per-path config writers, drops any path outside the namespace's cache
+tree rather than forwarding it. An extension that keeps its dirty set in
+memory still walks the whole cache on a fresh process (rule 4), so "exact
 paths" means the marks sent, not the objects the extension compares. The
 lockfile is uploaded either way.
 
@@ -1115,8 +1118,11 @@ lockfile is uploaded either way.
   `.markDirty?.()` forms on any receiver, and names the top-level function that
   makes the call.
 - A third checks a pinned list of CLI extension writers. None may call
-  `pushManagedConfigChanges` or `pushManagedConfigChangesDeferred`, and each
-  must publish through a per-path helper.
+  `pushManagedConfigChanges`, `pushManagedConfigChangesDeferred` or
+  `pushManagedConfigPaths(Deferred)`, and each must run its change in
+  `withManagedLockfileTransaction(createManagedLockfileTransaction(...))`.
+  A fourth requires serve's extension handlers to do the same and not push
+  after the change (swamp-club#2838).
 
 Every serve mutation handler that changes the cache must call `pushChanged()`
 after the mutation. The data-domain handlers (`data.delete`, `data.rename`,
@@ -1869,8 +1875,8 @@ lockfile:
 | Model definition delete | `config/models/` | Per-model lock flush, through `flushAfterManagedConfigMutation` | Via per-model lock flush |
 | Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
-| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | `pushManagedLockfileIfChangedDeferred`, only when the lockfile's content changed, no bulk mark; skipped when the datastore-extension exemption records into the in-repo lockfile | `ctx.syncService.pushChanged` after `markExtensionChanges` marks the lockfile |
-| Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | `pushManagedLockfileIfChangedDeferred`, only when the lockfile's content changed | — |
+| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate; a failed publish is logged and left pending |
+| Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | Managed lockfile transaction | — |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 
 A CLI config write whose push fails, or times out, exits non-zero with
@@ -1882,13 +1888,14 @@ the retry. `model delete` fails this way only when its lock flush fails after
 the delete completed; a flush failure while an earlier error propagates is
 logged, so it cannot replace that error (swamp-club#2752).
 
-The lockfile publish is gated on a content change, so on its own a re-run
-after a failed publish would find the lockfile unchanged and exit 0 with the
-change still unpublished. A failed lockfile publish therefore leaves a local
-record, `.swamp/managed-config-lockfile-unpublished` in the repo
-(`pending_lockfile_publish.ts`), and while it stands every gated command
-publishes the lockfile whether or not it changed it. A successful lockfile
-publish, `datastore sync --push` or a full `datastore sync` clears it.
+The extension lockfile is the exception: a failed publish records the change
+itself (a `LockfileDelta`) in `.swamp/managed-config-lockfile-unpublished`
+(`pending_lockfile_publish.ts`), and the error names `swamp extension install`
+as the retry. Any later lockfile transaction fetches the datastore's lockfile,
+replays the recorded change onto it and publishes, whether or not it changed
+anything itself, then clears the record. `datastore sync --push` and a full
+`datastore sync` clear only a record from an older swamp that holds no change
+(swamp-club#2838).
 
 Auto-definitions are a normal datastore subdirectory
 (`DEFAULT_DATASTORE_SUBDIRS` includes `auto-definitions`). They sync through the
@@ -2002,9 +2009,16 @@ config write another process on the same checkout made and has not pushed
 yet can therefore be overwritten; the lockfile itself is protected by the
 pending-change record.
 
-The lockfile's own advisory lock (`LockfileRepository`) lives in the repo's
-`.swamp/managed-lockfile.lock`, outside the synced tier, so a push never
-uploads it to other checkouts.
+The lockfile's own advisory lock (`LockfileRepository`) is a sibling file
+named exactly `.lock`, which datastore sync excludes in both directions, so a
+push never uploads it to other checkouts. Everyone writing that lockfile shares
+it: repos on a shared filesystem datastore and worktrees sharing a cache.
+
+Dependencies are the one exception to "downloads outside every lock": they
+install inside the parent's apply, whether a dependency needs installing is
+only known from the lockfile read under the lock, so their downloads run while
+the global lock is held. The CLI holds the global lock through the sync
+coordinator, whose SIGINT handler releases it on Ctrl-C.
 
 ### Pod boot sequence under managed config
 
