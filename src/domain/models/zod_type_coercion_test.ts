@@ -545,3 +545,35 @@ Deno.test("parseGlobalArgumentsLeniently: leaves an async object-level refinemen
     data: { n: 1 },
   });
 });
+
+Deno.test("parseGlobalArgumentsLeniently: does not require a missing field whose own refinement rejects undefined (swamp-club#2783)", () => {
+  const schema = z.object({
+    region: z.string().optional(),
+    cert: z.custom<string>((v) => typeof v === "string"),
+    anything: z.any().refine((v) => v !== undefined, "required"),
+  }).refine(() => true);
+  assertEquals(parseGlobalArgumentsLeniently(schema, { region: "eu" }), {
+    success: true,
+    data: { region: "eu" },
+  });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: keeps a non-custom refinement issue at an absent optional field (swamp-club#2783)", () => {
+  const schema = z.object({ apiKey: z.string().optional() }).superRefine(
+    (v, ctx) => {
+      if (!v.apiKey) {
+        ctx.addIssue({
+          code: "invalid_type",
+          expected: "string",
+          path: ["apiKey"],
+          message: "apiKey required",
+        });
+      }
+    },
+  );
+  const result = parseGlobalArgumentsLeniently(schema, {});
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(result.issues.map((i) => i.message), ["apiKey required"]);
+  }
+});

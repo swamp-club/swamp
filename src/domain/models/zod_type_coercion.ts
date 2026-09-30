@@ -207,17 +207,19 @@ function tryPartial(schema: z.ZodTypeAny): z.ZodTypeAny | "none" | "refused" {
 
 /**
  * Runs the whole schema over the raw values of the shape's keys and returns
- * its issues, leaving out the ones that only say a top-level field is missing
- * (invalid_type, invalid_value or invalid_union on an absent key). Issues a
- * refinement adds (code "custom") are kept at any path. The raw values are
- * parsed, not the field outputs, since a transformed field would not parse a
- * second time. A schema whose refinements are async cannot be checked by a
- * synchronous parse, so it reports nothing.
+ * its issues, leaving out every issue rooted at a `missing` key: a field that
+ * is absent and fails on its own, which the lenient check does not require.
+ * Issues at the root, at a present key or at an absent optional key are kept,
+ * so a refinement's own issues are reported. The raw values are parsed, not
+ * the field outputs, since a transformed field would not parse a second time.
+ * A schema whose refinements are async cannot be checked by a synchronous
+ * parse, so it reports nothing.
  */
 function objectRefinementIssues(
   schema: z.ZodTypeAny,
   input: Record<string, unknown>,
   shape: Record<string, unknown>,
+  missing: ReadonlySet<PropertyKey>,
 ): z.ZodIssue[] {
   const raw: Record<string, unknown> = Object.fromEntries(
     Object.entries(input).filter(([key]) => Object.hasOwn(shape, key)),
@@ -231,8 +233,7 @@ function objectRefinementIssues(
   }
   if (result.success) return [];
   return result.error.issues.filter((issue) =>
-    issue.code === "custom" || issue.path.length !== 1 ||
-    Object.hasOwn(raw, issue.path[0] as PropertyKey)
+    issue.path.length === 0 || !missing.has(issue.path[0])
   );
 }
 
@@ -269,6 +270,7 @@ export function parseGlobalArgumentsLeniently(
   if (shape) {
     const data: Record<string, unknown> = {};
     const issues: z.ZodIssue[] = [];
+    const missing = new Set<string>();
     for (const [key, fieldSchema] of Object.entries(shape)) {
       if (skipKeys.has(key)) continue;
       const present = Object.hasOwn(input, key);
@@ -279,6 +281,8 @@ export function parseGlobalArgumentsLeniently(
         for (const issue of result.error.issues) {
           issues.push({ ...issue, path: [key, ...issue.path] } as z.ZodIssue);
         }
+      } else {
+        missing.add(key);
       }
     }
     // Refinements run only on an object whose fields all pass and none is
@@ -286,7 +290,7 @@ export function parseGlobalArgumentsLeniently(
     // a refinement see the field as missing.
     if (issues.length > 0) return { success: false, issues };
     if (skipKeys.size > 0) return { success: true, data };
-    const refined = objectRefinementIssues(schema, input, shape);
+    const refined = objectRefinementIssues(schema, input, shape, missing);
     return refined.length > 0
       ? { success: false, issues: refined }
       : { success: true, data };

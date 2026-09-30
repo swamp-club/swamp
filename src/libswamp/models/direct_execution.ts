@@ -456,7 +456,9 @@ export async function resolveOrCreateDefinition(
     // checking them now would reject a sentinel string against a constrained
     // field, blocking the vault remediation for a sensitive argument.
     // The stripped keys are passed as skipped, so object-level refinements
-    // never run against an object missing a field that has a value.
+    // never run against an object missing a field that has a value. A schema
+    // without an object shape (a transform) never gets here with a value,
+    // since routing above rejects its global arguments as unknown inputs.
     const staticArgs = stripExpressionFields(routed.globalArguments);
     const strippedKeys = new Set(
       Object.keys(routed.globalArguments).filter((key) =>
