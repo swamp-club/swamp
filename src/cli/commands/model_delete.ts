@@ -39,7 +39,10 @@ import {
   acquireModelLocks,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { flushAfterManagedConfigMutation } from "../managed_config_sync.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   requestServerResponse,
@@ -122,6 +125,9 @@ export const modelDeleteCommand = withRemoteOptions(
       throw new UserError(`Model not found: ${modelIdOrName}`);
     }
 
+    const marker = await new RepoMarkerRepository().read(
+      RepoPath.create(repoDir),
+    );
     const lockResult = await acquireModelLocks(
       datastoreConfig,
       [
@@ -136,6 +142,7 @@ export const modelDeleteCommand = withRemoteOptions(
     );
     if (lockResult.synced) repoContext.catalogStore.invalidate();
 
+    let deleted = false;
     try {
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const deps = createModelDeleteDeps(
@@ -210,19 +217,25 @@ export const modelDeleteCommand = withRemoteOptions(
       );
 
       cliCtx.logger.debug("Model delete command completed");
+      deleted = true;
     } finally {
-      try {
-        await lockResult.flush();
-      } catch (releaseError) {
-        cliCtx.logger.warn(
-          "Failed to release locks during cleanup: {error}",
-          {
-            error: releaseError instanceof Error
-              ? releaseError.message
-              : String(releaseError),
-          },
-        );
-      }
+      // After a completed delete the flush is what publishes it, so a
+      // failure there throws; before that it must not mask the original error.
+      await flushAfterManagedConfigMutation(
+        lockResult.flush,
+        deleted,
+        marker,
+        (releaseError) => {
+          cliCtx.logger.warn(
+            "Failed to release locks during cleanup: {error}",
+            {
+              error: releaseError instanceof Error
+                ? releaseError.message
+                : String(releaseError),
+            },
+          );
+        },
+      );
     }
   },
 );

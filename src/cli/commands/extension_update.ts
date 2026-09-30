@@ -32,7 +32,10 @@ import {
 } from "../repo_context.ts";
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
-import { pushManagedConfigPathsDeferred } from "../managed_config_sync.ts";
+import {
+  pushManagedLockfileIfChangedDeferred,
+  snapshotLockfileHash,
+} from "../managed_config_sync.ts";
 import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
 import {
   consumeStream,
@@ -161,6 +164,7 @@ export const extensionUpdateCommand = withRemoteOptions(
     lockfilePath = target.lockfilePath;
     publish = target.publish;
   }
+  const lockfileHashBefore = await snapshotLockfileHash(lockfilePath);
 
   // Per-extension models/workflows/vaults/datastores/reports
   // destinations are derived inside installExtension from the
@@ -245,6 +249,11 @@ export const extensionUpdateCommand = withRemoteOptions(
   }
 
   if (publish) {
-    await pushManagedConfigPathsDeferred(repoDir, marker, [lockfilePath]);
+    await pushManagedLockfileIfChangedDeferred(
+      repoDir,
+      marker,
+      lockfilePath,
+      lockfileHashBefore,
+    );
   }
 });

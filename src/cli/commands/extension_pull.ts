@@ -36,7 +36,10 @@ import {
   resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
-import { pushManagedConfigPathsDeferred } from "../managed_config_sync.ts";
+import {
+  pushManagedLockfileIfChangedDeferred,
+  snapshotLockfileHash,
+} from "../managed_config_sync.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -292,6 +295,7 @@ export const extensionPullCommand = withRemoteOptions(
       extensionLookup: createExtensionRegistryLookup(serverUrl, identity),
     },
   );
+  const lockfileHashBefore = await snapshotLockfileHash(lockfilePath);
 
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
   const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -347,6 +351,11 @@ export const extensionPullCommand = withRemoteOptions(
   }
 
   if (publish) {
-    await pushManagedConfigPathsDeferred(repoDir, marker, [lockfilePath]);
+    await pushManagedLockfileIfChangedDeferred(
+      repoDir,
+      marker,
+      lockfilePath,
+      lockfileHashBefore,
+    );
   }
 });
