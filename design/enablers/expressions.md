@@ -626,10 +626,15 @@ shared with `swamp model validate` and direct type execution; `model validate`
 still skips the global-argument check entirely when any field holds an
 expression, and direct type execution checks only the static fields). It uses the
 schema's `.partial()`. An object schema with refinements refuses `.partial()`
-in zod 4, so its fields are checked one by one and its object-level
-refinements do not run there. A schema without `.partial()`, such as a
-transform, is parsed whole, and passes unchecked when some field is
-unresolved, since it cannot check an incomplete object.
+in zod 4, so its fields are checked one by one. When they all pass and no field
+is unresolved or stripped, the whole schema then runs over the input, so
+object-level refinements such as "apiKey or token is required" are enforced.
+Zod skips refinements while a required field is missing, so an object that
+leaves out a required field without a default is not refined; the
+missing-field issues themselves are dropped, as the check is lenient. An async
+refinement cannot run in this synchronous check. A schema without
+`.partial()`, such as a transform, is parsed whole, and passes unchecked when
+some field is unresolved, since it cannot check an incomplete object.
 
 ## Other Services' Template Syntax
 

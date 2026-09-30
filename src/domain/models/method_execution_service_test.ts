@@ -4315,3 +4315,49 @@ Deno.test("executeWorkflow: rejects a wrongly typed field in a refined globalArg
     'Global arguments validation failed: Invalid input: expected number, received string at "top"',
   );
 });
+
+const credentialsSchema = z.object({
+  apiKey: z.string().optional(),
+  token: z.string().optional(),
+}).superRefine((v, ctx) => {
+  if (!v.apiKey && !v.token) {
+    ctx.addIssue({ code: "custom", message: "apiKey or token required" });
+  }
+});
+
+Deno.test("executeWorkflow: enforces an object-level globalArguments refinement (swamp-club#2783)", async () => {
+  const service = new DefaultMethodExecutionService();
+  let ran = false;
+  const model = createGlobalArgsCaptureModel(credentialsSchema, () => {
+    ran = true;
+  });
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "show", context),
+    Error,
+    "Global arguments validation failed: apiKey or token required",
+  );
+  assertEquals(ran, false);
+});
+
+Deno.test("executeWorkflow: runs when an object-level globalArguments refinement holds or a field is unresolved (swamp-club#2783)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const seen: unknown[] = [];
+  for (const token of ["t", UNRESOLVED_TOKEN]) {
+    const model = createGlobalArgsCaptureModel(credentialsSchema, (g) => {
+      seen.push(g.apiKey);
+    });
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: { token },
+    });
+    const { context } = createTestContext({ modelType: model.type });
+    await service.executeWorkflow(definition, model, "show", context);
+  }
+  assertEquals(seen, [undefined, undefined]);
+});

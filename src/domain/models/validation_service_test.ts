@@ -2701,3 +2701,32 @@ Deno.test("validateModel validates a refined globalArguments schema instead of c
   assertEquals(invalidResult?.passed, false);
   assertStringIncludes(invalidResult?.error ?? "", '"count"');
 });
+
+Deno.test("validateModel enforces an object-level globalArguments refinement (swamp-club#2783)", async () => {
+  const service = new DefaultModelValidationService();
+  const model: ModelDefinition = {
+    ...testExprModel,
+    globalArguments: z.object({
+      apiKey: z.string().optional(),
+      token: z.string().optional(),
+    }).superRefine((v, ctx) => {
+      if (!v.apiKey && !v.token) {
+        ctx.addIssue({ code: "custom", message: "apiKey or token required" });
+      }
+    }),
+  };
+  const resultFor = async (globalArguments: Record<string, unknown>) =>
+    (await service.validateModel(
+      Definition.create({
+        name: "test-definition",
+        globalArguments,
+        methods: { write: { arguments: { message: "hello" } } },
+      }),
+      model,
+    )).results.find((r) => r.name === "Global arguments");
+
+  const invalid = await resultFor({});
+  assertEquals(invalid?.passed, false);
+  assertStringIncludes(invalid?.error ?? "", "apiKey or token required");
+  assertEquals((await resultFor({ token: "t" }))?.passed, true);
+});

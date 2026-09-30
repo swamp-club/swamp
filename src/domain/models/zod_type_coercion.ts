@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { z } from "zod";
+import { z } from "zod";
 
 /**
  * Internal Zod definition structure for schema introspection.
@@ -206,14 +206,48 @@ function tryPartial(schema: z.ZodTypeAny): z.ZodTypeAny | "none" | "refused" {
 }
 
 /**
+ * Runs the whole schema over the raw values of the shape's keys and returns
+ * its issues, leaving out every issue rooted at a `missing` key: a field that
+ * is absent and fails on its own, which the lenient check does not require.
+ * Issues at the root, at a present key or at an absent optional key are kept,
+ * so a refinement's own issues are reported. The raw values are parsed, not
+ * the field outputs, since a transformed field would not parse a second time.
+ * A schema whose refinements are async cannot be checked by a synchronous
+ * parse, so it reports nothing.
+ */
+function objectRefinementIssues(
+  schema: z.ZodTypeAny,
+  input: Record<string, unknown>,
+  shape: Record<string, unknown>,
+  missing: ReadonlySet<PropertyKey>,
+): z.ZodIssue[] {
+  const raw: Record<string, unknown> = Object.fromEntries(
+    Object.entries(input).filter(([key]) => Object.hasOwn(shape, key)),
+  );
+  let result;
+  try {
+    result = schema.safeParse(raw);
+  } catch (error) {
+    if (error instanceof z.core.$ZodAsyncError) return [];
+    throw error;
+  }
+  if (result.success) return [];
+  return result.error.issues.filter((issue) =>
+    issue.path.length === 0 || !missing.has(issue.path[0])
+  );
+}
+
+/**
  * Validates global arguments against a model's schema without requiring the
  * fields that are missing: provided fields are checked and missing fields get
  * their Zod defaults.
  *
  * - A schema that supports `.partial()` is parsed with its partial form.
  * - An object schema whose `.partial()` throws (a Zod v4 object with
- *   refinements) is parsed field by field against its shape; object-level
- *   refinements do not run, since the object may be incomplete.
+ *   refinements) is parsed field by field against its shape. When every field
+ *   passes and no key is skipped, the whole schema then runs over the input,
+ *   so object-level refinements are enforced. Zod skips them while a
+ *   required field is missing, so an incomplete object is not refined.
  * - Any other schema (no `.partial()`, e.g. a transform) is parsed as-is,
  *   unless keys are skipped: it cannot check an incomplete object, so the
  *   input is returned unchecked.
@@ -236,6 +270,7 @@ export function parseGlobalArgumentsLeniently(
   if (shape) {
     const data: Record<string, unknown> = {};
     const issues: z.ZodIssue[] = [];
+    const missing = new Set<string>();
     for (const [key, fieldSchema] of Object.entries(shape)) {
       if (skipKeys.has(key)) continue;
       const present = Object.hasOwn(input, key);
@@ -246,10 +281,18 @@ export function parseGlobalArgumentsLeniently(
         for (const issue of result.error.issues) {
           issues.push({ ...issue, path: [key, ...issue.path] } as z.ZodIssue);
         }
+      } else {
+        missing.add(key);
       }
     }
-    return issues.length > 0
-      ? { success: false, issues }
+    // Refinements run only on an object whose fields all pass and none is
+    // skipped: a failing field is reported alone, and a skipped one would make
+    // a refinement see the field as missing.
+    if (issues.length > 0) return { success: false, issues };
+    if (skipKeys.size > 0) return { success: true, data };
+    const refined = objectRefinementIssues(schema, input, shape, missing);
+    return refined.length > 0
+      ? { success: false, issues: refined }
       : { success: true, data };
   }
 

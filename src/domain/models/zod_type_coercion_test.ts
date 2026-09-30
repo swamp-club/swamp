@@ -395,3 +395,185 @@ Deno.test("parseGlobalArgumentsLeniently: treats an own __proto__ key as data, n
   const result = parseGlobalArgumentsLeniently(schema, args);
   assertEquals(result, { success: true, data: { top: 6 } });
 });
+
+const credentials = z.object({
+  apiKey: z.string().optional(),
+  token: z.string().optional(),
+}).superRefine((v, ctx) => {
+  if (!v.apiKey && !v.token) {
+    ctx.addIssue({ code: "custom", message: "apiKey or token required" });
+  }
+});
+
+Deno.test("parseGlobalArgumentsLeniently: enforces an object-level refinement when the object is complete (swamp-club#2783)", () => {
+  const result = parseGlobalArgumentsLeniently(credentials, {});
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(
+      result.issues.map((i) => [i.path, i.message]),
+      [[[], "apiKey or token required"]],
+    );
+  }
+});
+
+Deno.test("parseGlobalArgumentsLeniently: passes a satisfied object-level refinement (swamp-club#2783)", () => {
+  assertEquals(parseGlobalArgumentsLeniently(credentials, { token: "t" }), {
+    success: true,
+    data: { token: "t" },
+  });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: reports a refinement issue at an absent field's path (swamp-club#2783)", () => {
+  const schema = z.object({ apiKey: z.string().optional() }).superRefine(
+    (v, ctx) => {
+      if (!v.apiKey) {
+        ctx.addIssue({
+          code: "custom",
+          message: "apiKey required",
+          path: ["apiKey"],
+        });
+      }
+    },
+  );
+  const result = parseGlobalArgumentsLeniently(schema, {});
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(
+      result.issues.map((i) => [i.path, i.message]),
+      [[["apiKey"], "apiKey required"]],
+    );
+  }
+});
+
+Deno.test("parseGlobalArgumentsLeniently: does not require missing string, enum, literal or union fields of a refined object (swamp-club#2783)", () => {
+  const schema = z.object({
+    name: z.string(),
+    kind: z.enum(["a", "b"]),
+    mode: z.literal("x"),
+    size: z.union([z.string(), z.number()]),
+    nested: z.object({ n: z.number() }),
+    region: z.string().optional(),
+  }).refine(() => false, "never satisfied");
+  assertEquals(parseGlobalArgumentsLeniently(schema, { region: "eu" }), {
+    success: true,
+    data: { region: "eu" },
+  });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: does not run object-level refinements when a key is skipped (swamp-club#2783)", () => {
+  const result = parseGlobalArgumentsLeniently(
+    credentials,
+    { token: "${{ inputs.token }}" },
+    new Set(["token"]),
+  );
+  assertEquals(result, { success: true, data: {} });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: object-level refinements see field defaults (swamp-club#2783)", () => {
+  const schema = z.object({
+    min: z.number().default(1),
+    max: z.number(),
+  }).refine((v) => v.min <= v.max, "min must not exceed max");
+  const result = parseGlobalArgumentsLeniently(schema, { max: 0 });
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(result.issues.map((i) => i.message), [
+      "min must not exceed max",
+    ]);
+  }
+  assertEquals(parseGlobalArgumentsLeniently(schema, { max: 2 }), {
+    success: true,
+    data: { min: 1, max: 2 },
+  });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: reports a field issue once, without running refinements (swamp-club#2783)", () => {
+  const schema = z.object({ top: z.number() }).refine(
+    () => false,
+    "never satisfied",
+  );
+  const result = parseGlobalArgumentsLeniently(schema, { top: "many" });
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(result.issues.map((i) => i.path), [["top"]]);
+  }
+});
+
+Deno.test("parseGlobalArgumentsLeniently: runs a refinement declared with when on an incomplete object (swamp-club#2783)", () => {
+  const schema = z.object({
+    name: z.string(),
+    token: z.string().optional(),
+  }).refine((v) => !!v.token, {
+    message: "token required",
+    when: () => true,
+  });
+  const result = parseGlobalArgumentsLeniently(schema, {});
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(result.issues.map((i) => i.message), ["token required"]);
+  }
+});
+
+Deno.test("parseGlobalArgumentsLeniently: refines the raw input, so transformed fields pass (swamp-club#2783)", () => {
+  const schema = z.object({
+    port: z.string().transform(Number),
+    tags: z.string().transform((v) => v.split(",")),
+  }).refine((v) => v.port > 0, "port must be positive");
+  assertEquals(
+    parseGlobalArgumentsLeniently(schema, { port: "8080", tags: "a,b" }),
+    { success: true, data: { port: 8080, tags: ["a", "b"] } },
+  );
+  const result = parseGlobalArgumentsLeniently(schema, {
+    port: "0",
+    tags: "a",
+  });
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(result.issues.map((i) => i.message), [
+      "port must be positive",
+    ]);
+  }
+});
+
+Deno.test("parseGlobalArgumentsLeniently: leaves an async object-level refinement unchecked (swamp-club#2783)", () => {
+  const schema = z.object({ n: z.number() }).refine(
+    () => Promise.resolve(false),
+    "never satisfied",
+  );
+  assertEquals(parseGlobalArgumentsLeniently(schema, { n: 1 }), {
+    success: true,
+    data: { n: 1 },
+  });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: does not require a missing field whose own refinement rejects undefined (swamp-club#2783)", () => {
+  const schema = z.object({
+    region: z.string().optional(),
+    cert: z.custom<string>((v) => typeof v === "string"),
+    anything: z.any().refine((v) => v !== undefined, "required"),
+  }).refine(() => true);
+  assertEquals(parseGlobalArgumentsLeniently(schema, { region: "eu" }), {
+    success: true,
+    data: { region: "eu" },
+  });
+});
+
+Deno.test("parseGlobalArgumentsLeniently: keeps a non-custom refinement issue at an absent optional field (swamp-club#2783)", () => {
+  const schema = z.object({ apiKey: z.string().optional() }).superRefine(
+    (v, ctx) => {
+      if (!v.apiKey) {
+        ctx.addIssue({
+          code: "invalid_type",
+          expected: "string",
+          path: ["apiKey"],
+          message: "apiKey required",
+        });
+      }
+    },
+  );
+  const result = parseGlobalArgumentsLeniently(schema, {});
+  assertEquals(result.success, false);
+  if (!result.success) {
+    assertEquals(result.issues.map((i) => i.message), ["apiKey required"]);
+  }
+});
