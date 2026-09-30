@@ -1183,3 +1183,28 @@ Deno.test("CanonicalResources: an orphaned control-plane record is judged on its
     );
   });
 });
+
+Deno.test("resolveOutputAccess: an output of a deleted control-plane model stays admin-only", async () => {
+  await withTempDir(async (dir) => {
+    const access = await resolveOutputAccess(
+      new YamlDefinitionRepository(dir),
+      () =>
+        Promise.resolve({
+          reference: {
+            kind: "output" as const,
+            match: {
+              output: OUTPUT,
+              type: ModelType.create("swamp/enrollment-token"),
+            },
+          },
+        }),
+      "abc",
+      ["model", "data"],
+    );
+    assertEquals(access.status === "resolved" && access.resources, [{
+      kind: "access",
+      name: "swamp/enrollment-token",
+      fields: { name: "swamp/enrollment-token" },
+    }]);
+  });
+});

@@ -38,6 +38,12 @@ export interface ActiveRunRecord {
    * without a method, as before.
    */
   methodName?: string;
+  /**
+   * The normalized model type of a method run's model. Cancel and attach use
+   * it when the model is gone, so a control-plane run stays admin-only
+   * (swamp-club#2756). Absent for workflow runs and older records.
+   */
+  resourceType?: string;
   runKind: RunKind;
   startedAt: string;
 }

@@ -470,6 +470,11 @@ async function outputOwners(
       kinds.map((kind) => modelAccessResource(owner, kind))
     );
   }
+  // An owner no longer found is judged on its recorded type, so the output
+  // of a deleted control-plane model stays admin-only (swamp-club#2756).
+  if (isControlPlaneModelType(type.normalized)) {
+    return [controlPlaneRecordResource(type.normalized)];
+  }
   return kinds.map((kind) => ({
     kind,
     name: definitionId,

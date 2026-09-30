@@ -3054,6 +3054,41 @@ Deno.test("handleRunAttach: miss + active-runs record + stale heartbeat returns 
   );
 });
 
+Deno.test("handleRunAttach: a run of a gone control-plane model stays admin-only", async () => {
+  // The definition is gone, so the run is judged on its recorded type: model
+  // run grants do not reach it (swamp-club#2756).
+  const cpStore = createMockControlPlaneStore();
+  cpStore.data.set(
+    "active-runs/instance-remote/run-grant",
+    encoder.encode(JSON.stringify({
+      instanceId: "instance-remote",
+      resourceName: "grant-gone",
+      resourceType: "swamp/grant",
+      methodName: "create",
+      runKind: "method-run",
+      startedAt: "2026-08-01T12:00:00Z",
+    })),
+  );
+  const ctx = makeCtx(modeTokenConfig, [
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["run"],
+      resource: { kind: "model", pattern: "*" },
+    }),
+  ]);
+  (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
+
+  const sent = await sendAndCollect(ctx, "run.attach", "attach-cp", {
+    runId: "run-grant",
+  });
+  const refusals = unauthorizedErrorsOf(sent);
+  assertEquals(refusals.length, 1);
+  assertStringIncludes(
+    String((refusals[0].error as Record<string, unknown>).message),
+    "access:swamp/grant",
+  );
+});
+
 Deno.test("handleRunAttach: miss + no active-runs record returns not_found", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();

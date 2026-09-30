@@ -57,6 +57,12 @@ export interface ActiveRun {
    * so a methods-scoped grant judges them as it judged the run.
    */
   readonly methodName?: string;
+  /**
+   * The normalized model type of a method run's model. Cancel and attach use
+   * it when the model is gone, so a control-plane run stays admin-only
+   * (swamp-club#2756).
+   */
+  readonly resourceType?: string;
   readonly buffer: RunEventBuffer;
   readonly controller: AbortController;
   readonly startedAt: Date;

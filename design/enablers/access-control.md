@@ -544,7 +544,9 @@ holding its secret, and a group record lists its members (swamp-club#2756).
   `data.versions`, `data.delete`, `data.rename`, `data.search`, `data.query`,
   reports, workflow-history step data, `model.get`, `model.output.*` and
   `model.method.history.*`. An owner no longer found is judged on its recorded
-  type.
+  type — a data item's or output's owner, and the model of a run whose cancel or
+  attach arrives after its definition was deleted (the run records its model
+  type) — and method run and create gate every control-plane type as admin.
 - **Decided as admin.** The decision service decides every action on a
   control-plane record as `admin`, whatever the request asked for
   (`isControlPlaneRecordResource`). So `read`, `write` or `run` on `data:*` or
