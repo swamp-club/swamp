@@ -1961,14 +1961,20 @@ async function runInvocation(
     try {
       const stat = await Deno.stat(extensionsDir);
       if (!stat.isDirectory) {
-        throw new UserError(
-          `--extensions-dir must be a directory: ${extensionsDir}`,
+        throw markErrorPaths(
+          new UserError(
+            `--extensions-dir must be a directory: ${extensionsDir}`,
+          ),
+          [extensionsDir],
         );
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        throw new UserError(
-          `--extensions-dir directory not found: ${extensionsDir}`,
+        throw markErrorPaths(
+          new UserError(
+            `--extensions-dir directory not found: ${extensionsDir}`,
+          ),
+          [extensionsDir],
         );
       }
       throw error;

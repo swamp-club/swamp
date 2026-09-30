@@ -21,7 +21,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
 import { Cron } from "croner";
 import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
-import { UserError } from "../domain/errors.ts";
+import { markErrorPaths, UserError } from "../domain/errors.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   resolveSecret,
@@ -36,6 +36,14 @@ import {
 import type { VerifierConfig } from "./webhook_verifiers.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
+
+/**
+ * A UserError about the serve config file at `path`, with the path marked so
+ * telemetry removes it exactly (swamp-club#2830).
+ */
+function configError(path: string, message: string): UserError {
+  return markErrorPaths(new UserError(message), [path]);
+}
 
 const logger = getSwampLogger(["serve", "config"]);
 
@@ -306,13 +314,12 @@ export function loadServeConfig(
   } catch (cause) {
     if (cause instanceof Deno.errors.NotFound) {
       if (isExplicit) {
-        throw new UserError(
-          `Serve config file not found: ${path}`,
-        );
+        throw configError(path, `Serve config file not found: ${path}`);
       }
       return null;
     }
-    throw new UserError(
+    throw configError(
+      path,
       `Failed to read serve config file ${path}: ${cause}`,
     );
   }
@@ -321,7 +328,8 @@ export function loadServeConfig(
   try {
     parsed = parseYaml(content);
   } catch (cause) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid YAML in serve config file ${path}: ${cause}`,
     );
   }
@@ -331,7 +339,8 @@ export function loadServeConfig(
   }
 
   if (typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new UserError(
+    throw configError(
+      path,
       `Serve config file ${path} must be a YAML mapping, got ${
         Array.isArray(parsed) ? "array" : typeof parsed
       }`,
@@ -400,27 +409,31 @@ function validateConfigValues(
 ): void {
   if (raw.port !== undefined) {
     if (typeof raw.port !== "number" || !Number.isInteger(raw.port)) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid port in ${path}: expected integer, got ${
           JSON.stringify(raw.port)
         }`,
       );
     }
     if (raw.port < 1 || raw.port > 65535) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid port in ${path}: must be between 1 and 65535, got ${raw.port}`,
       );
     }
   }
 
   if (raw.host !== undefined && typeof raw.host !== "string") {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid host in ${path}: expected string, got ${typeof raw.host}`,
     );
   }
 
   if (raw.schedule !== undefined && typeof raw.schedule !== "boolean") {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid schedule in ${path}: expected boolean, got ${typeof raw
         .schedule}`,
     );
@@ -429,7 +442,8 @@ function validateConfigValues(
   if (
     raw["hot-reload"] !== undefined && typeof raw["hot-reload"] !== "boolean"
   ) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid hot-reload in ${path}: expected boolean, got ${typeof raw[
         "hot-reload"
       ]}`,
@@ -439,7 +453,8 @@ function validateConfigValues(
   if (
     raw["detach-runs"] !== undefined && typeof raw["detach-runs"] !== "boolean"
   ) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid detach-runs in ${path}: expected boolean, got ${typeof raw[
         "detach-runs"
       ]}`,
@@ -449,7 +464,8 @@ function validateConfigValues(
   if (
     raw["trust-proxy"] !== undefined && typeof raw["trust-proxy"] !== "boolean"
   ) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid trust-proxy in ${path}: expected boolean, got ${typeof raw[
         "trust-proxy"
       ]}`,
@@ -460,7 +476,8 @@ function validateConfigValues(
     raw["verify-on-enroll"] !== undefined &&
     typeof raw["verify-on-enroll"] !== "boolean"
   ) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid verify-on-enroll in ${path}: expected boolean, got ${typeof raw[
         "verify-on-enroll"
       ]}`,
@@ -471,7 +488,8 @@ function validateConfigValues(
     raw["remote-only"] !== undefined &&
     typeof raw["remote-only"] !== "boolean"
   ) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid remote-only in ${path}: expected boolean, got ${typeof raw[
         "remote-only"
       ]}`,
@@ -482,7 +500,8 @@ function validateConfigValues(
     raw["auto-resume"] !== undefined &&
     typeof raw["auto-resume"] !== "boolean"
   ) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid auto-resume in ${path}: expected boolean, got ${typeof raw[
         "auto-resume"
       ]}`,
@@ -506,7 +525,8 @@ function validateConfigValues(
   ];
   for (const [name, value] of stringFields) {
     if (value !== undefined && typeof value !== "string") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
       );
     }
@@ -524,7 +544,8 @@ function validateConfigValues(
     ];
     for (const [name, value] of authStringFields) {
       if (value !== undefined && typeof value !== "string") {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
         );
       }
@@ -535,7 +556,8 @@ function validateConfigValues(
       approveRequiresExplicitGrant !== undefined &&
       typeof approveRequiresExplicitGrant !== "boolean"
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid auth.approve-requires-explicit-grant in ${path}: expected boolean, got ${typeof approveRequiresExplicitGrant}`,
       );
     }
@@ -549,7 +571,8 @@ function validateConfigValues(
     ];
     for (const [name, value] of tlsStringFields) {
       if (value !== undefined && typeof value !== "string") {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
         );
       }
@@ -561,7 +584,8 @@ function validateConfigValues(
       typeof raw.triggers !== "object" || raw.triggers === null ||
       Array.isArray(raw.triggers)
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid triggers in ${path}: expected mapping of workflow name to trigger override`,
       );
     }
@@ -573,7 +597,8 @@ function validateConfigValues(
 
   if (raw.webhooks !== undefined) {
     if (!Array.isArray(raw.webhooks)) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid webhooks in ${path}: expected array, got ${typeof raw
           .webhooks}`,
       );
@@ -585,7 +610,8 @@ function validateConfigValues(
 
   if (raw["trusted-hosts"] !== undefined) {
     if (!Array.isArray(raw["trusted-hosts"])) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid trusted-hosts in ${path}: expected array of strings, got ${typeof raw[
           "trusted-hosts"
         ]}`,
@@ -609,7 +635,8 @@ function validateConfigValues(
  */
 export function validateTokenSecretsConfig(value: unknown, path: string): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid token-secrets in ${path}: expected mapping with vault and key`,
     );
   }
@@ -622,14 +649,16 @@ export function validateTokenSecretsConfig(value: unknown, path: string): void {
       typeof fieldValue !== "string" || fieldValue.length === 0 ||
       fieldValue.trim() !== fieldValue
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid token-secrets.${field} in ${path}: expected a non-empty ` +
           "string without surrounding whitespace",
       );
     }
   }
   if (block.vault === TOKEN_SECRETS_VAULT_NAME) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid token-secrets.vault in ${path}: the key cannot be stored in ` +
         `${TOKEN_SECRETS_VAULT_NAME}, the vault it encrypts. Name a vault ` +
         "whose storage is outside the datastore.",
@@ -658,28 +687,33 @@ function validateWebhookEntry(
   index: number,
 ): void {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid webhook at index ${index} in ${path}: expected object`,
     );
   }
   const obj = entry as Record<string, unknown>;
   if (typeof obj.route !== "string" || !obj.route) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid webhook at index ${index} in ${path}: route is required and must be a string`,
     );
   }
   if (!obj.route.startsWith("/")) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid webhook at index ${index} in ${path}: route must start with '/', got '${obj.route}'`,
     );
   }
   if (typeof obj.workflow !== "string" || !obj.workflow) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid webhook at index ${index} in ${path}: workflow is required and must be a string`,
     );
   }
   if (typeof obj.secret !== "string" || !obj.secret) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid webhook at index ${index} in ${path}: secret is required and must be a string`,
     );
   }
@@ -689,14 +723,16 @@ function validateWebhookEntry(
       !((WEBHOOK_SCHEMES as readonly string[]).includes(obj.scheme) ||
         isExtensionWebhookScheme(obj.scheme.toLowerCase()))
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid webhook at index ${index} in ${path}: scheme must be one of ${
           WEBHOOK_SCHEMES.join(", ")
         } or a webhook extension type (@collective/name), got '${obj.scheme}'`,
       );
     }
     if (obj.scheme === "generic" && typeof obj.header !== "string") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid webhook at index ${index} in ${path}: generic scheme requires a header name`,
       );
     }
@@ -706,7 +742,8 @@ function validateWebhookEntry(
     (typeof obj.config !== "object" || obj.config === null ||
       Array.isArray(obj.config))
   ) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid webhook at index ${index} in ${path}: config must be an object`,
     );
   }
@@ -715,7 +752,8 @@ function validateWebhookEntry(
     !(typeof obj.scheme === "string" &&
       isExtensionWebhookScheme(obj.scheme.toLowerCase()))
   ) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid webhook at index ${index} in ${path}: config is only supported for webhook extension schemes`,
     );
   }
@@ -729,7 +767,8 @@ export function validateTriggerOverrideEntry(
   workflowName: string,
 ): void {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid trigger override for '${workflowName}' in ${path}: expected object with optional 'schedule' and 'inputs'`,
     );
   }
@@ -744,7 +783,8 @@ export function validateTriggerOverrideEntry(
   }
   if (obj.schedule !== undefined) {
     if (typeof obj.schedule !== "string") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid trigger override for '${workflowName}' in ${path}: schedule must be a string, got ${typeof obj
           .schedule}`,
       );
@@ -753,7 +793,8 @@ export function validateTriggerOverrideEntry(
       const cron = new Cron(obj.schedule);
       cron.stop();
     } catch {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid trigger override for '${workflowName}' in ${path}: invalid cron expression '${obj.schedule}'`,
       );
     }
@@ -763,13 +804,15 @@ export function validateTriggerOverrideEntry(
       typeof obj.inputs !== "object" || obj.inputs === null ||
       Array.isArray(obj.inputs)
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid trigger override for '${workflowName}' in ${path}: inputs must be a mapping`,
       );
     }
   }
   if (obj.schedule === undefined && obj.inputs === undefined) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid trigger override for '${workflowName}' in ${path}: must specify at least 'schedule' or 'inputs'`,
     );
   }
@@ -1368,14 +1411,18 @@ export async function readServeConfigFile(
     if (error instanceof Deno.errors.NotFound) {
       return null;
     }
-    throw new UserError(`Failed to read serve config file ${path}: ${error}`);
+    throw configError(
+      path,
+      `Failed to read serve config file ${path}: ${error}`,
+    );
   }
 
   let parsed: unknown;
   try {
     parsed = parseYaml(content);
   } catch (cause) {
-    throw new UserError(
+    throw configError(
+      path,
       `Invalid YAML in serve config file ${path}: ${cause}`,
     );
   }
@@ -1385,7 +1432,8 @@ export async function readServeConfigFile(
   }
 
   if (typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new UserError(
+    throw configError(
+      path,
       `Serve config file ${path} must be a YAML mapping, got ${
         Array.isArray(parsed) ? "array" : typeof parsed
       }`,
@@ -1424,16 +1472,15 @@ const KNOWN_AUDIT_KEYS = new Set([
 
 function validateAuditConfig(audit: unknown, path: string): void {
   if (typeof audit !== "object" || audit === null || Array.isArray(audit)) {
-    throw new UserError(
-      `Invalid audit in ${path}: expected mapping`,
-    );
+    throw configError(path, `Invalid audit in ${path}: expected mapping`);
   }
   const obj = audit as Record<string, unknown>;
   warnUnknownKeys(obj, KNOWN_AUDIT_KEYS, path, "audit.");
 
   if (obj.stores !== undefined) {
     if (!Array.isArray(obj.stores)) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.stores in ${path}: expected array, got ${typeof obj
           .stores}`,
       );
@@ -1443,18 +1490,21 @@ function validateAuditConfig(audit: unknown, path: string): void {
       if (
         typeof entry !== "object" || entry === null || Array.isArray(entry)
       ) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit store at index ${i} in ${path}: expected object`,
         );
       }
       const storeObj = entry as Record<string, unknown>;
       if (typeof storeObj.target !== "string" || !storeObj.target) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit store at index ${i} in ${path}: target is required and must be a string`,
         );
       }
       if (storeObj.type !== undefined && typeof storeObj.type !== "string") {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit store at index ${i} in ${path}: type must be a string`,
         );
       }
@@ -1463,14 +1513,16 @@ function validateAuditConfig(audit: unknown, path: string): void {
         (typeof storeObj.config !== "object" || storeObj.config === null ||
           Array.isArray(storeObj.config))
       ) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit store at index ${i} in ${path}: config must be an object`,
         );
       }
       if (
         (storeObj.type !== undefined) !== (storeObj.config !== undefined)
       ) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit store at index ${i} in ${path}: type and config must both be present for a dedicated audit store`,
         );
       }
@@ -1480,7 +1532,8 @@ function validateAuditConfig(audit: unknown, path: string): void {
           storeObj.retention === null ||
           Array.isArray(storeObj.retention)
         ) {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit store at index ${i} in ${path}: retention must be an object`,
           );
         }
@@ -1490,7 +1543,8 @@ function validateAuditConfig(audit: unknown, path: string): void {
           !Number.isInteger(retention.days) ||
           retention.days < 1
         ) {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit store at index ${i} in ${path}: retention.days must be a positive integer`,
           );
         }
@@ -1500,7 +1554,8 @@ function validateAuditConfig(audit: unknown, path: string): void {
 
   if (obj["fail-open"] !== undefined) {
     if (typeof obj["fail-open"] !== "boolean") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.fail-open in ${path}: expected boolean`,
       );
     }
@@ -1511,7 +1566,8 @@ function validateAuditConfig(audit: unknown, path: string): void {
       typeof obj.policy !== "object" || obj.policy === null ||
       Array.isArray(obj.policy)
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.policy in ${path}: expected mapping`,
       );
     }
@@ -1527,13 +1583,15 @@ function validateAuditConfig(audit: unknown, path: string): void {
       (typeof policy["default-level"] !== "string" ||
         !validLevels.has(policy["default-level"]))
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.policy.default-level in ${path}: expected one of none, metadata, request, requestResponse`,
       );
     }
     if (policy.rules !== undefined) {
       if (!Array.isArray(policy.rules)) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.policy.rules in ${path}: expected array`,
         );
       }
@@ -1541,26 +1599,30 @@ function validateAuditConfig(audit: unknown, path: string): void {
       for (let i = 0; i < policy.rules.length; i++) {
         const rule = policy.rules[i] as Record<string, unknown>;
         if (typeof rule !== "object" || rule === null || Array.isArray(rule)) {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.policy.rules[${i}] in ${path}: expected object`,
           );
         }
         if (
           typeof rule.level !== "string" || !validLevels.has(rule.level)
         ) {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.policy.rules[${i}].level in ${path}: expected one of none, metadata, request, requestResponse`,
           );
         }
         if (
           rule.category !== undefined && typeof rule.category !== "string"
         ) {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.policy.rules[${i}].category in ${path}: expected string`,
           );
         }
         if (rule.action !== undefined && typeof rule.action !== "string") {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.policy.rules[${i}].action in ${path}: expected string`,
           );
         }
@@ -1568,12 +1630,14 @@ function validateAuditConfig(audit: unknown, path: string): void {
           rule.tier !== undefined &&
           (typeof rule.tier !== "string" || !validTiers.has(rule.tier))
         ) {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.policy.rules[${i}].tier in ${path}: expected one of management, data`,
           );
         }
         if (rule.hmac !== undefined && typeof rule.hmac !== "boolean") {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.policy.rules[${i}].hmac in ${path}: expected boolean`,
           );
         }
@@ -1586,24 +1650,25 @@ function validateAuditConfig(audit: unknown, path: string): void {
       typeof obj.wal !== "object" || obj.wal === null ||
       Array.isArray(obj.wal)
     ) {
-      throw new UserError(
-        `Invalid audit.wal in ${path}: expected mapping`,
-      );
+      throw configError(path, `Invalid audit.wal in ${path}: expected mapping`);
     }
     const wal = obj.wal as Record<string, unknown>;
     if (wal.directory !== undefined && typeof wal.directory !== "string") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.wal.directory in ${path}: expected string`,
       );
     }
     if (wal["max-size"] !== undefined) {
       if (typeof wal["max-size"] !== "string") {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.wal.max-size in ${path}: expected string (e.g. "100MB", "1GB")`,
         );
       }
       if (parseByteSize(wal["max-size"]) === null) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.wal.max-size in ${path}: expected format like "100MB" or "1GB", got "${
             wal["max-size"]
           }"`,
@@ -1618,7 +1683,8 @@ function validateAuditConfig(audit: unknown, path: string): void {
       !Number.isInteger(obj["batch-size"]) ||
       obj["batch-size"] < 1
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.batch-size in ${path}: expected positive integer`,
       );
     }
@@ -1626,7 +1692,8 @@ function validateAuditConfig(audit: unknown, path: string): void {
 
   if (obj["flush-interval"] !== undefined) {
     if (typeof obj["flush-interval"] !== "string") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.flush-interval in ${path}: expected string (e.g. "5s", "10s"), got ${typeof obj[
           "flush-interval"
         ]}`,
@@ -1634,14 +1701,16 @@ function validateAuditConfig(audit: unknown, path: string): void {
     }
     const parsed = parseDuration(obj["flush-interval"] as string);
     if (parsed === null) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.flush-interval in ${path}: expected format like "5s", "100ms", or "1m", got "${
           obj["flush-interval"]
         }"`,
       );
     }
     if (parsed <= 0) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.flush-interval in ${path}: must be positive, got "${
           obj["flush-interval"]
         }"`,
@@ -1654,7 +1723,8 @@ function validateAuditConfig(audit: unknown, path: string): void {
       typeof obj.hmac !== "object" || obj.hmac === null ||
       Array.isArray(obj.hmac)
     ) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.hmac in ${path}: expected mapping`,
       );
     }
@@ -1662,17 +1732,20 @@ function validateAuditConfig(audit: unknown, path: string): void {
     const knownHmacKeys = new Set(["vault", "key", "enabled"]);
     warnUnknownKeys(hmac, knownHmacKeys, path, "audit.hmac.");
     if (hmac.vault !== undefined && typeof hmac.vault !== "string") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.hmac.vault in ${path}: expected string`,
       );
     }
     if (hmac.key !== undefined && typeof hmac.key !== "string") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.hmac.key in ${path}: expected string`,
       );
     }
     if (hmac.enabled !== undefined && typeof hmac.enabled !== "boolean") {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.hmac.enabled in ${path}: expected boolean`,
       );
     }
@@ -1680,9 +1753,7 @@ function validateAuditConfig(audit: unknown, path: string): void {
 
   if (obj.sinks !== undefined) {
     if (!Array.isArray(obj.sinks)) {
-      throw new UserError(
-        `Invalid audit.sinks in ${path}: expected array`,
-      );
+      throw configError(path, `Invalid audit.sinks in ${path}: expected array`);
     }
     const validSinkTypes = new Set(["webhook", "syslog"]);
     const knownWebhookKeys = new Set([
@@ -1707,13 +1778,15 @@ function validateAuditConfig(audit: unknown, path: string): void {
     for (let i = 0; i < obj.sinks.length; i++) {
       const sink = obj.sinks[i];
       if (typeof sink !== "object" || sink === null || Array.isArray(sink)) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.sinks[${i}] in ${path}: expected object`,
         );
       }
       const s = sink as Record<string, unknown>;
       if (typeof s.type !== "string" || !validSinkTypes.has(s.type)) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.sinks[${i}].type in ${path}: expected one of webhook, syslog`,
         );
       }
@@ -1724,26 +1797,30 @@ function validateAuditConfig(audit: unknown, path: string): void {
       }
       if (s.type === "webhook") {
         if (typeof s.url !== "string") {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.sinks[${i}].url in ${path}: webhook sink requires a url`,
           );
         }
         try {
           new URL(s.url);
         } catch {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.sinks[${i}].url in ${path}: "${s.url}" is not a valid URL`,
           );
         }
       }
       if (s.type === "syslog") {
         if (typeof s.host !== "string") {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.sinks[${i}].host in ${path}: syslog sink requires a host`,
           );
         }
         if (typeof s.port !== "number" || !Number.isInteger(s.port)) {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.sinks[${i}].port in ${path}: syslog sink requires an integer port`,
           );
         }
@@ -1753,30 +1830,35 @@ function validateAuditConfig(audit: unknown, path: string): void {
 
   if (obj.alerts !== undefined) {
     if (!Array.isArray(obj.alerts)) {
-      throw new UserError(
+      throw configError(
+        path,
         `Invalid audit.alerts in ${path}: expected array`,
       );
     }
     for (let i = 0; i < obj.alerts.length; i++) {
       const alert = obj.alerts[i];
       if (typeof alert !== "object" || alert === null || Array.isArray(alert)) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.alerts[${i}] in ${path}: expected object`,
         );
       }
       const a = alert as Record<string, unknown>;
       if (typeof a.name !== "string" || a.name.length === 0) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.alerts[${i}].name in ${path}: required string`,
         );
       }
       if (typeof a.match !== "object" || a.match === null) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.alerts[${i}].match in ${path}: required object`,
         );
       }
       if (typeof a.threshold !== "object" || a.threshold === null) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.alerts[${i}].threshold in ${path}: required object`,
         );
       }
@@ -1785,7 +1867,8 @@ function validateAuditConfig(audit: unknown, path: string): void {
         typeof threshold.count !== "number" ||
         !Number.isInteger(threshold.count) || threshold.count <= 0
       ) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.alerts[${i}].threshold.count in ${path}: expected positive integer`,
         );
       }
@@ -1793,31 +1876,36 @@ function validateAuditConfig(audit: unknown, path: string): void {
         typeof threshold["window-seconds"] !== "number" ||
         threshold["window-seconds"] <= 0
       ) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.alerts[${i}].threshold.window-seconds in ${path}: expected positive number`,
         );
       }
       if (typeof a.action !== "object" || a.action === null) {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.alerts[${i}].action in ${path}: required object`,
         );
       }
       const action = a.action as Record<string, unknown>;
       if (action.type !== "webhook" && action.type !== "log") {
-        throw new UserError(
+        throw configError(
+          path,
           `Invalid audit.alerts[${i}].action.type in ${path}: expected one of webhook, log`,
         );
       }
       if (action.type === "webhook") {
         if (typeof action.url !== "string") {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.alerts[${i}].action.url in ${path}: webhook action requires a url`,
           );
         }
         try {
           new URL(action.url);
         } catch {
-          throw new UserError(
+          throw configError(
+            path,
             `Invalid audit.alerts[${i}].action.url in ${path}: "${action.url}" is not a valid URL`,
           );
         }

@@ -45,7 +45,7 @@ import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { Data } from "../data/data.ts";
-import { UserError } from "../errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../errors.ts";
 import { MALFORMED_TYPE_VERSION_CODE } from "./definition_upgrade_service.ts";
 import { getLogger } from "@logtape/logtape";
 import { createModelOutputId, type ModelOutput } from "./model_output.ts";
@@ -4360,4 +4360,34 @@ Deno.test("executeWorkflow: runs when an object-level globalArguments refinement
     await service.executeWorkflow(definition, model, "show", context);
   }
   assertEquals(seen, [undefined, undefined]);
+});
+
+Deno.test("executeWorkflow - a method's marked paths survive the in-process rethrow (swamp-club#2830)", async () => {
+  const path = "/srv/Acme Corp/final report";
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/marked-paths"),
+    version: "1",
+    methods: {
+      create: {
+        description: "Throws an error naming a marked path",
+        arguments: z.object({}),
+        execute: () => {
+          throw markErrorPaths(new Error(`cannot read ${path}`), [path]);
+        },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+
+  const error = await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    Error,
+    "cannot read",
+  );
+  assertEquals(errorPaths(error), [path]);
 });

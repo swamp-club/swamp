@@ -101,7 +101,7 @@ const INTERNAL_HOST_RE =
   /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b/g;
 
 /** A value that names a location rather than being an opaque input. */
-function isPathLike(value: string): boolean {
+export function isPathLike(value: string): boolean {
   return /[\\/]/.test(value) || value.startsWith("~");
 }
 

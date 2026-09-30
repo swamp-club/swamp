@@ -27,7 +27,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveExtensionFiles } from "../resolve_extension_files.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
 import { CalVer } from "../../domain/models/calver.ts";
 import {
@@ -150,16 +150,22 @@ async function requireNodeModules(projectDir: string): Promise<void> {
   try {
     const stat = await Deno.stat(nodeModulesPath);
     if (!stat.isDirectory) {
-      throw new UserError(
-        `Expected node_modules/ to be a directory at ${nodeModulesPath}. ` +
-          `Run 'npm install' or 'deno install' in ${projectDir} first.`,
+      throw markErrorPaths(
+        new UserError(
+          `Expected node_modules/ to be a directory at ${nodeModulesPath}. ` +
+            `Run 'npm install' or 'deno install' in ${projectDir} first.`,
+        ),
+        [nodeModulesPath, projectDir],
       );
     }
   } catch (error) {
     if (error instanceof UserError) throw error;
-    throw new UserError(
-      `No node_modules/ found at ${projectDir}. ` +
-        `Run 'npm install' or 'deno install' to install dependencies before pushing.`,
+    throw markErrorPaths(
+      new UserError(
+        `No node_modules/ found at ${projectDir}. ` +
+          `Run 'npm install' or 'deno install' to install dependencies before pushing.`,
+      ),
+      [projectDir],
     );
   }
 }

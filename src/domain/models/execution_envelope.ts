@@ -84,6 +84,11 @@ export interface ExecutionResult {
   status: "success" | "error";
   /** Error message if status is "error". */
   error?: string;
+  /**
+   * Paths the error marked (see `markErrorPaths`), so the error rebuilt from
+   * `error` can carry them to telemetry (swamp-club#2830).
+   */
+  errorPaths?: string[];
   /** Outputs produced during execution. */
   outputs: ExecutionOutput[];
   /** Log lines captured during execution. */

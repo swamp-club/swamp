@@ -33,7 +33,7 @@
  */
 
 import type { Command } from "@cliffy/command";
-import { UserError } from "../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import type {
   ModelMethodRunPayload,
   ServerMessage,
@@ -192,16 +192,25 @@ export async function readTokenFile(
     raw = await Deno.readTextFile(path);
   } catch (err) {
     if (err instanceof Deno.errors.NotFound) {
-      throw new UserError(`${flagName} file not found: ${path}`);
+      throw markErrorPaths(
+        new UserError(`${flagName} file not found: ${path}`),
+        [path],
+      );
     }
     if (err instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(`${flagName} file not readable: ${path}`);
+      throw markErrorPaths(
+        new UserError(`${flagName} file not readable: ${path}`),
+        [path],
+      );
     }
     throw err;
   }
   const value = raw.replace(/\r?\n$/, "");
   if (value === "") {
-    throw new UserError(`${flagName} file is empty: ${path}`);
+    throw markErrorPaths(
+      new UserError(`${flagName} file is empty: ${path}`),
+      [path],
+    );
   }
   return value;
 }
@@ -967,8 +976,11 @@ export function getEnvCaCerts(): string[] | undefined {
     resolvedEnvCaCerts = [Deno.readTextFileSync(certPath)];
   } catch (e: unknown) {
     const detail = e instanceof Error ? e.message : String(e);
-    throw new UserError(
-      `Could not read CA certificate file '${certPath}': ${detail}`,
+    throw markErrorPaths(
+      new UserError(
+        `Could not read CA certificate file '${certPath}': ${detail}`,
+      ),
+      [certPath, ...errorPaths(e)],
     );
   }
   return resolvedEnvCaCerts;

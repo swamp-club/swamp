@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { errorPaths } from "../errors.ts";
-import { redactErrorMessage } from "./error_message_redaction.ts";
+import { isPathLike, redactErrorMessage } from "./error_message_redaction.ts";
 
 /**
  * Status of a command invocation.
@@ -60,15 +60,6 @@ export function createSuccessResult(): InvocationResult {
 }
 
 /**
- * A marked value that looks like a path. Anything else would be removed as a
- * whole word wherever it appears (a relative name such as `root`), which
- * costs diagnostics and protects nothing, so it is left to the patterns.
- */
-function isPathLike(value: string): boolean {
-  return /[\\/]/.test(value) || value.startsWith("~");
-}
-
-/**
  * Creates an error InvocationResult from an Error.
  *
  * Paths the error marked with `markErrorPaths` (on it or its cause chain) are
@@ -87,6 +78,9 @@ export function createErrorResult(
     errorType: error.constructor.name,
     errorMessage: redactErrorMessage(firstLine, [
       ...knownValues,
+      // A marked value that is not path-like would be removed as a whole
+      // word wherever it appears, which costs diagnostics and protects
+      // nothing, so it is left to the patterns.
       ...errorPaths(error).filter(isPathLike),
     ]),
     exitCode: 1,

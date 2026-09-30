@@ -31,6 +31,7 @@
  * ride this protocol — they use the HTTP data plane (`src/serve/data_plane.ts`).
  */
 
+import { errorPaths } from "../errors.ts";
 import { z } from "zod";
 
 /**
@@ -319,6 +320,18 @@ export type DispatchOutput = z.infer<typeof DispatchOutputSchema>;
 export const MAX_ERROR_PATHS = 32;
 /** Longest marked error path a dispatch result may carry. */
 export const MAX_ERROR_PATH_LENGTH = 4096;
+
+/**
+ * The paths an error marked, trimmed to what a dispatch result may carry, or
+ * `undefined` when there are none. The runner sends this so the orchestrator
+ * never has to drop the whole list for being out of bounds.
+ */
+export function dispatchErrorPaths(error: unknown): string[] | undefined {
+  const paths = errorPaths(error)
+    .filter((path) => path.length <= MAX_ERROR_PATH_LENGTH)
+    .slice(0, MAX_ERROR_PATHS);
+  return paths.length > 0 ? paths : undefined;
+}
 
 export const DispatchResultSchema = z.object({
   status: z.enum(["success", "error"]),

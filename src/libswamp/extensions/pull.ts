@@ -1254,12 +1254,15 @@ export async function prepareInstall(
       const safetyResult = await analyzeExtensionSafety(tsFiles);
 
       if (safetyResult.errors.length > 0) {
-        throw new UserError(
-          `Extension has safety errors. Install aborted.\n${
-            safetyResult.errors.map((e) => `  ${e.file}: ${e.message}`).join(
-              "\n",
-            )
-          }`,
+        throw markErrorPaths(
+          new UserError(
+            `Extension has safety errors. Install aborted.\n${
+              safetyResult.errors.map((e) => `  ${e.file}: ${e.message}`).join(
+                "\n",
+              )
+            }`,
+          ),
+          safetyResult.errors.map((e) => e.file),
         );
       }
 

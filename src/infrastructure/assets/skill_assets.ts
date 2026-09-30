@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
+import { markErrorPaths } from "../../domain/errors.ts";
 
 /**
  * Represents a skill that can be bundled with swamp.
@@ -483,8 +484,11 @@ export class SkillAssets {
     for (const skill of BUNDLED_SKILLS) {
       // Validate that relativePath doesn't contain path traversal
       if (skill.relativePath.includes("..")) {
-        throw new Error(
-          `Invalid skill path: ${skill.relativePath} contains path traversal`,
+        throw markErrorPaths(
+          new Error(
+            `Invalid skill path: ${skill.relativePath} contains path traversal`,
+          ),
+          [skill.relativePath],
         );
       }
 

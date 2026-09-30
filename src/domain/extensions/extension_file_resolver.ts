@@ -56,10 +56,13 @@ export function resolveExtensionFile(
     );
   }
   if (!isSafeRelativePath(relPath)) {
-    throw new UserError(
-      `Unsafe relative path passed to ctx.extensionFile(): "${relPath}". ` +
-        `Paths must be relative, must not start with "/", and must not ` +
-        `contain ".." segments.`,
+    throw markErrorPaths(
+      new UserError(
+        `Unsafe relative path passed to ctx.extensionFile(): "${relPath}". ` +
+          `Paths must be relative, must not start with "/", and must not ` +
+          `contain ".." segments.`,
+      ),
+      [relPath],
     );
   }
   const absPath = join(root, relPath);
@@ -69,11 +72,14 @@ export function resolveExtensionFile(
     // Normalize backslashes so the marker check matches on Windows too.
     const isPulled = PULLED_MARKER.test(root.replaceAll("\\", "/"));
     if (isPulled) {
-      throw new UserError(
-        `Extension file not found: "${relPath}". This can happen when ` +
-          `the installed archive was packaged before directory ` +
-          `preservation landed; re-publish the extension and re-pull to ` +
-          `pick up the nested layout.`,
+      throw markErrorPaths(
+        new UserError(
+          `Extension file not found: "${relPath}". This can happen when ` +
+            `the installed archive was packaged before directory ` +
+            `preservation landed; re-publish the extension and re-pull to ` +
+            `pick up the nested layout.`,
+        ),
+        [relPath],
       );
     }
     throw markErrorPaths(

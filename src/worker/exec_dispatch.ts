@@ -30,12 +30,10 @@ import { Definition } from "../domain/definitions/definition.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
 import type { DataHandle } from "../domain/models/model.ts";
 import { withConsoleGuard } from "../domain/models/console_guard.ts";
-import { errorPaths } from "../domain/errors.ts";
 import {
+  dispatchErrorPaths,
   type DispatchOutput,
   type DispatchResult,
-  MAX_ERROR_PATH_LENGTH,
-  MAX_ERROR_PATHS,
 } from "../domain/remote/protocol.ts";
 import { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import {
@@ -227,14 +225,10 @@ export async function runDispatchRunner(
     logger.warn("Runner dispatch failed: {error}", { error: message });
     const durationMs = performance.now() - start;
 
-    const paths = errorPaths(error)
-      .filter((path) => path.length <= MAX_ERROR_PATH_LENGTH)
-      .slice(0, MAX_ERROR_PATHS);
-
     result = {
       status: "error",
       error: message,
-      errorPaths: paths.length > 0 ? paths : undefined,
+      errorPaths: dispatchErrorPaths(error),
       outputs: toOutputs(getHandles()),
       logs,
       durationMs,

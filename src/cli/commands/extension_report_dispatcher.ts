@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Logger } from "@logtape/logtape";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   isSwampCollective,
   loadInstalledExtensionManifest,
@@ -148,10 +148,13 @@ export async function resolveExtensionTarget(
   const repoPath = RepoPath.create(repoDir);
   const marker = await markerRepo.read(repoPath);
   if (marker === null) {
-    throw new UserError(
-      `No swamp repository found at \`${repoDir}\`. ` +
-        `Run \`swamp issue ...\` from inside a swamp repo, or pass ` +
-        `\`--repo-dir <path>\` / set SWAMP_REPO_DIR.`,
+    throw markErrorPaths(
+      new UserError(
+        `No swamp repository found at \`${repoDir}\`. ` +
+          `Run \`swamp issue ...\` from inside a swamp repo, or pass ` +
+          `\`--repo-dir <path>\` / set SWAMP_REPO_DIR.`,
+      ),
+      [repoDir],
     );
   }
 

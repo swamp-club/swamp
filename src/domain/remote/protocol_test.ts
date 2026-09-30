@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { markErrorPaths } from "../errors.ts";
 import {
+  dispatchErrorPaths,
   DispatchParamsSchema,
   DispatchResultSchema,
   EnrollParamsSchema,
@@ -187,4 +189,26 @@ Deno.test("DispatchResultSchema: drops out-of-bounds errorPaths without failing 
   }
   // A result from a worker without the field still parses.
   assertEquals(DispatchResultSchema.parse(base).errorPaths, undefined);
+});
+
+Deno.test("dispatchErrorPaths: trims marked paths to what the schema accepts", () => {
+  const long = "/p/" + "x".repeat(4096);
+  const many = Array.from({ length: 40 }, (_, i) => `/p/${i}`);
+  const error = markErrorPaths(new Error("boom"), [long, ...many]);
+  const paths = dispatchErrorPaths(error);
+  assertEquals(paths, many.slice(0, 32));
+  const parsed = DispatchResultSchema.parse({
+    status: "error",
+    error: "boom",
+    errorPaths: paths,
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  });
+  assertEquals(parsed.errorPaths, paths);
+});
+
+Deno.test("dispatchErrorPaths: is undefined when the error marked nothing", () => {
+  assertEquals(dispatchErrorPaths(new Error("boom")), undefined);
+  assertEquals(dispatchErrorPaths("boom"), undefined);
 });

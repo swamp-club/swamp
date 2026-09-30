@@ -98,3 +98,38 @@ Deno.test("createErrorResult: leaves a marked value that is not a path to the pa
     `Custom tool "root" escapes the repository root.`,
   );
 });
+
+Deno.test("createErrorResult: removes marked Windows paths whose last segment has a space", () => {
+  const cases = [
+    String.raw`C:\Users\John Smith\Acme Corp\final report.yaml`,
+    "C:/Users/John Smith/Acme Corp/final report",
+    String.raw`\\fileserver\share\Acme Corp\final report`,
+    String.raw`D:\data\final report`,
+  ];
+  for (const path of cases) {
+    const error = markErrorPaths(
+      new UserError(`Failed to read ${path}: denied`),
+      [path],
+    );
+    assertEquals(
+      createErrorResult(error, true).errorMessage,
+      "Failed to read <PATH>: denied",
+      path,
+    );
+  }
+});
+
+Deno.test("createErrorResult: removes a marked Windows path quoted by a runtime error", () => {
+  const path = String.raw`C:\Users\John Smith\final report`;
+  const inner = markErrorPaths(
+    new Error(
+      `The system cannot find the file specified. (os error 2): readfile '${path}'`,
+    ),
+    [path],
+  );
+  const error = new Error(`Load failed: ${inner.message}`, { cause: inner });
+  assertEquals(
+    createErrorResult(error).errorMessage,
+    "Load failed: The system cannot find the file specified. (os error 2): readfile '<PATH>'",
+  );
+});
