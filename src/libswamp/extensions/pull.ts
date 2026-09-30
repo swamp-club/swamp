@@ -26,6 +26,10 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
+import type {
+  InstallRollbackOutcome,
+  KeptInstall,
+} from "../../domain/extensions/duplicate_type_user_error.ts";
 import {
   type ExtensionManifest,
   parseExtensionManifest,
@@ -68,6 +72,7 @@ import {
   canonicalClaimPath,
   claimsPath,
   findClaimants,
+  pathCovers,
 } from "../../domain/extensions/extension_path_claims.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
 import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
@@ -139,8 +144,9 @@ export interface InstallResult {
   /**
    * Repo-relative paths that were declared in the prior version's
    * lockfile entry but absent from the current version's
-   * `extractedFiles`, and which were actually removed from disk by
-   * `pruneOrphanFiles` during this install. Empty for first-installs
+   * `extractedFiles`, and which were actually removed from disk by this
+   * install: skill paths when it commits, the rest with the previous
+   * root. Empty for first-installs
    * (no prior entry) and re-installs of the same version (no diff).
    * Reflects ground truth — paths skipped due to NotFound are NOT
    * included.
@@ -155,11 +161,12 @@ export interface InstallResult {
    */
   shadowedTypes?: ShadowedTypeInfo[];
   /**
-   * Repo-relative paths this install created, which a rollback may
-   * delete. Equals `extractedFiles` except for skills: a skill dir that
-   * already existed before extraction is never listed, only the files
-   * this install newly wrote inside it. Files it overwrote there are
-   * not listed either.
+   * Repo-relative paths this install created. Equals `extractedFiles`
+   * except for skills: a skill dir that already existed before
+   * extraction is never listed, only the files this install newly wrote
+   * inside it. Files it overwrote there are not listed either. A
+   * rollback deletes the skill ones; the rest are under the swapped
+   * roots, which it moves back whole.
    */
   createdPaths: string[];
 }
@@ -334,7 +341,7 @@ export interface ExtensionPullDeps {
   /**
    * W2 service deps. When BOTH are provided, `extensionPull` routes
    * through {@link InstallExtensionService} — phase 8 fires (synchronous
-   * type extraction + `repository.save` + FS rollback on
+   * type extraction + `repository.save` + rollback on
    * `DuplicateTypeError`). When either is missing, falls back to the
    * pre-W2 free-function path (catalog rows populated lazily by the
    * loader's next pass — same behavior as W1b shipped).
@@ -837,22 +844,18 @@ export function computeOrphanDiff(
   });
 }
 
-/** What {@link InstallOptions.underLock} receives. */
-export interface AppliedInstall {
-  result: InstallResult;
-  /** The extension's lockfile entry before apply, read under the lock. */
-  priorEntry: UpstreamExtensionEntry | null;
-}
-
 /** Options for {@link installExtension}. */
 export interface InstallOptions {
   /**
    * Runs after a successful apply, in the same pulled-extensions lock
    * section, so a caller can extend that section (e.g. the catalog save
    * in InstallExtensionService) without holding the lock across
-   * prepare. Not passed to dependency installs.
+   * prepare. It receives the install uncommitted, with the previous
+   * version still kept, and ends it: {@link PendingInstall.commit} or
+   * {@link PendingInstall.rollback}. One it leaves pending, by throwing
+   * or otherwise, is committed. Not passed to dependency installs.
    */
-  underLock?: (applied: AppliedInstall) => Promise<void>;
+  underLock?: (pending: PendingInstall) => Promise<void>;
 }
 
 /** Signature of {@link installExtension}, for callers' test seams. */
@@ -875,12 +878,49 @@ export type InstallExtensionFn = (
  * install afterwards. A ConflictError leaves the locked section before
  * it reaches the caller, so the lock is never held across the CLI's
  * conflict prompt (swamp-club#2709).
+ *
+ * The install is committed before the lock is released: by
+ * `options.underLock` (which may roll it back instead), or here when
+ * there is none or it left the install pending.
  */
 export async function installExtension(
   ref: ExtensionRef,
   ctx: InstallContext,
   options?: InstallOptions,
 ): Promise<InstallResult | undefined> {
+  return await installLocked(ref, ctx, async (pending) => {
+    try {
+      await options?.underLock?.(pending);
+    } finally {
+      await pending.commit();
+    }
+    return pending.result;
+  });
+}
+
+/**
+ * Installs a dependency from inside its parent's apply, leaving it
+ * uncommitted: the parent's {@link PendingInstall} owns the handle, so a
+ * rollback of the parent also removes the dependency.
+ */
+async function installDependencyPending(
+  ref: ExtensionRef,
+  ctx: InstallContext,
+): Promise<PendingInstall | undefined> {
+  return await installLocked(ref, ctx, (pending) => Promise.resolve(pending));
+}
+
+/**
+ * The shared install sequence: the dependency-cycle and depth checks,
+ * {@link prepareInstall} outside the lock, then {@link applyInstall} and
+ * `withPending` in one pulled-extensions lock section. Returns undefined
+ * when `ref` is already being installed in this operation.
+ */
+async function installLocked<T>(
+  ref: ExtensionRef,
+  ctx: InstallContext,
+  withPending: (pending: PendingInstall) => Promise<T>,
+): Promise<T | undefined> {
   if (ctx.alreadyPulled.has(ref.name)) {
     return undefined;
   }
@@ -897,13 +937,7 @@ export async function installExtension(
   try {
     return await pulledExtensionsLock.withLock(ctx.repoDir, async () => {
       await ctx.lockfileRepository.refresh();
-      const priorEntry = ctx.lockfileRepository.getEntry(ref.name);
-      const applied = await applyInstall(prepared, ctx);
-      // Commit at the end of apply: the prior version is deleted before
-      // underLock's catalog save. swamp-club#2724 moves this after it.
-      await applied.commit();
-      await options?.underLock?.({ result: applied.result, priorEntry });
-      return applied.result;
+      return await withPending(await applyInstall(prepared, ctx));
     });
   } finally {
     await prepared.dispose();
@@ -1244,17 +1278,295 @@ export async function prepareInstall(
 
 /**
  * What {@link applyInstall} returns: the install's result, with the new
- * version swapped in and the old one kept in staging until
- * {@link AppliedInstallHandle.commit}.
+ * version swapped in and the previous one kept in staging until it is
+ * committed or rolled back. It covers the extension and every dependency
+ * installed with it. Exactly one of commit and rollback takes effect;
+ * calling either again, or the other afterwards, does nothing.
  */
-export interface AppliedInstallHandle {
-  result: InstallResult;
+export interface PendingInstall {
+  readonly result: InstallResult;
   /**
-   * Deletes the install's staging, and with it the prior version. Never
-   * throws: whatever it cannot delete, the next install or removal
-   * cleans up.
+   * Deletes the install's staging, and with it the previous versions,
+   * then prunes the skill files the previous version shipped and this
+   * one does not. Never throws: whatever it cannot delete, the next
+   * install or removal cleans up.
    */
   commit(): Promise<void>;
+  /**
+   * Puts the previous versions back: first every lockfile entry this
+   * install wrote, in one write, then every root, dependencies first;
+   * then deletes the skill files this install created. Never throws;
+   * the outcome says whether the previous versions are back.
+   */
+  rollback(): Promise<InstallRollbackOutcome>;
+}
+
+/** One extension of a {@link PendingInstall} and its dependencies. */
+class PendingInstallNode implements PendingInstall {
+  readonly result: InstallResult;
+  readonly #tx: ExtensionInstallTransaction;
+  readonly #ctx: InstallContext;
+  /** The lockfile entry before apply; null when there was none. */
+  readonly #priorEntry: UpstreamExtensionEntry | null;
+  /** The entry apply wrote. */
+  readonly #writtenEntry: UpstreamExtensionEntry | null;
+  /** Skill paths apply created, which a rollback deletes. */
+  readonly #skillCreatedPaths: string[];
+  /** Skill paths the previous version shipped and this one does not. */
+  readonly #orphanCandidates: string[];
+  readonly #children: PendingInstallNode[];
+  /** Reports what the install changed, once it can no longer roll back. */
+  readonly #onCommit: () => void;
+  #state: "pending" | "committed" | "rolled-back" = "pending";
+  #outcome: InstallRollbackOutcome | undefined;
+
+  constructor(args: {
+    result: InstallResult;
+    tx: ExtensionInstallTransaction;
+    ctx: InstallContext;
+    priorEntry: UpstreamExtensionEntry | null;
+    writtenEntry: UpstreamExtensionEntry | null;
+    skillCreatedPaths: string[];
+    orphanCandidates: string[];
+    children: PendingInstall[];
+    onCommit: () => void;
+  }) {
+    this.result = args.result;
+    this.#tx = args.tx;
+    this.#ctx = args.ctx;
+    this.#priorEntry = args.priorEntry;
+    this.#writtenEntry = args.writtenEntry;
+    this.#skillCreatedPaths = args.skillCreatedPaths;
+    this.#orphanCandidates = args.orphanCandidates;
+    this.#children = args.children.filter((c) =>
+      c instanceof PendingInstallNode
+    );
+    this.#onCommit = args.onCommit;
+  }
+
+  /** This node and its pending dependencies, in install order. */
+  #pendingNodes(): PendingInstallNode[] {
+    if (this.#state !== "pending") return [];
+    return [this, ...this.#children.flatMap((c) => c.#pendingNodes())];
+  }
+
+  async commit(): Promise<void> {
+    // Dependencies first, so the claims the orphan prune reads are final.
+    for (const node of this.#pendingNodes().reverse()) {
+      await node.#commitOwn();
+    }
+  }
+
+  async #commitOwn(): Promise<void> {
+    this.#state = "committed";
+    await this.#tx.commit();
+    this.#onCommit();
+    try {
+      for (
+        const path of await pruneSkillOrphans(
+          this.#orphanCandidates,
+          this.result.name,
+          this.#ctx,
+        )
+      ) {
+        this.result.pruned.push(path);
+      }
+    } catch (error) {
+      const { logger } = this.#ctx;
+      if (logger) {
+        logger
+          .warn`Could not prune the skill files ${this.result.name} no longer ships: ${error}`;
+      }
+    }
+  }
+
+  async rollback(): Promise<InstallRollbackOutcome> {
+    if (this.#outcome) return this.#outcome;
+    const nodes = this.#pendingNodes();
+    if (nodes.length === 0) {
+      // Already committed: everything in it stays on the new version.
+      return { status: "kept", kept: this.#allNodes().map((n) => n.#kept()) };
+    }
+    this.#outcome = await this.#rollbackNodes(nodes);
+    return this.#outcome;
+  }
+
+  /** This node and every dependency under it, in install order. */
+  #allNodes(): PendingInstallNode[] {
+    return [this, ...this.#children.flatMap((c) => c.#allNodes())];
+  }
+
+  #kept(): KeptInstall {
+    return {
+      name: this.result.name,
+      version: this.result.version,
+      priorVersion: this.#priorEntry?.version ?? null,
+    };
+  }
+
+  async #rollbackNodes(
+    nodes: PendingInstallNode[],
+  ): Promise<InstallRollbackOutcome> {
+    const lockfile = this.#ctx.lockfileRepository;
+    const restore: Record<string, UpstreamExtensionEntry | null> = {};
+    for (const node of nodes) restore[node.result.name] = node.#priorEntry;
+
+    // The entries go back before any root does: from then on every
+    // journal sees an entry that is not its install's, so a crash part-way
+    // is recovered back too.
+    let restored: "all" | "none" | "unknown";
+    try {
+      await lockfile.refresh();
+      await lockfile.restoreEntries(restore);
+      restored = "all";
+    } catch (error) {
+      const { logger } = this.#ctx;
+      if (logger) {
+        logger
+          .warn`Could not restore the lockfile entries of ${this.result.name}: ${error}`;
+      }
+      // A throw does not prove nothing was written (releasing the lock
+      // runs after the write), so read back what landed.
+      restored = await PendingInstallNode.#readRestoreState(
+        lockfile.lockfilePath,
+        nodes,
+        restore,
+      );
+    }
+
+    if (restored === "none") {
+      for (const node of [...nodes].reverse()) await node.#commitOwn();
+      return { status: "kept", kept: nodes.map((node) => node.#kept()) };
+    }
+    if (restored === "unknown") {
+      for (const node of nodes) {
+        node.#state = "rolled-back";
+        node.#tx.release();
+      }
+      return { status: "unsettled", lockfilePath: lockfile.lockfilePath };
+    }
+
+    let settled = true;
+    for (const node of [...nodes].reverse()) {
+      node.#state = "rolled-back";
+      if (!await node.#tx.rollback()) settled = false;
+      await deleteCreatedPaths(node.#skillCreatedPaths, this.#ctx);
+    }
+    return settled
+      ? { status: "rolled-back" }
+      : { status: "unsettled", lockfilePath: lockfile.lockfilePath };
+  }
+
+  /**
+   * After a restore that threw: `all` when the lockfile on disk holds
+   * every restored entry, `none` when it still holds every entry apply
+   * wrote, `unknown` when it cannot be read or holds neither.
+   */
+  static async #readRestoreState(
+    lockfilePath: string,
+    nodes: PendingInstallNode[],
+    restore: Record<string, UpstreamExtensionEntry | null>,
+  ): Promise<"all" | "none" | "unknown"> {
+    let onDisk: LockfileRepository;
+    try {
+      onDisk = await LockfileRepository.create(lockfilePath);
+    } catch {
+      return "unknown";
+    }
+    const holds = (name: string, entry: UpstreamExtensionEntry | null) =>
+      JSON.stringify(onDisk.getEntry(name)) === JSON.stringify(entry);
+    if (nodes.every((n) => holds(n.result.name, restore[n.result.name]))) {
+      return "all";
+    }
+    if (nodes.every((n) => holds(n.result.name, n.#writtenEntry))) {
+      return "none";
+    }
+    return "unknown";
+  }
+}
+
+/**
+ * Deletes paths an install created, unlinking a symlink rather than
+ * following it. Best-effort: a path already gone is skipped, and any
+ * other failure is logged, since the caller is undoing an install.
+ */
+async function deleteCreatedPaths(
+  paths: ReadonlyArray<string>,
+  ctx: InstallContext,
+): Promise<void> {
+  for (const file of paths) {
+    const absolutePath = join(ctx.repoDir, file);
+    try {
+      const stat = await Deno.lstat(absolutePath);
+      await Deno.remove(absolutePath, { recursive: stat.isDirectory });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        if (ctx.logger) {
+          ctx.logger.warn`Could not remove ${absolutePath}: ${error}`;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Prunes the skill paths an install's previous version shipped and this
+ * one does not, once the install commits. The claims are the other
+ * entries' as the lockfile holds them now, so a dependency installed in
+ * the same call that merged files into a dropped skill dir keeps them:
+ *
+ * - a candidate no entry lists, or lists anything under, goes whole (a
+ *   symlink as the link itself);
+ * - one an entry lists, or lists a dir above, is kept;
+ * - a dir an entry lists only files under is walked, and only the files,
+ *   links and wholly unclaimed dirs under it go. The walk descends plain
+ *   dirs only, never a symlink, so it cannot reach outside the repo.
+ *
+ * Returns the paths removed. Files the user added to a pruned dir go
+ * with it, as they always have.
+ */
+async function pruneSkillOrphans(
+  candidates: ReadonlyArray<string>,
+  selfName: string,
+  ctx: InstallContext,
+): Promise<string[]> {
+  if (candidates.length === 0) return [];
+  await ctx.lockfileRepository.refresh();
+  const listed = Object.entries(ctx.lockfileRepository.getAllEntries())
+    .filter(([name]) => name !== selfName)
+    .flatMap(([, entry]) => entry.files ?? []);
+  const claimedWhole = (path: string) =>
+    listed.some((f) => pathCovers(f, path));
+  const claimedUnder = (path: string) =>
+    listed.some((f) => pathCovers(path, f));
+
+  const unclaimedUnder = async (dir: string): Promise<string[]> => {
+    const absolute = join(ctx.repoDir, dir);
+    const stat = await lstatOrNull(absolute);
+    if (!stat?.isDirectory) return [];
+    const out: string[] = [];
+    for await (const entry of Deno.readDir(absolute)) {
+      const path = join(dir, entry.name);
+      if (claimedWhole(path)) continue;
+      if (!claimedUnder(path)) {
+        out.push(path);
+      } else {
+        for (const inner of await unclaimedUnder(path)) out.push(inner);
+      }
+    }
+    return out;
+  };
+
+  const toPrune: string[] = [];
+  for (const candidate of candidates) {
+    if (claimedWhole(candidate)) continue;
+    if (!claimedUnder(candidate)) {
+      toPrune.push(candidate);
+    } else {
+      for (const path of await unclaimedUnder(candidate)) toPrune.push(path);
+    }
+  }
+  return await pruneOrphanFiles(toPrune, ctx.repoDir);
 }
 
 /** Top-level names in an extension root that a nested entry cannot use. */
@@ -1296,7 +1608,7 @@ const EXTENSION_ROOT_ENTRIES = new Set([
 export async function applyInstall(
   prepared: PreparedInstall,
   ctx: InstallContext,
-): Promise<AppliedInstallHandle> {
+): Promise<PendingInstall> {
   if (!(prepared instanceof PreparedInstall)) {
     throw new Error(
       "applyInstall requires a PreparedInstall from prepareInstall",
@@ -1477,6 +1789,8 @@ export async function applyInstall(
   // reinstall finds the prior entry already carrying its checksum, so
   // only this flag says the entry landed for a failure after the swap.
   let lockfileWritten = false;
+  // Dependencies applied inside this install, still uncommitted.
+  const dependencies: PendingInstall[] = [];
   try {
     const stagedExtRoot = tx.newPathOf(absoluteExtRoot);
     const extractedFiles: string[] = [];
@@ -1678,7 +1992,7 @@ export async function applyInstall(
     // are NOT in the new version's extractedFiles[]. Those under a
     // swapped root are already out of the live tree (the swap replaced
     // the root whole) and are only reported. The rest (skills) are
-    // pruned after writeEntry persists the new entry (see below). A path
+    // pruned when the install commits (see pruneSkillOrphans). A path
     // another lockfile entry also claims (a shared skill dir) is kept.
     const otherEntries = ctx.lockfileRepository.getAllEntries();
     const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles).filter(
@@ -1727,41 +2041,40 @@ export async function applyInstall(
       },
     );
     lockfileWritten = true;
+    const writtenEntry = ctx.lockfileRepository.getEntry(ref.name);
 
-    // Reported once the install can no longer roll back.
-    const extRootRel = relative(repoDir, absoluteExtRoot);
-    if (logger && replacedLinkTarget !== null) {
-      logger
-        .warn`Replaced the symlink ${extRootRel} (to ${replacedLinkTarget}) with an installed copy of ${ref.name}@${version}; the link's target was not changed. Re-create the link to keep using it.`;
-    }
-    if (logger && extraFiles.unattributed.length > 0) {
-      logger
-        .warn`Removed ${extraFiles.unattributed.length} file(s) under ${extRootRel} that ${ref.name}@${version} does not ship. The lockfile entry does not describe the installed version, so they could not be told apart from files an earlier version shipped: ${
-        extraFiles.unattributed.join(", ")
-      }`;
-    }
-    if (logger && extraFiles.unkept.length > 0) {
-      logger
-        .warn`Removed ${extraFiles.unkept.length} path(s) under ${extRootRel} that could not be carried into ${ref.name}@${version}, being a symlink or under a file it ships: ${
-        extraFiles.unkept.join(", ")
-      }`;
-    }
-    if (logger && extraFiles.carried.length > 0) {
-      logger
-        .debug`Kept ${extraFiles.carried.length} file(s) added under ${extRootRel}: ${
-        extraFiles.carried.join(", ")
-      }`;
-    }
-
-    // Skill orphans are pruned once the entry naming the new files has
-    // landed, so a failed write rolls back to an entry whose skill files
-    // are all still there. A kill mid-prune leaves only untracked orphan
-    // files, never an entry claiming deleted ones.
-    if (toPrune.length > 0) {
-      for (const path of await pruneOrphanFiles(toPrune, repoDir)) {
-        pruned.push(path);
+    // Reported when the install commits: a rollback puts the previous
+    // root back, and with it whatever these say was replaced or removed.
+    const reportCommitted = () => {
+      const extRootRel = relative(repoDir, absoluteExtRoot);
+      if (logger && replacedLinkTarget !== null) {
+        logger
+          .warn`Replaced the symlink ${extRootRel} (to ${replacedLinkTarget}) with an installed copy of ${ref.name}@${version}; the link's target was not changed. Re-create the link to keep using it.`;
       }
-    }
+      if (logger && extraFiles.unattributed.length > 0) {
+        logger
+          .warn`Removed ${extraFiles.unattributed.length} file(s) under ${extRootRel} that ${ref.name}@${version} does not ship. The lockfile entry does not describe the installed version, so they could not be told apart from files an earlier version shipped: ${
+          extraFiles.unattributed.join(", ")
+        }`;
+      }
+      if (logger && extraFiles.unkept.length > 0) {
+        logger
+          .warn`Removed ${extraFiles.unkept.length} path(s) under ${extRootRel} that could not be carried into ${ref.name}@${version}, being a symlink or under a file it ships: ${
+          extraFiles.unkept.join(", ")
+        }`;
+      }
+      if (logger && extraFiles.carried.length > 0) {
+        logger
+          .debug`Kept ${extraFiles.carried.length} file(s) added under ${extRootRel}: ${
+          extraFiles.carried.join(", ")
+        }`;
+      }
+    };
+
+    // Skill orphans are pruned when the install commits, not here: a
+    // rollback then finds the previous version's skill files still there.
+    // A kill before the prune leaves only untracked orphan files, never
+    // an entry claiming deleted ones.
 
     // A dependency cycle must not reinstall this extension over the tree
     // just written. installExtension() marks it before prepare; mark it
@@ -1825,14 +2138,17 @@ export async function applyInstall(
           // dependency reached here has no lockfile entry, so it has no
           // anchor of its own: it installs like a fresh pull, still checked
           // against the registry's server checksum.
-          const depResult = await installExtension(resolvedRef, {
+          // The dependency stays uncommitted, owned by this install, so
+          // rolling this install back removes it too.
+          const depPending = await installDependencyPending(resolvedRef, {
             ...ctx,
             depth: ctx.depth + 1,
             channel: depChannel,
             expectedChecksum: undefined,
           });
-          if (depResult) {
-            dependencyResults.push(depResult);
+          if (depPending) {
+            dependencies.push(depPending);
+            dependencyResults.push(depPending.result);
           }
         }
       }
@@ -1841,35 +2157,47 @@ export async function applyInstall(
     const extendsTypes = await scanForExtensionGrafts(absoluteModelsDir);
     const skillRecorded = new Set(skillRecordedPaths);
 
-    return {
-      result: {
-        name: ref.name,
-        version,
-        description: extInfo.description,
-        extractedFiles,
-        integrityStatus,
-        repository: manifest.repository,
-        platforms: manifest.platforms,
-        safetyWarnings,
-        binaries: manifest.binaries,
-        conflicts,
-        missingSourceFiles,
-        hasSkills,
-        hasSkillScripts,
-        skillFiles,
-        dependencies: manifest.dependencies,
-        dependencyResults,
-        extendsTypes,
-        pruned,
-        shadowedTypes: [],
-        createdPaths: [
-          ...extractedFiles.filter((f) => !skillRecorded.has(f)),
-          ...skillCreatedPaths,
-        ],
-      },
-      commit: () => tx.commit(),
+    const result: InstallResult = {
+      name: ref.name,
+      version,
+      description: extInfo.description,
+      extractedFiles,
+      integrityStatus,
+      repository: manifest.repository,
+      platforms: manifest.platforms,
+      safetyWarnings,
+      binaries: manifest.binaries,
+      conflicts,
+      missingSourceFiles,
+      hasSkills,
+      hasSkillScripts,
+      skillFiles,
+      dependencies: manifest.dependencies,
+      dependencyResults,
+      extendsTypes,
+      pruned,
+      shadowedTypes: [],
+      createdPaths: [
+        ...extractedFiles.filter((f) => !skillRecorded.has(f)),
+        ...skillCreatedPaths,
+      ],
     };
+    return new PendingInstallNode({
+      result,
+      tx,
+      ctx,
+      priorEntry: oldEntry,
+      writtenEntry,
+      skillCreatedPaths,
+      orphanCandidates: toPrune,
+      children: dependencies,
+      onCommit: reportCommitted,
+    });
   } catch (error) {
+    // Dependencies already applied stay installed, as the parent rolls
+    // forward below once its entry has landed; a dependency whose own
+    // apply failed has settled itself.
+    for (const dependency of dependencies) await dependency.commit();
     // Roll the swap back, or forward when the lockfile entry already
     // landed (e.g. a dependency failed after it). Read from disk, so a
     // write that failed after reaching the file still counts, except
@@ -2111,7 +2439,7 @@ export async function* extensionPull(
       //   1. deps.installExtensionFn (test seam — Pin 2 stubs)
       //   2. InstallExtensionService when deps.denoRuntime + deps.repository
       //      are both provided (W2 contract: phase 8 fires, I-Repo-1 fires
-      //      at install time, FS rollback on DuplicateTypeError)
+      //      at install time, rollback on DuplicateTypeError)
       //   3. Free-function installExtension (pre-W2 fallback — catalog rows
       //      populated lazily on next loader pass)
       const denoRt = deps.denoRuntime;
@@ -2188,7 +2516,7 @@ async function scanForExtensionGrafts(
  * **W2 service deps.** Optional `denoRuntime` and `repository` activate
  * the {@link InstallExtensionService} routing inside `extensionPull`.
  * When BOTH are passed, phase 8 fires (catalog populated synchronously,
- * I-Repo-1 fires on `(kind, type)` collision, FS rollback on conflict).
+ * I-Repo-1 fires on `(kind, type)` collision, rollback on conflict).
  * When either is missing, the deps fall back to the pre-W2 free-function
  * path (catalog populated lazily on next loader pass) — same behavior
  * as before W2.

@@ -114,8 +114,8 @@ interface InstallHooks {
   underLock?: () => Promise<void>;
   /** Installs this extension and archive instead of the fixture's. */
   other?: { name: string; archive: Uint8Array };
-  /** Runs when the install removes a lockfile entry (its rollback). */
-  onRemoveEntry?: () => Promise<void>;
+  /** Runs when the install restores lockfile entries (its rollback). */
+  onRestoreEntries?: () => Promise<void>;
 }
 
 async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
@@ -148,14 +148,14 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     const p: Process = {
       install: (version, hooks) => {
         const target = hooks?.other?.name ?? name;
-        if (hooks?.onRemoveEntry) {
-          const removeEntry = lockfileRepository.removeEntry.bind(
+        if (hooks?.onRestoreEntries) {
+          const restoreEntries = lockfileRepository.restoreEntries.bind(
             lockfileRepository,
           );
-          const onRemoveEntry = hooks.onRemoveEntry;
-          lockfileRepository.removeEntry = async (n) => {
-            await onRemoveEntry();
-            await removeEntry(n);
+          const onRestoreEntries = hooks.onRestoreEntries;
+          lockfileRepository.restoreEntries = async (entries) => {
+            await onRestoreEntries();
+            await restoreEntries(entries);
           };
         }
         const ctx: InstallContext = {
@@ -353,7 +353,7 @@ Deno.test("integration: a DuplicateTypeError rollback runs under the lock", asyn
     const failed = await Promise.allSettled([
       (await f.process()).install(V1, {
         other: { name: intruder, archive },
-        onRemoveEntry: async () => {
+        onRestoreEntries: async () => {
           busyDuringRollback.push(
             !(await otherProcess.tryWithLock(
               f.repoDir,

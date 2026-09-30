@@ -24,6 +24,7 @@ import {
   installExtension,
   type InstallExtensionFn,
   type InstallResult,
+  type PendingInstall,
 } from "./pull.ts";
 import {
   type Extension,
@@ -35,7 +36,10 @@ import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_type_error.ts";
-import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
+import {
+  DuplicateTypeUserError,
+  type InstallRollbackOutcome,
+} from "../../domain/extensions/duplicate_type_user_error.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
@@ -45,7 +49,6 @@ import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_ada
 import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
 import { webhookKindAdapter } from "../../domain/extensions/webhook_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
-import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
 
 /** Subdirectories of a per-extension subtree, paired with their kind. */
 const KIND_DIRS = [
@@ -79,17 +82,21 @@ type KindDir = typeof KIND_DIRS[number];
  * `(kind, typeNormalized)` collision raises `DuplicateTypeError`
  * synchronously — the user-visible payoff for W2.
  *
- * **FS rollback on `DuplicateTypeError`.** SQLite ROLLBACK does not
- * undo filesystem mutations, so the service explicitly undoes the
- * filesystem writes (delete extracted files, restore lockfile to its
- * prior state) before propagating a {@link UserError} that names both
- * conflicting extensions. Plan v4 calls this "expensive miss #2".
+ * **Commit or rollback after the catalog save.** Phase 8 receives the
+ * install uncommitted ({@link PendingInstall}): the previous versions
+ * of the extension and its dependencies are still kept aside. SQLite
+ * ROLLBACK does not undo filesystem mutations, so on `DuplicateTypeError`
+ * the service rolls the install back (lockfile entries restored, then
+ * every root moved back) before propagating a {@link UserError} that
+ * names both conflicting extensions; an upgrade that collides leaves
+ * the previous version installed (swamp-club#2724). Any other outcome
+ * commits. Plan v4 calls the collision case "expensive miss #2".
  *
  * **Snapshot semantics inherited from `InstallContext`.** The
  * `lockfileRepository` on the context captures a snapshot at
  * construction. Single-use only — see {@link InstallContext} JSDoc.
  * installExtension refreshes it under the pulled-extensions lock, and
- * the prior entry used for FS rollback is read after that refresh.
+ * the prior entries a rollback restores are read after that refresh.
  *
  * **W4-inherits.** When the unified loader (KindAdapter) lands in W4,
  * the per-loader `bundleAndIndexOne` calls in `buildExtensionFromDisk`
@@ -127,38 +134,39 @@ export class InstallExtensionService {
    * (alreadyPulled).
    *
    * Throws `ConflictError` from filesystem-conflict detection when
-   * `ctx.force` is false. Throws {@link UserError} (mapped from
-   * {@link DuplicateTypeError}) when the catalog save detects a
-   * cross-extension type collision; filesystem state is rolled back to
-   * the pre-install snapshot before the throw.
+   * `ctx.force` is false. Throws {@link DuplicateTypeUserError} (mapped
+   * from {@link DuplicateTypeError}) when the catalog save detects a
+   * cross-extension type collision, after rolling the install back to
+   * the previous versions; its `rollback` says how that ended.
    */
   async execute(
     ref: ExtensionRef,
     ctx: InstallContext,
   ): Promise<InstallResult | undefined> {
-    // Phases 1-7: download → extract → copy → prune → lockfile write,
+    // Phases 1-7: download → extract → stage and swap → lockfile write,
     // then phase 8 in the underLock hook. installExtension runs apply
     // and the hook in one pulled-extensions lock section, so the catalog
-    // save and any rollback cannot interleave with another install or
-    // removal on this checkout (swamp-club#2709). Deps recurse inside
-    // installExtension and land in the same section.
+    // save and the commit or rollback cannot interleave with another
+    // install or removal on this checkout (swamp-club#2709). Deps recurse
+    // inside apply, land in the same section, and are part of `pending`.
     return await this.installExtensionFn(ref, ctx, {
-      underLock: ({ result, priorEntry }) =>
-        this.indexInstalled(ref, result, priorEntry, ctx),
+      underLock: (pending) => this.indexInstalled(ref, pending, ctx),
     });
   }
 
   /**
-   * Phase 8, under the lock. `priorEntry` is the extension's lockfile
-   * entry read after the refresh at the start of the section, so FS
-   * rollback restores the entry that was on disk.
+   * Phase 8, under the lock, with the install still uncommitted: the
+   * previous versions are kept until the catalog save decides. Commits
+   * on success; rolls back on a type collision, so an upgrade that
+   * collides leaves the previous version installed; commits and
+   * reports the half-state on any other fault.
    */
   private async indexInstalled(
     ref: ExtensionRef,
-    result: InstallResult,
-    priorEntry: UpstreamExtensionEntry | null,
+    pending: PendingInstall,
     ctx: InstallContext,
   ): Promise<void> {
+    const result = pending.result;
     // Phase 8: build Extension aggregates for top-level + each freshly-
     // installed dep. **Atomic upgrade pattern** — for each new
     // extension, tombstone any existing aggregates with the SAME name
@@ -174,7 +182,7 @@ export class InstallExtensionService {
     // overwrite semantics.
     //
     // On DuplicateTypeError (genuine cross-extension collision —
-    // not the v1→v2 case), FS rollback the entire set.
+    // not the v1→v2 case), roll the entire set back.
     try {
       const installedResults = flattenInstallResults(result);
       let newExtensions: Extension[];
@@ -212,18 +220,21 @@ export class InstallExtensionService {
         }));
       }
     } catch (error) {
-      if (error instanceof UserError) throw error;
       if (error instanceof DuplicateTypeError) {
-        await this.rollbackOnCollision(result, priorEntry, ctx);
+        const rollback = await pending.rollback();
         const ghostRow = await isGhostRow(error);
-        throw mapDuplicateTypeErrorToUserError(error, ghostRow);
+        throw mapDuplicateTypeErrorToUserError(error, ghostRow, rollback);
       }
-      // Half-state from a non-DuplicateTypeError fault during phase 8.
-      // Files + lockfile entry are on disk (the install service does
-      // NOT auto-roll-back FS for generic faults — see crash-state
-      // recovery posture in design/primitives/extensions.md). Surface a UserError
-      // with the pinned recovery message so log-mode shows a clean
-      // single-line guidance instead of a stack trace.
+      // Half-state from any other fault during phase 8, bundling
+      // included: the install commits, so files + lockfile entry hold
+      // the new version while the catalog does not (see crash-state
+      // recovery posture in design/primitives/extensions.md). A source
+      // that fails to bundle on this machine must not block installing
+      // the rest. Surface a UserError with the pinned recovery message so
+      // log-mode shows a clean single-line guidance instead of a stack
+      // trace.
+      await pending.commit();
+      if (error instanceof UserError) throw error;
       throw new UserError(
         `Install partially applied for ${ref.name} — files extracted but the ` +
           `catalog write failed (${
@@ -232,6 +243,7 @@ export class InstallExtensionService {
           `\`swamp extension pull ${ref.name}\` to reconcile.`,
       );
     }
+    await pending.commit();
   }
 
   /**
@@ -363,79 +375,6 @@ export class InstallExtensionService {
         );
     }
   }
-
-  /**
-   * Filesystem rollback on `DuplicateTypeError`. Deletes the paths the
-   * failed install created (`createdPaths`) for the top-level extension
-   * AND any freshly-installed deps, then restores the lockfile to its
-   * pre-install state. A skill dir that existed before the install
-   * keeps its prior files.
-   *
-   * Best-effort: any individual delete that fails (file already gone,
-   * permission denied) is logged and swallowed so the caller still
-   * surfaces the original `DuplicateTypeError` as the user-visible
-   * cause. The disk-walk fallback in the loader pipeline handles any
-   * stragglers on the next swamp invocation.
-   */
-  private async rollbackOnCollision(
-    result: InstallResult,
-    priorEntry: UpstreamExtensionEntry | null,
-    ctx: InstallContext,
-  ): Promise<void> {
-    const installedResults = flattenInstallResults(result);
-    for (const r of installedResults) {
-      // createdPaths, not extractedFiles: a skill dir that existed before
-      // the install (the user's, or another extension's) is merged into,
-      // and deleting it would remove files this install never wrote.
-      for (const file of r.createdPaths) {
-        const absolutePath = join(ctx.repoDir, file);
-        try {
-          // lstat so a symlink is unlinked, never followed into its target.
-          const stat = await Deno.lstat(absolutePath);
-          await Deno.remove(absolutePath, { recursive: stat.isDirectory });
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) {
-            if (ctx.logger) {
-              ctx.logger.warn`FS rollback failed for ${absolutePath}: ${error}`;
-            }
-          }
-        }
-      }
-    }
-
-    // Restore the top-level extension's lockfile entry to its prior
-    // state (or remove if first-install). Deps' lockfile entries were
-    // also written during install but their priorEntry isn't captured
-    // here — they were absent before this install (otherwise
-    // installExtension would have skipped them via the alreadyPulled
-    // / lockfile check). So we remove deps' entries.
-    try {
-      if (priorEntry) {
-        await ctx.lockfileRepository.writeEntry(
-          result.name,
-          priorEntry.version,
-          priorEntry.files ?? [],
-          {
-            include: priorEntry.include,
-            checksum: priorEntry.checksum,
-            filesChecksum: priorEntry.filesChecksum,
-            serverUrl: priorEntry.serverUrl,
-            channel: priorEntry.channel,
-            pulledAt: priorEntry.pulledAt,
-          },
-        );
-      } else {
-        await ctx.lockfileRepository.removeEntry(result.name);
-      }
-      for (const dep of installedResults.slice(1)) {
-        await ctx.lockfileRepository.removeEntry(dep.name);
-      }
-    } catch (error) {
-      if (ctx.logger) {
-        ctx.logger.warn`Lockfile rollback failed: ${error}`;
-      }
-    }
-  }
 }
 
 /**
@@ -487,6 +426,7 @@ async function collectTsFiles(dir: string): Promise<string[]> {
 function mapDuplicateTypeErrorToUserError(
   error: DuplicateTypeError,
   ghostRow: boolean,
+  rollback: InstallRollbackOutcome,
 ): DuplicateTypeUserError {
   return new DuplicateTypeUserError({
     kind: error.kind,
@@ -494,15 +434,16 @@ function mapDuplicateTypeErrorToUserError(
     existing: error.firstSource,
     conflicting: error.secondSource,
     isGhostRow: ghostRow,
+    rollback,
   });
 }
 
 async function isGhostRow(error: DuplicateTypeError): Promise<boolean> {
   // Only check firstSource, which the repository reports as the
   // pre-existing catalog occupant when the other side is being saved.
-  // secondSource is then the extension being installed — its files are
-  // always absent after rollbackOnCollision, so it can never be a
-  // meaningful ghost-row signal. When both sides are in the same save
+  // secondSource is then the extension being installed — its new files
+  // are gone after the rollback, so it can never be a meaningful
+  // ghost-row signal. When both sides are in the same save
   // (e.g. two dependencies of one install), the order is catalog order
   // and firstSource may be an incoming extension.
   try {

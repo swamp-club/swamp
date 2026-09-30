@@ -24,7 +24,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join, relative } from "@std/path";
+import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { InstallExtensionService } from "./install_extension_service.ts";
 import type { ExtensionRef, InstallContext, InstallResult } from "./pull.ts";
@@ -321,7 +321,7 @@ Deno.test(
 );
 
 Deno.test(
-  "InstallExtensionService.execute: DuplicateTypeError triggers FS rollback and surfaces as UserError",
+  "InstallExtensionService.execute: DuplicateTypeError rolls the install back and surfaces as UserError",
   async () => {
     await withFixtureRepo(
       async ({ repoDir, repository, lockfileRepository }) => {
@@ -354,23 +354,21 @@ Deno.test(
 
         // Stage B which claims the SAME type. Phase 8 must detect the
         // collision via I-Repo-1 and roll back.
-        const bModelPath = await stageModel(
-          repoDir,
-          extB,
-          "model.ts",
-          MINIMAL_MODEL_CODE(typeId),
-        );
+        await stageModel(repoDir, extB, "model.ts", MINIMAL_MODEL_CODE(typeId));
         const bExtractedFiles = [
           `.swamp/pulled-extensions/${extB}/models/model.ts`,
         ];
 
+        const calls = { commit: 0, rollback: 0 };
         const serviceB = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: stubInstallExtension(() =>
-            Promise.resolve(
-              makeStubInstallResult(extB, "1.0.0", bExtractedFiles),
-            )
+          installExtensionFn: stubInstallExtension(
+            () =>
+              Promise.resolve(
+                makeStubInstallResult(extB, "1.0.0", bExtractedFiles),
+              ),
+            { calls },
           ),
         });
 
@@ -390,19 +388,11 @@ Deno.test(
         );
         assertStringIncludes(thrown.message, "swamp extension rm");
 
-        // FS rollback: B's staged file is gone.
-        let bStillExists = true;
-        try {
-          await Deno.stat(bModelPath);
-        } catch (error) {
-          if (error instanceof Deno.errors.NotFound) bStillExists = false;
-          else throw error;
-        }
-        assertEquals(
-          bStillExists,
-          false,
-          "FS rollback must delete files staged by the failed install",
-        );
+        // Phase 8 rolled the install back and did not commit it. What a
+        // rollback does on disk is tested against the real install in
+        // install_rollback_test.ts.
+        assertEquals(calls, { commit: 0, rollback: 1 });
+        assertEquals(thrown.rolledBack, true);
 
         // Lockfile rollback: B's entry was never persisted (or was
         // rolled back). A's entry remains.
@@ -416,81 +406,6 @@ Deno.test(
         // is preserved, B's never landed.
         assertEquals(repository.loadByName(extA).length, 1);
         assertEquals(repository.loadByName(extB).length, 0);
-      },
-    );
-  },
-);
-
-Deno.test(
-  "InstallExtensionService.execute: collision rollback keeps the prior entry's channel and pulledAt",
-  async () => {
-    await withFixtureRepo(
-      async ({ repoDir, repository, lockfileRepository }) => {
-        const id = crypto.randomUUID().slice(0, 8);
-        const typeId = `@test/svc-collide-${id}`;
-        const extA = `@test/collide-a-${id}`;
-        const extB = `@test/collide-b-${id}`;
-
-        await stageModel(repoDir, extA, "model.ts", MINIMAL_MODEL_CODE(typeId));
-        await lockfileRepository.writeEntry(extA, "1.0.0", [
-          `.swamp/pulled-extensions/${extA}/models/model.ts`,
-        ]);
-        await new InstallExtensionService({
-          denoRuntime: testDenoRuntime,
-          repository,
-          installExtensionFn: stubInstallExtension(() =>
-            Promise.resolve(
-              makeStubInstallResult(extA, "1.0.0", [
-                `.swamp/pulled-extensions/${extA}/models/model.ts`,
-              ]),
-            )
-          ),
-        }).execute(
-          { name: extA, version: "1.0.0" } as ExtensionRef,
-          makeInstallContext(repoDir, lockfileRepository),
-        );
-
-        // B's prior entry was pulled on the beta channel.
-        const priorFiles = [`.swamp/pulled-extensions/${extB}/models/old.ts`];
-        await lockfileRepository.writeEntry(extB, "0.9.0", priorFiles, {
-          channel: "beta",
-          pulledAt: "2026-01-01T00:00:00.000Z",
-        });
-
-        // B's new version claims A's type. The stubbed install rewrites
-        // B's entry as installExtension would, then phase 8 rolls back.
-        await stageModel(repoDir, extB, "model.ts", MINIMAL_MODEL_CODE(typeId));
-        const bExtractedFiles = [
-          `.swamp/pulled-extensions/${extB}/models/model.ts`,
-        ];
-        await assertRejects(
-          () =>
-            new InstallExtensionService({
-              denoRuntime: testDenoRuntime,
-              repository,
-              installExtensionFn: stubInstallExtension(async (_ref, ctx) => {
-                await ctx.lockfileRepository.writeEntry(
-                  extB,
-                  "1.0.0",
-                  bExtractedFiles,
-                );
-                return makeStubInstallResult(extB, "1.0.0", bExtractedFiles);
-              }),
-            }).execute(
-              { name: extB, version: "1.0.0" } as ExtensionRef,
-              makeInstallContext(repoDir, lockfileRepository),
-            ),
-          DuplicateTypeUserError,
-        );
-
-        const fresh = await LockfileRepository.create(
-          lockfileRepository.lockfilePath,
-        );
-        const restored = fresh.getEntry(extB);
-        assertEquals(restored?.version, "0.9.0");
-        assertEquals(restored?.files, priorFiles);
-        assertEquals(restored?.channel, "beta");
-        assertEquals(restored?.pulledAt, "2026-01-01T00:00:00.000Z");
       },
     );
   },
@@ -706,11 +621,11 @@ Deno.test(
 // (process kill, SQLite I/O error, OOM, etc.) must leave the catalog
 // in its pre-save state so a retry succeeds. This pins the SQLite
 // transaction-rollback contract that the lifecycle service depends on.
-// FS + lockfile are NOT auto-rolled-back for generic errors — that's a
-// known and intentional behavior (only DuplicateTypeError triggers FS
-// rollback, because the user is provably going to want the prior state
-// restored). The retry resolves the FS+lockfile-vs-catalog drift via
-// the diff-save in saveAll.
+// The install commits for generic errors, so FS + lockfile hold the new
+// version — a known and intentional behavior (only DuplicateTypeError
+// rolls the install back, because the user is provably going to want
+// the prior state restored). The retry resolves the FS+lockfile-vs-
+// catalog drift via the diff-save in saveAll.
 
 Deno.test(
   "InstallExtensionService.execute: catalog saveAll fault leaves catalog clean and retry succeeds",
@@ -736,6 +651,7 @@ Deno.test(
           new Error("simulated SQLite I/O fault"),
         );
 
+        const calls = { commit: 0, rollback: 0 };
         const service = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository: faultingRepo,
@@ -748,7 +664,7 @@ Deno.test(
             return makeStubInstallResult(ref.name, ref.version ?? "1.0.0", [
               `.swamp/pulled-extensions/${ref.name}/models/noop.ts`,
             ]);
-          }),
+          }, { calls }),
         });
 
         // First attempt: faults inside saveAll. The lifecycle service
@@ -782,6 +698,8 @@ Deno.test(
           );
         }
 
+        // The install was committed, not rolled back.
+        assertEquals(calls, { commit: 1, rollback: 0 });
         // Catalog state: SQLite txn rolled back, no rows survive.
         assertEquals(faultingRepo.loadByName(extName).length, 0);
         assertEquals(catalog.findAll().length, 0);
@@ -823,13 +741,13 @@ Deno.test(
           `import "npm:__swamp_nonexistent_package_for_test_${ts}@0.0.0";\nexport const model = { type: "@test/broken-import-${ts}" };\n`,
         );
 
+        const calls = { commit: 0, rollback: 0 };
         const service = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
-          installExtensionFn: stubInstallExtension(() =>
-            Promise.resolve(
-              makeStubInstallResult(extName, "1.0.0", []),
-            )
+          installExtensionFn: stubInstallExtension(
+            () => Promise.resolve(makeStubInstallResult(extName, "1.0.0", [])),
+            { calls },
           ),
         });
 
@@ -847,138 +765,9 @@ Deno.test(
           "bundling/importing",
           "error must identify the failure phase as bundling/importing",
         );
+        // A source that fails to bundle does not roll the install back.
+        assertEquals(calls, { commit: 1, rollback: 0 });
       },
     );
-  },
-);
-
-// ===== Rollback deletes only created paths (swamp-club#2494) =====
-
-/**
- * Installs extA claiming `typeId`, then runs a second install of extB
- * that claims the same type, so phase 8 raises DuplicateTypeError and
- * rolls extB back using the given stub result.
- */
-async function runCollidingInstall(
-  args: {
-    repoDir: string;
-    repository: ExtensionRepository;
-    lockfileRepository: LockfileRepository;
-  },
-  extraExtracted: string[],
-  extraCreated: string[],
-): Promise<void> {
-  const { repoDir, repository, lockfileRepository } = args;
-  const id = crypto.randomUUID().slice(0, 8);
-  const typeId = `@test/rb-type-${id}`;
-  const extA = `@test/rb-a-${id}`;
-  const extB = `@test/rb-b-${id}`;
-  const aFile = `.swamp/pulled-extensions/${extA}/models/model.ts`;
-  const bFile = `.swamp/pulled-extensions/${extB}/models/model.ts`;
-  await stageModel(repoDir, extA, "model.ts", MINIMAL_MODEL_CODE(typeId));
-  await new InstallExtensionService({
-    denoRuntime: testDenoRuntime,
-    repository,
-    installExtensionFn: stubInstallExtension(() =>
-      Promise.resolve(makeStubInstallResult(extA, "1.0.0", [aFile]))
-    ),
-  }).execute(
-    { name: extA, version: "1.0.0" } as ExtensionRef,
-    makeInstallContext(repoDir, lockfileRepository),
-  );
-
-  await stageModel(repoDir, extB, "model.ts", MINIMAL_MODEL_CODE(typeId));
-  await assertRejects(
-    () =>
-      new InstallExtensionService({
-        denoRuntime: testDenoRuntime,
-        repository,
-        installExtensionFn: stubInstallExtension(() =>
-          Promise.resolve(
-            makeStubInstallResult(
-              extB,
-              "1.0.0",
-              [bFile, ...extraExtracted],
-              [bFile, ...extraCreated],
-            ),
-          )
-        ),
-      }).execute(
-        { name: extB, version: "1.0.0" } as ExtensionRef,
-        makeInstallContext(repoDir, lockfileRepository),
-      ),
-    DuplicateTypeUserError,
-  );
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await Deno.lstat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return false;
-    throw error;
-  }
-}
-
-Deno.test(
-  "InstallExtensionService.execute: rollback keeps a pre-existing skill dir and the user's files in it",
-  async () => {
-    await withFixtureRepo(async (args) => {
-      const skillDir = join(args.repoDir, ".claude", "skills", "foo");
-      await ensureDir(skillDir);
-      await Deno.writeTextFile(join(skillDir, "my-notes.md"), "mine");
-      // The failed install wrote SKILL.md into a dir that already
-      // existed. extractedFiles names the root (as an owned skill is
-      // recorded); only SKILL.md was created, so only it may go.
-      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "from B");
-      const root = relative(args.repoDir, skillDir);
-      const skillMd = relative(args.repoDir, join(skillDir, "SKILL.md"));
-
-      await runCollidingInstall(args, [root], [skillMd]);
-
-      assertEquals(
-        await Deno.readTextFile(join(skillDir, "my-notes.md")),
-        "mine",
-      );
-      assertEquals(await pathExists(join(skillDir, "SKILL.md")), false);
-    });
-  },
-);
-
-Deno.test(
-  "InstallExtensionService.execute: rollback removes a skill dir the failed install created",
-  async () => {
-    await withFixtureRepo(async (args) => {
-      const skillDir = join(args.repoDir, ".claude", "skills", "fresh");
-      await ensureDir(join(skillDir, "scripts"));
-      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "from B");
-      await Deno.writeTextFile(join(skillDir, "scripts", "run.sh"), "x");
-      const root = relative(args.repoDir, skillDir);
-
-      await runCollidingInstall(args, [root], [root]);
-
-      assertEquals(await pathExists(skillDir), false);
-    });
-  },
-);
-
-Deno.test(
-  "InstallExtensionService.execute: rollback unlinks a created symlink without touching its target",
-  async () => {
-    await withFixtureRepo(async (args) => {
-      const target = join(args.repoDir, "user-data");
-      await ensureDir(target);
-      await Deno.writeTextFile(join(target, "keep.md"), "keep");
-      await ensureDir(join(args.repoDir, ".claude", "skills"));
-      const link = join(args.repoDir, ".claude", "skills", "linked");
-      await Deno.symlink(target, link, { type: "dir" });
-      const rel = relative(args.repoDir, link);
-
-      await runCollidingInstall(args, [rel], [rel]);
-
-      assertEquals(await pathExists(link), false);
-      assertEquals(await Deno.readTextFile(join(target, "keep.md")), "keep");
-    });
   },
 );

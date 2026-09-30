@@ -47,16 +47,13 @@ import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
  * no all-or-nothing rollback across a bulk-upgrade run. Pinned by
  * design.
  *
- * **Recovery posture for upgrade-half-state.** If `repository.save`
- * rolls back via `DuplicateTypeError`, the install service's FS
- * rollback fires (delete v2 files, restore lockfile entry to v1).
- * Plan v4 step 11 pins the user-visible recovery message:
- *
- *   "Upgrade partially applied. Run `swamp doctor extensions` to
- *   inspect, or `swamp extension rm <name> && swamp extension pull
- *   <name>@<version>` to reconcile."
- *
- * (The recovery message lands with the UserError mapping in commit 6.)
+ * **An upgrade that collides keeps the previous version.** If
+ * `repository.saveAll` rolls back via `DuplicateTypeError`, the install
+ * service rolls the install back: v1's lockfile entry is restored and
+ * v1's roots, kept aside until then, are moved back, so v1 stays
+ * installed exactly as it was (swamp-club#2724). Any other phase-8
+ * fault commits v2 and reports the "Install partially applied"
+ * half-state.
  */
 export class UpgradeExtensionService {
   private readonly installService: InstallExtensionService;

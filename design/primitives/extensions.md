@@ -1378,7 +1378,7 @@ Where it is held:
   subtree (`.swamp/pulled-extensions/<ext-name>/`, where names are scoped as
   `@x/...`), so no current-layout install writes them.
 - **Catalog save**: `InstallExtensionService` runs its catalog save and the
-  `DuplicateTypeError` rollback in the same section, through
+  install's commit or rollback in the same section, through
   `installExtension`'s `underLock` hook.
 - **Removal**: `RemoveExtensionService.execute` runs entirely under it.
   `extension rm`'s preview and confirmation prompt stay outside.
@@ -1561,15 +1561,22 @@ file. That left a mix of two versions' files after a crash and could not be
 undone.
 
 **Roots.** The swap moves whole directories: the extension root
-`<pulledRoot>/<name>/` and each bundle namespace dir
-`.swamp/<kind>-bundles/<ns>/` that the new version ships files for or that
-exists already. Skills are not swapped. A skill dir can be shared with the user
-or another extension, so skills keep the merge copy and `createdPaths` rules in
+`<pulledRoot>/<name>/` and each of its bundle namespace dirs
+`.swamp/<kind>-bundles/<ns>/`, including one that neither exists nor gets files
+from the new version: the catalog save's loaders write bundles into it after
+the swap, and a rollback must remove them. Skills are not swapped. A skill dir
+can be shared with the user or another extension, so skills keep the merge copy
+and `createdPaths` rules in
 [Multi-tool skill materialization](#multi-tool-skill-materialization), and sit
 outside the guarantees below: a rolled-back install can leave the new version's
-content in a skill file it overwrote. Skill orphans are pruned only after the
-new lockfile entry lands, so a failed install never leaves an entry claiming a
-deleted skill file.
+content in a skill file it overwrote. Skill orphans are pruned only when the
+install commits, so a rollback finds the previous version's skill files still
+there and a failed install never leaves an entry claiming a deleted skill file.
+The prune reads the claims at commit: a dropped skill dir that a dependency
+installed in the same call merged files into is walked, and only the files no
+entry claims (in either direction: an entry listing the file, or a dir above
+it) are removed. The walk descends plain dirs only, never a symlink, and
+removes a link itself, never its target.
 
 **Staging.** Each root's new and old copies live in a staging dir next to it,
 so every rename stays on one filesystem:
@@ -1591,7 +1598,9 @@ extension name, the phase
 (`staged` or `swapped`), the lockfile path the install writes, the new archive
 checksum, the old and new manifest digests, every root (live, old and new
 paths, whether the live root existed and whether it was a symlink, whether the
-new version has files for it), and the nested entry roots carried over.
+new version has files for it), and the nested entry roots carried over. A bundle
+root may have neither existed nor have new files; the extension root always has
+new files.
 
 **Swap.** Phase 1 moves each existing live root to `old/<i>`. Phase 2 moves
 each new root into place, bundles first, then the extension root (staged
@@ -1607,14 +1616,32 @@ directory. Between the first phase-1 rename and the `swapped` write only
 renames, lstats and journal reads and writes happen, so the window in which a
 root is absent to readers outside the lock stays short.
 
-**Commit.** `applyInstall` returns with the swap done and the old roots kept.
-`installExtension` commits (deletes the staging, and with it the old roots)
-right after apply, before the catalog save. Deleting staging removes the journal
-first, so a crash part-way through leaves journal-less staging for the sweep,
-never a journal that could later restore a half-deleted old root. swamp-club#2724 moves the commit
-after the catalog save so a type collision can roll back to the prior version.
-Until then, an upgrade that collides still ends with no version installed (see
-[FS rollback on DuplicateTypeError](#fs-rollback-on-duplicatetypeerror)).
+**Commit or rollback.** `applyInstall` returns a `PendingInstall`: the swap is
+done and the old roots are kept. It covers the extension and every dependency
+installed with it, which stay uncommitted too (their owner ids stay active, so
+a later dependency's recovery leaves their journals alone). Exactly one of
+`commit()` and `rollback()` takes effect; calling either again does nothing.
+The caller of `installExtension` ends it in its `underLock` hook, still under
+the lock (see
+[Commit or rollback after the catalog save](#commit-or-rollback-after-the-catalog-save));
+`installExtension` commits one left pending, and commits right after apply when
+there is no hook (the lockfile restore in `extension install`, auto-resolve
+without a catalog). If apply fails after some dependencies were applied, they
+are committed and the parent rolls forward, since its entry has landed.
+
+- **Commit** deletes the staging, and with it the old roots, dependencies
+  first, then prunes the skill orphans. Deleting staging removes the journal
+  first, so a crash part-way through leaves journal-less staging for the sweep,
+  never a journal that could later restore a half-deleted old root. Warnings
+  about what the install replaced or removed under the extension root are
+  logged here, once they are final.
+- **Rollback** (`ExtensionInstallTransaction.rollback()`) plans each root with
+  the crash recovery planner, forced back, and runs the same renames through the
+  same helper (`applyRecoveryRenames`). The one addition: a bundle cache dir a
+  loader recreates between moving the new copy aside and the old one back is
+  moved to a free path under `superseded/` in staging and the rename retried
+  once. Staging is then deleted, journal first. A root it cannot account for,
+  or a rename that fails, leaves the journal for crash recovery.
 
 **Settle.** Any failure after staging starts is settled before it propagates,
 by the same rule as crash recovery: forward when the journal reached `swapped`
@@ -1947,17 +1974,51 @@ diff-save in `saveAll` handles the overwrite.
 `InstallExtensionService.execute(...)` so call sites can state upgrade intent.
 The atomic-tombstone logic lives in the install service's phase 8.
 
-### FS rollback on DuplicateTypeError
+### Commit or rollback after the catalog save
 
-A cross-extension `DuplicateTypeError` (two different extensions claiming
-the same `(kind, typeNormalized)`) triggers a filesystem rollback before the
-error propagates. The paths the install created (`InstallResult.createdPaths`)
-are deleted and the lockfile entry is restored to its pre-install state, since
-SQLite ROLLBACK does not undo filesystem changes. The install transaction has
-already committed by then, so an upgrade's prior version is gone and an upgrade
-that collides ends with no version installed (swamp-club#2724 fixes this). A skill dir that existed
-before the install is never deleted: only the files the install newly wrote in
-it are removed, and files it overwrote keep their new content. The error then propagates as a `DuplicateTypeUserError` (a `UserError`
+Phase 8 receives the install uncommitted, as a `PendingInstall` (see
+[Install Transaction](#install-transaction)): the previous versions of the
+extension and of every dependency installed with it are still kept aside.
+`InstallExtensionService` ends it under the lock (swamp-club#2724):
+
+- **The catalog save succeeds**: commit.
+- **`DuplicateTypeError`** (two different extensions claiming the same
+  `(kind, typeNormalized)`): rollback. SQLite ROLLBACK has already undone the
+  catalog, so the previous versions' rows are still there; the rollback puts
+  the files back to match them:
+  1. Every lockfile entry the install wrote is restored in **one write**
+     (`LockfileRepository.restoreEntries`): the prior entry object exactly as it
+     was read, or no entry where there was none. The write is under the
+     advisory lock, and the entry is not rebuilt, so file order, empty fields
+     and unknown keys come back as they were.
+  2. Every root is moved back, dependencies first, in reverse install order.
+  3. The skill paths the install created are deleted. A skill dir that existed
+     before the install is never deleted: only the files the install newly
+     wrote in it are removed, and files it overwrote keep their new content.
+
+  The entries go back before any root, so a crash in between leaves journals
+  whose lockfile entry is not their install's, and recovery rolls each one
+  back. An upgrade that collides therefore leaves the previous version
+  installed exactly, files, bundles and lockfile entry.
+- **Any other fault** (a source that fails to bundle, a generic `saveAll`
+  failure): commit, then the "Install partially applied" message (see
+  [Crash-state recovery](#crash-state-recovery)).
+
+If the lockfile write reports an error, the rollback reads the lockfile back:
+releasing the advisory lock runs after the write, so an error does not prove
+nothing landed. Where every entry was restored it carries on. Where none was, it
+commits the whole install and reports `kept`: files, lockfile and dependencies
+stay consistently on the new version, the half-state of a generic fault plus an
+unresolved collision, which the next loader pass settles first-wins. Where the
+lockfile cannot be read back, or holds neither the restored entries nor the new
+ones, it leaves every journal for the next install or removal to settle from the
+lockfile then, and reports `unsettled`. A root the rollback cannot move back
+(a disk state it cannot account for, or a failed rename) also reports
+`unsettled`: its journal stays, its lockfile entry is already restored, and the
+next recovery rolls it back, or leaves it with a warning naming the journal when
+the disk state still does not match any it can produce.
+
+The error then propagates as a `DuplicateTypeUserError` (a `UserError`
 subclass). The top-level CLI handler prints a clean one-line message in log mode
 and a structured `duplicateType` object in `--json` mode:
 
@@ -1967,6 +2028,9 @@ and a structured `duplicateType` object in `--json` mode:
   "duplicateType": {
     "kind": "model",
     "type": "@scope/foo",
+    "isGhostRow": false,
+    "rolledBack": true,
+    "rollback": { "status": "rolled-back" },
     "existing": {
       "extensionName": "...",
       "extensionVersion": "...",
@@ -1985,6 +2049,16 @@ and a structured `duplicateType` object in `--json` mode:
 `conflicting` is the one being installed, regardless of how their paths sort:
 the repository decides this from which sources are in the failing save, not
 from catalog row order.
+
+`rollback` says how the rollback ended: `rolled-back`, `kept` (with each kept
+extension's name, new version and prior version) or `unsettled` (with the
+lockfile path); `rolledBack` is true only for `rolled-back`. A `kept` message
+says the install was kept rather than "Cannot install", and suggests `swamp
+extension pull <name>@<prior>` for each kept extension that had a prior version,
+`swamp extension rm <name>` for one that did not, or removing the extension that
+already held the type. An `unsettled` message says the next `swamp extension`
+install or removal completes the rollback, or names the install journal it
+could not settle.
 
 The message suggests `swamp extension rm <existing-name>`. A conflict may come
 from a **ghost catalog row**, whose source file was deleted outside swamp. The
@@ -2011,10 +2085,25 @@ guarantee.
 
 Any failure other than `DuplicateTypeError` inside `repository.saveAll` (SQLite
 I/O error, OOM, process killed mid-commit) leaves the catalog in its pre-save
-state via SQLite ROLLBACK. The install has committed by then, so the filesystem
-and lockfile hold the new version; only `DuplicateTypeError` triggers FS
-rollback. A retry succeeds, because the diff-save in `saveAll` reconciles the
-catalog with the disk and lockfile.
+state via SQLite ROLLBACK. The install then commits, so the filesystem and
+lockfile hold the new version; only `DuplicateTypeError` rolls the install
+back. A source that fails to bundle during phase 8 commits the same way, so one
+source that cannot import on this machine does not stop the rest installing. A
+retry succeeds, because the diff-save in `saveAll` reconciles the catalog with
+the disk and lockfile.
+
+A process killed while phase 8 holds the install uncommitted leaves a journal
+that reached `swapped` with its lockfile entry landed, so the next recovery
+rolls it forward: the same half-state as a generic fault.
+
+Known crash edges the recovery leaves for a person, with the journal named:
+
+- A same-version reinstall over a symlinked extension root that collides, then
+  crashes after its rollback renames: the entry carries the new checksum, so
+  recovery plans forward and finds the restored link where it expects the new
+  directory.
+- A rollback that crashes after moving a previously absent bundle root's new
+  copy to `discard/<i>`, followed by a loader recreating that bundle dir.
 
 For rm, the catalog tombstone is the first change, so a fault in that
 `saveAll` leaves catalog, lockfile and FS in their pre-rm state and a retry is a

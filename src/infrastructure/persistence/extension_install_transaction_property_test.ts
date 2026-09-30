@@ -72,6 +72,7 @@ async function readTree(dir: string): Promise<Record<string, string>> {
     const root of [
       join(".swamp", "pulled-extensions", "@acme", "thing"),
       join(".swamp", "bundles", "abcd1234"),
+      join(".swamp", "vault-bundles", "abcd1234"),
     ]
   ) {
     if (await defaultInstallFsOps.lstat(join(dir, root)) === "dir") {
@@ -249,6 +250,156 @@ Deno.test("ExtensionInstallTransaction: settle and recovery leave exactly the ol
             e.name.startsWith(".swamp-staging-")
           ),
         );
+      } finally {
+        await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+      }
+    }),
+    { numRuns: 60 },
+  );
+});
+
+// swamp-club#2724: for the same random old and new file sets, after a
+// completed swap, a loader optionally writing into the live bundle roots
+// (one of them a root neither version has), and a failure or crash at
+// any rollback rename (or none): rollback plus crash recovery with the
+// lockfile entry restored leaves exactly the old tree and no staging.
+// With no fault, rollback alone finishes and leaves no journal.
+
+const rollbackScenario = fc.record({
+  oldExt: fc.option(fileSet, { nil: null }),
+  newExt: fileSet,
+  oldBundle: fc.option(fileSet, { nil: null }),
+  newBundle: fileSet,
+  nestedChild: fc.boolean(),
+  loaderBundle: fc.boolean(),
+  loaderAbsentBundle: fc.boolean(),
+  // 0 injects nothing; past the last rollback rename is also no fault.
+  failAt: fc.integer({ min: 0, max: 6 }),
+  crash: fc.boolean(),
+});
+
+Deno.test("ExtensionInstallTransaction.rollback: rollback and recovery leave exactly the old tree", async () => {
+  await fc.assert(
+    fc.asyncProperty(rollbackScenario, async (s) => {
+      const repoDir = await Deno.makeTempDir({ prefix: "swamp_install_prop_" });
+      try {
+        const pulledRoot = join(repoDir, ".swamp", "pulled-extensions");
+        const bundleKindDir = join(repoDir, ".swamp", "bundles");
+        const vaultKindDir = join(repoDir, ".swamp", "vault-bundles");
+        const extRoot = join(pulledRoot, "@acme", "thing");
+        const bundleRoot = join(bundleKindDir, "abcd1234");
+        const absentBundleRoot = join(vaultKindDir, "abcd1234");
+        const lockfilePath = join(repoDir, "upstream_extensions.json");
+        await Deno.mkdir(pulledRoot, { recursive: true });
+        await Deno.mkdir(bundleKindDir, { recursive: true });
+        await Deno.mkdir(vaultKindDir, { recursive: true });
+
+        if (s.oldExt) {
+          await writeFiles(extRoot, {
+            ...s.oldExt,
+            "manifest.yaml": "old manifest",
+          });
+          if (s.nestedChild) {
+            await writeFiles(join(extRoot, "child"), {
+              "models/x.ts": "child",
+            });
+          }
+        }
+        if (s.oldBundle) await writeFiles(bundleRoot, s.oldBundle);
+        const oldTree = await readTree(repoDir);
+
+        let rollingBack = false;
+        let renames = 0;
+        let faulted = false;
+        const ops: InstallFsOps = crashAware({
+          rename: async (from, to) => {
+            if (rollingBack && ++renames === s.failAt) {
+              faulted = true;
+              throw s.crash
+                ? new SimulatedInstallCrash(`rollback rename ${renames}`)
+                : new Error(`rollback rename ${renames} failed`);
+            }
+            await defaultInstallFsOps.rename(from, to);
+          },
+        });
+        const tx = await ExtensionInstallTransaction.begin({
+          repoDir,
+          pulledRoot,
+          extensionName: NAME,
+          lockfilePath,
+          newChecksum: "sum-new",
+          newManifestDigest: await computeChecksum(
+            new TextEncoder().encode("new manifest"),
+          ),
+          roots: [
+            { role: "extension", live: extRoot, hasNew: true },
+            {
+              role: "bundle",
+              live: bundleRoot,
+              hasNew: Object.keys(s.newBundle).length > 0,
+            },
+            // Neither version has it; the loaders may create it.
+            { role: "bundle", live: absentBundleRoot, hasNew: false },
+          ],
+          nestedRoots: s.oldExt && s.nestedChild
+            ? [{ relDir: "child", strategy: "copied" }]
+            : [],
+          ops,
+        });
+        await writeFiles(tx.newPathOf(extRoot), s.newExt);
+        if (s.oldExt && s.nestedChild) {
+          await writeFiles(join(tx.newPathOf(extRoot), "child"), {
+            "models/x.ts": "child",
+          });
+        }
+        if (Object.keys(s.newBundle).length > 0) {
+          await writeFiles(tx.newPathOf(bundleRoot), s.newBundle);
+        }
+        await Deno.writeTextFile(tx.stagedManifestPath, "new manifest");
+        await tx.swap();
+
+        // The catalog save's loaders, outside the lock.
+        if (s.loaderBundle) {
+          await writeFiles(bundleRoot, { "loaded.js": "loader" });
+        }
+        if (s.loaderAbsentBundle) {
+          await writeFiles(absentBundleRoot, { "loaded.js": "loader" });
+        }
+
+        rollingBack = true;
+        const restored = await tx.rollback();
+        assertEquals(restored, !faulted);
+        if (!faulted) {
+          assertEquals(await stagingLeft(pulledRoot), []);
+          assertEquals(await readTree(repoDir), oldTree);
+        }
+
+        // The caller restored the lockfile entry before rolling back.
+        const report = await recoverInstallStaging({
+          bounds: {
+            repoDir,
+            pulledRoot,
+            allowedLockfilePaths: [lockfilePath],
+            expectedLivePaths: () => ({
+              extensionRoot: extRoot,
+              bundleRoots: [bundleRoot, absentBundleRoot],
+            }),
+          },
+          bundleKindDirs: [bundleKindDir, vaultKindDir],
+          readLockfileChecksum: () => Promise.resolve("sum-old"),
+        });
+
+        assertEquals(report.left, []);
+        assertEquals(report.rolledForward, []);
+        assertEquals(await readTree(repoDir), oldTree);
+        assertEquals(await stagingLeft(pulledRoot), []);
+        for (const kindDir of [bundleKindDir, vaultKindDir]) {
+          assert(
+            !(await Array.fromAsync(Deno.readDir(kindDir))).some((e) =>
+              e.name.startsWith(".swamp-staging-")
+            ),
+          );
+        }
       } finally {
         await Deno.remove(repoDir, { recursive: true }).catch(() => {});
       }

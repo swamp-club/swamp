@@ -387,6 +387,10 @@ Deno.test(
     const dup = result.duplicateType as Record<string, unknown>;
     assertEquals(dup.kind, "model");
     assertEquals(dup.type, "@scope/foo");
+    assertEquals(dup.isGhostRow, false);
+    // Rollback outcome defaults to rolled-back.
+    assertEquals(dup.rolledBack, true);
+    assertEquals(dup.rollback, { status: "rolled-back" });
     const existing = dup.existing as Record<string, string>;
     assertEquals(existing.extensionName, "@scopeA/aa");
     assertEquals(existing.extensionVersion, "1.0.0");
@@ -443,6 +447,104 @@ Deno.test(
       (dup.conflicting as Record<string, string>).extensionVersion,
       "2.0.0",
     );
+  },
+);
+
+Deno.test(
+  "buildErrorJson: DuplicateTypeUserError carries an explicit rolled-back outcome",
+  () => {
+    const err = new DuplicateTypeUserError({
+      kind: "model",
+      typeNormalized: "@scope/rb",
+      existing: {
+        extensionName: "@scopeA/aa",
+        extensionVersion: "1.0.0",
+        canonicalPath: "/path/a.ts",
+      },
+      conflicting: {
+        extensionName: "@scopeB/bb",
+        extensionVersion: "2.0.0",
+        canonicalPath: "/path/b.ts",
+      },
+      rollback: { status: "rolled-back" },
+    });
+
+    const result = buildErrorJson(err);
+    assertStringIncludes(result.error as string, "rolled back");
+    const dup = result.duplicateType as Record<string, unknown>;
+    assertEquals(dup.rolledBack, true);
+    assertEquals(dup.rollback, { status: "rolled-back" });
+  },
+);
+
+Deno.test(
+  "buildErrorJson: DuplicateTypeUserError carries a kept outcome with rolledBack false",
+  () => {
+    const kept = [
+      { name: "@scopeB/bb", version: "2.0.0", priorVersion: "1.0.0" },
+      { name: "@scopeB/dep", version: "1.0.0", priorVersion: null },
+    ];
+    const err = new DuplicateTypeUserError({
+      kind: "model",
+      typeNormalized: "@scope/kept",
+      existing: {
+        extensionName: "@scopeA/aa",
+        extensionVersion: "1.0.0",
+        canonicalPath: "/path/a.ts",
+      },
+      conflicting: {
+        extensionName: "@scopeB/bb",
+        extensionVersion: "2.0.0",
+        canonicalPath: "/path/b.ts",
+      },
+      rollback: { status: "kept", kept },
+    });
+
+    const result = buildErrorJson(err);
+    assertEquals(result.error, err.message);
+    assertEquals(result.stack, undefined);
+    const dup = result.duplicateType as Record<string, unknown>;
+    assertEquals(dup.type, "@scope/kept");
+    assertEquals(dup.isGhostRow, false);
+    assertEquals(dup.rolledBack, false);
+    assertEquals(dup.rollback, { status: "kept", kept });
+    // The whole object survives JSON serialization (priorVersion: null
+    // included), since the JSON renderer stringifies it.
+    assertEquals(
+      JSON.parse(JSON.stringify(result)).duplicateType.rollback,
+      { status: "kept", kept },
+    );
+  },
+);
+
+Deno.test(
+  "buildErrorJson: DuplicateTypeUserError carries an unsettled outcome with its lockfile path",
+  () => {
+    const lockfilePath = "/repo/extensions/models/upstream_extensions.json";
+    const err = new DuplicateTypeUserError({
+      kind: "vault",
+      typeNormalized: "@scope/unsettled",
+      existing: {
+        extensionName: "@scopeA/aa",
+        extensionVersion: "1.0.0",
+        canonicalPath: "/path/a.ts",
+      },
+      conflicting: {
+        extensionName: "@scopeB/bb",
+        extensionVersion: "2.0.0",
+        canonicalPath: "/path/b.ts",
+      },
+      isGhostRow: true,
+      rollback: { status: "unsettled", lockfilePath },
+    });
+
+    const result = buildErrorJson(err);
+    assertStringIncludes(result.error as string, lockfilePath);
+    const dup = result.duplicateType as Record<string, unknown>;
+    assertEquals(dup.kind, "vault");
+    assertEquals(dup.isGhostRow, true);
+    assertEquals(dup.rolledBack, false);
+    assertEquals(dup.rollback, { status: "unsettled", lockfilePath });
   },
 );
 
