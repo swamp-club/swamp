@@ -384,3 +384,48 @@ Deno.test("migrateConfigToDatastore: creates configRoot directory if it does not
     assertEquals(stat.isDirectory, true);
   });
 });
+
+Deno.test("migrateConfigToDatastore: leaves install staging out of the pulled-extensions copy", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await ensureDir(repoDir);
+    const configRoot = join(dir, "config");
+    const pulled = join(repoDir, ".swamp", "pulled-extensions");
+    await ensureDir(join(pulled, "@acme", "thing", "models"));
+    await Deno.writeTextFile(
+      join(pulled, "@acme", "thing", "models", "a.ts"),
+      "a",
+    );
+    const staging = join(pulled, ".swamp-staging", crypto.randomUUID());
+    await ensureDir(staging);
+    await Deno.writeTextFile(join(staging, "journal.json"), "{}");
+
+    const result = await migrateConfigToDatastore(
+      repoDir,
+      join(repoDir, "missing.json"),
+      configRoot,
+      pulled,
+    );
+    assertEquals(result.copiedPulledExtensions, true);
+    assertEquals(
+      await Deno.readTextFile(
+        join(
+          configRoot,
+          "pulled-extensions",
+          "@acme",
+          "thing",
+          "models",
+          "a.ts",
+        ),
+      ),
+      "a",
+    );
+    let copied = true;
+    try {
+      await Deno.stat(join(configRoot, "pulled-extensions", ".swamp-staging"));
+    } catch {
+      copied = false;
+    }
+    assertEquals(copied, false);
+  });
+});

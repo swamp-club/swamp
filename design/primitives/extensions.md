@@ -1345,8 +1345,9 @@ All changes to `upstream_extensions.json` take an advisory lockfile
 use atomic writes, so concurrent operations cannot corrupt it.
 
 That lock covers a single entry write. The rest of an install or removal (the
-copies into the pulled root and skills dirs, orphan pruning, the catalog save)
-is serialized per checkout by the **pulled-extensions lock**
+stage and swap of the extension's roots, the skills copy, orphan pruning, crash
+recovery, the catalog save) is serialized per checkout by the
+**pulled-extensions lock**
 (`src/infrastructure/persistence/pulled_extensions_lock.ts`, swamp-club#2709).
 Without it, two installs, or an install and an `extension rm`, can leave a mix
 of two versions' files, prune files the other just wrote, or record an entry
@@ -1413,7 +1414,11 @@ installed. The pulled-extensions lock covers only the local changes, so an
 explicit install is not held up by another process's download.
 
 Reconcile from disk and bundle eviction do not take the lock. A reconcile that
-reads a tree mid-copy is corrected by the next one.
+runs inside an install's swap window (see
+[Install Transaction](#install-transaction)) finds the extension's root briefly
+absent. It records the extension's sources as `EntryPointUnreadable`, never
+tombstoned, because the lockfile entry is still there, and the next reconcile
+returns them to `Indexed`. Bundle eviction skips staging entries.
 
 ## File Extraction (Per-Extension Layout)
 
@@ -1545,6 +1550,189 @@ Recovery paths:
 Bump `BUNDLE_LAYOUT_VERSION` whenever a change to the bundler, runtime interface
 or zod global shape makes existing bundles incompatible.
 
+## Install Transaction
+
+An install replaces an extension's files by **stage and swap**
+(`ExtensionInstallTransaction` in
+`src/infrastructure/persistence/extension_install_transaction.ts`, the journal
+and recovery rules in `src/domain/extensions/install_journal.ts`,
+swamp-club#2723). It used to copy the new version over the live one file by
+file. That left a mix of two versions' files after a crash and could not be
+undone.
+
+**Roots.** The swap moves whole directories: the extension root
+`<pulledRoot>/<name>/` and each bundle namespace dir
+`.swamp/<kind>-bundles/<ns>/` that the new version ships files for or that
+exists already. Skills are not swapped. A skill dir can be shared with the user
+or another extension, so skills keep the merge copy and `createdPaths` rules in
+[Multi-tool skill materialization](#multi-tool-skill-materialization), and sit
+outside the guarantees below: a rolled-back install can leave the new version's
+content in a skill file it overwrote. Skill orphans are pruned only after the
+new lockfile entry lands, so a failed install never leaves an entry claiming a
+deleted skill file.
+
+**Staging.** Each root's new and old copies live in a staging dir next to it,
+so every rename stays on one filesystem:
+
+- extension root: `<pulledRoot>/.swamp-staging/<stagingId>/{new,old}/0`;
+- bundle root: `.swamp/<kind>-bundles/.swamp-staging-<stagingId>/{new,old}/<i>`.
+
+A reader that lists the pulled root or a bundle kind dir must skip
+`.swamp-staging*` entries (`isStagingEntryName`). Most readers get extension
+names from the lockfile or keep only `@`-prefixed entries, so they never see
+them. `doctor extensions` bundle enumeration, the vault bundle preload for
+datastore expressions, bundle eviction, the managed-config migration copy and
+`directory_merge` skip them explicitly.
+
+**Journal.** Before any staging dir exists (only the dir that holds it),
+the install writes `<pulledRoot>/.swamp-staging/<stagingId>/journal.json` with an atomic
+write. It records the owner id, the stagingId, the absolute repo dir, the
+extension name, the phase
+(`staged` or `swapped`), the lockfile path the install writes, the new archive
+checksum, the old and new manifest digests, every root (live, old and new
+paths, whether the live root existed and whether it was a symlink, whether the
+new version has files for it), and the nested entry roots carried over.
+
+**Swap.** Phase 1 moves each existing live root to `old/<i>`. Phase 2 moves
+each new root into place, bundles first, then the extension root (staged
+without `manifest.yaml`), then `manifest.yaml` last. A bundle cache dir that a
+loader outside the lock recreated since phase 1 is moved aside into staging
+first, not treated as a failure. The journal then records
+`swapped`. Any failed rename undoes the completed ones in reverse order,
+carrying on past a step that cannot be undone (a bundle dir a loader recreated)
+so the other roots still go back. Before
+each phase the install re-reads the journal and stops unless it still owns it.
+No rename ever targets an existing path, so Windows never renames over a
+directory. Between the first phase-1 rename and the `swapped` write only
+renames, lstats and journal reads and writes happen, so the window in which a
+root is absent to readers outside the lock stays short.
+
+**Commit.** `applyInstall` returns with the swap done and the old roots kept.
+`installExtension` commits (deletes the staging, and with it the old roots)
+right after apply, before the catalog save. Deleting staging removes the journal
+first, so a crash part-way through leaves journal-less staging for the sweep,
+never a journal that could later restore a half-deleted old root. swamp-club#2724 moves the commit
+after the catalog save so a type collision can roll back to the prior version.
+Until then, an upgrade that collides still ends with no version installed (see
+[FS rollback on DuplicateTypeError](#fs-rollback-on-duplicatetypeerror)).
+
+**Settle.** Any failure after staging starts is settled before it propagates,
+by the same rule as crash recovery: forward when the journal reached `swapped`
+and the lockfile entry landed (a dependency failed after the parent was
+written), back otherwise. In process the install knows whether its own lockfile
+write completed, so a failed same-version reinstall rolls back even though the
+prior entry already carries its checksum. Settle never replaces the original error. If settle
+itself fails, the journal stays for crash recovery.
+
+**Crash recovery.** `recoverPulledExtensionStaging(repoDir)` runs under the
+pulled-extensions lock at the start of every apply and every removal. Other
+callers, such as convergence, can call it directly. For each journal whose
+owner is not an install running in this process (no pid checks: containers
+reuse pids):
+
+- The journal is validated first. Every path must be exactly the one derived
+  from the extension name and the stagingId, and the lockfile path must be one
+  this checkout can write (`resolveExtensionLockfilePaths`, including the
+  non-managed `extensions/models/upstream_extensions.json`). An invalid journal
+  is left in place with one warning naming it.
+- It rolls forward when the journal reached `swapped` and the recorded
+  lockfile's entry carries the new checksum; otherwise back. Rolling forward
+  checks that the extension root and its manifest are the new ones, not
+  whether a bundle root is live: loaders outside the lock rebuild and evict
+  bundle caches.
+- Rolling back, each root is judged from where its original is: in `old/<i>`
+  once phase 1 moved it aside, otherwise still live. Where the new copy is
+  does not matter, so a crash inside `begin` or during cleanup stays
+  recoverable, and a live dir found next to a moved-aside original (a bundle
+  cache a loader recreated) is superseded. Never from the extension's
+  manifest. Recovery only renames; a superseded root goes to `discard/<i>` and
+  is deleted with the staging, so the only copy of a root is never deleted.
+- An original that is gone, a symlink or file where a directory belongs
+  (including any staging dir or a dir above a live root, but not an extension
+  root recorded as a symlink, see below), or a failed
+  recovery leaves the journal in place with a warning. While such a journal
+  names an extension, installing or removing it, or an extension nested in or
+  above it, is refused with a message naming the journal: changing its roots
+  first would let a later recovery act on files it did not write. The
+  refusal's advice follows what recovery found at the extension root and at
+  `old/0`: move the previous version back when only it is left, keep the
+  wanted one when both exist, check the live root when nothing is staged,
+  pull again when neither exists. It never says to delete staging that may
+  hold the only copy.
+- Journal paths are absolute, derived from the absolute repository path. A
+  journal written under another repo dir (the repo was moved or copied, a CI
+  workspace was restored at another path, a container mounts it elsewhere, or
+  a symlinked spelling such as macOS `/tmp` and `/private/tmp`) is rebased
+  first: each path under the recorded repo dir moves under the current one,
+  and a path outside it (a lockfile kept outside the repo) is kept. The exact
+  validation then runs on the rebased journal, so the rebase only accepts a
+  journal that could have been written with the current paths, and a copied
+  checkout recovers its own files, never the original's.
+- Staging with no journal is swept only once it is older than an hour.
+
+Recovery never writes the lockfile. A same-version reinstall has equal old and
+new checksums, so after a process crash (not a failure the install settles
+itself) between `swapped` and the lockfile write, recovery rolls forward. The tree is then the reinstalled one with the old entry, identical
+apart from any files it could not carry forward (see below).
+
+**Extra files.** The swap replaces a root whole, so the install copies
+the files a user added under `.swamp/pulled-extensions/<name>/` into the
+new root, keeping their times, as the merge copy kept them. `extension
+update`, `extension install` and `repo upgrade` install with force, so
+this is what keeps those files, not the local-edits guard. A file is the
+user's when the new archive does not ship it and the prior lockfile
+entry's `files[]` does not list it. A file the entry lists is one the
+prior version shipped and the new one dropped, so it goes with the old
+root, and an upgrade never leaves a mix of two versions' files. Where the
+archive ships a file at the same path, the archive's copy wins (a
+`ConflictError` without `--force`, as before). The user's files stay out
+of `files[]`; `filesChecksum` is the digest of the tree on disk, theirs
+included, as before.
+
+The entry's list only describes the tree when the installed
+`manifest.yaml` is the entry's version. When it is not (a lockfile
+restored from git after an upgrade), or the entry has no `files[]`, or
+there is no entry, unlisted files cannot be told apart from ones an older
+version shipped. The install then keeps only what the archive ships and
+logs a warning naming each file it removed. A symlink, or a path under
+one where the new archive ships a file, cannot be copied and is named in
+a warning the same way. No file under the root is removed without either
+being listed in the prior entry or named in a warning.
+
+**Symlinked extension root.** An extension root that is a symlink is replaced,
+not written through. Phase 1 moves the link itself to `old/<i>`, the new
+version goes in as a real directory, and commit deletes the link with the
+staging; the link's target is never read or written by the swap. Files in the
+target are not carried forward. Once the lockfile entry is written, a warning
+names the link and its target and says to re-create the link to keep using it.
+A failure or a crash puts the link back where it was: the journal records
+`liveIsLink`, and recovery treats the link as the original in the `old` and
+live slots. A bundle root that is a symlink is still refused.
+
+**Nested entries.** A scoped name can nest another (`@a/b` contains the root of
+`@a/b/c`). An install of `@a/b` copies each nested entry's root into its new
+root, keeping file and directory times so the nested entry's sources stay no
+newer than its pre-built bundles, and records it in the journal. A nested entry
+whose first path segment is a kind dir or `manifest.yaml` (`@a/b/models`) is
+refused, whichever of the two is installed second: the parent's own files live
+there, and the swap would move them aside and commit would delete them. Such a
+layout installed before this change; remove one of the two to install the
+other. The installed-extension digest (`filesChecksum`) leaves nested entry
+roots out, so installing `@a/b/c` does not make `@a/b` look locally edited. A
+digest stored before this rule covered the nested root too. While a root has
+nested entries, the local-edits check and the `extension install` content check
+also accept that whole-tree digest, until the next install stores the new one.
+
+**Not protected.** The pulled-extensions lock is per host. Two hosts that
+mount one checkout on a shared volume can still interleave, and one host's
+recovery can roll back the other's install in flight. A crash-leftover
+staging dir under `.swamp/config/pulled-extensions` in a managed-config repo
+can be pushed by a full sync before the next install or removal recovers it.
+Rolling back an interrupted first install moves aside whatever is at the live
+root; if a swamp without this change, or another host, installed the extension
+there in between, recovery discards that install while its lockfile entry
+stays.
+
 ## Layout Migration
 
 Repos with extensions under older layouts migrate with `swamp repo upgrade`.
@@ -1587,7 +1775,9 @@ recognise, counts as current-layout and is ignored rather than swept.
 
 ## Removal
 
-`extension rm` first checks that every file tracked in `upstream_extensions.json`
+`extension rm` first runs crash recovery (see
+[Install Transaction](#install-transaction)), so the files it removes are the
+ones the lockfile describes. It then checks that every file tracked in `upstream_extensions.json`
 resolves inside the repository. If any path does not, for example in a lockfile
 written before `.swamp/` existed with `SWAMP_MODELS_DIR` outside the repo, rm
 fails with nothing changed and names the paths to remove from the entry.
@@ -1763,7 +1953,9 @@ A cross-extension `DuplicateTypeError` (two different extensions claiming
 the same `(kind, typeNormalized)`) triggers a filesystem rollback before the
 error propagates. The paths the install created (`InstallResult.createdPaths`)
 are deleted and the lockfile entry is restored to its pre-install state, since
-SQLite ROLLBACK does not undo filesystem changes. A skill dir that existed
+SQLite ROLLBACK does not undo filesystem changes. The install transaction has
+already committed by then, so an upgrade's prior version is gone and an upgrade
+that collides ends with no version installed (swamp-club#2724 fixes this). A skill dir that existed
 before the install is never deleted: only the files the install newly wrote in
 it are removed, and files it overwrote keep their new content. The error then propagates as a `DuplicateTypeUserError` (a `UserError`
 subclass). The top-level CLI handler prints a clean one-line message in log mode
@@ -1806,11 +1998,18 @@ is one extension, never a multi-extension run.
 
 ### Crash-state recovery
 
+A crash during the file changes of an install is put right by the next install
+or removal: the journal lets recovery roll the swap forward or back (see
+[Install Transaction](#install-transaction)), so the extension root and its
+bundle dirs are always one version's, never a mix. Skill files are outside that
+guarantee.
+
 Any failure other than `DuplicateTypeError` inside `repository.saveAll` (SQLite
 I/O error, OOM, process killed mid-commit) leaves the catalog in its pre-save
-state via SQLite ROLLBACK. The filesystem and lockfile are not rolled back; only
-`DuplicateTypeError` triggers FS rollback. A retry succeeds, because the
-diff-save in `saveAll` reconciles the catalog with the disk and lockfile.
+state via SQLite ROLLBACK. The install has committed by then, so the filesystem
+and lockfile hold the new version; only `DuplicateTypeError` triggers FS
+rollback. A retry succeeds, because the diff-save in `saveAll` reconciles the
+catalog with the disk and lockfile.
 
 For rm, the catalog tombstone is the first change, so a fault in that
 `saveAll` leaves catalog, lockfile and FS in their pre-rm state and a retry is a

@@ -265,3 +265,21 @@ Deno.test("buildAggregateState: all 7 RowState tags counted", async () => {
     }
   });
 });
+
+Deno.test("enumerateBundleFiles: skips install staging next to bundle namespaces", async () => {
+  await withTempDir(async (dir) => {
+    const kindDir = join(dir, ".swamp", "bundles");
+    await ensureDir(join(kindDir, "abc12345"));
+    await Deno.writeTextFile(join(kindDir, "abc12345", "model.js"), "// live");
+    const staging = join(kindDir, `.swamp-staging-${crypto.randomUUID()}`);
+    await ensureDir(join(staging, "new", "1"));
+    await ensureDir(join(staging, "old", "1"));
+    await Deno.writeTextFile(join(staging, "new", "1", "model.js"), "// new");
+    await Deno.writeTextFile(join(staging, "old", "1", "model.js"), "// old");
+
+    const files = await enumerateBundleFiles(dir);
+    assertEquals(files.map((f) => f.repoRelativePath), [
+      ".swamp/bundles/abc12345/model.js",
+    ]);
+  });
+});

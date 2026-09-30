@@ -212,3 +212,30 @@ Deno.test("createExtensionListDeps retries once when the lockfile is caught mid-
     assertEquals((await listed(deps)).map((e) => e.name), ["@ns/team"]);
   });
 });
+
+Deno.test("createExtensionListDeps lists nothing from install staging", async () => {
+  await withTempDir(async (dir) => {
+    const lockfile = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfile,
+      JSON.stringify({ "@ns/team": { version: "1", pulledAt: "x" } }),
+    );
+    const pulled = resolvePulledExtensionsRoot(dir);
+    await Deno.mkdir(join(pulled, "@ns", "team"), { recursive: true });
+    await Deno.writeTextFile(
+      join(pulled, "@ns", "team", "manifest.yaml"),
+      'name: "@ns/team"\nversion: "1"\n',
+    );
+    // An in-flight upgrade's staged root carries a newer manifest.
+    const staged = join(pulled, ".swamp-staging", crypto.randomUUID());
+    await Deno.mkdir(join(staged, "new", "0"), { recursive: true });
+    await Deno.writeTextFile(
+      join(staged, "manifest.yaml"),
+      'name: "@ns/team"\nversion: "2"\n',
+    );
+
+    const exts = await listed(await createExtensionListDeps(dir, lockfile));
+    assertEquals(exts.map((e) => [e.name, e.version]), [["@ns/team", "1"]]);
+    assertEquals("onDiskVersion" in exts[0], false);
+  });
+});

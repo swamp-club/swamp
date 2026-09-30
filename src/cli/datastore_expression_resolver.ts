@@ -30,6 +30,7 @@ import {
   rewriteZodImports,
 } from "../domain/models/bundle.ts";
 import { scanExpressions } from "../domain/expressions/expression_scanner.ts";
+import { isStagingEntryName } from "../domain/extensions/install_journal.ts";
 
 const logger = getLogger(["swamp", "datastore", "expressions"]);
 
@@ -49,6 +50,9 @@ async function loadCachedVaultBundles(repoDir: string): Promise<void> {
   try {
     for await (const fpDir of Deno.readDir(bundlesDir)) {
       if (!fpDir.isDirectory) continue;
+      // An in-flight or interrupted install's staging: half-written
+      // bundles that are not installed (swamp-club#2723).
+      if (isStagingEntryName(fpDir.name)) continue;
       for await (const file of Deno.readDir(join(bundlesDir, fpDir.name))) {
         if (!file.name.endsWith(".js")) continue;
         try {

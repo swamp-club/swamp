@@ -30,6 +30,12 @@ import {
 } from "../../domain/extensions/row_state.ts";
 import type { Source } from "../../domain/extensions/source.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import { BUNDLE_STAGING_PREFIX } from "../../domain/extensions/install_journal.ts";
+
+/** Matches a path inside a bundle kind dir's install staging sibling. */
+const STAGING_PATH_PATTERN = new RegExp(
+  `[\\\\/]${BUNDLE_STAGING_PREFIX.replaceAll(".", "\\.")}[^\\\\/]*([\\\\/]|$)`,
+);
 
 /** Per-extension aggregate summary. */
 export interface DoctorAggregateSummary {
@@ -124,7 +130,9 @@ function extractLastError(source: Source): string | undefined {
 
 /**
  * Walks all bundle directories under `.swamp/` and returns every `.js`
- * file found. Missing directories are silently skipped.
+ * file found. Missing directories are silently skipped, as are install
+ * staging dirs: their bundles are not installed yet, and `--repair` must
+ * never delete them from under an install or its crash recovery.
  */
 export async function enumerateBundleFiles(
   repoDir: string,
@@ -137,6 +145,7 @@ export async function enumerateBundleFiles(
         const entry of walk(absoluteDir, {
           includeDirs: false,
           includeSymlinks: false,
+          skip: [STAGING_PATH_PATTERN],
         })
       ) {
         if (entry.name.endsWith(".js")) {

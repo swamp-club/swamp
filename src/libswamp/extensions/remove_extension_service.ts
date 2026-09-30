@@ -32,6 +32,10 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
+import {
+  assertNoBlockingJournal,
+  recoverPulledExtensionStagingLocked,
+} from "./recover_staging.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
@@ -156,11 +160,19 @@ export class RemoveExtensionService {
    * interleave with an install or another removal. The lockfile
    * snapshot is refreshed first under the lock, so the entry removed
    * and the other entries' claims are the ones on disk
-   * (swamp-club#2709).
+   * (swamp-club#2709). Crash recovery of interrupted installs runs next,
+   * before anything is removed (swamp-club#2723).
    */
   async execute(name: string): Promise<RemoveExtensionResult> {
     return await pulledExtensionsLock.withLock(this.repoDir, async () => {
       await this.lockfileRepository.refresh();
+      // Put right any install a crashed process left half done, so the
+      // files removed are the ones the lockfile describes.
+      const recovery = await recoverPulledExtensionStagingLocked(
+        this.repoDir,
+        { lockfilePaths: [this.lockfileRepository.lockfilePath] },
+      );
+      assertNoBlockingJournal(recovery, this.repoDir, name, "remove");
       return await this.removeLocked(name);
     });
   }

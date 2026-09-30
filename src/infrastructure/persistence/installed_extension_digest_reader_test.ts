@@ -19,7 +19,10 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
-import { readInstalledExtensionDigest } from "./installed_extension_digest_reader.ts";
+import {
+  installedDigestMatches,
+  readInstalledExtensionDigest,
+} from "./installed_extension_digest_reader.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp_digest_test_" });
@@ -128,4 +131,94 @@ Deno.test("readInstalledExtensionDigest: empty directory produces a stable diges
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     );
   });
+});
+
+// ---- nested entry roots (swamp-club#2723) ----
+
+async function writeTree(root: string, files: Record<string, string>) {
+  for (const [rel, content] of Object.entries(files)) {
+    const path = join(root, ...rel.split("/"));
+    await Deno.mkdir(join(path, ".."), { recursive: true });
+    await Deno.writeTextFile(path, content);
+  }
+}
+
+Deno.test("readInstalledExtensionDigest: a root with no nested entries hashes as before", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      "models/a.ts": "export const a = 1;\n",
+      "models/sub/b.ts": "b\n",
+      "manifest.yaml": "name: x\n",
+    });
+    // Pinned from the reader before nested-root exclusion existed.
+    const golden =
+      "3005ac7db2817ffd05b2e940b0660557d5f047810282ae4599569ecb228dd0e6";
+    assertEquals(await readInstalledExtensionDigest(dir), golden);
+    assertEquals(
+      await readInstalledExtensionDigest(dir, { excludeRelDirs: [] }),
+      golden,
+    );
+  });
+});
+
+Deno.test("readInstalledExtensionDigest: leaves out nested entry roots", async () => {
+  await withTempDir(async (dir) => {
+    const parent = join(dir, "parent");
+    const alone = join(dir, "alone");
+    const files = { "models/a.ts": "a", "manifest.yaml": "name: parent" };
+    await writeTree(parent, files);
+    await writeTree(alone, files);
+    await writeTree(parent, {
+      "child/models/c.ts": "c",
+      "deep/er/models/d.ts": "d",
+    });
+
+    const withChild = await readInstalledExtensionDigest(parent, {
+      excludeRelDirs: ["child", "deep/er"],
+    });
+    assertEquals(withChild, await readInstalledExtensionDigest(alone));
+
+    await Deno.writeTextFile(join(parent, "child", "models", "c.ts"), "c2");
+    assertEquals(
+      await readInstalledExtensionDigest(parent, {
+        excludeRelDirs: ["child", "deep/er"],
+      }),
+      withChild,
+    );
+  });
+});
+
+Deno.test("installedDigestMatches: accepts the legacy whole-tree digest only for roots with nested entries", async () => {
+  await withTempDir(async (dir) => {
+    await writeTree(dir, {
+      "models/a.ts": "a",
+      "child/models/c.ts": "c",
+    });
+    const legacy = await readInstalledExtensionDigest(dir);
+    const current = await readInstalledExtensionDigest(dir, {
+      excludeRelDirs: ["child"],
+    });
+    assertNotEquals(legacy, current);
+
+    assertEquals(await installedDigestMatches(dir, current!, ["child"]), true);
+    assertEquals(await installedDigestMatches(dir, legacy!, ["child"]), true);
+    // With no nested entries there is nothing legacy to accept.
+    assertEquals(await installedDigestMatches(dir, current!, []), false);
+    assertEquals(await installedDigestMatches(dir, "other", ["child"]), false);
+
+    await Deno.writeTextFile(join(dir, "models", "a.ts"), "edited");
+    assertEquals(await installedDigestMatches(dir, legacy!, ["child"]), false);
+    assertEquals(await installedDigestMatches(dir, current!, ["child"]), false);
+  });
+});
+
+Deno.test("installedDigestMatches: returns null when the root is missing", async () => {
+  assertEquals(
+    await installedDigestMatches(
+      "/tmp/definitely-does-not-exist-" + crypto.randomUUID(),
+      "x",
+      [],
+    ),
+    null,
+  );
 });

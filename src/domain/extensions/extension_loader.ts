@@ -77,6 +77,7 @@ import {
   type ExtensionContributor,
   isPulledExtensionPath,
 } from "./extension_precedence.ts";
+import { isStagingEntryName } from "./install_journal.ts";
 
 /**
  * Build the dynamic import() URL for a bundle file, keyed on the bundle's
@@ -1679,7 +1680,18 @@ export class ExtensionLoader {
     const bundleDir = this.resolveBundlePath();
     if (!bundleDir) return;
     try {
-      await Deno.remove(bundleDir, { recursive: true });
+      // Every entry but install staging, which belongs to an install in
+      // flight or to its crash recovery (swamp-club#2723).
+      for await (const entry of Deno.readDir(bundleDir)) {
+        if (isStagingEntryName(entry.name)) continue;
+        try {
+          await Deno.remove(join(bundleDir, entry.name), { recursive: true });
+        } catch (error) {
+          // Moved or removed since the listing (an install's swap):
+          // nothing left to evict, and the rest still are.
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      }
       this.logger
         .info`Evicted stale bundles for ${this.adapter.kind}: ${bundleDir}`;
     } catch (error) {

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
 import {
   type DatastoreExpressionContext,
   resolveDatastoreExpressions,
@@ -334,4 +335,36 @@ Deno.test("resolveDatastoreExpressions: deeply nested config resolves at all lev
       level1: { level2: { level3: { secret: "deep-val" } } },
     });
   });
+});
+
+Deno.test("resolveDatastoreExpressions: never imports bundles from install staging", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_ds_expr_staging_" });
+  try {
+    const marker = `__swamp_staging_imported_${
+      crypto.randomUUID().slice(0, 8)
+    }`;
+    const staging = join(
+      repoDir,
+      ".swamp",
+      "vault-bundles",
+      `.swamp-staging-${crypto.randomUUID()}`,
+    );
+    await Deno.mkdir(staging, { recursive: true });
+    const source =
+      `globalThis["${marker}"] = true;\nexport const vault = {};\n`;
+    await Deno.writeTextFile(join(staging, "v.js"), source);
+
+    await assertRejects(
+      () =>
+        resolveDatastoreExpressions(
+          { token: "${{ vault.get(missing, key) }}" },
+          { repoDir },
+        ),
+      UserError,
+    );
+    assertEquals((globalThis as Record<string, unknown>)[marker], undefined);
+    assertEquals(await Deno.readTextFile(join(staging, "v.js")), source);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
 });

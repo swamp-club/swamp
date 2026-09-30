@@ -338,3 +338,25 @@ Deno.test("removeEmptyDirs: removes empty siblings but preserves occupied dir", 
     assertEquals(await exists(join(dir, "occupied", "file")), true);
   });
 });
+
+Deno.test("mergeDirInto: leaves install staging in the source", async () => {
+  await withTempDir(async (root) => {
+    const src = join(root, "src");
+    const dst = join(root, "dst");
+    const staging = join(src, `.swamp-staging-${crypto.randomUUID()}`);
+    await ensureDir(join(src, "ns1"));
+    await ensureDir(join(staging, "new", "1"));
+    await ensureDir(dst);
+    await Deno.writeTextFile(join(src, "ns1", "a.js"), "a");
+    await Deno.writeTextFile(join(staging, "new", "1", "b.js"), "b");
+
+    const result = await mergeDirInto(src, dst);
+    assertEquals(result.moved, 1);
+    assertEquals(await exists(join(dst, "ns1", "a.js")), true);
+    assertEquals(await exists(join(staging, "new", "1", "b.js")), true);
+    assertEquals(
+      await findFileCollisions(src, dst),
+      [],
+    );
+  });
+});

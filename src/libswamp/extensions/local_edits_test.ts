@@ -158,3 +158,91 @@ Deno.test("LocalEditsError: message names the extension and the remediation", ()
   assertEquals(err.name, "LocalEditsError");
   assert(err instanceof UserError);
 });
+
+// ---- nested entry roots (swamp-club#2723) ----
+
+async function writeNestedLockfile(
+  lockfilePath: string,
+  parentChecksum: string,
+): Promise<void> {
+  await Deno.writeTextFile(
+    lockfilePath,
+    JSON.stringify(
+      {
+        [EXT_NAME]: {
+          version: "1.0.0",
+          pulledAt: new Date().toISOString(),
+          filesChecksum: parentChecksum,
+        },
+        [`${EXT_NAME}/child`]: {
+          version: "1.0.0",
+          pulledAt: new Date().toISOString(),
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+}
+
+Deno.test("detectLocalEditsForExtension: a nested entry's files do not count as the parent's edits", async () => {
+  await withRepo(async (repoDir, lockfilePath, extRoot) => {
+    await Deno.mkdir(join(extRoot, "models"), { recursive: true });
+    await Deno.writeTextFile(join(extRoot, "models", "foo.ts"), "content");
+    const anchor = await readInstalledExtensionDigest(extRoot);
+    assert(anchor !== null);
+    await writeNestedLockfile(lockfilePath, anchor);
+
+    // Installing the nested entry adds files under the parent's root.
+    await Deno.mkdir(join(extRoot, "child", "models"), { recursive: true });
+    await Deno.writeTextFile(join(extRoot, "child", "models", "c.ts"), "c");
+
+    assertEquals(
+      await detectLocalEditsForExtension(repoDir, EXT_NAME, lockfilePath),
+      "match",
+    );
+  });
+});
+
+Deno.test("detectLocalEditsForExtension: a parent digest stored with its nested entry still matches", async () => {
+  await withRepo(async (repoDir, lockfilePath, extRoot) => {
+    await Deno.mkdir(join(extRoot, "models"), { recursive: true });
+    await Deno.writeTextFile(join(extRoot, "models", "foo.ts"), "content");
+    await Deno.mkdir(join(extRoot, "child", "models"), { recursive: true });
+    await Deno.writeTextFile(join(extRoot, "child", "models", "c.ts"), "c");
+    // Stored before nested roots were left out: the whole tree.
+    const legacy = await readInstalledExtensionDigest(extRoot);
+    assert(legacy !== null);
+    await writeNestedLockfile(lockfilePath, legacy);
+
+    assertEquals(
+      await detectLocalEditsForExtension(repoDir, EXT_NAME, lockfilePath),
+      "match",
+    );
+
+    await Deno.writeTextFile(join(extRoot, "models", "foo.ts"), "edited");
+    assertEquals(
+      await detectLocalEditsForExtension(repoDir, EXT_NAME, lockfilePath),
+      "mismatch",
+    );
+  });
+});
+
+Deno.test("detectLocalEditsForExtension: an extra file in the root is a local edit", async () => {
+  await withRepo(async (repoDir, lockfilePath, extRoot) => {
+    await Deno.mkdir(join(extRoot, "models"), { recursive: true });
+    await Deno.writeTextFile(join(extRoot, "models", "foo.ts"), "content");
+    const anchor = await readInstalledExtensionDigest(extRoot);
+    assert(anchor !== null);
+    await writeLockfile(lockfilePath, {
+      version: "1.0.0",
+      pulledAt: new Date().toISOString(),
+      filesChecksum: anchor,
+    });
+    await Deno.writeTextFile(join(extRoot, "models", "mine.ts"), "user file");
+    assertEquals(
+      await detectLocalEditsForExtension(repoDir, EXT_NAME, lockfilePath),
+      "mismatch",
+    );
+  });
+});
