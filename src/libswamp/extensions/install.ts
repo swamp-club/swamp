@@ -31,7 +31,10 @@ import { assertContainedPath } from "../../infrastructure/persistence/safe_path.
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-import { refreshManagedLockfile } from "./managed_lockfile_transaction.ts";
+import {
+  ManagedLockfileUnpublishedError,
+  refreshManagedLockfile,
+} from "./managed_lockfile_transaction.ts";
 import {
   type ExtensionRef,
   type InstallContext,
@@ -174,6 +177,8 @@ export async function* extensionInstall(
       await refreshManagedLockfile(lockfileRepository);
       const upstream = lockfileRepository.getAllEntries();
       const entries: ExtensionInstallEntry[] = [];
+      // A publish that failed after an install landed (swamp-club#2838).
+      let unpublished: ManagedLockfileUnpublishedError | undefined;
       let installed = 0;
       let migrated = 0;
       let upToDate = 0;
@@ -284,7 +289,17 @@ export async function* extensionInstall(
           }
           const ref = parseExtensionRef(`${name}@${version}`);
           const install = deps.installExtensionFn ?? installExtension;
-          const result = await install(ref, installCtx);
+          let result: InstallResult | undefined;
+          try {
+            result = await install(ref, installCtx);
+          } catch (error) {
+            // Installed and recorded; only the datastore publish failed.
+            // Count it as done and raise the error after the report.
+            if (!(error instanceof ManagedLockfileUnpublishedError)) {
+              throw error;
+            }
+            unpublished ??= error;
+          }
 
           // For migrations, sweep the original legacy paths now that the
           // current-layout files are on disk. installExtension has already
@@ -333,6 +348,7 @@ export async function* extensionInstall(
         kind: "completed",
         data: { entries, installed, migrated, upToDate, failed },
       };
+      if (unpublished) throw unpublished;
     })(),
   );
 }

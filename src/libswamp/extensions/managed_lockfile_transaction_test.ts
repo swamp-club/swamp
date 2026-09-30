@@ -31,6 +31,7 @@ import {
 import {
   inManagedLockfileTransaction,
   ManagedLockfileTransaction,
+  ManagedLockfileUnpublishedError,
   refreshManagedLockfile,
   withManagedLockfileTransaction,
 } from "./managed_lockfile_transaction.ts";
@@ -91,13 +92,18 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
           read: () => Promise.resolve(pending.value),
           write: (
             delta: LockfileEntryDelta,
-            options?: { incomplete?: boolean },
+            options?: { incomplete?: { base: UpstreamExtensionsMap } },
           ) => {
             events.push(
               options?.incomplete ? "pending-ahead" : "pending-write",
             );
             pending.value = options?.incomplete
-              ? { kind: "delta", delta, incomplete: true }
+              ? {
+                kind: "delta",
+                delta,
+                incomplete: true,
+                base: options.incomplete.base,
+              }
               : { kind: "delta", delta };
             return Promise.resolve();
           },
@@ -155,7 +161,8 @@ Deno.test("ManagedLockfileTransaction.run: a change that writes nothing publishe
   await withHarness(async (h) => {
     h.remote.entries = { "@peer/p": entry("1") };
     await h.transaction().refresh();
-    assertEquals(h.events, ["acquire", "hydrate", "pending-ahead", "release"]);
+    // A read writes no record.
+    assertEquals(h.events, ["acquire", "hydrate", "release"]);
     assertEquals(h.pending.value, { kind: "none" });
     assertEquals(await readUpstreamExtensions(h.lockfilePath), {
       "@peer/p": entry("1"),
@@ -401,7 +408,12 @@ Deno.test("ManagedLockfileTransaction.run: a pending change is published even wh
           read: () => Promise.resolve(pending.value),
           write: (delta, options) => {
             pending.value = options?.incomplete
-              ? { kind: "delta", delta, incomplete: true }
+              ? {
+                kind: "delta",
+                delta,
+                incomplete: true,
+                base: options.incomplete.base,
+              }
               : { kind: "delta", delta };
             return Promise.resolve();
           },
@@ -462,7 +474,12 @@ Deno.test("ManagedLockfileTransaction.run: a second failed publish keeps the fir
           read: () => Promise.resolve(pending.value),
           write: (delta, options) => {
             pending.value = options?.incomplete
-              ? { kind: "delta", delta, incomplete: true }
+              ? {
+                kind: "delta",
+                delta,
+                incomplete: true,
+                base: options.incomplete.base,
+              }
               : { kind: "delta", delta };
             return Promise.resolve();
           },
@@ -508,6 +525,7 @@ Deno.test("ManagedLockfileTransaction.run: a change interrupted before it settle
       kind: "delta",
       delta: { upserts: {}, removals: [] },
       incomplete: true,
+      base: {},
     };
     h.pending.value = interrupted;
     h.remote.entries = { "@peer/p": entry("1") };
@@ -516,5 +534,49 @@ Deno.test("ManagedLockfileTransaction.run: a change interrupted before it settle
 
     assertEquals(Object.keys(h.remote.entries).sort(), ["@me/x", "@peer/p"]);
     assertEquals<PendingLockfilePublish>(h.pending.value, { kind: "none" });
+  });
+});
+
+Deno.test("ManagedLockfileTransaction.run: recovering an interrupted change replays only what it changed, not a peer's later upgrade", async () => {
+  await withHarness(async (h) => {
+    // Interrupted while installing @me/new, when @peer/p was at v1.
+    await new LockfileRepository(h.lockfilePath).replaceAll({
+      "@peer/p": entry("1"),
+      "@me/new": entry("1"),
+    });
+    const interrupted: PendingLockfilePublish = {
+      kind: "delta",
+      delta: { upserts: {}, removals: [] },
+      incomplete: true,
+      base: { "@peer/p": entry("1") },
+    };
+    h.pending.value = interrupted;
+    // The peer upgraded @peer/p meanwhile.
+    h.remote.entries = { "@peer/p": entry("2") };
+
+    await h.transaction().refresh();
+
+    assertEquals(h.remote.entries, {
+      "@peer/p": entry("2"),
+      "@me/new": entry("1"),
+    });
+  });
+});
+
+Deno.test("ManagedLockfileTransaction.run: a failed publish surfaces as ManagedLockfileUnpublishedError", async () => {
+  await withHarness(async (h) => {
+    h.failPublish.value = true;
+    await assertRejects(
+      () =>
+        h.transaction().run(async () => {
+          await (await LockfileRepository.create(h.lockfilePath)).writeEntry(
+            "@me/x",
+            "1",
+            [],
+          );
+        }),
+      ManagedLockfileUnpublishedError,
+      "datastore unreachable",
+    );
   });
 });

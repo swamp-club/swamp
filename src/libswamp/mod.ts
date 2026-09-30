@@ -1041,6 +1041,7 @@ export {
   type ManagedLockfileSyncPort,
   ManagedLockfileTransaction,
   type ManagedLockfileTransactionOptions,
+  ManagedLockfileUnpublishedError,
   type PendingLockfileDeltaStore,
   withManagedLockfileTransaction,
 } from "./extensions/managed_lockfile_transaction.ts";

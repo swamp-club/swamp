@@ -423,7 +423,14 @@ function lazyLockfileTransaction(
   build: () => Promise<LockfileTransaction>,
 ): LockfileTransaction {
   let built: Promise<LockfileTransaction> | undefined;
-  const transaction = () => built ??= build();
+  // A failed build is not kept: the next change, say the next extension
+  // in a restore loop, tries again rather than repeating one transient
+  // failure.
+  const transaction = () =>
+    built ??= build().catch((error) => {
+      built = undefined;
+      throw error;
+    });
   return {
     lockfilePath,
     run: async (fn) => await (await transaction()).run(fn),

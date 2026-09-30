@@ -1893,7 +1893,11 @@ itself (a `LockfileDelta`) in `.swamp/managed-config-lockfile-unpublished`
 (`pending_lockfile_publish.ts`), and the error names `swamp extension install`
 as the retry. Any later lockfile transaction fetches the datastore's lockfile,
 replays the recorded change onto it and publishes, whether or not it changed
-anything itself, then clears the record. `datastore sync --push` and a full
+anything itself, then clears the record. Commands that report a result per
+extension (`extension install`'s restore, `extension update`,
+`doctor extensions --repair`) count an extension whose only failure was the
+publish as done, and exit non-zero with the publish error after the report.
+`datastore sync --push` and a full
 `datastore sync` clear only a record from an older swamp that holds no change
 (swamp-club#2838).
 

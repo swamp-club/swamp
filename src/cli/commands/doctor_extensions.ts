@@ -54,6 +54,7 @@ import {
   type DoctorRegistryDeps,
   type DoctorRescanSkipped,
   extensionMemberDoctorDeps,
+  ManagedLockfileUnpublishedError,
   ReconcileFromDiskService,
   type ReconcileTransition,
   repairExtensions,
@@ -93,10 +94,7 @@ import {
   requireRepoMarker,
   resolveManagedConfigPaths,
 } from "../repo_context.ts";
-import {
-  createManagedLockfileTransaction,
-  ManagedConfigUnpublishedError,
-} from "../managed_config_sync.ts";
+import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import {
   type DatastoreEnvReader,
   isExtensionBackedDatastore,
@@ -373,7 +371,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
     // A repair re-pull can rewrite the lockfile; it is made against the
     // datastore's lockfile and published as it lands, like the other
     // extension writers (swamp-club#2838).
-    let unpublishedRepair: ManagedConfigUnpublishedError | undefined;
+    let unpublishedRepair: ManagedLockfileUnpublishedError | undefined;
     const lockfileTransaction = repair && !rescanSkipped && !dryRun
       ? createManagedLockfileTransaction(repoDir, marker, {
         lockfilePath,
@@ -496,7 +494,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
                     // Installed, with only the lockfile publish pending:
                     // the repair succeeded, and the publish error is
                     // raised once the repair finishes (swamp-club#2838).
-                    if (error instanceof ManagedConfigUnpublishedError) {
+                    if (error instanceof ManagedLockfileUnpublishedError) {
                       unpublishedRepair ??= error;
                       return true;
                     }

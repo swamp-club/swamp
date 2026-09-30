@@ -440,6 +440,7 @@ Deno.test("LockfileRepository.restoreEntries: re-reads disk under the lock and r
     await assertRejects(() => Deno.lstat(`${path}.lock`), Deno.errors.NotFound);
   });
 });
+
 Deno.test("LockfileRepository.replaceAll: writes exactly the given entries and updates the cache", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "upstream_extensions.json");

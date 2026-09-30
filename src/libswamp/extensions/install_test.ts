@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import {
@@ -31,6 +31,7 @@ import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cle
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { InstallContext } from "./pull.ts";
+import { ManagedLockfileUnpublishedError } from "./managed_lockfile_transaction.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 
@@ -2427,6 +2428,60 @@ Deno.test(
         assertEquals(completed.data.upToDate, 1);
         assertEquals(completed.data.entries[0].status, "failed");
         assertEquals(completed.data.entries[1].status, "up_to_date");
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: an entry whose only failure is the lockfile publish counts as installed, then the restore rejects (swamp-club#2838)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp-install-2838-" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@me/missing": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [".swamp/pulled-extensions/@me/missing/models/m.ts"],
+          },
+        }),
+      );
+      const events: ExtensionInstallEvent[] = [];
+
+      await assertRejects(
+        async () => {
+          for await (
+            const event of extensionInstall(createLibSwampContext({}), {
+              lockfilePath,
+              repoDir: tmpDir,
+              createInstallContext: () =>
+                makeStubInstallContext(tmpDir, lockfilePath),
+              installExtensionFn: () =>
+                Promise.reject(
+                  new ManagedLockfileUnpublishedError(
+                    new Error("push refused"),
+                  ),
+                ),
+            })
+          ) {
+            events.push(event);
+          }
+        },
+        ManagedLockfileUnpublishedError,
+        "push refused",
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.failed, 0);
+        assertEquals(completed.data.installed, 1);
+        assertEquals(completed.data.entries[0].status, "installed");
       }
     } finally {
       await Deno.remove(tmpDir, { recursive: true });

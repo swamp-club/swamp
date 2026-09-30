@@ -33,7 +33,10 @@ import { validationFailed } from "../errors.ts";
 import type { InstallResult, ShadowedTypeInfo } from "./pull.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-import { refreshManagedLockfile } from "./managed_lockfile_transaction.ts";
+import {
+  ManagedLockfileUnpublishedError,
+  refreshManagedLockfile,
+} from "./managed_lockfile_transaction.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 function resolveServerUrl(): string {
@@ -259,6 +262,7 @@ export async function* extensionUpdate(
 
       // Update mode
       const finalStatuses: ExtensionUpdateStatus[] = [];
+      let unpublished: ManagedLockfileUnpublishedError | undefined;
       for (const s of statuses) {
         if (s.status === "update_available") {
           yield {
@@ -269,11 +273,23 @@ export async function* extensionUpdate(
           };
 
           try {
-            const result = await deps.installExtension(
-              s.name,
-              s.latestVersion,
-              upstream[s.name]?.channel,
-            );
+            let result: Awaited<ReturnType<typeof deps.installExtension>>;
+            try {
+              result = await deps.installExtension(
+                s.name,
+                s.latestVersion,
+                upstream[s.name]?.channel,
+              );
+            } catch (error) {
+              // Updated and recorded; only the datastore publish failed.
+              // Count it as updated and raise the error after the report
+              // (swamp-club#2838).
+              if (!(error instanceof ManagedLockfileUnpublishedError)) {
+                throw error;
+              }
+              unpublished ??= error;
+              result = undefined;
+            }
             if (result && result.pruned.length > 0) {
               yield {
                 kind: "orphans-pruned",
@@ -336,6 +352,7 @@ export async function* extensionUpdate(
         data: buildUpdateResult(finalStatuses),
         mode: "update",
       };
+      if (unpublished) throw unpublished;
     })(),
   );
 }

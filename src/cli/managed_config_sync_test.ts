@@ -42,6 +42,7 @@ import { UserError } from "../domain/errors.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { readLockfilePublishPending } from "../infrastructure/persistence/pending_lockfile_publish.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
+import { ManagedLockfileUnpublishedError } from "../libswamp/mod.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import type {
@@ -568,7 +569,7 @@ Deno.test("buildManagedLockfileTransaction: an unreachable datastore lock throws
   });
 });
 
-Deno.test("buildManagedLockfileTransaction: a failed publish throws ManagedConfigUnpublishedError and leaves the change pending", async () => {
+Deno.test("buildManagedLockfileTransaction: a failed publish throws ManagedLockfileUnpublishedError and leaves the change pending", async () => {
   await withLockfileTxnDirs(async (repoDir, cacheDir) => {
     const { service } = createLockfileSyncService(cacheDir, { lockfile: null });
     (service as unknown as { pushChanged: () => Promise<number> })
@@ -596,7 +597,7 @@ Deno.test("buildManagedLockfileTransaction: a failed publish throws ManagedConfi
           const repo = await LockfileRepository.create(lockfilePath);
           await repo.writeEntry("@me/x", "1", []);
         }),
-      ManagedConfigUnpublishedError,
+      ManagedLockfileUnpublishedError,
       "push refused",
     );
     // A plain `datastore sync --push` would publish the local copy without
