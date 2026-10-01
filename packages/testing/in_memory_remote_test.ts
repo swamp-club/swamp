@@ -547,15 +547,24 @@ Deno.test("createInMemoryRemote: pins that a mark of the cache root uploads ever
   });
 });
 
-Deno.test("createInMemoryRemote: pins that an absolute mark is nested under the cache, so its file is never pushed", async () => {
-  await withTempDir(async (dir) => {
-    const { remote, a, aCache } = await twoMachines(dir);
-    await write(aCache, "f", "1");
-    // join(cachePath, "/abs/...") nests the path, so the walk finds nothing.
-    await a.markDirty({ relPath: join(aCache, "f") });
-    assertEquals(await a.pushChanged(), 0);
-    assertEquals(remote.files().size, 0);
-  });
+Deno.test({
+  name:
+    "createInMemoryRemote: pins that an absolute mark is nested under the cache, so its file is never pushed",
+  // A drive-letter path nested under the cache is not a valid Windows path,
+  // and the extensions' `/`-only containment check sends every Windows mark
+  // to bulk anyway (swamp-club#2573), so this POSIX behaviour has no Windows
+  // counterpart to pin.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const { remote, a, aCache } = await twoMachines(dir);
+      await write(aCache, "f", "1");
+      // join(cachePath, "/abs/...") nests the path, so the walk finds nothing.
+      await a.markDirty({ relPath: join(aCache, "f") });
+      assertEquals(await a.pushChanged(), 0);
+      assertEquals(remote.files().size, 0);
+    });
+  },
 });
 
 Deno.test("createInMemoryRemote: a peer's commit between prepare and commit is still pulled afterwards", async () => {

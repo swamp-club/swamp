@@ -751,7 +751,11 @@ for (
               terminateProcessTree: true,
             });
             await waitFor(() => pidWritten(readPid), "grandchild pid file");
-            const shPid = Number((await Deno.readTextFile(shPidFile)).trim());
+            // sh writes its own pid after the grandchild's, so wait for it too.
+            const readShPid = async () =>
+              Number((await Deno.readTextFile(shPidFile)).trim());
+            await waitFor(() => pidWritten(readShPid), "sh pid file");
+            const shPid = await readShPid();
             await waitFor(() => !isProcessAlive(shPid), "sh to exit");
             controller.abort();
 
