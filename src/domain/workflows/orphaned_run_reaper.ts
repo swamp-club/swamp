@@ -162,13 +162,15 @@ export interface OwnerLiveness {
 }
 
 /**
- * Whether a tracker row says its owner is gone. The row must be owned on
- * this host, and either already reaped as `interrupted` (a local row is
- * reaped only once its pid is dead) or `running` with a dead pid. Rows the
- * owner settled itself (completed, failed, cancelled, suspended) never
- * count, and neither do rows owned elsewhere, which the tracker reaps on
- * heartbeat age alone. So this is safe to ask while other swamp processes
- * are running.
+ * Whether a tracker row says its owner is gone: the row is owned on this
+ * host, is `running` or already reaped as `interrupted`, and its pid is
+ * dead. The pid is checked for an `interrupted` row too, because the reaper
+ * that marked it may not have checked it: a serve instance reaps another
+ * instance's row on heartbeat age alone, even when both share this host and
+ * its tracker. Rows the owner settled itself (completed, failed, cancelled,
+ * suspended) never count, and neither do rows owned elsewhere. So this is
+ * safe to ask while other swamp processes are running; a reused pid can
+ * only make a dead owner look alive.
  */
 export function trackerShowsDeadOwner(
   tracked: ActiveRun | null,
@@ -178,8 +180,8 @@ export function trackerShowsDeadOwner(
   if (!tracked.isLocalTo(liveness.hostname, liveness.instanceId)) {
     return false;
   }
-  if (tracked.status === "interrupted") return true;
-  return tracked.status === "running" && liveness.isDead(tracked.pid);
+  return (tracked.status === "running" || tracked.status === "interrupted") &&
+    liveness.isDead(tracked.pid);
 }
 
 /**

@@ -480,7 +480,7 @@ function stubs(stored: WorkflowRun[], rows: ActiveRun[]): {
   };
 }
 
-Deno.test("trackerShowsDeadOwner: only an interrupted row or a local running row with a dead pid counts", () => {
+Deno.test("trackerShowsDeadOwner: only a local running or interrupted row with a dead pid counts", () => {
   const id = crypto.randomUUID();
   const check = liveness([4242]);
   assertEquals(trackerShowsDeadOwner(null, check), false);
@@ -491,6 +491,15 @@ Deno.test("trackerShowsDeadOwner: only an interrupted row or a local running row
   assertEquals(trackerShowsDeadOwner(trackerRow(id), check), true);
   assertEquals(
     trackerShowsDeadOwner(trackerRow(id, { pid: 7 }), check),
+    false,
+  );
+  // Reaped on heartbeat age by another serve instance on this host, while
+  // its owner is still alive: the pid decides, not the status.
+  assertEquals(
+    trackerShowsDeadOwner(
+      trackerRow(id, { pid: 7, status: "interrupted" }),
+      check,
+    ),
     false,
   );
   assertEquals(
@@ -662,12 +671,35 @@ Deno.test("settleDeadOwnerRun: interrupts a running run whose tracker row was al
     runTracker,
     WORKFLOW_ID,
     run.id,
-    liveness(),
+    liveness([4242]),
   );
 
   assertEquals(settled, true);
   assertEquals(run.status, "interrupted");
   assertEquals(recorded.saved.length, 1);
+});
+
+Deno.test("settleDeadOwnerRun: leaves a running run whose interrupted row's owner is still alive", async () => {
+  // Another serve instance on this host reaped the row on heartbeat age
+  // alone (a stalled event loop), while its owner is still executing.
+  const run = makeRun({ pid: 4242 });
+  const { runRepo, runTracker, recorded } = stubs(
+    [run],
+    [trackerRow(run.id, { pid: 4242, status: "interrupted" })],
+  );
+
+  const settled = await settleDeadOwnerRun(
+    runRepo,
+    runTracker,
+    WORKFLOW_ID,
+    run.id,
+    liveness(),
+  );
+
+  assertEquals(settled, false);
+  assertEquals(run.status, "running");
+  assertEquals(recorded.saved, []);
+  assertEquals(recorded.completed, []);
 });
 
 Deno.test("settleDeadOwnerRun: leaves a run whose owner is alive, remote or untracked", async () => {

@@ -96,10 +96,12 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    `interrupt_reason: owner_process_dead`, through `settleDeadOwnerRun`
    (`src/domain/workflows/orphaned_run_reaper.ts`). Because they run while
    other swamp processes may be live, they trust only a row owned on this
-   host that is `interrupted` (a local row is reaped only once its pid is
-   dead) or `running` with a dead pid, never a row the owner settled itself.
-   A row from another host is reaped on its heartbeat age alone, so it never
-   counts; that host's own `run doctor` settles its runs. They re-read the
+   host that is `running` or `interrupted` and whose pid is dead, never a row
+   the owner settled itself. The pid is checked for an `interrupted` row too:
+   a serve instance reaps another instance's row on heartbeat age alone, even
+   on the same host, so a stalled but live owner can be marked `interrupted`.
+   A row from another host never counts; that host's own `run doctor` settles
+   its runs. They re-read the
    record and write it only while it is still `running` under that pid. A
    record with no row is left alone: it carries no hostname, so on a shared
    datastore its pid says nothing about whether it is alive.
