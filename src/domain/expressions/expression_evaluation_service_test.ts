@@ -1707,26 +1707,30 @@ Deno.test("resolveRuntimeExpressionsInDefinition: sanitizes mixed runtime expres
         run: {
           arguments: {
             run:
-              '${{ env["HOME"] + ":" + data.latest("db", "creds").attributes.token }}',
+              '${{ env["SWAMP_TEST_MIXED_HOME"] + ":" + data.latest("db", "creds").attributes.token }}',
             len:
-              '${{ env["HOME"] + ":" + string(size(self.globalArguments.tok)) }}',
+              '${{ env["SWAMP_TEST_MIXED_HOME"] + ":" + string(size(self.globalArguments.tok)) }}',
           },
         },
       },
     });
-    const result = await service.resolveRuntimeExpressionsInDefinition(
-      definition,
-      undefined,
-      sensitiveDataContext({ count: 0 }),
-      "unrestricted",
-      { secretBag: bag, rawGlobalArguments: { tok: SENSITIVE } },
+    const result = await withMockedEnv(
+      { SWAMP_TEST_MIXED_HOME: "/tmp/test-home-mixed" },
+      () =>
+        service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          sensitiveDataContext({ count: 0 }),
+          "unrestricted",
+          { secretBag: bag, rawGlobalArguments: { tok: SENSITIVE } },
+        ),
     );
     assertEquals(result.secretBag, bag);
     const args = result.definition.getMethodArguments("run");
     const run = args.run as string;
     assertEquals(run.includes(SENSITIVE), false);
-    assertEquals(bag.resolveRaw(run), `${Deno.env.get("HOME")}:${SENSITIVE}`);
+    assertEquals(bag.resolveRaw(run), `/tmp/test-home-mixed:${SENSITIVE}`);
     // self.globalArguments is bound to the real value, not the sentinel.
-    assertEquals(args.len, `${Deno.env.get("HOME")}:${SENSITIVE.length}`);
+    assertEquals(args.len, `/tmp/test-home-mixed:${SENSITIVE.length}`);
   });
 });

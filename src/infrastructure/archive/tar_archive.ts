@@ -108,7 +108,8 @@ function untarGz(
   // `pipeThrough` typings on `ReadableStream<Uint8Array>` are tighter than
   // what `DecompressionStream` accepts as its writable side; cast to the
   // BufferSource-shaped stream that `DecompressionStream` actually needs.
-  const compressed = source as unknown as ReadableStream<BufferSource>;
+  const readable = signal ? cancelOnAbort(source, signal) : source;
+  const compressed = readable as unknown as ReadableStream<BufferSource>;
   let decompressed = compressed
     .pipeThrough(new DecompressionStream("gzip"), { signal })
     .pipeThrough(toUint8ArrayStream());
@@ -118,6 +119,39 @@ function untarGz(
     );
   }
   return decompressed.pipeThrough(new UntarStream());
+}
+
+/**
+ * Reads `source` through a reader that `signal` cancels directly. Aborting a
+ * pipe cancels its source only once the pending write settles, and a write
+ * into a backpressured `DecompressionStream` never settles after the consumer
+ * stops reading, which left a file-backed source's handle open (seen on
+ * Windows).
+ */
+function cancelOnAbort(
+  source: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
+  const onAbort = () => {
+    reader.cancel(signal.reason).catch(() => {});
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        signal.removeEventListener("abort", onAbort);
+        controller.close();
+      } else {
+        controller.enqueue(value);
+      }
+    },
+    cancel(reason) {
+      signal.removeEventListener("abort", onAbort);
+      return reader.cancel(reason);
+    },
+  }, { highWaterMark: 0 });
 }
 
 /**
