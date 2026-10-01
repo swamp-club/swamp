@@ -603,7 +603,7 @@ async function seedDetachedNestedRun(
     workflowName: "secret-wf",
     runId: secretRunId,
   });
-  run.cancel("stop");
+  run.endAsCancelled("stop");
   await new YamlWorkflowRunRepository(dir).save(workflow.id, run);
   return workflow;
 }

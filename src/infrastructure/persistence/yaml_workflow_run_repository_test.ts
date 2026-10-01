@@ -1410,7 +1410,7 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the IDs of the run
     const workflow = createTestWorkflow();
     const finished = WorkflowRun.create(workflow);
     finished.start();
-    finished.cancel("test");
+    finished.endAsCancelled("test");
     await repo.save(workflow.id, finished);
     const running = WorkflowRun.create(workflow);
     running.start();
@@ -1474,7 +1474,7 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: never reports a run ID tha
     for (const badId of ["", "..", "a/b"]) {
       const run = WorkflowRun.create(workflow);
       run.start();
-      run.cancel("test");
+      run.endAsCancelled("test");
       await repo.save(workflow.id, run);
       // Rewrite the persisted ID as a tampered or corrupt record would.
       const path = repo.getPath(workflow.id, run.id);
@@ -1506,7 +1506,7 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the deleted file's
     const workflow = createTestWorkflow();
     const finished = WorkflowRun.create(workflow);
     finished.start();
-    finished.cancel("test");
+    finished.endAsCancelled("test");
     await repo.save(workflow.id, finished);
     // The body names another, live run.
     const liveRunId = crypto.randomUUID();

@@ -14476,15 +14476,17 @@ Deno.test("resume cleanup: a job a resume never started whose remaining steps ar
     );
 
     // Nothing failed, so the abort lands between levels as in a first run:
-    // the teardown is never reached.
+    // the teardown is never reached, and the cancel settles it unstarted.
     assertEquals(run.status, "cancelled");
     assertEquals(run.getJob("main")!.status, "succeeded");
     const post = run.getJob("main")!.getStep("post")!;
     assertEquals(post.status, "skipped");
     assertEquals(post.settledByAbort, true);
-    assertEquals(run.getJob("teardown")!.status, "pending");
+    assertEquals(run.getJob("teardown")!.status, "failed");
+    assertCancelledBeforeStart(run, "teardown", ["t"]);
     assertEquals(executor.count("teardown/t"), 0);
-    assertEquals(run.getJob("audit")!.status, "pending");
+    assertEquals(run.getJob("audit")!.status, "failed");
+    assertCancelledBeforeStart(run, "audit", ["t"]);
     assertEquals(executor.count("audit/t"), 0);
   });
 });
@@ -14595,8 +14597,9 @@ Deno.test("resume cleanup: a --from resume aborted before it starts settles a jo
     assertCancelledBeforeStart(run, "main", ["post"]);
     assertEquals(executor.count("main/post"), 0);
     // s ran once, before the suspension; the aborted level starts it again
-    // no more than main.
-    assertEquals(run.getJob("side")!.status, "pending");
+    // no more than main, and the cancel settles the job it reset.
+    assertEquals(run.getJob("side")!.status, "failed");
+    assertCancelledBeforeStart(run, "side", ["s"]);
     assertEquals(executor.count("side/s"), 1);
     assertEquals(run.getJob("teardown")!.status, "succeeded");
     assertEquals(executor.count("teardown/t"), 1);
@@ -16519,7 +16522,7 @@ Deno.test("cancel: a parent cancelled while it waits detaches the nested run and
     const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
     const [childRun] = await runRepo.findAllByWorkflowId(child.id);
 
-    parentRun.cancel("operator");
+    parentRun.endAsCancelled("operator");
     await runRepo.save(parent.id, parentRun);
 
     const step = parentRun.getJob("main")!.getStep("call-child")!;
@@ -16684,5 +16687,56 @@ Deno.test("resume: saves each step as running when it starts", async () => {
     }
 
     assertStartsSaved(executor, run);
+  });
+});
+
+/** Rejects the first save made once `signal` has aborted, then saves again. */
+class RejectOnceAfterAbortRunRepository extends SpyWorkflowRunRepository {
+  signal?: AbortSignal;
+  rejected = false;
+
+  override save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    if (this.signal?.aborted && !this.rejected) {
+      this.rejected = true;
+      return Promise.reject(new Error("datastore unavailable"));
+    }
+    return super.save(workflowId, run);
+  }
+}
+
+Deno.test("run: a cancel after a mid-walk failure settles the run against its evaluated workflow", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "cancel-catch-settles-wf",
+      jobs: [
+        Job.create({ name: "a", steps: [modelStep("x")] }),
+        jobOn("b", "a", TriggerCondition.succeeded()),
+      ],
+    });
+    const executor = new SignalHonoringExecutor();
+    const runRepo = new RejectOnceAfterAbortRunRepository();
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+      runRepo,
+    );
+    const signal = executor.arm("x");
+    runRepo.signal = signal;
+
+    const { run, kinds } = await runUntilAborted(service, workflow, signal);
+
+    // The rejected save ends the walk early; the catch path cancels the run.
+    assertEquals(runRepo.rejected, true);
+    assertEquals(kinds.at(-1), "cancelled");
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("a")!.status, "failed");
+    // Settled against the evaluated workflow, b's unmet dependsOn skips it;
+    // from its records alone its step would have been cancelled.
+    assertEquals(run.getJob("b")!.status, "skipped");
+    assertEquals(run.getJob("b")!.getStep("t")!.status, "skipped");
+    assertEquals(run.getJob("b")!.getStep("t")!.settledByAbort, true);
+    assertEquals(runRepo.saved.at(-1)?.status, "cancelled");
   });
 });

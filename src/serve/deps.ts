@@ -84,6 +84,7 @@ import {
 } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
+import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
 import {
   extractTraceContext,
@@ -217,16 +218,25 @@ export async function createWorkflowRunDeps(
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     telemetrySink: options?.telemetrySink,
-    findSuspendedRuns: async (workflowId) => {
-      const runRepo = repoContext.workflowRunRepo;
-      const suspended = await runRepo
-        .findSummariesByStatus(workflowId, "suspended");
-      const runs = await Promise.all(
-        suspended.map((s) =>
-          runRepo.findById(workflowId, s.id as WorkflowRunId)
-        ),
-      );
-      return runs.filter((r): r is WorkflowRun => r !== null);
+    supersede: {
+      findSuspendedRuns: async (workflowId) => {
+        const runRepo = repoContext.workflowRunRepo;
+        const suspended = await runRepo
+          .findSummariesByStatus(workflowId, "suspended");
+        const runs = await Promise.all(
+          suspended.map((s) =>
+            runRepo.findById(workflowId, s.id as WorkflowRunId)
+          ),
+        );
+        return runs.filter((r): r is WorkflowRun => r !== null);
+      },
+      // Read from the datastore-resolved path ExecutionService writes to.
+      findEvaluatedWorkflow: (runId) =>
+        new YamlEvaluatedWorkflowRepository(
+          repoDir,
+          new DefaultDatastorePathResolver(repoDir, datastoreConfig)
+            .resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+        ).findByRunId(runId),
     },
   };
 }

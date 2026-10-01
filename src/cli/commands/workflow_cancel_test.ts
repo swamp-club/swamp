@@ -27,6 +27,11 @@ import {
 } from "../../domain/workflows/workflow_run.ts";
 import { CLEANUP_GRACE_TIMEOUT_MS } from "../../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { TriggerCondition } from "../../domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
   buildCancelUrl,
@@ -47,6 +52,12 @@ import "../../domain/models/models.ts";
 await initializeLogging({});
 
 const WORKFLOW_ID = "a0000000-0000-4000-8000-000000000001";
+
+/** The workflow the runs here belong to; it defines none of their jobs. */
+const WORKFLOW = Workflow.create({ id: WORKFLOW_ID, name: "test-workflow" });
+
+/** Runs here have no evaluated snapshot. */
+const noSnapshot = () => Promise.resolve(null);
 
 function makeRun(
   overrides: {
@@ -234,10 +245,11 @@ Deno.test("cancelLocalRun: keeps the record the owner cancelled and records the 
     const killed: number[] = [];
     const result = await cancelLocalRun(
       snapshot,
-      workflowId,
+      WORKFLOW,
       "No longer needed",
       {
         runRepo,
+        findEvaluatedWorkflow: noSnapshot,
         killProcess: async (pid) => {
           killed.push(pid);
           await runRepo.save(
@@ -274,10 +286,11 @@ Deno.test("cancelLocalRun: leaves a record the owner finished as failed or succe
 
       const result = await cancelLocalRun(
         snapshot,
-        workflowId,
+        WORKFLOW,
         "No longer needed",
         {
           runRepo,
+          findEvaluatedWorkflow: noSnapshot,
           killProcess: async () => {
             await runRepo.save(workflowId, ownerFinal);
             return true;
@@ -303,10 +316,11 @@ Deno.test("cancelLocalRun: fails the work a stopped owner left running and cance
     // The owner saved progress, then was SIGKILLed before its final save.
     const result = await cancelLocalRun(
       snapshot,
-      workflowId,
+      WORKFLOW,
       "No longer needed",
       {
         runRepo,
+        findEvaluatedWorkflow: noSnapshot,
         killProcess: async () => {
           await runRepo.save(
             workflowId,
@@ -321,9 +335,73 @@ Deno.test("cancelLocalRun: fails the work a stopped owner left running and cance
     for (const run of [result, stored]) {
       assertEquals(run?.status, "cancelled");
       assertEquals(run?.tags.cancel_reason, "No longer needed");
+      // The workflow defines no job here, so the job is settled from its
+      // records alone: the step the owner left running fails as cut off,
+      // and the step it never reached is cancelled.
       assertEquals(run?.jobs[0].status, "failed");
-      assertEquals(stepSummary(run!), ["build-1:failed", "rollback:pending"]);
+      assertEquals(stepSummary(run!), ["build-1:failed", "rollback:failed"]);
       assertEquals(run?.jobs[0].steps[0].error, OWNER_STOPPED_STEP_ERROR);
+      assertEquals(run?.jobs[0].steps[1].error, "cancelled");
+    }
+  });
+});
+
+Deno.test("cancelLocalRun: settles a dead owner's run against the workflow's steps", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(snapshotData(runId));
+    await runRepo.save(workflowId, snapshot);
+    // build is a forEach step whose iteration build-1 was running when the
+    // owner died; rollback needs build to succeed.
+    const workflow = Workflow.create({
+      id: WORKFLOW_ID,
+      name: "test-workflow",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "build",
+            task: StepTask.model("m", "run"),
+            forEach: { item: "n", in: "${{ [1] }}" },
+          }),
+          Step.create({
+            name: "rollback",
+            task: StepTask.model("m", "run"),
+            dependsOn: [{
+              step: "build",
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+        ],
+      })],
+    });
+
+    const result = await cancelLocalRun(
+      snapshot,
+      workflow,
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        killProcess: async () => {
+          await runRepo.save(
+            workflowId,
+            WorkflowRun.fromData(ownerFinalData(runId, "running")),
+          );
+          return true;
+        },
+      },
+    );
+
+    const stored = await runRepo.findById(workflowId, snapshot.id);
+    for (const run of [result, stored]) {
+      assertEquals(run?.status, "cancelled");
+      assertEquals(run?.jobs[0].status, "failed");
+      assertEquals(stepSummary(run!), ["build-1:failed", "rollback:skipped"]);
+      assertEquals(run?.jobs[0].steps[1].skipReason, { kind: "dependency" });
+      assertEquals(run?.jobs[0].steps[1].settledByAbort, true);
     }
   });
 });
@@ -340,8 +418,9 @@ Deno.test("cancelLocalRun: gives the owner the cleanup grace before it is killed
     await runRepo.save(workflowId, snapshot);
 
     const waits: number[] = [];
-    await cancelLocalRun(snapshot, workflowId, "No longer needed", {
+    await cancelLocalRun(snapshot, WORKFLOW, "No longer needed", {
       runRepo,
+      findEvaluatedWorkflow: noSnapshot,
       killProcess: (_pid, { maxWaitMs }) => {
         waits.push(maxWaitMs);
         return Promise.resolve(true);
@@ -365,10 +444,11 @@ Deno.test("cancelLocalRun: cancels without a kill when no other process owns the
       let killCalls = 0;
       const result = await cancelLocalRun(
         snapshot,
-        workflowId,
+        WORKFLOW,
         "No longer needed",
         {
           runRepo,
+          findEvaluatedWorkflow: noSnapshot,
           killProcess: () => {
             killCalls++;
             return Promise.resolve(true);
@@ -393,9 +473,13 @@ Deno.test("cancelLocalRun: does not recreate a run record deleted during the kil
 
     const result = await cancelLocalRun(
       snapshot,
-      workflowId,
+      WORKFLOW,
       "No longer needed",
-      { runRepo, killProcess: () => Promise.resolve(true) },
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        killProcess: () => Promise.resolve(true),
+      },
     );
 
     assertEquals(result, null);
@@ -417,12 +501,12 @@ Deno.test("cancelAllLocalRuns: stops a process that owns several runs once", asy
     const result = await cancelAllLocalRuns(
       snapshots.map((run) => ({
         run,
-        workflowId,
-        workflowName: "test-workflow",
+        workflow: WORKFLOW,
       })),
       "No longer needed",
       {
         runRepo,
+        findEvaluatedWorkflow: noSnapshot,
         killProcess: (pid) => {
           killed.push(pid);
           return Promise.resolve(true);
@@ -455,12 +539,12 @@ Deno.test("cancelAllLocalRuns: stops different owners together", async () => {
     const result = await cancelAllLocalRuns(
       snapshots.map((run) => ({
         run,
-        workflowId,
-        workflowName: "test-workflow",
+        workflow: WORKFLOW,
       })),
       "No longer needed",
       {
         runRepo,
+        findEvaluatedWorkflow: noSnapshot,
         killProcess: async (pid) => {
           started.push(pid);
           if (started.length === 2) bothStarted();
@@ -494,14 +578,11 @@ Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () 
     // Only the succeeded run's owner saves a final record during the kill;
     // the deleted run was never saved.
     const result = await cancelAllLocalRuns(
-      snapshots.map((run) => ({
-        run,
-        workflowId,
-        workflowName: "test-workflow",
-      })),
+      snapshots.map((run) => ({ run, workflow: WORKFLOW })),
       "No longer needed",
       {
         runRepo,
+        findEvaluatedWorkflow: noSnapshot,
         killProcess: async () => {
           await runRepo.save(
             workflowId,

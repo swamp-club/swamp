@@ -239,8 +239,11 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/cli/commands/serve.ts: serveCommand: YamlDefinitionRepository",
   "src/cli/commands/serve.ts: serveCommand: YamlVaultConfigRepository",
   "src/cli/commands/workflow_approvals.ts: workflowApprovalsCommand: YamlEvaluatedWorkflowRepository",
+  "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_resume.ts: workflowResumeCommand: YamlDefinitionRepository",
+  "src/cli/commands/workflow_resume.ts: workflowResumeCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlDefinitionRepository",
+  "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlEvaluatedWorkflowRepository",
   // Built directly in src/cli/completion_types.ts.
   "src/cli/completion_types.ts: ModelNameType: YamlDefinitionRepository",
   "src/cli/completion_types.ts: WorkflowNameType: YamlWorkflowRepository",
@@ -359,15 +362,21 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   // Built directly in src/serve/.
   "src/serve/deps.ts: createModelMethodRunDeps: YamlDefinitionRepository",
   "src/serve/deps.ts: createWorkflowRunDeps: YamlDefinitionRepository",
+  "src/serve/deps.ts: createWorkflowRunDeps: YamlEvaluatedWorkflowRepository",
   "src/serve/device_auth_handler.ts: mintServerTokenImpl: YamlDefinitionRepository",
   "src/serve/handlers/access_handlers.ts: handleAccessReload: YamlDefinitionRepository",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowApprovals: YamlEvaluatedWorkflowRepository",
   "src/serve/server_token_gc_deps.ts: createServerTokenGcRepos: YamlDefinitionRepository",
+  "src/serve/suspended_run_cancel.ts: cancelSuspendedRunAndPush: YamlEvaluatedWorkflowRepository",
 ];
 
 const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   // Read only: these repositories never write.
   "src/cli/commands/workflow_approvals.ts: workflowApprovalsCommand: YamlEvaluatedWorkflowRepository",
+  // Read a run's evaluated snapshot to settle a cancelled run against it.
+  "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",
+  "src/cli/commands/workflow_resume.ts: workflowResumeCommand: YamlEvaluatedWorkflowRepository",
+  "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/completion_types.ts: ModelNameType: YamlDefinitionRepository",
   "src/cli/completion_types.ts: WorkflowNameType: YamlWorkflowRepository",
   "src/libswamp/data/delete.ts: createDataDeleteDeps: YamlDefinitionRepository",
@@ -415,6 +424,9 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/workflows/history_logs.ts: createWorkflowHistoryLogsDeps: YamlWorkflowRepository",
   "src/libswamp/workflows/history_logs.ts: createWorkflowHistoryLogsDeps: YamlWorkflowRunRepository",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowApprovals: YamlEvaluatedWorkflowRepository",
+  // Read a run's evaluated snapshot to settle a cancelled run against it.
+  "src/serve/deps.ts: createWorkflowRunDeps: YamlEvaluatedWorkflowRepository",
+  "src/serve/suspended_run_cancel.ts: cancelSuspendedRunAndPush: YamlEvaluatedWorkflowRepository",
   // Factory helpers with no callers.
   "src/infrastructure/persistence/repository_factory.ts: createDefinitionRepository: YamlDefinitionRepository",
   "src/infrastructure/persistence/repository_factory.ts: createWorkflowRepository: YamlWorkflowRepository",

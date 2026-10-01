@@ -243,7 +243,7 @@ Deno.test("cancelSuspendedRunAndPush: cancels a suspended run and releases the i
 Deno.test("cancelSuspendedRunAndPush: maps an authorized run that is not suspended to not_suspended", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedRun(wf);
-  run.cancel("earlier");
+  run.endAsCancelled("earlier");
   const h = harness([wf], [run]);
 
   const result = await cancelSuspendedRunAndPush(

@@ -150,7 +150,9 @@ steps:
 
    Before starting, `workflow run` **supersedes** suspended runs of the same
    workflow whose resolved inputs deep-equal the new run's. They are cancelled
-   with reason "Superseded by new run with matching inputs". Runs with
+   with reason "Superseded by new run with matching inputs", their unfinished
+   work settled as any cancel settles it (see [Cancellation](#cancellation)).
+   Runs with
    different inputs are separate intents and are left alone, as are
    serve-owned runs (cancel those through serve:
    `swamp workflow cancel --run <id> --server <url>`). `--no-supersede`
@@ -1426,6 +1428,40 @@ period), re-reads the run, and writes the cancelled status to the run YAML only
 if the run is still active. The owner saves its own final record while handling
 SIGTERM, so a run it already finished keeps that record; a cancelled one gets
 the `--reason` as its `cancel_reason` tag.
+
+**Settling a cancelled run.** Every cancel settles the work the run leaves
+unfinished before it marks the run `cancelled`, so a cancelled record never
+keeps a job `running` or a step `running` or `waiting_approval`. That holds for
+a live abort, an offline cancel of a suspended run or of one whose owner died,
+a supersede, serve's cancel of a suspended run, and the backstops that cancel a
+run an interrupted `workflow run` or `workflow resume` left running. All of
+them go through `cancelAndSettle` (`src/domain/workflows/abort_settlement.ts`),
+the only production caller of `WorkflowRun.endAsCancelled`;
+`integration/workflow_run_cancel_settlement_rules_test.ts` pins that.
+
+- A step still `running` (its owner died) fails with error `cancelled`.
+- A `waiting_approval` gate fails with error `cancelled`.
+- A pending step is skipped when its `dependsOn` is unmet, otherwise it fails
+  with error `cancelled`. A step with a `guard` stays `pending`: its guard
+  never decided.
+- A pending job whose `dependsOn` is unmet is skipped. Any other job still
+  `pending` or `running` ends from its steps: `failed` when a step failed,
+  `unknown` (or still `pending`, for a job that never started) while a guarded
+  step is undecided, otherwise `succeeded` or `skipped`.
+
+The steps a cancel settles without running them are marked `settledByAbort`.
+A cancelled run cannot be resumed, so the marker only records that the cancel
+settled them. Conditions are evaluated in dependency order against the run's
+own evaluated workflow snapshot, which `workflow run` saves under
+`workflows-evaluated/runs/<runId>/` when the run starts, so the evaluated job
+and step names in the run's records match. Without a snapshot (a
+`--last-evaluated` run, an older run, a snapshot run gc removed, or one not yet
+hydrated from a lazy datastore) the current workflow definition is used. A job
+or step that definition does not name, and every job when there is no
+definition or its jobs or steps form a cycle, is settled from its records
+alone, with every unfinished step failed as `cancelled`. Because settled steps
+are failed, the run's history reports a failed step and failure reason
+`cancelled`, as it does for a run aborted live.
 
 `swamp workflow cancel --all` cancels all active runs across all workflows.
 With `--server`, `--run <id>` is required and `--all` is rejected. `--reason`

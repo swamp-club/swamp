@@ -304,7 +304,7 @@ Deno.test("NestedRunLink.isAwaitedByParent: only while the parent still waits on
   const { parent, child, deps } = linkedPair();
   const link = new NestedRunLink(deps);
   assertEquals(await link.isAwaitedByParent(child), true);
-  parent.cancel("stop");
+  parent.endAsCancelled("stop");
   assertEquals(await link.isAwaitedByParent(child), false);
 });
 

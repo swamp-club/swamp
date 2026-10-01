@@ -53,7 +53,6 @@ import type {
 import {
   createWorkflowId,
   createWorkflowRunId,
-  type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import {
   coerceInputTypes,
@@ -70,7 +69,7 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
 import { findBrokenWorkflow, workflowsDirFor } from "./broken_workflow.ts";
-import { supersedeSuspendedRuns } from "./supersede.ts";
+import { type SupersedeDeps, supersedeSuspendedRuns } from "./supersede.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
 
 /**
@@ -320,9 +319,8 @@ export interface WorkflowRunDeps {
   dataRepo?: UnifiedDataRepository;
   definitionRepo?: DefinitionRepository;
   telemetrySink?: WorkflowTelemetrySink;
-  findSuspendedRuns?: (
-    workflowId: WorkflowId,
-  ) => Promise<WorkflowRun[]>;
+  /** Supersedes matching-input suspended runs when set. */
+  supersede?: SupersedeDeps;
 }
 
 /**
@@ -784,12 +782,12 @@ export async function* workflowRun(
           };
         }
 
-        if (!resolvedInput.noSupersede && deps.findSuspendedRuns) {
+        if (!resolvedInput.noSupersede && deps.supersede) {
           const { cancelledRunIds, detachedNestedRuns } =
             await supersedeSuspendedRuns(
-              workflow.id as WorkflowId,
+              workflow,
               resolvedInput.inputs ?? {},
-              deps.findSuspendedRuns,
+              deps.supersede,
               deps.runRepo,
             );
           if (cancelledRunIds.length > 0) {

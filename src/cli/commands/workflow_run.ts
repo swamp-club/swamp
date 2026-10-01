@@ -54,6 +54,11 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import {
+  cancelAndSettle,
+  resolveSettlementWorkflow,
+} from "../../domain/workflows/abort_settlement.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -308,6 +313,12 @@ export const workflowRunCommand = new Command()
 
     const repoDir = unlocked.repoDir;
     const repoContext = unlocked.repoContext;
+    // A run's evaluated snapshot, read from the datastore-resolved path
+    // ExecutionService writes it to, settles a run this command cancels.
+    const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+      repoDir,
+      unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+    );
 
     const stepLockHook: StepLockHook = async (modelType, modelId) => {
       const result = await acquireModelLocks(
@@ -465,15 +476,19 @@ export const workflowRunCommand = new Command()
         dataRepo: repoContext.unifiedDataRepo,
         definitionRepo: repoContext.definitionRepo,
         telemetrySink,
-        findSuspendedRuns: async (workflowId) => {
-          const suspended = await runRepo
-            .findSummariesByStatus(workflowId, "suspended");
-          const runs = await Promise.all(
-            suspended.map((s) =>
-              runRepo.findById(workflowId, s.id as WorkflowRunId)
-            ),
-          );
-          return runs.filter((r): r is WorkflowRun => r !== null);
+        supersede: {
+          findSuspendedRuns: async (workflowId) => {
+            const suspended = await runRepo
+              .findSummariesByStatus(workflowId, "suspended");
+            const runs = await Promise.all(
+              suspended.map((s) =>
+                runRepo.findById(workflowId, s.id as WorkflowRunId)
+              ),
+            );
+            return runs.filter((r): r is WorkflowRun => r !== null);
+          },
+          findEvaluatedWorkflow: (runId) =>
+            evaluatedWorkflowRepo.findByRunId(runId),
         },
       };
 
@@ -591,7 +606,15 @@ export const workflowRunCommand = new Command()
                 createWorkflowRunId(currentRunId),
               );
               if (run && run.status === "running") {
-                run.cancel("aborted");
+                cancelAndSettle(
+                  run,
+                  await resolveSettlementWorkflow(
+                    run,
+                    wf,
+                    (runId) => evaluatedWorkflowRepo.findByRunId(runId),
+                  ),
+                  "aborted",
+                );
                 await repoContext.workflowRunRepo.save(wf.id, run);
               }
             }

@@ -164,6 +164,12 @@ applies to the total wall-clock time of the run, not individual steps.
 `swamp workflow cancel <workflow>` cancels an in-flight run from another
 terminal or via `--server`.
 
+A cancelled run's record holds no job `running` and no step `running` or
+`waiting_approval`. Cancel and supersede settle unfinished work as an abort
+does: waiting gates and pending steps fail with error `cancelled` (or are
+skipped when their `dependsOn` is unmet), so `history get` shows failed jobs
+under a `cancelled` run. A guarded step that never ran stays `pending`.
+
 Cancelling a run also cancels the child runs of its nested workflow steps. Over
 `--server`, cancel the parent's run id. A child run is not cancellable by its
 own id there.

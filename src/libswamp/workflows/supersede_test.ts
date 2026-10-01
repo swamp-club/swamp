@@ -57,6 +57,9 @@ function createSuspendedRun(
   return run;
 }
 
+/** Runs here have no evaluated snapshot: they settle against `wf`. */
+const noSnapshot = () => Promise.resolve(null);
+
 function stubRunRepo(saved: WorkflowRun[]): WorkflowRunRepository {
   return {
     save: (_wfId: WorkflowId, run: WorkflowRun) => {
@@ -72,9 +75,12 @@ Deno.test("supersedeSuspendedRuns: cancels matching-input suspended run", async 
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(
-    wf.id as WorkflowId,
+    wf,
     { env: "prod" },
-    () => Promise.resolve([run]),
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+    },
     stubRunRepo(saved),
   );
 
@@ -83,15 +89,44 @@ Deno.test("supersedeSuspendedRuns: cancels matching-input suspended run", async 
   assertEquals(saved[0].status, "cancelled");
 });
 
+Deno.test("supersedeSuspendedRuns: settles the superseded run's unfinished work", async () => {
+  const wf = createWorkflow("deploy");
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.captureInputs({ env: "prod" });
+  run.getJob("j")!.start();
+  run.suspend({ env: "prod" });
+  const saved: WorkflowRun[] = [];
+
+  await supersedeSuspendedRuns(
+    wf,
+    { env: "prod" },
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+    },
+    stubRunRepo(saved),
+  );
+
+  const job = saved[0].getJob("j")!;
+  assertEquals(job.status, "failed");
+  assertEquals(job.getStep("s")!.status, "failed");
+  assertEquals(job.getStep("s")!.error, "cancelled");
+  assertEquals(job.getStep("s")!.settledByAbort, true);
+});
+
 Deno.test("supersedeSuspendedRuns: preserves different-input suspended run", async () => {
   const wf = createWorkflow("deploy");
   const run = createSuspendedRun(wf, { env: "staging" });
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(
-    wf.id as WorkflowId,
+    wf,
     { env: "prod" },
-    () => Promise.resolve([run]),
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+    },
     stubRunRepo(saved),
   );
 
@@ -106,9 +141,12 @@ Deno.test("supersedeSuspendedRuns: cancels only matching runs", async () => {
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(
-    wf.id as WorkflowId,
+    wf,
     { env: "prod" },
-    () => Promise.resolve([matching, different]),
+    {
+      findSuspendedRuns: () => Promise.resolve([matching, different]),
+      findEvaluatedWorkflow: noSnapshot,
+    },
     stubRunRepo(saved),
   );
 
@@ -122,9 +160,12 @@ Deno.test("supersedeSuspendedRuns: skips serve-owned runs", async () => {
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(
-    wf.id as WorkflowId,
+    wf,
     { env: "prod" },
-    () => Promise.resolve([run]),
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+    },
     stubRunRepo(saved),
   );
 
@@ -138,9 +179,12 @@ Deno.test("supersedeSuspendedRuns: empty inputs match empty inputs", async () =>
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(
-    wf.id as WorkflowId,
+    wf,
     {},
-    () => Promise.resolve([run]),
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+    },
     stubRunRepo(saved),
   );
 
@@ -153,9 +197,12 @@ Deno.test("supersedeSuspendedRuns: no suspended runs returns empty", async () =>
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(
-    wf.id as WorkflowId,
+    wf,
     { env: "prod" },
-    () => Promise.resolve([]),
+    {
+      findSuspendedRuns: () => Promise.resolve([]),
+      findEvaluatedWorkflow: noSnapshot,
+    },
     stubRunRepo(saved),
   );
 
@@ -172,9 +219,12 @@ Deno.test("supersedeSuspendedRuns: skips non-suspended runs in the list", async 
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(
-    wf.id as WorkflowId,
+    wf,
     { env: "prod" },
-    () => Promise.resolve([run]),
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+    },
     stubRunRepo(saved),
   );
 

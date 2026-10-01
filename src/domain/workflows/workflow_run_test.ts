@@ -21,7 +21,6 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   CANCELLED_STEP_ERROR,
   JobRun,
-  OWNER_STOPPED_STEP_ERROR,
   StepRun,
   StepSkipReasonSchema,
   STRANDED_STEP_ERROR,
@@ -847,24 +846,46 @@ Deno.test("WorkflowRun.fromData tolerates legacy records lacking inputs/resumeIn
 
 // WorkflowRun cancel tests
 
-Deno.test("WorkflowRun.cancel: marks running run as cancelled", () => {
+Deno.test("WorkflowRun.isCancellable: true only while pending, running or suspended", () => {
+  const workflow = createTestWorkflow();
+  const pending = WorkflowRun.create(workflow);
+  assertEquals(pending.isCancellable, true);
+  pending.start();
+  assertEquals(pending.isCancellable, true);
+  pending.suspend();
+  assertEquals(pending.isCancellable, true);
+
+  const finished = [
+    (run: WorkflowRun) => run.complete(),
+    (run: WorkflowRun) => run.endAsCancelled(),
+    (run: WorkflowRun) => run.interrupt("server_crash"),
+  ];
+  for (const finish of finished) {
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    finish(run);
+    assertEquals(run.isCancellable, false, run.status);
+  }
+});
+
+Deno.test("WorkflowRun.endAsCancelled: marks running run as cancelled", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.cancel();
+  run.endAsCancelled();
   assertEquals(run.status, "cancelled");
   assertEquals(run.completedAt instanceof Date, true);
 });
 
-Deno.test("WorkflowRun.cancel: stores reason in tags", () => {
+Deno.test("WorkflowRun.endAsCancelled: stores reason in tags", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.cancel("user requested");
+  run.endAsCancelled("user requested");
   assertEquals(run.tags.cancel_reason, "user requested");
 });
 
-Deno.test("WorkflowRun.cancel: no-ops on succeeded run", () => {
+Deno.test("WorkflowRun.endAsCancelled: no-ops on succeeded run", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -873,11 +894,11 @@ Deno.test("WorkflowRun.cancel: no-ops on succeeded run", () => {
   run.getJob("job2")?.start();
   run.getJob("job2")?.succeed();
   run.complete();
-  run.cancel();
+  run.endAsCancelled();
   assertEquals(run.status, "succeeded");
 });
 
-Deno.test("WorkflowRun.cancel: no-ops on failed run", () => {
+Deno.test("WorkflowRun.endAsCancelled: no-ops on failed run", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -886,32 +907,32 @@ Deno.test("WorkflowRun.cancel: no-ops on failed run", () => {
   run.getJob("job2")?.start();
   run.getJob("job2")?.fail();
   run.complete();
-  run.cancel();
+  run.endAsCancelled();
   assertEquals(run.status, "failed");
 });
 
-Deno.test("WorkflowRun.cancel: no-ops on already cancelled run", () => {
+Deno.test("WorkflowRun.endAsCancelled: no-ops on already cancelled run", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.cancel();
-  run.cancel();
+  run.endAsCancelled();
+  run.endAsCancelled();
   assertEquals(run.status, "cancelled");
 });
 
-Deno.test("WorkflowRun.cancel: works on suspended run", () => {
+Deno.test("WorkflowRun.endAsCancelled: works on suspended run", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
   run.suspend();
-  run.cancel();
+  run.endAsCancelled();
   assertEquals(run.status, "cancelled");
 });
 
-Deno.test("WorkflowRun.cancel: works on pending run", () => {
+Deno.test("WorkflowRun.endAsCancelled: works on pending run", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
-  run.cancel();
+  run.endAsCancelled();
   assertEquals(run.status, "cancelled");
 });
 
@@ -919,7 +940,7 @@ Deno.test("WorkflowRun.complete: no-ops on cancelled run", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.cancel();
+  run.endAsCancelled();
   run.complete();
   assertEquals(run.status, "cancelled");
 });
@@ -928,7 +949,7 @@ Deno.test("WorkflowRun.recordCancelReason: replaces the reason on a cancelled ru
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.cancel("aborted");
+  run.endAsCancelled("aborted");
   const completedAt = run.completedAt;
 
   run.recordCancelReason("No longer needed");
@@ -942,7 +963,7 @@ Deno.test("WorkflowRun.recordCancelReason: ignores an empty reason, as cancel do
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.cancel("aborted");
+  run.endAsCancelled("aborted");
 
   run.recordCancelReason("");
 
@@ -982,7 +1003,7 @@ Deno.test("WorkflowRun: cancelled round-trips through serialization", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.cancel("test reason");
+  run.endAsCancelled("test reason");
 
   const data = run.toData();
   const restored = WorkflowRun.fromData(data);
@@ -1159,7 +1180,7 @@ Deno.test("WorkflowRun.resumeFromSuspended: keeps the owner aside while the resu
 const leaveRunning: [string, (run: WorkflowRun) => void][] = [
   ["suspend", (run) => run.suspend()],
   ["complete", (run) => run.complete()],
-  ["cancel", (run) => run.cancel("stop")],
+  ["cancel", (run) => run.endAsCancelled("stop")],
   ["interrupt", (run) => run.interrupt("server_crash")],
 ];
 
@@ -1289,40 +1310,6 @@ Deno.test("WorkflowRun.resetForResumeFrom: does not reset jobs without target st
   assertEquals(run.jobs[1].steps[0].status, "pending");
 });
 
-// failInFlightWork() tests
-
-Deno.test("WorkflowRun.failInFlightWork: fails running steps and jobs with the error", () => {
-  const run = WorkflowRun.create(createTestWorkflow());
-  run.start();
-  run.jobs[0].start();
-  run.jobs[0].steps[0].start();
-  run.jobs[0].steps[0].succeed();
-  run.jobs[0].steps[1].start();
-
-  run.failInFlightWork(OWNER_STOPPED_STEP_ERROR);
-
-  assertEquals(run.jobs[0].status, "failed");
-  assertEquals(run.jobs[0].steps[0].status, "succeeded");
-  assertEquals(run.jobs[0].steps[1].status, "failed");
-  assertEquals(run.jobs[0].steps[1].error, OWNER_STOPPED_STEP_ERROR);
-  // The run's own status is the caller's to settle.
-  assertEquals(run.status, "running");
-});
-
-Deno.test("WorkflowRun.failInFlightWork: leaves pending and waiting work untouched", () => {
-  const run = WorkflowRun.create(createTestWorkflow());
-  run.start();
-  run.jobs[0].start();
-  run.jobs[0].steps[0].waitForApproval("Approve?");
-
-  run.failInFlightWork(OWNER_STOPPED_STEP_ERROR);
-
-  assertEquals(run.jobs[0].steps[0].status, "waiting_approval");
-  assertEquals(run.jobs[0].steps[1].status, "pending");
-  assertEquals(run.jobs[1].status, "pending");
-  assertEquals(run.jobs[1].steps[0].status, "pending");
-});
-
 // interrupt() tests
 
 Deno.test("WorkflowRun.interrupt: marks running run as interrupted with interrupt tag", () => {
@@ -1414,7 +1401,7 @@ Deno.test("WorkflowRun.interrupt: converts cancelled run to interrupted", () => 
   run.start();
   run.jobs[0].start();
   run.jobs[0].steps[0].start();
-  run.cancel("user cancelled");
+  run.endAsCancelled("user cancelled");
 
   run.interrupt("server_shutdown");
 
@@ -1584,7 +1571,7 @@ Deno.test("StepRun.markUnknown: sets status to unknown with error", () => {
   assertEquals(step.completedAt instanceof Date, true);
 });
 
-Deno.test("WorkflowRun.cancel: no-ops on interrupted run", () => {
+Deno.test("WorkflowRun.endAsCancelled: no-ops on interrupted run", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);
   run.start();
@@ -1592,7 +1579,7 @@ Deno.test("WorkflowRun.cancel: no-ops on interrupted run", () => {
   run.jobs[0].steps[0].start();
 
   run.interrupt("server_crash");
-  run.cancel("user cancelled");
+  run.endAsCancelled("user cancelled");
 
   assertEquals(run.status, "interrupted");
 });
@@ -2304,6 +2291,38 @@ Deno.test("JobRun.settleNotStarted: keeps a job pending while a step is undecide
   job.settleNotStarted();
 
   assertEquals(job.status, "pending");
+});
+
+Deno.test("StepRun.cancelUndecidedApproval: fails a waiting gate as cancelled, marked settledByAbort", () => {
+  const job = JobRun.pending("main", ["gate"]);
+  const gate = job.getStep("gate")!;
+  gate.waitForApproval("go?");
+
+  gate.cancelUndecidedApproval();
+
+  assertEquals(gate.status, "failed");
+  assertEquals(gate.error, CANCELLED_STEP_ERROR);
+  assertEquals(gate.settledByAbort, true);
+});
+
+Deno.test("StepRun.cancelUndecidedApproval: leaves a step that is not waiting alone", () => {
+  const job = JobRun.pending("main", ["pending", "approved"]);
+  job.getStep("approved")!.succeed();
+
+  for (const step of job.steps) step.cancelUndecidedApproval();
+
+  assertEquals(job.getStep("pending")!.status, "pending");
+  assertEquals(job.getStep("approved")!.status, "succeeded");
+  assertEquals(job.getStep("pending")!.settledByAbort, false);
+});
+
+Deno.test("JobRun.hasForEachExpansion: true once an expansion is registered", () => {
+  const job = JobRun.pending("main", ["build"]);
+  assertEquals(job.hasForEachExpansion("build"), false);
+
+  job.registerForEachExpansion("build", ["build-1"]);
+
+  assertEquals(job.hasForEachExpansion("build"), true);
 });
 
 /** A job a resume inherited as running, its gate approved before the abort. */

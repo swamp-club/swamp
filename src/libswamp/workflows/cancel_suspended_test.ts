@@ -128,6 +128,7 @@ function harness(
       authorized.push(wf);
       return allow(wf);
     },
+    findEvaluatedWorkflow: () => Promise.resolve(null),
   };
   return { deps, calls, saved, authorized, tracked };
 }
@@ -166,6 +167,20 @@ Deno.test("workflowCancelSuspended: cancels a suspended run found by id alone", 
     status: "cancelled",
     reason: "stuck gate",
   }]);
+});
+
+Deno.test("workflowCancelSuspended: settles the waiting gate and its job", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = suspendedServeRun(wf);
+  const h = harness([wf], [run]);
+
+  await cancel(h.deps, { runId: run.id, reason: "stuck gate" });
+
+  const job = h.saved[0].getJob("main")!;
+  assertEquals(job.status, "failed");
+  assertEquals(job.getStep("gate")!.status, "failed");
+  assertEquals(job.getStep("gate")!.error, "cancelled");
+  assertEquals(job.getStep("gate")!.settledByAbort, true);
 });
 
 Deno.test("workflowCancelSuspended: cancels a run found through its workflow", async () => {
@@ -236,7 +251,7 @@ Deno.test("workflowCancelSuspended: denied, missing and mismatched runs get the 
 Deno.test("workflowCancelSuspended: reveals a non-suspended status only after authorization", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedServeRun(wf);
-  run.cancel("earlier");
+  run.endAsCancelled("earlier");
 
   const allowed = harness([wf], [run]);
   const allowedEvent = await cancel(allowed.deps, {
@@ -446,7 +461,7 @@ Deno.test("locateSuspendedRunToCancel: an unknown run named with a workflow does
 Deno.test("locateSuspendedRunToCancel: a run that is not suspended is not found without a workflow", async () => {
   const wf = makeWorkflow("deploy");
   const run = suspendedServeRun(wf);
-  run.cancel("earlier");
+  run.endAsCancelled("earlier");
   const h = harness([wf], [run]);
 
   assertEquals(

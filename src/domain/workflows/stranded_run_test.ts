@@ -48,6 +48,9 @@ function runningRun(workflow: Workflow): WorkflowRun {
   return run;
 }
 
+/** A run with no evaluated snapshot: settles against the workflow passed. */
+const noSnapshot = () => Promise.resolve(null);
+
 interface Recorded {
   saved: { workflowId: WorkflowId; status: string }[];
   completed: { runId: string; status: ActiveRunStatus }[];
@@ -87,9 +90,10 @@ Deno.test("cancelStrandedRun: cancels a running run, saves it, and completes its
   const cancelled = await cancelStrandedRun(
     runRepo,
     runTracker,
-    wf.id,
+    wf,
     run.id,
     "aborted",
+    noSnapshot,
   );
 
   assertEquals(cancelled, true);
@@ -99,13 +103,34 @@ Deno.test("cancelStrandedRun: cancels a running run, saves it, and completes its
   assertEquals(recorded.completed, [{ runId: run.id, status: "cancelled" }]);
 });
 
+Deno.test("cancelStrandedRun: settles the work the aborted execution left unfinished", async () => {
+  const wf = createWorkflow();
+  const run = runningRun(wf);
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  const { runRepo, runTracker } = stubs([run]);
+
+  await cancelStrandedRun(
+    runRepo,
+    runTracker,
+    wf,
+    run.id,
+    "aborted",
+    noSnapshot,
+  );
+
+  assertEquals(run.jobs[0].status, "failed");
+  assertEquals(run.jobs[0].steps[0].status, "failed");
+  assertEquals(run.jobs[0].steps[0].error, "cancelled");
+});
+
 Deno.test("cancelStrandedRun: leaves a run that is not running untouched", async () => {
   const wf = createWorkflow();
 
   const pendingRun = WorkflowRun.create(wf);
 
   const cancelledRun = runningRun(wf);
-  cancelledRun.cancel("earlier");
+  cancelledRun.endAsCancelled("earlier");
 
   const failedRun = runningRun(wf);
   failedRun.jobs[0].start();
@@ -137,9 +162,10 @@ Deno.test("cancelStrandedRun: leaves a run that is not running untouched", async
     const cancelled = await cancelStrandedRun(
       runRepo,
       runTracker,
-      wf.id,
+      wf,
       run.id,
       "aborted",
+      noSnapshot,
     );
 
     assertEquals(cancelled, false, status);
@@ -157,9 +183,10 @@ Deno.test("cancelStrandedRun: returns false for a missing run", async () => {
   const cancelled = await cancelStrandedRun(
     runRepo,
     runTracker,
-    wf.id,
+    wf,
     createWorkflowRunId(crypto.randomUUID()),
     "aborted",
+    noSnapshot,
   );
 
   assertEquals(cancelled, false);

@@ -18,6 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
+import {
+  cancelAndSettle,
+  type EvaluatedWorkflowLookup,
+  resolveSettlementWorkflow,
+} from "../../domain/workflows/abort_settlement.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -111,6 +117,8 @@ type CancelRunRepository =
 export interface WorkflowCancelSuspendedDeps {
   workflowRepo: WorkflowRepository;
   runRepo: CancelRunRepository;
+  /** Reads a run's own evaluated workflow snapshot, to settle it against. */
+  findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   runTracker?: RunTrackerRepository;
   /**
    * Decides whether the caller may cancel runs of the run's own workflow.
@@ -124,9 +132,16 @@ export function createWorkflowCancelSuspendedDeps(
   workflowRepo: WorkflowRepository,
   runRepo: CancelRunRepository,
   authorize: WorkflowCancelSuspendedDeps["authorize"],
+  findEvaluatedWorkflow: EvaluatedWorkflowLookup,
   runTracker?: RunTrackerRepository,
 ): WorkflowCancelSuspendedDeps {
-  return { workflowRepo, runRepo, authorize, runTracker };
+  return {
+    workflowRepo,
+    runRepo,
+    authorize,
+    findEvaluatedWorkflow,
+    runTracker,
+  };
 }
 
 /** Code of the error reported for a missing, unauthorized or mismatched run. */
@@ -194,7 +209,7 @@ export async function* workflowCancelSuspended(
         yield { kind: "error", error: cancelNotFound(input.runId) };
         return;
       }
-      const { run, workflowId, target } = found;
+      const { run, workflowId, target, workflow } = found;
 
       if (run.status !== "suspended") {
         yield {
@@ -209,7 +224,15 @@ export async function* workflowCancelSuspended(
         return;
       }
 
-      run.cancel(input.reason);
+      cancelAndSettle(
+        run,
+        await resolveSettlementWorkflow(
+          run,
+          workflow,
+          deps.findEvaluatedWorkflow,
+        ),
+        input.reason,
+      );
       await deps.runRepo.save(workflowId, run);
       if (deps.runTracker) {
         deps.runTracker.complete(run.id, "cancelled", input.reason);
@@ -241,7 +264,12 @@ async function findAuthorizedRun(
   deps: WorkflowCancelSuspendedDeps,
   input: LocateSuspendedRunInput & { workflowId?: string },
 ): Promise<
-  | { run: WorkflowRun; workflowId: WorkflowId; target: CancelTargetWorkflow }
+  | {
+    run: WorkflowRun;
+    workflowId: WorkflowId;
+    target: CancelTargetWorkflow;
+    workflow: Workflow | undefined;
+  }
   | null
 > {
   const found = await findRun(deps, input);
@@ -262,7 +290,7 @@ async function findAuthorizedRun(
     return null;
   }
   if (!(await deps.authorize(target))) return null;
-  return { run, workflowId, target };
+  return { run, workflowId, target, workflow: workflow ?? undefined };
 }
 
 /**

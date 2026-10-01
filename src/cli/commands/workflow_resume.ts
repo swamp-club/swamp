@@ -36,6 +36,7 @@ import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolv
 import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
 import { runHasDeadOwner } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
   type DirectTypeResolver,
   type StepLockHook,
@@ -292,6 +293,12 @@ export const workflowResumeCommand = withRemoteOptions(
     // YamlWorkflowRunRepository(repoDir) directly would bind to repo-local
     // .swamp/workflow-runs/ and miss runs stored in a configured datastore.
     const repoDir = unlocked.repoDir;
+    // A run's evaluated snapshot, read from the datastore-resolved path
+    // ExecutionService writes it to, settles a run this command cancels.
+    const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+      repoDir,
+      unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+    );
     const repoContext = unlocked.repoContext;
     const workflowRepo = repoContext.workflowRepo;
     const runRepo = repoContext.workflowRunRepo;
@@ -552,9 +559,10 @@ export const workflowResumeCommand = withRemoteOptions(
             const cancelled = await cancelStrandedRun(
               runRepo,
               runTracker,
-              workflow.id,
+              workflow,
               run.id,
               "aborted",
+              (runId) => evaluatedWorkflowRepo.findByRunId(runId),
             );
             if (cancelled) {
               cliCtx.logger

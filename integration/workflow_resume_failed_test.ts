@@ -597,9 +597,12 @@ for (
         // Cancel and supersede treat it as the starter's run.
         assertEquals(isServeOwnedRun(suspended), starter === "serve");
         const superseded = await supersedeSuspendedRuns(
-          workflowId,
+          workflow,
           suspended.inputs,
-          (id) => runRepo.findAllByWorkflowId(id),
+          {
+            findSuspendedRuns: (id) => runRepo.findAllByWorkflowId(id),
+            findEvaluatedWorkflow: () => Promise.resolve(null),
+          },
           runRepo,
         );
         assertEquals(
