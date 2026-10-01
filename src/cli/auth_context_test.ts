@@ -22,6 +22,7 @@ import {
   isAuthenticated,
   requireAuthenticated,
   requireScope,
+  resolveCliInitiatedBy,
   scopeMatches,
   setAuthenticated,
   setAuthScopes,
@@ -29,6 +30,9 @@ import {
   setScopeResolutionFailed,
 } from "./auth_context.ts";
 import { UserError } from "../domain/errors.ts";
+import { join } from "@std/path";
+import { setApiKeyFileOverride } from "../infrastructure/persistence/api_key_source.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("auth_context: defaults to not authenticated", () => {
   setAuthenticated(false);
@@ -49,9 +53,13 @@ Deno.test("auth_context: setAuthenticated false makes isAuthenticated return fal
 
 Deno.test("requireAuthenticated: throws UserError when not authenticated", () => {
   setAuthenticated(false);
-  const err = assertThrows(
-    () => requireAuthenticated("swamp serve is a team feature", "serve:*"),
-    UserError,
+  const err = withMockedEnv(
+    { SWAMP_API_KEY: undefined, SWAMP_API_KEY_FILE: undefined },
+    () =>
+      assertThrows(
+        () => requireAuthenticated("swamp serve is a team feature", "serve:*"),
+        UserError,
+      ),
   );
   assertEquals(err.code, "auth_required");
   assertStringIncludes(
@@ -61,6 +69,69 @@ Deno.test("requireAuthenticated: throws UserError when not authenticated", () =>
   assertStringIncludes(err.message, "swamp auth login");
   assertStringIncludes(err.message, "SWAMP_API_KEY");
   assertStringIncludes(err.message, "serve:*");
+});
+
+Deno.test("requireAuthenticated: names a missing key file instead of prompting sign-in", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const missing = join(dir, "missing-key");
+    setAuthenticated(false);
+    withMockedEnv(
+      { SWAMP_API_KEY: undefined, SWAMP_API_KEY_FILE: missing },
+      () => {
+        const err = assertThrows(
+          () =>
+            requireAuthenticated("swamp serve is a team feature", "serve:*"),
+          UserError,
+        );
+        assertStringIncludes(err.message, "SWAMP_API_KEY_FILE file not found");
+        assertStringIncludes(err.message, missing);
+      },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("requireAuthenticated: names a missing --club-api-key-file", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    setAuthenticated(false);
+    setApiKeyFileOverride(join(dir, "missing-key"));
+    withMockedEnv(
+      { SWAMP_API_KEY: undefined, SWAMP_API_KEY_FILE: undefined },
+      () => {
+        const err = assertThrows(
+          () =>
+            requireAuthenticated("swamp serve is a team feature", "serve:*"),
+          UserError,
+        );
+        assertStringIncludes(err.message, "--club-api-key-file file not found");
+      },
+    );
+  } finally {
+    setApiKeyFileOverride(undefined);
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("resolveCliInitiatedBy: a key file removed mid-run falls back to ghost", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    setAuthenticated(true);
+    setCollectiveToken("swamp_personal_abc");
+    setApiKeyFileOverride(join(dir, "removed-key"));
+    const initiatedBy = await withMockedEnv(
+      { SWAMP_API_KEY: undefined, SWAMP_API_KEY_FILE: undefined },
+      () => resolveCliInitiatedBy(),
+    );
+    assertEquals(initiatedBy, "ghost");
+  } finally {
+    setApiKeyFileOverride(undefined);
+    setAuthenticated(false);
+    setCollectiveToken("");
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("requireAuthenticated: does not throw when authenticated", () => {

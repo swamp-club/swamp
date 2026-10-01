@@ -208,9 +208,18 @@ Swamp has two token families — picking the wrong one is a common mistake.
 | ------------- | ------------------------------------------------------- | ----------------------------------- |
 | **Mint with** | `swamp auth token create`                               | `swamp access token mint`           |
 | **Format**    | `swamp_org_<hex>`                                       | `<name>.<secret>`                   |
-| **Env var**   | `SWAMP_API_KEY`                                         | `SWAMP_SERVER_TOKEN`                |
+| **Env var**   | `SWAMP_API_KEY` (or `SWAMP_API_KEY_FILE`)               | `SWAMP_SERVER_TOKEN`                |
 | **Scopes**    | `serve:*`, `oauth:manage`, …                            | principal-based (no scopes)         |
 | **Used by**   | `swamp serve` → swamp-club (features, OAuth client reg) | Clients → a specific serve instance |
+
+To keep the collective API token out of the process env, put it in a file and
+pass `swamp serve --club-api-key-file <path>` (also accepted by
+`serve check-config` and forwarded by `serve daemon enable`) or set
+`SWAMP_API_KEY_FILE=<path>`. Precedence is `--club-api-key-file`, then
+`SWAMP_API_KEY_FILE`, then `SWAMP_API_KEY`; setting both env vars is an error.
+Serve reads the key at startup for OAuth registration, username lookup and the
+club heartbeat, so restart it after rotating the key; other lookups re-read the
+file.
 
 `SWAMP_SERVER_TOKEN` requires `SWAMP_SERVER_URL` (or `SWAMP_SERVE_URL`) to scope
 which server the token applies to. Without a server URL, the token is silently

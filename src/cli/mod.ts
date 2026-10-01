@@ -81,6 +81,7 @@ import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
 import {
   applyColorPolicy,
+  getClubApiKeyFileFromArgs,
   getExtensionsDirFromArgs,
   getRepoDirFromArgs,
   type GlobalOptions,
@@ -169,6 +170,10 @@ import type { CommandInvocationData } from "../domain/telemetry/command_invocati
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
 import { TelemetryPreferencesFileRepository } from "../infrastructure/persistence/telemetry_preferences_file_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
+import {
+  hasApiKeySource,
+  setApiKeyFileOverride,
+} from "../infrastructure/persistence/api_key_source.ts";
 import {
   getCollectives,
   SwampClubClient,
@@ -2027,6 +2032,14 @@ async function runInvocation(
   // Pre-parse --extensions-dir for split code-plane/data-plane scenarios
   const extensionsDir = getExtensionsDirFromArgs(args);
 
+  // Pre-parse --club-api-key-file so every credential load below (telemetry,
+  // identity and scopes, the extension auto-resolver) uses the same
+  // collective key as the serve command that declares the flag.
+  const clubApiKeyFile = getClubApiKeyFileFromArgs(args, commandInfo);
+  if (clubApiKeyFile !== undefined) {
+    setApiKeyFileOverride(clubApiKeyFile);
+  }
+
   if (extensionsDir !== undefined) {
     const swampDataDir = join(repoDir, ".swamp");
     if (
@@ -2168,13 +2181,14 @@ async function runInvocation(
     }
   }
 
-  // Resolve identity and scopes for SWAMP_API_KEY users. Calls whoami only
+  // Resolve identity and scopes for collective API key users
+  // (--club-api-key-file, SWAMP_API_KEY_FILE or SWAMP_API_KEY). Calls whoami only
   // when the cache is stale (first use, key rotation, or missing scopes for
   // a collective token). Scopes are set directly from the response to avoid
   // cache round-trip issues with --unstable-bundle module duplication.
   // Must run before the authCollectives read so the first invocation gets
   // cached collectives for extension trust.
-  if (!hookMode && Deno.env.get("SWAMP_API_KEY")) {
+  if (!hookMode && hasApiKeySource()) {
     try {
       const authRepo = new AuthRepository();
       const creds = await authRepo.load();
@@ -2232,7 +2246,7 @@ async function runInvocation(
       const authRepo = new AuthRepository();
       const creds = await authRepo.load();
       authCollectives = creds?.collectives;
-      if (!Deno.env.get("SWAMP_API_KEY")) {
+      if (!hasApiKeySource()) {
         if (creds?.apiKey) setCollectiveToken(creds.apiKey);
         setAuthScopes(creds?.scopes);
       }
@@ -2621,5 +2635,6 @@ async function runInvocation(
     // single clearer.
     clearActiveTelemetryService();
     clearActiveTelemetryContext();
+    setApiKeyFileOverride(undefined);
   }
 }

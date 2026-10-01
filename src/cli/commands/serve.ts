@@ -174,6 +174,11 @@ import {
 } from "../../presentation/output/serve_check_config_output.ts";
 import type { TokenSecretsKeyRef } from "../../domain/vaults/token_secrets_key.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import {
+  apiKeySourceName,
+  CLUB_API_KEY_FILE_FLAG,
+  resolveApiKey,
+} from "../../infrastructure/persistence/api_key_source.ts";
 import { selectCheckConfigToken } from "../serve_check_config_token.ts";
 import { groupCommandAction } from "../group_action.ts";
 import {
@@ -842,6 +847,11 @@ export function buildServeDaemonEnv(): Record<string, string> {
   };
 }
 
+const CLUB_API_KEY_FILE_DESCRIPTION =
+  "Path to a file containing the collective API key (oauth:manage scope) " +
+  "used for headless OAuth registration, username lookup, instance " +
+  "registration and heartbeat; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY";
+
 export function collectServeExtraArgs(options: AnyOptions): string[] {
   const args: string[] = [];
   if (options.config) {
@@ -885,6 +895,14 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.oauthClientName) {
     args.push("--oauth-client-name", options.oauthClientName as string);
+  }
+  if (options.clubApiKeyFile) {
+    // The daemon runs from the repo directory, so a path relative to the
+    // shell that ran `daemon enable` must be made absolute here.
+    args.push(
+      CLUB_API_KEY_FILE_FLAG,
+      resolve(options.clubApiKeyFile as string),
+    );
   }
   if (options.groupsField) {
     args.push("--groups-field", options.groupsField as string);
@@ -1475,8 +1493,13 @@ const daemonEnableCommand = new Command()
   .option(
     "--oauth-client-id <id:string>",
     "OAuth client ID — auto-registered on first start if omitted. " +
-      "Set SWAMP_API_KEY (a collective API token with oauth:manage scope) " +
-      "for headless registration without browser interaction.",
+      "Set SWAMP_API_KEY, SWAMP_API_KEY_FILE or --club-api-key-file (a collective " +
+      "API token with oauth:manage scope) for headless registration without " +
+      "browser interaction.",
+  )
+  .option(
+    `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
+    CLUB_API_KEY_FILE_DESCRIPTION,
   )
   .option(
     "--oauth-client-name <name:string>",
@@ -1842,7 +1865,8 @@ const checkConfigCommand = new Command()
       "Loads the auth settings the same way 'swamp serve' does (flags, env vars, then the " +
       "config file), validates them, and in oauth mode looks up every admin and " +
       "allowed-user name on the OAuth provider. Exits non-zero if a name is unknown " +
-      "or serve would refuse to start. Uses SWAMP_API_KEY or your 'swamp auth login' " +
+      "or serve would refuse to start. Uses --club-api-key-file, SWAMP_API_KEY_FILE, " +
+      "SWAMP_API_KEY or your 'swamp auth login' " +
       "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
       "for a custom provider). With a token-secrets block, also reads the token " +
       "secrets key from its vault and checks it is a usable 32-byte key, without " +
@@ -1888,6 +1912,11 @@ const checkConfigCommand = new Command()
   .option(
     "--oauth-provider <url:string>",
     "OAuth provider URL, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
+    "Path to a file containing the collective API key used to look up " +
+      "usernames; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
@@ -1940,8 +1969,9 @@ const checkConfigCommand = new Command()
     }
 
     const providerUrl = authConfig.oauthProvider;
-    // AuthRepository.load() returns SWAMP_API_KEY (issued by SWAMP_CLUB_URL
-    // or the default server) when set, otherwise the stored login.
+    // AuthRepository.load() returns the collective API key (issued by
+    // SWAMP_CLUB_URL or the default server) when set, otherwise the stored
+    // login.
     const creds = await new AuthRepository().load();
     const token = selectCheckConfigToken(
       providerUrl,
@@ -1949,7 +1979,7 @@ const checkConfigCommand = new Command()
         ? {
           serverUrl: creds.serverUrl,
           apiKey: creds.apiKey,
-          source: Deno.env.get("SWAMP_API_KEY") ? "env" : "login",
+          source: apiKeySourceName() ?? "login",
         }
         : null,
     );
@@ -2026,6 +2056,10 @@ export const serveCommand = new Command()
     "Headless OAuth (CI / container)",
     "SWAMP_API_KEY=<token> swamp serve --auth-mode oauth --admins dmc --allowed-collectives my-org",
   )
+  .example(
+    "Headless OAuth with the key in a mounted secret file",
+    "swamp serve --auth-mode oauth --club-api-key-file /run/secrets/swamp-api-key --admins dmc --allowed-collectives my-org",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
@@ -2093,8 +2127,13 @@ export const serveCommand = new Command()
   .option(
     "--oauth-client-id <id:string>",
     "OAuth client ID — auto-registered on first start if omitted. " +
-      "Set SWAMP_API_KEY (a collective API token with oauth:manage scope) " +
-      "for headless registration without browser interaction.",
+      "Set SWAMP_API_KEY, SWAMP_API_KEY_FILE or --club-api-key-file (a collective " +
+      "API token with oauth:manage scope) for headless registration without " +
+      "browser interaction.",
+  )
+  .option(
+    `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
+    CLUB_API_KEY_FILE_DESCRIPTION,
   )
   .option(
     "--oauth-client-name <name:string>",
@@ -3000,7 +3039,11 @@ export const serveCommand = new Command()
       },
     });
 
-    const clubApiKey = Deno.env.get("SWAMP_API_KEY") ?? null;
+    // Only OAuth mode uses the collective key, so a misconfigured key source
+    // must not stop serve from starting in none or token mode.
+    const clubApiKey = authConfig.mode === "oauth"
+      ? resolveApiKey() ?? null
+      : null;
     const oauthClientName = merged.oauthClientName ??
       `swamp-serve-${basename(resolvedRepoDir)}-${Deno.hostname()}`.slice(
         0,
@@ -3204,8 +3247,8 @@ export const serveCommand = new Command()
 
         if (clubApiKey) {
           logger.info(
-            "Using SWAMP_API_KEY to resolve admin/allowed-user usernames: {admins}",
-            { admins: missingNames },
+            "Using {source} to resolve admin/allowed-user usernames: {admins}",
+            { source: apiKeySourceName(), admins: missingNames },
           );
           accessToken = clubApiKey;
         } else {
@@ -6301,7 +6344,7 @@ export const serveCommand = new Command()
         );
         if (!authenticated) {
           logger.info(
-            "Telemetry: runs are reported but not attributed to your account — run `swamp auth login` or set SWAMP_API_KEY to authenticate",
+            "Telemetry: runs are reported but not attributed to your account — run `swamp auth login` or set SWAMP_API_KEY or SWAMP_API_KEY_FILE to authenticate",
           );
         }
       } else {

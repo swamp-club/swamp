@@ -33,7 +33,7 @@ const login: CheckConfigCredential = {
 const envKey: CheckConfigCredential = {
   serverUrl: CLUB,
   apiKey: "swamp_org_env",
-  source: "env",
+  source: "SWAMP_API_KEY",
 };
 
 const OTHER_ORIGINS = [
@@ -63,7 +63,19 @@ Deno.test("selectCheckConfigToken: never sends SWAMP_API_KEY to another origin",
     assertThrows(
       () => selectCheckConfigToken(provider, envKey),
       UserError,
-      "SWAMP_API_KEY is a credential for https://swamp-club.com",
+      "The key from SWAMP_API_KEY is a credential for https://swamp-club.com",
+    );
+  }
+});
+
+Deno.test("selectCheckConfigToken: names the key file source when refusing another origin", () => {
+  for (
+    const source of ["SWAMP_API_KEY_FILE", "--club-api-key-file"] as const
+  ) {
+    assertThrows(
+      () => selectCheckConfigToken("https://evil.test", { ...envKey, source }),
+      UserError,
+      `The key from ${source} is a credential for https://swamp-club.com`,
     );
   }
 });

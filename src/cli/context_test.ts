@@ -24,6 +24,7 @@ import {
   applyColorPolicy,
   createContext,
   findAncestorRepoDir,
+  getClubApiKeyFileFromArgs,
   getExtensionsDirFromArgs,
   getOutputModeFromArgs,
   getRepoDirFromArgs,
@@ -451,6 +452,138 @@ Deno.test("findAncestorRepoDir: returns null from a linked worktree when the mai
 
     assertEquals(findAncestorRepoDir(nested), null);
   });
+});
+
+// ============================================================================
+// getClubApiKeyFileFromArgs Tests
+// ============================================================================
+
+const SERVE = { command: "serve" };
+
+Deno.test("getClubApiKeyFileFromArgs: returns undefined when the flag is absent", () => {
+  assertEquals(getClubApiKeyFileFromArgs([], SERVE), undefined);
+  assertEquals(
+    getClubApiKeyFileFromArgs(["serve", "--port", "9090"], SERVE),
+    undefined,
+  );
+});
+
+Deno.test("getClubApiKeyFileFromArgs: parses the flag with a space separator", () => {
+  const result = getClubApiKeyFileFromArgs([
+    "serve",
+    "--auth-mode",
+    "oauth",
+    "--club-api-key-file",
+    "/run/secrets/key",
+  ], SERVE);
+  assertPathEquals(result!, resolve("/run/secrets/key"));
+});
+
+Deno.test("getClubApiKeyFileFromArgs: parses the flag with an equals separator", () => {
+  const result = getClubApiKeyFileFromArgs([
+    "serve",
+    "check-config",
+    "--club-api-key-file=/run/secrets/key",
+  ], { command: "serve", subcommand: "check-config" });
+  assertPathEquals(result!, resolve("/run/secrets/key"));
+});
+
+Deno.test("getClubApiKeyFileFromArgs: resolves relative paths to absolute", () => {
+  const result = getClubApiKeyFileFromArgs([
+    "serve",
+    "--club-api-key-file",
+    "./key",
+  ], SERVE);
+  assertEquals(isAbsolute(result!), true);
+  assertPathEquals(result!, resolve("./key"));
+});
+
+Deno.test("getClubApiKeyFileFromArgs: ignores the flag on commands other than serve", () => {
+  // Only serve declares the flag; reading the file for any other command
+  // would send its contents as a credential before Cliffy rejects it.
+  assertEquals(
+    getClubApiKeyFileFromArgs(
+      ["issue", "search", "--club-api-key-file", "/home/u/.ssh/id_ed25519"],
+      { command: "issue", subcommand: "search" },
+    ),
+    undefined,
+  );
+});
+
+Deno.test("getClubApiKeyFileFromArgs: reads the flag for serve daemon enable", () => {
+  const result = getClubApiKeyFileFromArgs(
+    ["serve", "daemon", "enable", "--club-api-key-file", "/run/secrets/key"],
+    { command: "serve", subcommand: "daemon" },
+  );
+  assertPathEquals(result!, resolve("/run/secrets/key"));
+});
+
+Deno.test("getClubApiKeyFileFromArgs: ignores the flag on serve subcommands that do not declare it", () => {
+  assertEquals(
+    getClubApiKeyFileFromArgs(
+      ["serve", "daemon", "status", "--club-api-key-file", "/home/u/.ssh/id"],
+      { command: "serve", subcommand: "daemon" },
+    ),
+    undefined,
+  );
+  assertEquals(
+    getClubApiKeyFileFromArgs(
+      ["serve", "reload", "--club-api-key-file", "/home/u/.ssh/id"],
+      { command: "serve", subcommand: "reload" },
+    ),
+    undefined,
+  );
+});
+
+Deno.test("getClubApiKeyFileFromArgs: gates on the command path extractCommandInfo finds", () => {
+  const key = "/run/secrets/key";
+  const read = (args: string[]) =>
+    getClubApiKeyFileFromArgs(args, extractCommandInfo(args));
+  for (
+    const args of [
+      ["serve", "--auth-mode", "oauth", "--club-api-key-file", key],
+      ["--json", "serve", "--club-api-key-file", key],
+      ["serve", "check-config", "--admins", "a", "--club-api-key-file", key],
+      [
+        "serve",
+        "daemon",
+        "enable",
+        "--port",
+        "9090",
+        "--club-api-key-file",
+        key,
+      ],
+    ]
+  ) {
+    assertPathEquals(read(args)!, resolve(key));
+  }
+  for (
+    const args of [
+      ["serve", "daemon", "status", "--club-api-key-file", key],
+      ["serve", "daemon", "disable", "--club-api-key-file", key],
+      ["issue", "search", "x", "--club-api-key-file", key],
+      ["auth", "whoami", "--club-api-key-file", key],
+    ]
+  ) {
+    assertEquals(read(args), undefined, args.join(" "));
+  }
+});
+
+Deno.test("getClubApiKeyFileFromArgs: stops scanning at the -- terminator", () => {
+  assertEquals(
+    getClubApiKeyFileFromArgs(
+      ["serve", "--", "--club-api-key-file", "/run/secrets/key"],
+      SERVE,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("getClubApiKeyFileFromArgs: ignores a trailing flag with no value", () => {
+  assertEquals(
+    getClubApiKeyFileFromArgs(["serve", "--club-api-key-file"], SERVE),
+    undefined,
+  );
 });
 
 // ============================================================================

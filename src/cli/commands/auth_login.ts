@@ -31,6 +31,7 @@ import { UserError } from "../../domain/errors.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { apiKeySourceName } from "../../infrastructure/persistence/api_key_source.ts";
 
 /** Resolve server URL: env var > default */
 function resolveServerUrl(): string {
@@ -45,7 +46,8 @@ export const authLoginCommand = new Command()
   .description(
     "Authenticate with a swamp-club server.\n\n" +
       "For non-interactive use (CI, agents, scripts), set the SWAMP_API_KEY\n" +
-      "environment variable instead of running this command.",
+      "environment variable (or SWAMP_API_KEY_FILE, a path to a file holding\n" +
+      "the key) instead of running this command.",
   )
   .example("Login via browser", "swamp auth login")
   .example(
@@ -71,9 +73,10 @@ export const authLoginCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["auth", "login"]);
     cliCtx.logger.debug("Executing auth login command");
 
-    if (Deno.env.get("SWAMP_API_KEY")) {
+    const keySource = apiKeySourceName();
+    if (keySource) {
       throw new UserError(
-        "Already authenticated via SWAMP_API_KEY environment variable. " +
+        `Already authenticated via ${keySource} environment variable. ` +
           "Unset it to use file-based login.",
       );
     }

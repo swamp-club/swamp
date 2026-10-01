@@ -20,6 +20,8 @@
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { AuthRepository } from "./auth_repository.ts";
+import { setApiKeyFileOverride } from "./api_key_source.ts";
+import { withMockedEnv } from "./path_test_helpers.ts";
 import {
   type AuthCredentials,
   keyFingerprint,
@@ -786,6 +788,53 @@ Deno.test("AuthRepository - delete also removes scope_cache.json", async () => {
     const scopes = await repo.loadScopeCache("swamp_org_te");
     assertEquals(scopes, undefined);
   } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - default key lookup reads SWAMP_API_KEY_FILE", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const keyPath = join(tmpDir, "key");
+    await Deno.writeTextFile(keyPath, "swamp_org_fromfile\n");
+    const repo = new AuthRepository({
+      configDir: join(tmpDir, "swamp"),
+      getServerUrl: () => undefined,
+    });
+
+    const loaded = await withMockedEnv(
+      { SWAMP_API_KEY: undefined, SWAMP_API_KEY_FILE: keyPath },
+      () => repo.load(),
+    );
+
+    assertExists(loaded);
+    assertEquals(loaded.apiKey, "swamp_org_fromfile");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - default key lookup prefers --club-api-key-file over env and auth.json", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const keyPath = join(tmpDir, "flag-key");
+    await Deno.writeTextFile(keyPath, "swamp_org_fromflag");
+    const repo = new AuthRepository({
+      configDir: join(tmpDir, "swamp"),
+      getServerUrl: () => undefined,
+    });
+    await repo.save(TEST_CREDENTIALS);
+    setApiKeyFileOverride(keyPath);
+
+    const loaded = await withMockedEnv(
+      { SWAMP_API_KEY: "swamp_org_fromenv", SWAMP_API_KEY_FILE: undefined },
+      () => repo.load(),
+    );
+
+    assertExists(loaded);
+    assertEquals(loaded.apiKey, "swamp_org_fromflag");
+  } finally {
+    setApiKeyFileOverride(undefined);
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
