@@ -605,3 +605,22 @@ Deno.test("createInMemoryRemote: a clean push returns 0 offline and leaves an in
     await assertRejects(() => a.pushChanged(), Error, "later");
   });
 });
+
+Deno.test("createInMemoryRemote: pins that a peer's commit during a bulk two-phase push is skipped by the next pull (S3SYNC:3882-3893, 4012-4040)", async () => {
+  await withTempDir(async (dir) => {
+    const { a, b, aCache, bCache } = await twoMachines(dir);
+    await write(aCache, "x", "a");
+    await a.markDirty();
+    const manifest = await a.preparePush();
+
+    await write(bCache, "y", "b");
+    await b.markDirty({ relPath: "y" });
+    await b.pushChanged();
+    await a.commitPush(manifest);
+
+    // A's index holds only what it read at prepare plus its own upload, so
+    // the fast path arms at the new sequence and B's file never arrives.
+    assertEquals(await a.pullChanged(), 0);
+    assertEquals(await read(aCache, "y"), undefined);
+  });
+});

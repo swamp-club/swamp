@@ -60,7 +60,10 @@
  * - `preparePush` uploads and deletes content at once but publishes nothing
  *   other machines can pull, and keeps dirty state; `commitPush` publishes
  *   the index and clears dirty state, including marks made in between
- *   (S3SYNC:3406-3956).
+ *   (S3SYNC:3406-3956). After an unscoped prepare, commit checks completeness
+ *   against the index it read at prepare plus its own changes, so a peer's
+ *   commit in between is skipped by the next pull (S3SYNC:3882-3893,
+ *   4012-4040).
  * - Internal cache files are never pushed or pulled (S3SYNC:116-128). `.log`
  *   files are synced.
  *
@@ -187,11 +190,13 @@ export interface InMemoryRemote {
 
 const PLAN_SCOPED = Symbol("scoped");
 const PLAN_PRIOR_SEQ = Symbol("priorSeq");
+const PLAN_INDEX = Symbol("index");
 const PLAN_OVERFLOWED = Symbol("overflowed");
 
 interface InternalManifest extends InMemoryPushManifest {
   [PLAN_SCOPED]?: boolean;
   [PLAN_PRIOR_SEQ]?: number;
+  [PLAN_INDEX]?: readonly string[];
   [PLAN_OVERFLOWED]?: boolean;
 }
 
@@ -486,8 +491,9 @@ export function createInMemoryRemote(
       return { uploads, deletes: [...deletes].sort(), scoped };
     }
 
-    async function hasAllCommitted(): Promise<boolean> {
-      for (const remoteKey of committed.keys()) {
+    /** Whether every key in `index` (default: the live remote) is local. */
+    async function hasAll(index: Iterable<string>): Promise<boolean> {
+      for (const remoteKey of index) {
         if (!(await statLocal(cacheDir, remoteKey))) return false;
       }
       return true;
@@ -504,6 +510,8 @@ export function createInMemoryRemote(
       upToDate: boolean;
       scoped: boolean;
       overflowed: boolean;
+      /** The index this cache holds; defaults to the live remote. */
+      index?: Iterable<string>;
     }): Promise<void> {
       const sidecar = ensureSidecar();
       sidecar.dirtyPaths.clear();
@@ -513,7 +521,8 @@ export function createInMemoryRemote(
       const reconciled = (arm.scoped || arm.overflowed) &&
         arm.priorSeq === arm.baseSeq;
       const armed = arm.upToDate &&
-        (reconciled || (!arm.scoped && await hasAllCommitted()));
+        (reconciled ||
+          (!arm.scoped && await hasAll(arm.index ?? committed.keys())));
       sidecar.commitSeq = armed ? commitSeq : undefined;
     }
 
@@ -587,6 +596,7 @@ export function createInMemoryRemote(
         deletes: plan.deletes,
         [PLAN_SCOPED]: plan.scoped,
         [PLAN_PRIOR_SEQ]: sidecar?.commitSeq,
+        [PLAN_INDEX]: [...committed.keys()],
         [PLAN_OVERFLOWED]: sidecar?.overflowed ?? false,
       } as InMemoryPushManifest;
     }
@@ -600,6 +610,11 @@ export function createInMemoryRemote(
       // Commit compares the cache's last-seen sequence with the remote's at
       // commit time, so a peer's commit after prepare blocks the arm.
       const baseSeq = commitSeq;
+      // The cache's own index is what prepare read plus this push's changes;
+      // a peer's commit since prepare is not in it (S3SYNC:3882-3893).
+      const index = new Set(internal[PLAN_INDEX] ?? committed.keys());
+      for (const rel of manifest.uploads.keys()) index.add(rel);
+      for (const rel of manifest.deletes) index.delete(rel);
       const deleted = publish(manifest.uploads, manifest.deletes);
       await settle({
         priorSeq: internal[PLAN_PRIOR_SEQ],
@@ -607,6 +622,7 @@ export function createInMemoryRemote(
         upToDate: true,
         scoped: internal[PLAN_SCOPED] ?? false,
         overflowed: internal[PLAN_OVERFLOWED] ?? false,
+        index,
       });
       record({
         instance,
