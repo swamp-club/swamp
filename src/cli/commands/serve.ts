@@ -3812,7 +3812,10 @@ export const serveCommand = new Command()
     );
     const reapResult = await reapOrphanedWorkflowRuns(
       recentRuns,
-      (wid, r) => repoContext.workflowRunRepo.save(wid, r),
+      async (wid, r) => {
+        await repoContext.workflowRunRepo.save(wid, r);
+        runTracker.markSettled(r.id, "server_crash");
+      },
       (runId) => {
         const tracked = runTracker.findById(runId);
         return tracked ? { status: tracked.status } : null;

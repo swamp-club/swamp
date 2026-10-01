@@ -63,7 +63,10 @@ CREATE TABLE pending_runs (             -- queued webhook/cron fires
 
 (`src/infrastructure/persistence/run_tracker_store.ts`.) The
 `run_tracker_meta` table holds the schema version. Terminal rows older than 7
-days are purged at startup. `swamp run gc` removes older records on demand:
+days are purged at startup, except a workflow row reaped `interrupted` with no
+reason (`cancel_reason` null): its run record may still say `running`, and the
+row is the evidence that settles it (see Dead owner below). Once the record is
+settled, `markSettled` stores a reason and the row is purged as usual. `swamp run gc` removes older records on demand:
 30-day default, `--older-than`, `--dry-run`, `--server`
 (`src/cli/commands/run_gc.ts`, protocol `run.gc`).
 
@@ -100,8 +103,14 @@ days are purged at startup. `swamp run gc` removes older records on demand:
    record and write it only while it is still `running` under that pid. A
    record with no row is left alone: it carries no hostname, so on a shared
    datastore its pid says nothing about whether it is alive.
-   `swamp workflow resume` on such a run names `workflow recover` instead of
-   saying to wait.
+   `swamp workflow resume` on such a run, named with `--run` or the latest
+   run, names `workflow recover` instead of saying to wait. Every path that
+   interrupts a record after its owner died (`settleDeadOwnerRun`, the serve
+   boot reaper, the `run.doctor` handler) then calls `markSettled` on the
+   row, only after the record is saved. `run doctor` scans recent records
+   (7 days) and finds older ones through their workflow row, by workflow
+   name, so no run is stranded by age; with `--fix` it also marks settled an
+   `interrupted` row whose record is no longer `running`.
 5. **Suspend**: approval gates set `suspended`, which skips stale detection.
 6. **Reactivate**: on resume, the row passes to the resuming process. A
    `suspended`, `failed` or `interrupted` row becomes `running` with that

@@ -73,7 +73,7 @@ export async function reapOrphanedWorkflowRuns(
           reason: "tracker confirmed stale",
         },
       );
-      run.interrupt("server_crash");
+      run.interruptOrphaned("server_crash");
       await save(workflowId, run);
       reaped++;
       continue;
@@ -108,7 +108,7 @@ export async function reapOrphanedWorkflowRuns(
             reason: "remote instance dead (no heartbeat)",
           },
         );
-        run.interrupt("server_crash");
+        run.interruptOrphaned("server_crash");
         await save(workflowId, run);
         reaped++;
         continue;
@@ -143,7 +143,7 @@ export async function reapOrphanedWorkflowRuns(
       "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
       { runId: run.id, workflowName: run.workflowName, reason },
     );
-    run.interrupt("server_crash");
+    run.interruptOrphaned("server_crash");
     await save(workflowId, run);
     reaped++;
   }
@@ -201,12 +201,14 @@ export function runHasDeadOwner(
 /**
  * Interrupts a run whose owning process died without settling it, for
  * example a `workflow run` or `resume` force-exited by a second Ctrl-C, and
- * marks its tracker row `interrupted`. The run then shows its in-flight
- * steps as `unknown` and `swamp workflow recover` accepts it.
+ * marks its tracker row `interrupted` and then settled. The run then shows
+ * its in-flight steps as `unknown` and `swamp workflow recover` accepts it.
  *
  * The run is read fresh from the repository and settled only while it is
  * still `running` under the dead owner's pid, so a run its owner finished
- * or another process took over is never overwritten.
+ * or another process took over is never overwritten. The row is marked
+ * settled only after the record is saved, so retention keeps it while the
+ * record may still say `running`.
  *
  * Returns true when the run was interrupted.
  */
@@ -224,8 +226,9 @@ export async function settleDeadOwnerRun(
     { runId: run.id, workflowName: run.workflowName, pid: run.pid },
   );
   runTracker.complete(run.id, "interrupted");
-  run.interrupt("owner_process_dead");
+  run.interruptOrphaned("owner_process_dead");
   await runRepo.save(workflowId, run);
+  runTracker.markSettled(run.id, "owner_process_dead");
   return true;
 }
 

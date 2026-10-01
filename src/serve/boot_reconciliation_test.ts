@@ -1241,7 +1241,7 @@ Deno.test("reconcileRemoteInterruptedRuns: interrupts YAML workflow runs from st
           id: "yaml-run-1",
           instanceId: "dead-inst",
           status: "running",
-          interrupt: (reason: string) => {
+          interruptOrphaned: (reason: string) => {
             yamlInterrupted.push(`${reason}`);
           },
         },
@@ -1283,7 +1283,7 @@ Deno.test("reconcileRemoteInterruptedRuns: skips YAML runs from non-stale instan
           id: "yaml-run-alive",
           instanceId: "alive-inst",
           status: "running",
-          interrupt: () => {
+          interruptOrphaned: () => {
             throw new Error("should not interrupt alive instance's run");
           },
         },

@@ -34,8 +34,17 @@ import {
   type OwnerLiveness,
   runHasDeadOwner,
   settleDeadOwnerRun,
+  trackerShowsDeadOwner,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
-import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import type {
+  WorkflowRepository,
+  WorkflowRunRepository,
+} from "../../domain/workflows/repositories.ts";
+import {
+  createWorkflowRunId,
+  type WorkflowId,
+} from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import {
   createModelRunsOutput,
@@ -176,10 +185,16 @@ export interface LocalRunDiagnosis {
  * still `running` whose tracker row shows a dead owner are orphaned; with
  * `fix`, the stale rows are reaped and the orphaned records interrupted so
  * `swamp workflow recover` accepts them.
+ *
+ * Recent records are found by scanning; an older one is found through its
+ * workflow tracker row, so no run is stranded by its age. With `fix`, an
+ * `interrupted` workflow row whose record is already settled is marked so,
+ * and retention may then purge it.
  */
 export async function diagnoseLocalRuns(
   tracker: RunTrackerStore,
   runRepo: WorkflowRunRepository,
+  workflowRepo: Pick<WorkflowRepository, "findByName">,
   liveness: OwnerLiveness,
   fix: boolean,
 ): Promise<LocalRunDiagnosis> {
@@ -206,11 +221,25 @@ export async function diagnoseLocalRuns(
 
   let orphanedWorkflowRuns = 0;
   let orphanedReaped = 0;
-  const records = await runRepo.findGlobalByStatus(
-    "running",
-    new Date(Date.now() - ORPHAN_SCAN_WINDOW_MS),
+  const records = new Map(
+    (await runRepo.findGlobalByStatus(
+      "running",
+      new Date(Date.now() - ORPHAN_SCAN_WINDOW_MS),
+    )).map((record) => [record.run.id as string, record]),
   );
-  for (const { run, workflowId } of records) {
+  for (const row of tracker.findAll()) {
+    if (row.runKind !== "workflow" || records.has(row.id)) continue;
+    const unsettled = fix && row.status === "interrupted";
+    if (!unsettled && !trackerShowsDeadOwner(row, liveness)) continue;
+    const record = await findRunRecord(runRepo, workflowRepo, row);
+    if (!record) continue;
+    if (record.run.status === "running") {
+      records.set(row.id, record);
+    } else if (unsettled) {
+      tracker.markSettled(row.id, "record_settled");
+    }
+  }
+  for (const { run, workflowId } of records.values()) {
     if (!runHasDeadOwner(run, tracker, liveness)) continue;
     orphanedWorkflowRuns++;
     if (
@@ -229,6 +258,19 @@ export async function diagnoseLocalRuns(
     orphanedWorkflowRuns,
     orphanedReaped,
   };
+}
+
+/** The run record behind a workflow tracker row, found by workflow name. */
+async function findRunRecord(
+  runRepo: WorkflowRunRepository,
+  workflowRepo: Pick<WorkflowRepository, "findByName">,
+  row: ActiveRun,
+): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | null> {
+  if (!row.workflowName) return null;
+  const workflow = await workflowRepo.findByName(row.workflowName);
+  if (!workflow) return null;
+  const run = await runRepo.findById(workflow.id, createWorkflowRunId(row.id));
+  return run ? { run, workflowId: workflow.id } : null;
 }
 
 const runDoctorCommand = withRemoteOptions(
@@ -301,6 +343,7 @@ const runDoctorCommand = withRemoteOptions(
         const result = await diagnoseLocalRuns(
           tracker,
           repoContext.workflowRunRepo,
+          repoContext.workflowRepo,
           localOwnerLiveness(),
           !!options.fix,
         );

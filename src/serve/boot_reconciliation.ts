@@ -545,7 +545,7 @@ export async function reconcileRemoteInterruptedRuns(
       for (const { run, workflowId } of yamlRuns) {
         if (!run.instanceId || !claimedSet.has(run.instanceId)) continue;
         if (run.status !== "running") continue;
-        run.interrupt("remote_instance_dead");
+        run.interruptOrphaned("remote_instance_dead");
         await deps.workflowRunRepo.save(workflowId, run);
         reaped++;
         logger.warn(

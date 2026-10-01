@@ -360,6 +360,43 @@ Deno.test("resolveResumableRun: --run still says to wait for a running run whose
   );
 });
 
+Deno.test("resolveResumableRun: without --run names recover when the latest run is running under a dead owner", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = WorkflowRun.create(wf);
+  run.start(4242);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  const error = await assertRejects(
+    () =>
+      resolveResumableRun(workflowRepo, runRepo, "test-wf", undefined, {
+        ownerIsDead: (r) => r.id === run.id,
+      }),
+    Error,
+    `The latest run (${run.id}) is recorded as running, but its owning process is gone`,
+  );
+  assertStringIncludes(
+    error.message,
+    `swamp workflow recover test-wf --run ${run.id}`,
+  );
+  assertEquals(error.message.includes("Wait for it to complete"), false);
+});
+
+Deno.test("resolveResumableRun: without --run still says to wait when the latest run's owner is alive", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = WorkflowRun.create(wf);
+  run.start(4242);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  await assertRejects(
+    () =>
+      resolveResumableRun(workflowRepo, runRepo, "test-wf", undefined, {
+        ownerIsDead: () => false,
+      }),
+    Error,
+    "The latest run is running",
+  );
+});
+
 Deno.test("resolveResumableRun: refuses an ineligible failed run before resume starts", async () => {
   const wf = createWorkflow("test-wf");
   const run = createFailedRun(wf);

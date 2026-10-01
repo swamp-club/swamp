@@ -991,3 +991,108 @@ Deno.test("RunTrackerStore: findDeadProcessRuns lists local dead-PID runs with a
     store.close();
   }
 });
+
+// ── retention of unsettled interrupted workflow rows ───────────────
+
+function workflowRow(id: string, kind: "workflow" | "model_method") {
+  return ActiveRun.fromData({
+    id,
+    runKind: kind,
+    modelType: kind === "workflow" ? null : "@test/model",
+    methodName: kind === "workflow" ? null : "start",
+    workflowName: kind === "workflow" ? "wf" : null,
+    pid: 2147483647,
+    hostname: hostname(),
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    status: "running",
+  });
+}
+
+/** Backdates every terminal row past retention, then reopens the store. */
+function reopenAfterRetention(dbPath: string): RunTrackerStore {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare(
+      "UPDATE active_runs SET completed_at = ? WHERE completed_at IS NOT NULL",
+    ).run(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+  } finally {
+    db.close();
+  }
+  return new RunTrackerStore(dbPath);
+}
+
+Deno.test("RunTrackerStore: retention keeps an interrupted workflow row until it is settled", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(workflowRow("unsettled", "workflow"));
+    store.register(workflowRow("settled", "workflow"));
+    store.register(workflowRow("method", "model_method"));
+    store.register(workflowRow("done", "workflow"));
+    store.complete("done", "completed");
+    store.reapDeadProcessRuns();
+    store.markSettled("settled", "owner_process_dead");
+  } finally {
+    store.close();
+  }
+
+  const reopened = reopenAfterRetention(dbPath);
+  try {
+    assertEquals(reopened.findAll().map((r) => r.id), ["unsettled"]);
+    assertEquals(reopened.findById("unsettled")?.status, "interrupted");
+  } finally {
+    reopened.close();
+  }
+});
+
+Deno.test("RunTrackerStore: markSettled only touches an unsettled interrupted row", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(workflowRow("running", "workflow"));
+    store.register(workflowRow("completed", "workflow"));
+    store.complete("completed", "completed");
+
+    store.markSettled("running", "owner_process_dead");
+    store.markSettled("completed", "owner_process_dead");
+
+    assertEquals(store.findById("running")?.status, "running");
+    assertEquals(store.findById("completed")?.status, "completed");
+  } finally {
+    store.close();
+  }
+
+  const db = new DatabaseSync(dbPath);
+  try {
+    const reason = (id: string) =>
+      (db.prepare("SELECT cancel_reason FROM active_runs WHERE id = ?").get(
+        id,
+      ) as { cancel_reason: string | null }).cancel_reason;
+    assertEquals(reason("running"), null);
+    assertEquals(reason("completed"), null);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("RunTrackerStore: a resumed run killed again is unsettled once more", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(workflowRow("run-1", "workflow"));
+    store.reapDeadProcessRuns();
+    store.markSettled("run-1", "owner_process_dead");
+    store.reactivate("run-1", 2147483646, hostname());
+    store.reapDeadProcessRuns();
+  } finally {
+    store.close();
+  }
+
+  const reopened = reopenAfterRetention(dbPath);
+  try {
+    assertEquals(reopened.findById("run-1")?.status, "interrupted");
+  } finally {
+    reopened.close();
+  }
+});

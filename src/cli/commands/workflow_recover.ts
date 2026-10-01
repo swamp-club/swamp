@@ -84,7 +84,7 @@ async function findRecoverableRun(
       return await findInterruptedRun(workflow, runRepo, runId);
     }
     for (const run of deadOwnerRuns) {
-      run.interrupt("owner_process_dead");
+      run.interruptOrphaned("owner_process_dead");
     }
     const interrupted = await findInterruptedRun(workflow, runRepo, runId);
     const candidates = [

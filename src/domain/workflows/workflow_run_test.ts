@@ -1422,6 +1422,65 @@ Deno.test("WorkflowRun.interrupt: converts cancelled run to interrupted", () => 
   assertEquals(run.tags["interrupt_reason"], "server_shutdown");
 });
 
+Deno.test("WorkflowRun.interruptOrphaned: marks pending steps unknown in a running job with no step recorded running", () => {
+  // A record saved by a swamp that did not save step starts: step1 finished,
+  // step2 was in flight but still reads pending.
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+
+  run.interruptOrphaned("owner_process_dead");
+
+  assertEquals(run.status, "interrupted");
+  assertEquals(run.tags["interrupt_reason"], "owner_process_dead");
+  assertEquals(run.jobs[0].steps[0].status, "succeeded");
+  assertEquals(run.jobs[0].steps[1].status, "unknown");
+  assertEquals(
+    run.jobs[0].steps[1].error,
+    "interrupted: owner_process_dead (start not recorded)",
+  );
+  assertEquals(run.jobs[0].status, "unknown");
+  // job2 never started, so its step is known not to have run.
+  assertEquals(run.jobs[1].status, "pending");
+  assertEquals(run.jobs[1].steps[0].status, "pending");
+  assertEquals(run.unknownSteps(), ["step2"]);
+});
+
+Deno.test("WorkflowRun.interruptOrphaned: leaves pending steps alone when a step is recorded running", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+
+  run.interruptOrphaned("owner_process_dead");
+
+  assertEquals(run.jobs[0].steps[0].status, "unknown");
+  assertEquals(
+    run.jobs[0].steps[0].error,
+    "interrupted: owner_process_dead",
+  );
+  assertEquals(run.jobs[0].steps[1].status, "pending");
+  assertEquals(run.unknownSteps(), ["step1"]);
+});
+
+Deno.test("WorkflowRun.interruptOrphaned: no-ops on a run that is not running", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].fail("boom");
+  run.jobs[0].fail();
+  run.complete();
+
+  run.interruptOrphaned("owner_process_dead");
+
+  assertEquals(run.status, "failed");
+  assertEquals(run.jobs[0].steps[1].status, "pending");
+  assertEquals(run.tags["interrupt_reason"], undefined);
+});
+
 Deno.test("WorkflowRun.unknownSteps: returns names of unknown steps", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);

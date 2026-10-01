@@ -1734,7 +1734,12 @@ recording the result.
 each time it reaches a terminal state (succeeded, failed, skipped), not only at
 topological level boundaries, so a crash mid-level keeps that level's completed
 steps, and a step that was running when the process died is recorded `running`
-and becomes `unknown`, never `pending`, when the run is interrupted.
+and becomes `unknown`, never `pending`, when the run is interrupted. A record
+written by a swamp that did not save step starts, or a kill that beat the save,
+can still show the in-flight step `pending`. So when a dead owner's run is
+interrupted (`WorkflowRun.interruptOrphaned`), a job left `running` with no step
+recorded `running` has its `pending` steps marked `unknown` too, and recovery
+asks before re-running them.
 
 **Run plan identity:** at run start, the run plan records two fingerprints: one
 of the definition as loaded from disk (`definitionFingerprint`), and one of the

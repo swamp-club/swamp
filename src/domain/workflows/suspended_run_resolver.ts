@@ -63,12 +63,21 @@ function lookupWorkflow(
     : findWorkflowByIdOrName(workflowRepo, workflowIdOrName);
 }
 
+/** Options for {@link resolveSuspendedRun}. */
+export interface ResolveSuspendedRunOptions extends WorkflowLookupOptions {
+  /**
+   * Whether a run recorded as `running` has lost its owning process, so a
+   * refusal that names such a run can point at `workflow recover`.
+   */
+  ownerIsDead?: (run: WorkflowRun) => boolean;
+}
+
 export async function resolveSuspendedRun(
   workflowRepo: WorkflowRepository,
   runRepo: WorkflowRunRepository,
   workflowIdOrName: string,
   runId?: string,
-  lookup: WorkflowLookupOptions = {},
+  lookup: ResolveSuspendedRunOptions = {},
 ): Promise<SuspendedRunInfo> {
   const workflow = await lookupWorkflow(
     workflowRepo,
@@ -105,7 +114,12 @@ export async function resolveSuspendedRun(
 
   if (suspendedRuns.length === 0) {
     throw new UserError(
-      noRunsInStateMessage(workflow.name, "suspended", allRuns),
+      noRunsInStateMessage(
+        workflow.name,
+        "suspended",
+        allRuns,
+        lookup.ownerIsDead,
+      ),
     );
   }
   if (suspendedRuns.length > 1) {
@@ -126,7 +140,7 @@ export async function resolveSuspendedRun(
 
 export type ResumableRunInfo = SuspendedRunInfo;
 
-export interface ResolveResumableRunOptions extends WorkflowLookupOptions {
+export interface ResolveResumableRunOptions extends ResolveSuspendedRunOptions {
   /** The --from step; when set, only a failed run is resumable. */
   fromStep?: string;
   /**
@@ -134,11 +148,6 @@ export interface ResolveResumableRunOptions extends WorkflowLookupOptions {
    * Takes precedence over `fromStep`.
    */
   suspendedOnly?: boolean;
-  /**
-   * Whether a run recorded as `running` has lost its owning process, so the
-   * refusal can name `workflow recover` rather than say to wait for it.
-   */
-  ownerIsDead?: (run: WorkflowRun) => boolean;
 }
 
 /**
@@ -171,7 +180,11 @@ export async function resolveResumableRun(
       runRepo,
       workflowIdOrName,
       runId,
-      { byId: options.byId, expectedName: options.expectedName },
+      {
+        byId: options.byId,
+        expectedName: options.expectedName,
+        ownerIsDead: options.ownerIsDead,
+      },
     );
     checkSuspendedRunResume(resolved.workflow, resolved.run);
     await assertNestedWaitsSettled(
@@ -202,7 +215,7 @@ export async function resolveResumableRun(
       throw new UserError(
         `Run ${runId} is recorded as running, but its owning process` +
           `${run.pid !== undefined ? ` (pid ${run.pid})` : ""} is gone.` +
-          ` Recover it with 'swamp workflow recover ${workflow.name} --run ${run.id}', then resume it.`,
+          deadOwnerNextAction(workflow.name, run.id),
       );
     }
     if (options.fromStep) {
@@ -256,16 +269,26 @@ export async function resolveResumableRun(
   };
 }
 
+/** The next step for a run left `running` by an owner that is gone. */
+function deadOwnerNextAction(workflowName: string, runId: string): string {
+  return ` Recover it with 'swamp workflow recover ${workflowName} --run ${runId}', then resume it.`;
+}
+
 function noRunsInStateMessage(
   workflowName: string,
   expectedStatus: string,
   allRuns: readonly WorkflowRun[],
+  ownerIsDead?: (run: WorkflowRun) => boolean,
 ): string {
   const base = `No ${expectedStatus} runs found for workflow "${workflowName}"`;
   if (allRuns.length === 0) {
     return `${base}. No runs exist — run the workflow first with 'swamp workflow run ${workflowName}'.`;
   }
   const latest = allRuns[0];
+  if (latest.status === "running" && ownerIsDead?.(latest)) {
+    return `${base}. The latest run (${latest.id}) is recorded as running, but its owning process is gone.` +
+      deadOwnerNextAction(workflowName, latest.id);
+  }
   const suggestion = nextActionForStatus(
     latest.status,
     workflowName,

@@ -16,7 +16,7 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   type OwnerLiveness,
   reapOrphanedWorkflowRuns,
@@ -118,6 +118,32 @@ Deno.test("reapOrphanedWorkflowRuns: interrupts run when tracker confirmed stale
   assertEquals(result.skipped, 0);
   assertEquals(run.status, "interrupted");
   assertEquals(saved.length, 1);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: a step whose start was never saved becomes unknown", async () => {
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: WORKFLOW_ID,
+    workflowName: "test-workflow",
+    status: "running",
+    startedAt: "2026-07-20T20:00:00.000Z",
+    pid: 99999,
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      startedAt: "2026-07-20T20:00:00.000Z",
+      steps: [{ stepName: "step1", status: "pending" }],
+    }],
+    tags: {},
+  });
+  await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    () => Promise.resolve(),
+    trackerReaped,
+    unexpectedPidCheck,
+  );
+  assertEquals(run.tags["interrupt_reason"], "server_crash");
+  assertEquals(run.unknownSteps(), ["step1"]);
 });
 
 Deno.test("reapOrphanedWorkflowRuns: legacy run with live PID is skipped", async () => {
@@ -414,6 +440,8 @@ function trackerRow(
 interface Recorded {
   saved: { runId: string; status: string }[];
   completed: { runId: string; status: ActiveRunStatus }[];
+  /** Every repository and tracker write, in order. */
+  writes: string[];
 }
 
 /**
@@ -425,7 +453,7 @@ function stubs(stored: WorkflowRun[], rows: ActiveRun[]): {
   runTracker: RunTrackerRepository;
   recorded: Recorded;
 } {
-  const recorded: Recorded = { saved: [], completed: [] };
+  const recorded: Recorded = { saved: [], completed: [], writes: [] };
   return {
     runRepo: {
       findById: (_wfId: WorkflowId, runId: WorkflowRunId) =>
@@ -434,6 +462,7 @@ function stubs(stored: WorkflowRun[], rows: ActiveRun[]): {
         ),
       save: (_wfId: WorkflowId, run: WorkflowRun) => {
         recorded.saved.push({ runId: run.id, status: run.status });
+        recorded.writes.push(`save:${run.status}`);
         return Promise.resolve();
       },
     } as unknown as WorkflowRunRepository,
@@ -441,6 +470,10 @@ function stubs(stored: WorkflowRun[], rows: ActiveRun[]): {
       findById: (runId: string) => rows.find((r) => r.id === runId) ?? null,
       complete: (runId: string, status: ActiveRunStatus) => {
         recorded.completed.push({ runId, status });
+        recorded.writes.push(`complete:${status}`);
+      },
+      markSettled: (_runId: string, reason: string) => {
+        recorded.writes.push(`settled:${reason}`);
       },
     } as unknown as RunTrackerRepository,
     recorded,
@@ -545,6 +578,76 @@ Deno.test("settleDeadOwnerRun: interrupts a running run whose local owner is dea
   assertEquals(run.jobs[0].steps[0].status, "unknown");
   assertEquals(recorded.saved, [{ runId: run.id, status: "interrupted" }]);
   assertEquals(recorded.completed, [{ runId: run.id, status: "interrupted" }]);
+  // The row is marked settled only once the record is saved.
+  assertEquals(recorded.writes, [
+    "complete:interrupted",
+    "save:interrupted",
+    "settled:owner_process_dead",
+  ]);
+});
+
+Deno.test("settleDeadOwnerRun: a step whose start was never saved becomes unknown, not pending", async () => {
+  // As a pre-#2896 swamp left it: the job is running, its in-flight step
+  // still reads pending.
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: WORKFLOW_ID,
+    workflowName: "test-workflow",
+    status: "running",
+    startedAt: "2026-07-20T20:00:00.000Z",
+    pid: 4242,
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      startedAt: "2026-07-20T20:00:00.000Z",
+      steps: [
+        {
+          stepName: "fast",
+          status: "succeeded",
+          startedAt: "2026-07-20T20:00:00.000Z",
+        },
+        { stepName: "slow", status: "pending" },
+      ],
+    }],
+    tags: {},
+  });
+  const { runRepo, runTracker } = stubs(
+    [run],
+    [trackerRow(run.id, { pid: 4242 })],
+  );
+
+  await settleDeadOwnerRun(
+    runRepo,
+    runTracker,
+    WORKFLOW_ID,
+    run.id,
+    liveness([4242]),
+  );
+
+  assertEquals(run.unknownSteps(), ["slow"]);
+});
+
+Deno.test("settleDeadOwnerRun: leaves the row unsettled when saving the record fails", async () => {
+  const run = makeRun({ pid: 4242 });
+  const { runRepo, runTracker, recorded } = stubs(
+    [run],
+    [trackerRow(run.id, { pid: 4242 })],
+  );
+  runRepo.save = () => Promise.reject(new Error("disk full"));
+
+  await assertRejects(
+    () =>
+      settleDeadOwnerRun(
+        runRepo,
+        runTracker,
+        WORKFLOW_ID,
+        run.id,
+        liveness([4242]),
+      ),
+    Error,
+    "disk full",
+  );
+  assertEquals(recorded.writes, ["complete:interrupted"]);
 });
 
 Deno.test("settleDeadOwnerRun: interrupts a running run whose tracker row was already reaped", async () => {

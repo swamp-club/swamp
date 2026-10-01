@@ -1864,8 +1864,9 @@ export async function handleRunDoctor(
 
         orphanedWorkflowRuns++;
         if (payload?.fix) {
-          run.interrupt("doctor_reap");
+          run.interruptOrphaned("doctor_reap");
           await ctx.repoContext.workflowRunRepo.save(workflowId, run);
+          ctx.runTracker.markSettled(run.id, "doctor_reap");
           orphanedReaped++;
         }
       }

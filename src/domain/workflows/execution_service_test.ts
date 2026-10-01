@@ -8069,6 +8069,8 @@ class RecordingRunTracker implements RunTrackerRepository {
     this.completions.push({ runId, status });
   }
 
+  markSettled(_runId: string, _reason: string): void {}
+
   readonly reactivations: {
     runId: string;
     pid: number;

@@ -28,7 +28,11 @@ import {
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import type {
+  WorkflowRepository,
+  WorkflowRunRepository,
+} from "../../domain/workflows/repositories.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type {
   WorkflowId,
   WorkflowRunId,
@@ -101,7 +105,11 @@ function trackerRow(
   });
 }
 
-function runRepoOf(runs: WorkflowRun[]): {
+/**
+ * A run repository over `runs`. `scanned` limits what the recent-record scan
+ * returns, as its window does for a run started long ago.
+ */
+function runRepoOf(runs: WorkflowRun[], scanned = runs): {
   runRepo: WorkflowRunRepository;
   saved: string[];
 } {
@@ -109,7 +117,7 @@ function runRepoOf(runs: WorkflowRun[]): {
   const runRepo = {
     findGlobalByStatus: (status: string) =>
       Promise.resolve(
-        runs.filter((r) => r.status === status).map((run) => ({
+        scanned.filter((r) => r.status === status).map((run) => ({
           run,
           workflowId: WORKFLOW_ID,
         })),
@@ -124,6 +132,14 @@ function runRepoOf(runs: WorkflowRun[]): {
   return { runRepo, saved };
 }
 
+/** Workflow lookup that knows only workflow "wf". */
+const workflowRepo = {
+  findByName: (name: string) =>
+    Promise.resolve(
+      name === "wf" ? { id: WORKFLOW_ID, name } as unknown as Workflow : null,
+    ),
+} as Pick<WorkflowRepository, "findByName">;
+
 Deno.test(
   "diagnoseLocalRuns: lists a dead local owner as stale before its heartbeat expires, and writes nothing without fix",
   withTracker(async (tracker) => {
@@ -134,6 +150,7 @@ Deno.test(
     const result = await diagnoseLocalRuns(
       tracker,
       runRepo,
+      workflowRepo,
       localOwnerLiveness(),
       false,
     );
@@ -161,6 +178,7 @@ Deno.test(
     const result = await diagnoseLocalRuns(
       tracker,
       runRepo,
+      workflowRepo,
       localOwnerLiveness(),
       true,
     );
@@ -195,6 +213,7 @@ Deno.test(
     const result = await diagnoseLocalRuns(
       tracker,
       runRepo,
+      workflowRepo,
       localOwnerLiveness(),
       true,
     );
@@ -208,6 +227,93 @@ Deno.test(
     assertEquals(live.status, "running");
     assertEquals(remote.status, "running");
     assertEquals(untracked.status, "running");
+    assertEquals(saved, []);
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: fix settles a run older than the scan window through its tracker row",
+  withTracker(async (tracker) => {
+    const run = strandedRun(DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    const { runRepo, saved } = runRepoOf([run], []);
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      localOwnerLiveness(),
+      true,
+    );
+
+    assertEquals(result.orphanedWorkflowRuns, 1);
+    assertEquals(result.orphanedReaped, 1);
+    assertEquals(run.status, "interrupted");
+    assertEquals(saved, [run.id]);
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: without fix, an old run is counted through its tracker row but not written",
+  withTracker(async (tracker) => {
+    const run = strandedRun(DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    tracker.complete(run.id, "interrupted");
+    const { runRepo, saved } = runRepoOf([run], []);
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      localOwnerLiveness(),
+      false,
+    );
+
+    assertEquals(result.orphanedWorkflowRuns, 1);
+    assertEquals(run.status, "running");
+    assertEquals(saved, []);
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: fix marks an interrupted row settled only once its record is no longer running",
+  withTracker(async (tracker) => {
+    const settled = strandedRun(DEAD_PID);
+    settled.interrupt("server_crash");
+    const remote = strandedRun(DEAD_PID);
+    const renamed = strandedRun(DEAD_PID);
+    for (
+      const [run, host] of [
+        [settled, hostname()],
+        [remote, "some-other-host"],
+        [renamed, hostname()],
+      ] as const
+    ) {
+      tracker.register(trackerRow(run.id, DEAD_PID, "workflow", host));
+      tracker.complete(run.id, "interrupted");
+    }
+    // The renamed run's record is not found under its row's workflow name.
+    const { runRepo, saved } = runRepoOf([settled, remote], []);
+    const marked: string[] = [];
+    const markSettled = tracker.markSettled.bind(tracker);
+    tracker.markSettled = (id: string, reason: string) => {
+      marked.push(id);
+      markSettled(id, reason);
+    };
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      localOwnerLiveness(),
+      true,
+    );
+
+    // The settled record's row is marked; the remote row's record is still
+    // running on another host, and the renamed run's record is not found.
+    assertEquals(marked, [settled.id]);
+    assertEquals(result.orphanedWorkflowRuns, 0);
+    assertEquals(remote.status, "running");
     assertEquals(saved, []);
   }),
 );
