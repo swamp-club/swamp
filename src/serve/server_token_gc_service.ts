@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "token-gc"]);
@@ -98,9 +99,11 @@ export class ServerTokenGcService {
 
   #scheduleNext(delayMs: number): void {
     if (this.#disposed) return;
-    this.#timer = setTimeout(() => {
-      void this.#tick();
-    }, delayMs);
+    this.#timer = runDetached(() =>
+      setTimeout(() => {
+        void this.#tick();
+      }, delayMs)
+    );
     Deno.unrefTimer(this.#timer);
   }
 

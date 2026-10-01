@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   commandNeedsLoaderSetup,
   type DeferredWarning,
+  isDispatchRunnerCommand,
   isHookCommand,
   isLocalhostUrl,
   isRepoScopedCommand,
@@ -462,6 +463,21 @@ Deno.test("commandNeedsLoaderSetup returns true for model type search with globa
 });
 
 // isHookCommand tests
+
+Deno.test("isDispatchRunnerCommand: true only for worker exec-dispatch", () => {
+  assertEquals(
+    isDispatchRunnerCommand(extractCommandInfo(["worker", "exec-dispatch"])),
+    true,
+  );
+  assertEquals(
+    isDispatchRunnerCommand(extractCommandInfo(["worker", "connect"])),
+    false,
+  );
+  assertEquals(
+    isDispatchRunnerCommand(extractCommandInfo(["audit", "record"])),
+    false,
+  );
+});
 
 Deno.test("isHookCommand: returns true for audit record --from-hook", () => {
   assertEquals(

@@ -17,13 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   type ServerTokenGcDeps,
   ServerTokenGcService,
   type TokenGcInfo,
 } from "./server_token_gc_service.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 
 const ONE_HOUR = 60 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * ONE_HOUR;
@@ -328,4 +331,27 @@ Deno.test("dispose: waits for an in-flight sweep and schedules no further sweep"
   }
 
   assertEquals(listCalls, callsAtDispose);
+});
+
+Deno.test("ServerTokenGcService: a tick runs with no active span when started under one", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    const service = new ServerTokenGcService(makeMockDeps([], {
+      intervalMs: 10,
+      listTokens: () => {
+        seen.push(trace.getActiveSpan());
+        return Promise.resolve([]);
+      },
+    }));
+    await withSpan("swamp.cli", {}, async () => {
+      service.start();
+      try {
+        await waitFor(() => seen.length >= 2, "two sweeps");
+      } finally {
+        await service.dispose();
+      }
+    });
+    assert(seen.length >= 2);
+    for (const span of seen) assertEquals(span, undefined);
+  });
 });

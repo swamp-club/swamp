@@ -21,19 +21,18 @@
 //
 // The production worker child (`swamp worker exec-dispatch`) boots through
 // main.ts, which runs initTracing() (extracting the propagated TRACEPARENT) and
-// shutdownLogs(); and dispatch_handler.ts builds the child env by overlaying the
-// shipped snapshot on top of Deno.env.toObject(), so OTEL_* is inherited. This
-// test proves both halves without spawning a subprocess:
+// shutdownLogs(); and dispatch_handler.ts builds the child env
+// (buildRunnerEnvironment) from the worker's own environment, so the worker's
+// OTEL_* is inherited, with the dispatch's trace headers on top. This test
+// proves both halves without spawning a subprocess:
 //   1. The env plumbing carries OTEL_* + TRACEPARENT into the child env.
 //   2. Feeding that child env through the real initTracing's env lookup, then
 //      runWithParentTrace, makes the child's exported log records carry the
 //      *parent's* trace id.
 
 import { assert, assertEquals } from "@std/assert";
-import {
-  isDeniedEnvVar,
-  overlayEnvironment,
-} from "../src/domain/remote/environment_snapshot.ts";
+import { isDeniedEnvVar } from "../src/domain/remote/environment_snapshot.ts";
+import { buildRunnerEnvironment } from "../src/worker/dispatch_handler.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { getSwampLogger } from "../src/infrastructure/logging/logger.ts";
 import {
@@ -47,30 +46,20 @@ import {
 const PARENT_TRACE = "11111111111111111111111111111111";
 const PARENT_SPAN = "2222222222222222";
 
-/** Reproduces dispatch_handler.ts's child-env construction. */
-function buildChildEnv(
-  base: Record<string, string>,
-  snapshot: Record<string, string>,
-  traceHeaders: Record<string, string>,
-): Record<string, string> {
-  let env = overlayEnvironment(base, snapshot);
-  const traceSnapshot: Record<string, string> = {};
-  for (const [key, value] of Object.entries(traceHeaders)) {
-    traceSnapshot[key.toUpperCase().replace(/-/g, "_")] = value;
-  }
-  env = overlayEnvironment(env, traceSnapshot);
-  return env;
-}
-
 Deno.test("worker env: OTEL_* is inherited and TRACEPARENT is overlaid into the child env", () => {
   const base = {
     OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.test",
     OTEL_EXPORTER_OTLP_HEADERS: "x-honeycomb-team=key",
     HOME: "/worker-home",
   };
-  const env = buildChildEnv(
+  const env = buildRunnerEnvironment(
     base,
-    { SOME_SHIPPED: "value" },
+    {
+      SOME_SHIPPED: "value",
+      // The orchestrator's own telemetry settings are never shipped
+      // (swamp-club#2467); an older orchestrator that ships them is ignored.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://orchestrator-collector.test",
+    },
     { traceparent: `00-${PARENT_TRACE}-${PARENT_SPAN}-01` },
   );
 
@@ -80,13 +69,14 @@ Deno.test("worker env: OTEL_* is inherited and TRACEPARENT is overlaid into the 
     "http://collector.test",
   );
   assertEquals(env.OTEL_EXPORTER_OTLP_HEADERS, "x-honeycomb-team=key");
+  assertEquals(env.SOME_SHIPPED, "value");
   // Propagated trace context is present as the env var initTracing reads.
   assertEquals(env.TRACEPARENT, `00-${PARENT_TRACE}-${PARENT_SPAN}-01`);
 
-  // And the denylist never strips telemetry config or trace context.
-  assertEquals(isDeniedEnvVar("OTEL_EXPORTER_OTLP_ENDPOINT"), false);
-  assertEquals(isDeniedEnvVar("OTEL_EXPORTER_OTLP_HEADERS"), false);
-  assertEquals(isDeniedEnvVar("TRACEPARENT"), false);
+  // The snapshot denylist keeps the orchestrator's telemetry config and trace
+  // context on the orchestrator; the dispatch carries its trace explicitly.
+  assertEquals(isDeniedEnvVar("OTEL_EXPORTER_OTLP_ENDPOINT"), true);
+  assertEquals(isDeniedEnvVar("TRACEPARENT"), true);
 });
 
 Deno.test("worker correlation: child logs carry the propagated parent trace id", async () => {
@@ -98,7 +88,7 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
   // that child env to initTracing through its env lookup instead of writing it
   // into the process-wide Deno.env: parallel test files and InProcessExecutor
   // save, set, and delete TRACEPARENT there concurrently (swamp-club#2445).
-  const childEnv = buildChildEnv({}, {}, {
+  const childEnv = buildRunnerEnvironment({}, {}, {
     traceparent: `00-${PARENT_TRACE}-${PARENT_SPAN}-01`,
   });
   // deno-lint-ignore no-explicit-any

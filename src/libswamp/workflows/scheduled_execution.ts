@@ -40,7 +40,7 @@ import {
   extractFirstStepError,
   type WorkflowRunView,
 } from "./workflow_run_view.ts";
-import { withSpan } from "../../infrastructure/tracing/mod.ts";
+import { runDetached, withRootSpan } from "../../infrastructure/tracing/mod.ts";
 
 const logger = getSwampLogger(["scheduled-execution"]);
 
@@ -282,7 +282,8 @@ export class ScheduledExecutionService {
     // workflows and replaces schedules on already-registered ones
     await this.applyTriggerOverrides();
 
-    // Start the scheduler — cron jobs begin firing
+    // Start the scheduler — cron jobs begin firing. WorkflowScheduler arms
+    // each job's timer detached, so a fire never joins this caller's trace.
     this.scheduler.start((workflowId, fireTime) => {
       const fire: Promise<void> = this.handleFire(workflowId, fireTime)
         .finally(() => this.inFlightFires.delete(fire));
@@ -290,8 +291,9 @@ export class ScheduledExecutionService {
       return fire;
     });
 
-    // Start watching for changes
-    await this.watcher.start();
+    // Start watching for changes. Detached: serve starts this service inside
+    // the never-ending swamp.cli span, and a reload must not join that trace.
+    await runDetached(() => this.watcher.start());
 
     logger.info("Scheduled execution service started with {count} schedules", {
       count: this.scheduler.size,
@@ -798,7 +800,7 @@ export class ScheduledExecutionService {
 
       const override = this.triggerOverrides.get(workflowName);
 
-      await withSpan(
+      await withRootSpan(
         "swamp.scheduled.fire",
         { "workflow.id": String(workflowId), "workflow.name": workflowName },
         async (_span) => {

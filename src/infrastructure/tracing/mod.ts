@@ -30,10 +30,13 @@ export {
 export {
   bindGeneratorToSpan,
   getTracer,
+  runDetached,
   type Span,
   SpanStatusCode,
   withActiveSpan,
   withGeneratorSpan,
+  withPollCycleSpan,
+  withRootSpan,
   withServerSpan,
   withSpan,
 } from "./tracer.ts";

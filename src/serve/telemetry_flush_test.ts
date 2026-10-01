@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { DaemonTelemetryFlushService } from "./telemetry_flush.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { TelemetryEntry } from "../domain/telemetry/telemetry_entry.ts";
@@ -26,6 +28,8 @@ import type {
   TelemetryFlushResult,
   TelemetrySender,
 } from "../domain/telemetry/telemetry_sender.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 
 /**
  * In-memory spool that behaves like the real one: entries stay readable
@@ -322,4 +326,34 @@ Deno.test("DaemonTelemetryFlushService: stop() prevents any further flushing", a
   await new Promise((resolve) => setTimeout(resolve, 5));
 
   assertEquals(sender.countOf("after-stop"), 0);
+});
+
+Deno.test("DaemonTelemetryFlushService: a tick runs with no active span when started under one", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    let recording = true;
+    const repo = new FakeRepository();
+    const findUnflushed = repo.findUnflushed.bind(repo);
+    repo.findUnflushed = (limit) => {
+      if (recording) seen.push(trace.getActiveSpan());
+      return findUnflushed(limit);
+    };
+    const service = new DaemonTelemetryFlushService(
+      new TelemetryService(repo, "1.0.0"),
+      { sender: new FakeSender(), distinctId: "user-1", keepFlushed: false },
+      { intervalMs: 10 },
+    );
+    await withSpan("swamp.cli", {}, async () => {
+      service.start();
+      try {
+        await waitFor(() => seen.length >= 2, "two flush ticks");
+      } finally {
+        // stop() runs a final drain under the caller's span; it is not a tick.
+        recording = false;
+        await service.stop();
+      }
+    });
+    assert(seen.length >= 2);
+    for (const span of seen) assertEquals(span, undefined);
+  });
 });

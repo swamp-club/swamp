@@ -24,6 +24,7 @@ import {
   isDeniedEnvVar,
   isSwampEnvVar,
   overlayEnvironment,
+  stripInheritedTraceContext,
   stripWorkerCredentials,
 } from "./environment_snapshot.ts";
 
@@ -214,4 +215,44 @@ Deno.test("stripWorkerCredentials: preserves SWAMP_SERVE_EXTRA_HEADERS and worke
     SWAMP_WORKER_CACHE_DIR: "/var/cache/swamp",
     HOME: "/home/worker",
   });
+});
+
+Deno.test("isDeniedEnvVar: denies the orchestrator's OTEL_ settings and trace context", () => {
+  for (
+    const name of [
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      "OTEL_SERVICE_NAME",
+      "OTEL_TRACES_EXPORTER",
+      "otel_resource_attributes",
+      "TRACEPARENT",
+      "TRACESTATE",
+      "traceparent",
+    ]
+  ) {
+    assertEquals(isDeniedEnvVar(name), true, name);
+  }
+  assertEquals(isDeniedEnvVar("MY_TRACEPARENT_COPY"), false);
+});
+
+Deno.test("captureEnvironmentSnapshot: never ships OTEL_ settings or trace context", () => {
+  const snapshot = captureEnvironmentSnapshot({
+    OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer collector-secret",
+    OTEL_TRACES_EXPORTER: "console",
+    TRACEPARENT: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    API_KEY: "key123",
+  });
+  assertEquals(snapshot, { API_KEY: "key123" });
+});
+
+Deno.test("stripInheritedTraceContext: removes TRACEPARENT and TRACESTATE in any case", () => {
+  assertEquals(
+    stripInheritedTraceContext({
+      TRACEPARENT: "a",
+      tracestate: "b",
+      OTEL_SERVICE_NAME: "worker",
+      KEEP: "c",
+    }),
+    { OTEL_SERVICE_NAME: "worker", KEEP: "c" },
+  );
 });

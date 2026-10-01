@@ -118,6 +118,7 @@ import {
 } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
+import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import { getActiveTelemetryContext } from "../telemetry_integration.ts";
 import { HttpTelemetrySender } from "../../infrastructure/telemetry/http_telemetry_sender.ts";
 import { USER_AGENT } from "../load_identity.ts";
@@ -6298,9 +6299,12 @@ export const serveCommand = new Command()
           );
         }
       };
-      const reaperTimer = setInterval(
-        () => reapFireRecords().catch(() => {}),
-        FIRE_RECORD_REAP_INTERVAL_MS,
+      // Armed detached so the reaper's work never joins swamp.cli's trace.
+      const reaperTimer = runDetached(() =>
+        setInterval(
+          () => reapFireRecords().catch(() => {}),
+          FIRE_RECORD_REAP_INTERVAL_MS,
+        )
       );
       Deno.unrefTimer(reaperTimer);
     }

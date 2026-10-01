@@ -21,6 +21,12 @@ import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { waitFor } from "@swamp-club/swamp-testing";
+import {
+  assertPollCycleRoots,
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
+import { withSpan } from "../../infrastructure/tracing/mod.ts";
 import { GrantsDirectoryPoller } from "./grants_directory_poller.ts";
 import type { FileGrantStore } from "./grant_file_reconciler.ts";
 import type { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
@@ -810,5 +816,34 @@ Deno.test("GrantsDirectoryPoller: runs store writes and the snapshot reload insi
     assert(units >= 1);
     assertEquals(store.written.size, 1);
     assertEquals(writesOutsideUnit, 0);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: each poll cycle is the root of its own trace", async () => {
+  await withTempDir(async (grantsDir) => {
+    const mock = createMockLoader();
+    await withCapturedSpans(async (spans) => {
+      // Started under an active span, as serve starts it under swamp.cli.
+      await withSpan("swamp.cli", {}, async () => {
+        const poller = new GrantsDirectoryPoller({
+          grantsDir,
+          fileGrantStore: createMockFileGrantStore(),
+          policySnapshotLoader: mock.loader,
+          pollIntervalMs: 30,
+        });
+        await poller.start();
+        await waitFor(
+          () => spans.filter((s) => s.name === "swamp.serve.poll").length >= 2,
+          "two poll cycles",
+        );
+        await poller.stop();
+      });
+
+      assertPollCycleRoots(
+        spans,
+        "grants_directory",
+        findSpan(spans, "swamp.cli"),
+      );
+    });
   });
 });

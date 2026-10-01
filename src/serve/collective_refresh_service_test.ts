@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   type ActiveTokenInfo,
@@ -25,6 +26,8 @@ import {
   CollectiveRefreshService,
 } from "./collective_refresh_service.ts";
 import type { OAuthUserInfo } from "./oauth_client.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 
 function makeMockDeps(
   overrides: Partial<CollectiveRefreshDeps> = {},
@@ -378,4 +381,27 @@ Deno.test("CollectiveRefreshService: skips token when getAccessToken returns nul
 
   assertEquals(deps.updatedTokens.size, 0);
   assertEquals(deps.revokedTokens.length, 0);
+});
+
+Deno.test("CollectiveRefreshService: a tick runs with no active span when started under one", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    const service = new CollectiveRefreshService(makeMockDeps({
+      intervalMs: 10,
+      listActiveTokens: () => {
+        seen.push(trace.getActiveSpan());
+        return Promise.resolve([]);
+      },
+    }));
+    await withSpan("swamp.cli", {}, async () => {
+      service.start();
+      try {
+        await waitFor(() => seen.length >= 2, "two refresh cycles");
+      } finally {
+        await service.dispose();
+      }
+    });
+    assert(seen.length >= 2);
+    for (const span of seen) assertEquals(span, undefined);
+  });
 });

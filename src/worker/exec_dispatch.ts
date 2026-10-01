@@ -238,5 +238,8 @@ export async function runDispatchRunner(
   }
 
   await transport.sendFinal(JSON.stringify({ type: "runner.result", result }));
-  Deno.exit(0);
+  // Return rather than exit: the CLI then ends the runner's swamp.cli span
+  // and flushes tracing before main.ts exits the process. Without that, every
+  // runner span hangs off a root the collector never receives. Standalone
+  // entry points exit themselves after this returns.
 }

@@ -620,6 +620,27 @@ Deno.test("DispatchService: forwards trace headers and reports the executing wor
   assertEquals(result.workerName, "w1");
 });
 
+Deno.test("DispatchService: records the dispatch's trace headers for the data plane", async () => {
+  const h = createHarness();
+  let recorded: Readonly<Record<string, string>> | undefined;
+  h.setBehavior(() => {
+    // Read while the dispatch is active, as a data-plane request would.
+    recorded = h.dispatches.forWorker("w1")[0]?.traceHeaders;
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await h.service.executeRemote(
+    stepRequest({
+      traceHeaders: { traceparent: "00-abc-def-01" },
+    } as Partial<RemoteStepRequest>),
+  );
+  assertEquals(recorded, { traceparent: "00-abc-def-01" });
+});
+
 Deno.test("DispatchService: worker_draining re-queues instead of failing the run", async () => {
   const h = createHarness();
   let attempts = 0;

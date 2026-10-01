@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import type { AuditSink } from "../../domain/serve_audit/audit_sink.ts";
@@ -69,13 +70,15 @@ export class StoreSink implements AuditSink {
     this.#flushIntervalMs = options.flushIntervalMs ??
       DEFAULT_FLUSH_INTERVAL_MS;
 
-    this.#timer = setInterval(() => {
-      this.flush().catch((error: unknown) => {
-        logger.warn("Periodic flush failed: {error}", {
-          error: error instanceof Error ? error.message : String(error),
+    this.#timer = runDetached(() =>
+      setInterval(() => {
+        this.flush().catch((error: unknown) => {
+          logger.warn("Periodic flush failed: {error}", {
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
-    }, this.#flushIntervalMs);
+      }, this.#flushIntervalMs)
+    );
     Deno.unrefTimer(this.#timer);
 
     const hasRetention = this.#stores.some((s) =>
@@ -83,13 +86,15 @@ export class StoreSink implements AuditSink {
     );
     if (hasRetention) {
       const gcInterval = options.gcIntervalMs ?? DEFAULT_GC_INTERVAL_MS;
-      this.#gcTimer = setInterval(() => {
-        this.#runGc().catch((error: unknown) => {
-          logger.warn("Audit GC failed: {error}", {
-            error: error instanceof Error ? error.message : String(error),
+      this.#gcTimer = runDetached(() =>
+        setInterval(() => {
+          this.#runGc().catch((error: unknown) => {
+            logger.warn("Audit GC failed: {error}", {
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
-        });
-      }, gcInterval);
+        }, gcInterval)
+      );
       Deno.unrefTimer(this.#gcTimer);
     }
 

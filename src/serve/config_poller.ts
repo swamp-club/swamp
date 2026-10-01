@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { withPollCycleSpan } from "../infrastructure/tracing/mod.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type {
   ExtensionReloadResult,
@@ -133,7 +134,9 @@ export class ConfigPoller {
   #poll(): void {
     if (this.#pulling) return;
 
-    this.#pendingPull = this.#pendingPull.then(() => this.#pollOnce());
+    this.#pendingPull = this.#pendingPull.then(() =>
+      withPollCycleSpan("config", () => this.#pollOnce())
+    );
   }
 
   async #pollOnce(): Promise<void> {

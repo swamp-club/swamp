@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { withPollCycleSpan } from "../infrastructure/tracing/mod.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import {
   gatedPull,
@@ -89,7 +90,9 @@ export class RuntimeDataPoller {
   #poll(): void {
     if (this.#pulling) return;
 
-    this.#pendingPull = this.#pendingPull.then(() => this.#pullAndInvalidate());
+    this.#pendingPull = this.#pendingPull.then(() =>
+      withPollCycleSpan("runtime_data", () => this.#pullAndInvalidate())
+    );
   }
 
   async #pullAndInvalidate(): Promise<void> {

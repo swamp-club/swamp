@@ -126,8 +126,9 @@ swamp.cli "workflow run"
 One CLI invocation is one trace: `swamp.cli` is the root and covers startup, the
 command, and shutdown. A `TRACEPARENT` env var parents the whole invocation; the
 `--traceparent` flag parents only the workflow or method run it is passed to.
-Long-running commands (`swamp serve`, `worker`, `agent`) never end `swamp.cli`,
-so their spans appear under a parent the backend never receives.
+Long-running commands (`swamp serve`, `worker connect`) never end `swamp.cli`,
+so work they do later starts its own trace instead — see
+[Traces in `swamp serve` and workers](#traces-in-swamp-serve-and-workers).
 
 ### All CLI Operations
 
@@ -169,6 +170,32 @@ span status and error message indicate which phase failed.
 
 If `swamp.lock.acquire` spans are long, another process is holding the lock.
 Check with `swamp datastore lock status` to see the current holder.
+
+### Traces in `swamp serve` and Workers
+
+Serve's background work is never a child of serve's `swamp.cli`. Each unit of
+work is the root of its own trace:
+
+- **HTTP request**: a SERVER span named `{method} {route}` (below).
+- **Poll cycle**: `swamp.serve.poll`, with `swamp.serve.poller` set to `config`,
+  `access_data`, `runtime_data` or `grants_directory`. The cycle's
+  `swamp.serve.sync_gate.wait`, `swamp.datastore.sync` and datastore extension
+  spans (for example S3 `getObject`) nest under it. Filter on
+  `swamp.serve.poller` to find slow pulls.
+- **Scheduled fire**: `swamp.scheduled.fire`, with the workflow run under it.
+- **WebSocket or queued webhook run without `traceparent`**: the run's own top
+  span. With `traceparent`, the run joins the caller's trace.
+- **Other loops** (heartbeats, GC, audit flushes, token revalidation): no span
+  per tick. Anything a tick traces starts its own trace.
+
+A worker dispatch joins the run's trace when serve sends trace headers. Look for
+`swamp.remote.dispatch` under the step's `swamp.model.method`, then the runner's
+`swamp.cli`, and `swamp.serve.data_plane` spans (`swamp.data_plane.operation`)
+for the runner's reads and writes. A runner never inherits `TRACEPARENT` from
+the worker's environment, and serve does not ship its `OTEL_*` settings or trace
+context to workers, so a runner exports with the worker host's own OTel
+settings. Console span output from a runner goes to stderr, because its stdout
+carries the frames it sends to the worker.
 
 ### Slow `swamp serve` Requests
 

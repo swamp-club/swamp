@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { withPollCycleSpan } from "../infrastructure/tracing/mod.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import {
   gatedPull,
@@ -102,7 +103,7 @@ export class AccessDataPoller {
     if (this.#pulling) return;
 
     this.#pendingPull = this.#pendingPull.then(() =>
-      this.#pullAndReloadPolicy()
+      withPollCycleSpan("access_data", () => this.#pullAndReloadPolicy())
     );
   }
 

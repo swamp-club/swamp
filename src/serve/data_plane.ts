@@ -53,6 +53,11 @@ import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  extractTraceContext,
+  runWithParentTrace,
+  withSpan,
+} from "../infrastructure/tracing/mod.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 
 const logger = getSwampLogger(["serve", "data-plane"]);
@@ -161,14 +166,22 @@ export class DataPlane {
     }
 
     try {
-      if (root === "bundle") {
-        return this.#handleBundle(req, segments);
-      }
-      return await this.#handleData(
-        req,
-        segments,
+      // The work runs in the dispatch's own trace, taken from serve's record
+      // of the dispatch. The request's SERVER span stays a root, and an
+      // inbound traceparent header is never consulted.
+      return await this.#inDispatchTrace(
         auth.workerName,
         auth.dispatchId,
+        dataPlaneOperation(req.method, segments),
+        () =>
+          root === "bundle"
+            ? this.#handleBundle(req, segments)
+            : this.#handleData(
+              req,
+              segments,
+              auth.workerName,
+              auth.dispatchId,
+            ),
       );
     } catch (error) {
       if (error instanceof DataPlaneError) {
@@ -196,6 +209,38 @@ export class DataPlane {
     );
     if (result === null) return null;
     return { workerName: result.workerId, dispatchId: result.dispatchId };
+  }
+
+  /**
+   * Runs `fn` under a `swamp.serve.data_plane` span. When the request's
+   * dispatch recorded trace headers, the span joins that trace — the run
+   * that dispatched the work — so the runner's reads and writes appear in
+   * it. Otherwise it nests under the request's own span.
+   */
+  #inDispatchTrace(
+    workerName: string,
+    dispatchId: string | undefined,
+    operation: string,
+    fn: () => Response | Promise<Response>,
+  ): Promise<Response> {
+    const dispatch = dispatchId
+      ? this.#options.dispatches.forDispatch(workerName, dispatchId)
+      : soleDispatch(this.#options.dispatches.forWorker(workerName));
+    const run = () =>
+      withSpan(
+        "swamp.serve.data_plane",
+        { "swamp.data_plane.operation": operation },
+        async (span) => {
+          const response = await fn();
+          span.setAttribute("http.response.status_code", response.status);
+          return response;
+        },
+      );
+    if (!dispatch?.traceHeaders) return run();
+    return runWithParentTrace(
+      extractTraceContext({ ...dispatch.traceHeaders }),
+      run,
+    );
   }
 
   #activeDispatch(
@@ -613,4 +658,41 @@ export class DataPlane {
       },
     });
   }
+}
+
+function soleDispatch(
+  dispatches: readonly ActiveDispatch[],
+): ActiveDispatch | null {
+  return dispatches.length === 1 ? dispatches[0] : null;
+}
+
+/**
+ * Names a data-plane request's operation for its span. Derived from the
+ * route shape only: paths carry data names and are never recorded.
+ */
+export function dataPlaneOperation(
+  method: string,
+  segments: readonly string[],
+): string {
+  const [root, kind] = segments;
+  if (root === "bundle") return "fetch_bundle";
+  if (method === "GET" && segments.length === 5) return "read";
+  if (kind === "resource") {
+    if (method === "POST") return "write_resource";
+    if (method === "DELETE") return "delete_resource";
+  }
+  if (method === "POST" && kind === "writers") {
+    if (segments.length === 2) return "open_writer";
+    if (segments.length === 4) {
+      switch (segments[3]) {
+        case "line":
+          return "writer_line";
+        case "content":
+          return "writer_content";
+        case "finalize":
+          return "writer_finalize";
+      }
+    }
+  }
+  return "unknown";
 }

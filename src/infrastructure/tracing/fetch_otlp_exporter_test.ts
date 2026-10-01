@@ -208,3 +208,36 @@ Deno.test("FetchOtlpExporter: respects timeout via AbortController", async () =>
     globalThis.fetch = originalFetch;
   }
 });
+
+Deno.test("FetchOtlpExporter: shutdown waits for an in-flight send", async () => {
+  const originalFetch = globalThis.fetch;
+  let releaseFetch!: () => void;
+  const fetchGate = new Promise<void>((resolve) => {
+    releaseFetch = resolve;
+  });
+  globalThis.fetch = async (): Promise<Response> => {
+    await fetchGate;
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    const exporter = new FetchOtlpExporter({
+      url: "https://example.com/v1/traces",
+    });
+    const order: string[] = [];
+    // The last span a process ends: exported, then shut down before the
+    // send completes, as main.ts does right before Deno.exit.
+    exporter.export([makeSpan("swamp.cli")], (result) => {
+      order.push(`exported:${result.code}`);
+    });
+    const shutdown = exporter.shutdown().then(() => order.push("shutdown"));
+    await Promise.resolve();
+    assertEquals(order, []);
+
+    releaseFetch();
+    await shutdown;
+    assertEquals(order, [`exported:${ExportResultCode.SUCCESS}`, "shutdown"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

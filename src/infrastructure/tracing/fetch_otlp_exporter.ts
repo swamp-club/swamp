@@ -45,6 +45,7 @@ export class FetchOtlpExporter implements SpanExporter {
   readonly #url: string;
   readonly #headers: Record<string, string>;
   readonly #timeoutMs: number;
+  readonly #inFlight = new Set<Promise<void>>();
   #shutdown = false;
 
   constructor(config: FetchOtlpExporterConfig) {
@@ -65,20 +66,34 @@ export class FetchOtlpExporter implements SpanExporter {
       return;
     }
 
-    this.#send(spans).then(
+    const pending = this.#send(spans).then(
       () => resultCallback({ code: ExportResultCode.SUCCESS }),
       () => resultCallback({ code: ExportResultCode.FAILED }),
     );
+    // Track the in-flight send so forceFlush()/shutdown() can drain it, and
+    // remove it once settled to bound the set's size. `pending` rejects only
+    // if resultCallback throws; tracing must never surface that.
+    const tracked = pending.catch(() => {}).finally(() => {
+      this.#inFlight.delete(tracked);
+    });
+    this.#inFlight.add(tracked);
   }
 
-  shutdown(): Promise<void> {
+  /**
+   * Drains in-flight sends before resolving. SimpleSpanProcessor does not
+   * track the exports it starts, so without this the last span a process
+   * ends — its `swamp.cli` root — is cut mid-send by `Deno.exit`
+   * (swamp-club#2467). `swamp` relies on the path
+   * TracerProvider.shutdown -> processor.shutdown -> here.
+   */
+  async shutdown(): Promise<void> {
     this.#shutdown = true;
-    return Promise.resolve();
+    await this.forceFlush();
   }
 
+  /** Awaits every in-flight send so no spans are lost on flush. */
   forceFlush(): Promise<void> {
-    // Nothing to flush — each export sends immediately via fetch.
-    return Promise.resolve();
+    return Promise.all([...this.#inFlight]).then(() => {});
   }
 
   async #send(spans: ReadableSpan[]): Promise<void> {

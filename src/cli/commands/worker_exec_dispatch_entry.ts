@@ -27,6 +27,7 @@ import { setColorEnabled } from "@std/fmt/colors";
 import "../../domain/models/models.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { runDispatchRunner } from "../../worker/exec_dispatch.ts";
+import { redirectConsoleToStderr } from "../dispatch_runner_stdio.ts";
 
 // stdout is handed to the dispatch protocol below, where a stray escape
 // sequence is a parse failure rather than a cosmetic problem, and this process
@@ -34,17 +35,7 @@ import { runDispatchRunner } from "../../worker/exec_dispatch.ts";
 // the colour policy in `runCli`.
 setColorEnabled(false);
 
-const encoder = new TextEncoder();
-const write = (line: string) => {
-  Deno.stderr.writeSync(encoder.encode(line + "\n"));
-};
-console.log = (...args: unknown[]) => write(args.map(String).join(" "));
-console.info = (...args: unknown[]) => write(args.map(String).join(" "));
-console.debug = (...args: unknown[]) => write(args.map(String).join(" "));
-console.warn = (...args: unknown[]) =>
-  write("[WARN] " + args.map(String).join(" "));
-console.error = (...args: unknown[]) =>
-  write("[ERROR] " + args.map(String).join(" "));
+redirectConsoleToStderr();
 
 await initializeLogging({
   logLevel: "info",
@@ -54,3 +45,6 @@ await initializeLogging({
 });
 
 await runDispatchRunner(Deno.stdin.readable, Deno.stdout.writable);
+// The runner returns once its result frame is flushed; the open stdin reader
+// would otherwise keep this process alive.
+Deno.exit(0);

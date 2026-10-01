@@ -32,6 +32,9 @@
 /** An immutable name→value capture of environment variables. */
 export type EnvironmentSnapshot = Readonly<Record<string, string>>;
 
+// W3C trace context variables. A process started with these joins that trace.
+const TRACE_CONTEXT_VARS: readonly string[] = ["TRACEPARENT", "TRACESTATE"];
+
 // Worker control-plane credentials that must never reach a dispatch runner.
 // Canonical sources: collectWorkerEnv (worker_daemon.ts), worker_connect.ts.
 const WORKER_CREDENTIAL_VARS: ReadonlySet<string> = new Set([
@@ -54,12 +57,20 @@ const DENYLIST_EXACT: ReadonlySet<string> = new Set([
   "TMP",
   "HOSTNAME",
   "TERM",
+  // The orchestrator's own trace context. A dispatch carries its trace
+  // explicitly (execution.traceHeaders); an inherited one would put every
+  // untraced dispatch into the orchestrator's process trace.
+  ...TRACE_CONTEXT_VARS,
 ]);
 
 const DENYLIST_PREFIXES: readonly string[] = [
   "XDG_",
   "DENO_",
   "SWAMP_",
+  // The orchestrator's telemetry identity and exporter settings (service
+  // name, collector endpoint and auth headers). A runner exports as the
+  // worker host it runs on.
+  "OTEL_",
 ];
 
 /**
@@ -101,6 +112,25 @@ export function stripWorkerCredentials(
   const cleaned: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
     if (!WORKER_CREDENTIAL_VARS.has(name)) {
+      cleaned[name] = value;
+    }
+  }
+  return cleaned;
+}
+
+/**
+ * Strip inherited W3C trace context (`TRACEPARENT`, `TRACESTATE`, matched
+ * case-insensitively) from an environment record. A dispatch runner joins a
+ * trace only through its dispatch's own trace headers; context inherited from
+ * the worker's environment, or from an orchestrator that still ships it,
+ * would put every untraced dispatch into one long-lived trace.
+ */
+export function stripInheritedTraceContext(
+  env: Record<string, string>,
+): Record<string, string> {
+  const cleaned: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (!TRACE_CONTEXT_VARS.includes(name.toUpperCase())) {
       cleaned[name] = value;
     }
   }

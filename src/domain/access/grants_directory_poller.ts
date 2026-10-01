@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { withPollCycleSpan } from "../../infrastructure/tracing/mod.ts";
 import { join } from "@std/path";
 import {
   type ConditionValidator,
@@ -108,7 +109,7 @@ export class GrantsDirectoryPoller {
     if (this.#reconciling) return;
 
     this.#pendingReconcile = this.#pendingReconcile.then(() =>
-      this.#checkAndReconcile()
+      withPollCycleSpan("grants_directory", () => this.#checkAndReconcile())
     );
   }
 

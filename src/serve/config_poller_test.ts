@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater } from "@std/assert";
+import { assert, assertEquals, assertGreater } from "@std/assert";
 import { ConfigPoller, MAX_FAILED_RELOAD_ATTEMPTS } from "./config_poller.ts";
 import type {
   ExtensionReloadResult,
@@ -29,6 +29,13 @@ import type {
   DatastoreSyncService,
 } from "../domain/datastore/datastore_sync_service.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
+import {
+  assertPollCycleRoots,
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
 
 interface MockSyncService extends DatastoreSyncService {
   pullCalls: DatastoreSyncOptions[];
@@ -810,4 +817,43 @@ Deno.test("ConfigPoller: a poll still running when stop() is called does not sta
 
   assertEquals(state.extensionReloaderCalls, 0);
   assertEquals(lockfile.reads, 0);
+});
+
+Deno.test("ConfigPoller: each poll cycle is the root of its own trace", async () => {
+  const sync = createMockSyncService();
+  const pull = sync.pullChanged.bind(sync);
+  // Stands in for the datastore's own spans, which must nest under the cycle.
+  sync.pullChanged = (options) =>
+    withSpan("swamp.datastore.sync", {}, () => pull(options));
+
+  await withCapturedSpans(async (spans) => {
+    // Started under an active span, as serve starts it under swamp.cli.
+    await withSpan("swamp.cli", {}, async () => {
+      const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
+      const poller = new ConfigPoller({
+        syncService: sync,
+        catalogInvalidate,
+        extensionReloader,
+        lockfileHash: createLockfile().lockfileHash,
+        pollIntervalMs: 30,
+      });
+      poller.start();
+      await waitFor(
+        () => spans.filter((s) => s.name === "swamp.serve.poll").length >= 2,
+        "two poll cycles",
+      );
+      await poller.stop();
+    });
+
+    const cycles = assertPollCycleRoots(
+      spans,
+      "config",
+      findSpan(spans, "swamp.cli"),
+    );
+    const syncSpans = spans.filter((s) => s.name === "swamp.datastore.sync");
+    assert(syncSpans.length >= 2);
+    for (const syncSpan of syncSpans) {
+      assert(cycles.some((cycle) => isChildOf(syncSpan, cycle)));
+    }
+  });
 });

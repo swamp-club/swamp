@@ -18,11 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { traceHeadersToEnv } from "../domain/models/execution_envelope.ts";
 import {
   overlayEnvironment,
   stripWorkerCredentials,
 } from "../domain/remote/environment_snapshot.ts";
+import {
+  buildRunnerEnvironment,
+  runnerSpawnOptions,
+} from "./dispatch_handler.ts";
 import { RpcChannel, type RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   DispatchParamsSchema,
@@ -87,18 +90,14 @@ Deno.test("overlayEnvironment: returns a merged record without mutating the base
   assertEquals("ADDED" in base, false);
 });
 
-Deno.test("overlayEnvironment: trace headers overlay on top of snapshot", () => {
-  const base = { HOME: "/root", PATH: "/usr/bin" };
-  const snapshot = { API_KEY: "secret" };
-  let env = overlayEnvironment(base, snapshot);
-  assertEquals(env["API_KEY"], "secret");
-
-  env = overlayEnvironment(
-    env,
-    traceHeadersToEnv({
+Deno.test("buildRunnerEnvironment: trace headers overlay on top of snapshot", () => {
+  const env = buildRunnerEnvironment(
+    { HOME: "/root", PATH: "/usr/bin" },
+    { API_KEY: "secret" },
+    {
       traceparent: "00-abc123-def456-01",
       "ld-preload": "/tmp/evil.so",
-    }),
+    },
   );
   assertEquals(env["TRACEPARENT"], "00-abc123-def456-01");
   assertEquals(env["API_KEY"], "secret");
@@ -209,4 +208,68 @@ Deno.test("registerDispatchHandler: drain() resolves immediately when idle", asy
   });
 
   await handle.drain();
+});
+
+Deno.test("buildRunnerEnvironment: drops a TRACEPARENT inherited from the worker when the dispatch has no trace headers", () => {
+  const env = buildRunnerEnvironment(
+    {
+      TRACEPARENT: "00-11111111111111111111111111111111-2222222222222222-01",
+      tracestate: "vendor=worker",
+      DEPLOY_ENV: "dev",
+    },
+    {},
+    undefined,
+  );
+  assertEquals(env["TRACEPARENT"], undefined);
+  assertEquals(env["tracestate"], undefined);
+  assertEquals(env["DEPLOY_ENV"], "dev");
+});
+
+Deno.test("buildRunnerEnvironment: drops trace context shipped in the snapshot", () => {
+  // An older orchestrator still ships its own TRACEPARENT in the snapshot.
+  const env = buildRunnerEnvironment(
+    {},
+    {
+      TRACEPARENT: "00-33333333333333333333333333333333-4444444444444444-01",
+      API_KEY: "key123",
+    },
+    undefined,
+  );
+  assertEquals(env["TRACEPARENT"], undefined);
+  assertEquals(env["API_KEY"], "key123");
+});
+
+Deno.test("buildRunnerEnvironment: the dispatch's trace headers replace inherited trace context", () => {
+  const dispatchParent =
+    "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+  const env = buildRunnerEnvironment(
+    {
+      TRACEPARENT: "00-11111111111111111111111111111111-2222222222222222-01",
+      TRACESTATE: "vendor=worker",
+      SWAMP_WORKER_TOKEN: "tok.secret",
+    },
+    {},
+    { traceparent: dispatchParent },
+  );
+  assertEquals(env["TRACEPARENT"], dispatchParent);
+  assertEquals(env["TRACESTATE"], undefined);
+  assertEquals(env["SWAMP_WORKER_TOKEN"], undefined);
+});
+
+Deno.test("runnerSpawnOptions: the built environment replaces the worker's instead of merging over it", () => {
+  const env = buildRunnerEnvironment(
+    {
+      SWAMP_WORKER_TOKEN: "tok.secret",
+      TRACEPARENT: "00-1-2-01",
+      PATH: "/bin",
+    },
+    {},
+    undefined,
+  );
+  const options = runnerSpawnOptions(["worker", "exec-dispatch"], env);
+  // Without clearEnv, Deno merges env over the worker's own environment and
+  // the runner inherits the credentials and trace context removed above.
+  assertEquals(options.clearEnv, true);
+  assertEquals(options.env, { PATH: "/bin" });
+  assertEquals(options.args, ["worker", "exec-dispatch"]);
 });

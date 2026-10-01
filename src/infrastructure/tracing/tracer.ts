@@ -21,8 +21,10 @@ import {
   type Attributes,
   type Context,
   context,
+  ROOT_CONTEXT,
   type Span,
   SpanKind,
+  type SpanOptions,
   SpanStatusCode,
   trace,
   type Tracer,
@@ -192,8 +194,61 @@ export function withSpan<T>(
   attributes: Attributes,
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
+  return runInSpan(name, { attributes }, fn);
+}
+
+/**
+ * Like {@link withSpan}, but the span is always the root of a new trace.
+ *
+ * Use it for a unit of work a long-running process starts on its own, such
+ * as one poll cycle or one scheduled fire. `swamp serve` runs inside the
+ * `swamp.cli` span, which never ends, so that work must not inherit it.
+ */
+export function withRootSpan<T>(
+  name: string,
+  attributes: Attributes,
+  fn: (span: Span) => Promise<T>,
+): Promise<T> {
+  return runInSpan(name, { root: true, attributes }, fn);
+}
+
+/**
+ * Runs one cycle of a `swamp serve` background poller as the root of its own
+ * trace: a `swamp.serve.poll` span whose `swamp.serve.poller` attribute names
+ * the poller. Everything the cycle does — sync-gate waits, datastore pulls,
+ * datastore extension calls — nests under it.
+ */
+export function withPollCycleSpan<T>(
+  poller: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withRootSpan(
+    "swamp.serve.poll",
+    { "swamp.serve.poller": poller },
+    () => fn(),
+  );
+}
+
+/**
+ * Runs `fn` with no active span, so spans it starts — directly, or from
+ * timers and promises it schedules — begin their own traces instead of
+ * joining the caller's.
+ *
+ * The active context is captured when a timer is armed, so arm a
+ * long-running process's background timers inside this, not just their
+ * callbacks.
+ */
+export function runDetached<T>(fn: () => T): T {
+  return context.with(ROOT_CONTEXT, fn);
+}
+
+function runInSpan<T>(
+  name: string,
+  options: SpanOptions,
+  fn: (span: Span) => Promise<T>,
+): Promise<T> {
   const tracer = getTracer();
-  return tracer.startActiveSpan(name, { attributes }, (span) => {
+  return tracer.startActiveSpan(name, options, (span) => {
     return fn(span).then(
       (result) => {
         span.setStatus({ code: SpanStatusCode.OK });

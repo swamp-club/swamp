@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 import {
   ClubHeartbeatService,
   DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
@@ -119,4 +123,30 @@ Deno.test("ClubHeartbeatService: sendHeartbeat failure does not stop the service
   await new Promise((r) => setTimeout(r, 180));
   service.stop();
   assertEquals(callCount >= 2, true);
+});
+
+Deno.test("ClubHeartbeatService: a tick runs with no active span when started under one", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    const service = new ClubHeartbeatService({
+      providerUrl: "https://example.com",
+      oauthClientId: "clt-test",
+      intervalMs: 10,
+      getAccessToken: () => Promise.resolve("tok"),
+      sendHeartbeat: () => {
+        seen.push(trace.getActiveSpan());
+        return Promise.resolve({ heartbeatCount: seen.length });
+      },
+    });
+    await withSpan("swamp.cli", {}, async () => {
+      service.start();
+      try {
+        await waitFor(() => seen.length >= 2, "two heartbeat ticks");
+      } finally {
+        service.stop();
+      }
+    });
+    assert(seen.length >= 2);
+    for (const span of seen) assertEquals(span, undefined);
+  });
 });
