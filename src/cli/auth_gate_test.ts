@@ -20,7 +20,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
-  AuthGateBlockedError,
+  authGateBlockedError,
   type AuthGateCredential,
   type AuthGateDeps,
   blockMessage,
@@ -57,6 +57,7 @@ interface Harness {
     credential?: AuthGateCredential | null;
     answer?: IdentityCheckResult;
     now?: number;
+    canWrite?: boolean;
   }): AuthGateDeps;
 }
 
@@ -92,6 +93,7 @@ async function withHarness(
           );
         },
         now: () => options.now ?? NOW,
+        canWrite: options.canWrite,
       }),
     });
   } finally {
@@ -348,7 +350,10 @@ Deno.test("runAuthGate: a signin token runs offline when swamp-club is down", as
         const result = await runAuthGate(h.deps({ answer: { outcome } }));
         assert(result.kind === "pass");
         assertEquals(result.authMode, "offline");
-        assertStringIncludes(result.warning ?? "", "offline identity");
+        assertStringIncludes(
+          result.warning ?? "",
+          "using your cached verification",
+        );
       }
     },
     async (key) =>
@@ -462,8 +467,8 @@ Deno.test("runAuthGate: a read-only config dir does not fail a passing run", asy
   });
 });
 
-Deno.test("AuthGateBlockedError: carries the reason, the code and the design's message", () => {
-  const error = new AuthGateBlockedError({ kind: "no_credential" });
+Deno.test("authGateBlockedError: carries the reason, the code and the design's message", () => {
+  const error = authGateBlockedError({ kind: "no_credential" });
   assertEquals(error.name, "AuthGateBlockedError");
   assertEquals(error.code, "auth_gate_blocked");
   assertStringIncludes(error.message, "swamp auth login");
@@ -474,7 +479,7 @@ Deno.test("AuthGateBlockedError: carries the reason, the code and the design's m
     "15 days",
   );
   assertStringIncludes(
-    blockMessage({ kind: "refused", retryAfterSeconds: 30 }),
+    blockMessage({ kind: "refused", status: 429, retryAfterSeconds: 30 }),
     "Retry in 30s",
   );
 });
@@ -508,15 +513,59 @@ Deno.test("runAuthGate: a refresh attempt suppresses the next for an hour", asyn
 
 Deno.test("blockMessage: waits read in sensible units and days are pluralised", () => {
   assertStringIncludes(
-    blockMessage({ kind: "refused", retryAfterSeconds: 3600 }),
+    blockMessage({ kind: "refused", status: 429, retryAfterSeconds: 3600 }),
     "Retry in 60 minutes",
   );
   assertStringIncludes(
-    blockMessage({ kind: "refused", retryAfterSeconds: 3 * 3600 }),
+    blockMessage({ kind: "refused", status: 429, retryAfterSeconds: 3 * 3600 }),
     "Retry in 3 hours",
   );
   assertStringIncludes(
     blockMessage({ kind: "unreachable_unverified", daysSinceVerification: 1 }),
     "in 1 day.",
   );
+});
+
+Deno.test("blockMessage: a refusal names the status and the proxy, and unreachable points at auth whoami", () => {
+  const refused = blockMessage({ kind: "refused", status: 403 });
+  assertStringIncludes(refused, "(HTTP 403)");
+  assertStringIncludes(refused, "a proxy between");
+  assertStringIncludes(
+    blockMessage({ kind: "unreachable_unverified" }),
+    "swamp auth whoami",
+  );
+});
+
+Deno.test("runAuthGate: a process that does not own the config dir reads but never writes", async () => {
+  await withHarness(async (h) => {
+    const fresh = await mintTestProof(h.key, API_KEY, {
+      iat: NOW,
+      exp: NOW + 14 * DAY,
+    });
+    const verified = await runAuthGate(
+      h.deps({ answer: verifiedWith(fresh), canWrite: false }),
+    );
+    assertEquals(verified.kind, "pass");
+    const outage = await runAuthGate(
+      h.deps({
+        answer: { outcome: { kind: "server_error", status: 503 } },
+        canWrite: false,
+      }),
+    );
+    assertEquals(outage.kind, "pass");
+    assertEquals([...Deno.readDirSync(h.dir)], [], "nothing written");
+
+    // It still passes on a proof the owner cached, and offers no refresh.
+    await saveProof(
+      h,
+      await mintTestProof(h.key, API_KEY, {
+        iat: NOW - 8 * DAY,
+        exp: NOW + DAY,
+      }),
+    );
+    const owned = await runAuthGate(h.deps({ canWrite: false }));
+    assert(owned.kind === "pass");
+    assertEquals(owned.authMode, "verified");
+    assertEquals(owned.refresh, undefined);
+  });
 });

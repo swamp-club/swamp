@@ -189,7 +189,7 @@ import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.
 import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
 import {
-  AuthGateBlockedError,
+  authGateBlockedError,
   type AuthGateOutcome,
   createAuthGateDeps,
   runAuthGate,
@@ -2267,20 +2267,9 @@ async function runInvocation(
   let gateOutcome: AuthGateOutcome | undefined;
   if (gateTiming === "exempt") telemetryCtx?.service.setAuthMode("none");
   if (gateTiming === "gated") {
-    try {
-      gateOutcome = await runAuthGate(
-        createAuthGateDeps({ liveChecks: !hookMode }),
-      );
-    } catch (error) {
-      if (!hookMode) {
-        bootstrapSpan.end();
-        endInvocation();
-        throw error;
-      }
-      gateOutcome = { kind: "block", reason: { kind: "no_credential" } };
-    }
-    if (gateOutcome.kind === "block") {
-      const error = new AuthGateBlockedError(gateOutcome.reason);
+    // Ends the run before the outer try is entered: records the failure the
+    // same way the outer catch would (best effort), then clears per-run state.
+    const endGatedRun = async (error: Error): Promise<void> => {
       try {
         if (telemetryCtx && commandTree) {
           telemetryCtx.service.setAuthMode("none");
@@ -2294,11 +2283,30 @@ async function runInvocation(
           );
         }
       } catch {
-        // Best effort — telemetry never changes how a block exits.
+        // Best effort — telemetry never changes how a run ends.
       } finally {
         bootstrapSpan.end();
         endInvocation();
       }
+    };
+    try {
+      gateOutcome = await runAuthGate(
+        createAuthGateDeps({ liveChecks: !hookMode }),
+      );
+    } catch (error) {
+      // A misconfigured key source or an unreadable auth.json. Hook mode
+      // treats it as a block; otherwise it is reported as itself.
+      if (!hookMode) {
+        await endGatedRun(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        throw error;
+      }
+      gateOutcome = { kind: "block", reason: { kind: "no_credential" } };
+    }
+    if (gateOutcome.kind === "block") {
+      const error = authGateBlockedError(gateOutcome.reason);
+      await endGatedRun(error);
       if (hookMode) return;
       throw error;
     }

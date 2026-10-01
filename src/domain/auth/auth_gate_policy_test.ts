@@ -228,7 +228,10 @@ Deno.test("decideAfterCheck: without a proof a 429 or proxy 403 blocks", () => {
       outcome: { kind: "refused", status: 429, retryAfterSeconds: 30 },
       now: NOW,
     }).decision,
-    { kind: "block", reason: { kind: "refused", retryAfterSeconds: 30 } },
+    {
+      kind: "block",
+      reason: { kind: "refused", status: 429, retryAfterSeconds: 30 },
+    },
   );
 });
 

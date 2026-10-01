@@ -78,7 +78,13 @@ option that takes a value. So `--input --help` is still gated. When in doubt
 the rule gates. `src/cli/auth_gate_exemptions.ts` holds it.
 
 A blocked run throws `AuthGateBlockedError` (code `auth_gate_blocked`). It
-records one telemetry event with `authMode: none` and exits 1. In hook mode
+records one telemetry event with `authMode: none`. In JSON mode the error
+carries `reason` (`kind`, plus `status`, `retryAfterSeconds` or
+`daysSinceVerification` where they apply) and `temporary`. A temporary block
+(refused, unreachable, or swamp-club failing for a day) exits 75
+(`EX_TEMPFAIL`), like a lock timeout, so CI can retry it. A missing or revoked
+credential exits 1. An error the gate itself hits, such as an unreadable
+`auth.json`, is reported as itself and recorded the same way. In hook mode
 (`audit record --from-hook`) the gate checks locally only. A blocked hook
 records nothing and exits 0, so an agent session is not broken.
 
@@ -121,21 +127,27 @@ down when a refresh is due.
 
 ## State in the config dir
 
-| File                    | Holds                                               | Cleared by                    |
-| ----------------------- | --------------------------------------------------- | ----------------------------- |
-| `auth_verified.json`    | The proof and the public keys from the last whoami  | a rejection, `auth logout`    |
-| `auth_fail_open.json`   | When the current 24-hour fail-open window started  | a verified answer, logout     |
-| `auth_token_check.json` | The fingerprint and time of the last token check   | a rejection, logout           |
-| `auth_refresh_attempt.json` | When the weekly refresh was last attempted   | logout                        |
+| File                        | Holds                                              | Cleared by                 |
+| --------------------------- | -------------------------------------------------- | -------------------------- |
+| `auth_verified.json`        | The proof and the public keys from the last whoami | a rejection, `auth logout` |
+| `auth_fail_open.json`       | When the current 24-hour fail-open window started  | a verified answer, logout  |
+| `auth_token_check.json`     | The fingerprint and time of the last token check   | a rejection, logout        |
+| `auth_refresh_attempt.json` | When the weekly refresh was last attempted         | logout                     |
 
-All four are written mode 0600. Writes are best effort: a read-only config dir
-never fails a run the gate already passed. A future or unparsable time is read
-as absent, so editing a file cannot widen a window.
+All four are written mode 0600, and a write creates the config dir if it is
+missing. Writes are best effort: a read-only config dir never fails a run the
+gate already passed. A future or unparsable time is read as absent, so editing
+a file cannot widen a window. On a config dir that cannot be written, the
+fail-open window cannot be recorded. Each run then starts a fresh 24 hours
+while swamp-club returns 5xx, the same trade-off as an ephemeral CI runner.
 
 `swamp serve daemon enable` and `swamp worker daemon enable` set
 `SWAMP_CONFIG_DIR` in the service definition, so a system-mode daemon reads the
 enabling user's credential and proof. A worker daemon enabled before this
-change lacks it and must be enabled again.
+change lacks it and must be enabled again. A process that does not own the
+config dir, such as a system daemon running as root, reads it but never writes
+to it and skips the weekly refresh. It would otherwise leave root-owned files
+that the user's own runs cannot read.
 
 ## Telemetry
 

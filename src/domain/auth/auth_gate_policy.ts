@@ -74,7 +74,12 @@ export type IdentityCheckOutcome =
 export type BlockReason =
   | { readonly kind: "no_credential" }
   | { readonly kind: "revoked" }
-  | { readonly kind: "refused"; readonly retryAfterSeconds?: number }
+  | {
+    readonly kind: "refused";
+    /** The HTTP status that was not swamp-club's answer. */
+    readonly status: number;
+    readonly retryAfterSeconds?: number;
+  }
   | {
     readonly kind: "unreachable_unverified";
     /** Days since the last proof was issued, when an expired one exists. */
@@ -251,6 +256,7 @@ export function decideAfterCheck(input: AfterCheckInput): AfterCheckResult {
           kind: "block",
           reason: {
             kind: "refused",
+            status: outcome.status,
             retryAfterSeconds: outcome.retryAfterSeconds,
           },
         },

@@ -364,7 +364,9 @@ Deno.test("auth gate integration: the weekly refresh saves a fresh proof and dro
 
 Deno.test("auth gate integration: a blocked run records one telemetry event and does no other work", async () => {
   const { runCli } = await import("../src/cli/mod.ts");
-  const { AuthGateBlockedError } = await import("../src/cli/auth_gate.ts");
+  const { AuthGateBlockedError } = await import(
+    "../src/domain/auth/auth_gate_blocked_error.ts"
+  );
   const dir = await Deno.makeTempDir({ prefix: "swamp-gate-block-" });
   try {
     const configDir = join(dir, "config");

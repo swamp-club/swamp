@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../domain/errors.ts";
+import { AuthGateBlockedError } from "../domain/auth/auth_gate_blocked_error.ts";
 import {
   type AuthMode,
   type BlockReason,
@@ -66,6 +67,13 @@ export interface AuthGateDeps {
   ): Promise<IdentityCheckResult>;
   /** Unix seconds. */
   now(): number;
+  /**
+   * False when this process does not own the config dir — a system-mode
+   * daemon running as root against the enabling user's dir. The gate then
+   * reads but never writes there, so it leaves no root-owned files the user
+   * cannot read back. Defaults to true.
+   */
+  readonly canWrite?: boolean;
 }
 
 export type AuthGateOutcome =
@@ -162,6 +170,7 @@ async function applyEffects(
     readonly now: number;
   },
 ): Promise<void> {
+  if (deps.canWrite === false) return;
   const repo = deps.verificationRepo;
   const { response } = context;
   // Every write is best effort: a read-only config dir must not fail a run
@@ -245,7 +254,10 @@ export async function runAuthGate(
     lastTokenCheckAt,
     now,
   });
-  const refresh = shouldRefresh(verdict, now, await repo.readRefreshAttempt())
+  // The refresh exists only to save or delete the proof, so a process that
+  // may not write to the config dir skips it.
+  const refresh = deps.canWrite !== false &&
+      shouldRefresh(verdict, now, await repo.readRefreshAttempt())
     ? () => runProofRefresh(deps)
     : undefined;
   if (before.kind === "block") return { kind: "block", reason: before.reason };
@@ -296,7 +308,7 @@ function offlineWarning(
     ? "swamp-club.com is returning errors"
     : "could not reach swamp-club.com";
   return hasProof
-    ? `Running with offline identity: ${why}.`
+    ? `Running offline (${why}); using your cached verification.`
     : `Running unverified for up to 24 hours: ${why}. swamp will block once ` +
       `it has been unable to verify you for a day.`;
 }
@@ -309,12 +321,12 @@ function offlineWarning(
 export async function runProofRefresh(deps: AuthGateDeps): Promise<void> {
   const credential = await deps.loadCredential();
   if (!credential) return;
+  const now = deps.now();
   const assessment = await assessProofs(
     await deps.verificationRepo.loadCandidates(),
     credential.apiKey,
-    deps.now(),
+    now,
   );
-  const now = deps.now();
   // Recorded before the call, so a refresh that never answers still waits an
   // hour before the next attempt.
   try {
@@ -376,7 +388,26 @@ export function createAuthGateDeps(
       return await client.verifyIdentity(credential.apiKey, signal);
     },
     now: () => Math.floor(Date.now() / 1000),
+    canWrite: ownsConfigDir(),
   };
+}
+
+/**
+ * Whether this process owns the swamp config dir, or may create it. False
+ * only when the dir exists and belongs to another user, as for a system
+ * daemon pointed at the enabling user's dir. Platforms without uids
+ * (Windows) always own it.
+ */
+function ownsConfigDir(): boolean {
+  const uid = Deno.uid();
+  if (uid === null) return true;
+  try {
+    const owner = Deno.statSync(getSwampConfigDir()).uid;
+    return owner === null || owner === uid;
+  } catch {
+    // Missing (it will be created by this process) or no HOME at all.
+    return true;
+  }
 }
 
 function plural(count: number, unit: string): string {
@@ -419,13 +450,15 @@ export function blockMessage(reason: BlockReason): string {
       ].join("\n");
     case "refused": {
       const wait = reason.retryAfterSeconds !== undefined
-        ? ` Retry in ${formatWait(reason.retryAfterSeconds)}.`
-        : " Try again shortly.";
+        ? `Retry in ${formatWait(reason.retryAfterSeconds)}.`
+        : "Try again shortly.";
       return [
-        "Could not verify your identity: swamp-club.com refused the check.",
+        "Could not verify your identity: swamp-club.com, or a proxy between",
+        `you and it, refused the check (HTTP ${reason.status}).`,
         "",
-        `  It is limiting or blocking requests from this network.${wait}`,
-        "  Once verified, swamp keeps working through swamp-club outages.",
+        `  ${wait} If you are behind a corporate proxy, check that it allows`,
+        "  swamp-club.com. Once verified, swamp keeps working through",
+        "  swamp-club outages.",
       ].join("\n");
     }
     case "unreachable_unverified":
@@ -436,13 +469,15 @@ export function blockMessage(reason: BlockReason): string {
           }.`,
           "",
           "  swamp needs to check in with swamp-club.com periodically.",
-          "  Please check your network connection and try again.",
+          "  Check your network connection and try again. `swamp auth whoami`",
+          "  works without verification and shows what swamp-club.com returns.",
         ].join("\n")
         : [
           "Could not reach swamp-club.com to verify your identity.",
           "",
           "  swamp verifies your credentials once before it can run offline.",
-          "  Please check your network connection and try again.",
+          "  Check your network connection and try again. `swamp auth whoami`",
+          "  works without verification and shows what swamp-club.com returns.",
         ].join("\n");
     case "unverified_for_a_day":
       return [
@@ -454,15 +489,9 @@ export function blockMessage(reason: BlockReason): string {
   }
 }
 
-/**
- * The error a blocked run exits with. Telemetry records the class name and
- * the message's first line, so blocks are countable by type and reason.
- */
-export class AuthGateBlockedError extends UserError {
-  readonly reason: BlockReason;
-  constructor(reason: BlockReason) {
-    super(blockMessage(reason), "auth_gate_blocked");
-    this.name = "AuthGateBlockedError";
-    this.reason = reason;
-  }
+/** The error a blocked run exits with, carrying the design's message. */
+export function authGateBlockedError(
+  reason: BlockReason,
+): AuthGateBlockedError {
+  return new AuthGateBlockedError(reason, blockMessage(reason));
 }

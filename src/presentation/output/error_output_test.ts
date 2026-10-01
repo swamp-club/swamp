@@ -28,6 +28,7 @@ import {
   tlsErrorHint,
 } from "./error_output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 
@@ -807,5 +808,41 @@ Deno.test("renderError: log mode appends the cert-store hint once to a wrapping 
     assertEquals(logs[1].split("DENO_TLS_CA_STORE=mozilla").length, 2);
   } finally {
     console.error = originalError;
+  }
+});
+
+Deno.test("buildErrorJson: an auth gate block reports its reason as data", () => {
+  const json = buildErrorJson(
+    new AuthGateBlockedError(
+      { kind: "refused", status: 429, retryAfterSeconds: 30 },
+      "Could not verify your identity",
+    ),
+  );
+  assertEquals(json.code, "auth_gate_blocked");
+  assertEquals(json.reason, {
+    kind: "refused",
+    status: 429,
+    retryAfterSeconds: 30,
+  });
+  assertEquals(json.temporary, true);
+});
+
+Deno.test("exitCodeForError: temporary auth gate blocks exit 75, the rest 1", () => {
+  for (
+    const reason of [
+      { kind: "refused", status: 403 } as const,
+      { kind: "unreachable_unverified" } as const,
+      { kind: "unverified_for_a_day" } as const,
+    ]
+  ) {
+    assertEquals(exitCodeForError(new AuthGateBlockedError(reason, "x")), 75);
+  }
+  for (
+    const reason of [
+      { kind: "no_credential" } as const,
+      { kind: "revoked" } as const,
+    ]
+  ) {
+    assertEquals(exitCodeForError(new AuthGateBlockedError(reason, "x")), 1);
   }
 });
