@@ -190,7 +190,10 @@ export async function* workflowApprovals(
             ...(parentRun
               ? {
                 parentRun,
-                parentWaiting: await nestedLink.isAwaitedByParent(run),
+                // One unreadable parent must not fail the whole listing.
+                parentWaiting: await nestedLink.isAwaitedByParent(run).catch(
+                  () => false,
+                ),
               }
               : {}),
           });

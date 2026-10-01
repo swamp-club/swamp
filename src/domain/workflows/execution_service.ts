@@ -654,10 +654,6 @@ export interface StepExecutor {
 }
 
 /**
- * Maximum nesting depth for workflow-calling-workflow execution.
- */
-
-/**
  * Grace period for cleanup steps (always/completed dependents) after
  * cancellation. Cleanup steps run with a fresh signal bounded by this
  * timeout so they cannot hang indefinitely.

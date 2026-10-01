@@ -41,6 +41,7 @@ export type ChildResolution =
 
 /** The run a next action names. */
 export interface NestedRunTarget {
+  readonly workflowId: string;
   readonly workflowName: string;
   readonly runId: string;
   /** True when a serve instance owns the run, so commands need --server. */
@@ -91,6 +92,7 @@ export function isFinishedRun(run: WorkflowRun): boolean {
 
 function targetOf(run: WorkflowRun): NestedRunTarget {
   return {
+    workflowId: run.workflowId,
     workflowName: run.workflowName,
     runId: run.id,
     serveOwned: run.instanceId !== undefined,

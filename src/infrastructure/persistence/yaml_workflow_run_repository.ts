@@ -761,7 +761,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 continue;
               }
               if (!TERMINAL_STATUSES.has(data.status)) continue;
-              if (await keepForParent(data)) continue;
 
               const completedAt = data.completedAt
                 ? new Date(data.completedAt).getTime()
@@ -774,6 +773,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 timestamp === undefined || Number.isNaN(timestamp) ||
                 timestamp >= cutoffMs
               ) continue;
+              // Read a parent only for a child old enough to collect.
+              if (await keepForParent(data)) continue;
 
               const logPath = yamlPath.replace(/\.yaml$/, ".log");
               let fileBytes = stat.size ?? 0;

@@ -54,7 +54,10 @@ import {
 } from "../remote_run.ts";
 import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
 import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
-import { detachedNestedRunsOf } from "../../libswamp/mod.ts";
+import {
+  type DetachedNestedRunData,
+  detachedNestedRunsOf,
+} from "../../libswamp/mod.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -433,11 +436,19 @@ export const workflowCancelCommand = withRemoteOptions(
         cliCtx.logger
           .warn`The server did not confirm the reason; it may predate cancel reasons over HTTP`;
       }
+      // Nested runs the cancelled run waited on, left suspended
+      // (swamp-club#2736). An older serve reports none.
+      const remoteDetached = Array.isArray(body.detachedNestedRuns)
+        ? (body.detachedNestedRuns as DetachedNestedRunData[])
+        : [];
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
           runId: body.executionId ?? runId,
           status: body.status,
           ...(recordedReason !== undefined ? { reason: recordedReason } : {}),
+          ...(remoteDetached.length > 0
+            ? { detachedNestedRuns: remoteDetached }
+            : {}),
         }));
       } else {
         if (body.status === "cancelled") {
@@ -448,6 +459,10 @@ export const workflowCancelCommand = withRemoteOptions(
         }
         if (recordedReason !== undefined) {
           cliCtx.logger.info`Reason: ${recordedReason}`;
+        }
+        for (const detached of remoteDetached) {
+          cliCtx.logger
+            .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left suspended. Cancel it with ${detached.cancelCommand}`;
         }
       }
       return;

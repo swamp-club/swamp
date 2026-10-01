@@ -751,7 +751,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "system",
               `${
                 yellow("Nested run:")
-              }  approve and resume swamp workflow ${e.nested.workflowName} --run ${e.nested.runId}${this.commandTarget}`,
+              }  approve its gate as shown above, then  swamp workflow resume ${e.nested.workflowName} --run ${e.nested.runId}${this.commandTarget}`,
             ),
           );
           writeOutput(

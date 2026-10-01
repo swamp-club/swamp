@@ -36,6 +36,7 @@ import {
   awaitingParentOf,
   type DetachedNestedRunData,
   detachedNestedRunsOf,
+  nestedWaitGateMessage,
 } from "./nested_runs.ts";
 
 export interface WorkflowRejectData {
@@ -156,7 +157,8 @@ export async function* workflowReject(
         yield {
           kind: "error",
           error: validationFailed(
-            `Step "${input.stepName}" is not awaiting approval in the suspended run`,
+            nestedWaitGateMessage(run, input.stepName) ??
+              `Step "${input.stepName}" is not awaiting approval in the suspended run`,
           ),
         };
         return;
@@ -196,8 +198,14 @@ export async function* workflowReject(
       if (deps.runTracker) {
         deps.runTracker.complete(run.id, "failed");
       }
-      const detachedNestedRuns = await detachedNestedRunsOf(deps, run);
-      const awaitingParent = await awaitingParentOf(deps, run);
+      // The decision is saved: an unreadable linked run must not turn it
+      // into an error, so these reads are best effort.
+      const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
+        () => [],
+      );
+      const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
+        undefined
+      );
 
       yield {
         kind: "completed",

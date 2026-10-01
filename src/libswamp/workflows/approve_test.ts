@@ -283,6 +283,14 @@ Deno.test("workflowApprove: a nested step waiting on its child run is not a gate
   const { deps } = gateBesideNestedWait("suspended");
   const last = await approve(deps, "call-child");
   assertEquals(last?.kind, "error");
+  // The refusal points at the nested run to decide instead.
+  if (last?.kind === "error") {
+    assertEquals(last.error.message.includes("waits on nested run"), true);
+    assertEquals(
+      last.error.message.includes("swamp workflow resume child --run"),
+      true,
+    );
+  }
 });
 
 Deno.test("workflowApprove: allGatesDecided waits for the nested run to finish, derived from the child", async () => {
@@ -296,4 +304,23 @@ Deno.test("workflowApprove: allGatesDecided waits for the nested run to finish, 
     settled?.kind === "completed" && settled.data.allGatesDecided,
     true,
   );
+});
+
+Deno.test("workflowApprove: an unreadable linked run after the decision is saved does not turn the approval into an error", async () => {
+  const { deps } = gateBesideNestedWait("suspended");
+  const throwing: WorkflowApproveDeps = {
+    ...deps,
+    runRepo: {
+      ...deps.runRepo,
+      findById: () => Promise.reject(new Error("corrupt run file")),
+      save: () => Promise.resolve(),
+    } as unknown as WorkflowApproveDeps["runRepo"],
+  };
+  // Resolution reads the run once through findAllByWorkflowId.
+  const last = await approve(throwing, "gate");
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals(last.data.allGatesDecided, false);
+    assertEquals(last.data.awaitingParent, undefined);
+  }
 });

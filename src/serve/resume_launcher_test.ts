@@ -815,3 +815,96 @@ Deno.test("autoResumeParentAfterChild: refuses to start anything once shutdown b
   );
   assertStringIncludes(audit[0].detail ?? "", "reason=shutting_down");
 });
+
+Deno.test("startDetachedResume: a nested refusal names a grandchild only when every named run is readable", async () => {
+  const secret = Workflow.create({
+    name: "secret-child",
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok") }),
+        ],
+      }),
+    ],
+  });
+  const middle = Workflow.create({
+    name: "middle",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("secret-child"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const root = Workflow.create({
+    name: "root",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("middle"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const link = (
+    parent: WorkflowRun,
+    parentWf: Workflow,
+    child: WorkflowRun,
+  ) => {
+    child.recordParentRun({
+      workflowId: parentWf.id,
+      workflowName: parentWf.name,
+      runId: parent.id,
+      jobName: "main",
+      stepName: "call-child",
+      nestingDepth: 1,
+      ancestorWorkflowNames: [parentWf.name],
+    });
+    parent.getJob("main")!.getStep("call-child")!.waitForNestedRun({
+      workflowId: child.workflowId,
+      workflowName: child.workflowName,
+      runId: child.id,
+    });
+  };
+  const rootRun = WorkflowRun.create(root);
+  const middleRun = WorkflowRun.create(middle);
+  const secretRun = WorkflowRun.create(secret);
+  for (const run of [rootRun, middleRun, secretRun]) run.start();
+  secretRun.getJob("child-job")!.getStep("gate")!.waitForApproval("ok");
+  link(rootRun, root, middleRun);
+  link(middleRun, middle, secretRun);
+  for (const run of [rootRun, middleRun, secretRun]) run.suspend();
+  const { ctx, registry } = nestedHarness([root, middle, secret], [
+    rootRun,
+    middleRun,
+    secretRun,
+  ]);
+
+  const refuse = async (readable: (name: string) => boolean) => {
+    const result = await startDetachedResume(ctx, registry, {
+      workflowIdOrName: root.name,
+      runId: rootRun.id,
+      principalId: null,
+      canReadWorkflow: (w) => Promise.resolve(readable(w.workflowName)),
+    });
+    assertEquals(result.ok, false);
+    return result.ok ? "" : result.message;
+  };
+
+  const hidden = await refuse((name) => name !== "secret-child");
+  assertEquals(hidden.includes(secretRun.id), false);
+  assertEquals(hidden.includes("secret-child"), false);
+  const shown = await refuse(() => true);
+  assertStringIncludes(shown, secretRun.id);
+  assertEquals(registry.registered.length, 0);
+});

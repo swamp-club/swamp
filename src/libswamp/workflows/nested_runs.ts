@@ -112,3 +112,21 @@ export async function awaitingParentOf(
       }`,
   };
 }
+
+/**
+ * For a step that waits on a nested run rather than a gate of its own, the
+ * refusal to approve or reject it, naming the nested run to decide instead.
+ */
+export function nestedWaitGateMessage(
+  run: WorkflowRun,
+  stepName: string,
+): string | undefined {
+  const wait = run.findNestedWaits().find((w) => w.stepName === stepName);
+  if (!wait) return undefined;
+  if (wait.link.kind !== "valid") {
+    return `Step "${stepName}" waits on a nested workflow run, not on an approval of its own.`;
+  }
+  const { workflowName, runId } = wait.link.ref;
+  return `Step "${stepName}" waits on nested run ${runId} of workflow "${workflowName}", not on an approval of its own. ` +
+    `Decide the nested run's gate ('swamp workflow approvals' lists it), resume it with 'swamp workflow resume ${workflowName} --run ${runId}', then resume this run.`;
+}

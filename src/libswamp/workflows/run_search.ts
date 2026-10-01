@@ -183,8 +183,13 @@ export async function* workflowRunSearch(
         let allFinished = true;
         const waits = run.waitingOnRun.map((ref) => {
           const child = byId.get(ref.runId.toLowerCase());
+          // The index is not trusted: the child must link back to this run
+          // and be of the linked workflow.
           const linked = child?.parentRun &&
-            child.parentRun.runId.toLowerCase() === run.id.toLowerCase();
+            child.parentRun.runId.toLowerCase() === run.id.toLowerCase() &&
+            child.parentRun.workflowId.toLowerCase() ===
+              run.workflowId.toLowerCase() &&
+            child.workflowId.toLowerCase() === ref.workflowId.toLowerCase();
           if (linked && !FINISHED.has(child.status)) allFinished = false;
           return {
             workflowId: ref.workflowId,

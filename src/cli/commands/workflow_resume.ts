@@ -55,11 +55,11 @@ import { resolveModelType } from "../../domain/extensions/extension_auto_resolve
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
+  awaitingParentOf,
   consumeStream,
   mapWorkflowExecutionEvent,
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
-import { awaitingParentOf } from "../../libswamp/mod.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
 import { GIT_SHA } from "./version.ts";

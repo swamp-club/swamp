@@ -119,11 +119,11 @@ export const workflowApproveCommand = withRemoteOptions(
                   .info`Serve is resuming run ${e.data.runId} automatically`;
               } else {
                 cliCtx.logger
-                  .info`After approval: swamp workflow resume ${e.data.workflowName} --run ${e.data.runId}`;
+                  .info`After approval: swamp workflow resume ${e.data.workflowName} --run ${e.data.runId} --server <url>`;
               }
               if (e.data.awaitingParent) {
                 cliCtx.logger
-                  .info`Once it finishes, resume the parent run: ${e.data.awaitingParent.resumeCommand}`;
+                  .info`Once it finishes, resume the parent run unless serve resumes it automatically: ${e.data.awaitingParent.resumeCommand}`;
               }
             }
           },

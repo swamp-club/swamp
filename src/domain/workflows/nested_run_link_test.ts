@@ -237,7 +237,12 @@ Deno.test("NestedRunLink.isAwaitedByParent: only while the parent still waits on
 });
 
 Deno.test("nestedWaitHint: names the --server form for a serve-owned run", () => {
-  const target = { workflowName: "child", runId: "r-1", serveOwned: true };
+  const target = {
+    workflowId: "11111111-1111-4111-8111-111111111111",
+    workflowName: "child",
+    runId: "r-1",
+    serveOwned: true,
+  };
   const hint = nestedWaitHint({
     kind: "approve",
     target,

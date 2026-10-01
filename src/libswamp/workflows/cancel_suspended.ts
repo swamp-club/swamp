@@ -214,7 +214,9 @@ export async function* workflowCancelSuspended(
       if (deps.runTracker) {
         deps.runTracker.complete(run.id, "cancelled", input.reason);
       }
-      const detachedNestedRuns = await detachedNestedRunsOf(deps, run);
+      const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
+        () => [],
+      );
 
       yield {
         kind: "completed",

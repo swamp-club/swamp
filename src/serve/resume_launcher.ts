@@ -151,12 +151,16 @@ export async function startDetachedResume(
   } catch (error) {
     if (error instanceof NestedRunPendingError) {
       let readable = request.canReadWorkflow !== undefined;
+      // Every run the message names: each direct child, and the innermost
+      // run that has to act, which can be a grandchild in another workflow.
       for (const pending of error.pending) {
-        if (!readable) break;
-        readable = await request.canReadWorkflow!({
-          workflowId: pending.child.workflowId,
-          workflowName: pending.child.workflowName,
-        });
+        for (const named of [pending.child, pending.action.target]) {
+          if (!readable) break;
+          readable = await request.canReadWorkflow!({
+            workflowId: named.workflowId,
+            workflowName: named.workflowName,
+          });
+        }
       }
       return {
         ok: false,
