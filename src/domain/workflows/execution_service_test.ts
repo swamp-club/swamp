@@ -11937,14 +11937,21 @@ async function finishedRun(
   return { run, events };
 }
 
+/**
+ * A step stop grace short enough that a test whose methods stop only after
+ * the run has finished does not wait out STEP_STOP_GRACE_MS.
+ */
+const SHORT_STEP_STOP_GRACE_MS = 10;
+
 async function runUntilAborted(
   service: WorkflowExecutionService,
   workflow: Workflow,
   signal: AbortSignal,
   inputs?: Record<string, unknown>,
+  stepStopGraceMs?: number,
 ): Promise<{ run: WorkflowRun; kinds: string[] }> {
   const { run, events } = await finishedRun(
-    service.run(workflow.name, { signal, inputs }),
+    service.run(workflow.name, { signal, inputs, stepStopGraceMs }),
   );
   return { run, kinds: events.map((e) => e.kind) };
 }
@@ -12566,6 +12573,8 @@ Deno.test("abort cleanup: a guard still answering when the abort ends a multi-st
         service,
         workflow,
         executor.controller.signal,
+        undefined,
+        SHORT_STEP_STOP_GRACE_MS,
       );
 
       assertEquals(run.status, "cancelled");
@@ -13028,6 +13037,8 @@ Deno.test("abort cleanup: steps in flight in a job's last level end failed as ca
         service,
         workflow,
         executor.controller.signal,
+        undefined,
+        SHORT_STEP_STOP_GRACE_MS,
       );
 
       assertEquals(run.status, "cancelled");
@@ -13043,7 +13054,7 @@ Deno.test("abort cleanup: steps in flight in a job's last level end failed as ca
   });
 });
 
-Deno.test("abort cleanup: a guard still answering in a job that shares its level does not hold the run", async () => {
+Deno.test("abort cleanup: a guard still answering in a job that shares its level holds the run only for the step stop grace", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "shared-level-guard-wf",
@@ -13096,6 +13107,8 @@ Deno.test("abort cleanup: a guard still answering in a job that shares its level
         service,
         workflow,
         executor.controller.signal,
+        undefined,
+        SHORT_STEP_STOP_GRACE_MS,
       );
 
       assertEquals(run.status, "cancelled");
@@ -16883,4 +16896,437 @@ Deno.test("DefaultStepExecutor: a step of a local run registers its method row w
   );
 
   assertEquals(tracker.registrations.map((r) => r.instanceId), [undefined]);
+});
+
+// ---------------------------------------------------------------------------
+// A cancelled run waits for the model methods it left in flight
+// (swamp-club#2918)
+// ---------------------------------------------------------------------------
+
+/**
+ * Counts the step executions still in flight, each until its promise has
+ * settled: for DefaultStepExecutor, after it saved the method-run output and
+ * completed the tracker row.
+ */
+class InFlightCountingExecutor extends CountingStepExecutor {
+  inFlight = 0;
+
+  constructor(private readonly inner: StepExecutor) {
+    super();
+  }
+
+  override async execute(
+    step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    this.inFlight++;
+    try {
+      return await this.inner.execute(step, ctx);
+    } finally {
+      this.inFlight--;
+    }
+  }
+}
+
+/**
+ * Opens `gate` once the save that follows a failed job `main` has completed:
+ * the abort has settled the level, and the run goes on to record its
+ * cancellation. On entry to each save of the cancelled run it records how
+ * many step executions were still in flight; it never throws, so the run
+ * takes the path under test.
+ */
+class GatedRunRepository extends SpyWorkflowRunRepository {
+  readonly gate = Promise.withResolvers<void>();
+  readonly inFlightAtCancelledSave: number[] = [];
+
+  constructor(private readonly inFlight: () => number = () => 0) {
+    super();
+  }
+
+  override async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    if (run.status === "cancelled") {
+      this.inFlightAtCancelledSave.push(this.inFlight());
+    }
+    await super.save(workflowId, run);
+    if (run.status === "running" && run.getJob("main")?.status === "failed") {
+      this.gate.resolve();
+    }
+  }
+}
+
+/**
+ * Registers a model type, under a per-run name, whose `execute` method is
+ * `execute`, and saves one definition of it per name in `definitionNames`.
+ * Returns the type, whose method-run outputs the test reads back.
+ */
+async function registerMethodModel(
+  tempDir: string,
+  definitionNames: string[],
+  execute: () => Promise<Record<string, never>>,
+): Promise<ModelType> {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+  const modelType = ModelType.create(
+    `@test-2918/method-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    resources: {},
+    methods: {
+      execute: {
+        description: "runs the test's method body",
+        arguments: z.object({}),
+        execute,
+      },
+    },
+  });
+  const definitionRepo = new YamlDefinitionRepository(tempDir);
+  for (const name of definitionNames) {
+    await definitionRepo.save(
+      modelType,
+      Definition.create({ name, type: modelType.normalized }),
+    );
+  }
+  return modelType;
+}
+
+async function methodRunOutputs(
+  tempDir: string,
+  modelType: ModelType,
+): Promise<import("../models/model_output.ts").ModelOutput[]> {
+  const { YamlOutputRepository } = await import(
+    "../../infrastructure/persistence/yaml_output_repository.ts"
+  );
+  return await new YamlOutputRepository(tempDir).findAll(modelType);
+}
+
+function methodStep(name: string, definition: string): Step {
+  return Step.create({
+    name,
+    task: StepTask.model(definition, "execute"),
+  });
+}
+
+/**
+ * Holds every call, until `gate` opens, of the two methods a test runs, and
+ * aborts `controller` once both have started: a cancel firing while two
+ * parallel methods run. Each then fails as an interrupted process does, once
+ * the level has moved on without it.
+ */
+function stoppedAfterGate(
+  controller: AbortController,
+  gate: Promise<void>,
+): () => Promise<Record<string, never>> {
+  let started = 0;
+  return async () => {
+    if (++started === 2) controller.abort();
+    await gate;
+    throw new Error("process exited with signal SIGTERM");
+  };
+}
+
+function assertMethodRunsCancelled(
+  outputs: import("../models/model_output.ts").ModelOutput[],
+  count: number,
+): void {
+  assertEquals(outputs.length, count);
+  for (const output of outputs) {
+    assertEquals(output.status, "cancelled", output.id);
+    assertExists(output.completedAt, output.id);
+  }
+}
+
+Deno.test("run(): a cancelled run waits for its parallel model methods to save their method runs cancelled (swamp-club#2918)", async () => {
+  await withTempDir(async (tempDir) => {
+    const controller = new AbortController();
+    const executor = new InFlightCountingExecutor(new DefaultStepExecutor());
+    const runRepo = new GatedRunRepository(() => executor.inFlight);
+    const modelType = await registerMethodModel(
+      tempDir,
+      ["m1", "m2"],
+      stoppedAfterGate(controller, runRepo.gate.promise),
+    );
+    const workflow = Workflow.create({
+      name: "parallel-cancel-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [methodStep("p1", "m1"), methodStep("p2", "m2")],
+        }),
+      ],
+    });
+    const tracker = new RecordingRunTracker();
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      tracker,
+      executor,
+      runRepo,
+    );
+
+    const { run } = await runUntilAborted(service, workflow, controller.signal);
+
+    assertEquals(run.status, "cancelled");
+    // Both methods had saved their method runs before the run saved itself
+    // cancelled, so the CLI's push and exit come after them.
+    assertEquals(runRepo.inFlightAtCancelledSave, [0]);
+    const outputs = await methodRunOutputs(tempDir, modelType);
+    assertMethodRunsCancelled(outputs, 2);
+    for (const output of outputs) {
+      assertEquals(
+        tracker.completions.filter((c) => c.runId === output.id),
+        [{ runId: output.id, status: "cancelled" }],
+      );
+    }
+    // The level settled the steps; the methods' late failures leave them so.
+    for (const name of ["p1", "p2"]) {
+      const step = run.getJob("main")!.getStep(name)!;
+      assertEquals(step.status, "failed", name);
+      assertEquals(step.error, CANCELLED_STEP_ERROR, name);
+    }
+  });
+});
+
+Deno.test("resume(): a cancelled resume waits for its parallel model methods to save their method runs cancelled (swamp-club#2918)", async () => {
+  await withTempDir(async (tempDir) => {
+    const controller = new AbortController();
+    const executor = new InFlightCountingExecutor(new DefaultStepExecutor());
+    const runRepo = new GatedRunRepository(() => executor.inFlight);
+    const modelType = await registerMethodModel(
+      tempDir,
+      ["m1", "m2"],
+      stoppedAfterGate(controller, runRepo.gate.promise),
+    );
+    const afterGate = onStep("gate", TriggerCondition.succeeded());
+    const workflow = Workflow.create({
+      name: "parallel-cancel-resume-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("go?"),
+            }),
+            Step.create({
+              ...afterGate,
+              name: "p1",
+              task: StepTask.model("m1", "execute"),
+            }),
+            Step.create({
+              ...afterGate,
+              name: "p2",
+              task: StepTask.model("m2", "execute"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+      runRepo,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const { run } = await finishedRun(
+      service.resume(workflow.name, suspended.id, {
+        signal: controller.signal,
+      }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(runRepo.inFlightAtCancelledSave, [0]);
+    assertMethodRunsCancelled(await methodRunOutputs(tempDir, modelType), 2);
+  });
+});
+
+Deno.test("run(): a cancelled run waits for a guard's model.method() call in flight to save its method run cancelled (swamp-club#2918)", async () => {
+  await withTempDir(async (tempDir) => {
+    const controller = new AbortController();
+    const executor = new InFlightCountingExecutor(new DefaultStepExecutor());
+    const runRepo = new GatedRunRepository(() => executor.inFlight);
+    const modelType = await registerMethodModel(
+      tempDir,
+      ["m1", "m2"],
+      stoppedAfterGate(controller, runRepo.gate.promise),
+    );
+    const workflow = Workflow.create({
+      name: "guard-cancel-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            methodStep("p1", "m1"),
+            Step.create({
+              name: "guarded",
+              task: StepTask.model("m1", "execute"),
+              guard: '${{ model.method("m2", "execute") }}',
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+      runRepo,
+    );
+
+    const { run } = await runUntilAborted(service, workflow, controller.signal);
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(runRepo.inFlightAtCancelledSave, [0]);
+    // p1's method run and the guard's: a guard call registers no tracker
+    // row, but its method-run record is saved cancelled all the same.
+    const outputs = await methodRunOutputs(tempDir, modelType);
+    assertMethodRunsCancelled(outputs, 2);
+    assertEquals(run.getJob("main")!.getStep("guarded")!.status, "pending");
+  });
+});
+
+/**
+ * Holds the steps named in `outcomes` until `gate` opens, aborting the run
+ * once all of them have started, then settles each with its outcome: a
+ * method that answers after the level has moved on without it. It emits no
+ * events, so the abandoned step goes on to its own completion code.
+ */
+class LateAnswerExecutor extends CountingStepExecutor {
+  readonly controller = new AbortController();
+  #started = 0;
+
+  constructor(
+    private readonly outcomes: Record<string, "fail" | "succeed">,
+    private readonly gate: Promise<void>,
+  ) {
+    super();
+  }
+
+  override async execute(
+    step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    const result = await super.execute(step, ctx);
+    const outcome = this.outcomes[ctx.stepName];
+    if (!outcome) return result;
+    if (++this.#started === Object.keys(this.outcomes).length) {
+      this.controller.abort();
+    }
+    await this.gate;
+    if (outcome === "fail") throw new Error(`${ctx.stepName} stopped`);
+    return ctx.stepName.startsWith("__assert_") ? { ok: true } : result;
+  }
+}
+
+Deno.test("abort cleanup: a method answering after the abort settled its step leaves the step failed as cancelled (swamp-club#2918)", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "late-answer-wf",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [modelStep("stops"), modelStep("finishes")],
+          }),
+        ],
+      });
+      const runRepo = new GatedRunRepository();
+      const executor = new LateAnswerExecutor(
+        { stops: "fail", finishes: "succeed" },
+        runRepo.gate.promise,
+      );
+      const { service } = await setupRetry(
+        tempDir,
+        workflow,
+        undefined,
+        executor,
+        runRepo,
+      );
+
+      const { run } = await runUntilAborted(
+        service,
+        workflow,
+        executor.controller.signal,
+      );
+
+      // Each abandoned step has run its own completion code (its span ends
+      // in runStepInSpan's finally) before its record is checked.
+      await waitFor(
+        () => recorder.allEnded(),
+        "every started span to be ended",
+      );
+      assertEquals(run.status, "cancelled");
+      for (const name of ["stops", "finishes"]) {
+        const step = run.getJob("main")!.getStep(name)!;
+        assertEquals(step.status, "failed", name);
+        assertEquals(step.error, CANCELLED_STEP_ERROR, name);
+      }
+      assertEquals(executor.count("main/stops"), 1);
+      assertEquals(executor.count("main/finishes"), 1);
+    });
+  });
+});
+
+Deno.test("abort cleanup: an assert whose model.method() answers after the abort settled it stays failed as cancelled (swamp-club#2918)", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "late-assert-wf",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              modelStep("work"),
+              Step.create({
+                name: "check",
+                task: StepTask.assert(
+                  'model.method("infra", "status").ok',
+                  "infra is not ok",
+                ),
+              }),
+            ],
+          }),
+        ],
+      });
+      const runRepo = new GatedRunRepository();
+      const executor = new LateAnswerExecutor(
+        { work: "fail", __assert_check: "succeed" },
+        runRepo.gate.promise,
+      );
+      const { service } = await setupRetry(
+        tempDir,
+        workflow,
+        undefined,
+        executor,
+        runRepo,
+      );
+
+      const { run } = await runUntilAborted(
+        service,
+        workflow,
+        executor.controller.signal,
+      );
+
+      await waitFor(
+        () => recorder.allEnded(),
+        "every started span to be ended",
+      );
+      assertEquals(run.status, "cancelled");
+      const check = run.getJob("main")!.getStep("check")!;
+      assertEquals(check.status, "failed");
+      assertEquals(check.error, CANCELLED_STEP_ERROR);
+      assertEquals(check.assertResult, undefined);
+      assertEquals(executor.count("main/__assert_check"), 1);
+    });
+  });
 });

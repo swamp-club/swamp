@@ -692,6 +692,103 @@ async function awaitNestedRuns(
 }
 
 /**
+ * How long after its abort a cancelled run waits for the model methods it
+ * started to stop (see {@link InFlightMethodRuns}). It covers the shell
+ * executor's 3 s SIGTERM-to-SIGKILL grace (an aborted step skips the pipe
+ * drain) and the save of the cancelled method-run output; the method-summary
+ * report and lock flush that follow the save may take longer. It stays under
+ * serve's 5 s abort graces, so serve still sees an aborted run finish.
+ */
+export const STEP_STOP_GRACE_MS = 4_000;
+
+/**
+ * The model-method executions of one run still in flight, and when the run's
+ * signal aborted.
+ *
+ * After an abort a level of several steps stops reading them, and the run
+ * settles and saves itself cancelled while their methods are still stopping.
+ * The CLI then exits and kills them before they save their method-run records,
+ * which stay `running` (swamp-club#2918). The run waits here, until
+ * `stepStopGraceMs` after the abort, so each method records its own
+ * cancellation first.
+ */
+class InFlightMethodRuns {
+  readonly #pending = new Set<Promise<void>>();
+  readonly #signal: AbortSignal | undefined;
+  #abortedAt: number | undefined;
+  readonly #onAbort = () => {
+    this.#abortedAt ??= performance.now();
+  };
+
+  constructor(signal: AbortSignal | undefined) {
+    this.#signal = signal;
+    if (signal?.aborted) {
+      this.#onAbort();
+    } else {
+      signal?.addEventListener("abort", this.#onAbort, { once: true });
+    }
+  }
+
+  /** Holds `execution` until it settles, and returns it. */
+  track<T>(execution: Promise<T>): Promise<T> {
+    const release = () => {
+      this.#pending.delete(settled);
+    };
+    const settled: Promise<void> = execution.then(release, release);
+    this.#pending.add(settled);
+    return execution;
+  }
+
+  /** Waits for the executions in flight, until `graceMs` after the abort. */
+  async settle(graceMs: number): Promise<void> {
+    if (this.#pending.size === 0) return;
+    const remaining = (this.#abortedAt ?? performance.now()) + graceMs -
+      performance.now();
+    if (remaining <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, remaining);
+    });
+    try {
+      await Promise.race([Promise.allSettled([...this.#pending]), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Stops listening to the run's signal. */
+  dispose(): void {
+    this.#signal?.removeEventListener("abort", this.#onAbort);
+  }
+}
+
+/**
+ * Waits for the work a cancelled run left in flight before the run records
+ * its cancellation: its nested workflow steps (see {@link awaitNestedRuns})
+ * and its model methods (see {@link InFlightMethodRuns}).
+ */
+async function awaitInFlightWork(
+  nestedRuns: ReadonlySet<Promise<void>>,
+  methodRuns: InFlightMethodRuns,
+  stepStopGraceMs: number | undefined,
+): Promise<void> {
+  await Promise.all([
+    awaitNestedRuns(nestedRuns),
+    methodRuns.settle(stepStopGraceMs ?? STEP_STOP_GRACE_MS),
+  ]);
+}
+
+/**
+ * Whether the run's abort already settled this step while it ran: a level of
+ * several steps stops reading them, and the job fails the ones still running
+ * as cancelled (failAbandonedSteps). A method that answers after that must
+ * not overwrite the settlement; its method-run record keeps its own outcome.
+ */
+function abandonedByAbort(stepRun: StepRun, options: StepOptions): boolean {
+  return (options.signal?.aborted ?? false) && stepRun.status !== "running";
+}
+
+/**
  * Runs a nested workflow step's stream, holding a promise in `nestedRuns`
  * until the stream ends so the run can wait for it (see
  * {@link awaitNestedRuns}).
@@ -2474,6 +2571,16 @@ interface StepOptions {
    * recording its own cancellation (see {@link awaitNestedRuns}).
    */
   nestedRuns?: Set<Promise<void>>;
+  /**
+   * The run's model-method executions still in flight, which the run awaits
+   * before recording its own cancellation (see {@link InFlightMethodRuns}).
+   */
+  inFlightMethodRuns?: InFlightMethodRuns;
+  /**
+   * How long after its abort the run waits for them; defaults to
+   * {@link STEP_STOP_GRACE_MS}. Passed on to nested runs.
+   */
+  stepStopGraceMs?: number;
 }
 
 /**
@@ -2652,6 +2759,12 @@ export class WorkflowExecutionService {
       triggerSource?: string;
       /** Optional metadata linking the run to external systems */
       references?: Record<string, string>;
+      /**
+       * How long after an abort the run waits for its model methods to stop
+       * before recording its cancellation; defaults to
+       * {@link STEP_STOP_GRACE_MS}.
+       */
+      stepStopGraceMs?: number;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const runSpan = getTracer().startSpan("swamp.workflow.run", {
@@ -2682,6 +2795,7 @@ export class WorkflowExecutionService {
     let workflowLogHandle: string | undefined;
     let wfHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
     const nestedRuns = new Set<Promise<void>>();
+    const inFlightMethodRuns = new InFlightMethodRuns(options?.signal);
     try {
       const wfSetupSpan = tracer.startSpan("swamp.workflow.setup");
       let workflow: Workflow;
@@ -2984,6 +3098,8 @@ export class WorkflowExecutionService {
         sanitizedTasks,
         signal: options?.signal,
         nestedRuns,
+        inFlightMethodRuns,
+        stepStopGraceMs: options?.stepStopGraceMs,
         // Default so per-step reports run even when the caller doesn't
         // thread CLI report flags — absent filter means "no filtering".
         reportFilterOptions: options?.reportFilterOptions ?? {},
@@ -3132,7 +3248,11 @@ export class WorkflowExecutionService {
       // Check if the run was cancelled via abort signal
       if (options?.signal?.aborted) {
         if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
-        await awaitNestedRuns(nestedRuns);
+        await awaitInFlightWork(
+          nestedRuns,
+          inFlightMethodRuns,
+          options.stepStopGraceMs,
+        );
         if (this.runTracker) this.runTracker.complete(run.id, "cancelled");
         cancelAndSettle(run, workflow, abortReason(options.signal));
         await this.saveRun(workflow.id, run);
@@ -3202,7 +3322,11 @@ export class WorkflowExecutionService {
       if (
         workflowRun && options?.signal?.aborted
       ) {
-        await awaitNestedRuns(nestedRuns);
+        await awaitInFlightWork(
+          nestedRuns,
+          inFlightMethodRuns,
+          options.stepStopGraceMs,
+        );
         if (this.runTracker) {
           this.runTracker.complete(workflowRun.id, "cancelled");
         }
@@ -3244,6 +3368,7 @@ export class WorkflowExecutionService {
       // streaming consumer that breaks on socket close). Cleanup placed after a
       // yield would be skipped on .return(); only finally blocks unwind.
       runFileSink.unregister(workflowLogHandle);
+      inFlightMethodRuns.dispose();
       runSpan.end();
     }
   }
@@ -3313,6 +3438,12 @@ export class WorkflowExecutionService {
        * which clears any instance id the run carried.
        */
       instanceId?: string;
+      /**
+       * How long after an abort the resume waits for its model methods to
+       * stop before recording its cancellation; defaults to
+       * {@link STEP_STOP_GRACE_MS}.
+       */
+      stepStopGraceMs?: number;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -3534,6 +3665,7 @@ export class WorkflowExecutionService {
     });
 
     const nestedRuns = new Set<Promise<void>>();
+    const inFlightMethodRuns = new InFlightMethodRuns(options?.signal);
     // The try opens immediately after register() — before the "started"
     // yield — so early consumer abandonment (a client that receives
     // "started" then disconnects) still unwinds the finally, which stops the
@@ -3572,6 +3704,8 @@ export class WorkflowExecutionService {
         sanitizedTasks,
         signal: options?.signal,
         nestedRuns,
+        inFlightMethodRuns,
+        stepStopGraceMs: options?.stepStopGraceMs,
         resumeDerived: existingRun.resumeInputs.map((key) => `inputs.${key}`),
         // workflow resume never receives CLI report flags — default so
         // resumed runs still execute reports instead of silently skipping.
@@ -3722,7 +3856,11 @@ export class WorkflowExecutionService {
       }
 
       if (options?.signal?.aborted) {
-        await awaitNestedRuns(nestedRuns);
+        await awaitInFlightWork(
+          nestedRuns,
+          inFlightMethodRuns,
+          options.stepStopGraceMs,
+        );
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "cancelled");
         }
@@ -3771,7 +3909,11 @@ export class WorkflowExecutionService {
         return;
       }
       if (options?.signal?.aborted) {
-        await awaitNestedRuns(nestedRuns);
+        await awaitInFlightWork(
+          nestedRuns,
+          inFlightMethodRuns,
+          options.stepStopGraceMs,
+        );
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "cancelled");
         }
@@ -3799,6 +3941,7 @@ export class WorkflowExecutionService {
       // only finally blocks unwind.
       if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
       runFileSink.unregister(workflowLogHandle);
+      inFlightMethodRuns.dispose();
     }
   }
 
@@ -4543,6 +4686,9 @@ export class WorkflowExecutionService {
             task.expr,
             assertContext,
           );
+          // A model.method() call that answered after the abort settled the
+          // step does not decide the assertion.
+          if (abandonedByAbort(stepRun, options)) return;
           const passed = !!result;
 
           // Interpolate ${{ }} expressions in the message
@@ -4636,6 +4782,7 @@ export class WorkflowExecutionService {
             };
           }
         } catch (error) {
+          if (abandonedByAbort(stepRun, options)) return;
           const errorMessage = error instanceof Error
             ? error.message
             : String(error);
@@ -4754,8 +4901,12 @@ export class WorkflowExecutionService {
             : undefined,
           declaredWrites: step.writes ?? job.writes ?? workflow.writes,
         };
-        return this.executor.execute(step, ctx);
+        return this.executeMethod(step, ctx, options);
       });
+
+      // A method that finished after the abort settled its step keeps the
+      // data it wrote, but not the step's outcome or its outputs.
+      const abandoned = abandonedByAbort(stepRun, options);
 
       // Track data artifacts and update expression context if this was a model method
       let stepDataHandles:
@@ -4784,7 +4935,7 @@ export class WorkflowExecutionService {
         }
 
         // Update expression context for subsequent steps (only when not using --last-evaluated)
-        if (stepExprContext && taskOutput.model) {
+        if (stepExprContext && taskOutput.model && !abandoned) {
           // Create model entry if it doesn't exist
           if (!stepExprContext.model[taskOutput.model]) {
             stepExprContext.model[taskOutput.model] = {
@@ -4827,6 +4978,8 @@ export class WorkflowExecutionService {
           }
         }
       }
+
+      if (abandoned) return;
 
       // Strip heavy payload from the run record (see stripResourceContent).
       // Outputs are taken first: the stripped record keeps no attributes.
@@ -4871,6 +5024,8 @@ export class WorkflowExecutionService {
           stepRun.addDataArtifact(artifact);
         }
       }
+      // The abort already settled the step; keep its settlement.
+      if (abandonedByAbort(stepRun, options)) return;
 
       const errorMessage = error instanceof Error
         ? error.message
@@ -5307,6 +5462,7 @@ export class WorkflowExecutionService {
       signal: options.signal,
       secretRedactor: options.secretRedactor,
       sensitiveValues: options.sensitiveValues,
+      stepStopGraceMs: options.stepStopGraceMs,
     });
     let childEnded = false;
     try {
@@ -5458,6 +5614,20 @@ export class WorkflowExecutionService {
     return childOutputs;
   }
 
+  /**
+   * Runs a model method on the step executor, held in the run's in-flight
+   * set until it settles so a cancelled run waits for it to record itself
+   * (see {@link InFlightMethodRuns}).
+   */
+  private executeMethod(
+    step: Step,
+    ctx: StepExecutionContext,
+    options: StepOptions,
+  ): Promise<unknown> {
+    const execution = this.executor.execute(step, ctx);
+    return options.inFlightMethodRuns?.track(execution) ?? execution;
+  }
+
   private buildModelMethodDelegate(
     workflow: Workflow,
     run: WorkflowRun,
@@ -5478,7 +5648,7 @@ export class WorkflowExecutionService {
           name: syntheticName,
           task: StepTask.model(modelName, methodName, inputs),
         });
-        const result = await this.executor.execute(syntheticStep, {
+        const result = await this.executeMethod(syntheticStep, {
           workflowId: workflow.id,
           workflowRunId: run.id,
           workflowName: workflow.name,
@@ -5495,7 +5665,7 @@ export class WorkflowExecutionService {
           sensitiveValues: options.sensitiveValues,
           sanitizedTasks: options.sanitizedTasks,
           authoredExpressions: options.authoredExpressions,
-        });
+        }, options);
         const methodResult = result as {
           dataHandles?: Array<{
             specName: string;

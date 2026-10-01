@@ -46,6 +46,13 @@ export interface DrainableRunRegistry {
   list(): ReadonlyArray<ActiveRun>;
 }
 
+/**
+ * How long serve's shutdown gives the runs it aborted to settle before it
+ * marks them interrupted. A cancelled run waits at most
+ * `STEP_STOP_GRACE_MS` for its model methods to stop, which stays under this.
+ */
+export const SHUTDOWN_ABORT_GRACE_MS = 5_000;
+
 export interface ShutdownDrainDeps {
   readonly webhookService: DrainableTriggerSource | null;
   readonly scheduledExecution: DrainableTriggerSource | null;

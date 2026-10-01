@@ -163,11 +163,12 @@ export function isServeOwnedRun(run: WorkflowRun): boolean {
  * How long cancel waits for a run's owning process to exit after SIGTERM
  * before it SIGKILLs it. The owner runs the cancelled run's always/completed
  * cleanup steps under {@link CLEANUP_GRACE_TIMEOUT_MS}; the margin covers the
- * step the abort interrupted (the shell executor's 3 s SIGTERM-to-SIGKILL
- * grace and its 5 s pipe drain) and the owner's final save of the run. It does
- * not budget a slow push to a remote datastore after cleanup, nor a second
- * cleanup level; an owner still running then is killed, and the record it
- * left is settled with {@link OWNER_STOPPED_STEP_ERROR}.
+ * wait for the model methods the abort interrupted to stop and save their
+ * method runs (at most `STEP_STOP_GRACE_MS` after the abort) and the owner's
+ * final save of the run. It does not budget a slow push to a remote datastore
+ * after cleanup, nor a second cleanup level; an owner still running then is
+ * killed, and the record it left is settled with
+ * {@link OWNER_STOPPED_STEP_ERROR}.
  */
 export const OWNER_STOP_GRACE_MS = CLEANUP_GRACE_TIMEOUT_MS + 10_000;
 

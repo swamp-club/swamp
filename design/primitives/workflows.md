@@ -1426,8 +1426,10 @@ stop the run live. When serve is not running, the command cancels offline: it
 stops the owning `workflow run` process (SIGTERM, then SIGKILL after a grace
 period), re-reads the run, and writes the cancelled status to the run YAML only
 if the run is still active. The owner saves its own final record while handling
-SIGTERM, so a run it already finished keeps that record; a cancelled one gets
-the `--reason` as its `cancel_reason` tag.
+SIGTERM, once its in-flight model methods have stopped or the step stop grace
+ran out (see [Post-Cancellation Cleanup](#post-cancellation-cleanup)), so a run
+it already finished keeps that record; a cancelled one gets the `--reason` as
+its `cancel_reason` tag.
 
 **Settling a cancelled run.** Every cancel settles the work the run leaves
 unfinished before it marks the run `cancelled`, so a cancelled record never
@@ -1657,6 +1659,14 @@ order:
   method reported (for `command/shell`, the killed subprocess's exit). A level
   holding several steps does not wait for them once the cancellation fires, so
   each step it leaves `running` is marked `failed` with reason `cancelled`.
+  Their model methods go on stopping, and before it saves its cancelled
+  record the run waits for them, and for any guard or assert
+  `model.method()` call still in flight, until `STEP_STOP_GRACE_MS` (4 s)
+  after the cancellation. Each method therefore saves its method run
+  `cancelled` before `swamp workflow run` pushes its data and exits; a method
+  still running after that keeps its method run `running` (swamp-club#2918).
+  A method that answers late does not change the step: it stays `failed` with
+  reason `cancelled`, while its method run records what the method did.
 - Steps, `forEach` iterations and jobs that the interrupted level never started
   (queued behind a `concurrency` limit) are settled at the end of that level as
   if they had been reached: skipped when their `dependsOn` is not met (reason

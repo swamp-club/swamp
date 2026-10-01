@@ -258,7 +258,10 @@ import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { setProcessGroupIsolation } from "../../infrastructure/process/process_group_policy.ts";
 import { warnIfRunningAsInit } from "../../infrastructure/process/init_process.ts";
-import { runShutdownDrain } from "../../serve/shutdown_drain.ts";
+import {
+  runShutdownDrain,
+  SHUTDOWN_ABORT_GRACE_MS,
+} from "../../serve/shutdown_drain.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -5876,7 +5879,7 @@ export const serveCommand = new Command()
         scheduledExecution,
         activeRunRegistry: activeRunRegistry ?? null,
         drainTimeoutMs: shutdownDrainTimeoutMs,
-        abortGraceMs: 5_000,
+        abortGraceMs: SHUTDOWN_ABORT_GRACE_MS,
         onAborting: (undrained) => {
           if (isJson) {
             console.log(JSON.stringify({ status: "aborting", undrained }));
