@@ -1017,6 +1017,12 @@ The contract has eight rules:
    operation. Simplest approach: keep a `bulkInvalidated: boolean` flag beside
    the dirty set, and do a full walk in `pushChanged` whenever it is true.
 
+`assertSyncServiceRoundTripConformance` in `@swamp-club/swamp-testing` holds
+every `DatastoreSyncService` adapter to this contract, delete propagation and
+two-phase push semantics, by syncing two caches over one backend. The suite is
+experimental: like `createInMemoryRemote`, its defaults follow what the S3 and
+GCS datastore extensions do today and may change as those extensions change.
+
 **Core obligation.** Repositories writing into the cache call the dirty hook at
 the start of every public mutation method. These are `save`, `append`, `delete`,
 `rename`, `allocateVersion`, `finalizeVersion`, `removeLatestMarker`,
