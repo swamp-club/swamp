@@ -1899,7 +1899,9 @@ extension (`extension install`'s restore, `extension update`,
 publish as done, and exit non-zero with the publish error after the report.
 While a recorded change cannot be published, any extension write, including
 the `extension rm` preview, fails with the publish error first, since it
-publishes the recorded change before reading or changing anything.
+publishes the recorded change before reading or changing anything. That error
+says an earlier change is still unpublished and that this command did not
+change the lockfile, rather than that its own change was saved.
 `datastore sync --push` and a full
 `datastore sync` clear only a record from an older swamp that holds no change
 (swamp-club#2838).

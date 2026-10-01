@@ -48,6 +48,7 @@ interface Harness {
   /** The push "succeeds" but sends nothing, as the real adapter sees it. */
   pushSendsNothing: { value: boolean };
   mustUpload: boolean[];
+  earlierChangeOnly: boolean[];
   warnings: string[];
   transaction: (
     publishFailure?: "throw" | "defer",
@@ -64,6 +65,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
     const failPublish = { value: false };
     const pushSendsNothing = { value: false };
     const mustUpload: boolean[] = [];
+    const earlierChangeOnly: boolean[] = [];
     const warnings: string[] = [];
     const transaction = (publishFailure?: "throw" | "defer") =>
       new ManagedLockfileTransaction({
@@ -90,6 +92,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
           publish: async (options) => {
             events.push("publish");
             mustUpload.push(options.mustUpload);
+            earlierChangeOnly.push(options.earlierChangeOnly);
             if (failPublish.value) throw new Error("datastore unreachable");
             if (pushSendsNothing.value) {
               if (options.mustUpload) {
@@ -121,6 +124,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       failPublish,
       pushSendsNothing,
       mustUpload,
+      earlierChangeOnly,
       warnings,
       transaction,
     });
@@ -659,5 +663,28 @@ Deno.test("ManagedLockfileTransaction.run: a pending change the datastore alread
 
     assertEquals(h.mustUpload, [false]);
     assertEquals(h.pending.value, { kind: "none" });
+  });
+});
+
+Deno.test("ManagedLockfileTransaction.run: a publish of only an earlier change says so, and one carrying this change does not", async () => {
+  await withHarness(async (h) => {
+    h.failPublish.value = true;
+    await assertRejects(
+      () =>
+        h.transaction().run(async () => {
+          await (await LockfileRepository.create(h.lockfilePath)).writeEntry(
+            "@me/x",
+            "1",
+            [],
+          );
+        }),
+      ManagedLockfileUnpublishedError,
+    );
+    // A refresh (the rm preview, update targets) changes nothing itself.
+    await assertRejects(
+      () => h.transaction().refresh(),
+      ManagedLockfileUnpublishedError,
+    );
+    assertEquals(h.earlierChangeOnly, [false, true]);
   });
 });

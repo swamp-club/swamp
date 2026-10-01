@@ -64,16 +64,19 @@ export class ManagedConfigUnpublishedError extends UserError {
    *   change names `swamp extension install`, which fetches the datastore's
    *   lockfile and replays the change onto it; a plain push would publish
    *   the local copy over other checkouts' entries (swamp-club#2838).
+   * @param summary What happened, before the reason. The default describes
+   *   the current command's own change.
    */
   constructor(
     cause: unknown,
     retryAdvice = "Run 'swamp datastore sync --push' to publish it.",
+    summary = "The change is saved locally but was not published to the " +
+      "datastore",
   ) {
     const reason = (cause instanceof Error ? cause.message : String(cause))
       .replace(/\.+$/, "");
     super(
-      "The change is saved locally but was not published to the datastore: " +
-        `${reason}. ${retryAdvice}`,
+      `${summary}: ${reason}. ${retryAdvice}`,
       "managed_config_unpublished",
     );
     this.name = "ManagedConfigUnpublishedError";
@@ -345,11 +348,22 @@ export function buildManagedLockfileTransaction(
         try {
           await sync.publish(options);
         } catch (error) {
-          throw new ManagedConfigUnpublishedError(
-            error,
-            "Run 'swamp extension install' to publish it: it fetches the " +
-              "datastore's lockfile and replays the change onto it.",
-          );
+          // Only an earlier command's change was being published: this
+          // command changed nothing, and must not read as if it had.
+          throw options.earlierChangeOnly
+            ? new ManagedConfigUnpublishedError(
+              error,
+              "Run 'swamp extension install' to publish the earlier change " +
+                "once the datastore accepts it, then run this command again.",
+              "An earlier extension lockfile change is still not published " +
+                "to the datastore, so this command did not change the " +
+                "lockfile",
+            )
+            : new ManagedConfigUnpublishedError(
+              error,
+              "Run 'swamp extension install' to publish it: it fetches the " +
+                "datastore's lockfile and replays the change onto it.",
+            );
         }
       },
     },

@@ -40,7 +40,10 @@ import {
 } from "./managed_config_sync.ts";
 import { UserError } from "../domain/errors.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
-import { readLockfilePublishPending } from "../infrastructure/persistence/pending_lockfile_publish.ts";
+import {
+  markLockfilePublishPending,
+  readLockfilePublishPending,
+} from "../infrastructure/persistence/pending_lockfile_publish.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { ManagedLockfileUnpublishedError } from "../libswamp/mod.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
@@ -683,6 +686,41 @@ Deno.test("buildManagedLockfileTransaction: a push that does not report a count 
       await repo.writeEntry("@me/x", "1", []);
     });
     assertEquals(await readLockfilePublishPending(repoDir), { kind: "none" });
+  });
+});
+
+Deno.test("buildManagedLockfileTransaction: a refresh that fails to publish an earlier change does not claim this command's change was saved", async () => {
+  await withLockfileTxnDirs(async (repoDir, cacheDir) => {
+    const { service } = createLockfileSyncService(cacheDir, { lockfile: null });
+    (service as unknown as { pushChanged: () => Promise<number> })
+      .pushChanged = () => Promise.reject(new Error("push refused"));
+    await markLockfilePublishPending(repoDir, {
+      upserts: {
+        "@me/x": { version: "1", pulledAt: "2026-09-30T00:00:00.000Z" },
+      },
+      removals: [],
+    });
+    const transaction = buildManagedLockfileTransaction({
+      syncService: service,
+      datastoreConfig: {
+        ...S3_CONFIG,
+        datastorePath: cacheDir,
+        cachePath: cacheDir,
+      },
+      repoDir,
+      lockfilePath: join(cacheDir, "ns1", "config", "upstream_extensions.json"),
+      lock: NOOP_LOCK,
+    });
+
+    const error = await assertRejects(
+      () => transaction.refresh(),
+      ManagedLockfileUnpublishedError,
+      "An earlier extension lockfile change is still not published",
+    );
+    assertEquals(error.code, "managed_config_unpublished");
+    assertStringIncludes(error.message, "this command did not change");
+    assertEquals(error.message.includes("The change is saved locally"), false);
+    assertEquals((await readLockfilePublishPending(repoDir)).kind, "delta");
   });
 });
 

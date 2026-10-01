@@ -54,9 +54,13 @@ export interface ManagedLockfileSyncPort {
    * Publishes the local cache's lockfile to the datastore. With
    * `mustUpload`, the lockfile differs from the datastore's copy, so a push
    * that reports sending nothing rejects: the change did not reach the
-   * datastore.
+   * datastore. With `earlierChangeOnly`, the current command did not change
+   * the lockfile, and the publish carries only a change an earlier
+   * transaction failed to publish.
    */
-  publish(options: { mustUpload: boolean }): Promise<void>;
+  publish(
+    options: { mustUpload: boolean; earlierChangeOnly: boolean },
+  ): Promise<void>;
 }
 
 /** The datastore global lock, held for a whole lockfile transaction. */
@@ -258,10 +262,8 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
     changeFailed: boolean,
   ): Promise<void> {
     const final = await this.#readEntries();
-    const record = mergeLockfileDeltas(
-      prior,
-      diffLockfileEntries(start, final),
-    );
+    const change = diffLockfileEntries(start, final);
+    const record = mergeLockfileDeltas(prior, change);
     if (isEmptyLockfileDelta(record) && !hadPending) return;
     const tolerate = changeFailed || this.#publishFailure === "defer";
     try {
@@ -274,6 +276,7 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
     try {
       await this.#sync.publish({
         mustUpload: !isEmptyLockfileDelta(diffLockfileEntries(fetched, final)),
+        earlierChangeOnly: isEmptyLockfileDelta(change),
       });
     } catch (error) {
       if (!tolerate) {
