@@ -1652,3 +1652,364 @@ Deno.test("extractContentMetadata: ignores type: inside template literal in meth
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+/** Writes one model source file and returns its extracted content metadata. */
+async function extractFromSource(lines: string[]) {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const file = join(modelsDir, "model.ts");
+    await Deno.writeTextFile(file, lines.join("\n"));
+    return await extractContentMetadata([file], modelsDir, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+function methodNames(result: Awaited<ReturnType<typeof extractFromSource>>) {
+  return result.models[0].methods.map((m) => m.name);
+}
+
+Deno.test("extractContentMetadata: lists methods with double- and single-quoted keys", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/quoted",',
+    '  version: "2026.10.01.1",',
+    "  methods: {",
+    "    list: {",
+    '      description: "List items",',
+    "      arguments: z.object({}),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    '    "list-subscriptions": {',
+    '      description: "List subscriptions",',
+    "      arguments: z.object({",
+    '        source: z.string().describe("Source id"),',
+    "      }),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "    'force-run': {",
+    "      description: 'Force a run',",
+    "      arguments: z.object({}),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  const methods = result.models[0].methods;
+  assertEquals(methodNames(result), [
+    "list",
+    "list-subscriptions",
+    "force-run",
+  ]);
+  assertEquals(methods[1].description, "List subscriptions");
+  assertEquals(methods[1].arguments.map((a) => a.name), ["source"]);
+  assertEquals(methods[2].description, "Force a run");
+});
+
+Deno.test("extractContentMetadata: does not list objects nested inside a method", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/nested",',
+    '  version: "2026.10.01.1",',
+    "  methods: {",
+    "    create: {",
+    "      checks: {",
+    '        "duplicate-check": {',
+    '          description: "Reject duplicates",',
+    "          execute: () => Promise.resolve({ pass: true }),",
+    "        },",
+    "      },",
+    '      description: "Create an audience",',
+    "      arguments: z.object({}),",
+    "      execute: () => {",
+    "        const result = { inner: { description: 'not a method' } };",
+    "        return Promise.resolve(result);",
+    "      },",
+    "    },",
+    "    update: {",
+    '      description: "Update an audience",',
+    "      arguments: z.object({}),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  assertEquals(methodNames(result), ["create", "update"]);
+  assertEquals(result.models[0].methods[0].description, "Create an audience");
+});
+
+Deno.test("extractContentMetadata: lists a method whose description is not a string literal", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    'const DESCRIPTION = "Synced";',
+    "export const model = {",
+    '  type: "@test/nonliteral",',
+    '  version: "2026.10.01.1",',
+    "  methods: {",
+    "    sync: {",
+    "      description: DESCRIPTION,",
+    "      arguments: z.object({}),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  assertEquals(methodNames(result), ["sync"]);
+  assertEquals(result.models[0].methods[0].description, "");
+});
+
+Deno.test("extractContentMetadata: keeps the first literal of a concatenated description", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/concat",',
+    '  version: "2026.10.01.1",',
+    "  methods: {",
+    "    login: {",
+    "      description:",
+    '        "Log into a registry. " +',
+    '        "The password is never logged.",',
+    "      arguments: z.object({}),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "    push: {",
+    "      description: `Push an image`,",
+    "      arguments: z.object({}),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  const methods = result.models[0].methods;
+  assertEquals(methods[0].description, "Log into a registry. ");
+  assertEquals(methods[1].description, "Push an image");
+});
+
+Deno.test("extractContentMetadata: skips spreads, computed keys, shorthand, factory calls and comments", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    'const KEY = "computed";',
+    "const shared = {};",
+    "const helper = {};",
+    "export const model = {",
+    '  type: "@test/skips",',
+    '  version: "2026.10.01.1",',
+    "  methods: {",
+    "    ...shared,",
+    "    [KEY]: {",
+    '      description: "Computed",',
+    "      execute: () => Promise.resolve({}),",
+    "    },",
+    "    helper,",
+    "    made: makeMethod(spec, {",
+    '      checks: { description: "inside a call" },',
+    "    }),",
+    '    // old: { description: "commented out" },',
+    '    /* older: { description: "block comment" }, */',
+    "    run: {",
+    '      description: "Run it",',
+    "      arguments: z.object({}),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  assertEquals(methodNames(result), ["run"]);
+});
+
+Deno.test("extractContentMetadata: regex literals and apostrophes in method bodies do not drop later methods", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/bodies",',
+    '  version: "2026.10.01.1",',
+    "  methods: {",
+    "    quote: {",
+    '      description: "Escape quotes",',
+    "      arguments: z.object({}),",
+    "      execute: (args: { s: string }) => {",
+    "        // don't let an apostrophe confuse the walker",
+    '        const escaped = args.s.replace(/[\'"`]/g, "\\\\$&");',
+    "        return Promise.resolve({ escaped });",
+    "      },",
+    "    },",
+    '    "after-quote": {',
+    '      description: "Runs after",',
+    "      arguments: z.object({}),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  assertEquals(methodNames(result), ["quote", "after-quote"]);
+});
+
+Deno.test("extractContentMetadata: a method named as a suffix of another gets its own arguments", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/suffix",',
+    '  version: "2026.10.01.1",',
+    "  methods: {",
+    "    direct_predict: {",
+    '      description: "direct predict",',
+    "      arguments: z.object({",
+    "        inputs: z.any().optional(),",
+    "      }),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "    predict: {",
+    '      description: "predict",',
+    "      arguments: z.object({",
+    "        instances: z.any().optional(),",
+    "      }),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  const methods = result.models[0].methods;
+  assertEquals(methods[0].arguments.map((a) => a.name), ["inputs"]);
+  assertEquals(methods[1].arguments.map((a) => a.name), ["instances"]);
+});
+
+Deno.test("extractContentMetadata: lists quoted keys in a variable-referenced methods object", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "const segmentMethods = {",
+    '  "list-rules": {',
+    '    description: "List rules",',
+    "    arguments: z.object({}),",
+    "    execute: () => Promise.resolve({ dataHandles: [] }),",
+    "  },",
+    "  get: {",
+    '    description: "Get one",',
+    "    arguments: z.object({}),",
+    "    execute: () => Promise.resolve({ dataHandles: [] }),",
+    "  },",
+    "};",
+    "export const model = {",
+    '  type: "@test/varref",',
+    '  version: "2026.10.01.1",',
+    "  methods: segmentMethods,",
+    "};",
+  ]);
+
+  assertEquals(methodNames(result), ["list-rules", "get"]);
+});
+
+Deno.test("extractContentMetadata: extension methods array lists quoted keys and skips nested objects", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const extension = {",
+    '  type: "@test/target",',
+    "  methods: [",
+    "    {",
+    '      "query-logs": {',
+    '        description: "Query logs",',
+    "        arguments: z.object({}),",
+    "        checks: {",
+    '          "rate-limit": { description: "Rate limit check" },',
+    "        },",
+    "        execute: () => Promise.resolve({ dataHandles: [] }),",
+    "      },",
+    "    },",
+    "    {",
+    "      tail: {",
+    '        description: "Tail logs",',
+    "        arguments: z.object({}),",
+    "        execute: () => Promise.resolve({ dataHandles: [] }),",
+    "      },",
+    "    },",
+    "  ],",
+    "};",
+  ]);
+
+  assertEquals(
+    result.extensions[0].methods.map((m) => m.name),
+    ["query-logs", "tail"],
+  );
+  assertEquals(result.extensions[0].methods[0].description, "Query logs");
+});
+
+Deno.test("extractContentMetadata: extracts quoted argument and globalArgument keys", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/quotedargs",',
+    '  version: "2026.10.01.1",',
+    "  globalArguments: z.object({",
+    "    'api-url': z.string().describe(\"API URL\"),",
+    "  }),",
+    "  methods: {",
+    "    run: {",
+    '      description: "Run",',
+    "      arguments: z.object({",
+    '        "dry-run": z.boolean().optional(),',
+    "        target: z.string(),",
+    "      }),",
+    "      execute: () => Promise.resolve({ dataHandles: [] }),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  const model = result.models[0];
+  assertEquals(model.globalArguments.map((a) => a.name), ["api-url"]);
+  assertEquals(model.methods[0].arguments, [
+    { name: "dry-run", type: "boolean", description: "", required: false },
+    { name: "target", type: "string", description: "", required: true },
+  ]);
+});
+
+Deno.test("extractContentMetadata: lists every method of a container-image shaped model", async () => {
+  const body = Array.from(
+    { length: 40 },
+    (_, i) => `        const step${i} = { stage: ${i}, flags: ["--x"] };`,
+  );
+  const method = (key: string, description: string) => [
+    `    ${key}: {`,
+    `      description: "${description}",`,
+    "      arguments: z.object({}),",
+    "      execute: () => {",
+    ...body,
+    "        return Promise.resolve({ dataHandles: [] });",
+    "      },",
+    "    },",
+  ];
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/container-image",',
+    '  version: "2026.10.01.1",',
+    "  methods: {",
+    ...method("validate", "Validate"),
+    ...method("build", "Build"),
+    ...method("run", "Run"),
+    ...method("login", "Login"),
+    ...method("push", "Push"),
+    ...method('"multi-platform-build"', "Multi-platform build"),
+    "  },",
+    "};",
+  ]);
+
+  assertEquals(methodNames(result), [
+    "validate",
+    "build",
+    "run",
+    "login",
+    "push",
+    "multi-platform-build",
+  ]);
+});

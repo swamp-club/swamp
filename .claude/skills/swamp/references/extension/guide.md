@@ -42,7 +42,11 @@ For webhook extensions, read
 
    The `contentMetadata` field in the JSON output lists every model type with
    its methods and arguments, plus workflows, vaults, and other content. If the
-   type or method you need isn't listed, don't pull — move to step 5.
+   type you need isn't listed, don't pull — move to step 5. Method lists are
+   read from source at push time and can be incomplete (versions pushed by older
+   CLIs, methods merged in by spread), so if the type matches but a method seems
+   missing, pull and confirm with `swamp model type describe <type> --json`
+   before ruling it out.
 
 3. **Pull and use.** If the extension has the right type and method, install it:
    `swamp extension pull <package>`. Stop.
