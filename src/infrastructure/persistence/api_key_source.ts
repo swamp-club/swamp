@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
 export const API_KEY_ENV = "SWAMP_API_KEY";
 export const API_KEY_FILE_ENV = "SWAMP_API_KEY_FILE";
@@ -69,13 +69,22 @@ function readKeyFile(path: string, source: ApiKeySourceName): string {
     raw = Deno.readTextFileSync(path);
   } catch (err) {
     if (err instanceof Deno.errors.NotFound) {
-      throw new UserError(`${source} file not found: ${path}`);
+      throw markErrorPaths(
+        new UserError(`${source} file not found: ${path}`),
+        [path],
+      );
     }
     if (err instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(`${source} file not readable: ${path}`);
+      throw markErrorPaths(
+        new UserError(`${source} file not readable: ${path}`),
+        [path],
+      );
     }
     if (err instanceof Deno.errors.IsADirectory) {
-      throw new UserError(`${source} is a directory, not a file: ${path}`);
+      throw markErrorPaths(
+        new UserError(`${source} is a directory, not a file: ${path}`),
+        [path],
+      );
     }
     throw err;
   }
@@ -84,7 +93,10 @@ function readKeyFile(path: string, source: ApiKeySourceName): string {
   // fails later as an opaque invalid-header error.
   const value = raw.trim();
   if (value === "") {
-    throw new UserError(`${source} file is empty: ${path}`);
+    throw markErrorPaths(
+      new UserError(`${source} file is empty: ${path}`),
+      [path],
+    );
   }
   return value;
 }
