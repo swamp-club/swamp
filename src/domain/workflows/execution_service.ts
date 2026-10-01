@@ -5362,12 +5362,14 @@ export class WorkflowExecutionService {
           stepRun.detachNestedRun(
             `Cancelled while nested run ${ref.runId} of workflow "${ref.workflowName}" suspended. The nested run was left suspended.`,
           );
+          if (allowFailure) stepRun.markAllowedFailure();
           yield {
             kind: "step_failed",
             jobId: job.name,
             stepId: stepName,
             runId: run.id,
             error: stepRun.error ?? CANCELLED_STEP_ERROR,
+            allowedFailure: allowFailure || undefined,
             nestedRun: {
               workflowId: ref.workflowId,
               workflowName: ref.workflowName,

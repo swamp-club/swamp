@@ -1533,12 +1533,37 @@ export function createSocketSubscriber(
   onDetachCallback?: () => void,
   transform?: (event: SerializedEvent) => Promise<SerializedEvent>,
 ): import("../run_event_buffer.ts").RunEventSubscriber {
+  const sendEvent = (seq: number, event: SerializedEvent) => {
+    send(socket, { type: "event", id: requestId, event: { ...event, seq } });
+  };
+  const sendTerminal = (
+    terminal: import("../run_event_buffer.ts").BufferTerminal,
+  ) => {
+    if (terminal.kind === "done") {
+      send(socket, { type: "done", id: requestId });
+    } else {
+      sendError(
+        socket,
+        requestId,
+        terminal.code,
+        terminal.message,
+        terminal.details,
+      );
+    }
+  };
+  // Without a transform, delivery stays synchronous, so a send that throws
+  // reaches the buffer, which isolates subscriber errors.
+  if (!transform) {
+    return {
+      onEvent: sendEvent,
+      onTerminal: sendTerminal,
+      onDetach() {
+        onDetachCallback?.();
+      },
+    };
+  }
   let delivering = Promise.resolve();
   const inOrder = (deliver: () => void | Promise<void>) => {
-    if (!transform) {
-      deliver();
-      return;
-    }
     delivering = delivering.then(deliver).catch((error) => {
       streamLogger.warn("Failed to deliver a run stream event: {error}", {
         error: error instanceof Error ? error.message : String(error),
@@ -1547,29 +1572,10 @@ export function createSocketSubscriber(
   };
   return {
     onEvent(seq, event) {
-      inOrder(async () => {
-        const visible = transform ? await transform(event) : event;
-        send(socket, {
-          type: "event",
-          id: requestId,
-          event: { ...visible, seq },
-        });
-      });
+      inOrder(async () => sendEvent(seq, await transform(event)));
     },
     onTerminal(terminal) {
-      inOrder(() => {
-        if (terminal.kind === "done") {
-          send(socket, { type: "done", id: requestId });
-        } else {
-          sendError(
-            socket,
-            requestId,
-            terminal.code,
-            terminal.message,
-            terminal.details,
-          );
-        }
-      });
+      inOrder(() => sendTerminal(terminal));
     },
     onDetach() {
       inOrder(() => onDetachCallback?.());

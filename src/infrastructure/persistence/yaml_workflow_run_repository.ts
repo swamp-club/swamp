@@ -679,7 +679,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     // A finished nested run is kept while its parent still exists and has not
     // finished (interrupted counts as unfinished: it can be recovered), since
     // the parent's resume reads the child's outcome (swamp-club#2736). A
-    // parent that no longer exists leaves the child collectible.
+    // parent that no longer exists leaves the child collectible; one that
+    // cannot be read keeps it, since the deletion cannot be undone.
     const parentStatuses = new Map<string, string | null>();
     const keepForParent = async (data: unknown): Promise<boolean> => {
       const link = ParentRunRefSchema.safeParse(
@@ -692,8 +693,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         const parent = await this.findById(
           createWorkflowId(link.data.workflowId),
           createWorkflowRunId(link.data.runId),
-        ).catch(() => null);
-        status = parent?.status ?? null;
+        ).catch(() => undefined);
+        status = parent === undefined ? "unreadable" : parent?.status ?? null;
         parentStatuses.set(key, status);
       }
       return status !== null && !TERMINAL_STATUSES.has(status);

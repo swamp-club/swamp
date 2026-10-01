@@ -439,7 +439,7 @@ Deno.test("nested approval: a direct run of the child workflow never supersedes 
   });
 });
 
-Deno.test("nested approval: run cleanup keeps a finished child its parent waits on, and collects it once the parent is gone", async () => {
+Deno.test("nested approval: run cleanup keeps a finished child its parent waits on or that cannot be read, and collects it once the parent is gone", async () => {
   const child = gatedChild();
   const parent = caller("waiting-parent", child.name);
   await withHarness([parent, child], async (h) => {
@@ -460,6 +460,17 @@ Deno.test("nested approval: run cleanup keeps a finished child its parent waits 
     const future = new Date(Date.now() + 60_000);
 
     let result = await h.runRepo.deleteOlderThan(future, { dryRun: true });
+    assertEquals(result.deletedRunIds.includes(childRun.id), false);
+
+    // A parent that cannot be read (a transient read error) may still wait:
+    // the child is kept.
+    const findById = h.runRepo.findById;
+    h.runRepo.findById = () => Promise.reject(new Error("EMFILE"));
+    try {
+      result = await h.runRepo.deleteOlderThan(future, { dryRun: true });
+    } finally {
+      h.runRepo.findById = findById;
+    }
     assertEquals(result.deletedRunIds.includes(childRun.id), false);
 
     await h.runRepo.deleteAllByWorkflowId(parent.id);

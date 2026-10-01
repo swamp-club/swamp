@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { dirname } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
@@ -54,7 +54,7 @@ import type { TriggerOverride } from "../../libswamp/mod.ts";
 import { type ActiveRun, ActiveRunRegistry } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { SUSPENDED_RUN_BUSY_MESSAGE } from "../suspended_run_cancel.ts";
-import { subscribeUntilDetach } from "./shared.ts";
+import { createSocketSubscriber, subscribeUntilDetach } from "./shared.ts";
 import { redactingFor } from "./nested_run_redaction.ts";
 
 function makeWorkflowRepo(
@@ -637,6 +637,18 @@ Deno.test("handleWorkflowHistoryGet: hides a step's nested run, and the error na
     );
     assertEquals(String(shownStep.error).includes(secretRunId), true);
   });
+});
+
+Deno.test("createSocketSubscriber: without a transform a failed send throws to the buffer rather than escaping as a rejection", () => {
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: () => {
+      throw new Error("socket closed");
+    },
+  } as unknown as WebSocket;
+  const subscriber = createSocketSubscriber(socket, "req-1");
+  assertThrows(() => subscriber.onEvent(1, { kind: "started" }), Error);
+  assertThrows(() => subscriber.onTerminal({ kind: "done" }), Error);
 });
 
 Deno.test("subscribeUntilDetach: a redacting subscriber gets every event in order without links it may not read, and leaves the buffer intact", async () => {
