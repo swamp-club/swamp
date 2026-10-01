@@ -2372,8 +2372,27 @@ async function lstatOrNull(path: string): Promise<Deno.FileInfo | null> {
 
 async function copyTimes(src: string, dest: string): Promise<void> {
   const stat = await Deno.lstat(src);
-  if (stat.mtime) {
-    await Deno.utime(dest, stat.atime ?? stat.mtime, stat.mtime);
+  if (!stat.mtime) return;
+  const atime = stat.atime ?? stat.mtime;
+  try {
+    await Deno.utime(dest, atime, stat.mtime);
+  } catch (error) {
+    // Windows refuses to set times on a read-only file, and copyFile
+    // carries the attribute over (a nested entry's manifest.yaml is
+    // installed 0o444). Lift it for the call, then put it back.
+    if (
+      Deno.build.os !== "windows" ||
+      !(error instanceof Deno.errors.PermissionDenied) ||
+      stat.isDirectory
+    ) {
+      throw error;
+    }
+    await Deno.chmod(dest, 0o666);
+    try {
+      await Deno.utime(dest, atime, stat.mtime);
+    } finally {
+      await Deno.chmod(dest, 0o444);
+    }
   }
 }
 
