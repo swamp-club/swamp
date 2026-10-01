@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
@@ -30,7 +30,11 @@ import {
   WorkflowRun,
   type WorkflowRunData,
 } from "../../domain/workflows/workflow_run.ts";
-import { detachedNestedRunsOf } from "./nested_runs.ts";
+import {
+  detachedNestedRunsOf,
+  nestedWaitGateError,
+  nestedWaitGateOf,
+} from "./nested_runs.ts";
 
 const childWorkflow = Workflow.create({
   name: "child",
@@ -114,4 +118,47 @@ Deno.test("detachedNestedRunsOf: reports a child it cannot read, since it may st
   );
   const detached = await detachedNestedRunsOf({ runRepo }, parent);
   assertEquals(detached.map((d) => d.runId), [child.id]);
+});
+
+/** A parent whose step waits on a suspended child. */
+function waitingParent(): { parent: WorkflowRun; child: WorkflowRun } {
+  const parent = WorkflowRun.create(parentWorkflow);
+  parent.start();
+  const child = WorkflowRun.create(childWorkflow);
+  child.start();
+  child.suspend();
+  parent.getJob("main")!.getStep("call-child")!.waitForNestedRun({
+    workflowId: childWorkflow.id,
+    workflowName: childWorkflow.name,
+    runId: child.id,
+  });
+  parent.suspend();
+  return { parent, child };
+}
+
+Deno.test("nestedWaitGateError: names the nested run, and carries its workflow and a refusal that names none", () => {
+  const { parent, child } = waitingParent();
+  const error = nestedWaitGateError(parent, "call-child");
+  assert(error);
+  assertStringIncludes(error.message, child.id);
+  assertStringIncludes(error.message, `workflow "${childWorkflow.name}"`);
+  const gate = nestedWaitGateOf(error);
+  assertEquals(gate?.workflowId, childWorkflow.id);
+  assertEquals(gate?.workflowName, childWorkflow.name);
+  assert(!gate!.genericMessage.includes(child.id));
+  assert(
+    !gate!.genericMessage.includes(`workflow "${childWorkflow.name}"`),
+  );
+});
+
+Deno.test("nestedWaitGateError: undefined for a step that does not wait on a nested run", () => {
+  const { parent } = waitingParent();
+  assertEquals(nestedWaitGateError(parent, "no-such-step"), undefined);
+});
+
+Deno.test("nestedWaitGateOf: undefined for an error that is not a nested gate refusal", () => {
+  assertEquals(
+    nestedWaitGateOf({ code: "validation_failed", message: "nope" }),
+    undefined,
+  );
 });

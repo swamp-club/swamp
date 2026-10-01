@@ -761,7 +761,11 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   parent. Fields that link a run to another run (`parentRun`, `nestedWaits`,
   a step's `nestedRun`, detached nested runs on cancel and reject results)
   are returned only when the caller may read the other run's workflow
-  (`src/serve/handlers/nested_run_redaction.ts`).
+  (`src/serve/handlers/nested_run_redaction.ts`). The same holds for run and
+  resume streams, redacted per attached client, for the error of a step
+  whose nested run is hidden, and for the refusals to approve, reject or
+  resume a run waiting on a nested run, which then name no run. A nested
+  run's own events, forwarded into its parent's stream, are not redacted.
 - **Club heartbeat.** In OAuth mode serve registers with swamp-club at startup
   and sends a heartbeat hourly (`src/serve/club_heartbeat_service.ts`,
   `src/serve/oauth_client.ts`). This needs a resolved OAuth client id, a

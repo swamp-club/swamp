@@ -33,7 +33,7 @@ import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import type { RunCancelRegistry } from "../run_cancel_registry.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
-import type { ServerMessage } from "../protocol.ts";
+import type { SerializedEvent, ServerMessage } from "../protocol.ts";
 import type { WorkerGateway } from "../worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
@@ -72,6 +72,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SyncGate } from "../sync_gate.ts";
 
 const pushLogger = getSwampLogger(["serve", "sync"]);
+const streamLogger = getSwampLogger(["serve", "stream"]);
 
 /**
  * Pushes local data mutations to the remote datastore. Call after any
@@ -1521,34 +1522,57 @@ export function clearRequestErrored(
   erroredRequests.get(socket)?.delete(requestId);
 }
 
+/**
+ * A run stream subscriber that sends each event to the socket. With
+ * `transform`, each event is sent as it returns, which may wait: deliveries
+ * are chained, so events, the terminal and the detach keep their order.
+ */
 export function createSocketSubscriber(
   socket: WebSocket,
   requestId: string,
   onDetachCallback?: () => void,
+  transform?: (event: SerializedEvent) => Promise<SerializedEvent>,
 ): import("../run_event_buffer.ts").RunEventSubscriber {
+  let delivering = Promise.resolve();
+  const inOrder = (deliver: () => void | Promise<void>) => {
+    if (!transform) {
+      deliver();
+      return;
+    }
+    delivering = delivering.then(deliver).catch((error) => {
+      streamLogger.warn("Failed to deliver a run stream event: {error}", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
   return {
     onEvent(seq, event) {
-      send(socket, {
-        type: "event",
-        id: requestId,
-        event: { ...event, seq },
+      inOrder(async () => {
+        const visible = transform ? await transform(event) : event;
+        send(socket, {
+          type: "event",
+          id: requestId,
+          event: { ...visible, seq },
+        });
       });
     },
     onTerminal(terminal) {
-      if (terminal.kind === "done") {
-        send(socket, { type: "done", id: requestId });
-      } else {
-        sendError(
-          socket,
-          requestId,
-          terminal.code,
-          terminal.message,
-          terminal.details,
-        );
-      }
+      inOrder(() => {
+        if (terminal.kind === "done") {
+          send(socket, { type: "done", id: requestId });
+        } else {
+          sendError(
+            socket,
+            requestId,
+            terminal.code,
+            terminal.message,
+            terminal.details,
+          );
+        }
+      });
     },
     onDetach() {
-      onDetachCallback?.();
+      inOrder(() => onDetachCallback?.());
     },
   };
 }
@@ -1559,10 +1583,11 @@ export function subscribeUntilDetach(
   requestId: string,
   controller: AbortController,
   afterSeq = 0,
+  transform?: (event: SerializedEvent) => Promise<SerializedEvent>,
 ): Promise<void> {
   return new Promise<void>((resolve) => {
     const unsub = buffer.subscribe(
-      createSocketSubscriber(socket, requestId, resolve),
+      createSocketSubscriber(socket, requestId, resolve, transform),
       afterSeq,
     );
     controller.signal.addEventListener("abort", () => {

@@ -27,6 +27,7 @@ import {
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { type SwampError, validationFailed } from "../errors.ts";
 
 /**
  * A nested workflow run its parent stopped waiting on when the parent ended
@@ -120,19 +121,47 @@ export async function awaitingParentOf(
 }
 
 /**
+ * What a refusal to approve or reject a nested workflow step carries in its
+ * `details`: the nested run's workflow, and the refusal without naming it, so
+ * a server can name the nested run only to a reader of its workflow
+ * (swamp-club#2736).
+ */
+export interface NestedWaitGateDetails {
+  nestedWaitGate: {
+    workflowId: string;
+    workflowName: string;
+    genericMessage: string;
+  };
+}
+
+/**
  * For a step that waits on a nested run rather than a gate of its own, the
  * refusal to approve or reject it, naming the nested run to decide instead.
  */
-export function nestedWaitGateMessage(
+export function nestedWaitGateError(
   run: WorkflowRun,
   stepName: string,
-): string | undefined {
+): SwampError | undefined {
   const wait = run.findNestedWaits().find((w) => w.stepName === stepName);
   if (!wait) return undefined;
-  if (wait.link.kind !== "valid") {
-    return `Step "${stepName}" waits on a nested workflow run, not on an approval of its own.`;
-  }
-  const { workflowName, runId } = wait.link.ref;
-  return `Step "${stepName}" waits on nested run ${runId} of workflow "${workflowName}", not on an approval of its own. ` +
-    `Decide the nested run's gate ('swamp workflow approvals' lists it), resume it with 'swamp workflow resume ${workflowName} --run ${runId}', then resume this run.`;
+  const genericMessage =
+    `Step "${stepName}" waits on a nested workflow run, not on an approval of its own.`;
+  if (wait.link.kind !== "valid") return validationFailed(genericMessage);
+  const { workflowId, workflowName, runId } = wait.link.ref;
+  const details: NestedWaitGateDetails = {
+    nestedWaitGate: { workflowId, workflowName, genericMessage },
+  };
+  return validationFailed(
+    `Step "${stepName}" waits on nested run ${runId} of workflow "${workflowName}", not on an approval of its own. ` +
+      `Decide the nested run's gate ('swamp workflow approvals' lists it), resume it with 'swamp workflow resume ${workflowName} --run ${runId}', then resume this run.`,
+    details,
+  );
+}
+
+/** The nested run a refusal from {@link nestedWaitGateError} names, if any. */
+export function nestedWaitGateOf(
+  error: SwampError,
+): NestedWaitGateDetails["nestedWaitGate"] | undefined {
+  const details = error.details as Partial<NestedWaitGateDetails> | undefined;
+  return details?.nestedWaitGate;
 }

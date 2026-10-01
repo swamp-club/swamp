@@ -102,6 +102,7 @@ import {
   type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { NestedRunPendingError } from "../../domain/workflows/nested_run_link.ts";
 import {
   type Principal,
   principalToString,
@@ -117,9 +118,14 @@ import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   type NamedWorkflow,
+  nestedGateRefusalForClient,
+  nestedPendingRefusalForClient,
   nestedRunReadDecider,
   readableNestedRuns,
+  redactingFor,
   redactParentRun,
+  redactRunViewLinks,
+  redactStreamEvent,
 } from "./nested_run_redaction.ts";
 import {
   autoResumeAfterApproval,
@@ -265,6 +271,11 @@ export async function handleWorkflowRun(
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let registeredRunId: string | undefined;
+    // Events are redacted per client before they are sent (swamp-club#2736),
+    // which may wait: sends are chained so they keep the run's order, and
+    // drained before the request's own reply.
+    const redact = redactingFor(ctx, socket, principal);
+    let sending = Promise.resolve();
     try {
       await executeWorkflowWithLocks(
         ctx.repoDir,
@@ -312,14 +323,24 @@ export async function handleWorkflowRun(
           const serialized = serializeEvent(
             event as { kind: string; [key: string]: unknown },
           );
-          send(socket, { type: "event", id: requestId, event: serialized });
+          sending = sending.then(async () => {
+            const visible = redact ? await redact(serialized) : serialized;
+            if (socket.readyState !== WebSocket.OPEN) return;
+            send(socket, { type: "event", id: requestId, event: visible });
+          }).catch((error) => {
+            logger.warn("Failed to send a workflow run event: {error}", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         },
         ctx.syncService,
         ctx.runTracker,
         { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
       );
+      await sending;
       send(socket, { type: "done", id: requestId });
     } catch (error) {
+      await sending;
       if (error instanceof DOMException && error.name === "AbortError") {
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
       } else if (error instanceof LockTimeoutError) {
@@ -507,7 +528,14 @@ export async function handleWorkflowRun(
     });
   }
 
-  await subscribeUntilDetach(buffer, socket, requestId, controller);
+  await subscribeUntilDetach(
+    buffer,
+    socket,
+    requestId,
+    controller,
+    0,
+    redactingFor(ctx, socket, principal),
+  );
 }
 
 export async function handleWorkflowSearch(
@@ -1255,8 +1283,15 @@ export async function handleWorkflowApprove(
         completed: (e) => {
           result = e.data;
         },
-        error: (e) => {
-          throw new Error(e.error.message);
+        error: async (e) => {
+          // A nested step's refusal names the nested run only to a reader
+          // of its workflow (swamp-club#2736).
+          throw new Error(
+            await nestedGateRefusalForClient(
+              e.error,
+              nestedRunReadDecider(ctx, socket, principal),
+            ) ?? e.error.message,
+          );
         },
       },
     );
@@ -1382,8 +1417,15 @@ export async function handleWorkflowReject(
         completed: (e) => {
           result = e.data as unknown as Record<string, unknown>;
         },
-        error: (e) => {
-          throw new Error(e.error.message);
+        error: async (e) => {
+          // A nested step's refusal names the nested run only to a reader
+          // of its workflow (swamp-club#2736).
+          throw new Error(
+            await nestedGateRefusalForClient(
+              e.error,
+              nestedRunReadDecider(ctx, socket, principal),
+            ) ?? e.error.message,
+          );
         },
       },
     );
@@ -1753,12 +1795,16 @@ export async function handleWorkflowResume(
         }
       };
 
+      const canRead = nestedRunReadDecider(ctx, socket, principal);
       const run_ = async () => {
         try {
           for await (const event of resumeGenerator()) {
             if (socket.readyState !== WebSocket.OPEN) break;
-            const serialized = serializeEvent(
-              event as { kind: string; [key: string]: unknown },
+            const serialized = await redactStreamEvent(
+              serializeEvent(
+                event as { kind: string; [key: string]: unknown },
+              ),
+              canRead,
             );
             send(socket, { type: "event", id: requestId, event: serialized });
           }
@@ -1784,6 +1830,16 @@ export async function handleWorkflowResume(
       } else if (error instanceof LockTimeoutError) {
         const lt = lockTimeoutErrorForClient(error);
         sendError(socket, requestId, lt.code, lt.message, lt.details);
+      } else if (error instanceof NestedRunPendingError) {
+        sendError(
+          socket,
+          requestId,
+          "workflow_resume_failed",
+          await nestedPendingRefusalForClient(
+            error,
+            nestedRunReadDecider(ctx, socket, principal),
+          ),
+        );
       } else {
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "workflow_resume_failed", message);
@@ -1832,7 +1888,14 @@ export async function handleWorkflowResume(
     return;
   }
 
-  await subscribeUntilDetach(launched.buffer, socket, requestId, controller);
+  await subscribeUntilDetach(
+    launched.buffer,
+    socket,
+    requestId,
+    controller,
+    0,
+    redactingFor(ctx, socket, principal),
+  );
 }
 
 export async function handleWorkflowCreate(
@@ -2493,31 +2556,5 @@ export async function applyTriggerOverrides(
       "Failed to apply trigger overrides to running scheduler: {error}",
       { error: err instanceof Error ? err.message : String(err) },
     );
-  }
-}
-
-/**
- * Removes, from a run view sent to a client, the links to other runs whose
- * workflow the principal may not read (swamp-club#2736): the parent link,
- * the nested runs it waits on and each step's nested run link.
- */
-async function redactRunViewLinks(
-  view: WorkflowRunView,
-  canRead: (workflow: NamedWorkflow) => Promise<boolean>,
-): Promise<void> {
-  await redactParentRun(view, canRead);
-  const nestedWaits = await readableNestedRuns(
-    view.nestedWaits,
-    (w) => w.workflowId,
-    canRead,
-  );
-  if (nestedWaits) view.nestedWaits = nestedWaits;
-  else delete view.nestedWaits;
-  for (const job of view.jobs ?? []) {
-    for (const step of job.steps) {
-      if (step.nestedRun && !(await canRead(step.nestedRun))) {
-        delete step.nestedRun;
-      }
-    }
   }
 }

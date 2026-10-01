@@ -54,6 +54,8 @@ import type { TriggerOverride } from "../../libswamp/mod.ts";
 import { type ActiveRun, ActiveRunRegistry } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { SUSPENDED_RUN_BUSY_MESSAGE } from "../suspended_run_cancel.ts";
+import { subscribeUntilDetach } from "./shared.ts";
+import { redactingFor } from "./nested_run_redaction.ts";
 
 function makeWorkflowRepo(
   workflows: Map<string, Workflow>,
@@ -564,6 +566,129 @@ Deno.test("handleWorkflowHistoryGet: leaves out outputs of models the principal 
       stdout: "hello",
     });
   });
+});
+
+// ── nested run links (swamp-club#2736) ─────────────────────────────────
+
+/**
+ * Persists a run of `history-wf` cancelled while its one step waited on a
+ * run of `secret-wf`, which detaches the step with an error naming that run.
+ */
+async function seedDetachedNestedRun(
+  dir: string,
+  secretRunId: string,
+): Promise<Workflow> {
+  const workflow = Workflow.create({
+    name: "history-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("secret-wf"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const step = job.getStep("call-child")!;
+  step.start();
+  step.waitForNestedRun({
+    workflowId: crypto.randomUUID(),
+    workflowName: "secret-wf",
+    runId: secretRunId,
+  });
+  run.cancel("stop");
+  await new YamlWorkflowRunRepository(dir).save(workflow.id, run);
+  return workflow;
+}
+
+Deno.test("handleWorkflowHistoryGet: hides a step's nested run, and the error naming it, from a principal who may not read its workflow", async () => {
+  await withHistoryRepo(async (dir) => {
+    const secretRunId = crypto.randomUUID();
+    const workflow = await seedDetachedNestedRun(dir, secretRunId);
+    const frame = await historyGet(
+      makeHistoryCtx(dir, workflow, [grantFor("wf", "workflow", "history-wf")]),
+      searchPrincipal,
+    );
+    const step = frame.payload?.data.jobs[0].steps[0] as Record<
+      string,
+      unknown
+    >;
+    assertEquals(step.nestedRun, undefined);
+    assertEquals(String(step.error).includes("secret"), false);
+
+    const shown = await historyGet(
+      makeHistoryCtx(dir, workflow, [grantFor("wf", "workflow", "*")]),
+      searchPrincipal,
+    );
+    const shownStep = shown.payload?.data.jobs[0].steps[0] as Record<
+      string,
+      unknown
+    >;
+    assertEquals(
+      (shownStep.nestedRun as { runId: string }).runId,
+      secretRunId,
+    );
+    assertEquals(String(shownStep.error).includes(secretRunId), true);
+  });
+});
+
+Deno.test("subscribeUntilDetach: a redacting subscriber gets every event in order without links it may not read, and leaves the buffer intact", async () => {
+  const ctx = makeSearchCtx([readGrant("child", "child-wf")]);
+  const buffer = new RunEventBuffer(16);
+  const run = {
+    id: "child-run",
+    workflowId: crypto.randomUUID(),
+    workflowName: "child-wf",
+    status: "succeeded",
+    jobs: [],
+    parentRun: {
+      workflowId: crypto.randomUUID(),
+      workflowName: "parent-wf",
+      runId: "parent-run",
+      stepName: "call-child",
+    },
+  };
+  buffer.push({ kind: "started", runId: "child-run" });
+  buffer.push({ kind: "completed", run });
+
+  const { socket, frames } = makeSearchSocket();
+  const subscribed = subscribeUntilDetach(
+    buffer,
+    socket,
+    "req-1",
+    new AbortController(),
+    0,
+    redactingFor(ctx, socket, searchPrincipal),
+  );
+  buffer.finish({ kind: "done" });
+  await subscribed;
+
+  const sent = frames as unknown as Array<{
+    type: string;
+    event?: { kind: string; seq: number; run?: Record<string, unknown> };
+  }>;
+  assertEquals(sent.map((f) => f.event?.kind ?? f.type), [
+    "started",
+    "completed",
+    "done",
+  ]);
+  assertEquals(sent[1].event?.seq, 2);
+  assertEquals(sent[1].event?.run?.parentRun, undefined);
+  assertEquals(sent[1].event?.run?.workflowName, "child-wf");
+
+  const { socket: plain, frames: unredacted } = makeSearchSocket();
+  await subscribeUntilDetach(buffer, plain, "req-2", new AbortController());
+  const replayed = unredacted as unknown as Array<{
+    event?: { run?: { parentRun?: { workflowName: string } } };
+  }>;
+  assertEquals(replayed[1].event?.run?.parentRun?.workflowName, "parent-wf");
 });
 
 Deno.test("handleWorkflowHistoryGet: a principal with no data read sees no outputs", async () => {

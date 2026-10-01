@@ -34,7 +34,7 @@ import { NestedRunLink } from "../../domain/workflows/nested_run_link.ts";
 import {
   type AwaitingParentData,
   awaitingParentOf,
-  nestedWaitGateMessage,
+  nestedWaitGateError,
 } from "./nested_runs.ts";
 
 export interface WorkflowApproveData {
@@ -148,10 +148,10 @@ export async function* workflowApprove(
       if (!step || !jobName) {
         yield {
           kind: "error",
-          error: validationFailed(
-            nestedWaitGateMessage(run, input.stepName) ??
+          error: nestedWaitGateError(run, input.stepName) ??
+            validationFailed(
               `Step "${input.stepName}" is not awaiting approval in the suspended run`,
-          ),
+            ),
         };
         return;
       }

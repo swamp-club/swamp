@@ -51,6 +51,7 @@ import {
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
 import { resolveRecordedWorkflow } from "./handlers/resource_resolution.ts";
+import { nestedPendingRefusalForClient } from "./handlers/nested_run_redaction.ts";
 import {
   isFinishedRun,
   NestedRunLink,
@@ -150,22 +151,13 @@ export async function startDetachedResume(
     workflowId = result.workflowId;
   } catch (error) {
     if (error instanceof NestedRunPendingError) {
-      let readable = request.canReadWorkflow !== undefined;
-      // Every run the message names: each direct child, and the innermost
-      // run that has to act, which can be a grandchild in another workflow.
-      for (const pending of error.pending) {
-        for (const named of [pending.child, pending.action.target]) {
-          if (!readable) break;
-          readable = await request.canReadWorkflow!({
-            workflowId: named.workflowId,
-            workflowName: named.workflowName,
-          });
-        }
-      }
       return {
         ok: false,
         code: "workflow_resume_failed",
-        message: readable ? error.message : error.genericMessage,
+        message: await nestedPendingRefusalForClient(
+          error,
+          request.canReadWorkflow,
+        ),
       };
     }
     return {
@@ -296,6 +288,17 @@ export async function startDetachedResume(
           code: lt.code,
           message: lt.message,
           details: lt.details,
+        };
+      } else if (error instanceof NestedRunPendingError) {
+        // The resume checks the nested runs again, and one may have changed
+        // since the check above.
+        terminal = {
+          kind: "error",
+          code: "workflow_resume_failed",
+          message: await nestedPendingRefusalForClient(
+            error,
+            request.canReadWorkflow,
+          ),
         };
       } else {
         terminal = {
