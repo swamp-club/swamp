@@ -315,12 +315,13 @@ credentials, serve registers an OAuth client via
 `client_secret` in the vault (keys `oauth-client-id`, `oauth-client-secret`)
 for later starts. There are two registration paths:
 
-- **Headless (SWAMP_API_KEY)**: if the `SWAMP_API_KEY` env var is set (a
-  collective API token with `oauth:manage` scope), serve validates it against
-  `/api/whoami`. It then uses it as the bearer token for client registration
-  and for resolving admin and allowed-user usernames. The key is never stored in
-  the vault; it is read from the environment on each boot, so rotating it needs
-  no other step.
+- **Headless (collective API key)**: if a collective API token with
+  `oauth:manage` scope is supplied, serve validates it against `/api/whoami`.
+  It then uses it as the bearer token for client registration and for resolving
+  admin and allowed-user usernames. The key comes from `--club-api-key-file`,
+  then `SWAMP_API_KEY_FILE` (both name a file holding the key, for container
+  secret mounts), then `SWAMP_API_KEY`. The key is never stored in the vault; it
+  is read on each boot, so rotating it needs a restart and no other step.
 - **Interactive (device grant)**: otherwise, serve starts a device grant flow
   (RFC 8628) and waits for an admin to approve in a browser. The device grant
   access token is stored in the vault for later admin resolution.
@@ -357,7 +358,8 @@ no lookups. The rules for a name that does not resolve:
 writing the cache. It reads the auth settings the way serve does (flags, env
 vars, then the config file) and looks up every name, including ones serve has
 recorded as not found. It exits non-zero on any unknown name, so a typo is
-caught before a deploy. It uses `SWAMP_API_KEY` or the
+caught before a deploy. It uses the collective API key
+(`--club-api-key-file`, `SWAMP_API_KEY_FILE` or `SWAMP_API_KEY`) or the
 `swamp auth login` credential, and sends it only when the provider has the same
 origin as the swamp-club server that issued it (`SWAMP_CLUB_URL` for a custom
 provider). The command is meant for configs that are not yet deployed, possibly
@@ -815,7 +817,8 @@ them.
 
 The shell model builds the child's environment with `createSafeMethodEnv`
 (`src/domain/remote/environment_snapshot.ts`): a copy of the host env with
-every `SWAMP_*` variable removed (case-insensitive prefix match).
+every `SWAMP_*` variable removed (case-insensitive prefix match). That includes
+`SWAMP_API_KEY_FILE`, so a child cannot find the key file through it.
 Process-identity vars (`HOME`, `PATH`, `SHELL`, …) stay, because the child runs
 on the same host. The env is passed with `clearEnv: true` so Deno does not
 re-inherit the parent's `SWAMP_*` vars behind the filter. A per-variable

@@ -34,6 +34,7 @@ import {
   AuthRepository,
   type AuthRepositoryOptions,
 } from "../../infrastructure/persistence/auth_repository.ts";
+import { resolveApiKey } from "../../infrastructure/persistence/api_key_source.ts";
 import { AuthVerificationRepository } from "../../infrastructure/persistence/auth_verification_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import {
@@ -119,8 +120,7 @@ export interface CreateAuthDepsOptions {
 /** Wires real infrastructure into AuthDeps. */
 export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
   const repo = new AuthRepository(options.repo);
-  const getApiKey = options.repo?.getApiKey ??
-    (() => Deno.env.get("SWAMP_API_KEY"));
+  const getApiKey = options.repo?.getApiKey ?? resolveApiKey;
   return {
     loadCredentials: () => repo.load(),
     saveCredentials: async (credentials) => {

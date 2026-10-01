@@ -19,6 +19,10 @@
 
 import { UserError } from "../domain/errors.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
+import {
+  hasApiKeySource,
+  resolveApiKey,
+} from "../infrastructure/persistence/api_key_source.ts";
 
 const COLLECTIVE_TOKEN_PREFIX = "swamp_org_";
 
@@ -78,12 +82,18 @@ export function requireAuthenticated(
   scope: string,
 ): void {
   if (!state().authenticated) {
+    // Startup swallows credential errors, so a configured key source that
+    // left us unauthenticated is reported here by name (a missing key file,
+    // or both SWAMP_API_KEY and SWAMP_API_KEY_FILE set) instead of as a
+    // generic sign-in prompt.
+    if (hasApiKeySource()) resolveApiKey();
     throw new UserError(
       `${featureSentence} that requires a free swamp-club.com account.\n\n` +
         `Sign in:\n\n` +
         `  swamp auth login\n\n` +
         `Or create a collective token at swamp-club.com/collectives and set\n` +
-        `SWAMP_API_KEY. Your token should include the ${scope} scope.\n`,
+        `SWAMP_API_KEY (or SWAMP_API_KEY_FILE to a file holding it). Your\n` +
+        `token should include the ${scope} scope.\n`,
       "auth_required",
     );
   }
@@ -129,7 +139,8 @@ export function requireScope(scope: string): void {
       `Either sign in with your personal account:\n\n` +
       `  swamp auth login\n\n` +
       `Or create a collective token at swamp-club.com/collectives that\n` +
-      `includes the ${scope} scope and set SWAMP_API_KEY.\n`,
+      `includes the ${scope} scope and set SWAMP_API_KEY (or\n` +
+      `SWAMP_API_KEY_FILE to a file holding it).\n`,
     "missing_scope",
   );
 }

@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import { isAbsolute, resolve } from "@std/path";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   assertOffLoopbackSecurity,
@@ -648,6 +654,15 @@ Deno.test("collectServeExtraArgs: forwards --trusted-hosts", () => {
     "--trusted-hosts",
     "host.docker.internal,host.minikube.internal",
   ]);
+});
+
+Deno.test("collectServeExtraArgs: forwards --club-api-key-file as an absolute path", () => {
+  const args = collectServeExtraArgs({ clubApiKeyFile: "secrets/key" });
+  assertEquals(args, [
+    "--club-api-key-file",
+    resolve("secrets/key"),
+  ]);
+  assert(isAbsolute(args[1]));
 });
 
 Deno.test("collectServeExtraArgs: omits --trusted-hosts when not set", () => {

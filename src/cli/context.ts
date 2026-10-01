@@ -21,6 +21,7 @@ import type { Logger } from "@logtape/logtape";
 import { setColorEnabled } from "@std/fmt/colors";
 import { basename, dirname, join, resolve, SEPARATOR } from "@std/path";
 import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
+import { CLUB_API_KEY_FILE_FLAG } from "../infrastructure/persistence/api_key_source.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 
@@ -452,6 +453,33 @@ export function getExtensionsDirFromArgs(
   const envDir = Deno.env.get("SWAMP_EXTENSIONS_DIR");
   if (envDir && envDir.length > 0) {
     return resolve(envDir);
+  }
+  return undefined;
+}
+
+/**
+ * Pre-parses --club-api-key-file from raw CLI arguments before Cliffy option
+ * parsing. Startup loads credentials (telemetry, identity and scopes, the
+ * extension auto-resolver) before any command action runs, so the flag has
+ * to be known by then for the whole process to use one collective key.
+ *
+ * Supports both `--club-api-key-file <value>` and
+ * `--club-api-key-file=<value>` forms. Returns the resolved absolute path, or
+ * undefined if the flag is absent. The env var fallbacks live in
+ * `resolveApiKey`.
+ */
+export function getClubApiKeyFileFromArgs(
+  args: string[],
+): string | undefined {
+  const prefix = `${CLUB_API_KEY_FILE_FLAG}=`;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === CLUB_API_KEY_FILE_FLAG && i + 1 < args.length) {
+      return resolve(args[i + 1]);
+    }
+    if (arg.startsWith(prefix)) {
+      return resolve(arg.slice(prefix.length));
+    }
   }
   return undefined;
 }

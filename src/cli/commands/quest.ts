@@ -30,6 +30,7 @@ import {
   QUEST_TAGLINE,
 } from "../../presentation/renderers/quest_pass.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { apiKeySourceName } from "../../infrastructure/persistence/api_key_source.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -58,7 +59,7 @@ export const questCommand = new Command()
 
     // Authenticated → your own pass. Otherwise the ghost read: the progress
     // this device accrued, keyed by its distinct_id, unclaimed until an
-    // authenticated session (swamp auth login or SWAMP_API_KEY) binds it.
+    // authenticated session (swamp auth login or a collective API key) binds it.
     let deps: QuestPassDeps;
     if (credentials?.apiKey) {
       const apiKey = credentials.apiKey;
@@ -67,9 +68,10 @@ export const questCommand = new Command()
         fetchPass: async () => {
           const who = await client.whoami(apiKey);
           if (!who.authenticated || !who.username) {
+            const keySource = apiKeySourceName();
             throw new UserError(
-              Deno.env.get("SWAMP_API_KEY")
-                ? "Could not resolve your identity. Your SWAMP_API_KEY may be invalid or expired."
+              keySource
+                ? `Could not resolve your identity. The key from ${keySource} may be invalid or expired.`
                 : "Could not resolve your identity. Run `swamp auth login` again.",
             );
           }

@@ -223,8 +223,13 @@ owned by the `access` kind: every request that reaches one needs `admin` on
 logged in to swamp-club with the `serve:*` scope (`requireAuthenticated` /
 `requireScope` in `src/cli/commands/serve.ts`). `swamp serve daemon enable`
 applies the same gate, keyed on the auth mode the daemon will resolve
-(including one set in `serve.yaml`). OAuth mode also reads `SWAMP_API_KEY` to register the
-instance with the provider and resolve admin usernames.
+(including one set in `serve.yaml`). OAuth mode also reads the collective
+API key to register the instance with the provider and resolve admin
+usernames. The key comes from `--club-api-key-file`, then
+`SWAMP_API_KEY_FILE`, then `SWAMP_API_KEY`
+(`src/infrastructure/persistence/api_key_source.ts`). Setting both env vars is
+an error. The flag is read from argv before Cliffy parses, so the operator
+gate, telemetry and extension pulls use the same key as the OAuth calls.
 
 **Tokens.** A token is split on the first `.`; the name resolves a
 `swamp/server-token` lifecycle resource and its vault secret. Serve applies the
@@ -746,8 +751,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
 - **Club heartbeat.** In OAuth mode serve registers with swamp-club at startup
   and sends a heartbeat hourly (`src/serve/club_heartbeat_service.ts`,
   `src/serve/oauth_client.ts`). This needs a resolved OAuth client id, a
-  non-empty `--allowed-collectives` and `SWAMP_API_KEY`; otherwise registration
-  is silently skipped.
+  non-empty `--allowed-collectives` and a collective API key
+  (`--club-api-key-file`, `SWAMP_API_KEY_FILE` or `SWAMP_API_KEY`); otherwise
+  registration is silently skipped.
 
 ## Known limits
 

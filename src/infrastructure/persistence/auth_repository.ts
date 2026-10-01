@@ -20,6 +20,7 @@
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampConfigDir } from "./paths.ts";
+import { resolveApiKey } from "./api_key_source.ts";
 import {
   type AuthCredentials,
   DEFAULT_SWAMP_CLUB_URL,
@@ -45,8 +46,9 @@ export interface AuthRepositoryOptions {
   /** Override the config dir; default is `getSwampConfigDir()`. */
   configDir?: string;
   /**
-   * Override the SWAMP_API_KEY lookup; default reads
-   * `Deno.env.get("SWAMP_API_KEY")` lazily at call time.
+   * Override the collective API key lookup; default calls `resolveApiKey()`
+   * lazily at call time (`--club-api-key-file`, SWAMP_API_KEY_FILE, then
+   * SWAMP_API_KEY).
    */
   getApiKey?: () => string | undefined;
   /**
@@ -61,7 +63,8 @@ export interface AuthRepositoryOptions {
  * Stores API key and server info at ~/.config/swamp/auth.json
  * (or $XDG_CONFIG_HOME/swamp/auth.json).
  *
- * Precedence: SWAMP_API_KEY env var > auth.json file.
+ * Precedence: collective API key (`--club-api-key-file`,
+ * SWAMP_API_KEY_FILE or SWAMP_API_KEY) > auth.json file.
  */
 export class AuthRepository {
   private readonly getConfigDir: () => string;
@@ -72,8 +75,7 @@ export class AuthRepository {
     this.getConfigDir = options.configDir !== undefined
       ? () => options.configDir!
       : getSwampConfigDir;
-    this.getApiKey = options.getApiKey ??
-      (() => Deno.env.get("SWAMP_API_KEY"));
+    this.getApiKey = options.getApiKey ?? resolveApiKey;
     this.getServerUrl = options.getServerUrl ??
       (() => Deno.env.get("SWAMP_CLUB_URL"));
   }
@@ -84,10 +86,11 @@ export class AuthRepository {
   }
 
   /**
-   * Read auth credentials. Checks SWAMP_API_KEY env var first,
-   * then falls back to auth.json file. Returns null if neither exists.
+   * Read auth credentials. Checks the collective API key first
+   * (`--club-api-key-file`, SWAMP_API_KEY_FILE or SWAMP_API_KEY), then
+   * falls back to auth.json file. Returns null if neither exists.
    *
-   * When SWAMP_API_KEY is set, cached identity (username, collectives)
+   * When a collective API key is set, cached identity (username, collectives)
    * is merged from auth.json if the server URL and key fingerprint match.
    * This gives API-key users the same identity resolution as login users.
    */

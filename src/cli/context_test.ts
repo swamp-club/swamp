@@ -24,6 +24,7 @@ import {
   applyColorPolicy,
   createContext,
   findAncestorRepoDir,
+  getClubApiKeyFileFromArgs,
   getExtensionsDirFromArgs,
   getOutputModeFromArgs,
   getRepoDirFromArgs,
@@ -451,6 +452,55 @@ Deno.test("findAncestorRepoDir: returns null from a linked worktree when the mai
 
     assertEquals(findAncestorRepoDir(nested), null);
   });
+});
+
+// ============================================================================
+// getClubApiKeyFileFromArgs Tests
+// ============================================================================
+
+Deno.test("getClubApiKeyFileFromArgs: returns undefined when the flag is absent", () => {
+  assertEquals(getClubApiKeyFileFromArgs([]), undefined);
+  assertEquals(
+    getClubApiKeyFileFromArgs(["serve", "--port", "9090"]),
+    undefined,
+  );
+});
+
+Deno.test("getClubApiKeyFileFromArgs: parses the flag with a space separator", () => {
+  const result = getClubApiKeyFileFromArgs([
+    "serve",
+    "--auth-mode",
+    "oauth",
+    "--club-api-key-file",
+    "/run/secrets/key",
+  ]);
+  assertPathEquals(result!, resolve("/run/secrets/key"));
+});
+
+Deno.test("getClubApiKeyFileFromArgs: parses the flag with an equals separator", () => {
+  const result = getClubApiKeyFileFromArgs([
+    "serve",
+    "check-config",
+    "--club-api-key-file=/run/secrets/key",
+  ]);
+  assertPathEquals(result!, resolve("/run/secrets/key"));
+});
+
+Deno.test("getClubApiKeyFileFromArgs: resolves relative paths to absolute", () => {
+  const result = getClubApiKeyFileFromArgs([
+    "serve",
+    "--club-api-key-file",
+    "./key",
+  ]);
+  assertEquals(isAbsolute(result!), true);
+  assertPathEquals(result!, resolve("./key"));
+});
+
+Deno.test("getClubApiKeyFileFromArgs: ignores a trailing flag with no value", () => {
+  assertEquals(
+    getClubApiKeyFileFromArgs(["serve", "--club-api-key-file"]),
+    undefined,
+  );
 });
 
 // ============================================================================
