@@ -3039,7 +3039,11 @@ export const serveCommand = new Command()
       },
     });
 
-    const clubApiKey = resolveApiKey() ?? null;
+    // Only OAuth mode uses the collective key, so a misconfigured key source
+    // must not stop serve from starting in none or token mode.
+    const clubApiKey = authConfig.mode === "oauth"
+      ? resolveApiKey() ?? null
+      : null;
     const oauthClientName = merged.oauthClientName ??
       `swamp-serve-${basename(resolvedRepoDir)}-${Deno.hostname()}`.slice(
         0,

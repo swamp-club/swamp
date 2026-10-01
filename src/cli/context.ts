@@ -463,10 +463,11 @@ export function getExtensionsDirFromArgs(
  * extension auto-resolver) before any command action runs, so the flag has
  * to be known by then for the whole process to use one collective key.
  *
- * Only `swamp serve` and its subcommands declare the flag. For any other
- * command it is ignored here, so a stray `--club-api-key-file <path>` never
- * has the file read and sent as a credential before Cliffy rejects it.
- * Scanning stops at the `--` terminator.
+ * Only `swamp serve`, `swamp serve check-config` and
+ * `swamp serve daemon enable` declare the flag. For any other command path it
+ * is ignored here, so a stray `--club-api-key-file <path>` never has the file
+ * read and sent as a credential before Cliffy rejects it. Scanning stops at
+ * the `--` terminator.
  *
  * Supports both `--club-api-key-file <value>` and
  * `--club-api-key-file=<value>` forms. Returns the resolved absolute path, or
@@ -475,9 +476,9 @@ export function getExtensionsDirFromArgs(
  */
 export function getClubApiKeyFileFromArgs(
   args: string[],
-  command: string,
+  commandInfo: { command: string; subcommand?: string },
 ): string | undefined {
-  if (command !== "serve") return undefined;
+  if (!declaresClubApiKeyFile(args, commandInfo)) return undefined;
   const prefix = `${CLUB_API_KEY_FILE_FLAG}=`;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -490,6 +491,22 @@ export function getClubApiKeyFileFromArgs(
     }
   }
   return undefined;
+}
+
+/**
+ * Whether the invoked command path declares --club-api-key-file. When the
+ * pre-parse cannot tell (an option it did not know took a value), it answers
+ * no: the flag is then ignored here rather than read for the wrong command.
+ */
+function declaresClubApiKeyFile(
+  args: string[],
+  commandInfo: { command: string; subcommand?: string },
+): boolean {
+  if (commandInfo.command !== "serve") return false;
+  const sub = commandInfo.subcommand;
+  if (sub === undefined || sub === "check-config") return true;
+  if (sub !== "daemon") return false;
+  return args[args.indexOf("daemon") + 1] === "enable";
 }
 
 /**
