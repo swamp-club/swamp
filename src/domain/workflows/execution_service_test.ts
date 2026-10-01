@@ -14550,6 +14550,54 @@ Deno.test("resume cleanup: a job a resume never started is settled when the abor
   });
 });
 
+Deno.test("resume cleanup: a --from resume aborted before it starts settles a job the failed run left running", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = inheritedJobWorkflow("resume-cleanup-retry-wf", {
+      extra: [jobOn("teardown", "main", TriggerCondition.always())],
+    });
+    const executor = new SignalHonoringExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    // A failed run that still holds main running with its approved post
+    // pending, and side failed, so --from s resets side and re-enters the
+    // level without ever starting main.
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+    const data = suspended.toData();
+    data.status = "failed";
+    for (const job of data.jobs) {
+      if (job.jobName !== "side") continue;
+      job.status = "failed";
+      for (const step of job.steps) {
+        step.status = "failed";
+        step.error = "boom";
+      }
+    }
+    await runRepo.save(workflow.id, WorkflowRun.fromData(data));
+
+    const { run } = await finishedRun(
+      service.resume(workflow.name, suspended.id, {
+        signal: AbortSignal.abort(),
+        fromStep: "s",
+      }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.status, "failed");
+    assertCancelledBeforeStart(run, "main", ["post"]);
+    assertEquals(executor.count("main/post"), 0);
+    // s ran once, before the suspension; the aborted level starts it again
+    // no more than main.
+    assertEquals(run.getJob("side")!.status, "pending");
+    assertEquals(executor.count("side/s"), 1);
+    assertEquals(run.getJob("teardown")!.status, "succeeded");
+    assertEquals(executor.count("teardown/t"), 1);
+  });
+});
+
 Deno.test("resume cleanup: the approved work of a job a resume never started runs once a later resume reopens it", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = inheritedJobWorkflow("resume-cleanup-reopen-wf", {

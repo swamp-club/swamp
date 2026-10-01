@@ -5345,7 +5345,7 @@ export class WorkflowExecutionService {
    * or one a failed run left running) that this walk never started, the abort
    * having fired before the level or while the job was queued, is settled the
    * same way, whether or not the abort interrupted the level: its pending
-   * steps as a never-started job's, then the job as a started job would end
+   * steps as a never-started job's, then the job from its steps' outcome
    * (settleNotResumedJob). Its approved work never ran, so a dependent gated
    * on it must not see it still running.
    *
@@ -5431,7 +5431,7 @@ export class WorkflowExecutionService {
   /**
    * Settles a job a resume inherited as running that its abort kept from
    * starting: its pending steps as {@link settleNotStartedJob} does, then the
-   * job as a started job would end ({@link JobRun.settleNotResumed}).
+   * job from its steps' outcome ({@link JobRun.settleNotResumed}).
    */
   private settleNotResumedJob(job: Job, jobRun: JobRun): void {
     this.settleUnstartedSteps(job, jobRun);
