@@ -38,7 +38,10 @@ import {
 } from "../src/infrastructure/persistence/pending_lockfile_publish.ts";
 import { readUpstreamExtensions } from "../src/infrastructure/persistence/upstream_extensions.ts";
 import {
+  createDatastoreLockfileSync,
+  createRepoPendingLockfileStore,
   ManagedLockfileTransaction,
+  ManagedLockfileUnpublishedError,
   withManagedLockfileTransaction,
 } from "../src/libswamp/extensions/managed_lockfile_transaction.ts";
 import {
@@ -344,5 +347,106 @@ Deno.test("managed lockfile: a dependency whose entry points outside the repo co
       (await readUpstreamExtensions(a.lockfilePath))["@test/old"],
       legacy["@test/old"],
     );
+  });
+});
+
+/**
+ * A datastore sync service that, like @swamp/s3-datastore before its fix,
+ * forgets a file whose push failed once an unscoped pull marks the cache
+ * clean: marking the file dirty again is a no-op, so the next push sends
+ * nothing and reports success.
+ */
+function forgetfulSyncService(remoteConfigDir: string, configBase: string) {
+  const dirty = new Set<string>();
+  const state = { localDirty: false, failPush: false, forgetful: true };
+  return {
+    state,
+    markDirty: (absPath: string) => {
+      if (state.forgetful && dirty.has(absPath)) return Promise.resolve();
+      dirty.add(absPath);
+      state.localDirty = true;
+      return Promise.resolve();
+    },
+    pullChanged: async (options?: { subdirs?: string[] }) => {
+      await copy(remoteConfigDir, configBase, { overwrite: true });
+      // Only an unscoped pull claims the whole cache is in sync.
+      if (!options?.subdirs?.length) state.localDirty = false;
+      return 1;
+    },
+    pushChanged: async () => {
+      if (state.failPush) throw new Error("datastore unreachable");
+      if (!state.localDirty) return 0;
+      for (const path of dirty) {
+        await Deno.copyFile(path, join(remoteConfigDir, LOCKFILE));
+      }
+      const pushed = dirty.size;
+      dirty.clear();
+      state.localDirty = false;
+      return pushed;
+    },
+  };
+}
+
+Deno.test("managed lockfile: a change whose push sends nothing after an unscoped pull stays pending until it is published", async () => {
+  await withWorld(async (w) => {
+    w.archives.set("@test/v", await buildArchive("@test/v"));
+    const b = await w.checkout("b");
+
+    const root = dirname(w.remoteDir);
+    const repoDir = join(root, "a", "repo");
+    const configBase = join(root, "a", "cache", "config");
+    const lockfilePath = join(configBase, LOCKFILE);
+    await ensureDir(swampPath(repoDir));
+    await ensureDir(configBase);
+    registerManagedConfig(repoDir, true, configBase);
+    const service = forgetfulSyncService(
+      join(w.remoteDir, "config"),
+      configBase,
+    );
+    const transaction = () =>
+      new ManagedLockfileTransaction({
+        lockfilePath,
+        lock: {
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+        },
+        sync: createDatastoreLockfileSync({
+          syncService: service,
+          namespace: undefined,
+          timeoutMs: 10_000,
+          lockfilePath,
+          markDirty: service.markDirty,
+        }),
+        pending: createRepoPendingLockfileStore(repoDir),
+      });
+    const addEntry = (name: string) =>
+      transaction().run(async () => {
+        await (await LockfileRepository.create(lockfilePath)).writeEntry(
+          name,
+          VERSION,
+          [],
+        );
+      });
+
+    service.state.failPush = true;
+    await assertRejects(() => addEntry("@test/w"), Error, "unreachable");
+    await b.install("@test/v");
+    // `datastore sync --pull` or a serve restart, between the failure and
+    // the retry.
+    await service.pullChanged();
+    service.state.failPush = false;
+
+    await assertRejects(
+      () => transaction().refresh(),
+      ManagedLockfileUnpublishedError,
+      "the push uploaded nothing",
+    );
+    assertEquals(await w.remoteEntries(), ["@test/v"]);
+    assertEquals((await readLockfilePublishPending(repoDir)).kind, "delta");
+
+    service.state.forgetful = false;
+    await transaction().refresh();
+    assertEquals(await w.remoteEntries(), ["@test/v", "@test/w"]);
+    assertEquals((await readLockfilePublishPending(repoDir)).kind, "none");
   });
 });

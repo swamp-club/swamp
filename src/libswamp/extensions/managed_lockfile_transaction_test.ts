@@ -45,6 +45,9 @@ interface Harness {
   remote: { entries: UpstreamExtensionsMap };
   pending: { value: PendingLockfilePublish };
   failPublish: { value: boolean };
+  /** The push "succeeds" but sends nothing, as the real adapter sees it. */
+  pushSendsNothing: { value: boolean };
+  mustUpload: boolean[];
   warnings: string[];
   transaction: (
     publishFailure?: "throw" | "defer",
@@ -59,6 +62,8 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
     const remote = { entries: {} as UpstreamExtensionsMap };
     const pending = { value: { kind: "none" } as PendingLockfilePublish };
     const failPublish = { value: false };
+    const pushSendsNothing = { value: false };
+    const mustUpload: boolean[] = [];
     const warnings: string[] = [];
     const transaction = (publishFailure?: "throw" | "defer") =>
       new ManagedLockfileTransaction({
@@ -82,9 +87,16 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
               structuredClone(remote.entries),
             );
           },
-          publish: async () => {
+          publish: async (options) => {
             events.push("publish");
+            mustUpload.push(options.mustUpload);
             if (failPublish.value) throw new Error("datastore unreachable");
+            if (pushSendsNothing.value) {
+              if (options.mustUpload) {
+                throw new Error("the push uploaded nothing");
+              }
+              return;
+            }
             remote.entries = await readUpstreamExtensions(lockfilePath);
           },
         },
@@ -107,6 +119,8 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       remote,
       pending,
       failPublish,
+      pushSendsNothing,
+      mustUpload,
       warnings,
       transaction,
     });
@@ -572,6 +586,78 @@ Deno.test("ManagedLockfileTransaction.run: removing an extension an unpublished 
 
     assertEquals(h.remote.entries, {});
     assertEquals(await readUpstreamExtensions(h.lockfilePath), {});
+    assertEquals(h.pending.value, { kind: "none" });
+  });
+});
+
+Deno.test("ManagedLockfileTransaction.run: a replayed change is kept pending when the push sends nothing", async () => {
+  await withHarness(async (h) => {
+    h.failPublish.value = true;
+    await assertRejects(
+      () =>
+        h.transaction().run(async () => {
+          await (await LockfileRepository.create(h.lockfilePath)).writeEntry(
+            "@me/x",
+            "1",
+            [],
+          );
+        }),
+      ManagedLockfileUnpublishedError,
+    );
+
+    // A peer publishes, and the sync service has lost track of the unpushed
+    // file: the retry's push reports success but sends nothing.
+    h.remote.entries = { "@peer/p": entry("1") };
+    h.failPublish.value = false;
+    h.pushSendsNothing.value = true;
+    await assertRejects(
+      () => h.transaction().refresh(),
+      ManagedLockfileUnpublishedError,
+      "the push uploaded nothing",
+    );
+    assertEquals(h.mustUpload.at(-1), true);
+    assertEquals(h.remote.entries, { "@peer/p": entry("1") });
+    assertEquals(
+      h.pending.value.kind === "delta" &&
+        Object.keys(h.pending.value.delta.upserts),
+      ["@me/x"],
+    );
+
+    h.pushSendsNothing.value = false;
+    await h.transaction().refresh();
+    assertEquals(Object.keys(h.remote.entries).sort(), ["@me/x", "@peer/p"]);
+    assertEquals(h.pending.value, { kind: "none" });
+  });
+});
+
+Deno.test("ManagedLockfileTransaction.run: a deferred push that sends nothing warns and keeps the change pending", async () => {
+  await withHarness(async (h) => {
+    h.pushSendsNothing.value = true;
+    await h.transaction("defer").run(async () => {
+      await (await LockfileRepository.create(h.lockfilePath)).writeEntry(
+        "@me/x",
+        "1",
+        [],
+      );
+    });
+    assertEquals(h.warnings.length, 1);
+    assertEquals(h.remote.entries, {});
+    assertEquals(h.pending.value.kind, "delta");
+  });
+});
+
+Deno.test("ManagedLockfileTransaction.run: a pending change the datastore already has clears when the push sends nothing", async () => {
+  await withHarness(async (h) => {
+    h.remote.entries = { "@me/x": entry("1") };
+    h.pending.value = {
+      kind: "delta",
+      delta: { upserts: { "@me/x": entry("1") }, removals: [] },
+    } as PendingLockfilePublish;
+    h.pushSendsNothing.value = true;
+
+    await h.transaction().refresh();
+
+    assertEquals(h.mustUpload, [false]);
     assertEquals(h.pending.value, { kind: "none" });
   });
 });

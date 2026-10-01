@@ -612,6 +612,80 @@ Deno.test("buildManagedLockfileTransaction: a failed publish throws ManagedLockf
   });
 });
 
+function pushSendingNothing(
+  cacheDir: string,
+  repoDir: string,
+  pushed: number | undefined,
+): {
+  transaction: ReturnType<typeof buildManagedLockfileTransaction>;
+  lockfilePath: string;
+} {
+  const { service } = createLockfileSyncService(cacheDir, { lockfile: null });
+  // The sync service reports the push as done without sending anything,
+  // as one that lost track of its unpushed files does.
+  (service as unknown as { pushChanged: () => Promise<number | undefined> })
+    .pushChanged = () => Promise.resolve(pushed);
+  const lockfilePath = join(
+    cacheDir,
+    "ns1",
+    "config",
+    "upstream_extensions.json",
+  );
+  const transaction = buildManagedLockfileTransaction({
+    syncService: service,
+    datastoreConfig: {
+      ...S3_CONFIG,
+      datastorePath: cacheDir,
+      cachePath: cacheDir,
+    },
+    repoDir,
+    lockfilePath,
+    lock: NOOP_LOCK,
+  });
+  return { transaction, lockfilePath };
+}
+
+Deno.test("buildManagedLockfileTransaction: a push that sends nothing leaves the change pending", async () => {
+  await withLockfileTxnDirs(async (repoDir, cacheDir) => {
+    const { transaction, lockfilePath } = pushSendingNothing(
+      cacheDir,
+      repoDir,
+      0,
+    );
+    const error = await assertRejects(
+      () =>
+        transaction.run(async () => {
+          const repo = await LockfileRepository.create(lockfilePath);
+          await repo.writeEntry("@me/x", "1", []);
+        }),
+      ManagedLockfileUnpublishedError,
+      "the push uploaded nothing",
+    );
+    assertEquals(error.code, "managed_config_unpublished");
+    assertStringIncludes(error.message, "Run 'swamp extension install'");
+    const pending = await readLockfilePublishPending(repoDir);
+    assertEquals(
+      pending.kind === "delta" ? Object.keys(pending.delta.upserts) : [],
+      ["@me/x"],
+    );
+  });
+});
+
+Deno.test("buildManagedLockfileTransaction: a push that does not report a count clears the change", async () => {
+  await withLockfileTxnDirs(async (repoDir, cacheDir) => {
+    const { transaction, lockfilePath } = pushSendingNothing(
+      cacheDir,
+      repoDir,
+      undefined,
+    );
+    await transaction.run(async () => {
+      const repo = await LockfileRepository.create(lockfilePath);
+      await repo.writeEntry("@me/x", "1", []);
+    });
+    assertEquals(await readLockfilePublishPending(repoDir), { kind: "none" });
+  });
+});
+
 Deno.test("createManagedLockfileTransaction: none unless the lockfile is shared through an extension datastore", () => {
   const write = {
     lockfilePath: "/cache/config/upstream_extensions.json",

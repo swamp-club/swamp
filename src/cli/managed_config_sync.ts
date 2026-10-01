@@ -341,9 +341,9 @@ export function buildManagedLockfileTransaction(
           throw new ManagedLockfileUnavailableError(error);
         }
       },
-      publish: async () => {
+      publish: async (options) => {
         try {
-          await sync.publish();
+          await sync.publish(options);
         } catch (error) {
           throw new ManagedConfigUnpublishedError(
             error,

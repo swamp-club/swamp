@@ -50,8 +50,13 @@ import {
 export interface ManagedLockfileSyncPort {
   /** Fetches the datastore's lockfile into the local cache. */
   hydrate(): Promise<void>;
-  /** Publishes the local cache's lockfile to the datastore. */
-  publish(): Promise<void>;
+  /**
+   * Publishes the local cache's lockfile to the datastore. With
+   * `mustUpload`, the lockfile differs from the datastore's copy, so a push
+   * that reports sending nothing rejects: the change did not reach the
+   * datastore.
+   */
+  publish(options: { mustUpload: boolean }): Promise<void>;
 }
 
 /** The datastore global lock, held for a whole lockfile transaction. */
@@ -198,7 +203,8 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
       await this.#pending.write(prior);
     }
     await this.#sync.hydrate();
-    let current = await this.#readEntries();
+    const fetched = await this.#readEntries();
+    let current = fetched;
     if (pending.kind !== "none") {
       current = applyLockfileDelta(current, prior);
       await this.#writeEntries(current);
@@ -216,11 +222,11 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
 
     const hadPending = pending.kind !== "none";
     if (result.ok) {
-      await this.#settle(current, prior, hadPending, false);
+      await this.#settle(fetched, current, prior, hadPending, false);
       return result.value;
     }
     try {
-      await this.#settle(current, prior, hadPending, true);
+      await this.#settle(fetched, current, prior, hadPending, true);
     } catch (error) {
       this.#onWarning("Failed to publish the extension lockfile", error);
     }
@@ -237,16 +243,24 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
    * did nothing: a fetch that found nothing to download (no lockfile in the
    * datastore yet, or a sync service that keeps a locally changed file)
    * leaves the earlier change unpublished (swamp-club#2752).
+   *
+   * The record is cleared only once the change reached the datastore. When
+   * the lockfile differs from the one fetched (`fetched`), a push that
+   * sends nothing counts as a failed publish: a sync service that lost
+   * track of its unpushed files would otherwise report success and the
+   * change would be dropped.
    */
   async #settle(
+    fetched: UpstreamExtensionsMap,
     start: UpstreamExtensionsMap,
     prior: LockfileEntryDelta,
     hadPending: boolean,
     changeFailed: boolean,
   ): Promise<void> {
+    const final = await this.#readEntries();
     const record = mergeLockfileDeltas(
       prior,
-      diffLockfileEntries(start, await this.#readEntries()),
+      diffLockfileEntries(start, final),
     );
     if (isEmptyLockfileDelta(record) && !hadPending) return;
     const tolerate = changeFailed || this.#publishFailure === "defer";
@@ -258,7 +272,9 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
       this.#onWarning("Failed to record the extension lockfile change", error);
     }
     try {
-      await this.#sync.publish();
+      await this.#sync.publish({
+        mustUpload: !isEmptyLockfileDelta(diffLockfileEntries(fetched, final)),
+      });
     } catch (error) {
       if (!tolerate) {
         throw error instanceof ManagedLockfileUnpublishedError
@@ -339,7 +355,8 @@ export async function refreshManagedLockfile(
 /**
  * A {@link ManagedLockfileSyncPort} over a datastore sync service. The fetch
  * is a pull scoped to the `config` tier; the publish marks exactly the
- * lockfile and pushes. Both are bounded by `timeoutMs`.
+ * lockfile and pushes, and rejects a push that reports `0` files sent when
+ * the lockfile had to be uploaded. Both are bounded by `timeoutMs`.
  */
 export function createDatastoreLockfileSync(options: {
   syncService: Pick<DatastoreSyncService, "pullChanged" | "pushChanged">;
@@ -360,14 +377,21 @@ export function createDatastoreLockfileSync(options: {
           syncService.pullChanged({ subdirs: ["config"], namespace, signal }),
       );
     },
-    publish: async () => {
+    publish: async ({ mustUpload }) => {
       await options.markDirty(options.lockfilePath);
-      await runBoundedSync(
+      const pushed = await runBoundedSync(
         "managed config",
         "push",
         timeoutMs,
         (signal) => syncService.pushChanged({ namespace, signal }),
       );
+      if (mustUpload && pushed === 0) {
+        throw new UserError(
+          "the datastore reported that the push uploaded nothing; if this " +
+            "repeats, update the datastore extension",
+          "managed_config_unpublished",
+        );
+      }
     },
   };
 }
