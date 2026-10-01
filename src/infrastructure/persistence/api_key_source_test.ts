@@ -67,7 +67,7 @@ Deno.test("resolveApiKey: reads SWAMP_API_KEY", () => {
   });
 });
 
-Deno.test("resolveApiKey: reads the SWAMP_API_KEY_FILE file and strips one trailing newline", async () => {
+Deno.test("resolveApiKey: reads the SWAMP_API_KEY_FILE file and strips the trailing newline", async () => {
   await withKeyDir(async (dir) => {
     const path = join(dir, "key");
     await Deno.writeTextFile(path, "swamp_org_file\n");
@@ -84,6 +84,27 @@ Deno.test("resolveApiKey: strips a trailing CRLF from the key file", async () =>
     await Deno.writeTextFile(path, "swamp_org_crlf\r\n");
     withMockedEnv({ ...UNSET, SWAMP_API_KEY_FILE: path }, () => {
       assertEquals(resolveApiKey(), "swamp_org_crlf");
+    });
+  });
+});
+
+Deno.test("resolveApiKey: trims blank lines, spaces and a BOM around the key", async () => {
+  await withKeyDir(async (dir) => {
+    const path = join(dir, "key");
+    await Deno.writeTextFile(path, "\uFEFF  swamp_org_padded \n\n");
+    withMockedEnv({ ...UNSET, SWAMP_API_KEY_FILE: path }, () => {
+      assertEquals(resolveApiKey(), "swamp_org_padded");
+    });
+  });
+});
+
+Deno.test("resolveApiKey: a whitespace-only key file is empty", async () => {
+  await withKeyDir(async (dir) => {
+    const path = join(dir, "blank");
+    await Deno.writeTextFile(path, " \n\t\n");
+    withMockedEnv({ ...UNSET, SWAMP_API_KEY_FILE: path }, () => {
+      const err = assertThrows(() => resolveApiKey(), UserError);
+      assertStringIncludes(err.message, "SWAMP_API_KEY_FILE file is empty");
     });
   });
 });

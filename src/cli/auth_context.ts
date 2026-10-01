@@ -147,7 +147,13 @@ export function requireScope(scope: string): void {
 
 export async function resolveCliInitiatedBy(): Promise<string> {
   if (!state().authenticated || state().collectiveToken) return "ghost";
-  const creds = await new AuthRepository().load();
-  if (creds?.username) return `user:${creds.username}`;
+  let username: string | undefined;
+  try {
+    username = (await new AuthRepository().load())?.username;
+  } catch {
+    // A key file removed while a long-running process (serve) is up must
+    // not fail the run; attribution falls back like an unknown user.
+  }
+  if (username) return `user:${username}`;
   return "ghost";
 }

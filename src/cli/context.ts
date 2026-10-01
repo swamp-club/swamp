@@ -463,6 +463,11 @@ export function getExtensionsDirFromArgs(
  * extension auto-resolver) before any command action runs, so the flag has
  * to be known by then for the whole process to use one collective key.
  *
+ * Only `swamp serve` and its subcommands declare the flag. For any other
+ * command it is ignored here, so a stray `--club-api-key-file <path>` never
+ * has the file read and sent as a credential before Cliffy rejects it.
+ * Scanning stops at the `--` terminator.
+ *
  * Supports both `--club-api-key-file <value>` and
  * `--club-api-key-file=<value>` forms. Returns the resolved absolute path, or
  * undefined if the flag is absent. The env var fallbacks live in
@@ -470,10 +475,13 @@ export function getExtensionsDirFromArgs(
  */
 export function getClubApiKeyFileFromArgs(
   args: string[],
+  command: string,
 ): string | undefined {
+  if (command !== "serve") return undefined;
   const prefix = `${CLUB_API_KEY_FILE_FLAG}=`;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === "--") return undefined;
     if (arg === CLUB_API_KEY_FILE_FLAG && i + 1 < args.length) {
       return resolve(args[i + 1]);
     }

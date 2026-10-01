@@ -459,9 +459,9 @@ Deno.test("findAncestorRepoDir: returns null from a linked worktree when the mai
 // ============================================================================
 
 Deno.test("getClubApiKeyFileFromArgs: returns undefined when the flag is absent", () => {
-  assertEquals(getClubApiKeyFileFromArgs([]), undefined);
+  assertEquals(getClubApiKeyFileFromArgs([], "serve"), undefined);
   assertEquals(
-    getClubApiKeyFileFromArgs(["serve", "--port", "9090"]),
+    getClubApiKeyFileFromArgs(["serve", "--port", "9090"], "serve"),
     undefined,
   );
 });
@@ -473,7 +473,7 @@ Deno.test("getClubApiKeyFileFromArgs: parses the flag with a space separator", (
     "oauth",
     "--club-api-key-file",
     "/run/secrets/key",
-  ]);
+  ], "serve");
   assertPathEquals(result!, resolve("/run/secrets/key"));
 });
 
@@ -482,7 +482,7 @@ Deno.test("getClubApiKeyFileFromArgs: parses the flag with an equals separator",
     "serve",
     "check-config",
     "--club-api-key-file=/run/secrets/key",
-  ]);
+  ], "serve");
   assertPathEquals(result!, resolve("/run/secrets/key"));
 });
 
@@ -491,14 +491,36 @@ Deno.test("getClubApiKeyFileFromArgs: resolves relative paths to absolute", () =
     "serve",
     "--club-api-key-file",
     "./key",
-  ]);
+  ], "serve");
   assertEquals(isAbsolute(result!), true);
   assertPathEquals(result!, resolve("./key"));
 });
 
+Deno.test("getClubApiKeyFileFromArgs: ignores the flag on commands other than serve", () => {
+  // Only serve declares the flag; reading the file for any other command
+  // would send its contents as a credential before Cliffy rejects it.
+  assertEquals(
+    getClubApiKeyFileFromArgs(
+      ["issue", "search", "--club-api-key-file", "/home/u/.ssh/id_ed25519"],
+      "issue",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("getClubApiKeyFileFromArgs: stops scanning at the -- terminator", () => {
+  assertEquals(
+    getClubApiKeyFileFromArgs(
+      ["serve", "--", "--club-api-key-file", "/run/secrets/key"],
+      "serve",
+    ),
+    undefined,
+  );
+});
+
 Deno.test("getClubApiKeyFileFromArgs: ignores a trailing flag with no value", () => {
   assertEquals(
-    getClubApiKeyFileFromArgs(["serve", "--club-api-key-file"]),
+    getClubApiKeyFileFromArgs(["serve", "--club-api-key-file"], "serve"),
     undefined,
   );
 });

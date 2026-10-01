@@ -22,6 +22,7 @@ import {
   isAuthenticated,
   requireAuthenticated,
   requireScope,
+  resolveCliInitiatedBy,
   scopeMatches,
   setAuthenticated,
   setAuthScopes,
@@ -110,6 +111,25 @@ Deno.test("requireAuthenticated: names a missing --club-api-key-file", async () 
     );
   } finally {
     setApiKeyFileOverride(undefined);
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("resolveCliInitiatedBy: a key file removed mid-run falls back to ghost", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    setAuthenticated(true);
+    setCollectiveToken("swamp_personal_abc");
+    setApiKeyFileOverride(join(dir, "removed-key"));
+    const initiatedBy = await withMockedEnv(
+      { SWAMP_API_KEY: undefined, SWAMP_API_KEY_FILE: undefined },
+      () => resolveCliInitiatedBy(),
+    );
+    assertEquals(initiatedBy, "ghost");
+  } finally {
+    setApiKeyFileOverride(undefined);
+    setAuthenticated(false);
+    setCollectiveToken("");
     await Deno.remove(dir, { recursive: true });
   }
 });

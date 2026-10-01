@@ -1493,8 +1493,9 @@ const daemonEnableCommand = new Command()
   .option(
     "--oauth-client-id <id:string>",
     "OAuth client ID — auto-registered on first start if omitted. " +
-      "Set SWAMP_API_KEY or --club-api-key-file (a collective API token with " +
-      "oauth:manage scope) for headless registration without browser interaction.",
+      "Set SWAMP_API_KEY, SWAMP_API_KEY_FILE or --club-api-key-file (a collective " +
+      "API token with oauth:manage scope) for headless registration without " +
+      "browser interaction.",
   )
   .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
@@ -1914,7 +1915,8 @@ const checkConfigCommand = new Command()
   )
   .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
-    CLUB_API_KEY_FILE_DESCRIPTION,
+    "Path to a file containing the collective API key used to look up " +
+      "usernames; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
@@ -2125,8 +2127,9 @@ export const serveCommand = new Command()
   .option(
     "--oauth-client-id <id:string>",
     "OAuth client ID — auto-registered on first start if omitted. " +
-      "Set SWAMP_API_KEY or --club-api-key-file (a collective API token with " +
-      "oauth:manage scope) for headless registration without browser interaction.",
+      "Set SWAMP_API_KEY, SWAMP_API_KEY_FILE or --club-api-key-file (a collective " +
+      "API token with oauth:manage scope) for headless registration without " +
+      "browser interaction.",
   )
   .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,

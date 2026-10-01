@@ -217,7 +217,9 @@ pass `swamp serve --club-api-key-file <path>` (also accepted by
 `serve check-config` and forwarded by `serve daemon enable`) or set
 `SWAMP_API_KEY_FILE=<path>`. Precedence is `--club-api-key-file`, then
 `SWAMP_API_KEY_FILE`, then `SWAMP_API_KEY`; setting both env vars is an error.
-Serve reads the file once per start, so restart it after rotating the key.
+Serve reads the key at startup for OAuth registration, username lookup and the
+club heartbeat, so restart it after rotating the key; other lookups re-read the
+file.
 
 `SWAMP_SERVER_TOKEN` requires `SWAMP_SERVER_URL` (or `SWAMP_SERVE_URL`) to scope
 which server the token applies to. Without a server URL, the token is silently

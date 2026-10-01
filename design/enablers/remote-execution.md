@@ -321,7 +321,9 @@ for later starts. There are two registration paths:
   admin and allowed-user usernames. The key comes from `--club-api-key-file`,
   then `SWAMP_API_KEY_FILE` (both name a file holding the key, for container
   secret mounts), then `SWAMP_API_KEY`. The key is never stored in the vault; it
-  is read on each boot, so rotating it needs a restart and no other step.
+  is read on each boot for registration, name lookup and the club heartbeat,
+  so rotating it needs a restart and no other step (other credential lookups
+  re-read the file).
 - **Interactive (device grant)**: otherwise, serve starts a device grant flow
   (RFC 8628) and waits for an admin to approve in a browser. The device grant
   access token is stored in the vault for later admin resolution.

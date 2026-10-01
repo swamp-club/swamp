@@ -46,12 +46,15 @@ const PINNED_KEY_ENV_READERS = [
 ];
 
 const KEY_ENV_LITERAL = /(["'])SWAMP_API_KEY(?:_FILE)?\1/;
+// Backticks are matched only as an env read: prose in template-literal
+// messages and doc comments names the variable without reading it.
+const KEY_ENV_TEMPLATE_READ = /\.(?:get|has)\(\s*`SWAMP_API_KEY(?:_FILE)?`/;
 
 Deno.test("api key source: only api_key_source.ts names the key env vars", async () => {
   const readers: string[] = [];
   for await (const path of productionSourceFiles(SRC_DIR)) {
     const source = await Deno.readTextFile(path);
-    if (KEY_ENV_LITERAL.test(source)) {
+    if (KEY_ENV_LITERAL.test(source) || KEY_ENV_TEMPLATE_READ.test(source)) {
       readers.push(toPosixPath(relative(ROOT, path)));
     }
   }

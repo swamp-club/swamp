@@ -2035,7 +2035,10 @@ async function runInvocation(
   // Pre-parse --club-api-key-file so every credential load below (telemetry,
   // identity and scopes, the extension auto-resolver) uses the same
   // collective key as the serve command that declares the flag.
-  const clubApiKeyFile = getClubApiKeyFileFromArgs(args);
+  const clubApiKeyFile = getClubApiKeyFileFromArgs(
+    args,
+    commandInfo.command,
+  );
   if (clubApiKeyFile !== undefined) {
     setApiKeyFileOverride(clubApiKeyFile);
   }

@@ -79,7 +79,10 @@ function readKeyFile(path: string, source: ApiKeySourceName): string {
     }
     throw err;
   }
-  const value = raw.replace(/\r?\n$/, "");
+  // Keys never contain whitespace, so trim all of it (blank lines, trailing
+  // spaces, a BOM) rather than only one newline: whitespace left in a key
+  // fails later as an opaque invalid-header error.
+  const value = raw.trim();
   if (value === "") {
     throw new UserError(`${source} file is empty: ${path}`);
   }
