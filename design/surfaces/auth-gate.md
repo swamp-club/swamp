@@ -128,18 +128,21 @@ lives only in the environment, the nested swamp has no credential. Instead it
 inherits a pass.
 
 Every gated run that passes sets `SWAMP_NESTED_GATE_PASS` in its own
-environment to `<pid>.<base64url proof>.<signature>`: its own pid and a proof
-for its key. That is the fresh proof a verified whoami returned, else the
-valid proof cached in `auth_verified.json`, else the pass the run itself
-inherited. It is never the `SWAMP_SIGNIN_TOKEN` proof: the token is a CI
-secret, and handing its contents down under another name would undo the
-stripping. In CI the first gated run of a job checks its token live and caches
-the fresh proof, so later runs have a file proof to hand down. A run with no
-such proof (one that passed offline on its signin token alone, or offline and
-fail-open) clears any pass it inherited and hands nothing down.
-The shell model lets this one variable through to its children, next to
-`SWAMP_LOCK_HOLDER_PID`. The value is fixed for the life of the process,
-because the gate runs once.
+environment to `<pid>.<base64url proof>.<signature>`: a pid and a proof. A run
+admitted on its own key hands down its own pid with the fresh proof a verified
+whoami returned, else the valid proof cached in `auth_verified.json`. A run
+admitted on an inherited pass hands that pass on unchanged, so it still names
+the swamp first admitted on the proof, and a daemon's grandchildren are judged
+against the daemon's start rather than the nested run in between.
+
+The proof is never the `SWAMP_SIGNIN_TOKEN` one: the token is a CI secret, and
+handing its contents down under another name would undo the stripping. In CI
+the first gated run of a job checks its token live and caches the fresh proof,
+so later runs have a file proof to hand down. A run with no such proof (one
+that passed offline on its signin token alone, or offline and fail-open)
+clears any pass it inherited and hands nothing down. The shell model lets this
+one variable through to its children, next to `SWAMP_LOCK_HOLDER_PID`. The
+value is fixed for the life of the process, because the gate runs once.
 
 A swamp with no credential accepts the pass when all three checks hold:
 
@@ -234,7 +237,9 @@ carries the new key.
   and fail-open stamps. A local user can forge them, just as they can patch the
   source. A nested pass is no stronger: it needs a proof swamp-club issued, an
   ancestor started before that proof expired, and a swamp ancestor, which a
-  gate-exempt command can be made to provide. The gate enforces an account requirement. It is not a security boundary.
+  gate-exempt command can be made to provide. Under `deno run dev` any `deno`
+  ancestor counts as the same executable. The gate enforces an account
+  requirement. It is not a security boundary.
 - **Re-checking long-running processes.** `serve` and `worker` pass the gate
   when they start and are checked again when they restart. A revoked collective
   key still fails their own swamp-club calls, such as heartbeat and

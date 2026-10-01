@@ -508,6 +508,7 @@ Deno.test("auth gate integration: a nested run with no credential passes on its 
     assertEquals(outcome.handoff, {
       proof: parentProof.proof,
       signature: parentProof.signature,
+      issuerPid: 4242,
     });
     assertEquals(w.calls, 0);
   });

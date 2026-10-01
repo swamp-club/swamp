@@ -36,6 +36,7 @@ import {
 } from "../domain/auth/proof_verifier.ts";
 import {
   admitsNestedRun,
+  formatNestedGatePass,
   NESTED_GATE_PASS_ENV,
   type NestedGatePass,
   parseNestedGatePass,
@@ -92,6 +93,30 @@ export interface NestedGateDeps {
 export interface GateHandoff {
   readonly proof: string;
   readonly signature: string;
+  /**
+   * The pid the inherited pass names, when this run passed on one. The pass
+   * is handed on unchanged, so every descendant judges the proof against the
+   * swamp that was admitted on it, not against this later one.
+   */
+  readonly issuerPid?: number;
+}
+
+/**
+ * The SWAMP_NESTED_GATE_PASS value a run that passed hands to the swamps it
+ * starts, or undefined when it has nothing to hand down. A run admitted on
+ * its own proof names itself; one admitted on an inherited pass passes that
+ * pass on, still naming the original issuer.
+ */
+export function nestedGatePassValue(
+  handoff: GateHandoff | undefined,
+  ownPid: number,
+): string | undefined {
+  if (!handoff) return undefined;
+  return formatNestedGatePass({
+    parentPid: handoff.issuerPid ?? ownPid,
+    proof: handoff.proof,
+    signature: handoff.signature,
+  });
 }
 
 export interface AuthGateDeps {
@@ -445,7 +470,11 @@ async function assessNestedPass(
   }
   return {
     verdict: { kind: "valid" },
-    handoff: { proof: pass.proof, signature: pass.signature },
+    handoff: {
+      proof: pass.proof,
+      signature: pass.signature,
+      issuerPid: pass.parentPid,
+    },
   };
 }
 

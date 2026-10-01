@@ -31,6 +31,10 @@ import {
 } from "./process_ancestry.ts";
 
 const inspectable = Deno.build.os === "linux" || Deno.build.os === "darwin";
+// The positive cases inspect the test runner's parent, which in a container
+// may be a root-owned init this user cannot read.
+const parentInspectable = inspectable &&
+  executablePathOf(Deno.ppid) !== undefined;
 
 Deno.test("parseProcStatParentPid: reads the field after the state", () => {
   assertEquals(parseProcStatParentPid("1234 (swamp) S 99 1234 1234 0"), 99);
@@ -102,7 +106,7 @@ Deno.test({
 
 Deno.test({
   name: "findAncestor: the parent is an ancestor, with its executable",
-  ignore: !inspectable,
+  ignore: !parentInspectable,
   fn: () => {
     const result = findAncestor(Deno.ppid);
     assertEquals(result.kind, "ancestor");
@@ -155,7 +159,7 @@ Deno.test({
 
 Deno.test({
   name: "findAncestor: reports the ancestor's start time, no later than ours",
-  ignore: !inspectable,
+  ignore: !parentInspectable,
   fn: () => {
     const result = findAncestor(Deno.ppid);
     assert(result.kind === "ancestor");

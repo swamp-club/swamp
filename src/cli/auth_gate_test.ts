@@ -25,9 +25,11 @@ import {
   type AuthGateDeps,
   blockMessage,
   type NestedGateDeps,
+  nestedGatePassValue,
   runAuthGate,
   runProofRefresh,
 } from "./auth_gate.ts";
+import { parseNestedGatePass } from "../domain/auth/nested_gate_pass.ts";
 import { AuthVerificationRepository } from "../infrastructure/persistence/auth_verification_repository.ts";
 import type {
   IdentityCheckResult,
@@ -625,6 +627,7 @@ Deno.test("runAuthGate: no credential with a valid nested pass passes and hands 
     assertEquals(outcome.handoff, {
       proof: parentProof.proof,
       signature: parentProof.signature,
+      issuerPid: PARENT_PID,
     });
     assertEquals(nested.checked, [PARENT_PID]);
     assertEquals(h.calls.length, 0);
@@ -817,4 +820,58 @@ Deno.test("runAuthGate: a pass on a signin token alone hands nothing down", asyn
     async (key) =>
       toSigninToken(await mintTestProof(key, API_KEY, { iat: NOW - 90 * DAY })),
   );
+});
+
+Deno.test("nestedGatePassValue: names this run for its own proof, the issuer for an inherited one", () => {
+  assertEquals(nestedGatePassValue(undefined, 7), undefined);
+  const own = nestedGatePassValue({ proof: "{}", signature: "c2ln" }, 7);
+  assertEquals(own?.split(".")[0], "7");
+  const inherited = nestedGatePassValue(
+    { proof: "{}", signature: "c2ln", issuerPid: 4242 },
+    7,
+  );
+  assertEquals(inherited?.split(".")[0], "4242");
+});
+
+Deno.test("runAuthGate: a grandchild passes under a daemon that outlived its proof", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    // The daemon (PARENT_PID) was admitted 20 days ago on a proof that
+    // expired 6 days later. The nested run in between started today.
+    const daemonStart = NOW - 20 * DAY;
+    const proof = await mintTestProof(h.key, "daemon_key", {
+      iat: NOW - 21 * DAY,
+      exp: NOW - 14 * DAY,
+    });
+    const middlePid = 5000;
+    const startedAt = (pid: number) =>
+      pid === PARENT_PID ? daemonStart : NOW - 60;
+
+    const middle = await runAuthGate(h.deps({
+      credential: null,
+      nested: nestedFrom(
+        proof,
+        (pid) => ({ kind: "ok", startedAt: startedAt(pid) }),
+      ),
+    }));
+    assert(middle.kind === "pass");
+
+    // What the nested run publishes for its own children.
+    const value = nestedGatePassValue(middle.handoff, middlePid);
+    assert(value !== undefined);
+    const checked: number[] = [];
+    const grandchild = await runAuthGate(h.deps({
+      credential: null,
+      nested: {
+        loadPass: () => parseNestedGatePass(value),
+        checkAncestor: (pid) => {
+          checked.push(pid);
+          return { kind: "ok", startedAt: startedAt(pid) };
+        },
+      },
+    }));
+    assertEquals(grandchild.kind, "pass");
+    // Judged against the daemon, not the nested run that started today.
+    assertEquals(checked, [PARENT_PID]);
+  });
 });
